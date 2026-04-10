@@ -2,7 +2,7 @@
 
 Context Engine is an open-source context layer for startups and AI systems.
 
-It ingests company knowledge from chat, docs, meetings, and engineering tools, stores the raw evidence, extracts structured facts and relationships, and serves source-backed answers with review, provenance, and temporal context built in.
+Context Engine ingests company knowledge from Slack, Notion, Zoom, and GitHub. It extracts structured facts, stores provenance, and serves source-backed answers with review, conflict handling, and temporal awareness.
 
 ## Why This Exists
 
