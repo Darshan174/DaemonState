@@ -43,7 +43,7 @@ describe("WorkspaceBootstrap", () => {
 
     renderBootstrap();
 
-    expect(screen.getByText("Connecting to backend...")).toBeInTheDocument();
+    expect(container.querySelector(".animate-spin")).toBeInTheDocument();
     expect(screen.queryByText("App Content")).not.toBeInTheDocument();
   });
 
@@ -108,8 +108,8 @@ describe("WorkspaceBootstrap", () => {
 
     renderBootstrap();
 
-    expect(screen.getByText("Create your workspace")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("e.g. My Company")).toBeInTheDocument();
+    expect(screen.getByText("Create Workspace")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("e.g. Acme Corp")).toBeInTheDocument();
     expect(screen.queryByText("App Content")).not.toBeInTheDocument();
   });
 
@@ -124,10 +124,10 @@ describe("WorkspaceBootstrap", () => {
 
     renderBootstrap();
 
-    expect(screen.getByText("Create Workspace")).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Create Workspace/ })).toBeDisabled();
   });
 
-  it("submits creation form with name and description", async () => {
+  it("submits creation form with name", async () => {
     const mutate = vi.fn();
     useCreateWorkspace.mockReturnValue({ ...defaultCreateMut, mutate });
     useWorkspaces.mockReturnValue({
@@ -140,11 +140,11 @@ describe("WorkspaceBootstrap", () => {
 
     renderBootstrap();
 
-    await userEvent.type(screen.getByPlaceholderText("e.g. My Company"), "Acme Corp");
-    await userEvent.click(screen.getByText("Create Workspace"));
+    await userEvent.type(screen.getByPlaceholderText("e.g. Acme Corp"), "Acme Corp");
+    await userEvent.click(screen.getByRole("button", { name: /Create Workspace/ }));
 
     expect(mutate).toHaveBeenCalledWith(
-      { name: "Acme Corp", description: null },
+      { name: "Acme Corp" },
       expect.objectContaining({ onSuccess: expect.any(Function) }),
     );
   });
@@ -161,6 +161,6 @@ describe("WorkspaceBootstrap", () => {
 
     renderBootstrap();
 
-    expect(screen.getByText("Creating...")).toBeInTheDocument();
+    expect(screen.getByText("Initializing...")).toBeInTheDocument();
   });
 });

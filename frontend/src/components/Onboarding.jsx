@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useCreateWorkspace, useSeedDemoData, useUploadSourceFile } from "../api/hooks";
+import { Link } from "react-router-dom";
+import { useSeedDemoData, useUploadSourceFile } from "../api/hooks";
 import { useWorkspaceSelection } from "../context/WorkspaceContext";
 import { 
   PlayCircle, 
@@ -20,7 +20,6 @@ export default function Onboarding({ onComplete }) {
   
   const seedDemo = useSeedDemoData();
   const uploadFile = useUploadSourceFile();
-  const createWorkspace = useCreateWorkspace();
   const { setSelectedId } = useWorkspaceSelection();
 
   const handleRunDemo = () => {
@@ -209,10 +208,10 @@ function OnboardingCard({ icon, title, description, action, onClick, to, color }
         </div>
       </div>
       {to ? (
-        <a href={to} className={`px-6 py-2.5 rounded-xl bg-slate-900 text-white text-sm font-bold hover:bg-slate-800 transition-colors inline-flex items-center gap-2`}>
+        <Link to={to} className={`px-6 py-2.5 rounded-xl bg-slate-900 text-white text-sm font-bold hover:bg-slate-800 transition-colors inline-flex items-center gap-2`}>
           {action}
           <ArrowRight className="w-4 h-4" />
-        </a>
+        </Link>
       ) : (
         <button 
           onClick={onClick}

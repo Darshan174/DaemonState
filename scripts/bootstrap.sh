@@ -97,12 +97,20 @@ log "5/5  Migrations and demo seed"
 docker compose exec -T api alembic upgrade head
 ok "alembic upgrade head"
 
-seed_out=$(docker compose exec -T api python scripts/seed_demo.py --json)
+# Seed via the HTTP surface (POST /api/seed-demo) so bootstrap exercises the
+# same endpoint the frontend's "Run Demo Workspace" flow hits. This route
+# delegates to the canonical seed_demo_workspace() and is idempotent.
+seed_out=$(curl -fsS --max-time 60 \
+    -X POST \
+    -H 'Content-Type: application/json' \
+    -d '{}' \
+    "${BASE_URL}/api/seed-demo") \
+    || die "POST ${BASE_URL}/api/seed-demo failed — see docker compose logs api"
 printf "%s\n" "$seed_out"
 workspace_id=$(printf "%s" "$seed_out" \
-    | sed -n 's/.*"workspace_id"[^"]*"\([^"]*\)".*/\1/p' \
+    | sed -n 's/.*"workspaceId"[^"]*"\([^"]*\)".*/\1/p' \
     | head -n1)
-[ -n "$workspace_id" ] || die "seed_demo.py did not return a workspace_id"
+[ -n "$workspace_id" ] || die "/api/seed-demo did not return a workspaceId"
 ok "demo workspace ready: ${workspace_id}"
 
 cat <<EOF

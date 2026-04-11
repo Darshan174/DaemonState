@@ -107,7 +107,7 @@ bash scripts/smoke.sh
 2. Create `.env` from `.env.example` if missing, and auto-generate an `ENCRYPTION_KEY`.
 3. `docker compose up -d --build` for Postgres (pgvector), Redis, the API, and the Celery worker.
 4. Wait for `/health/ready` to report both database and Redis as ok.
-5. Run `alembic upgrade head` and seed the deterministic demo workspace.
+5. Run `alembic upgrade head`, then seed the deterministic demo workspace by calling `POST /api/seed-demo` — the same route the frontend "Run Demo Workspace" flow hits, which makes the HTTP surface part of the bootstrap critical path.
 
 `scripts/smoke.sh` then verifies boot, health, seed, and a source-backed query end-to-end — use it as the one-shot credibility check after every deploy.
 
@@ -147,12 +147,14 @@ bash scripts/smoke.sh
 
 It proves:
 
-| Step    | What it checks                                                      |
-| ------- | ------------------------------------------------------------------- |
-| BOOT    | `postgres`, `redis`, and `api` are running under docker compose     |
-| HEALTH  | `/health` returns `ok` and `/health/ready` reports db + redis ok     |
-| SEED    | The deterministic demo workspace exists (idempotently re-seedable)  |
-| QUERY   | `POST /api/query` returns a source-backed answer with provenance    |
+| Step    | What it checks                                                                     |
+| ------- | ---------------------------------------------------------------------------------- |
+| BOOT    | `postgres`, `redis`, and `api` are running under docker compose                    |
+| HEALTH  | `/health` returns `ok` and `/health/ready` reports db + redis ok                   |
+| SEED    | `POST /api/seed-demo` creates the canonical demo workspace with a full knowledge   |
+|         | model + provenance graph, **and is idempotent** — the script calls it twice and    |
+|         | asserts the second call returns the same `workspaceId` with `status="existing"`    |
+| QUERY   | `POST /api/query` against the seeded workspace returns a source-backed answer      |
 
 Exit code is `0` on full pass, non-zero with a descriptive failure otherwise — safe to wire into CI or a post-deploy hook. Override `BASE_URL`, `SMOKE_QUESTION`, or `SMOKE_EXPECT` via env if needed.
 

@@ -4,9 +4,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db_session
+from app.evals.demo_seed import DEFAULT_WORKSPACE_NAME, seed_demo_workspace
 from app.models.user import Workspace
 from app.schemas.user import WorkspaceCreate, WorkspaceRead
 
@@ -30,65 +32,38 @@ async def create_workspace(
     return WorkspaceRead.model_validate(workspace)
 
 
-from datetime import datetime, timezone
-from app.models.connector import Connector, ConnectorStatus
-from app.models.source import SourceDocument, ConnectorType
-
 @router.post("/seed-demo")
 async def seed_demo(
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, object]:
-    """Seed the current workspace with demo data."""
-    # Find the latest workspace
-    workspace = await session.scalar(select(Workspace).order_by(Workspace.created_at.desc()).limit(1))
-    if workspace is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No workspace found to seed.")
+    """Create (or return) the canonical deterministic demo workspace.
 
-    # Create a demo Slack connector
-    connector = Connector(
-        workspace_id=workspace.id,
-        connector_type=ConnectorType.SLACK,
-        status=ConnectorStatus.CONNECTED,
-        config={"document_count": 3, "message": "Demo data seeded"}
-    )
-    session.add(connector)
-    await session.flush()
+    This delegates to ``seed_demo_workspace`` — the same path exercised by
+    ``scripts/seed_demo.py`` and covered by ``tests/test_evals/test_demo_seed.py``
+    — so the workspace ends up with the full knowledge model, components,
+    provenance links, and eval cases that Brief / Query / Accuracy depend on.
 
-    # Add mock documents
-    docs = [
-        SourceDocument(
-            connector_id=connector.id,
-            connector_type=ConnectorType.SLACK,
-            external_id="demo-1",
-            content="Decision: We will adopt a mono-repo for Context Engine.",
-            author="Founder",
-            ingested_at=datetime.now(timezone.utc),
-            metadata_json={"source": "demo"}
-        ),
-        SourceDocument(
-            connector_id=connector.id,
-            connector_type=ConnectorType.SLACK,
-            external_id="demo-2",
-            content="Roadmap: Q3 will focus on accuracy and provenance review.",
-            author="Product Lead",
-            ingested_at=datetime.now(timezone.utc),
-            metadata_json={"source": "demo"}
-        ),
-        SourceDocument(
-            connector_id=connector.id,
-            connector_type=ConnectorType.SLACK,
-            external_id="demo-3",
-            content="Blocker: We need clearer definition for the trust layer API.",
-            author="Eng Lead",
-            ingested_at=datetime.now(timezone.utc),
-            metadata_json={"source": "demo"}
-        )
-    ]
-    for doc in docs:
-        session.add(doc)
-    
-    await session.commit()
-    return {"workspaceId": str(workspace.id), "status": "success"}
+    Idempotent: calling this repeatedly returns the same workspace id with
+    ``status="existing"`` after the first successful run. A race between two
+    concurrent callers is mapped to a 409 instead of leaking an IntegrityError.
+    """
+    try:
+        result = await seed_demo_workspace(session, replace_existing=False)
+    except IntegrityError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Demo workspace is already being seeded by another request.",
+        ) from exc
+
+    return {
+        "workspaceId": str(result.workspace_id),
+        "workspaceName": result.workspace_name,
+        "status": result.status,
+        "seededCaseCount": result.seeded_case_count,
+        "defaultWorkspaceName": DEFAULT_WORKSPACE_NAME,
+    }
+
 
 @router.get("/workspaces", response_model=list[WorkspaceRead])
 async def list_workspaces(

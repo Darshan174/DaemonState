@@ -5,8 +5,11 @@
 # Proves four things against a running Context Engine stack:
 #   1. BOOT   — docker compose reports api+postgres+redis running
 #   2. HEALTH — /health returns ok AND /health/ready returns ready
-#   3. SEED   — the deterministic demo workspace exists (idempotently seeded)
-#   4. QUERY  — POST /api/query against the demo returns a source-backed answer
+#   3. SEED   — POST /api/seed-demo creates the canonical demo workspace and
+#               is idempotent (second call returns the same workspace with
+#               status="existing" instead of hitting the unique constraint)
+#   4. QUERY  — POST /api/query against the seeded workspace returns a
+#               source-backed answer with provenance
 #
 # Exit code 0 on success, non-zero (with a descriptive failure) otherwise.
 #
@@ -67,17 +70,55 @@ printf "%s" "$ready" | grep -q '"redis"[[:space:]]*:[[:space:]]*"ok"' \
 pass "/health/ready → ready (database + redis ok)"
 
 # ── 3. SEED ─────────────────────────────────────────────────────
-step "3/4 SEED — demo workspace"
-seed_out=$(docker compose exec -T api python scripts/seed_demo.py --json) \
-    || fail "seed_demo.py failed — is the api container healthy? (docker compose logs api)"
-workspace_id=$(printf "%s" "$seed_out" \
-    | sed -n 's/.*"workspace_id"[^"]*"\([^"]*\)".*/\1/p' \
-    | head -n1)
-[ -n "$workspace_id" ] || fail "seed_demo.py output missing workspace_id:\n$seed_out"
-seed_status=$(printf "%s" "$seed_out" \
-    | sed -n 's/.*"status"[^"]*"\([^"]*\)".*/\1/p' \
-    | head -n1)
-pass "demo workspace ${workspace_id} (${seed_status:-unknown})"
+step "3/4 SEED — POST /api/seed-demo (idempotent)"
+
+extract_field() {
+    # extract_field <json> <key> — pulls the string value for a top-level key
+    # out of the pretty-printed JSON response from /api/seed-demo.
+    printf "%s" "$1" \
+        | sed -n "s/.*\"$2\"[^\"]*\"\\([^\"]*\\)\".*/\\1/p" \
+        | head -n1
+}
+
+seed_call() {
+    # seed_call <attempt_label> — POSTs /api/seed-demo, echoes the response.
+    curl -fsS --max-time 60 \
+        -X POST \
+        -H 'Content-Type: application/json' \
+        -d '{}' \
+        "${BASE_URL}/api/seed-demo" \
+        || fail "POST /api/seed-demo ($1) returned non-2xx"
+}
+
+# First call — may return status="created" on a fresh stack or "existing" if
+# a previous bootstrap/smoke already seeded this workspace.
+first_out=$(seed_call "first")
+workspace_id=$(extract_field "$first_out" "workspaceId")
+first_status=$(extract_field "$first_out" "status")
+[ -n "$workspace_id" ] || fail "first /api/seed-demo missing workspaceId:\n$first_out"
+[ -n "$first_status" ] || fail "first /api/seed-demo missing status:\n$first_out"
+pass "first  POST → workspaceId=${workspace_id} status=${first_status}"
+
+# Second call — must be idempotent. Same workspaceId, status must be
+# "existing", and must NOT return 500 (which would indicate the IntegrityError
+# regression the code review flagged).
+second_out=$(seed_call "second")
+second_id=$(extract_field "$second_out" "workspaceId")
+second_status=$(extract_field "$second_out" "status")
+[ "$second_id" = "$workspace_id" ] \
+    || fail "second /api/seed-demo returned a different workspaceId ('$second_id' vs '$workspace_id') — not idempotent"
+[ "$second_status" = "existing" ] \
+    || fail "second /api/seed-demo status should be 'existing', got '$second_status' — not idempotent"
+pass "second POST → same workspaceId, status=existing (idempotent)"
+
+# The seeded workspace must contain the full knowledge graph, not just raw
+# SourceDocument rows. Probe GET /api/models?workspace_id=... to confirm.
+models_out=$(curl -fsS --max-time 15 \
+    "${BASE_URL}/api/models?workspace_id=${workspace_id}") \
+    || fail "GET /api/models for seeded workspace failed"
+printf "%s" "$models_out" | grep -q '"id"' \
+    || fail "seeded workspace has zero knowledge models — the seed path is not eval-ready:\n$models_out"
+pass "seeded workspace has knowledge models (eval-ready seed)"
 
 # ── 4. QUERY ────────────────────────────────────────────────────
 step "4/4 QUERY — source-backed answer"
@@ -104,7 +145,9 @@ cat <<EOF
 
     Boot:   postgres + redis + api running
     Health: /health ok, /health/ready ok (db + redis)
-    Seed:   demo workspace ${workspace_id} (${seed_status:-unknown})
+    Seed:   workspace ${workspace_id} via POST /api/seed-demo
+            first=${first_status}, second=existing (idempotent)
+            knowledge models present
     Query:  "${SMOKE_QUESTION}" returned a source-backed answer
 
     Context Engine is up, healthy, seeded, and answering queries.

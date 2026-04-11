@@ -1,7 +1,7 @@
 """Generic file scanner importer.
 
 Walks a directory or reads individual files and creates a
-``NormalizedDocument`` per file.  Supports common text-based formats:
+``NormalizedDocument`` per file. Supports common text-based formats:
 
 - ``.txt``, ``.md``, ``.rst`` — plain text / markdown
 - ``.csv`` — each row becomes a separate document
@@ -16,6 +16,7 @@ for the zero-auth MVP.
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -26,34 +27,94 @@ from app.importers.base import BaseImporter, ImporterError
 
 # Supported text extensions
 _TEXT_EXTENSIONS = {
-    ".txt", ".md", ".markdown", ".rst", ".log",
-    ".json", ".jsonl", ".jsonlines",
-    ".csv", ".tsv",
-    ".html", ".htm",
+    ".txt",
+    ".md",
+    ".markdown",
+    ".rst",
+    ".log",
+    ".json",
+    ".jsonl",
+    ".jsonlines",
+    ".csv",
+    ".tsv",
+    ".html",
+    ".htm",
     ".xml",
-    ".yaml", ".yml",
+    ".yaml",
+    ".yml",
     ".toml",
-    ".ini", ".cfg", ".conf",
+    ".ini",
+    ".cfg",
+    ".conf",
     ".env",
     ".sql",
-    ".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".rs", ".java",
-    ".sh", ".bash", ".zsh",
+    ".py",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".go",
+    ".rs",
+    ".java",
+    ".sh",
+    ".bash",
+    ".zsh",
 }
 
 # Skip these common binary / non-parseable extensions
 _SKIP_EXTENSIONS = {
     # Images
-    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg", ".webp", ".ico", ".tiff",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".bmp",
+    ".svg",
+    ".webp",
+    ".ico",
+    ".tiff",
     # Documents
-    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".ppt",
+    ".pptx",
     # Archives
-    ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".bz2",
+    ".7z",
+    ".rar",
     # Binary / compiled
-    ".exe", ".dll", ".so", ".dylib", ".o", ".pyc", ".class",
+    ".exe",
+    ".dll",
+    ".so",
+    ".dylib",
+    ".o",
+    ".pyc",
+    ".class",
     # Database
-    ".db", ".sqlite", ".sqlite3",
+    ".db",
+    ".sqlite",
+    ".sqlite3",
     # Other
-    ".lock", ".DS_Store", ".git",
+    ".lock",
+    ".DS_Store",
+    ".git",
+}
+_IGNORED_DIR_NAMES = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
 }
 
 # Maximum file size to read (10 MB)
@@ -112,6 +173,8 @@ class GenericFileScanner(BaseImporter):
                 continue
             if entry.name.startswith("."):
                 continue
+            if any(part in _IGNORED_DIR_NAMES for part in entry.parts):
+                continue
             ext = entry.suffix.lower()
             if ext in _SKIP_EXTENSIONS:
                 continue
@@ -133,6 +196,9 @@ class GenericFileScanner(BaseImporter):
         workspace_id: str,
         connector_type_hint: str,
     ) -> Iterator[NormalizedDocument]:
+        if file_path.stat().st_size > _MAX_FILE_SIZE:
+            raise ImporterError(f"File too large to import safely: {file_path}")
+
         ext = file_path.suffix.lower()
 
         if ext == ".csv" or ext == ".tsv":
@@ -142,7 +208,9 @@ class GenericFileScanner(BaseImporter):
         elif ext in (".html", ".htm"):
             yield from self._process_html(file_path, workspace_id, connector_type_hint)
         else:
-            yield self._process_text_file(file_path, workspace_id, connector_type_hint)
+            doc = self._process_text_file(file_path, workspace_id, connector_type_hint)
+            if doc is not None:
+                yield doc
 
     # ── Format-specific parsers ────────────────────────────────────────
 
@@ -151,7 +219,7 @@ class GenericFileScanner(BaseImporter):
         file_path: Path,
         workspace_id: str,
         connector_type_hint: str,
-    ) -> NormalizedDocument:
+    ) -> NormalizedDocument | None:
         """Read a plain text / markdown file as a single document."""
         try:
             content = file_path.read_text(encoding="utf-8", errors="replace")
@@ -159,7 +227,7 @@ class GenericFileScanner(BaseImporter):
             raise ImporterError(f"Cannot read {file_path}: {exc}") from exc
 
         if not content.strip():
-            raise ImporterError(f"Empty file: {file_path}")
+            return None
 
         content = content.strip()
 
@@ -170,17 +238,18 @@ class GenericFileScanner(BaseImporter):
             title = first_line.lstrip("# ").strip() or title
 
         try:
-            rel_path = str(file_path)
+            rel_path = str(file_path.resolve())
         except ValueError:
             rel_path = file_path.name
 
         return NormalizedDocument(
-            external_id=f"file-import:{workspace_id}:{file_path.stem}:{file_path.suffix}",
+            external_id=f"file-import:{workspace_id}:{_path_digest(file_path)}",
             content=content,
             author=None,
-            source_url=None,
+            source_url=file_path.resolve().as_uri(),
             created_at=None,
             metadata={
+                "title": title,
                 "source_type": "file_import",
                 "file_name": file_path.name,
                 "file_path": rel_path,
@@ -214,7 +283,6 @@ class GenericFileScanner(BaseImporter):
         fieldnames = reader.fieldnames or []
 
         for idx, row in enumerate(rows):
-            # Build content from all key-value pairs
             lines = []
             for key, value in row.items():
                 if key and value:
@@ -223,23 +291,23 @@ class GenericFileScanner(BaseImporter):
             if not content.strip():
                 continue
 
-            # Use first column as title if available
             title = ""
             if fieldnames:
                 title = row.get(fieldnames[0], "") or ""
 
             try:
-                rel_path = str(file_path)
+                rel_path = str(file_path.resolve())
             except ValueError:
                 rel_path = file_path.name
 
             yield NormalizedDocument(
-                external_id=f"csv-import:{workspace_id}:{file_path.stem}:row-{idx}",
+                external_id=f"csv-import:{workspace_id}:{_path_digest(file_path)}:row-{idx}",
                 content=content.strip(),
                 author=None,
-                source_url=None,
+                source_url=file_path.resolve().as_uri(),
                 created_at=None,
                 metadata={
+                    "title": title or file_path.stem,
                     "source_type": "csv_import",
                     "file_name": file_path.name,
                     "file_path": rel_path,
@@ -265,26 +333,35 @@ class GenericFileScanner(BaseImporter):
         if not raw.strip():
             return
 
-        # Try JSONL first
         if file_path.suffix.lower() in (".jsonl", ".jsonlines"):
             yield from self._process_jsonl(raw, file_path, workspace_id, connector_type_hint)
             return
 
-        # Try standard JSON
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
-            # Fall back to JSONL parsing
             yield from self._process_jsonl(raw, file_path, workspace_id, connector_type_hint)
             return
 
         if isinstance(data, list):
             for idx, item in enumerate(data):
-                doc = self._json_value_to_document(item, file_path, workspace_id, connector_type_hint, idx)
+                doc = self._json_value_to_document(
+                    item,
+                    file_path,
+                    workspace_id,
+                    connector_type_hint,
+                    idx,
+                )
                 if doc is not None:
                     yield doc
         elif isinstance(data, dict):
-            doc = self._json_value_to_document(data, file_path, workspace_id, connector_type_hint, 0)
+            doc = self._json_value_to_document(
+                data,
+                file_path,
+                workspace_id,
+                connector_type_hint,
+                0,
+            )
             if doc is not None:
                 yield doc
 
@@ -304,7 +381,13 @@ class GenericFileScanner(BaseImporter):
                 item = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            doc = self._json_value_to_document(item, file_path, workspace_id, connector_type_hint, idx)
+            doc = self._json_value_to_document(
+                item,
+                file_path,
+                workspace_id,
+                connector_type_hint,
+                idx,
+            )
             if doc is not None:
                 yield doc
 
@@ -323,7 +406,6 @@ class GenericFileScanner(BaseImporter):
                 return None
             title = content[:80]
         elif isinstance(value, dict):
-            # Flatten dict to text
             lines = []
             for key, val in value.items():
                 if val is not None:
@@ -346,17 +428,18 @@ class GenericFileScanner(BaseImporter):
             title = content[:80]
 
         try:
-            rel_path = str(file_path)
+            rel_path = str(file_path.resolve())
         except ValueError:
             rel_path = file_path.name
 
         return NormalizedDocument(
-            external_id=f"json-import:{workspace_id}:{file_path.stem}:{index}",
+            external_id=f"json-import:{workspace_id}:{_path_digest(file_path)}:{index}",
             content=content.strip(),
             author=None,
-            source_url=None,
+            source_url=file_path.resolve().as_uri(),
             created_at=None,
             metadata={
+                "title": title,
                 "source_type": "json_import",
                 "file_name": file_path.name,
                 "file_path": rel_path,
@@ -372,11 +455,7 @@ class GenericFileScanner(BaseImporter):
         workspace_id: str,
         connector_type_hint: str,
     ) -> Iterator[NormalizedDocument]:
-        """Parse HTML — strip tags and use text content.
-
-        Uses a simple regex-based approach to avoid requiring BeautifulSoup
-        as a dependency.
-        """
+        """Parse HTML — strip tags and use text content."""
         try:
             raw = file_path.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
@@ -385,31 +464,30 @@ class GenericFileScanner(BaseImporter):
         if not raw.strip():
             return
 
-        # Strip HTML tags
         import re
+
         text = re.sub(r"<[^>]+>", " ", raw)
-        # Collapse whitespace
         text = re.sub(r"\s+", " ", text).strip()
 
         if not text:
             return
 
-        # Try to extract <title>
         title_match = re.search(r"<title[^>]*>([^<]+)</title>", raw, re.IGNORECASE)
         title = title_match.group(1).strip() if title_match else file_path.stem
 
         try:
-            rel_path = str(file_path)
+            rel_path = str(file_path.resolve())
         except ValueError:
             rel_path = file_path.name
 
         yield NormalizedDocument(
-            external_id=f"html-import:{workspace_id}:{file_path.stem}",
+            external_id=f"html-import:{workspace_id}:{_path_digest(file_path)}",
             content=text,
             author=None,
-            source_url=None,
+            source_url=file_path.resolve().as_uri(),
             created_at=None,
             metadata={
+                "title": title,
                 "source_type": "html_import",
                 "file_name": file_path.name,
                 "file_path": rel_path,
@@ -422,6 +500,7 @@ class GenericFileScanner(BaseImporter):
 def _authority_weight_for_hint(connector_type_hint: str) -> float:
     """Return a reasonable authority weight for a connector type hint."""
     weights = {
+        "local": 0.85,
         "notion": 0.95,
         "zoom": 0.90,
         "gong": 0.90,
@@ -442,3 +521,7 @@ def _flatten_value(value: object) -> str:
     if isinstance(value, dict):
         return "; ".join(f"{k}={_flatten_value(v)}" for k, v in value.items())
     return str(value)
+
+
+def _path_digest(file_path: Path) -> str:
+    return hashlib.sha1(str(file_path.resolve()).encode("utf-8")).hexdigest()

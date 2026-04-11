@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +19,8 @@ from app.database import get_db_session
 from app.models.source import SourceDocument
 from app.schemas.imports import (
     ImportConnectorRead,
+    ImportRequest,
+    ImportResponse,
     ImportSourceDocumentList,
     ImportSourceDocumentRead,
     ImportTriggerRequest,
@@ -31,11 +33,41 @@ from app.services.import_service import (
     ImportServiceError,
     ImportStatus,
     ImportType,
+    ImportWorkspaceNotFoundError,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/imports", tags=["imports"])
+
+
+def get_import_service(session: AsyncSession = Depends(get_db_session)) -> ImportService:
+    return ImportService(session)
+
+
+def _get_import_service(session: AsyncSession = Depends(get_db_session)) -> ImportService:
+    return ImportService(session)
+
+
+# ── Direct document import (pre-existing contract) ─────────────────────
+
+
+@router.post("", response_model=ImportResponse, summary="Import normalized documents directly")
+async def import_documents(
+    payload: ImportRequest,
+    service: ImportService = Depends(get_import_service),
+) -> ImportResponse:
+    """Import already-normalized documents directly into the knowledge graph.
+
+    This is the programmatic contract used by the CLI and scripted imports.
+    """
+    try:
+        return await service.import_documents(
+            workspace_id=payload.workspace_id,
+            documents=payload.documents,
+        )
+    except ImportWorkspaceNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 # ── Trigger import ─────────────────────────────────────────────────────
@@ -49,7 +81,7 @@ router = APIRouter(prefix="/imports", tags=["imports"])
 )
 async def trigger_import(
     body: ImportTriggerRequest,
-    db: AsyncSession = next(get_db_session()),
+    svc: ImportService = Depends(_get_import_service),
 ):
     """Point the system at an exported file/directory and ingest it.
 
@@ -65,10 +97,9 @@ async def trigger_import(
         )
 
     import_type = ImportType(body.import_type)
-    service = ImportService(db)
 
     try:
-        result = await service.run_import(
+        result = await svc.run_import(
             import_type=import_type,
             source_path=source_path,
             workspace_id=body.workspace_id,
@@ -153,10 +184,9 @@ async def validate_import_source(body: ImportValidateRequest):
 )
 async def list_import_connectors(
     workspace_id: UUID = Query(..., description="Workspace ID"),
-    db: AsyncSession = next(get_db_session()),
+    svc: ImportService = Depends(_get_import_service),
 ):
-    service = ImportService(db)
-    connectors = await service.get_import_connectors(workspace_id)
+    connectors = await svc.get_import_connectors(workspace_id)
     return [
         ImportConnectorRead.model_validate(c)
         for c in connectors
@@ -176,23 +206,21 @@ async def list_import_documents(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     processed: bool | None = None,
-    db: AsyncSession = next(get_db_session()),
+    svc: ImportService = Depends(_get_import_service),
 ):
-    service = ImportService(db)
-    documents = await service.get_source_documents_for_connector(
+    documents = await svc.get_source_documents_for_connector(
         connector_id,
         limit=limit,
         offset=offset,
         processed=processed,
     )
 
-    # Get total count
     count_query = (
         select(func.count())
         .select_from(SourceDocument)
         .where(SourceDocument.connector_id == connector_id)
     )
-    total = await db.scalar(count_query) or 0
+    total = await svc.session.scalar(count_query) or 0
 
     return ImportSourceDocumentList(
         items=[ImportSourceDocumentRead.model_validate(d) for d in documents],

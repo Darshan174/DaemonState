@@ -233,8 +233,7 @@ class SlackExportImporter(BaseImporter):
             or msg.get("user")
         )
 
-        # Build source URL if we have a team domain
-        team = msg.get("team", "")
+        # Build source URL
         source_url = None
         if ts:
             source_url = f"https://slack.com/archives/{channel_name}/p{ts.replace('.', '')}"
