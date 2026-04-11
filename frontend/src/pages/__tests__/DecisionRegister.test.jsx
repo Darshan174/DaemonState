@@ -164,6 +164,10 @@ describe("DecisionRegister", () => {
       "href",
       "/app/engineering/sd12",
     );
+    expect(screen.getAllByRole("link", { name: "Explore graph" })[0]).toHaveAttribute(
+      "href",
+      "/app/graph?view=local&focus=Enterprise+Seat+Price&q=Enterprise+Seat+Price",
+    );
 
     await userEvent.click(screen.getByRole("button", { name: "Needs review" }));
 

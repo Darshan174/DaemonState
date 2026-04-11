@@ -943,16 +943,198 @@ export function useLaunchGuardCheck() {
 
 const MOCK_GRAPH = { nodes: mockGraphNodes, edges: mockGraphEdges };
 
-export function useKnowledgeGraph() {
-  const query = useQuery({
-    queryKey: ["knowledge-graph"],
-    queryFn: withFallback(
-      () => api.get("/graph"),
-      MOCK_GRAPH,
-      { fallbackStatuses: [404, 501] },
-    ),
+function formatRelationshipLabel(value) {
+  return String(value ?? "")
+    .replaceAll("_", " ")
+    .trim();
+}
+
+function positionGraphNodes(nodes) {
+  const modelNodes = nodes.filter((node) => node.type === "model");
+  const componentNodes = nodes.filter((node) => node.type !== "model");
+  const positions = new Map();
+
+  const width = 760;
+  const topY = 110;
+  const modelGap = width / Math.max(modelNodes.length + 1, 2);
+
+  modelNodes.forEach((node, index) => {
+    positions.set(node.id, {
+      x: Math.round((index + 1) * modelGap),
+      y: topY,
+    });
   });
-  return { ...query, isMock: query.data === MOCK_GRAPH };
+
+  const groupedByModel = new Map();
+  componentNodes.forEach((node) => {
+    const groupKey = node.modelId ?? "__ungrouped__";
+    const group = groupedByModel.get(groupKey) ?? [];
+    group.push(node);
+    groupedByModel.set(groupKey, group);
+  });
+
+  groupedByModel.forEach((groupNodes, groupKey) => {
+    const anchor =
+      positions.get(groupKey) ??
+      {
+        x: Math.round(width / 2),
+        y: 250,
+      };
+    const radius = groupNodes.length <= 1 ? 0 : Math.min(170, 70 + groupNodes.length * 10);
+
+    groupNodes.forEach((node, index) => {
+      if (groupNodes.length === 1) {
+        positions.set(node.id, { x: anchor.x, y: anchor.y + 120 });
+        return;
+      }
+
+      const angle = (-Math.PI / 2) + ((Math.PI * 2 * index) / groupNodes.length);
+      positions.set(node.id, {
+        x: Math.round(anchor.x + Math.cos(angle) * radius),
+        y: Math.round(anchor.y + 150 + Math.sin(angle) * radius * 0.58),
+      });
+    });
+  });
+
+  return nodes.map((node) => ({
+    ...node,
+    ...(positions.get(node.id) ?? { x: Math.round(width / 2), y: 250 }),
+  }));
+}
+
+function normalizeGraphResponse(graph) {
+  const modelNodeMap = new Map();
+  const componentNodeMap = new Map();
+  const edgeMap = new Map();
+
+  graph?.nodes?.forEach((node) => {
+    if (node.model_id && !modelNodeMap.has(node.model_id)) {
+      modelNodeMap.set(node.model_id, {
+        id: node.model_id,
+        label: node.model_name ?? "Model",
+        type: "model",
+        modelId: node.model_id,
+      });
+    }
+
+    componentNodeMap.set(node.id, {
+      id: node.id,
+      label: node.name,
+      type: "component",
+      modelId: node.model_id,
+      reviewStatus: node.review_status,
+      temporalState: node.temporal_state,
+      authorityWeight: node.authority_weight,
+      sourceCount: node.source_count,
+      confidence: node.confidence,
+    });
+
+    if (node.model_id) {
+      edgeMap.set(`model:${node.model_id}:${node.id}`, {
+        id: `model:${node.model_id}:${node.id}`,
+        source: node.model_id,
+        target: node.id,
+        label: "contains",
+      });
+    }
+  });
+
+  graph?.edges?.forEach((edge) => {
+    edgeMap.set(edge.id, {
+      id: edge.id,
+      source: edge.source_component_id ?? edge.source_id,
+      target: edge.target_component_id ?? edge.target_id,
+      label: formatRelationshipLabel(edge.relationship_type),
+    });
+  });
+
+  return {
+    nodes: positionGraphNodes([
+      ...modelNodeMap.values(),
+      ...componentNodeMap.values(),
+    ]),
+    edges: [...edgeMap.values()],
+    includeHistorical: graph?.include_historical ?? false,
+    hiddenNodeCount: graph?.hidden_node_count ?? 0,
+    rootComponentId: graph?.root_component_id ?? graph?.root_id ?? null,
+  };
+}
+
+export function useKnowledgeGraph({ viewMode = "workspace", selectedNodeId = null } = {}) {
+  const workspaceQuery = useQuery({
+    queryKey: ["knowledge-graph"],
+    queryFn: withFallback(async () => {
+      const wsId = await getWorkspaceId();
+      if (!wsId) return { nodes: [], edges: [] };
+
+      return normalizeGraphResponse(
+        await api.get(`/graph?workspace_id=${wsId}`),
+      );
+    }, MOCK_GRAPH, { fallbackStatuses: [404, 501] }),
+  });
+
+  const selectedWorkspaceNode =
+    workspaceQuery.data?.nodes?.find((node) => node.id === selectedNodeId) ?? null;
+
+  const localQuery = useQuery({
+    queryKey: [
+      "knowledge-graph",
+      "local",
+      selectedWorkspaceNode?.type ?? null,
+      selectedWorkspaceNode?.id ?? null,
+    ],
+    enabled:
+      viewMode === "local" &&
+      !!selectedWorkspaceNode &&
+      (selectedWorkspaceNode.type === "model" || selectedWorkspaceNode.type === "component"),
+    queryFn: withFallback(async () => {
+      if (!selectedWorkspaceNode) {
+        return { nodes: [], edges: [] };
+      }
+
+      if (selectedWorkspaceNode.type === "model") {
+        return normalizeGraphResponse(
+          await api.get(`/graph/models/${selectedWorkspaceNode.id}`),
+        );
+      }
+
+      return normalizeGraphResponse(
+        await api.get(`/graph/components/${selectedWorkspaceNode.id}?depth=1`),
+      );
+    }, MOCK_GRAPH, { fallbackStatuses: [404, 501] }),
+  });
+
+  const usingLocalGraph =
+    viewMode === "local" &&
+    !!selectedWorkspaceNode &&
+    (selectedWorkspaceNode.type === "model" || selectedWorkspaceNode.type === "component");
+
+  const data =
+    usingLocalGraph && localQuery.data
+      ? localQuery.data
+      : workspaceQuery.data;
+  const isMock =
+    usingLocalGraph && localQuery.data
+      ? localQuery.data === MOCK_GRAPH
+      : workspaceQuery.data === MOCK_GRAPH;
+  const isLoading =
+    workspaceQuery.isLoading || (usingLocalGraph && localQuery.isLoading && !localQuery.data);
+  const isError =
+    workspaceQuery.isError || (usingLocalGraph && localQuery.isError && !localQuery.data);
+  const error =
+    usingLocalGraph && localQuery.isError
+      ? localQuery.error
+      : workspaceQuery.error;
+  const refetch = usingLocalGraph ? localQuery.refetch : workspaceQuery.refetch;
+
+  return {
+    data,
+    isMock,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  };
 }
 
 // ── Context Query ─────────────────────────────────────────────

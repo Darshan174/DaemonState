@@ -212,6 +212,39 @@ class Component(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     def superseded_by(self) -> UUID | None:
         return self.superseded_by_id
 
+    @property
+    def source_count(self) -> int:
+        """Number of source documents supporting this component.
+
+        Returns 0 if the relationship is not loaded (avoids accidental
+        lazy-load in property access).
+        """
+        if "source_links" not in self.__dict__:
+            return 0
+        return len(self.source_links)
+
+    @property
+    def is_rejected(self) -> bool:
+        """True when the review status is explicitly rejected."""
+        return self.review_status == "rejected"
+
+    @property
+    def is_superseded(self) -> bool:
+        """True when this component has been superseded by a newer version."""
+        return self.valid_to is not None
+
+    @property
+    def is_hidden(self) -> bool:
+        """True when this component should be hidden from default graph views.
+
+        A component is hidden if it is rejected or superseded.
+        Historical (valid_to set but not superseded) components are NOT hidden —
+        they represent earlier versions of facts that are still part of the lineage.
+        """
+        return self.is_rejected or (
+            self.is_superseded and self.superseded_by_id is not None
+        )
+
 
 class Relationship(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "relationships"
@@ -311,6 +344,31 @@ class Relationship(UUIDPrimaryKeyMixin, Base):
     @property
     def superseded_by(self) -> UUID | None:
         return self.superseded_by_id
+
+    @property
+    def source_review_status(self) -> str | None:
+        """Review status of the source component."""
+        if self.source_component is None:
+            return None
+        return self.source_component.review_status
+
+    @property
+    def target_review_status(self) -> str | None:
+        """Review status of the target component."""
+        if self.target_component is None:
+            return None
+        return self.target_component.review_status
+
+    @property
+    def is_hidden(self) -> bool:
+        """True when either endpoint is hidden — the relationship should be
+        hidden from default graph views.
+        """
+        if self.source_component is not None and self.source_component.is_hidden:
+            return True
+        if self.target_component is not None and self.target_component.is_hidden:
+            return True
+        return self.valid_to is not None
 
 
 class ComponentSource(Base):

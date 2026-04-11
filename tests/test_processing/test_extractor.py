@@ -274,6 +274,58 @@ class TestStructuredLLMExtractor:
         with pytest.raises(ExtractionError, match="malformed output"):
             await extractor.extract(doc)
 
+    async def test_long_documents_are_truncated_and_chunked(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.processing.extractor.settings.extraction_max_input_chars",
+            64,
+        )
+        monkeypatch.setattr(
+            "app.processing.extractor.settings.extraction_chunk_size_chars",
+            24,
+        )
+        monkeypatch.setattr(
+            "app.processing.extractor.settings.extraction_chunk_overlap_chars",
+            4,
+        )
+        prompts: list[str] = []
+        doc = _make_doc(
+            "decision: keep first part. " * 8 + "TAIL-END-SHOULD-NOT-APPEAR",
+            connector_type=ConnectorType.ZOOM,
+        )
+
+        async def _complete(prompt: str):
+            prompts.append(prompt)
+            return {"facts": []}
+
+        extractor = StructuredLLMExtractor(completion_fn=_complete)
+        facts = await extractor.extract(doc)
+
+        assert facts == []
+        assert len(prompts) > 1
+        joined = "\n".join(prompts)
+        assert any("truncated" in prompt or "extraction ...]" in prompt for prompt in prompts)
+        assert "TAIL-END-SHOULD-NOT-APPEAR" not in joined
+
+    async def test_connector_specific_examples_are_included_in_prompt(self):
+        prompts: list[str] = []
+        doc = _make_doc(
+            "Decision: use Postgres 16 rolling migration.",
+            channel=None,
+            title="Migration plan",
+            connector_type=ConnectorType.GITHUB,
+        )
+
+        async def _complete(prompt: str):
+            prompts.append(prompt)
+            return {"facts": []}
+
+        extractor = StructuredLLMExtractor(completion_fn=_complete)
+        await extractor.extract(doc)
+
+        assert len(prompts) == 1
+        assert "Examples for github" in prompts[0]
+        assert "Expected output" in prompts[0]
+
 
 class TestFallbackExtractor:
     async def test_falls_back_to_regex_when_structured_output_is_malformed(self):

@@ -208,6 +208,10 @@ describe("Sources", () => {
     expect(screen.getByText(/5 stored · 4 processed · 1 pending/)).toBeInTheDocument();
     expect(within(detail).getByText("Alice")).toBeInTheDocument();
     expect(within(detail).getByText("Raw content")).toBeInTheDocument();
+    expect(within(detail).getByRole("link", { name: "Explore graph" })).toHaveAttribute(
+      "href",
+      "/app/graph?view=local&focus=%23pricing&q=%23pricing",
+    );
     expect(
       within(detail).getByText(/enterprise pricing moves to \$600\/seat/),
     ).toBeInTheDocument();
@@ -277,8 +281,10 @@ describe("Sources", () => {
     const detail = screen.getByRole("region", { name: "Document detail" });
     expect(within(detail).getByText("Used in components")).toBeInTheDocument();
     expect(
-      within(detail).getByRole("link", { name: /Enterprise Seat Price/ }),
-    ).toHaveAttribute("href", "/app/model/pricing");
+      within(detail)
+        .getAllByRole("link")
+        .find((link) => link.getAttribute("href") === "/app/model/pricing"),
+    ).toBeTruthy();
     expect(within(detail).getByText("Related review items")).toBeInTheDocument();
     expect(
       within(detail).getByRole("link", { name: /Enterprise pricing changed across Slack and Notion/ }),
@@ -290,6 +296,10 @@ describe("Sources", () => {
     expect(within(detail).getByText("needs review -> approved")).toBeInTheDocument();
     expect(within(detail).getByText("Conflict generated automatically during ingestion.")).toBeInTheDocument();
     expect(within(detail).getByText("Finance confirmed the new price.")).toBeInTheDocument();
+    expect(within(detail).getByRole("link", { name: "Explore Enterprise Seat Price in graph" })).toHaveAttribute(
+      "href",
+      "/app/graph?view=local&focus=Enterprise+Seat+Price&q=Enterprise+Seat+Price",
+    );
   });
 
   it("renders transcript metadata for Zoom source documents", () => {

@@ -131,6 +131,10 @@ describe("Changes", () => {
       "href",
       "/app/brief",
     );
+    expect(screen.getAllByRole("link", { name: "Explore graph" })[0]).toHaveAttribute(
+      "href",
+      "/app/graph?view=local&focus=Launch+Decisions&q=Launch+Decisions",
+    );
 
     await userEvent.click(screen.getByRole("button", { name: /Decisions\s*1/i }));
 

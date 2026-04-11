@@ -160,11 +160,19 @@ function DecisionCard({ item }) {
           </div>
           <p className="mt-2 text-sm text-gray-600">{item.summary}</p>
         </div>
-        <div className="text-right text-xs text-gray-400">
-          <p>{formatDateTime(item.createdAt)}</p>
-          {typeof item.averageConfidence === "number" && (
-            <p className="mt-1">Confidence {Math.round(item.averageConfidence * 100)}%</p>
-          )}
+        <div className="flex flex-col items-end gap-3 text-xs text-gray-400">
+          <div className="text-right">
+            <p>{formatDateTime(item.createdAt)}</p>
+            {typeof item.averageConfidence === "number" && (
+              <p className="mt-1">Confidence {Math.round(item.averageConfidence * 100)}%</p>
+            )}
+          </div>
+          <Link
+            to={buildDecisionGraphHref(item)}
+            className="inline-flex rounded-lg bg-slate-900 px-3 py-1.5 font-medium text-white shadow-sm transition-colors hover:bg-slate-800"
+          >
+            Explore graph
+          </Link>
         </div>
       </div>
 
@@ -398,6 +406,19 @@ function buildDecisionWorkflowLinks(rationaleSources) {
   });
 
   return links;
+}
+
+function buildDecisionGraphHref(item) {
+  const focus =
+    item.affectedComponents?.[0]?.name ||
+    item.modelNames?.[0] ||
+    item.sourceLabel ||
+    item.title;
+  const params = new URLSearchParams();
+  params.set("view", "local");
+  params.set("focus", focus);
+  params.set("q", focus);
+  return `/app/graph?${params.toString()}`;
 }
 
 function formatDateTime(value) {

@@ -316,6 +316,15 @@ export default function Sources() {
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
+                    <Link
+                      to={buildSourceGraphHref(
+                        selectedDocument,
+                        componentRefsQuery.data?.[0] ?? null,
+                      )}
+                      className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 transition-colors shadow-sm"
+                    >
+                      Explore graph
+                    </Link>
                     {!isMock && (
                       <button
                         type="button"
@@ -514,6 +523,15 @@ export default function Sources() {
                               </div>
                             </Link>
                           ))}
+                          {componentRefsQuery.data.map((component) => (
+                            <Link
+                              key={`graph:${component.id}`}
+                              to={buildComponentGraphHref(component)}
+                              className="inline-flex text-[11px] font-medium text-brand-700 hover:text-brand-800"
+                            >
+                              Explore {component.name} in graph
+                            </Link>
+                          ))}
                         </div>
                       ) : (
                         <p className="text-xs text-gray-500">
@@ -632,6 +650,32 @@ function SourceEmptyState({ filtersActive }) {
       </div>
     </div>
   );
+}
+
+function buildSourceGraphHref(document, primaryComponent = null) {
+  const focus =
+    primaryComponent?.name ||
+    primaryComponent?.modelName ||
+    document.location ||
+    document.meetingTopic ||
+    document.documentTitle ||
+    document.repository ||
+    document.author ||
+    document.externalId;
+  const params = new URLSearchParams();
+  params.set("view", "local");
+  params.set("focus", focus);
+  params.set("q", focus);
+  return `/app/graph?${params.toString()}`;
+}
+
+function buildComponentGraphHref(component) {
+  const focus = component.name || component.modelName || "graph";
+  const params = new URLSearchParams();
+  params.set("view", "local");
+  params.set("focus", focus);
+  params.set("q", focus);
+  return `/app/graph?${params.toString()}`;
 }
 
 function formatDate(value) {

@@ -26,6 +26,7 @@ const ADMIN_NAV = [
   { to: "/app/brief", label: "Founder Brief", icon: BriefIcon },
   { to: "/app/decisions", label: "Decision Register", icon: DecisionIcon },
   { to: "/app/changes", label: "What Changed", icon: ChangesIcon },
+  { to: "/app/graph", label: "Knowledge Graph", icon: GraphIcon },
   { to: "/app/launch-guard", label: "Launch Guard", icon: GuardIcon },
   { to: "/app/meetings", label: "Meetings", icon: MeetingIcon },
   { to: "/app/engineering", label: "Engineering", icon: CodeIcon },
@@ -35,7 +36,6 @@ const ADMIN_NAV = [
   { to: "/app/review", label: "Review Queue", icon: ShieldCheckIcon },
   { to: "/app/connectors", label: "Connectors", icon: PlugIcon },
   { to: "/app/sources", label: "Sources", icon: DocumentStackIcon },
-  { to: "/app/graph", label: "Knowledge Graph", icon: GraphIcon },
 ];
 
 function SidebarContent({ onNavigate }) {

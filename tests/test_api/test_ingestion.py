@@ -18,6 +18,12 @@ from app.models.knowledge import (
 )
 from app.models.review import ReviewItem
 from app.models.source import ConnectorType, SourceDocument
+from app.processing.extractor import (
+    ExtractedFact,
+    ExtractionError,
+    ExtractorMetadata,
+    RegexExtractor,
+)
 from app.services.ingestion_service import IngestionService
 
 
@@ -129,6 +135,108 @@ class TestIngestionServiceDirect:
         decision = next(c for c in components if "Decision" in c.name)
         assert decision.value == "migrate to Postgres 16"
         assert decision.confidence == 0.75
+
+    async def test_processing_batches_embeddings_per_document(
+        self, db_session, workspace, slack_connector
+    ):
+        doc = SourceDocument(
+            connector_id=slack_connector.id,
+            connector_type=ConnectorType.SLACK,
+            external_id="C1:batch.embed.1",
+            content=(
+                "decision: migrate to Postgres 16\n"
+                "action item: write the migration runbook\n"
+                "blocker: staging database is unavailable"
+            ),
+            metadata_json={"channel_name": "engineering"},
+        )
+        db_session.add(doc)
+        await db_session.flush()
+
+        class _BatchOnlyEmbedder:
+            def __init__(self) -> None:
+                self.calls: list[list[str]] = []
+
+            async def embed_text(self, text: str) -> list[float]:
+                raise AssertionError("single-text embedding path should not be used")
+
+            async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+                self.calls.append(list(texts))
+                return [[0.01 * (idx + 1)] * 1024 for idx in range(len(texts))]
+
+        embedder = _BatchOnlyEmbedder()
+        svc = IngestionService(db_session, embedder=embedder)
+        count = await svc.process_connector_documents(
+            workspace_id=workspace.id,
+            connector_id=slack_connector.id,
+            connector_type=ConnectorType.SLACK,
+        )
+
+        assert count == 1
+        assert len(embedder.calls) == 1
+        assert set(embedder.calls[0]) == {
+            "Decision in #engineering\nmigrate to Postgres 16",
+            "Action Item in #engineering\nwrite the migration runbook",
+            "Blocker in #engineering\nstaging database is unavailable",
+        }
+
+    async def test_failed_document_does_not_abort_remaining_connector_batch(
+        self, db_session, workspace, slack_connector
+    ):
+        healthy = SourceDocument(
+            connector_id=slack_connector.id,
+            connector_type=ConnectorType.SLACK,
+            external_id="C1:healthy.1",
+            content="decision: launch Monday",
+            metadata_json={"channel_name": "product"},
+        )
+        broken = SourceDocument(
+            connector_id=slack_connector.id,
+            connector_type=ConnectorType.SLACK,
+            external_id="C1:broken.1",
+            content="decision: this document will fail extraction",
+            metadata_json={"channel_name": "product"},
+        )
+        db_session.add_all([healthy, broken])
+        await db_session.flush()
+
+        class _SometimesFailingExtractor:
+            async def extract(self, doc):
+                if doc.external_id == "C1:broken.1":
+                    raise RuntimeError("boom")
+                return [
+                    ExtractedFact(
+                        name="Decision in #product",
+                        value="launch Monday",
+                        confidence=0.91,
+                        fact_type="decision",
+                        extractor=ExtractorMetadata(
+                            extractor_name="test_structured",
+                            extractor_kind="llm_structured",
+                        ),
+                    )
+                ]
+
+        svc = IngestionService(db_session, extractor=_SometimesFailingExtractor())
+        count = await svc.process_connector_documents(
+            workspace_id=workspace.id,
+            connector_id=slack_connector.id,
+            connector_type=ConnectorType.SLACK,
+        )
+
+        assert count == 1
+        await db_session.refresh(healthy)
+        await db_session.refresh(broken)
+        assert healthy.processed_at is not None
+        assert broken.processed_at is None
+
+        components = list(
+            await db_session.scalars(
+                select(Component).where(Component.name == "Decision in #product")
+            )
+        )
+        assert len(components) == 1
+        assert components[0].value == "launch Monday"
 
     async def test_component_source_links_created(
         self, db_session, workspace, slack_connector
@@ -1072,9 +1180,6 @@ class TestSavepointIsolation:
     ):
         """A document that fails during extraction should not roll back
         the entire batch — only the failing doc is skipped."""
-        from app.processing.extractor import ExtractionError
-        from unittest.mock import AsyncMock
-
         good_doc = SourceDocument(
             connector_id=slack_connector.id,
             connector_type=ConnectorType.SLACK,

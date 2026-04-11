@@ -8,9 +8,9 @@ vi.mock("../../api/hooks", () => ({
 }));
 
 vi.mock("../../components/GraphVisualizer", () => ({
-  default: ({ nodes, edges }) => (
+  default: ({ nodes, edges, selectedNodeId }) => (
     <div data-testid="graph-viz">
-      {nodes.length} nodes, {edges.length} edges
+      {nodes.length} nodes, {edges.length} edges, selected={selectedNodeId ?? "none"}
     </div>
   ),
 }));
@@ -70,11 +70,12 @@ describe("KnowledgeGraph", () => {
 
     renderGraph();
 
-    expect(screen.getByText("Knowledge Graph")).toBeInTheDocument();
-    expect(screen.getByText("How to read this graph")).toBeInTheDocument();
+    expect(screen.getByText("Graph Explorer")).toBeInTheDocument();
+    expect(screen.getByText("How to use this graph")).toBeInTheDocument();
     expect(screen.getByText(/Demo data/)).toBeInTheDocument();
     expect(screen.getByText(/Showing demo data/)).toBeInTheDocument();
     expect(screen.getByTestId("graph-viz")).toHaveTextContent("3 nodes, 2 edges");
+    expect(screen.getByText("Inspector")).toBeInTheDocument();
   });
 
   it("hides MockBadge for real data", () => {
@@ -87,7 +88,7 @@ describe("KnowledgeGraph", () => {
 
     renderGraph();
 
-    expect(screen.getByText("Knowledge Graph")).toBeInTheDocument();
+    expect(screen.getByText("Graph Explorer")).toBeInTheDocument();
     expect(screen.queryByText(/Demo data/)).not.toBeInTheDocument();
   });
 
@@ -124,6 +125,22 @@ describe("KnowledgeGraph", () => {
     expect(screen.getByText(/If the graph still looks empty after syncing sources/i)).toBeInTheDocument();
   });
 
+  it("switches to local graph mode when asked", async () => {
+    useKnowledgeGraph.mockReturnValue({
+      data: { nodes: mockNodes, edges: mockEdges },
+      isMock: false,
+      isLoading: false,
+      isError: false,
+    });
+
+    renderGraph();
+
+    await userEvent.click(screen.getByText("Local graph"));
+
+    expect(screen.getByTestId("graph-viz")).toHaveTextContent("3 nodes, 2 edges");
+    expect(screen.getByText(/Showing first-degree neighborhood/i)).toBeInTheDocument();
+  });
+
   it("renders edge list", () => {
     useKnowledgeGraph.mockReturnValue({
       data: { nodes: mockNodes, edges: mockEdges },
@@ -134,11 +151,16 @@ describe("KnowledgeGraph", () => {
 
     renderGraph();
 
-    const edges = screen.getAllByTestId("rel-edge");
-    expect(edges).toHaveLength(2);
-    expect(edges[0]).toHaveTextContent("Slack #eng");
-    expect(edges[0]).toHaveTextContent("feeds");
-    expect(edges[0]).toHaveTextContent("Revenue Model");
+    const edgeTexts = screen
+      .getAllByTestId("rel-edge")
+      .map((edge) => edge.textContent);
+    expect(edgeTexts).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Slack #eng"),
+        expect.stringContaining("feeds"),
+        expect.stringContaining("Revenue Model"),
+      ]),
+    );
   });
 
   it("shows count summary", () => {
@@ -153,5 +175,18 @@ describe("KnowledgeGraph", () => {
 
     expect(screen.getByText(/3\/3 nodes/)).toBeInTheDocument();
     expect(screen.getByText(/2\/2 edges/)).toBeInTheDocument();
+  });
+
+  it("shows linked nodes in the inspector", () => {
+    useKnowledgeGraph.mockReturnValue({
+      data: { nodes: mockNodes, edges: mockEdges },
+      isMock: false,
+      isLoading: false,
+      isError: false,
+    });
+
+    renderGraph();
+
+    expect(screen.getByRole("button", { name: "Slack #eng" })).toBeInTheDocument();
   });
 });

@@ -16,10 +16,7 @@ Context Engine is built to solve that problem with:
 
 ## Architecture:
 
-
-
-
-
+![Context Engine Architecture](./assets/context-engine-architecture.png)
 
 ## Who It Is For
 

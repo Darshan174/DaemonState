@@ -115,7 +115,6 @@ class IngestionService:
         for doc in docs:
             ok = await self._ingest_document_with_savepoint(model, doc)
             if ok:
-                doc.processed_at = datetime.now(timezone.utc)
                 processed += 1
 
         await self.session.flush()
@@ -178,6 +177,7 @@ class IngestionService:
         try:
             async with self.session.begin_nested():
                 await self._ingest_document(model, doc)
+                doc.processed_at = datetime.now(timezone.utc)
                 await self.session.flush()
         except Exception:
             return False

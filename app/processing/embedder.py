@@ -108,21 +108,7 @@ class LiteLLMEmbedder(BaseEmbedder):
         self.service = service or LiteLLMService()
 
     async def embed_text(self, text: str) -> list[float]:
-        try:
-            vectors = await self.service.embed_texts(
-                model=self.model,
-                texts=[text],
-                dimensions=self.dimension,
-            )
-        except (
-            LLMConfigurationError,
-            LLMServiceError,
-            LLMResponseError,
-            Exception,
-        ) as exc:
-            raise EmbeddingError(str(exc)) from exc
-
-        return vectors[0]
+        return (await self.embed_texts([text]))[0]
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
         """Batch embed multiple texts in a single API call.

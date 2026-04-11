@@ -21,3 +21,11 @@ def is_component_visible_as_of(component: Component, *, as_of: datetime) -> bool
 
 def is_component_visible_in_history(component: Component) -> bool:
     return component.review_status != "rejected"
+
+
+def is_component_rejected(component: Component) -> bool:
+    """True when a component has been explicitly rejected.
+
+    Rejected components must not appear in any default graph view.
+    """
+    return component.review_status == "rejected"

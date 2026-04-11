@@ -99,6 +99,12 @@ class ComponentRead(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    # ── Graph / provenance fields ─────────────────────────────────
+    source_count: int = 0
+    is_rejected: bool = False
+    is_superseded: bool = False
+    is_hidden: bool = False
+
 
 class KnowledgeModelRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -134,3 +140,76 @@ class RelationshipRead(BaseModel):
     superseded_by: UUID | None = None
     temporal_state: str | None = None
     created_at: datetime
+
+    # ── Trust / provenance fields ─────────────────────────────────
+    source_review_status: str | None = None
+    target_review_status: str | None = None
+    is_hidden: bool = False
+
+
+# ── Graph response schemas ────────────────────────────────────────
+
+
+class GraphComponentRead(BaseModel):
+    """Component enriched with graph navigation metadata."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    model_id: UUID
+    model_name: str | None = None
+    name: str
+    value: str
+    confidence: float
+    authority_source: str | None
+    authority_weight: float
+    valid_from: datetime
+    valid_to: datetime | None = None
+    superseded_by: UUID | None = None
+    last_verified_at: datetime
+    is_stale: bool
+    review_status: str | None = None
+    review_summary: str | None = None
+    temporal_state: str | None = None
+    source_count: int = 0
+    is_rejected: bool = False
+    is_superseded: bool = False
+    is_hidden: bool = False
+    # Navigation: component IDs that this one supersedes (predecessors)
+    predecessor_ids: list[UUID] = []
+    # Navigation: relationship IDs where this component participates
+    relationship_ids: list[UUID] = []
+
+
+class GraphRelationshipRead(BaseModel):
+    """Relationship enriched with trust/provenance of both endpoints."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    source_component_id: UUID
+    source_component_name: str | None = None
+    target_component_id: UUID
+    target_component_name: str | None = None
+    relationship_type: RelationshipType
+    sentiment: RelationshipSentiment
+    description: str | None
+    confidence: float
+    valid_from: datetime
+    valid_to: datetime | None = None
+    temporal_state: str | None = None
+    source_review_status: str | None = None
+    target_review_status: str | None = None
+    is_hidden: bool = False
+
+
+class GraphResponse(BaseModel):
+    """Full local subgraph response with nodes and edges."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    root_component_id: UUID
+    nodes: list[GraphComponentRead]
+    edges: list[GraphRelationshipRead]
+    include_historical: bool = False
+    hidden_node_count: int = 0

@@ -145,6 +145,7 @@ export default function Changes() {
 function ChangeCard({ item }) {
   const tone = normalizeChangeTone(item);
   const destination = getChangeDestination(item);
+  const graphDestination = getChangeGraphDestination(item);
   const metadata = buildChangeMetadata(item);
 
   return (
@@ -176,11 +177,22 @@ function ChangeCard({ item }) {
             )}
           </div>
         </div>
-        <div className="text-right text-xs text-gray-400">
+        <div className="flex flex-col items-end gap-3 text-xs text-gray-400">
           <p>{formatDateTime(item.occurredAt)}</p>
           {destination ? (
-            <Link to={destination.href} className="mt-2 inline-block font-medium text-brand-700 hover:text-brand-800">
-              {destination.label}
+            <div className="flex flex-col items-end gap-2 text-right">
+              <Link to={destination.href} className="block font-medium text-brand-700 hover:text-brand-800">
+                {destination.label}
+              </Link>
+              {graphDestination ? (
+                <Link to={graphDestination.href} className="inline-flex rounded-lg bg-slate-900 px-3 py-1.5 font-medium text-white shadow-sm transition-colors hover:bg-slate-800">
+                  {graphDestination.label}
+                </Link>
+              ) : null}
+            </div>
+          ) : graphDestination ? (
+            <Link to={graphDestination.href} className="inline-flex rounded-lg bg-slate-900 px-3 py-1.5 font-medium text-white shadow-sm transition-colors hover:bg-slate-800">
+              {graphDestination.label}
             </Link>
           ) : null}
         </div>
@@ -252,6 +264,16 @@ function getChangeDestination(item) {
     };
   }
   return null;
+}
+
+function getChangeGraphDestination(item) {
+  const focus = item.modelName || item.sourceLabel || item.title;
+  if (!focus) return null;
+  const params = new URLSearchParams();
+  params.set("view", "local");
+  params.set("focus", focus);
+  params.set("q", focus);
+  return { href: `/app/graph?${params.toString()}`, label: "Explore graph" };
 }
 
 function buildChangeMetadata(item) {
