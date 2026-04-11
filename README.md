@@ -5,15 +5,6 @@ Context Engine is an open-source context layer for startups and AI systems.
 It is a self-hostable knowledge platform for startups. It solves a specific problem: company knowledge is scattered across Slack messages, Notion docs, Zoom meeting transcripts, and GitHub issues. When someone asks "what's the current pricing?" or "who decided to delay the launch?", the answer might be buried in a Slack thread from two weeks ago — and it might contradict what's written in Notion.
 Context Engine ingests all of that raw data, extracts structured facts from it using LLMs, tracks where each fact came from (provenance), flags conflicts, and serves source-backed answers through a query API and operator dashboard.
 
-Context Engine is built to solve that problem with:
-
-- raw source retention
-- structured fact storage
-- provenance for every fact
-- review and conflict handling
-- current-vs-historical truth
-- measurable accuracy
-
 ## Architecture:
 
 ![Context Engine Architecture](./assets/context-engine-architecture.svg)
@@ -24,10 +15,6 @@ Context Engine is built to solve that problem with:
 - founders and operators who need trustworthy answers, not vague retrieval
 - engineering and product teams that want decisions, blockers, and changes made explicit
 - agent builders who want auditable context instead of generic RAG
-
-## What The Product Does
-
-Context Engine takes data from connected systems and turns it into an operator-friendly context graph.
 
 ### Sources
 
