@@ -66,62 +66,72 @@ export default function WorkspaceBootstrap({ children }) {
   };
 
   return (
-    <div className="flex items-center justify-center h-screen bg-gray-50">
-      <div className="w-full max-w-md mx-4">
-        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8">
-          <div className="flex items-center gap-2 mb-6">
-            <span className="w-9 h-9 rounded-lg bg-brand-600 flex items-center justify-center text-white font-bold text-sm">
+    <div className="flex items-center justify-center h-screen bg-slate-950">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(79,70,229,0.15)_0%,transparent_70%)]" />
+      <div className="w-full max-w-md mx-4 relative z-10">
+        <div className="bg-white rounded-[32px] border border-slate-200 shadow-2xl p-10">
+          <div className="flex items-center gap-3 mb-8">
+            <span className="w-10 h-10 rounded-2xl bg-brand-600 flex items-center justify-center text-white font-bold text-sm shadow-lg shadow-brand-500/30">
               CE
             </span>
-            <span className="font-semibold text-gray-800 text-lg">Context Engine</span>
+            <span className="font-bold text-slate-900 text-xl tracking-tight">Context Engine</span>
           </div>
 
-          <h2 className="text-base font-semibold text-gray-800 mb-1">Create your workspace</h2>
-          <p className="text-sm text-gray-500 mb-6">
-            A workspace organizes your models, components, and data sources. You need at least one to get started.
+          <h2 className="text-2xl font-bold text-slate-900 mb-2">Create Workspace</h2>
+          <p className="text-sm text-slate-500 mb-8 leading-relaxed">
+            Every startup needs a grounded memory. Set up your first workspace to start ingesting context.
           </p>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="space-y-6">
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Name</label>
+              <label className="block text-xs font-bold uppercase tracking-widest text-slate-400 mb-2">Workspace Name</label>
               <input
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. My Company"
+                placeholder="e.g. Acme Corp"
                 required
-                className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">
-                Description <span className="text-gray-400">(optional)</span>
-              </label>
-              <input
-                type="text"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="What is this workspace for?"
-                className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500"
+                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 transition-all text-sm font-medium"
               />
             </div>
 
             {create.isError && (
-              <p className="text-xs text-red-600">
-                {create.error?.message || "Failed to create workspace."}
-              </p>
+              <div className="p-3 bg-red-50 border border-red-100 rounded-xl flex items-start gap-2">
+                <span className="text-red-500 text-sm font-bold mt-0.5">!</span>
+                <p className="text-xs text-red-800 font-medium">
+                  {create.error?.message || "Failed to create workspace."}
+                </p>
+              </div>
             )}
 
             <button
               type="submit"
               disabled={create.isPending || !name.trim()}
-              className="w-full py-2.5 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 transition-colors"
+              className="w-full py-4 text-sm font-bold rounded-xl bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-50 transition-all shadow-lg flex items-center justify-center gap-2"
             >
-              {create.isPending ? "Creating..." : "Create Workspace"}
+              {create.isPending ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                  Initializing...
+                </>
+              ) : (
+                <>
+                  Create Workspace
+                  <ArrowRight className="w-4 h-4" />
+                </>
+              )}
             </button>
           </form>
         </div>
       </div>
     </div>
+  );
+}
+
+function ArrowRight({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3" />
+    </svg>
   );
 }

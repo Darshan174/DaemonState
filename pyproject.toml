@@ -26,6 +26,7 @@ dependencies = [
 ]
 
 [project.scripts]
+ctxe = "app.cli.main:main"
 context-engine-evals = "app.evals.runner:main"
 context-engine-eval-regression = "app.evals.regression:main"
 context-engine-seed-demo = "scripts.seed_demo:main"

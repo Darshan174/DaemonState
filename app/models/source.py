@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 
 class ConnectorType(str, enum.Enum):
+    LOCAL = "local"
     SLACK = "slack"
     NOTION = "notion"
     ZOOM = "zoom"

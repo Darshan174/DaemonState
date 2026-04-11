@@ -90,59 +90,131 @@ The current architecture supports:
 - hybrid lexical + semantic scoring groundwork
 - eval summaries and case-level regressions
 
-## Quick Start
+## Quick Start (5-minute self-hosted)
 
-### 1. Configure the environment
+The fastest path. Requires Docker Engine with Compose v2 and `curl`.
 
-Copy the example env file:
+```bash
+git clone <this-repo> context-engine
+cd context-engine
+bash scripts/bootstrap.sh
+bash scripts/smoke.sh
+```
+
+`scripts/bootstrap.sh` will:
+
+1. Verify `docker`, `docker compose`, and `curl` are installed.
+2. Create `.env` from `.env.example` if missing, and auto-generate an `ENCRYPTION_KEY`.
+3. `docker compose up -d --build` for Postgres (pgvector), Redis, the API, and the Celery worker.
+4. Wait for `/health/ready` to report both database and Redis as ok.
+5. Run `alembic upgrade head` and seed the deterministic demo workspace.
+
+`scripts/smoke.sh` then verifies boot, health, seed, and a source-backed query end-to-end — use it as the one-shot credibility check after every deploy.
+
+Once the API is up:
+
+- API:          `http://localhost:8000`
+- Health:       `http://localhost:8000/health`
+- Readiness:    `http://localhost:8000/health/ready`
+- OpenAPI docs: `http://localhost:8000/docs`
+
+To run the operator/admin UI against this backend, see [Run the Frontend](#run-the-frontend) below.
+
+### Manual Quick Start (reference)
+
+If you prefer to run the steps yourself or need to customize the flow:
 
 ```bash
 cp .env.example .env
-```
+# Generate an encryption key and paste it into .env as ENCRYPTION_KEY=...
+openssl rand -base64 32
 
-Generate an encryption key:
-
-```bash
-python - <<'PY'
-from cryptography.fernet import Fernet
-print(Fernet.generate_key().decode())
-PY
-```
-
-Put that value into `.env` as `ENCRYPTION_KEY=...`.
-
-For an offline/local OSS run, leave these blank:
-
-- `LITELLM_API_KEY`
-- `EXTRACTION_MODEL`
-- `EMBEDDING_MODEL`
-
-### 2. Start the backend stack
-
-```bash
-docker compose up -d postgres redis api worker
-```
-
-Apply migrations:
-
-```bash
+docker compose up -d --build
 docker compose exec api alembic upgrade head
-```
-
-Seed the demo workspace:
-
-```bash
-docker compose exec api python scripts/seed_demo.py --json --replace-existing
-```
-
-Check health:
-
-```bash
-curl http://localhost:8000/health
+docker compose exec api python scripts/seed_demo.py --json
 curl http://localhost:8000/health/ready
 ```
 
-### 3. Run the frontend
+Leave `LITELLM_API_KEY`, `EXTRACTION_MODEL`, and `EMBEDDING_MODEL` blank for a fully offline OSS run using the local deterministic embedder and rule-based extraction fallback.
+
+## Smoke Verification
+
+`scripts/smoke.sh` is the one-command "is this deploy credible?" check:
+
+```bash
+bash scripts/smoke.sh
+```
+
+It proves:
+
+| Step    | What it checks                                                      |
+| ------- | ------------------------------------------------------------------- |
+| BOOT    | `postgres`, `redis`, and `api` are running under docker compose     |
+| HEALTH  | `/health` returns `ok` and `/health/ready` reports db + redis ok     |
+| SEED    | The deterministic demo workspace exists (idempotently re-seedable)  |
+| QUERY   | `POST /api/query` returns a source-backed answer with provenance    |
+
+Exit code is `0` on full pass, non-zero with a descriptive failure otherwise — safe to wire into CI or a post-deploy hook. Override `BASE_URL`, `SMOKE_QUESTION`, or `SMOKE_EXPECT` via env if needed.
+
+## Resource Requirements
+
+Context Engine runs comfortably on a small VPS. The resource envelope below assumes the default offline OSS path (local embedder + rule extractor, no provider LLM calls):
+
+| Tier        | vCPU | RAM   | Disk  | Suitable for                                                         |
+| ----------- | ---- | ----- | ----- | -------------------------------------------------------------------- |
+| Minimum     | 2    | 2 GB  | 10 GB | Bootstrap, smoke, small demo workspace                               |
+| Recommended | 2    | 4 GB  | 20 GB | Everyday self-hosted use, a few thousand source documents            |
+| Comfortable | 4    | 8 GB  | 40 GB | Many connectors + provider-backed extraction + denser embedding use  |
+
+Notes:
+
+- Postgres with `pgvector` is the main memory consumer — embeddings and ANN indexes benefit from page cache.
+- Switching to provider-backed extraction/embeddings (`LITELLM_API_KEY` + `EXTRACTION_MODEL` + `EMBEDDING_MODEL`) does not meaningfully increase host RAM — the model runs remotely.
+- The Celery worker is light by default (`--concurrency=2`). Scale it by raising the concurrency or running additional worker containers.
+- Disk usage grows with `source_documents` + embeddings; budget ~1 GB per 50k average-sized documents, then add headroom for pgvector indexes.
+
+## Persistent Storage and Backups
+
+All stateful data lives in two named Docker volumes declared in `docker-compose.yml`:
+
+- `postgres_data` — Postgres database (source documents, components, relationships, review items, evals, everything)
+- `redis_data`    — Redis (Celery queue + transient caches)
+
+`docker compose down` leaves these volumes intact; only `docker compose down -v` destroys them. Back them up before every upgrade.
+
+Minimal backup recipe:
+
+```bash
+# SQL dump — portable across Postgres minor versions
+docker compose exec -T postgres \
+    pg_dump -U postgres -d context_engine --no-owner --format=custom \
+    > "context_engine-$(date +%Y%m%d-%H%M%S).dump"
+
+# Restore into a fresh stack
+docker compose exec -T postgres \
+    pg_restore -U postgres -d context_engine --clean --if-exists \
+    < context_engine-YYYYMMDD-HHMMSS.dump
+```
+
+For volume-level backups on a cheap VPS, snapshot the entire docker volume directory (typically under `/var/lib/docker/volumes/`) while the stack is stopped, or rely on your provider's block-storage snapshots.
+
+## Deploying on a Cheap VPS
+
+Context Engine is designed to run on a single small VPS. A 2 vCPU / 4 GB RAM instance from any mainstream provider is enough for a real self-hosted deployment; the "minimum" tier above works for demos.
+
+A reasonable shape for a cheap VPS deploy:
+
+1. Provision a Linux host (Ubuntu 24.04 LTS or Debian 12 are the least-friction picks) with at least 4 GB RAM and 20 GB disk.
+2. Install Docker Engine + Compose v2 (the official Docker convenience script or your distro's packages are both fine).
+3. `git clone` this repo and run `bash scripts/bootstrap.sh`.
+4. Put a TLS-terminating reverse proxy (Caddy, Traefik, or nginx) in front of `http://localhost:8000`. Block direct public access to the compose-published port if possible.
+5. Set `HOST_POSTGRES_PORT` and `HOST_REDIS_PORT` in `.env` to `127.0.0.1:5432` / `127.0.0.1:6379` bindings — or remove the `ports:` entries entirely — so Postgres and Redis are never exposed to the public internet.
+6. Enable automated snapshots on the host (provider-level) and a nightly `pg_dump` to object storage.
+7. Run `bash scripts/smoke.sh` after every deploy.
+
+> Auth note: Context Engine does not yet ship a production-grade auth layer. For a real internet-facing deploy, restrict access at the reverse proxy (basic auth, an allowlist, Tailscale, or a Cloudflare Access tunnel) until proper auth lands.
+
+## Run the Frontend
 
 ```bash
 cd frontend
@@ -150,7 +222,7 @@ npm install
 npm run dev
 ```
 
-The Vite app will proxy API requests to the backend.
+The Vite dev server will proxy API requests to the backend at `http://localhost:8000`.
 
 ## Local Development Without Docker
 
@@ -233,10 +305,10 @@ GitHub does not require app-level env vars for the first pass. Connect via the b
 
 ## Useful Commands
 
-Backend smoke test:
+Backend smoke test (boot + health + seed + query):
 
 ```bash
-python scripts/smoke_phase1.py
+bash scripts/smoke.sh
 ```
 
 Backend tests:

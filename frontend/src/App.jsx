@@ -1,5 +1,5 @@
 import { Suspense, lazy, useState } from "react";
-import { Routes, Route, NavLink, Navigate, useLocation } from "react-router-dom";
+import { Routes, Route, NavLink, Navigate, useLocation, Link } from "react-router-dom";
 import WorkspaceBootstrap from "./components/WorkspaceBootstrap";
 import WorkspaceSwitcher from "./components/WorkspaceSwitcher";
 
@@ -21,41 +21,47 @@ const Query = lazy(() => import("./pages/Query"));
 const ReviewQueue = lazy(() => import("./pages/ReviewQueue"));
 const Sources = lazy(() => import("./pages/Sources"));
 
+const CORE_NAV = [
+  { to: "/app/brief", label: "Founder Brief", icon: BriefIcon },
+  { to: "/app/query", label: "Ask", icon: SearchIcon },
+  { to: "/app/decisions", label: "Decisions", icon: DecisionIcon },
+  { to: "/app/changes", label: "Changes", icon: ChangesIcon },
+  { to: "/app/sources", label: "Sources", icon: DocumentStackIcon },
+];
+
 const ADMIN_NAV = [
   { to: "/app", label: "Dashboard", icon: BarChartIcon },
-  { to: "/app/brief", label: "Founder Brief", icon: BriefIcon },
-  { to: "/app/decisions", label: "Decision Register", icon: DecisionIcon },
-  { to: "/app/changes", label: "What Changed", icon: ChangesIcon },
   { to: "/app/graph", label: "Knowledge Graph", icon: GraphIcon },
   { to: "/app/launch-guard", label: "Launch Guard", icon: GuardIcon },
   { to: "/app/meetings", label: "Meetings", icon: MeetingIcon },
   { to: "/app/engineering", label: "Engineering", icon: CodeIcon },
   { to: "/app/accuracy", label: "Accuracy", icon: GaugeIcon },
   { to: "/app/models", label: "Models", icon: CubeIcon },
-  { to: "/app/query", label: "Query", icon: SearchIcon },
   { to: "/app/review", label: "Review Queue", icon: ShieldCheckIcon },
   { to: "/app/connectors", label: "Connectors", icon: PlugIcon },
-  { to: "/app/sources", label: "Sources", icon: DocumentStackIcon },
 ];
 
 function SidebarContent({ onNavigate }) {
+  const [showAdmin, setShowAdmin] = useState(false);
+
   return (
     <>
       <div className="flex items-center gap-3 px-6 py-6 border-b border-slate-800/60">
-        <span className="w-9 h-9 rounded-xl bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white font-bold text-[13px] shadow-[0_0_12px_rgba(79,70,229,0.4)]">
-          CE
-        </span>
-        <span className="font-bold text-white text-sm tracking-wide">
-          Context Engine
-        </span>
+        <Link to="/" className="flex items-center gap-3 group">
+          <span className="w-9 h-9 rounded-xl bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white font-bold text-[13px] shadow-[0_0_12px_rgba(79,70,229,0.4)] group-hover:scale-105 transition-transform">
+            CE
+          </span>
+          <span className="font-bold text-white text-sm tracking-wide">
+            Context Engine
+          </span>
+        </Link>
       </div>
 
       <nav className="flex-1 overflow-y-auto py-5 space-y-1 px-4 custom-scrollbar">
-        {ADMIN_NAV.map(({ to, label, icon: Icon }) => (
+        {CORE_NAV.map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
             to={to}
-            end={to === "/app"}
             onClick={onNavigate}
             className={({ isActive }) =>
               `group flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${isActive
@@ -72,10 +78,47 @@ function SidebarContent({ onNavigate }) {
             )}
           </NavLink>
         ))}
+
+        <div className="pt-4 mt-4 border-t border-slate-800/40">
+          <button
+            onClick={() => setShowAdmin(!showAdmin)}
+            className="w-full flex items-center justify-between px-3 py-2 text-xs font-bold uppercase tracking-widest text-slate-500 hover:text-slate-300 transition-colors"
+          >
+            <span>Operator Tools</span>
+            <svg 
+              className={`w-4 h-4 transition-transform duration-200 ${showAdmin ? 'rotate-180' : ''}`} 
+              fill="none" viewBox="0 0 24 24" stroke="currentColor"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+          
+          {showAdmin && (
+            <div className="mt-2 space-y-1">
+              {ADMIN_NAV.map(({ to, label, icon: Icon }) => (
+                <NavLink
+                  key={to}
+                  to={to}
+                  end={to === "/app"}
+                  onClick={onNavigate}
+                  className={({ isActive }) =>
+                    `group flex items-center gap-3 px-3 py-2 rounded-md text-xs font-medium transition-all duration-200 ${isActive
+                      ? "bg-slate-800 text-white"
+                      : "text-slate-500 hover:bg-slate-800/30 hover:text-slate-300"
+                    }`
+                  }
+                >
+                  <Icon className="w-4 h-4 shrink-0" />
+                  {label}
+                </NavLink>
+              ))}
+            </div>
+          )}
+        </div>
       </nav>
 
-      <div className="px-6 py-5 border-t border-slate-800/60 flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-slate-500">
-        <span>Admin workspace</span>
+      <div className="px-6 py-5 border-t border-slate-800/60 flex items-center justify-between text-[10px] font-bold uppercase tracking-widest text-slate-600">
+        <span>v1.0.0-oss</span>
         <span className="flex h-1.5 w-1.5"><span className="animate-ping absolute inline-flex h-1.5 w-1.5 rounded-full bg-brand-400 opacity-75"></span><span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-brand-500"></span></span>
       </div>
     </>
@@ -103,10 +146,11 @@ function AdminShell() {
   if (modelMatch) {
     pageTitle = "Model Detail";
   } else {
+    const allNav = [...CORE_NAV, ...ADMIN_NAV];
     pageTitle =
-      ADMIN_NAV.find((n) =>
+      allNav.find((n) =>
         n.to === "/app" ? location.pathname === "/app" : location.pathname.startsWith(n.to),
-      )?.label ?? "Admin Dashboard";
+      )?.label ?? "Dashboard";
   }
 
   return (

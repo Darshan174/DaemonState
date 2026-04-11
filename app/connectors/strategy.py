@@ -28,6 +28,12 @@ class ConnectorStrategy:
 
 
 CONNECTOR_STRATEGIES: dict[ConnectorType, ConnectorStrategy] = {
+    ConnectorType.LOCAL: ConnectorStrategy(
+        connector_type=ConnectorType.LOCAL,
+        provider=ConnectorProvider.NATIVE,
+        provider_label="Built in",
+        note="Generic file import surface used by the local CLI and import API.",
+    ),
     ConnectorType.SLACK: ConnectorStrategy(
         connector_type=ConnectorType.SLACK,
         provider=ConnectorProvider.NATIVE,

@@ -181,9 +181,10 @@ export function useDashboard() {
       const wsId = await getWorkspaceId();
       if (!wsId) throw new Error("no workspace");
 
-      const [models, connectors] = await Promise.all([
+      const [models, connectors, sources] = await Promise.all([
         api.get(`/models?workspace_id=${wsId}`),
         api.get(`/connectors?workspace_id=${wsId}`),
+        api.get(`/connectors/source-documents?workspace_id=${wsId}&limit=1`),
       ]);
 
       // Fetch each model's detail to get actual component counts
@@ -200,17 +201,17 @@ export function useDashboard() {
       const relationshipCount = new Set(
         relationshipsPerModel.flatMap((rels) => (rels ?? []).map((rel) => rel.id)),
       ).size;
-      const sourceDocumentCount = connectors.reduce(
-        (n, connector) => n + extractConnectorCount(connector.config),
-        0,
-      );
+      
+      const sourceDocumentCount = sources?.total ?? 0;
       const activeConnectorCount = connectors.filter(
         (connector) => connector.status === "connected" || connector.status === "error",
       ).length;
       const sourceDelta =
         activeConnectorCount > 0
           ? `${activeConnectorCount} connector${activeConnectorCount === 1 ? "" : "s"} active`
-          : "No connectors active";
+          : sourceDocumentCount > 0
+            ? `${sourceDocumentCount} document${sourceDocumentCount === 1 ? "" : "s"} uploaded`
+            : "No connectors active";
 
       return {
         stats: [
@@ -1399,6 +1400,59 @@ export function useConnectGitHub() {
       qc.invalidateQueries({ queryKey: ["connector-processing-summary"] });
       qc.invalidateQueries({ queryKey: ["source-documents"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+}
+
+export function useSeedDemoData() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      // This endpoint triggers a backend task to seed the current workspace with demo data
+      return api.post("/seed-demo", {});
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["workspaces"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      qc.invalidateQueries({ queryKey: ["connectors"] });
+      qc.invalidateQueries({ queryKey: ["source-documents"] });
+    },
+  });
+}
+
+export function useUploadSourceFile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (file) => {
+      const wsId = await getWorkspaceId();
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("workspace_id", wsId);
+
+      // We use a separate fetch call here because the standard api client 
+      // is configured for JSON and not multipart/form-data
+      const response = await fetch(`/api/source-documents/upload`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        let detail;
+        try {
+          const body = await response.json();
+          detail = body.detail ?? body;
+        } catch {
+          detail = response.statusText;
+        }
+        throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["source-documents"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      qc.invalidateQueries({ queryKey: ["connector-processing-summary"] });
     },
   });
 }

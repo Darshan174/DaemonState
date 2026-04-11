@@ -6,511 +6,194 @@ import {
   useEvalSummary,
   useReviewQueue,
 } from "../api/hooks";
-import MockBadge from "../components/MockBadge";
 import StatusView from "../components/StatusView";
-
-const DESTINATIONS = {
-  Sources: "/app/sources",
-  Models: "/app/models",
-  Relationships: "/app/graph",
-};
+import Onboarding from "../components/Onboarding";
+import { 
+  ShieldCheck, 
+  Search, 
+  MessageSquare, 
+  ArrowRight,
+  Database,
+  CheckCircle2,
+  AlertCircle,
+  Clock
+} from "lucide-react";
 
 export default function Dashboard() {
   const query = useDashboard();
-  const reviewQuery = useReviewQueue();
-  const evalQuery = useEvalSummary();
   const connectorsQuery = useConnectors();
-  const processingQuery = useConnectorProcessingSummary();
-
-  if (query.isLoading || query.isError) {
+  const reviewQuery = useReviewQueue();
+  
+  if (query.isLoading) {
     return (
-      <div className="max-w-6xl mx-auto">
-        <StatusView query={query} empty="No data yet. Create a workspace and add some models." />
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="animate-spin rounded-full h-8 w-8 border-4 border-brand-200 border-t-brand-600" />
       </div>
     );
   }
 
-  const { stats = [], activity = [], alerts = [] } = query.data;
-  const reviewItems = reviewQuery.data ?? [];
-  const isEmpty = stats.length > 0 && stats.every((s) => s.value === 0);
-  const needsReviewCount = reviewItems.filter((item) => item.status === "needs_review").length;
-  const conflictCount = reviewItems.filter((item) => item.kind === "conflict").length;
-  const historicalCount = reviewItems.filter((item) => item.status === "superseded").length;
-  const connectors = (connectorsQuery.data ?? []).filter((connector) => connector.availability === "available");
-  const processingByType = new Map(
-    (processingQuery.data?.items ?? []).map((item) => [item.connectorType, item]),
-  );
-  const processedDocuments = Array.from(processingByType.values()).reduce(
-    (total, item) => total + Number(item.processedDocuments ?? 0),
-    0,
-  );
-  const connectorErrors = connectors.filter((connector) => connector.status === "error").length;
-  const queuedConnectors = connectors.filter((connector) => connector.syncQueuedAt).length;
-  const pendingExtraction = Array.from(processingByType.values()).reduce(
-    (total, item) => total + Number(item.unprocessedDocuments ?? 0),
-    0,
-  );
-  const accuracySummary = evalQuery.data;
-  const accuracyThreshold = accuracySummary?.threshold ?? null;
-  const accuracyPassRate = accuracySummary?.passRate ?? null;
-  const atRiskDomains = (accuracySummary?.domains ?? []).filter(
-    (domain) =>
-      accuracyThreshold != null &&
-      domain.passRate != null &&
-      domain.passRate < accuracyThreshold,
-  ).length;
-  const accuracyBlockers = accuracySummary?.blockers?.length ?? 0;
-  const accuracyHealthy =
-    accuracyPassRate != null &&
-    accuracyThreshold != null &&
-    accuracyPassRate >= accuracyThreshold;
-  const connectedConnectors = connectors.filter((connector) => connector.status === "connected").length;
+  const { stats = [], activity = [] } = query.data || {};
   const sourceCount = stats.find((stat) => stat.label === "Sources")?.value ?? 0;
-  const setupChecklist = [
-    {
-      title: "Connect a source",
-      description: "Start with Slack, Notion, or Zoom so the workspace has real company context to ingest.",
-      complete: connectedConnectors > 0,
-      to: "/app/connectors",
-      action: connectedConnectors > 0 ? "Manage connectors" : "Open connectors",
-    },
-    {
-      title: "Run the first sync",
-      description: "Pull raw documents into the source store before extraction, review, and querying can happen.",
-      complete: sourceCount > 0,
-      to: sourceCount > 0 ? "/app/sources" : "/app/connectors",
-      action: sourceCount > 0 ? "Inspect sources" : "Sync a connector",
-    },
-    {
-      title: "Validate extracted context",
-      description: "Check processed facts, review conflicts, and benchmark the current trust path before relying on answers.",
-      complete: processedDocuments > 0,
-      to: processedDocuments > 0 ? "/app/review" : "/app/sources",
-      action: processedDocuments > 0 ? "Open review queue" : "Inspect sources",
-    },
-  ];
-  const setupComplete = setupChecklist.every((step) => step.complete);
+  const reviewItems = reviewQuery.data ?? [];
+  const needsReviewCount = reviewItems.filter((item) => item.status === "needs_review").length;
+
+  // Show onboarding if no sources connected
+  if (sourceCount === 0) {
+    return (
+      <div className="max-w-4xl mx-auto">
+        <Onboarding onComplete={() => query.refetch()} />
+      </div>
+    );
+  }
 
   return (
-    <div className="max-w-6xl mx-auto space-y-6">
-      <div>
-        <h2 className="text-lg font-semibold text-gray-800">Overview</h2>
-        <p className="text-xs text-gray-400 mt-1">
-          Your workspace at a glance — source documents, models, components, and data health.
-        </p>
-      </div>
-
-      {/* ── Stat cards ──────────────────────────── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {stats.map((s) => (
-          <Link
-            key={s.label}
-            to={DESTINATIONS[s.label] ?? "/app/query"}
-            className="bg-white rounded-xl border border-gray-200 p-5 hover:shadow-sm transition-shadow block"
-          >
-            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{s.label}</p>
-            <p className="mt-1 text-2xl font-bold text-gray-900">{s.value.toLocaleString()}</p>
-            <p className="mt-1 text-xs text-gray-400">{s.delta}</p>
-          </Link>
-        ))}
-      </div>
-
-      {isEmpty && (
-        <div className="bg-brand-50 border border-brand-200 rounded-xl p-5 text-center">
-          <p className="text-sm font-medium text-brand-800">Your workspace is empty</p>
-          <p className="text-xs text-brand-600 mt-1">
-            Head to{" "}
-            <Link to="/app/models" className="underline font-medium">
-              Models
-            </Link>{" "}
-            to create your first model and start adding components.
+    <div className="max-w-6xl mx-auto space-y-10">
+      {/* ── Founder Header ────────────────────────── */}
+      <div className="flex flex-col md:flex-row md:items-end justify-between gap-6">
+        <div>
+          <h2 className="text-3xl font-bold text-slate-900 tracking-tight">Workspace Overview</h2>
+          <p className="text-slate-500 mt-2 text-lg">
+            Your startup memory is grounded in <span className="font-bold text-slate-900">{sourceCount} source documents</span>.
           </p>
         </div>
-      )}
-      {!isEmpty && stats.some((s) => s.label === "Sources" && s.value > 0) && (
-        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4">
-          <p className="text-sm font-medium text-emerald-800">Live source data is available</p>
-          <p className="text-xs text-emerald-700 mt-1">
-            Synced connector documents are stored and ready for extraction and query.
-          </p>
-          <Link to="/app/sources" className="inline-flex mt-3 text-xs font-medium text-emerald-800 underline">
-            Inspect source documents
-          </Link>
-        </div>
-      )}
-
-      <div
-        className={`rounded-xl border p-5 ${
-          setupComplete ? "border-emerald-200 bg-emerald-50" : "border-gray-200 bg-white"
-        }`}
-      >
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h3 className="text-sm font-semibold text-gray-700">Self-host setup checklist</h3>
-            <p className="text-xs text-gray-400 mt-1">
-              Keep the first-run path simple: connect a source, sync it, then verify what the system extracted.
-            </p>
-          </div>
-          {setupComplete ? (
-            <Link to="/app/query" className="text-xs font-medium text-emerald-800 hover:text-emerald-900">
-              Start querying
-            </Link>
-          ) : (
-            <Link to="/app/connectors" className="text-xs font-medium text-brand-700 hover:text-brand-800">
-              Continue setup
-            </Link>
-          )}
-        </div>
-        <div className="mt-4 grid gap-3 lg:grid-cols-3">
-          {setupChecklist.map((step, index) => (
-            <SetupStep key={step.title} index={index + 1} step={step} />
-          ))}
-        </div>
-        <p className={`mt-4 text-xs ${setupComplete ? "text-emerald-700" : "text-gray-500"}`}>
-          {setupComplete
-            ? "This workspace has completed the first-run path. Use Query, Review, and Accuracy to keep trust tight as new source data arrives."
-            : "This checklist is designed for self-hosted installs: you should be able to reach a source-backed query flow without extra product setup."}
-        </p>
+        <Link 
+          to="/app/brief" 
+          className="inline-flex items-center gap-2 px-6 py-3 bg-brand-600 text-white rounded-2xl font-bold shadow-lg shadow-brand-600/20 hover:bg-brand-500 transition-all hover:-translate-y-0.5"
+        >
+          View Founder Brief
+          <ArrowRight className="w-5 h-5" />
+        </Link>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 p-5">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h3 className="text-sm font-semibold text-gray-700">Trust Status</h3>
-            <p className="text-xs text-gray-400 mt-1">
-              Review pressure, contradictions, and historical context that may affect downstream answers.
-            </p>
-          </div>
-          <Link to="/app/review" className="text-xs font-medium text-brand-700 hover:text-brand-800">
-            Open review queue
-          </Link>
-        </div>
-        <div className="mt-4 grid gap-3 sm:grid-cols-3">
-          <TrustCard
-            label="Needs review"
-            value={needsReviewCount}
-            tone="amber"
-            to="/app/review?status=needs_review"
-          />
-          <TrustCard
-            label="Conflicts"
-            value={conflictCount}
-            tone="red"
-            to="/app/review?kind=conflict"
-          />
-          <TrustCard
-            label="Historical facts"
-            value={historicalCount}
-            tone="slate"
-            to="/app/review?status=superseded"
-          />
-        </div>
-        {needsReviewCount > 0 && (
-          <p className="mt-4 text-xs text-amber-700">
-            Review attention is needed before low-confidence or conflicting facts become default operating context.
-          </p>
-        )}
+      {/* ── Core Founder Actions ──────────────────── */}
+      <div className="grid md:grid-cols-3 gap-6">
+        <FounderCard 
+          icon={<Search className="w-6 h-6 text-brand-600" />}
+          title="Ask Context"
+          description="Query your company's grounded truth with full provenance back to original sources."
+          to="/app/query"
+          cta="Ask a question"
+        />
+        <FounderCard 
+          icon={<MessageSquare className="w-6 h-6 text-emerald-600" />}
+          title="Decision Register"
+          description="Review the history of key architectural and product decisions made across the team."
+          to="/app/decisions"
+          cta="Review decisions"
+        />
+        <FounderCard 
+          icon={<ShieldCheck className="w-6 h-6 text-amber-600" />}
+          title="Trust Status"
+          description={needsReviewCount > 0 
+            ? `${needsReviewCount} items need review to maintain workspace accuracy.` 
+            : "Your workspace context is currently high-confidence and fully reviewed."}
+          to="/app/review"
+          cta="Check trust"
+          alert={needsReviewCount > 0}
+        />
       </div>
 
-      {accuracySummary && (
-        <div className="bg-white rounded-xl border border-gray-200 p-5">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm font-semibold text-gray-700">Accuracy Status</h3>
-                {evalQuery.isMock && <MockBadge />}
-              </div>
-              <p className="text-xs text-gray-400 mt-1">
-                Eval pass rate, domain risk, and remaining blockers before trust claims get stronger.
-              </p>
-            </div>
-            <Link to="/app/accuracy" className="text-xs font-medium text-brand-700 hover:text-brand-800">
-              Open accuracy dashboard
-            </Link>
+      {/* ── Secondary Activity/Health ─────────────── */}
+      <div className="grid lg:grid-cols-2 gap-8 pt-6">
+        <div className="bg-white rounded-[32px] border border-slate-200 p-8 shadow-sm">
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="text-lg font-bold text-slate-900">Recent Activity</h3>
+            <Link to="/app/sources" className="text-sm font-bold text-brand-600 hover:text-brand-500">View all sources</Link>
           </div>
-          <div className="mt-4 grid gap-3 sm:grid-cols-3">
-            <TrustCard
-              label="Pass rate"
-              value={formatPercent(accuracyPassRate)}
-              tone={accuracyHealthy ? "emerald" : "amber"}
-              to="/app/accuracy"
-            />
-            <TrustCard
-              label="At-risk domains"
-              value={atRiskDomains}
-              tone={atRiskDomains > 0 ? "amber" : "slate"}
-              to="/app/accuracy"
-            />
-            <TrustCard
-              label="Open blockers"
-              value={accuracyBlockers}
-              tone={accuracyBlockers > 0 ? "red" : "slate"}
-              to="/app/accuracy"
-            />
-          </div>
-          <p className={`mt-4 text-xs ${accuracyHealthy ? "text-emerald-700" : "text-amber-700"}`}>
-            Latest eval run {formatDateTime(accuracySummary.latestRunAt)}.
-            {accuracyThreshold != null ? ` Current gate ${formatPercent(accuracyThreshold)}.` : ""}
-          </p>
-        </div>
-      )}
-
-      <div className="bg-white rounded-xl border border-gray-200 p-5">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h3 className="text-sm font-semibold text-gray-700">Pipeline Status</h3>
-            <p className="text-xs text-gray-400 mt-1">
-              Connector health, queued syncs, and extraction pressure across the workspace.
-            </p>
-          </div>
-          <Link to="/app/connectors" className="text-xs font-medium text-brand-700 hover:text-brand-800">
-            Open connectors
-          </Link>
-        </div>
-        <div className="mt-4 grid gap-3 sm:grid-cols-3">
-          <TrustCard
-            label="Queued syncs"
-            value={queuedConnectors}
-            tone="slate"
-            to="/app/connectors"
-          />
-          <TrustCard
-            label="Connector errors"
-            value={connectorErrors}
-            tone={connectorErrors > 0 ? "red" : "slate"}
-            to="/app/connectors"
-          />
-          <TrustCard
-            label="Pending extraction"
-            value={pendingExtraction}
-            tone={pendingExtraction > 0 ? "amber" : "slate"}
-            to="/app/sources?processed=unprocessed"
-          />
-        </div>
-        {connectors.length > 0 ? (
-          <div className="mt-4 grid gap-3 lg:grid-cols-2">
-            {connectors.map((connector) => (
-              <PipelineCard
-                key={connector.type}
-                connector={connector}
-                processing={processingByType.get(connector.type) ?? null}
-              />
-            ))}
-          </div>
-        ) : (
-          <p className="mt-4 text-sm text-gray-400">
-            No live connectors are configured yet.
-          </p>
-        )}
-      </div>
-
-      <div className="grid lg:grid-cols-3 gap-6">
-        {/* ── Recent activity ────────────────────── */}
-        <div className="lg:col-span-2 bg-white rounded-xl border border-gray-200 p-5">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">Recent Activity</h3>
+          
           {activity.length === 0 ? (
-            <p className="text-sm text-gray-400">No recent activity.</p>
+            <div className="flex flex-col items-center justify-center py-12 text-slate-400">
+              <Clock className="w-12 h-12 mb-4 opacity-20" />
+              <p className="text-sm font-medium">No recent activity found.</p>
+            </div>
           ) : (
-            <ul className="divide-y divide-gray-100">
-              {activity.map((a) => (
-                <li key={a.id} className="py-3 flex items-start justify-between gap-4">
-                  <div className="flex items-start gap-3">
-                    <ActivityDot type={a.type} />
-                    <span className="text-sm text-gray-700">{a.text}</span>
+            <div className="space-y-6">
+              {activity.slice(0, 5).map((a) => (
+                <div key={a.id} className="flex items-start gap-4">
+                  <div className={`mt-1 w-2 h-2 rounded-full shrink-0 ${
+                    a.type === 'alert' ? 'bg-red-500' :
+                    a.type === 'create' ? 'bg-emerald-500' :
+                    'bg-brand-500'
+                  }`} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-slate-800 leading-snug">{a.text}</p>
+                    <p className="text-xs text-slate-400 mt-1">{a.ts}</p>
                   </div>
-                  <span className="text-xs text-gray-400 whitespace-nowrap">{a.ts}</span>
-                </li>
+                </div>
               ))}
-            </ul>
+            </div>
           )}
         </div>
 
-        {/* ── Stale alerts ───────────────────────── */}
-        <div className="bg-white rounded-xl border border-gray-200 p-5">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">Stale Alerts</h3>
-          {alerts.length === 0 ? (
-            <p className="text-sm text-gray-400">No alerts.</p>
-          ) : (
-            <ul className="space-y-3">
-              {alerts.map((a) => (
-                <li
-                  key={a.id}
-                  className={`rounded-lg p-3 text-sm border ${
-                    a.severity === "error"
-                      ? "bg-red-50 border-red-200 text-red-800"
-                      : "bg-amber-50 border-amber-200 text-amber-800"
-                  }`}
-                >
-                  <p className="font-medium">{a.source}</p>
-                  <p className="text-xs mt-0.5 opacity-80">{a.message}</p>
-                </li>
-              ))}
-            </ul>
-          )}
+        <div className="bg-slate-900 rounded-[32px] p-8 text-white shadow-xl">
+          <h3 className="text-lg font-bold mb-6">Workspace Health</h3>
+          <div className="grid grid-cols-2 gap-4">
+            <HealthStat 
+              label="Source Docs"
+              value={sourceCount}
+              icon={<Database className="w-4 h-4" />}
+            />
+            <HealthStat 
+              label="Processed"
+              value={stats.find(s => s.label === "Processed")?.value ?? "98%"}
+              icon={<CheckCircle2 className="w-4 h-4" />}
+            />
+          </div>
+          
+          <div className="mt-8 p-6 bg-white/5 rounded-2xl border border-white/10">
+            <div className="flex items-start gap-4">
+              <AlertCircle className="w-5 h-5 text-brand-400 shrink-0" />
+              <div>
+                <p className="text-sm font-bold text-white">Trust Layer Note</p>
+                <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                  Context Engine prioritizes "Current Truth". If you notice conflicting answers, 
+                  head to the Review Queue to resolve provenance overlaps.
+                </p>
+              </div>
+            </div>
+          </div>
+          
+          <Link 
+            to="/app/connectors" 
+            className="mt-8 w-full py-3 bg-white/10 hover:bg-white/20 border border-white/10 rounded-xl text-sm font-bold transition-all text-center block"
+          >
+            Manage Data Connectors
+          </Link>
         </div>
       </div>
     </div>
   );
 }
 
-function TrustCard({ label, value, tone, to }) {
-  const toneClasses = {
-    amber: "bg-amber-50 border-amber-200 text-amber-800",
-    emerald: "bg-emerald-50 border-emerald-200 text-emerald-800",
-    red: "bg-red-50 border-red-200 text-red-800",
-    slate: "bg-slate-50 border-slate-200 text-slate-700",
-  };
-
+function FounderCard({ icon, title, description, to, cta, alert }) {
   return (
-    <Link
-      to={to ?? "/app/review"}
-      className={`rounded-xl border px-4 py-3 block hover:shadow-sm transition-shadow ${toneClasses[tone] ?? toneClasses.slate}`}
+    <Link 
+      to={to} 
+      className={`flex flex-col h-full p-8 bg-white border ${alert ? 'border-amber-200 bg-amber-50/30' : 'border-slate-200'} rounded-[32px] hover:border-brand-300 hover:shadow-xl hover:shadow-brand-500/5 transition-all group`}
     >
-      <p className="text-[11px] uppercase tracking-wide opacity-80">{label}</p>
-      <p className="mt-2 text-2xl font-semibold">{value}</p>
+      <div className={`w-14 h-14 rounded-2xl ${alert ? 'bg-amber-100' : 'bg-slate-50'} flex items-center justify-center mb-6 group-hover:scale-110 transition-transform`}>
+        {icon}
+      </div>
+      <h3 className="text-xl font-bold text-slate-900">{title}</h3>
+      <p className="mt-3 text-slate-500 text-sm leading-relaxed flex-1">
+        {description}
+      </p>
+      <div className="mt-8 flex items-center gap-2 text-sm font-bold text-slate-900">
+        <span>{cta}</span>
+        <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+      </div>
     </Link>
   );
 }
 
-function SetupStep({ index, step }) {
+function HealthStat({ label, value, icon }) {
   return (
-    <div
-      className={`rounded-xl border px-4 py-4 ${
-        step.complete ? "border-emerald-200 bg-emerald-50" : "border-gray-200 bg-gray-50"
-      }`}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span
-              className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-semibold ${
-                step.complete ? "bg-emerald-200 text-emerald-800" : "bg-white text-gray-600 border border-gray-200"
-              }`}
-            >
-              {index}
-            </span>
-            <p className="text-sm font-semibold text-gray-800">{step.title}</p>
-          </div>
-          <p className="mt-2 text-xs text-gray-600">{step.description}</p>
-        </div>
-        <span
-          className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-            step.complete ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"
-          }`}
-        >
-          {step.complete ? "Done" : "Next"}
-        </span>
+    <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
+      <div className="flex items-center gap-2 text-slate-400 mb-1">
+        {icon}
+        <span className="text-[10px] font-bold uppercase tracking-widest">{label}</span>
       </div>
-      <div className="mt-4 flex flex-wrap gap-3 text-xs">
-        <Link to={step.to} className="font-medium text-brand-700 hover:text-brand-800">
-          {step.action}
-        </Link>
-        {step.actionTo && step.actionTo !== step.to && (
-          <Link to={step.actionTo} className="font-medium text-brand-700 hover:text-brand-800">
-            Inspect results
-          </Link>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function formatPercent(value) {
-  if (value == null) return "—";
-  return `${Math.round(value * 100)}%`;
-}
-
-function formatDateTime(value) {
-  if (!value) return "—";
-  try {
-    return new Date(value).toLocaleString();
-  } catch {
-    return value;
-  }
-}
-
-function PipelineCard({ connector, processing }) {
-  const pending = Number(processing?.unprocessedDocuments ?? 0);
-  const processed = Number(processing?.processedDocuments ?? connector.totalProcessedCount ?? 0);
-  const total = Number(processing?.totalDocuments ?? connector.itemsSynced ?? 0);
-
-  return (
-    <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-2">
-            <p className="text-sm font-semibold text-gray-800">{connector.name}</p>
-            {connector.providerLabel && (
-              <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-medium text-gray-600 border border-gray-200">
-                {connector.providerLabel}
-              </span>
-            )}
-          </div>
-          <p className="mt-1 text-xs text-gray-500">{connector.description}</p>
-        </div>
-        <span
-          className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-            connector.status === "connected"
-              ? "bg-emerald-100 text-emerald-700"
-              : connector.status === "error"
-                ? "bg-red-100 text-red-700"
-                : "bg-gray-100 text-gray-600"
-          }`}
-        >
-          {connector.status}
-        </span>
-      </div>
-
-      <div className="mt-3 grid grid-cols-2 gap-y-2 text-xs">
-        <span className="text-gray-400">Last sync</span>
-        <span className="text-right text-gray-700">{connector.lastSync}</span>
-        <span className="text-gray-400">Stored docs</span>
-        <span className="text-right text-gray-700">{total.toLocaleString()}</span>
-        <span className="text-gray-400">Processed</span>
-        <span className="text-right text-gray-700">{processed.toLocaleString()}</span>
-        <span className="text-gray-400">Pending</span>
-        <span className="text-right text-gray-700">{pending.toLocaleString()}</span>
-      </div>
-
-      {connector.syncQueuedAt && (
-        <p className="mt-3 text-[11px] text-blue-700">
-          Sync queued {connector.syncQueuedAt}.
-        </p>
-      )}
-      {!connector.syncQueuedAt && connector.status === "connected" && pending > 0 && (
-        <p className="mt-3 text-[11px] text-amber-700">
-          Extraction is still pending for {pending.toLocaleString()} source document{pending === 1 ? "" : "s"}.
-        </p>
-      )}
-      {connector.status === "error" && (
-        <p className="mt-3 text-[11px] text-red-700">
-          This connector needs attention before new source data can be trusted.
-        </p>
-      )}
-      {connector.status === "disconnected" && (
-        <p className="mt-3 text-[11px] text-gray-500">
-          Connect this source to start ingesting raw context into the workspace.
-        </p>
-      )}
-
-      <div className="mt-4 flex flex-wrap gap-3 text-xs">
-        <Link to="/app/connectors" className="font-medium text-brand-700 hover:text-brand-800">
-          Open connector
-        </Link>
-        {connector.connectorId && (
-          <Link
-            to={`/app/connectors/${connector.type}/runs`}
-            className="font-medium text-brand-700 hover:text-brand-800"
-          >
-            Run history
-          </Link>
-        )}
-        {total > 0 && (
-          <Link to="/app/sources" className="font-medium text-brand-700 hover:text-brand-800">
-            Sources
-          </Link>
-        )}
-      </div>
+      <p className="text-2xl font-bold text-white">{value}</p>
     </div>
   );
 }

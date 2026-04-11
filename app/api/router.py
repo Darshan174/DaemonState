@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api import admin, briefing, connectors, decisions, evals, graph, knowledge, query, trust
+from app.api import admin, briefing, connectors, decisions, evals, graph, imports, knowledge, query, trust
 
 
 api_router = APIRouter()
@@ -15,3 +15,4 @@ api_router.include_router(briefing.router, prefix="", tags=["briefing"])
 api_router.include_router(query.router, prefix="", tags=["query"])
 api_router.include_router(evals.router, prefix="", tags=["evals"])
 api_router.include_router(admin.router, prefix="", tags=["admin"])
+api_router.include_router(imports.router, prefix="", tags=["imports"])

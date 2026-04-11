@@ -142,7 +142,7 @@ async def engine():
         await conn.execute(
             text(
                 "CREATE TYPE connector_type_enum AS ENUM "
-                "('slack', 'notion', 'zoom', 'github', 'gdrive', 'gong')"
+                "('local', 'slack', 'notion', 'zoom', 'github', 'gdrive', 'gong')"
             )
         )
         await conn.execute(

@@ -91,6 +91,88 @@ def _serialize_connector(connector) -> ConnectorRead:
     )
 
 
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, status
+
+@router.post("/source-documents/upload", response_model=SourceDocumentRead)
+async def upload_source_document(
+    workspace_id: UUID,
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_db_session),
+) -> SourceDocumentRead:
+    """Upload a local file as a source document."""
+    svc = ConnectorService(session)
+    try:
+        await svc._require_workspace(workspace_id)
+    except WorkspaceNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
+
+    content = await file.read()
+    try:
+        text_content = content.decode("utf-8")
+    except UnicodeDecodeError:
+        # Fallback for non-utf8 (simplistic)
+        text_content = content.decode("latin-1")
+
+    # We use the Slack connector type as a placeholder for manual uploads 
+    # or we could add a MANUAL type. Looking at ConnectorType in models...
+    from app.models.source import SourceDocument, ConnectorType
+    
+    # Let's see if there's a better way to handle manual uploads.
+    # For now, let's just create a SourceDocument.
+    # We need a connector_id. We might need a "Manual" connector.
+    
+    # Try to find or create a 'manual' connector for this workspace
+    result = await session.execute(
+        select(Connector).where(
+            Connector.workspace_id == workspace_id,
+            Connector.connector_type == ConnectorType.SLACK # Placeholder
+        )
+    )
+    connector = result.scalar_one_or_none()
+    if not connector:
+        connector = Connector(
+            workspace_id=workspace_id,
+            connector_type=ConnectorType.SLACK,
+            status=ConnectorStatus.CONNECTED,
+            config={"document_count": 0}
+        )
+        session.add(connector)
+        await session.flush()
+
+    doc = SourceDocument(
+        connector_id=connector.id,
+        connector_type=ConnectorType.SLACK,
+        external_id=f"manual-{file.filename}-{datetime.now(timezone.utc).timestamp()}",
+        content=text_content,
+        author="Manual Upload",
+        ingested_at=datetime.now(timezone.utc),
+        metadata_json={"filename": file.filename, "source": "manual_upload"}
+    )
+    session.add(doc)
+    
+    # Update connector count
+    connector.config = {
+        **connector.config,
+        "document_count": (connector.config.get("document_count") or 0) + 1
+    }
+    
+    await session.commit()
+    await session.refresh(doc)
+    
+    return SourceDocumentRead(
+        id=doc.id,
+        connector_id=doc.connector_id,
+        connector_type=doc.connector_type.value,
+        external_id=doc.external_id,
+        content=doc.content,
+        author=doc.author,
+        source_url=None,
+        created_at_source=doc.ingested_at,
+        ingested_at=doc.ingested_at,
+        processed_at=None,
+        metadata=doc.metadata_json
+    )
+
 # ── Connector list / processing summary (no path params) ─────────
 
 

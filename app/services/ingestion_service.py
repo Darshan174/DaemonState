@@ -38,6 +38,7 @@ class IngestionService:
     _LOW_CONFIDENCE_THRESHOLD = 0.60
     _HIGH_RISK_CONFIDENCE_THRESHOLD = 0.45
     _CONNECTOR_AUTHORITY_WEIGHTS: dict[ConnectorType, float] = {
+        ConnectorType.LOCAL: 0.85,
         ConnectorType.NOTION: 0.95,
         ConnectorType.ZOOM: 0.90,
         ConnectorType.GONG: 0.90,
@@ -46,6 +47,7 @@ class IngestionService:
         ConnectorType.SLACK: 0.75,
     }
     _AUTO_MODEL_NAMES: dict[ConnectorType, tuple[str, str]] = {
+        ConnectorType.LOCAL: ("Imported Files", "Auto-generated from local file imports"),
         ConnectorType.SLACK: ("Slack Insights", "Auto-generated from Slack connector sync"),
         ConnectorType.NOTION: ("Notion Insights", "Auto-generated from Notion connector sync"),
         ConnectorType.ZOOM: ("Zoom Insights", "Auto-generated from Zoom connector sync"),

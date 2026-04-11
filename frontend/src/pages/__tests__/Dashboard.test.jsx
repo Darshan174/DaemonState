@@ -8,6 +8,8 @@ vi.mock("../../api/hooks", () => ({
   useDashboard: vi.fn(),
   useEvalSummary: vi.fn(),
   useReviewQueue: vi.fn(),
+  useSeedDemoData: vi.fn(),
+  useUploadSourceFile: vi.fn(),
 }));
 
 import {
@@ -16,6 +18,8 @@ import {
   useDashboard,
   useEvalSummary,
   useReviewQueue,
+  useSeedDemoData,
+  useUploadSourceFile,
 } from "../../api/hooks";
 
 function renderDashboard() {
@@ -44,6 +48,14 @@ beforeEach(() => {
     isError: false,
     data: [],
     refetch: vi.fn(),
+  });
+  useSeedDemoData.mockReturnValue({
+    mutate: vi.fn(),
+    isPending: false,
+  });
+  useUploadSourceFile.mockReturnValue({
+    mutateAsync: vi.fn(),
+    isPending: false,
   });
   useEvalSummary.mockReturnValue({
     isLoading: false,
@@ -75,20 +87,20 @@ describe("Dashboard", () => {
       refetch: vi.fn(),
     });
 
-    renderDashboard();
-    expect(screen.getByText("Loading...")).toBeInTheDocument();
+    const { container } = renderDashboard();
+    expect(container.querySelector(".animate-spin")).toBeInTheDocument();
   });
 
-  it("shows stat cards with data", () => {
+  it("shows workspace summary with data", () => {
     useDashboard.mockReturnValue({
       isLoading: false,
       isError: false,
       data: {
         stats: [
           { label: "Sources", value: 42, delta: "1 connector active" },
-          { label: "Models", value: 2, delta: "stable" },
-          { label: "Components", value: 15, delta: "+5" },
-          { label: "Relationships", value: 8, delta: "+2" },
+          { label: "Models", value: 2, delta: "—" },
+          { label: "Components", value: 15, delta: "—" },
+          { label: "Relationships", value: 8, delta: "—" },
         ],
         activity: [],
         alerts: [],
@@ -97,13 +109,17 @@ describe("Dashboard", () => {
     });
 
     renderDashboard();
-    expect(screen.getByText("Sources")).toBeInTheDocument();
-    expect(screen.getByText("15")).toBeInTheDocument();
-    expect(screen.getByText("Live source data is available")).toBeInTheDocument();
-    expect(screen.getByText(/stored and ready for extraction and query/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Inspect source documents" })).toHaveAttribute("href", "/app/sources");
-    expect(screen.getByRole("link", { name: /Sources/ })).toHaveAttribute("href", "/app/sources");
-    expect(screen.queryByText("Your workspace is empty")).not.toBeInTheDocument();
+    expect(screen.getByText("Workspace Overview")).toBeInTheDocument();
+    expect(screen.getByText(/42 source documents/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View Founder Brief" })).toHaveAttribute("href", "/app/brief");
+    
+    expect(screen.getByText("Ask Context")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Ask a question" })).toHaveAttribute("href", "/app/query");
+    
+    expect(screen.getByText("Decision Register")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Review decisions" })).toHaveAttribute("href", "/app/decisions");
+    
+    expect(screen.queryByText("Welcome to Context Engine")).not.toBeInTheDocument();
   });
 
   it("renders trust status counts and review queue link", () => {
@@ -131,269 +147,24 @@ describe("Dashboard", () => {
     renderDashboard();
 
     expect(screen.getByText("Trust Status")).toBeInTheDocument();
-    expect(screen.getByText("Needs review")).toBeInTheDocument();
-    expect(screen.getByText("Conflicts")).toBeInTheDocument();
-    expect(screen.getByText("Historical facts")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open review queue" })).toHaveAttribute("href", "/app/review");
-    expect(screen.getByRole("link", { name: /Needs review/ })).toHaveAttribute("href", "/app/review?status=needs_review");
-    expect(screen.getByRole("link", { name: /Conflicts/ })).toHaveAttribute("href", "/app/review?kind=conflict");
-    expect(screen.getByRole("link", { name: /Historical facts/ })).toHaveAttribute("href", "/app/review?status=superseded");
-    expect(screen.getByText(/Review attention is needed/)).toBeInTheDocument();
+    expect(screen.getByText(/2 items need review/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Check trust" })).toHaveAttribute("href", "/app/review");
   });
 
-  it("renders accuracy status summary and accuracy dashboard link", () => {
+  it("shows onboarding when no sources exist", () => {
     useDashboard.mockReturnValue({
       isLoading: false,
       isError: false,
       data: {
-        stats: [{ label: "Models", value: 1, delta: "—" }],
+        stats: [{ label: "Sources", value: 0 }],
         activity: [],
-        alerts: [],
       },
       refetch: vi.fn(),
     });
 
     renderDashboard();
-
-    expect(screen.getByText("Accuracy Status")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open accuracy dashboard" })).toHaveAttribute(
-      "href",
-      "/app/accuracy",
-    );
-    expect(screen.getByRole("link", { name: /Pass rate/ })).toHaveAttribute(
-      "href",
-      "/app/accuracy",
-    );
-    expect(screen.getByRole("link", { name: /At-risk domains/ })).toHaveAttribute(
-      "href",
-      "/app/accuracy",
-    );
-    expect(screen.getByRole("link", { name: /Open blockers/ })).toHaveAttribute(
-      "href",
-      "/app/accuracy",
-    );
-    expect(screen.getByText(/Latest eval run/)).toBeInTheDocument();
-  });
-
-  it("renders pipeline status cards and run-history links", () => {
-    useDashboard.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      data: {
-        stats: [{ label: "Sources", value: 12, delta: "2 connectors active" }],
-        activity: [],
-        alerts: [],
-      },
-      refetch: vi.fn(),
-    });
-    useConnectors.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      isMock: false,
-      data: [
-        {
-          type: "slack",
-          connectorId: "conn_slack",
-          name: "Slack",
-          description: "Channels",
-          status: "connected",
-          lastSync: "Mar 31, 2026, 9:05 AM",
-          itemsSynced: 10,
-          providerLabel: "Built in",
-          availability: "available",
-        },
-        {
-          type: "notion",
-          connectorId: "conn_notion",
-          name: "Notion",
-          description: "Docs",
-          status: "error",
-          lastSync: "Never",
-          itemsSynced: 2,
-          providerLabel: "dlt",
-          syncQueuedAt: "Mar 31, 2026, 10:00 AM",
-          availability: "available",
-        },
-      ],
-      refetch: vi.fn(),
-    });
-    useConnectorProcessingSummary.mockReturnValue({
-      data: {
-        items: [
-          {
-            connectorType: "slack",
-            processedDocuments: 8,
-            unprocessedDocuments: 2,
-            totalDocuments: 10,
-          },
-          {
-            connectorType: "notion",
-            processedDocuments: 1,
-            unprocessedDocuments: 1,
-            totalDocuments: 2,
-          },
-        ],
-      },
-      refetch: vi.fn(),
-    });
-
-    renderDashboard();
-
-    expect(screen.getByText("Pipeline Status")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open connectors" })).toHaveAttribute("href", "/app/connectors");
-    expect(screen.getByRole("link", { name: /Queued syncs/ })).toHaveAttribute("href", "/app/connectors");
-    expect(screen.getByRole("link", { name: /Connector errors/ })).toHaveAttribute("href", "/app/connectors");
-    expect(screen.getByRole("link", { name: /Pending extraction/ })).toHaveAttribute("href", "/app/sources?processed=unprocessed");
-    expect(screen.getByText("Slack")).toBeInTheDocument();
-    expect(screen.getByText("Notion")).toBeInTheDocument();
-    expect(screen.getAllByRole("link", { name: "Run history" })[0]).toHaveAttribute(
-      "href",
-      "/app/connectors/slack/runs",
-    );
-    expect(screen.getByText(/Extraction is still pending for 2 source documents/i)).toBeInTheDocument();
-    expect(screen.getByText(/Sync queued Mar 31, 2026, 10:00 AM/i)).toBeInTheDocument();
-    expect(screen.getByText(/needs attention before new source data can be trusted/i)).toBeInTheDocument();
-  });
-
-  it("shows onboarding hint when all stats are zero", () => {
-    useDashboard.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      data: {
-        stats: [
-          { label: "Sources", value: 0, delta: "—" },
-          { label: "Models", value: 0, delta: "—" },
-          { label: "Components", value: 0, delta: "—" },
-          { label: "Relationships", value: 0, delta: "—" },
-        ],
-        activity: [],
-        alerts: [],
-      },
-      refetch: vi.fn(),
-    });
-
-    renderDashboard();
-    expect(screen.getByText("Your workspace is empty")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Models" })).toHaveAttribute("href", "/app/models");
-  });
-
-  it("shows a self-host setup checklist for first-run workspaces", () => {
-    useDashboard.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      data: {
-        stats: [
-          { label: "Sources", value: 0, delta: "No connectors active" },
-          { label: "Models", value: 0, delta: "—" },
-          { label: "Components", value: 0, delta: "—" },
-          { label: "Relationships", value: 0, delta: "—" },
-        ],
-        activity: [],
-        alerts: [],
-      },
-      refetch: vi.fn(),
-    });
-
-    renderDashboard();
-
-    expect(screen.getByText("Self-host setup checklist")).toBeInTheDocument();
-    expect(screen.getByText("Connect a source")).toBeInTheDocument();
-    expect(screen.getByText("Run the first sync")).toBeInTheDocument();
-    expect(screen.getByText("Validate extracted context")).toBeInTheDocument();
-    expect(screen.getByText(/should be able to reach a source-backed query flow/i)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Continue setup" })).toHaveAttribute("href", "/app/connectors");
-  });
-
-  it("marks the setup checklist complete once sources are processed", () => {
-    useDashboard.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      data: {
-        stats: [
-          { label: "Sources", value: 12, delta: "2 connectors active" },
-          { label: "Models", value: 3, delta: "—" },
-          { label: "Components", value: 18, delta: "—" },
-          { label: "Relationships", value: 6, delta: "—" },
-        ],
-        activity: [],
-        alerts: [],
-      },
-      refetch: vi.fn(),
-    });
-    useConnectors.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      isMock: false,
-      data: [
-        {
-          type: "slack",
-          connectorId: "conn_slack",
-          name: "Slack",
-          description: "Channels",
-          status: "connected",
-          lastSync: "Apr 1, 2026, 11:05 AM",
-          itemsSynced: 10,
-          providerLabel: "Built in",
-          availability: "available",
-        },
-      ],
-      refetch: vi.fn(),
-    });
-    useConnectorProcessingSummary.mockReturnValue({
-      data: {
-        items: [
-          {
-            connectorType: "slack",
-            processedDocuments: 10,
-            unprocessedDocuments: 0,
-            totalDocuments: 10,
-          },
-        ],
-      },
-      refetch: vi.fn(),
-    });
-
-    renderDashboard();
-
-    expect(screen.getByRole("link", { name: "Start querying" })).toHaveAttribute("href", "/app/query");
-    expect(screen.getByText(/has completed the first-run path/i)).toBeInTheDocument();
-    expect(screen.getAllByText("Done")).toHaveLength(3);
-  });
-
-  it("degrades gracefully when activity and alerts are missing", () => {
-    useDashboard.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      data: {
-        stats: [{ label: "Models", value: 1, delta: "—" }],
-      },
-      refetch: vi.fn(),
-    });
-
-    renderDashboard();
-    expect(screen.getByText("No recent activity.")).toBeInTheDocument();
-    expect(screen.getByText("No alerts.")).toBeInTheDocument();
-  });
-
-  it("renders activity items and alert items", () => {
-    useDashboard.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      data: {
-        stats: [{ label: "Models", value: 1, delta: "—" }],
-        activity: [
-          { id: 1, text: "Slack synced 10 messages", ts: "5 min ago", type: "sync" },
-        ],
-        alerts: [
-          { id: 1, source: "Gong", message: "No data in 7 days", severity: "error" },
-        ],
-      },
-      refetch: vi.fn(),
-    });
-
-    renderDashboard();
-    expect(screen.getByText("Slack synced 10 messages")).toBeInTheDocument();
-    expect(screen.getByText("Gong")).toBeInTheDocument();
-    expect(screen.getByText("No data in 7 days")).toBeInTheDocument();
+    expect(screen.getByText("Welcome to Context Engine")).toBeInTheDocument();
+    expect(screen.getByText("Run Demo Workspace")).toBeInTheDocument();
+    expect(screen.getByText("Import Local Files")).toBeInTheDocument();
   });
 });
