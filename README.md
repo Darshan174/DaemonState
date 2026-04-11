@@ -2,16 +2,8 @@
 
 Context Engine is an open-source context layer for startups and AI systems.
 
-Context Engine ingests company knowledge from Slack, Notion, Zoom, and GitHub. It extracts structured facts, stores provenance, and serves source-backed answers with review, conflict handling, and temporal awareness.
-
-## Why This Exists
-
-Most internal AI systems fail on the same problem:
-
-- company knowledge is scattered across Slack, Notion, meeting transcripts, and GitHub
-- the newest answer is often buried in chat while old answers still live in docs
-- vector search alone retrieves similar text, not current truth
-- operators cannot easily see why an answer was given or whether it still needs review
+It is a self-hostable knowledge platform for startups. It solves a specific problem: company knowledge is scattered across Slack messages, Notion docs, Zoom meeting transcripts, and GitHub issues. When someone asks "what's the current pricing?" or "who decided to delay the launch?", the answer might be buried in a Slack thread from two weeks ago — and it might contradict what's written in Notion.
+Context Engine ingests all of that raw data, extracts structured facts from it using LLMs, tracks where each fact came from (provenance), flags conflicts, and serves source-backed answers through a query API and operator dashboard.
 
 Context Engine is built to solve that problem with:
 
@@ -21,6 +13,13 @@ Context Engine is built to solve that problem with:
 - review and conflict handling
 - current-vs-historical truth
 - measurable accuracy
+
+## Architecture:
+
+
+
+
+
 
 ## Who It Is For
 
