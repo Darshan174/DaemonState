@@ -22,6 +22,7 @@ from app.schemas.knowledge import (
     GraphRelationshipRead,
     GraphResponse,
 )
+from app.services.truth_visibility import history_where
 
 
 class KnowledgeServiceError(Exception):
@@ -257,10 +258,17 @@ class KnowledgeService:
         )
         if not include_historical:
             # Always keep the root; keep other active (valid_to is None) nodes
+            # Exclude rejected and superseded for consistency with current-truth
             component_stmt = component_stmt.where(
                 or_(
                     Component.id == component_id,
                     Component.valid_to.is_(None),
+                )
+            )
+            component_stmt = component_stmt.where(
+                or_(
+                    ~Component.review_item.has(),
+                    ~Component.review_item.has(ReviewItem.status.in_(("rejected", "superseded"))),
                 )
             )
 

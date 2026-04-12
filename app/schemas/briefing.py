@@ -19,6 +19,7 @@ class FounderBriefFactRead(BaseModel):
     review_status: str | None = None
     review_item_id: UUID | None = None
     source_labels: list[str] = []
+    source_document_ids: list[UUID] = []
 
 
 class FounderBriefConflictRead(BaseModel):

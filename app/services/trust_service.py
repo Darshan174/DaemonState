@@ -183,6 +183,9 @@ class TrustService:
         component = item.component
         if component is not None:
             component.is_stale = True
+            # Mark as historical so it is excluded from current-truth views
+            if component.valid_to is None:
+                component.valid_to = datetime.now(timezone.utc)
         await self._record_review_decision(
             item,
             previous_status=previous_status,

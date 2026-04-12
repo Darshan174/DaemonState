@@ -501,7 +501,7 @@ class BriefingService:
             stmt = stmt.where(Component.valid_to.is_(None))
             stmt = stmt.where(
                 or_(
-                    Component.review_item.is_(None),
+                    ~Component.review_item.has(),
                     ~Component.review_item.has(
                         ReviewItem.status.in_(("rejected", "superseded"))
                     ),
@@ -527,6 +527,7 @@ class BriefingService:
             review_status=component.review_status,
             review_item_id=component.review_item_id,
             source_labels=BriefingService._source_labels(component),
+            source_document_ids=BriefingService._source_document_ids(component),
         )
 
     @staticmethod
@@ -539,6 +540,15 @@ class BriefingService:
             if label not in labels:
                 labels.append(label)
         return labels
+
+    @staticmethod
+    def _source_document_ids(component: Component) -> list[UUID]:
+        """Return IDs of non-deleted source documents for provenance."""
+        return [
+            document.id
+            for document in component.source_documents
+            if document.deleted_at is None
+        ]
 
     @staticmethod
     def _primary_source_document(component: Component) -> SourceDocument | None:

@@ -19,30 +19,6 @@ def get_knowledge_service(session: AsyncSession = Depends(get_db_session)) -> Kn
     return KnowledgeService(session)
 
 
-def _merge_graphs(graphs: list[GraphResponse], *, include_historical: bool) -> GraphResponse:
-    node_map = {}
-    edge_map = {}
-    hidden_node_count = 0
-    root_component_id = UUID(int=0)
-
-    for graph in graphs:
-        if root_component_id.int == 0 and graph.root_component_id.int != 0:
-            root_component_id = graph.root_component_id
-        hidden_node_count += graph.hidden_node_count
-        for node in graph.nodes:
-            node_map[node.id] = node
-        for edge in graph.edges:
-            edge_map[edge.id] = edge
-
-    return GraphResponse(
-        root_component_id=root_component_id,
-        nodes=list(node_map.values()),
-        edges=list(edge_map.values()),
-        include_historical=include_historical,
-        hidden_node_count=hidden_node_count,
-    )
-
-
 @router.get("/graph", response_model=GraphResponse)
 async def get_workspace_graph(
     workspace_id: UUID,

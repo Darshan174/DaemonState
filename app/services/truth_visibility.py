@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import Select, or_
-from sqlalchemy.orm import DeclarativeAttr
 
 from app.models.knowledge import Component
 
@@ -83,7 +82,7 @@ def current_truth_where(
     try:
         stmt = stmt.where(
             or_(
-                Component.review_item.is_(None),
+                ~Component.review_item.has(),
                 ~Component.review_item.has(
                     Component.review_item.property.argument.class_.status.in_(
                         ("rejected", "superseded")

@@ -9,11 +9,11 @@
 #                   and is idempotent (second call returns same workspace
 #                   with status="existing")
 #   4. QUERY      — POST /api/query returns a source-backed answer
-#   5. GRAPH      — GET /api/graph returns the workspace knowledge graph
-#   6. MODELS     — GET /api/models + GET /api/graph/models/{id}
-#   7. BRIEF      — GET /api/founder-brief returns a structured brief
-#   8. DECISIONS  — GET /api/decisions returns the decision register
-#   9. SOURCES    — GET /api/source-documents returns provenance
+#   5. GRAPH      — GET /api/graph returns 15+ nodes, all with provenance
+#   6. MODELS     — GET /api/models returns 4+ models; model graph has nodes
+#   7. BRIEF      — GET /api/founder-brief returns structured content
+#   8. DECISIONS  — GET /api/decisions returns entries with names + values
+#   9. SOURCES    — GET /api/source-documents returns processed docs with content
 #
 # Exit code 0 on success, non-zero (with a descriptive failure) otherwise.
 #
@@ -147,65 +147,101 @@ pass "query returned an answer containing '${SMOKE_EXPECT}' with provenance"
 step "5/9 GRAPH — workspace knowledge graph"
 graph_out=$(curl -fsS --max-time 15 \
     "${BASE_URL}/api/graph?workspace_id=${workspace_id}") \
-    || fail "GET /api/graph failed"
+    || fail "GET /api/graph failed — is the api container running? Check: docker compose logs api"
 printf "%s" "$graph_out" | grep -q '"nodes"' \
-    || fail "graph response missing 'nodes' field:\n$graph_out"
-# The demo seed creates 18+ components — at minimum a handful should appear.
-node_count=$(printf "%s" "$graph_out" | grep -o '"id"' | wc -l | tr -d ' ')
-[ "$node_count" -ge 5 ] \
-    || fail "workspace graph returned only ${node_count} nodes — expected 5+ from demo seed"
-pass "workspace graph has ${node_count} nodes"
+    || fail "graph response missing 'nodes' field. Response: $graph_out"
+# The demo seed creates 20 components across 5 models. Count nodes by
+# counting "model_id" occurrences inside the nodes array (avoids double-
+# counting edge ids).
+node_count=$(printf "%s" "$graph_out" | grep -o '"model_id"' | wc -l | tr -d ' ')
+[ "$node_count" -ge 15 ] \
+    || fail "workspace graph returned only ${node_count} nodes — expected 15+ from the 20 seeded components. Check: docker compose exec api python -c 'from app.evals.demo_seed import _SEEDS; print(len(_SEEDS))'"
+# Verify provenance: every node should have source_count >= 1.
+zero_source_nodes=$(printf "%s" "$graph_out" | grep -o '"source_count"[[:space:]]*:[[:space:]]*0' | wc -l | tr -d ' ')
+[ "$zero_source_nodes" -eq 0 ] \
+    || fail "${zero_source_nodes} graph node(s) have source_count=0 — demo seed should attach sources to every component. Check ComponentSource links in demo_seed.py."
+# Verify graph is not all-nulls: at least one node should have a non-empty name.
+printf "%s" "$graph_out" | grep -q '"name"[[:space:]]*:[[:space:]]*"[^"]' \
+    || fail "graph nodes have empty names — the graph is structurally valid but useless for display"
+pass "workspace graph has ${node_count} nodes, all with provenance"
 
 # ── 6. MODELS ──────────────────────────────────────────────────
 step "6/9 MODELS — knowledge models"
 models_list=$(curl -fsS --max-time 15 \
     "${BASE_URL}/api/models?workspace_id=${workspace_id}") \
-    || fail "GET /api/models failed"
+    || fail "GET /api/models failed — check that the workspace was seeded correctly"
 printf "%s" "$models_list" | grep -q '"name"' \
-    || fail "models list is empty or malformed:\n$models_list"
+    || fail "models list is empty or malformed. Response: $models_list"
+# The demo seed creates 5 models: Decisions, GitHub Insights, Pricing,
+# Roadmap, Zoom Insights. Count them.
+model_count=$(printf "%s" "$models_list" | grep -o '"name"' | wc -l | tr -d ' ')
+[ "$model_count" -ge 4 ] \
+    || fail "expected 4+ knowledge models from demo seed, got ${model_count}. Check _SEEDS in demo_seed.py for model_name entries."
 # Extract first model id for downstream checks.
 first_model_id=$(printf "%s" "$models_list" \
     | sed -n 's/.*"id"[^"]*"\([^"]*\)".*/\1/p' | head -n1)
 [ -n "$first_model_id" ] || fail "could not extract a model id from models list"
-pass "models list returned model ${first_model_id}"
+pass "models list returned ${model_count} models (first: ${first_model_id})"
 
-# Model-scoped graph must work for the first model.
+# Model-scoped graph must work and return at least one component.
 model_graph=$(curl -fsS --max-time 15 \
     "${BASE_URL}/api/graph/models/${first_model_id}") \
-    || fail "GET /api/graph/models/${first_model_id} failed"
+    || fail "GET /api/graph/models/${first_model_id} failed — model graph endpoint may be broken"
 printf "%s" "$model_graph" | grep -q '"nodes"' \
-    || fail "model graph response missing 'nodes' field:\n$model_graph"
-pass "model graph for ${first_model_id} returned nodes"
+    || fail "model graph response missing 'nodes' field. Response: $model_graph"
+model_node_count=$(printf "%s" "$model_graph" | grep -o '"model_id"' | wc -l | tr -d ' ')
+[ "$model_node_count" -ge 1 ] \
+    || fail "model graph returned 0 nodes — the model has no components in the graph"
+pass "model graph for ${first_model_id} returned ${model_node_count} nodes"
 
 # ── 7. BRIEF ──────────────────────────────────────────────────
 step "7/9 BRIEF — founder brief"
 brief_out=$(curl -fsS --max-time 30 \
     "${BASE_URL}/api/founder-brief?workspace_id=${workspace_id}") \
-    || fail "GET /api/founder-brief failed"
-# The founder brief must contain structured sections.
+    || fail "GET /api/founder-brief failed — this endpoint aggregates across models; check logs for internal errors: docker compose logs api"
+# The founder brief must contain structured content, not just an id.
 printf "%s" "$brief_out" | grep -q '"workspace_id"' \
-    || fail "founder brief missing workspace_id:\n$brief_out"
-pass "founder brief returned for workspace"
+    || fail "founder brief missing workspace_id. Response: $brief_out"
+# Brief should contain at least one section with content from the seeded data.
+# Check for known fields that should be populated.
+printf "%s" "$brief_out" | grep -q '"workspace_name"' \
+    || fail "founder brief missing workspace_name — the brief is structurally empty"
+pass "founder brief returned with structured content"
 
 # ── 8. DECISIONS ──────────────────────────────────────────────
 step "8/9 DECISIONS — decision register"
 decisions_out=$(curl -fsS --max-time 15 \
     "${BASE_URL}/api/decisions?workspace_id=${workspace_id}") \
-    || fail "GET /api/decisions failed"
-# The demo seed creates components in the "Decisions" model — at least one
-# should be surfaced as a decision.
+    || fail "GET /api/decisions failed — check that the 'Decisions' model exists in the seeded workspace"
+# The demo seed creates 3 components in the "Decisions" model.
 printf "%s" "$decisions_out" | grep -q '"name"' \
-    || fail "decisions list is empty or malformed:\n$decisions_out"
-pass "decisions list returned entries"
+    || fail "decisions list is empty or malformed. Response: $decisions_out"
+# Decisions should have meaningful content — check for value field.
+printf "%s" "$decisions_out" | grep -q '"value"' \
+    || fail "decisions returned but missing 'value' field — entries are shaped incorrectly"
+decision_count=$(printf "%s" "$decisions_out" | grep -o '"name"' | wc -l | tr -d ' ')
+[ "$decision_count" -ge 1 ] \
+    || fail "expected at least 1 decision from the 3 seeded in the Decisions model, got 0"
+pass "decisions list returned ${decision_count} entries with names and values"
 
 # ── 9. SOURCES ─────────────────────────────────────────────────
 step "9/9 SOURCES — source documents with provenance"
 sources_out=$(curl -fsS --max-time 15 \
-    "${BASE_URL}/api/source-documents?workspace_id=${workspace_id}&limit=5") \
-    || fail "GET /api/source-documents failed"
+    "${BASE_URL}/api/source-documents?workspace_id=${workspace_id}&limit=10") \
+    || fail "GET /api/source-documents failed — check that SourceDocument rows were created by the seed"
 printf "%s" "$sources_out" | grep -q '"items"' \
-    || fail "source documents response missing 'items' field:\n$sources_out"
-pass "source documents returned for workspace"
+    || fail "source documents response missing 'items' field. Response: $sources_out"
+# Verify there are actual documents, not just an empty list.
+source_count=$(printf "%s" "$sources_out" | grep -o '"connector_type"' | wc -l | tr -d ' ')
+[ "$source_count" -ge 3 ] \
+    || fail "expected 3+ source documents, got ${source_count}. The demo seed creates ~25 source documents across multiple connector types."
+# Verify documents have been processed (processed_at is set by the seed).
+printf "%s" "$sources_out" | grep -q '"processed_at"' \
+    || fail "source documents missing 'processed_at' — documents appear unprocessed"
+# Verify content is present, not just metadata stubs.
+printf "%s" "$sources_out" | grep -q '"content"' \
+    || fail "source documents missing 'content' field — provenance without content is useless for attribution"
+pass "source documents returned ${source_count} entries with content and provenance"
 
 cat <<EOF
 
@@ -216,12 +252,12 @@ cat <<EOF
     Seed:      workspace ${workspace_id} via POST /api/seed-demo
                first=${first_status}, second=existing (idempotent)
                knowledge models present
-    Query:     "${SMOKE_QUESTION}" returned a source-backed answer
-    Graph:     workspace graph has ${node_count} nodes
-    Models:    knowledge models listed, model graph returned nodes
-    Brief:     founder brief returned
-    Decisions: decision register non-empty
-    Sources:   source documents present with provenance
+    Query:     "${SMOKE_QUESTION}" → source-backed answer
+    Graph:     ${node_count} nodes, all with provenance (no empty names)
+    Models:    ${model_count} models, model graph → ${model_node_count} nodes
+    Brief:     structured founder brief returned
+    Decisions: ${decision_count} decision(s) with names and values
+    Sources:   ${source_count} source documents with content + provenance
 
     Context Engine is up, healthy, seeded, and answering queries
     across the main OSS v1 workflows.

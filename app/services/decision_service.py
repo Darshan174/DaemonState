@@ -58,7 +58,7 @@ class DecisionService:
             stmt = stmt.where(Component.valid_to.is_(None))
             stmt = stmt.where(
                 or_(
-                    Component.review_item.is_(None),
+                    ~Component.review_item.has(),
                     ~Component.review_item.has(
                         ReviewItem.status.in_(("rejected", "superseded"))
                     ),
@@ -67,14 +67,16 @@ class DecisionService:
         else:
             stmt = history_where(stmt)
 
-        rows = await self.session.scalars(
-            stmt.order_by(
-                Component.valid_to.is_not(None).asc(),
-                Component.valid_from.desc(),
-                Component.id.desc(),
+        rows = list(
+            await self.session.scalars(
+                stmt.order_by(
+                    Component.valid_to.is_not(None).asc(),
+                    Component.valid_from.desc(),
+                    Component.id.desc(),
+                ).limit(limit)
             )
         )
-        return [self._serialize_decision(component) for component in rows[:limit]]
+        return [self._serialize_decision(component) for component in rows]
 
     async def get_decision_history(
         self,

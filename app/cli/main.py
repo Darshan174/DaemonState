@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -16,10 +17,24 @@ from app.importers.generic import GenericFileScanner
 DEFAULT_BASE_URL = "http://localhost:8000"
 DEFAULT_LOCAL_WORKSPACE_NAME = "Local Workspace"
 DEFAULT_DEMO_WORKSPACE_NAME = "Acme Accuracy Demo"
+DEFAULT_VERIFY_QUESTION = "What is the Starter Plan?"
+DEFAULT_VERIFY_EXPECT = "$29"
+HEALTH_PATH = "/health"
+READINESS_PATH = "/health/ready"
 WORKSPACES_PATH = "/api/workspaces"
 SEED_DEMO_PATH = "/api/seed-demo"
 IMPORTS_PATH = "/api/imports"
+FOUNDER_BRIEF_PATH = "/api/founder-brief"
 QUERY_PATH = "/api/query"
+DECISIONS_PATH = "/api/decisions"
+SOURCE_DOCUMENTS_PATH = "/api/source-documents"
+VERIFY_TEST_TARGETS = (
+    "tests/test_cli/test_main.py",
+    "tests/test_cli/test_http.py",
+    "tests/test_api/test_imports.py",
+    "tests/test_api/test_admin.py::TestSeedDemoAPI",
+    "tests/test_api/test_connectors_upload.py",
+)
 
 
 class CLIError(RuntimeError):
@@ -79,6 +94,34 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Print the raw JSON response.",
     )
     demo_parser.set_defaults(func=run_demo)
+
+    verify_parser = subparsers.add_parser(
+        "verify",
+        help="Run the OSS v1 release gate: boot, smoke, contract tests, and frontend checks.",
+    )
+    verify_parser.add_argument(
+        "--base-url",
+        default=DEFAULT_BASE_URL,
+        help=f"Base URL to check for readiness (default: {DEFAULT_BASE_URL})",
+    )
+    verify_parser.add_argument(
+        "--wait-timeout",
+        type=int,
+        default=90,
+        help="Seconds to wait for /health/ready after boot (default: 90)",
+    )
+    verify_parser.add_argument(
+        "--skip-frontend",
+        action="store_true",
+        help="Skip frontend test/build checks and run the backend release gate only.",
+    )
+    verify_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print the verification summary as JSON.",
+    )
+    verify_parser.set_defaults(func=run_verify)
 
     ingest_parser = subparsers.add_parser(
         "ingest",
@@ -149,26 +192,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def run_up(args: argparse.Namespace) -> int:
-    project_root = find_project_root()
-    compose = resolve_compose_command(project_root)
-
-    run_subprocess(
-        [*compose, "up", "-d", "postgres", "redis", "api", "worker"],
-        cwd=project_root,
-    )
-    run_subprocess_with_retries(
-        [*compose, "exec", "-T", "api", "alembic", "upgrade", "head"],
-        cwd=project_root,
-        timeout_seconds=max(30, args.wait_timeout),
-    )
-    wait_for_ready(args.base_url, timeout_seconds=args.wait_timeout)
-
+    boot_stack(args.base_url, wait_timeout=args.wait_timeout)
     print(f"Context Engine is ready at {args.base_url.rstrip('/')}")
     return 0
 
 
 def run_demo(args: argparse.Namespace) -> int:
-    run_up(args)
+    boot_stack(args.base_url, wait_timeout=args.wait_timeout)
 
     workspace_id: str | None = None
     if args.workspace:
@@ -179,13 +209,7 @@ def run_demo(args: argparse.Namespace) -> int:
         )
         workspace_id = workspace["id"]
 
-    response = api_request(
-        args.base_url,
-        "POST",
-        SEED_DEMO_PATH,
-        payload={"workspace_id": workspace_id} if workspace_id else {},
-        timeout=60,
-    )
+    response = seed_demo_workspace(args.base_url, workspace_id=workspace_id)
 
     if args.json_output:
         print_json(response)
@@ -195,6 +219,85 @@ def run_demo(args: argparse.Namespace) -> int:
     resolved_workspace_id = response.get("workspaceId", "unknown")
     status = response.get("status", "unknown")
     print(f"Demo workspace ready: {workspace_name} ({resolved_workspace_id}) [{status}]")
+    return 0
+
+
+def run_verify(args: argparse.Namespace) -> int:
+    project_root = boot_stack(args.base_url, wait_timeout=args.wait_timeout, quiet=True)
+    results: list[dict[str, str]] = [
+        {
+            "step": "boot",
+            "status": "ok",
+            "detail": f"stack ready at {args.base_url.rstrip('/')}",
+        }
+    ]
+
+    smoke = run_subprocess(
+        ["bash", "scripts/smoke.sh"],
+        cwd=project_root,
+        capture_output=True,
+        env={
+            "BASE_URL": args.base_url,
+            "SMOKE_QUESTION": DEFAULT_VERIFY_QUESTION,
+            "SMOKE_EXPECT": DEFAULT_VERIFY_EXPECT,
+        },
+    )
+    results.append(
+        {
+            "step": "smoke",
+            "status": "ok",
+            "detail": _last_output_line(smoke.stdout) or "backend founder workflows passed",
+        }
+    )
+
+    contract_tests = run_subprocess(
+        [sys.executable, "-m", "pytest", *VERIFY_TEST_TARGETS, "-q"],
+        cwd=project_root,
+        capture_output=True,
+    )
+    results.append(
+        {
+            "step": "contract-tests",
+            "status": "ok",
+            "detail": _last_output_line(contract_tests.stdout) or "contract tests passed",
+        }
+    )
+
+    if not args.skip_frontend:
+        frontend_dir = project_root / "frontend"
+        frontend_tests = run_subprocess(
+            ["npm", "test"],
+            cwd=frontend_dir,
+            capture_output=True,
+        )
+        results.append(
+            {
+                "step": "frontend-tests",
+                "status": "ok",
+                "detail": _last_output_line(frontend_tests.stdout) or "frontend tests passed",
+            }
+        )
+
+        frontend_build = run_subprocess(
+            ["npm", "run", "build"],
+            cwd=frontend_dir,
+            capture_output=True,
+        )
+        results.append(
+            {
+                "step": "frontend-build",
+                "status": "ok",
+                "detail": _last_output_line(frontend_build.stdout) or "frontend build passed",
+            }
+        )
+
+    if args.json_output:
+        print_json({"status": "ok", "steps": results})
+        return 0
+
+    for item in results:
+        print(f"{item['step']}: {item['detail']}")
+    print("\nOSS v1 verification passed.")
     return 0
 
 
@@ -295,34 +398,37 @@ def resolve_workspace(
     selector: str | None,
     create_if_missing: bool,
 ) -> dict[str, Any]:
-    workspaces = api_request(base_url, "GET", WORKSPACES_PATH)
+    workspaces = list_workspaces(base_url)
 
     if selector:
         workspace = resolve_workspace_selector(base_url, workspaces, selector)
         if workspace is not None:
             return workspace
         if create_if_missing and not looks_like_uuid(selector):
-            return create_workspace(base_url, selector)
-        raise CLIError(f"Workspace not found: {selector}")
+            return create_workspace(base_url, selector.strip())
+        available = format_workspace_options(workspaces)
+        if workspaces:
+            raise CLIError(
+                f"Workspace not found: {selector}. Available workspaces: {available}"
+            )
+        raise CLIError(
+            "No workspaces found. Run 'ctxe demo' for sample data or "
+            "'ctxe ingest <path>' to create a workspace."
+        )
 
     if len(workspaces) == 1:
         return workspaces[0]
-
-    preferred = [
-        workspace
-        for workspace in workspaces
-        if workspace["name"] in {DEFAULT_LOCAL_WORKSPACE_NAME, DEFAULT_DEMO_WORKSPACE_NAME}
-    ]
-    if len(preferred) == 1:
-        return preferred[0]
 
     if not workspaces and create_if_missing:
         return create_workspace(base_url, DEFAULT_LOCAL_WORKSPACE_NAME)
 
     if not workspaces:
-        raise CLIError("No workspaces found. Run 'ctxe ingest <path>' or 'ctxe demo' first.")
+        raise CLIError(
+            "No workspaces found. Run 'ctxe demo' for sample data or "
+            "'ctxe ingest <path>' to create a workspace."
+        )
 
-    names = ", ".join(workspace["name"] for workspace in workspaces)
+    names = format_workspace_options(workspaces)
     raise CLIError(
         "Multiple workspaces found; pass --workspace NAME_OR_UUID. "
         f"Available workspaces: {names}"
@@ -335,13 +441,26 @@ def resolve_workspace_selector(
     selector: str,
 ) -> dict[str, Any] | None:
     if looks_like_uuid(selector):
-        return api_request(base_url, "GET", f"{WORKSPACES_PATH}/{selector}")
+        try:
+            return api_request(base_url, "GET", f"{WORKSPACES_PATH}/{selector}")
+        except APIError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
 
     normalized = selector.strip().lower()
     matches = [workspace for workspace in workspaces if workspace["name"].strip().lower() == normalized]
     if len(matches) > 1:
-        raise CLIError(f"Multiple workspaces matched {selector!r}; use a UUID instead.")
+        raise CLIError(
+            f"Multiple workspaces matched {selector!r}; use a UUID instead. "
+            f"Matches: {format_workspace_options(matches)}"
+        )
     return matches[0] if matches else None
+
+
+def list_workspaces(base_url: str) -> list[dict[str, Any]]:
+    workspaces = api_request(base_url, "GET", WORKSPACES_PATH)
+    return workspaces if isinstance(workspaces, list) else []
 
 
 def create_workspace(base_url: str, name: str) -> dict[str, Any]:
@@ -353,6 +472,15 @@ def create_workspace(base_url: str, name: str) -> dict[str, Any]:
             "name": name,
             "description": "Workspace created by the ctxe CLI.",
         },
+    )
+
+
+def format_workspace_options(workspaces: list[dict[str, Any]]) -> str:
+    if not workspaces:
+        return "(none)"
+    return ", ".join(
+        f"{workspace['name']} ({workspace['id']})"
+        for workspace in workspaces
     )
 
 
@@ -377,6 +505,13 @@ def looks_like_uuid(value: str) -> bool:
 
 def print_json(payload: Any) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def _last_output_line(output: str | None) -> str | None:
+    if not output:
+        return None
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return lines[-1] if lines else None
 
 
 def find_project_root() -> Path:
@@ -404,7 +539,36 @@ def resolve_compose_command(project_root: Path) -> list[str]:
             return candidate
         except (FileNotFoundError, subprocess.CalledProcessError):
             continue
-    raise CLIError("Docker Compose is required for 'ctxe up' and 'ctxe demo'")
+    raise CLIError("Docker Compose is required for 'ctxe up', 'ctxe demo', and 'ctxe verify'")
+
+
+def boot_stack(base_url: str, *, wait_timeout: int, quiet: bool = False) -> Path:
+    project_root = find_project_root()
+    compose = resolve_compose_command(project_root)
+
+    run_subprocess(
+        [*compose, "up", "-d", "--build", "postgres", "redis", "api", "worker"],
+        cwd=project_root,
+        capture_output=quiet,
+    )
+    run_subprocess_with_retries(
+        [*compose, "exec", "-T", "api", "alembic", "upgrade", "head"],
+        cwd=project_root,
+        timeout_seconds=max(30, wait_timeout),
+        capture_output=True,
+    )
+    wait_for_ready(base_url, timeout_seconds=wait_timeout)
+    return project_root
+
+
+def seed_demo_workspace(base_url: str, *, workspace_id: str | None = None) -> dict[str, Any]:
+    return api_request(
+        base_url,
+        "POST",
+        SEED_DEMO_PATH,
+        payload={"workspace_id": workspace_id} if workspace_id else {},
+        timeout=60,
+    )
 
 
 def run_subprocess(
@@ -412,6 +576,7 @@ def run_subprocess(
     *,
     cwd: Path,
     capture_output: bool = False,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
@@ -420,10 +585,14 @@ def run_subprocess(
             check=True,
             text=True,
             capture_output=capture_output,
+            env={**os.environ, **env} if env is not None else None,
         )
+    except FileNotFoundError as exc:
+        raise CLIError(f"Command not found: {command[0]}") from exc
     except subprocess.CalledProcessError as exc:
+        stdout = (exc.stdout or "").strip()
         stderr = (exc.stderr or "").strip()
-        raise CLIError(stderr or f"Command failed: {' '.join(command)}") from exc
+        raise CLIError(stderr or stdout or f"Command failed: {' '.join(command)}") from exc
 
 
 def run_subprocess_with_retries(
@@ -432,12 +601,13 @@ def run_subprocess_with_retries(
     cwd: Path,
     timeout_seconds: int,
     interval_seconds: int = 3,
+    capture_output: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     deadline = time.monotonic() + timeout_seconds
     last_error: CLIError | None = None
     while time.monotonic() < deadline:
         try:
-            return run_subprocess(command, cwd=cwd, capture_output=True)
+            return run_subprocess(command, cwd=cwd, capture_output=capture_output)
         except CLIError as exc:
             last_error = exc
             time.sleep(interval_seconds)
@@ -451,7 +621,7 @@ def wait_for_ready(base_url: str, *, timeout_seconds: int) -> None:
     last_error: Exception | None = None
     while time.monotonic() < deadline:
         try:
-            ready = api_request(base_url, "GET", "/health/ready", timeout=5)
+            ready = api_request(base_url, "GET", READINESS_PATH, timeout=5)
         except Exception as exc:  # pragma: no cover - exercised through CLI integration
             last_error = exc
             time.sleep(2)
