@@ -18,6 +18,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 
 from app.connectors.base import NormalizedDocument
 from app.importers.generic import GenericFileScanner
@@ -647,6 +648,59 @@ class TestImportService:
         assert connectors[0].connector_type.value == "notion"
         assert connectors[0].config["import_source"] == "manual"
 
+    async def test_reimport_changed_file_re_runs_ingestion(
+        self, db_session, workspace
+    ):
+        """Re-importing a file whose content changed should re-run ingestion.
+
+        This is a regression test for the bug where _persist_documents
+        only counted freshly inserted rows (xmax = 0) and skipped
+        ingestion for update-only reimports even though processed_at
+        had been reset to None.
+        """
+        import tempfile
+        from app.models.knowledge import Component
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            (tmp_path / "page.md").write_text(
+                "# Decision\n\ndecision: use Postgres for storage"
+            )
+
+            svc = ImportService(db_session)
+            result1 = await svc.run_import(
+                import_type=ImportType.NOTION_DIRECTORY,
+                source_path=tmp_path,
+                workspace_id=workspace.id,
+                run_ingestion=True,
+            )
+            assert result1.documents_ingested >= 1
+
+            # Modify the file content — same title, different decision
+            (tmp_path / "page.md").write_text(
+                "# Decision\n\ndecision: use MySQL for storage"
+            )
+
+            result2 = await svc.run_import(
+                import_type=ImportType.NOTION_DIRECTORY,
+                source_path=tmp_path,
+                workspace_id=workspace.id,
+                run_ingestion=True,
+            )
+            # The key assertion: ingestion must have re-run
+            assert result2.documents_ingested >= 1
+
+            # Verify both fact versions exist in the knowledge graph
+            components = list(await db_session.scalars(
+                select(Component).where(
+                    Component.name.like("Decision%"),
+                ).order_by(Component.valid_from)
+            ))
+            # Should have at least 2 component versions (old + new)
+            values = {c.value for c in components}
+            assert any("Postgres" in v for v in values)
+            assert any("MySQL" in v for v in values)
+
     async def test_get_source_documents_for_connector(
         self, db_session, workspace
     ):
@@ -717,6 +771,24 @@ class TestImportAPI:
         assert resp.status_code == 400
         assert "absolute path" in resp.json()["detail"]
 
+    async def test_trigger_import_missing_workspace_returns_404(self, client, tmp_path):
+        """POST /api/imports/trigger with a non-existent workspace_id must return 404.
+
+        Regression test: run_import() previously created the import connector
+        before verifying the workspace existed, causing a generic 500 instead
+        of a clean 404.
+        """
+        from uuid import uuid4
+
+        (tmp_path / "page.md").write_text("# Test\n\nContent")
+        resp = await client.post("/api/imports/trigger", json={
+            "workspace_id": str(uuid4()),
+            "import_type": "notion_directory",
+            "source_path": str(tmp_path),
+        })
+        assert resp.status_code == 404
+        assert "not found" in resp.json()["detail"].lower()
+
     async def test_trigger_import_invalid_type(self, client, workspace, tmp_path):
         resp = await client.post("/api/imports/trigger", json={
             "workspace_id": str(workspace.id),
@@ -760,3 +832,38 @@ class TestImportAPI:
         assert body["total"] == 1
         assert len(body["items"]) == 1
         assert body["items"][0]["connector_type"] == "notion"
+
+    async def test_list_import_documents_filtered_total(self, client, workspace, tmp_path):
+        """Filtered document lists must return correct total counts.
+
+        Regression test: the total count query ignored the processed filter,
+        causing pagination metadata to be wrong in filtered views.
+        """
+        (tmp_path / "page.md").write_text("# Test\n\nContent")
+        trigger_resp = await client.post("/api/imports/trigger", json={
+            "workspace_id": str(workspace.id),
+            "import_type": "notion_directory",
+            "source_path": str(tmp_path),
+            "run_ingestion": True,
+        })
+        connector_id = trigger_resp.json()["connector_id"]
+
+        # All documents should be processed after import
+        resp = await client.get(
+            f"/api/imports/connectors/{connector_id}/documents",
+            params={"processed": True},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 1
+        assert len(body["items"]) == 1
+
+        # No unprocessed documents after successful ingestion
+        resp_unprocessed = await client.get(
+            f"/api/imports/connectors/{connector_id}/documents",
+            params={"processed": False},
+        )
+        assert resp_unprocessed.status_code == 200
+        body_unprocessed = resp_unprocessed.json()
+        assert body_unprocessed["total"] == 0
+        assert len(body_unprocessed["items"]) == 0

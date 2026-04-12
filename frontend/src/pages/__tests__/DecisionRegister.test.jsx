@@ -66,9 +66,9 @@ describe("DecisionRegister", () => {
     renderDecisionRegister();
 
     expect(screen.getByText("No decisions have been registered yet.")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Connect sources" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Add context" })).toHaveAttribute(
       "href",
-      "/app/connectors",
+      "/app",
     );
   });
 

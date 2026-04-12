@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.connectors.strategy import get_connector_strategy
 from app.database import get_db_session
-from app.models.source import ConnectorType
+from app.models.source import ConnectorType, SourceDocument
 from app.schemas.connector import (
     ConnectorProcessingSummary,
     ConnectorRead,
@@ -21,6 +22,7 @@ from app.schemas.connector import (
     SyncJobResponse,
     ZoomConnectRequest,
 )
+from app.schemas.imports import ImportDocumentInput
 from app.schemas.source import SourceDocumentList, SourceDocumentRead
 from app.services.connector_service import (
     ConfigurationError,
@@ -33,6 +35,7 @@ from app.services.connector_service import (
     WebhookVerificationError,
     WorkspaceNotFoundError,
 )
+from app.services.import_service import ImportService, ImportWorkspaceNotFoundError
 
 
 router = APIRouter()
@@ -91,87 +94,78 @@ def _serialize_connector(connector) -> ConnectorRead:
     )
 
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, status
+def _serialize_source_document(document: SourceDocument) -> SourceDocumentRead:
+    return SourceDocumentRead(
+        id=document.id,
+        connector_id=document.connector_id,
+        connector_type=document.connector_type.value,
+        external_id=document.external_id,
+        content=document.content,
+        author=document.author,
+        source_url=document.source_url,
+        created_at_source=document.created_at_source,
+        ingested_at=document.ingested_at,
+        processed_at=document.processed_at,
+        deleted_at=document.deleted_at,
+        metadata=document.metadata_json,
+    )
+
 
 @router.post("/source-documents/upload", response_model=SourceDocumentRead)
 async def upload_source_document(
-    workspace_id: UUID,
+    workspace_id: UUID = Form(...),
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_db_session),
 ) -> SourceDocumentRead:
-    """Upload a local file as a source document."""
-    svc = ConnectorService(session)
-    try:
-        await svc._require_workspace(workspace_id)
-    except WorkspaceNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
-
+    """Compatibility upload endpoint that routes browser files through local import."""
+    filename = file.filename or "uploaded-file"
+    suffix = Path(filename).suffix.lower()
     content = await file.read()
+
     try:
         text_content = content.decode("utf-8")
     except UnicodeDecodeError:
-        # Fallback for non-utf8 (simplistic)
         text_content = content.decode("latin-1")
 
-    # We use the Slack connector type as a placeholder for manual uploads 
-    # or we could add a MANUAL type. Looking at ConnectorType in models...
-    from app.models.source import SourceDocument, ConnectorType
-    
-    # Let's see if there's a better way to handle manual uploads.
-    # For now, let's just create a SourceDocument.
-    # We need a connector_id. We might need a "Manual" connector.
-    
-    # Try to find or create a 'manual' connector for this workspace
-    result = await session.execute(
-        select(Connector).where(
-            Connector.workspace_id == workspace_id,
-            Connector.connector_type == ConnectorType.SLACK # Placeholder
+    if not text_content.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded file is empty.",
         )
-    )
-    connector = result.scalar_one_or_none()
-    if not connector:
-        connector = Connector(
-            workspace_id=workspace_id,
-            connector_type=ConnectorType.SLACK,
-            status=ConnectorStatus.CONNECTED,
-            config={"document_count": 0}
-        )
-        session.add(connector)
-        await session.flush()
 
-    doc = SourceDocument(
-        connector_id=connector.id,
-        connector_type=ConnectorType.SLACK,
-        external_id=f"manual-{file.filename}-{datetime.now(timezone.utc).timestamp()}",
-        content=text_content,
-        author="Manual Upload",
-        ingested_at=datetime.now(timezone.utc),
-        metadata_json={"filename": file.filename, "source": "manual_upload"}
-    )
-    session.add(doc)
-    
-    # Update connector count
-    connector.config = {
-        **connector.config,
-        "document_count": (connector.config.get("document_count") or 0) + 1
-    }
-    
-    await session.commit()
-    await session.refresh(doc)
-    
-    return SourceDocumentRead(
-        id=doc.id,
-        connector_id=doc.connector_id,
-        connector_type=doc.connector_type.value,
-        external_id=doc.external_id,
-        content=doc.content,
-        author=doc.author,
-        source_url=None,
-        created_at_source=doc.ingested_at,
-        ingested_at=doc.ingested_at,
-        processed_at=None,
-        metadata=doc.metadata_json
-    )
+    service = ImportService(session)
+    try:
+        result = await service.import_documents(
+            workspace_id=workspace_id,
+            documents=[
+                ImportDocumentInput(
+                    external_id=f"browser-upload:{filename}",
+                    content=text_content,
+                    author="Browser Upload",
+                    metadata={
+                        "title": filename,
+                        "file_name": filename,
+                        "file_extension": suffix,
+                        "mime_type": file.content_type,
+                        "source_type": "browser_upload",
+                    },
+                )
+            ],
+        )
+    except ImportWorkspaceNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+    document = await session.get(SourceDocument, result.documents[0].document_id)
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Imported document could not be loaded.",
+        )
+
+    return _serialize_source_document(document)
 
 # ── Connector list / processing summary (no path params) ─────────
 
@@ -644,4 +638,3 @@ async def get_source_document(
         deleted_at=d.deleted_at,
         metadata=d.metadata_json,
     )
-

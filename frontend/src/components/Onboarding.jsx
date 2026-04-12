@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useSeedDemoData, useUploadSourceFile } from "../api/hooks";
 import { useWorkspaceSelection } from "../context/WorkspaceContext";
@@ -20,11 +21,11 @@ export default function Onboarding({ onComplete }) {
   
   const seedDemo = useSeedDemoData();
   const uploadFile = useUploadSourceFile();
-  const { setSelectedId } = useWorkspaceSelection();
+  const { selectedId, setSelectedId } = useWorkspaceSelection();
 
   const handleRunDemo = () => {
     setStep("demo");
-    seedDemo.mutate(null, {
+    seedDemo.mutate({ workspaceId: selectedId }, {
       onSuccess: (data) => {
         if (data?.workspaceId) {
           setSelectedId(data.workspaceId);
@@ -47,11 +48,25 @@ export default function Onboarding({ onComplete }) {
     setImportStatus({ status: 'uploading', message: `Uploading ${files.length} files...` });
     
     try {
-      for (const file of files) {
-        await uploadFile.mutateAsync(file);
+      const result = await uploadFile.mutateAsync({
+        files,
+        workspaceId: selectedId,
+      });
+
+      if (result.failed_documents > 0) {
+        setImportStatus({
+          status: 'error',
+          message: `${result.failed_documents} file${result.failed_documents === 1 ? '' : 's'} failed during import.`,
+        });
+        return;
       }
-      setImportStatus({ status: 'success', message: 'All files imported successfully! Your context is being processed.' });
-      setTimeout(() => onComplete?.(), 2000);
+
+      const importedCount = result.created_documents + result.updated_documents + result.unchanged_documents;
+      setImportStatus({
+        status: 'success',
+        message: `Imported ${importedCount} file${importedCount === 1 ? '' : 's'}. ${result.processed_documents} processed into context.`,
+      });
+      setTimeout(() => onComplete?.(), 1500);
     } catch (err) {
       setImportStatus({ status: 'error', message: err.message || 'Failed to upload files.' });
     }
@@ -83,7 +98,7 @@ export default function Onboarding({ onComplete }) {
         </button>
 
         <h2 className="text-xl font-bold text-slate-900 mb-2">Import your context</h2>
-        <p className="text-slate-500 mb-8">Upload PDF, Markdown, or Text files to ground your workspace truth.</p>
+        <p className="text-slate-500 mb-8">Upload Markdown, text, JSON, CSV, or HTML files to ground your workspace truth.</p>
 
         <div className="space-y-6">
           <div 
@@ -94,6 +109,7 @@ export default function Onboarding({ onComplete }) {
               id="file-upload" 
               type="file" 
               multiple 
+              accept=".md,.markdown,.txt,.json,.csv,.html,.htm,.xml,.yaml,.yml,.log,text/*"
               className="hidden" 
               onChange={handleFileUpload}
             />
@@ -101,7 +117,7 @@ export default function Onboarding({ onComplete }) {
               <UploadCloud className="w-6 h-6 text-brand-600" />
             </div>
             <p className="text-sm font-bold text-slate-900">Click to select files</p>
-            <p className="text-xs text-slate-500 mt-1">PDF, MD, TXT (up to 10MB each)</p>
+            <p className="text-xs text-slate-500 mt-1">MD, TXT, JSON, CSV, HTML, YAML, XML, LOG (up to 10MB each)</p>
           </div>
 
           {files.length > 0 && (

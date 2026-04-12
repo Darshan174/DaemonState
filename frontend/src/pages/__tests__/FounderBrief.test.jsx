@@ -174,9 +174,9 @@ describe("FounderBrief", () => {
     renderFounderBrief();
 
     expect(screen.getByText("No founder brief is available yet.")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Connect sources" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Add context" })).toHaveAttribute(
       "href",
-      "/app/connectors",
+      "/app",
     );
   });
 

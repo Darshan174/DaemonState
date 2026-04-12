@@ -8,9 +8,20 @@ from urllib import error, parse, request
 class APIError(RuntimeError):
     """Raised when an API request fails."""
 
-    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        method: str | None = None,
+        path: str | None = None,
+        detail: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.method = method
+        self.path = path
+        self.detail = detail
 
 
 def api_request(
@@ -47,6 +58,9 @@ def api_request(
         raise APIError(
             f"{method} {path} failed with {exc.code}: {detail}",
             status_code=exc.code,
+            method=method,
+            path=path,
+            detail=detail,
         ) from exc
     except error.URLError as exc:
         raise APIError(f"Unable to reach {url}: {exc.reason}") from exc

@@ -43,7 +43,7 @@ describe("WorkspaceBootstrap", () => {
 
     renderBootstrap();
 
-    expect(container.querySelector(".animate-spin")).toBeInTheDocument();
+    expect(screen.getByText("Connecting to backend...")).toBeInTheDocument();
     expect(screen.queryByText("App Content")).not.toBeInTheDocument();
   });
 
@@ -108,7 +108,7 @@ describe("WorkspaceBootstrap", () => {
 
     renderBootstrap();
 
-    expect(screen.getByText("Create Workspace")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Create Workspace" })).toBeInTheDocument();
     expect(screen.getByPlaceholderText("e.g. Acme Corp")).toBeInTheDocument();
     expect(screen.queryByText("App Content")).not.toBeInTheDocument();
   });
@@ -144,7 +144,7 @@ describe("WorkspaceBootstrap", () => {
     await userEvent.click(screen.getByRole("button", { name: /Create Workspace/ }));
 
     expect(mutate).toHaveBeenCalledWith(
-      { name: "Acme Corp" },
+      { name: "Acme Corp", description: null },
       expect.objectContaining({ onSuccess: expect.any(Function) }),
     );
   });

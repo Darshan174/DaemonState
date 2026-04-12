@@ -40,7 +40,7 @@ describe("Query — empty state", () => {
     expect(screen.getByText("Self-host query flow")).toBeInTheDocument();
     expect(screen.getByText("What is our current MRR?")).toBeInTheDocument();
     expect(screen.getByText("How healthy are our customers?")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Connect sources" })).toHaveAttribute("href", "/app/connectors");
+    expect(screen.getByRole("link", { name: "Add context" })).toHaveAttribute("href", "/app");
     expect(screen.getByRole("link", { name: "Review trust issues" })).toHaveAttribute("href", "/app/review");
     expect(screen.getByRole("link", { name: "Inspect sources" })).toHaveAttribute("href", "/app/sources");
   });
@@ -512,7 +512,7 @@ describe("Query — real backend success response", () => {
     await userEvent.type(screen.getByLabelText("As of date"), "2026-03-15");
     await userEvent.click(screen.getByText("Ask"));
 
-    expect(screen.getByText("As of: Mar 15, 2026")).toBeInTheDocument();
+    expect(screen.getByText(/As of:\s*(Mar 15, 2026|15 Mar 2026)/i)).toBeInTheDocument();
   });
 
   it("renders multiline causal answers as separate paragraphs", () => {

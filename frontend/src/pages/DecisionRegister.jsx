@@ -14,12 +14,21 @@ const FILTERS = [
 export default function DecisionRegister() {
   const [searchParams, setSearchParams] = useSearchParams();
   const filter = searchParams.get("state") ?? "all";
+  const sourceId = searchParams.get("source_id");
   const query = useDecisionRegister();
   const items = query.data ?? [];
 
+  const sourceFilteredItems = useMemo(
+    () => items.filter((item) => {
+      if (!sourceId) return true;
+      return item.sourceDocumentId === sourceId || item.rationaleSources?.some(s => s.sourceDocumentId === sourceId);
+    }),
+    [sourceId, items],
+  );
+
   const filteredItems = useMemo(
-    () => items.filter((item) => filter === "all" || item.status === filter),
-    [filter, items],
+    () => sourceFilteredItems.filter((item) => filter === "all" || item.status === filter),
+    [filter, sourceFilteredItems],
   );
 
   if (query.isLoading || query.isError) {
@@ -39,9 +48,9 @@ export default function DecisionRegister() {
   }
 
   const summary = {
-    current: items.filter((item) => item.status === "current").length,
-    needsReview: items.filter((item) => item.status === "needs_review").length,
-    historical: items.filter((item) => item.status === "historical").length,
+    current: sourceFilteredItems.filter((item) => item.status === "current").length,
+    needsReview: sourceFilteredItems.filter((item) => item.status === "needs_review").length,
+    historical: sourceFilteredItems.filter((item) => item.status === "historical").length,
   };
 
   return (
@@ -57,13 +66,13 @@ export default function DecisionRegister() {
           </p>
         </div>
         <div className="flex items-center gap-3 text-xs">
-          <Link to="/app/changes" className="font-medium text-brand-700 hover:text-brand-800">
+          <Link to={sourceId ? `/app/changes?source_id=${sourceId}` : "/app/changes"} className="font-medium text-brand-700 hover:text-brand-800">
             Open timeline
           </Link>
           <Link to="/app/review" className="font-medium text-brand-700 hover:text-brand-800">
             Open review queue
           </Link>
-          <Link to="/app/sources" className="font-medium text-brand-700 hover:text-brand-800">
+          <Link to={sourceId ? `/app/sources/${sourceId}` : "/app/sources"} className="font-medium text-brand-700 hover:text-brand-800">
             Inspect sources
           </Link>
         </div>
@@ -432,16 +441,21 @@ function formatDateTime(value) {
 
 function DecisionEmptyState() {
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-6 text-center">
-      <p className="text-sm font-semibold text-gray-800">No decisions have been registered yet.</p>
-      <p className="mt-2 text-xs text-gray-500 max-w-2xl mx-auto">
-        The register populates from synced source documents that contain decisions or decision-like meeting context.
+    <div className="rounded-[32px] border border-gray-200 bg-white p-12 text-center shadow-sm">
+      <div className="mx-auto w-16 h-16 bg-brand-50 text-brand-600 rounded-full flex items-center justify-center mb-6">
+        <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+        </svg>
+      </div>
+      <h2 className="text-xl font-bold text-gray-900">No decisions have been registered yet.</h2>
+      <p className="mt-3 text-sm text-gray-500 max-w-lg mx-auto leading-relaxed">
+        The register populates automatically from synced source documents that contain decisions, action items, or major technical choices.
       </p>
-      <div className="mt-4 flex flex-wrap items-center justify-center gap-4 text-xs">
-        <Link to="/app/connectors" className="font-medium text-brand-700 hover:text-brand-800">
-          Connect sources
+      <div className="mt-8 flex flex-wrap items-center justify-center gap-4">
+        <Link to="/app" className="px-6 py-2.5 bg-brand-600 text-white text-sm font-bold rounded-xl hover:bg-brand-500 transition-colors shadow-lg shadow-brand-500/20">
+          Add context
         </Link>
-        <Link to="/app/sources" className="font-medium text-brand-700 hover:text-brand-800">
+        <Link to="/app/sources" className="px-6 py-2.5 bg-gray-100 text-gray-700 text-sm font-bold rounded-xl hover:bg-gray-200 transition-colors">
           Inspect sources
         </Link>
       </div>

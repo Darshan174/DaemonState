@@ -269,7 +269,7 @@ class TestProvenanceEndpoints:
         }
         contexts = {item["extraction_context"] for item in body}
         assert "Extracted from pricing thread" in contexts
-        assert None in contexts
+        assert "Extracted from pricing page" in contexts
         assert all(item["id"] for item in body)
         schema_versions = {item["extractor_schema_version"] for item in body}
         assert "fact_extraction.v1" in schema_versions

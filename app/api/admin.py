@@ -3,17 +3,32 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db_session
-from app.evals.demo_seed import DEFAULT_WORKSPACE_NAME, seed_demo_workspace
+from app.evals.demo_seed import (
+    DEFAULT_WORKSPACE_NAME,
+    SeedWorkspaceNotFoundError,
+    seed_demo_into_workspace,
+    seed_demo_workspace,
+)
 from app.models.user import Workspace
 from app.schemas.user import WorkspaceCreate, WorkspaceRead
 
 
 router = APIRouter()
+
+
+class SeedDemoRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    workspace_id: UUID | None = Field(
+        default=None,
+        validation_alias=AliasChoices("workspace_id", "workspaceId"),
+    )
 
 
 @router.post(
@@ -34,6 +49,7 @@ async def create_workspace(
 
 @router.post("/seed-demo")
 async def seed_demo(
+    payload: SeedDemoRequest | None = None,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, object]:
     """Create (or return) the canonical deterministic demo workspace.
@@ -48,12 +64,23 @@ async def seed_demo(
     concurrent callers is mapped to a 409 instead of leaking an IntegrityError.
     """
     try:
-        result = await seed_demo_workspace(session, replace_existing=False)
+        if payload and payload.workspace_id is not None:
+            result = await seed_demo_into_workspace(
+                session,
+                workspace_id=payload.workspace_id,
+            )
+        else:
+            result = await seed_demo_workspace(session, replace_existing=False)
     except IntegrityError as exc:
         await session.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Demo workspace is already being seeded by another request.",
+        ) from exc
+    except SeedWorkspaceNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
         ) from exc
 
     return {

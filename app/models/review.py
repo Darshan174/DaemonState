@@ -71,7 +71,7 @@ class ReviewItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     decision_history: Mapped[list["ReviewDecision"]] = orm_relationship(
         back_populates="review_item",
         cascade="all, delete-orphan",
-        order_by=lambda: ReviewDecision.created_at.desc(),
+        order_by=lambda: (ReviewDecision.created_at.desc(), ReviewDecision.id.desc()),
     )
 
 

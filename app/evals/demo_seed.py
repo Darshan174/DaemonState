@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import bindparam, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.types import BigInteger
 
 from app.evals.gold_set import load_default_cases
 from app.models.connector import Connector, ConnectorStatus
@@ -19,6 +21,39 @@ from app.processing.embedder import HashingEmbedder
 
 DEFAULT_WORKSPACE_NAME = "Acme Accuracy Demo"
 _EMBEDDER = HashingEmbedder()
+
+# Stable 64-bit signed integer used with pg_advisory_xact_lock() to serialize
+# concurrent callers of seed_demo_workspace(). Without this lock, two requests
+# can both observe "no workspace yet" and both insert a fresh demo workspace
+# because Workspace.name has no unique constraint. The lock is transaction-
+# scoped and released automatically at commit or rollback.
+#
+# The key is derived from a fixed string so the value is stable across processes
+# (unlike Python's builtin hash() which is randomized by PYTHONHASHSEED). Any
+# unique 64-bit integer works; this derivation just guarantees uniqueness and
+# is self-documenting.
+_SEED_ADVISORY_LOCK_KEY: int = int.from_bytes(
+    hashlib.sha256(b"context-engine:demo-seed").digest()[:8],
+    byteorder="big",
+    signed=True,
+)
+
+
+async def _acquire_seed_lock(session: AsyncSession) -> None:
+    """Block until this transaction holds the demo-seed advisory lock.
+
+    pg_advisory_xact_lock is a blocking, reentrant lock bound to the current
+    transaction. Two concurrent callers racing to seed the demo workspace will
+    be serialized here: the first caller creates the workspace and commits
+    (releasing the lock), the second caller then acquires the lock and
+    observes the already-created workspace via the subsequent SELECT.
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:key)").bindparams(
+            bindparam("key", type_=BigInteger)
+        ),
+        {"key": _SEED_ADVISORY_LOCK_KEY},
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +80,10 @@ class SeedResult:
     workspace_name: str
     status: str
     seeded_case_count: int
+
+
+class SeedWorkspaceNotFoundError(LookupError):
+    """Raised when a requested workspace for demo seeding does not exist."""
 
 
 _SEEDS: tuple[ComponentSeed, ...] = (
@@ -370,13 +409,24 @@ async def seed_demo_workspace(
     workspace_name: str = DEFAULT_WORKSPACE_NAME,
     replace_existing: bool = False,
 ) -> SeedResult:
+    # Serialize concurrent callers under pg_advisory_xact_lock so we cannot
+    # observe "no workspace" twice and double-insert. See the module-level
+    # comment on _SEED_ADVISORY_LOCK_KEY for why this is necessary.
+    await _acquire_seed_lock(session)
+
     workspace = await session.scalar(
         select(Workspace).where(Workspace.name == workspace_name).limit(1)
     )
     if workspace is not None and replace_existing:
         await session.delete(workspace)
+        # Intermediate commit releases the advisory lock, so re-acquire it
+        # before recreating and re-check to avoid racing another replace
+        # caller that may have recreated the workspace in the meantime.
         await session.commit()
-        workspace = None
+        await _acquire_seed_lock(session)
+        workspace = await session.scalar(
+            select(Workspace).where(Workspace.name == workspace_name).limit(1)
+        )
 
     if workspace is not None:
         return SeedResult(
@@ -393,6 +443,37 @@ async def seed_demo_workspace(
     session.add(workspace)
     await session.flush()
 
+    return await _populate_demo_workspace(session, workspace=workspace, status="created")
+
+
+async def seed_demo_into_workspace(
+    session: AsyncSession,
+    *,
+    workspace_id: UUID,
+) -> SeedResult:
+    workspace = await session.scalar(
+        select(Workspace).where(Workspace.id == workspace_id).limit(1)
+    )
+    if workspace is None:
+        raise SeedWorkspaceNotFoundError("Workspace not found")
+
+    if await _workspace_has_context(session, workspace.id):
+        return SeedResult(
+            workspace_id=workspace.id,
+            workspace_name=workspace.name,
+            status="existing",
+            seeded_case_count=len(load_default_cases()),
+        )
+
+    return await _populate_demo_workspace(session, workspace=workspace, status="created")
+
+
+async def _populate_demo_workspace(
+    session: AsyncSession,
+    *,
+    workspace: Workspace,
+    status: str,
+) -> SeedResult:
     connectors = {
         connector_type: await _ensure_connector(session, workspace.id, connector_type)
         for connector_type in {
@@ -459,7 +540,7 @@ async def seed_demo_workspace(
     return SeedResult(
         workspace_id=workspace.id,
         workspace_name=workspace.name,
-        status="created",
+        status=status,
         seeded_case_count=len(load_default_cases()),
     )
 
@@ -469,6 +550,15 @@ async def _ensure_connector(
     workspace_id: UUID,
     connector_type: ConnectorType,
 ) -> Connector:
+    existing = await session.scalar(
+        select(Connector).where(
+            Connector.workspace_id == workspace_id,
+            Connector.connector_type == connector_type,
+        )
+    )
+    if existing is not None:
+        return existing
+
     connector = Connector(
         workspace_id=workspace_id,
         connector_type=connector_type,
@@ -478,6 +568,25 @@ async def _ensure_connector(
     session.add(connector)
     await session.flush()
     return connector
+
+
+async def _workspace_has_context(session: AsyncSession, workspace_id: UUID) -> bool:
+    """Check whether the workspace already has structured context.
+
+    We look for Component rows (structured facts) linked to the workspace
+    via a KnowledgeModel, not merely Connector rows. A workspace can have
+    connector config (e.g. a linked Slack connector) without any actual
+    seeded or ingested content — connectors are plumbing, components are
+    content. Checking only connectors would cause /seed-demo to no-op for
+    a workspace that has been connected but never populated.
+    """
+    component_id = await session.scalar(
+        select(Component.id)
+        .join(KnowledgeModel, Component.model_id == KnowledgeModel.id)
+        .where(KnowledgeModel.workspace_id == workspace_id)
+        .limit(1)
+    )
+    return component_id is not None
 
 
 def _connector_config(connector_type: ConnectorType) -> dict[str, object]:

@@ -2,6 +2,16 @@ import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import Dashboard from "../Dashboard";
 
+vi.mock("../../components/Onboarding", () => ({
+  default: () => (
+    <div>
+      <div>Welcome to Context Engine</div>
+      <div>Run Demo Workspace</div>
+      <div>Import Local Files</div>
+    </div>
+  ),
+}));
+
 vi.mock("../../api/hooks", () => ({
   useConnectorProcessingSummary: vi.fn(),
   useConnectors: vi.fn(),
@@ -114,10 +124,10 @@ describe("Dashboard", () => {
     expect(screen.getByRole("link", { name: "View Founder Brief" })).toHaveAttribute("href", "/app/brief");
     
     expect(screen.getByText("Ask Context")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Ask a question" })).toHaveAttribute("href", "/app/query");
+    expect(screen.getByRole("link", { name: /Ask Context.*Ask a question/i })).toHaveAttribute("href", "/app/query");
     
     expect(screen.getByText("Decision Register")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Review decisions" })).toHaveAttribute("href", "/app/decisions");
+    expect(screen.getByRole("link", { name: /Decision Register.*Review decisions/i })).toHaveAttribute("href", "/app/decisions");
     
     expect(screen.queryByText("Welcome to Context Engine")).not.toBeInTheDocument();
   });
@@ -127,7 +137,10 @@ describe("Dashboard", () => {
       isLoading: false,
       isError: false,
       data: {
-        stats: [{ label: "Models", value: 1, delta: "—" }],
+        stats: [
+          { label: "Sources", value: 4, delta: "1 connector active" },
+          { label: "Models", value: 1, delta: "—" },
+        ],
         activity: [],
         alerts: [],
       },
@@ -148,7 +161,7 @@ describe("Dashboard", () => {
 
     expect(screen.getByText("Trust Status")).toBeInTheDocument();
     expect(screen.getByText(/2 items need review/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Check trust" })).toHaveAttribute("href", "/app/review");
+    expect(screen.getByRole("link", { name: /Trust Status.*Check trust/i })).toHaveAttribute("href", "/app/review");
   });
 
   it("shows onboarding when no sources exist", () => {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useComponentSources, useContextQuery } from "../api/hooks";
 import MockBadge from "../components/MockBadge";
 import SourceDocumentLinks from "../components/SourceDocumentLinks";
@@ -393,13 +393,17 @@ export default function Query() {
 
       {/* ── Empty / hint ────────────────────────── */}
       {!result && !mutation.isPending && !mutation.isError && (
-        <div className="text-center py-12 text-gray-400 space-y-4">
-          <SearchIcon />
-          <p className="text-sm">Ask a question to query your knowledge graph.</p>
-          <p className="text-xs text-gray-500 max-w-2xl mx-auto">
+        <div className="rounded-[32px] border border-gray-200 bg-white p-12 text-center shadow-sm mt-8">
+          <div className="mx-auto w-16 h-16 bg-brand-50 text-brand-600 rounded-full flex items-center justify-center mb-6">
+            <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+            </svg>
+          </div>
+          <h2 className="text-xl font-bold text-gray-900">Ask a question to query your knowledge graph.</h2>
+          <p className="mt-3 text-sm text-gray-500 max-w-lg mx-auto leading-relaxed">
             For a self-hosted install, the fastest path is sync real sources first, review conflicts, then use query to pressure-test the current trust graph.
           </p>
-          <div className="flex flex-wrap justify-center gap-2 pt-2">
+          <div className="flex flex-wrap justify-center gap-3 pt-6">
             {["What is our current MRR?", "How healthy are our customers?"].map((q) => (
               <button
                 key={q}
@@ -413,22 +417,22 @@ export default function Query() {
                   });
                   mutation.mutate(payload.maxAgeDays != null || payload.asOf ? payload : payload.question);
                 }}
-                className="px-3 py-1.5 text-xs rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 transition-colors"
+                className="px-4 py-2 text-sm font-medium rounded-xl border border-gray-200 text-gray-600 hover:bg-brand-50 hover:text-brand-700 hover:border-brand-200 transition-colors shadow-sm"
               >
                 {q}
               </button>
             ))}
           </div>
-          <div className="flex flex-wrap justify-center gap-4 text-xs">
-            <a href="/app/connectors" className="font-medium text-brand-700 hover:text-brand-800">
-              Connect sources
-            </a>
-            <a href="/app/review" className="font-medium text-brand-700 hover:text-brand-800">
+          <div className="flex flex-wrap justify-center gap-4 text-xs mt-8">
+            <Link to="/app" className="font-medium text-brand-700 hover:text-brand-800">
+              Add context
+            </Link>
+            <Link to="/app/review" className="font-medium text-brand-700 hover:text-brand-800">
               Review trust issues
-            </a>
-            <a href="/app/accuracy" className="font-medium text-brand-700 hover:text-brand-800">
+            </Link>
+            <Link to="/app/accuracy" className="font-medium text-brand-700 hover:text-brand-800">
               Benchmark accuracy
-            </a>
+            </Link>
           </div>
         </div>
       )}

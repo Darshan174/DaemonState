@@ -187,7 +187,7 @@ describe("Sources", () => {
 
     expect(screen.getByText("No source documents yet.")).toBeInTheDocument();
     expect(screen.getByText(/connect Slack, Notion, or Zoom first/i)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open connectors" })).toHaveAttribute("href", "/app/connectors");
+    expect(screen.getByRole("link", { name: "Add context" })).toHaveAttribute("href", "/app");
   });
 
   it("renders mock badge, summary, and selected document detail", () => {

@@ -522,16 +522,22 @@ function formatGitHubItemType(value) {
 
 function FounderBriefEmptyState() {
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-6 text-center">
-      <p className="text-sm font-semibold text-gray-800">No founder brief is available yet.</p>
-      <p className="mt-2 text-xs text-gray-500 max-w-2xl mx-auto">
+    <div className="rounded-[32px] border border-gray-200 bg-white p-12 text-center shadow-sm">
+      <div className="mx-auto w-16 h-16 bg-brand-50 text-brand-600 rounded-full flex items-center justify-center mb-6">
+        <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M8 6h10M8 10h10M8 14h6M5 4h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z" />
+        </svg>
+      </div>
+      <h2 className="text-xl font-bold text-gray-900">No founder brief is available yet.</h2>
+      <p className="mt-3 text-sm text-gray-500 max-w-lg mx-auto leading-relaxed">
         Sync sources and let the trust pipeline extract decisions, review items, and eval state first.
+        Your startup's "current truth" will be summarized here once data is processed.
       </p>
-      <div className="mt-4 flex flex-wrap items-center justify-center gap-4 text-xs">
-        <Link to="/app/connectors" className="font-medium text-brand-700 hover:text-brand-800">
-          Connect sources
+      <div className="mt-8 flex flex-wrap items-center justify-center gap-4">
+        <Link to="/app" className="px-6 py-2.5 bg-brand-600 text-white text-sm font-bold rounded-xl hover:bg-brand-500 transition-colors shadow-lg shadow-brand-500/20">
+          Add context
         </Link>
-        <Link to="/app/decisions" className="font-medium text-brand-700 hover:text-brand-800">
+        <Link to="/app/decisions" className="px-6 py-2.5 bg-gray-100 text-gray-700 text-sm font-bold rounded-xl hover:bg-gray-200 transition-colors">
           Open decision register
         </Link>
       </div>

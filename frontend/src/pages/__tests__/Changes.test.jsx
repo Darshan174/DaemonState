@@ -112,9 +112,9 @@ describe("Changes", () => {
     renderChanges();
 
     expect(screen.getByText("No changes are visible yet.")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Connect sources" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Add context" })).toHaveAttribute(
       "href",
-      "/app/connectors",
+      "/app",
     );
   });
 

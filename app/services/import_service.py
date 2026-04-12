@@ -208,6 +208,8 @@ class ImportService:
         options: dict[str, Any] | None = None,
     ) -> ImportResult:
         """Run a full import pipeline."""
+        await self._require_workspace(workspace_id)
+
         result = ImportResult(
             import_type=import_type,
             status=ImportStatus.RUNNING,
@@ -262,7 +264,9 @@ class ImportService:
             result.completed_at = datetime.now(timezone.utc)
             return result
 
-        persisted = await self._persist_documents(connector.id, connector_type, documents)
+        persisted, needs_processing = await self._persist_documents(
+            connector.id, connector_type, documents
+        )
         result.documents_imported = persisted
 
         connector.last_sync_at = datetime.now(timezone.utc)
@@ -275,7 +279,9 @@ class ImportService:
         }
         await self.session.flush()
 
-        if run_ingestion and persisted > 0:
+        # Ingestion must run whenever rows had processed_at reset to None
+        # (new inserts or content-change updates), not only on fresh inserts.
+        if run_ingestion and needs_processing > 0:
             try:
                 ingestion = IngestionService(self.session)
                 processed = await ingestion.process_connector_documents(
@@ -355,10 +361,16 @@ class ImportService:
         connector_id: UUID,
         connector_type: ConnectorType,
         documents: list[NormalizedDocument],
-    ) -> int:
-        """Upsert NormalizedDocuments as SourceDocument rows."""
+    ) -> tuple[int, int]:
+        """Upsert NormalizedDocuments as SourceDocument rows.
+
+        Returns ``(persisted, needs_processing)`` where ``persisted`` is
+        the total number of documents upserted (inserted or updated) and
+        ``needs_processing`` is the subset whose ``processed_at`` is now
+        ``None`` (either newly inserted or reset due to content change).
+        """
         if not documents:
-            return 0
+            return 0, 0
 
         from sqlalchemy import case, literal_column, or_
         from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -401,9 +413,15 @@ class ImportService:
                 ),
             },
         )
-        stmt = stmt.returning(literal_column("(xmax = 0)").label("inserted"))
+        stmt = stmt.returning(
+            literal_column("(xmax = 0)").label("inserted"),
+            sd.processed_at.label("processed_at"),
+        )
         result = await self.session.execute(stmt)
-        return sum(1 for row in result if row.inserted)
+        rows_list = list(result)
+        persisted = len(rows_list)
+        needs_processing = sum(1 for row in rows_list if row.processed_at is None)
+        return persisted, needs_processing
 
     async def _load_existing_documents(
         self,

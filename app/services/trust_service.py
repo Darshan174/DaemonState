@@ -41,6 +41,25 @@ class DispatchError(TrustServiceError):
     """Raised when a background job could not be dispatched."""
 
 
+class InvalidStatusTransitionError(TrustServiceError):
+    """Raised when a review item status transition is not allowed."""
+
+    def __init__(self, current: str, target: str) -> None:
+        super().__init__(
+            f"Invalid status transition: '{current}' -> '{target}'"
+        )
+        self.current_status = current
+        self.target_status = target
+
+
+# Explicit status transition map: current -> set of allowed targets.
+# Terminal states (approved, rejected, superseded) cannot be re-mutated
+# via the operator API. Only needs_review can transition to a terminal state.
+_ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
+    "needs_review": frozenset({"approved", "rejected", "superseded"}),
+}
+
+
 class TrustService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -81,7 +100,11 @@ class TrustService:
             ).where(ComponentSource.source_document_id == source_document_id)
 
         result = await self.session.execute(
-            query.order_by(ReviewItem.updated_at.desc(), ReviewItem.created_at.desc())
+            query.order_by(
+                ReviewItem.updated_at.desc(),
+                ReviewItem.created_at.desc(),
+                ReviewItem.id.desc(),
+            )
         )
         return list(result.unique().scalars().all())
 
@@ -125,8 +148,17 @@ class TrustService:
             raise TrustResourceNotFoundError("Review item not found")
         return item
 
+    async def _validate_transition(
+        self, current: str, target: str
+    ) -> None:
+        """Raise InvalidStatusTransitionError if the transition is not allowed."""
+        allowed = _ALLOWED_TRANSITIONS.get(current, frozenset())
+        if target not in allowed:
+            raise InvalidStatusTransitionError(current, target)
+
     async def approve_review_item(self, review_item_id: UUID, workspace_id: UUID) -> ReviewItem:
         item = await self.get_review_item_for_workspace(review_item_id, workspace_id)
+        await self._validate_transition(item.status, "approved")
         previous_status = item.status
         item.status = "approved"
         component = item.component
@@ -145,6 +177,7 @@ class TrustService:
 
     async def reject_review_item(self, review_item_id: UUID, workspace_id: UUID) -> ReviewItem:
         item = await self.get_review_item_for_workspace(review_item_id, workspace_id)
+        await self._validate_transition(item.status, "rejected")
         previous_status = item.status
         item.status = "rejected"
         component = item.component
@@ -162,6 +195,7 @@ class TrustService:
 
     async def supersede_review_item(self, review_item_id: UUID, workspace_id: UUID) -> ReviewItem:
         item = await self.get_review_item_for_workspace(review_item_id, workspace_id)
+        await self._validate_transition(item.status, "superseded")
         previous_status = item.status
         item.status = "superseded"
         component = item.component

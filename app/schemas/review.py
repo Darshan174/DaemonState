@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, computed_field
 
 
 ReviewStatus = Literal["needs_review", "approved", "rejected", "superseded"]
@@ -21,6 +21,8 @@ ReviewKind = Literal[
 
 
 class ReviewItemSourceDocumentRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     label: str
     connector_type: str
@@ -38,10 +40,12 @@ class ReviewDecisionRead(BaseModel):
 
 
 class ReviewItemRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
-    status: str
-    severity: str
-    kind: str
+    status: ReviewStatus
+    severity: ReviewSeverity
+    kind: ReviewKind
     title: str
     summary: str
     confidence: float | None
@@ -54,11 +58,19 @@ class ReviewItemRead(BaseModel):
     suggested_action: str | None
     decision_history: list[ReviewDecisionRead] = []
 
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def is_actionable(self) -> bool:
+        """True when the item needs operator attention (still in needs_review)."""
+        return self.status == "needs_review"
+
 
 class ComponentSourceRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     connector_type: str
-    external_id: str
+    external_id: str | None = None
     label: str
     author: str | None
     source_url: str | None
@@ -73,6 +85,8 @@ class ComponentSourceRead(BaseModel):
 
 
 class SourceDocumentComponentRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     model_id: UUID
     model_name: str
@@ -82,8 +96,35 @@ class SourceDocumentComponentRead(BaseModel):
     valid_from: datetime | None = None
     valid_to: datetime | None = None
     superseded_by: UUID | None = None
-    review_status: str | None
+    review_status: ReviewStatus | None
     review_item_id: UUID | None
     review_summary: str | None = None
     decision_history: list[ReviewDecisionRead] = []
     temporal_state: str | None
+    is_stale: bool = False
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def review_state(self) -> str:
+        """Structured review state for consumer visibility.
+
+        Returns one of:
+        - 'needs_review': component is under review, not yet safe for production use
+        - 'approved': component has been explicitly approved by an operator
+        - 'rejected': component has been explicitly rejected
+        - 'superseded': component has been replaced by a newer version
+        - 'unreviewed': no review item exists for this component
+        """
+        if self.review_status is None:
+            return "unreviewed"
+        return self.review_status
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def is_safe_for_production(self) -> bool:
+        """True when this component is approved and not stale/superseded."""
+        return (
+            self.review_status == "approved"
+            and not self.is_stale
+            and self.valid_to is None
+        )

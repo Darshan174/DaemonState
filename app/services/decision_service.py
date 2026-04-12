@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -21,6 +21,7 @@ from app.schemas.decision import (
     DecisionRead,
 )
 from app.services.truth_visibility import (
+    history_where,
     is_component_visible_in_current_truth,
     is_component_visible_in_history,
 )
@@ -53,7 +54,18 @@ class DecisionService:
 
         stmt = self._decision_stmt(workspace_id)
         if not include_historical:
+            # Push current-truth filtering into SQL
             stmt = stmt.where(Component.valid_to.is_(None))
+            stmt = stmt.where(
+                or_(
+                    Component.review_item.is_(None),
+                    ~Component.review_item.has(
+                        ReviewItem.status.in_(("rejected", "superseded"))
+                    ),
+                )
+            )
+        else:
+            stmt = history_where(stmt)
 
         rows = await self.session.scalars(
             stmt.order_by(
@@ -62,16 +74,7 @@ class DecisionService:
                 Component.id.desc(),
             )
         )
-        visible = [
-            component
-            for component in rows
-            if (
-                is_component_visible_in_history(component)
-                if include_historical
-                else is_component_visible_in_current_truth(component)
-            )
-        ]
-        return [self._serialize_decision(component) for component in visible[:limit]]
+        return [self._serialize_decision(component) for component in rows[:limit]]
 
     async def get_decision_history(
         self,
@@ -92,6 +95,8 @@ class DecisionService:
             Component.model_id == target.model_id,
             func.lower(Component.name) == target.name.lower(),
         )
+        # History view: include all versions except rejected
+        lineage_stmt = history_where(lineage_stmt)
         lineage_components = list(
             await self.session.scalars(
                 lineage_stmt.order_by(
@@ -100,22 +105,17 @@ class DecisionService:
                 )
             )
         )
-        visible_lineage = [
-            component
-            for component in lineage_components
-            if is_component_visible_in_history(component)
-        ]
         current = next(
             (
                 component
-                for component in visible_lineage
+                for component in lineage_components
                 if component.valid_to is None
                 and is_component_visible_in_current_truth(component)
             ),
             None,
         )
 
-        entries = visible_lineage
+        entries = lineage_components
         if cursor:
             try:
                 cursor_id = UUID(cursor)
@@ -134,7 +134,7 @@ class DecisionService:
             workspace_id=workspace_id,
             decision_name=target.name,
             current_decision_id=current.id if current is not None else None,
-            total_versions=len(visible_lineage),
+            total_versions=len(lineage_components),
             has_more=has_more,
             next_cursor=next_cursor,
             entries=[self._serialize_decision(component) for component in paged_entries],

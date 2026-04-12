@@ -15,24 +15,32 @@ const FILTERS = [
 export default function Changes() {
   const [searchParams, setSearchParams] = useSearchParams();
   const type = searchParams.get("type") ?? "all";
+  const sourceId = searchParams.get("source_id");
   const timelineQuery = useTimeline();
   const changes = timelineQuery.data?.items ?? [];
+
+  const sourceFilteredChanges = useMemo(
+    () => sourceId ? changes.filter(i => i.sourceDocumentId === sourceId) : changes,
+    [changes, sourceId]
+  );
+
+  const filteredChanges = useMemo(
+    () => sourceFilteredChanges.filter((item) => type === "all" || item.type === type),
+    [sourceFilteredChanges, type],
+  );
+
   const summaryCounts = useMemo(
-    () =>
-      changes.reduce(
+    () => {
+      return sourceFilteredChanges.reduce(
         (acc, item) => {
           acc.all += 1;
           if (item.type in acc) acc[item.type] += 1;
           return acc;
         },
         { all: 0, decision: 0, review: 0, source: 0, connector: 0 },
-      ),
-    [changes],
-  );
-
-  const filteredChanges = useMemo(
-    () => changes.filter((item) => type === "all" || item.type === type),
-    [changes, type],
+      );
+    },
+    [sourceFilteredChanges],
   );
 
   if (timelineQuery.isLoading || timelineQuery.isError) {
@@ -53,7 +61,7 @@ export default function Changes() {
 
   const usesMockData = timelineQuery.isMock;
   const generatedAt = timelineQuery.data?.generatedAt ?? null;
-  const totalEvents = timelineQuery.data?.totalEvents ?? changes.length;
+  const totalEvents = sourceId ? sourceFilteredChanges.length : (timelineQuery.data?.totalEvents ?? changes.length);
   const showLoadMore = !timelineQuery.isMock && timelineQuery.hasMore;
 
   return (
@@ -76,7 +84,7 @@ export default function Changes() {
           <Link to="/app/brief" className="font-medium text-brand-700 hover:text-brand-800">
             Open founder brief
           </Link>
-          <Link to="/app/decisions" className="font-medium text-brand-700 hover:text-brand-800">
+          <Link to={sourceId ? `/app/decisions?source_id=${sourceId}` : "/app/decisions"} className="font-medium text-brand-700 hover:text-brand-800">
             Open decision register
           </Link>
         </div>
@@ -300,16 +308,21 @@ function formatDateTime(value) {
 
 function ChangesEmptyState() {
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-6 text-center">
-      <p className="text-sm font-semibold text-gray-800">No changes are visible yet.</p>
-      <p className="mt-2 text-xs text-gray-500 max-w-2xl mx-auto">
+    <div className="rounded-[32px] border border-gray-200 bg-white p-12 text-center shadow-sm">
+      <div className="mx-auto w-16 h-16 bg-brand-50 text-brand-600 rounded-full flex items-center justify-center mb-6">
+        <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+      </div>
+      <h2 className="text-xl font-bold text-gray-900">No changes are visible yet.</h2>
+      <p className="mt-3 text-sm text-gray-500 max-w-lg mx-auto leading-relaxed">
         This timeline starts filling in once source documents, review transitions, and decisions begin flowing through the workspace.
       </p>
-      <div className="mt-4 flex flex-wrap items-center justify-center gap-4 text-xs">
-        <Link to="/app/connectors" className="font-medium text-brand-700 hover:text-brand-800">
-          Connect sources
+      <div className="mt-8 flex flex-wrap items-center justify-center gap-4">
+        <Link to="/app" className="px-6 py-2.5 bg-brand-600 text-white text-sm font-bold rounded-xl hover:bg-brand-500 transition-colors shadow-lg shadow-brand-500/20">
+          Add context
         </Link>
-        <Link to="/app/review" className="font-medium text-brand-700 hover:text-brand-800">
+        <Link to="/app/review" className="px-6 py-2.5 bg-gray-100 text-gray-700 text-sm font-bold rounded-xl hover:bg-gray-200 transition-colors">
           Open review
         </Link>
       </div>

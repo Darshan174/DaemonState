@@ -6,6 +6,68 @@ import app.cli.main as cli_main
 
 
 class TestCtxeCLI:
+    def test_demo_seeds_canonical_workspace_via_http_api(self, monkeypatch, capsys):
+        calls: list[tuple[str, str, dict | None]] = []
+
+        def fake_run_up(args):
+            return 0
+
+        def fake_api_request(base_url, method, path, *, payload=None, params=None, timeout=30):
+            calls.append((method, path, payload))
+            if method == "POST" and path == cli_main.SEED_DEMO_PATH:
+                assert payload == {}
+                return {
+                    "workspaceId": str(uuid4()),
+                    "workspaceName": cli_main.DEFAULT_DEMO_WORKSPACE_NAME,
+                    "status": "created",
+                    "seededCaseCount": 5,
+                }
+            raise AssertionError(f"Unexpected API call: {method} {path}")
+
+        monkeypatch.setattr(cli_main, "run_up", fake_run_up)
+        monkeypatch.setattr(cli_main, "api_request", fake_api_request)
+
+        exit_code = cli_main.main(["demo", "--base-url", "http://example.test"])
+
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert "Demo workspace ready: Acme Accuracy Demo" in captured.out
+        assert calls == [("POST", cli_main.SEED_DEMO_PATH, {})]
+
+    def test_demo_targets_existing_workspace_when_selected(self, monkeypatch, capsys):
+        workspace_id = str(uuid4())
+        calls: list[tuple[str, str, dict | None]] = []
+
+        def fake_run_up(args):
+            return 0
+
+        def fake_api_request(base_url, method, path, *, payload=None, params=None, timeout=30):
+            calls.append((method, path, payload))
+            if method == "GET" and path == cli_main.WORKSPACES_PATH:
+                return [{"id": workspace_id, "name": "Selected Workspace"}]
+            if method == "POST" and path == cli_main.SEED_DEMO_PATH:
+                assert payload == {"workspace_id": workspace_id}
+                return {
+                    "workspaceId": workspace_id,
+                    "workspaceName": "Selected Workspace",
+                    "status": "created",
+                    "seededCaseCount": 5,
+                }
+            raise AssertionError(f"Unexpected API call: {method} {path}")
+
+        monkeypatch.setattr(cli_main, "run_up", fake_run_up)
+        monkeypatch.setattr(cli_main, "api_request", fake_api_request)
+
+        exit_code = cli_main.main(
+            ["demo", "--workspace", "Selected Workspace", "--base-url", "http://example.test"],
+        )
+
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert "Demo workspace ready: Selected Workspace" in captured.out
+        assert calls[0][:2] == ("GET", cli_main.WORKSPACES_PATH)
+        assert calls[1][:2] == ("POST", cli_main.SEED_DEMO_PATH)
+
     def test_ingest_creates_default_workspace_and_posts_documents(
         self,
         monkeypatch,
@@ -19,11 +81,11 @@ class TestCtxeCLI:
 
         def fake_api_request(base_url, method, path, *, payload=None, params=None, timeout=30):
             calls.append((method, path, payload))
-            if method == "GET" and path == "/api/workspaces":
+            if method == "GET" and path == cli_main.WORKSPACES_PATH:
                 return []
-            if method == "POST" and path == "/api/workspaces":
+            if method == "POST" and path == cli_main.WORKSPACES_PATH:
                 return {"id": workspace_id, "name": "Local Workspace"}
-            if method == "POST" and path == "/api/imports":
+            if method == "POST" and path == cli_main.IMPORTS_PATH:
                 assert payload["workspace_id"] == workspace_id
                 assert len(payload["documents"]) == 1
                 assert payload["documents"][0]["content"] == "decision: ship Friday"
@@ -50,17 +112,17 @@ class TestCtxeCLI:
         assert exit_code == 0
         captured = capsys.readouterr()
         assert "Imported 1 documents into Local Workspace" in captured.out
-        assert calls[0][:2] == ("GET", "/api/workspaces")
-        assert calls[1][:2] == ("POST", "/api/workspaces")
-        assert calls[2][:2] == ("POST", "/api/imports")
+        assert calls[0][:2] == ("GET", cli_main.WORKSPACES_PATH)
+        assert calls[1][:2] == ("POST", cli_main.WORKSPACES_PATH)
+        assert calls[2][:2] == ("POST", cli_main.IMPORTS_PATH)
 
     def test_query_uses_single_workspace_when_unambiguous(self, monkeypatch, capsys):
         workspace_id = str(uuid4())
 
         def fake_api_request(base_url, method, path, *, payload=None, params=None, timeout=30):
-            if method == "GET" and path == "/api/workspaces":
+            if method == "GET" and path == cli_main.WORKSPACES_PATH:
                 return [{"id": workspace_id, "name": "Acme Demo"}]
-            if method == "POST" and path == "/api/query":
+            if method == "POST" and path == cli_main.QUERY_PATH:
                 assert payload["workspace_id"] == workspace_id
                 assert payload["question"] == "What changed?"
                 return {

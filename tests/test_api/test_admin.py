@@ -1,10 +1,35 @@
-"""Tests for workspace bootstrap and health endpoints."""
+"""Tests for workspace CRUD, health endpoints, and POST /api/seed-demo."""
 
 from __future__ import annotations
 
 from uuid import uuid4
 
+import pytest
+from httpx import ASGITransport, AsyncClient
+
 import app.main as main_module
+from app.api import admin as admin_api
+from app.database import get_db_session
+from app.evals.demo_seed import SeedResult, SeedWorkspaceNotFoundError
+from app.main import app
+
+
+# ── Fixtures ─────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+async def admin_client():
+    """Lightweight client without DB session override — for monkeypatch tests."""
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as ac:
+        yield ac
+
+    app.dependency_overrides.clear()
+
+
+# ── Workspace CRUD ───────────────────────────────────────────────────────
 
 
 class TestWorkspaceEndpoints:
@@ -53,6 +78,9 @@ class TestWorkspaceEndpoints:
         resp = await client.get(f"/api/workspaces/{uuid4()}")
         assert resp.status_code == 404
         assert resp.json()["detail"] == "Workspace not found"
+
+
+# ── Health ───────────────────────────────────────────────────────────────
 
 
 class DummyConnection:
@@ -145,3 +173,57 @@ class TestHealthEndpoints:
         assert detail["status"] == "degraded"
         assert detail["checks"] == {"database": "ok", "redis": "error"}
         assert "redis" in detail["errors"]
+
+
+# ── Seed Demo ────────────────────────────────────────────────────────────
+
+
+class DummySession:
+    pass
+
+
+class TestSeedDemoAPI:
+    async def test_seed_demo_targets_selected_workspace(self, admin_client, monkeypatch):
+        workspace_id = uuid4()
+
+        async def fake_seed_demo_into_workspace(session, *, workspace_id):
+            assert isinstance(session, DummySession)
+            return SeedResult(
+                workspace_id=workspace_id,
+                workspace_name="Selected Workspace",
+                status="created",
+                seeded_case_count=5,
+            )
+
+        async def fail_if_called(*args, **kwargs):
+            raise AssertionError("Canonical seed path should not be used when workspace_id is provided")
+
+        app.dependency_overrides[get_db_session] = lambda: DummySession()
+        monkeypatch.setattr(admin_api, "seed_demo_into_workspace", fake_seed_demo_into_workspace)
+        monkeypatch.setattr(admin_api, "seed_demo_workspace", fail_if_called)
+
+        response = await admin_client.post(
+            "/api/seed-demo",
+            json={"workspace_id": str(workspace_id)},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["workspaceId"] == str(workspace_id)
+        assert body["workspaceName"] == "Selected Workspace"
+        assert body["status"] == "created"
+
+    async def test_seed_demo_returns_404_for_missing_workspace(self, admin_client, monkeypatch):
+        async def fake_seed_demo_into_workspace(session, *, workspace_id):
+            raise SeedWorkspaceNotFoundError("Workspace not found")
+
+        app.dependency_overrides[get_db_session] = lambda: DummySession()
+        monkeypatch.setattr(admin_api, "seed_demo_into_workspace", fake_seed_demo_into_workspace)
+
+        response = await admin_client.post(
+            "/api/seed-demo",
+            json={"workspace_id": str(uuid4())},
+        )
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Workspace not found"

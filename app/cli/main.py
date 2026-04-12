@@ -16,6 +16,10 @@ from app.importers.generic import GenericFileScanner
 DEFAULT_BASE_URL = "http://localhost:8000"
 DEFAULT_LOCAL_WORKSPACE_NAME = "Local Workspace"
 DEFAULT_DEMO_WORKSPACE_NAME = "Acme Accuracy Demo"
+WORKSPACES_PATH = "/api/workspaces"
+SEED_DEMO_PATH = "/api/seed-demo"
+IMPORTS_PATH = "/api/imports"
+QUERY_PATH = "/api/query"
 
 
 class CLIError(RuntimeError):
@@ -48,7 +52,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     demo_parser = subparsers.add_parser(
         "demo",
-        help="Boot the local Docker stack, apply migrations, and seed the demo workspace.",
+        help="Boot the local Docker stack, apply migrations, and seed demo data via the HTTP API.",
     )
     demo_parser.add_argument(
         "--base-url",
@@ -60,6 +64,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=90,
         help="Seconds to wait for /health/ready after boot (default: 90)",
+    )
+    demo_parser.add_argument(
+        "--workspace",
+        help=(
+            "Existing workspace name or UUID to seed. If omitted, ctxe seeds the canonical "
+            f"demo workspace ({DEFAULT_DEMO_WORKSPACE_NAME})."
+        ),
+    )
+    demo_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print the raw JSON response.",
     )
     demo_parser.set_defaults(func=run_demo)
 
@@ -153,26 +170,31 @@ def run_up(args: argparse.Namespace) -> int:
 def run_demo(args: argparse.Namespace) -> int:
     run_up(args)
 
-    project_root = find_project_root()
-    compose = resolve_compose_command(project_root)
-    seed_output = run_subprocess(
-        [
-            *compose,
-            "exec",
-            "-T",
-            "api",
-            "python",
-            "scripts/seed_demo.py",
-            "--json",
-            "--replace-existing",
-        ],
-        cwd=project_root,
-        capture_output=True,
+    workspace_id: str | None = None
+    if args.workspace:
+        workspace = resolve_workspace(
+            args.base_url,
+            selector=args.workspace,
+            create_if_missing=False,
+        )
+        workspace_id = workspace["id"]
+
+    response = api_request(
+        args.base_url,
+        "POST",
+        SEED_DEMO_PATH,
+        payload={"workspace_id": workspace_id} if workspace_id else {},
+        timeout=60,
     )
-    payload = json.loads(seed_output.stdout or "{}")
-    workspace_name = payload.get("workspace_name", DEFAULT_DEMO_WORKSPACE_NAME)
-    workspace_id = payload.get("workspace_id", "unknown")
-    print(f"Demo workspace ready: {workspace_name} ({workspace_id})")
+
+    if args.json_output:
+        print_json(response)
+        return 0
+
+    workspace_name = response.get("workspaceName", DEFAULT_DEMO_WORKSPACE_NAME)
+    resolved_workspace_id = response.get("workspaceId", "unknown")
+    status = response.get("status", "unknown")
+    print(f"Demo workspace ready: {workspace_name} ({resolved_workspace_id}) [{status}]")
     return 0
 
 
@@ -195,7 +217,7 @@ def run_ingest(args: argparse.Namespace) -> int:
     response = api_request(
         args.base_url,
         "POST",
-        "/api/imports",
+        IMPORTS_PATH,
         payload={
             "workspace_id": workspace["id"],
             "documents": documents,
@@ -247,7 +269,7 @@ def run_query(args: argparse.Namespace) -> int:
     response = api_request(
         args.base_url,
         "POST",
-        "/api/query",
+        QUERY_PATH,
         payload=payload,
         timeout=60,
     )
@@ -273,7 +295,7 @@ def resolve_workspace(
     selector: str | None,
     create_if_missing: bool,
 ) -> dict[str, Any]:
-    workspaces = api_request(base_url, "GET", "/api/workspaces")
+    workspaces = api_request(base_url, "GET", WORKSPACES_PATH)
 
     if selector:
         workspace = resolve_workspace_selector(base_url, workspaces, selector)
@@ -313,7 +335,7 @@ def resolve_workspace_selector(
     selector: str,
 ) -> dict[str, Any] | None:
     if looks_like_uuid(selector):
-        return api_request(base_url, "GET", f"/api/workspaces/{selector}")
+        return api_request(base_url, "GET", f"{WORKSPACES_PATH}/{selector}")
 
     normalized = selector.strip().lower()
     matches = [workspace for workspace in workspaces if workspace["name"].strip().lower() == normalized]
@@ -326,7 +348,7 @@ def create_workspace(base_url: str, name: str) -> dict[str, Any]:
     return api_request(
         base_url,
         "POST",
-        "/api/workspaces",
+        WORKSPACES_PATH,
         payload={
             "name": name,
             "description": "Workspace created by the ctxe CLI.",

@@ -7,7 +7,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -33,6 +33,7 @@ from app.schemas.briefing import (
 from app.services.decision_service import DecisionService
 from app.services.query_service import QueryService
 from app.services.truth_visibility import (
+    history_where,
     is_component_visible_in_current_truth,
     is_component_visible_in_history,
 )
@@ -494,21 +495,23 @@ class BriefingService:
             .where(KnowledgeModel.workspace_id == workspace_id)
             .order_by(Component.valid_from.desc(), Component.id.desc())
         )
+
+        # Push truth filtering into SQL — no Python-side double-filter needed.
         if current_only:
             stmt = stmt.where(Component.valid_to.is_(None))
+            stmt = stmt.where(
+                or_(
+                    Component.review_item.is_(None),
+                    ~Component.review_item.has(
+                        ReviewItem.status.in_(("rejected", "superseded"))
+                    ),
+                )
+            )
+        else:
+            stmt = history_where(stmt)
+
         rows = await self.session.scalars(stmt)
-        components = list(rows)
-        if current_only:
-            return [
-                component
-                for component in components
-                if is_component_visible_in_current_truth(component)
-            ]
-        return [
-            component
-            for component in components
-            if is_component_visible_in_history(component)
-        ]
+        return list(rows)
 
     @staticmethod
     def _serialize_fact(component: Component) -> FounderBriefFactRead:

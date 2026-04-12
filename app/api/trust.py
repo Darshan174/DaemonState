@@ -20,6 +20,7 @@ from app.schemas.review import (
 )
 from app.services.trust_service import (
     DispatchError,
+    InvalidStatusTransitionError,
     JobInProgressError,
     TrustResourceNotFoundError,
     TrustService,
@@ -128,6 +129,11 @@ async def approve_review_item(
             status_code=http_status.HTTP_404_NOT_FOUND,
             detail="Review item not found",
         )
+    except InvalidStatusTransitionError as exc:
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        )
     return _serialize_review_item(item)
 
 
@@ -149,6 +155,11 @@ async def reject_review_item(
             status_code=http_status.HTTP_404_NOT_FOUND,
             detail="Review item not found",
         )
+    except InvalidStatusTransitionError as exc:
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        )
     return _serialize_review_item(item)
 
 
@@ -169,6 +180,11 @@ async def supersede_review_item(
         raise HTTPException(
             status_code=http_status.HTTP_404_NOT_FOUND,
             detail="Review item not found",
+        )
+    except InvalidStatusTransitionError as exc:
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail=str(exc),
         )
     return _serialize_review_item(item)
 
@@ -264,6 +280,7 @@ async def list_source_document_components(
                 for decision in (review_item.decision_history if review_item is not None else [])
             ],
             temporal_state=component.temporal_state,
+            is_stale=component.is_stale,
         )
         for component, model, review_item in rows
     ]

@@ -325,6 +325,18 @@ export default function Sources() {
                     >
                       Explore graph
                     </Link>
+                    <Link
+                      to={`/app/decisions?source_id=${selectedDocument.id}`}
+                      className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+                    >
+                      Decisions
+                    </Link>
+                    <Link
+                      to={`/app/changes?source_id=${selectedDocument.id}`}
+                      className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+                    >
+                      Changes
+                    </Link>
                     {!isMock && (
                       <button
                         type="button"
@@ -631,20 +643,25 @@ export default function Sources() {
 
 function SourceEmptyState({ filtersActive }) {
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-6 text-center">
-      <p className="text-sm font-semibold text-gray-800">
+    <div className="rounded-[32px] border border-gray-200 bg-white p-12 text-center shadow-sm">
+      <div className="mx-auto w-16 h-16 bg-brand-50 text-brand-600 rounded-full flex items-center justify-center mb-6">
+        <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+        </svg>
+      </div>
+      <h2 className="text-xl font-bold text-gray-900">
         {filtersActive ? "No source documents match the current filters." : "No source documents yet."}
-      </p>
-      <p className="mt-2 text-xs text-gray-500 max-w-2xl mx-auto">
+      </h2>
+      <p className="mt-3 text-sm text-gray-500 max-w-lg mx-auto leading-relaxed">
         {filtersActive
           ? "Widen the current filters or sync another source to bring more raw context into the workspace."
-          : "For a self-hosted install, connect Slack, Notion, or Zoom first, run the first sync, then come back here to inspect the raw documents before extraction."}
+          : "Connect Slack, Notion, or Zoom first, run the first sync, then come back here to inspect the raw documents before extraction."}
       </p>
-      <div className="mt-4 flex flex-wrap items-center justify-center gap-4 text-xs">
-        <Link to="/app/connectors" className="font-medium text-brand-700 hover:text-brand-800">
-          Open connectors
+      <div className="mt-8 flex flex-wrap items-center justify-center gap-4">
+        <Link to="/app" className="px-6 py-2.5 bg-brand-600 text-white text-sm font-bold rounded-xl hover:bg-brand-500 transition-colors shadow-lg shadow-brand-500/20">
+          Add context
         </Link>
-        <Link to="/app/review" className="font-medium text-brand-700 hover:text-brand-800">
+        <Link to="/app/review" className="px-6 py-2.5 bg-gray-100 text-gray-700 text-sm font-bold rounded-xl hover:bg-gray-200 transition-colors">
           Open review queue
         </Link>
       </div>

@@ -32,6 +32,15 @@ import {
  * Enable with: VITE_USE_MOCKS=true in .env or environment.
  */
 const MOCKS_ENABLED = import.meta.env.VITE_USE_MOCKS === "true";
+const FOUNDER_WORKFLOW_API = Object.freeze({
+  workspaces: "/workspaces",
+  seedDemo: "/seed-demo",
+  imports: "/imports",
+  founderBrief: "/founder-brief",
+  decisions: "/decisions",
+  sourceDocuments: "/source-documents",
+  query: "/query",
+});
 
 /**
  * Wrap an API call so it falls back to mock data on network failure,
@@ -123,6 +132,20 @@ const CONNECTOR_CATALOG = {
   },
 };
 
+const BROWSER_IMPORT_EXTENSIONS = new Set([
+  "csv",
+  "html",
+  "htm",
+  "json",
+  "log",
+  "md",
+  "markdown",
+  "txt",
+  "xml",
+  "yaml",
+  "yml",
+]);
+
 /**
  * Resolve the workspace ID to use for API calls.
  *
@@ -133,7 +156,7 @@ const CONNECTOR_CATALOG = {
  * Returns null if no workspaces exist.
  */
 async function getWorkspaceId() {
-  const workspaces = await api.get("/workspaces");
+  const workspaces = await api.get(FOUNDER_WORKFLOW_API.workspaces);
   if (workspaces.length === 0) return null;
 
   const stored = localStorage.getItem(LS_KEY);
@@ -142,12 +165,60 @@ async function getWorkspaceId() {
   return workspaces[0].id;
 }
 
+function isBrowserFile(value) {
+  return value && typeof value === "object" && typeof value.name === "string" && typeof value.text === "function";
+}
+
+function normalizeUploadInput(input) {
+  if (Array.isArray(input)) return { files: input };
+  if (isBrowserFile(input)) return { files: [input] };
+  if (input && typeof input === "object") return input;
+  return { files: [] };
+}
+
+function getFileExtension(fileName) {
+  const parts = fileName.split(".");
+  return parts.length > 1 ? parts.at(-1).toLowerCase() : "";
+}
+
+async function buildBrowserImportDocument(file) {
+  const extension = getFileExtension(file.name);
+  const relativePath = file.webkitRelativePath || file.name;
+  const supportedByMime = file.type ? file.type.startsWith("text/") : false;
+
+  if (!supportedByMime && !BROWSER_IMPORT_EXTENSIONS.has(extension)) {
+    throw new Error(`Unsupported file type: ${file.name}. Use plain-text files like MD, TXT, JSON, CSV, or HTML.`);
+  }
+
+  const content = await file.text();
+  if (!content.trim()) {
+    throw new Error(`File is empty: ${file.name}`);
+  }
+
+  return {
+    external_id: `browser-upload:${relativePath}`,
+    content,
+    created_at_source:
+      typeof file.lastModified === "number" && file.lastModified > 0
+        ? new Date(file.lastModified).toISOString()
+        : undefined,
+    metadata: {
+      title: file.name,
+      file_name: file.name,
+      file_path: relativePath,
+      file_extension: extension,
+      mime_type: file.type || undefined,
+      source_type: "browser_upload",
+    },
+  };
+}
+
 // ── Workspaces ────────────────────────────────────────────────
 
 export function useWorkspaces() {
   return useQuery({
     queryKey: ["workspaces"],
-    queryFn: () => api.get("/workspaces"),
+    queryFn: () => api.get(FOUNDER_WORKFLOW_API.workspaces),
     retry: 1,
   });
 }
@@ -155,7 +226,7 @@ export function useWorkspaces() {
 export function useCreateWorkspace() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body) => api.post("/workspaces", body),
+    mutationFn: (body) => api.post(FOUNDER_WORKFLOW_API.workspaces, body),
     onSuccess: (newWorkspace) => {
       // Auto-select the newly created workspace
       if (newWorkspace?.id) {
@@ -184,7 +255,7 @@ export function useDashboard() {
       const [models, connectors, sources] = await Promise.all([
         api.get(`/models?workspace_id=${wsId}`),
         api.get(`/connectors?workspace_id=${wsId}`),
-        api.get(`/connectors/source-documents?workspace_id=${wsId}&limit=1`),
+        api.get(`${FOUNDER_WORKFLOW_API.sourceDocuments}?workspace_id=${wsId}&limit=1`),
       ]);
 
       // Fetch each model's detail to get actual component counts
@@ -362,7 +433,7 @@ export function useSourceDocuments(filters = {}) {
       params.set("limit", "25");
 
       try {
-        const data = await api.get(`/source-documents?${params.toString()}`);
+        const data = await api.get(`${FOUNDER_WORKFLOW_API.sourceDocuments}?${params.toString()}`);
         const items = applySourceSearchFilter(normalizeSourceDocuments(data.items ?? []), search);
         return {
           items,
@@ -425,7 +496,9 @@ export function useSourceDocument(documentId) {
       if (!wsId || !documentId) return null;
 
       try {
-        const data = await api.get(`/source-documents/${documentId}?workspace_id=${wsId}`);
+        const data = await api.get(
+          `${FOUNDER_WORKFLOW_API.sourceDocuments}/${documentId}?workspace_id=${wsId}`,
+        );
         return normalizeSourceDocuments([data])[0] ?? null;
       } catch (err) {
         if (err.status && ![404, 422, 500, 501, 502, 503].includes(err.status)) {
@@ -448,7 +521,9 @@ export function useSourceDocumentComponents(documentId) {
       if (!wsId || !documentId) return [];
 
       try {
-        const data = await api.get(`/source-documents/${documentId}/components?workspace_id=${wsId}`);
+        const data = await api.get(
+          `${FOUNDER_WORKFLOW_API.sourceDocuments}/${documentId}/components?workspace_id=${wsId}`,
+        );
         return normalizeSourceComponentRefs(data);
       } catch (err) {
         if (err.status && ![404, 422, 500, 501, 502, 503].includes(err.status)) {
@@ -685,7 +760,7 @@ export function useFounderBrief(lookbackDays = 7) {
       });
 
       try {
-        const data = await api.get(`/founder-brief?${params.toString()}`);
+        const data = await api.get(`${FOUNDER_WORKFLOW_API.founderBrief}?${params.toString()}`);
         return { brief: normalizeFounderBrief(data), isMock: false };
       } catch (err) {
         if (err.status && ![404, 500, 501, 502, 503].includes(err.status)) {
@@ -797,7 +872,7 @@ export function useDecisionRegister() {
           include_historical: "true",
           limit: "100",
         });
-        const data = await api.get(`/decisions?${params.toString()}`);
+        const data = await api.get(`${FOUNDER_WORKFLOW_API.decisions}?${params.toString()}`);
         return { items: normalizeDecisionRegisterItems(data), isMock: false };
       } catch (err) {
         if (err.status && ![404, 500, 501, 502, 503].includes(err.status)) {
@@ -835,7 +910,7 @@ export function useDecisionHistory(componentId, { enabled = true } = {}) {
 
       try {
         const data = await api.get(
-          `/decisions/${componentId}/history?workspace_id=${wsId}`,
+          `${FOUNDER_WORKFLOW_API.decisions}/${componentId}/history?workspace_id=${wsId}`,
         );
         return normalizeDecisionHistoryPayload(data);
       } catch (err) {
@@ -859,7 +934,7 @@ export function useLaunchGuardContext() {
         const [models, reviewData, sourceData] = await Promise.all([
           api.get(`/models?workspace_id=${wsId}`),
           api.get(`/review-items?workspace_id=${wsId}`),
-          api.get(`/source-documents?workspace_id=${wsId}&processed=true&limit=100`),
+          api.get(`${FOUNDER_WORKFLOW_API.sourceDocuments}?workspace_id=${wsId}&processed=true&limit=100`),
         ]);
 
         const modelDetails = await Promise.all(
@@ -874,7 +949,7 @@ export function useLaunchGuardContext() {
           decisionDocuments.map(async (doc) => {
             try {
               const linked = await api.get(
-                `/source-documents/${doc.id}/components?workspace_id=${wsId}`,
+                `${FOUNDER_WORKFLOW_API.sourceDocuments}/${doc.id}/components?workspace_id=${wsId}`,
               );
               return [doc.id, normalizeSourceComponentRefs(linked)];
             } catch (err) {
@@ -1145,9 +1220,8 @@ const MOCK_QUERY_RESPONSE = mockQueryExamples;
 /**
  * Submit a natural-language question to the Context API.
  *
- * Fully mock-backed for now — the backend query endpoint does not exist yet.
- * When the backend is ready, replace the mock with:
- *   api.post("/query", { question, workspace_id })
+ * Stable founder workflow contract: POST /api/query with explicit workspace_id.
+ * Falls back to mock data only on network failure when VITE_USE_MOCKS=true.
  */
 export function useContextQuery() {
   return useMutation({
@@ -1162,7 +1236,7 @@ export function useContextQuery() {
             };
       try {
         const wsId = await getWorkspaceId();
-        return await api.post("/query", {
+        return await api.post(FOUNDER_WORKFLOW_API.query, {
           question: request.question,
           workspace_id: wsId,
           ...(request.maxAgeDays != null ? { max_age_days: request.maxAgeDays } : {}),
@@ -1333,7 +1407,10 @@ export function useReprocessSourceDocument() {
   return useMutation({
     mutationFn: async (documentId) => {
       const wsId = await getWorkspaceId();
-      const job = await api.post(`/source-documents/${documentId}/reprocess?workspace_id=${wsId}`, {});
+      const job = await api.post(
+        `${FOUNDER_WORKFLOW_API.sourceDocuments}/${documentId}/reprocess?workspace_id=${wsId}`,
+        {},
+      );
       return normalizeSyncJob(job);
     },
     onSuccess: (job, documentId) => {
@@ -1407,14 +1484,19 @@ export function useConnectGitHub() {
 export function useSeedDemoData() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async () => {
-      // This endpoint triggers a backend task to seed the current workspace with demo data
-      return api.post("/seed-demo", {});
+    mutationFn: async (input) => {
+      const payload = input ?? {};
+      const workspaceId = payload.workspaceId ?? payload.workspace_id ?? await getWorkspaceId();
+      return api.post(
+        FOUNDER_WORKFLOW_API.seedDemo,
+        workspaceId ? { workspace_id: workspaceId } : {},
+      );
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["workspaces"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
       qc.invalidateQueries({ queryKey: ["connectors"] });
+      qc.invalidateQueries({ queryKey: ["connector-processing-summary"] });
       qc.invalidateQueries({ queryKey: ["source-documents"] });
     },
   });
@@ -1423,33 +1505,34 @@ export function useSeedDemoData() {
 export function useUploadSourceFile() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (file) => {
-      const wsId = await getWorkspaceId();
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("workspace_id", wsId);
-
-      // We use a separate fetch call here because the standard api client 
-      // is configured for JSON and not multipart/form-data
-      const response = await fetch(`/api/source-documents/upload`, {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!response.ok) {
-        let detail;
-        try {
-          const body = await response.json();
-          detail = body.detail ?? body;
-        } catch {
-          detail = response.statusText;
-        }
-        throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    mutationFn: async (input) => {
+      const payload = normalizeUploadInput(input);
+      const files = Array.isArray(payload.files) ? payload.files : [];
+      if (files.length === 0) {
+        throw new Error("Select at least one file to import.");
       }
 
-      return response.json();
+      const workspaceId = payload.workspaceId ?? payload.workspace_id ?? await getWorkspaceId();
+      if (!workspaceId) {
+        throw new Error("Workspace not found.");
+      }
+
+      const documents = await Promise.all(files.map((file) => buildBrowserImportDocument(file)));
+      const externalIds = new Set();
+      for (const document of documents) {
+        if (externalIds.has(document.external_id)) {
+          throw new Error("Selected files must have unique names or paths.");
+        }
+        externalIds.add(document.external_id);
+      }
+
+      return api.post(FOUNDER_WORKFLOW_API.imports, {
+        workspace_id: workspaceId,
+        documents,
+      });
     },
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["connectors"] });
       qc.invalidateQueries({ queryKey: ["source-documents"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
       qc.invalidateQueries({ queryKey: ["connector-processing-summary"] });

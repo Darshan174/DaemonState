@@ -109,7 +109,9 @@ bash scripts/smoke.sh
 4. Wait for `/health/ready` to report both database and Redis as ok.
 5. Run `alembic upgrade head`, then seed the deterministic demo workspace by calling `POST /api/seed-demo` — the same route the frontend "Run Demo Workspace" flow hits, which makes the HTTP surface part of the bootstrap critical path.
 
-`scripts/smoke.sh` then verifies boot, health, seed, and a source-backed query end-to-end — use it as the one-shot credibility check after every deploy.
+`scripts/smoke.sh` then verifies boot, health, seed, query, graph, brief, decisions, and sources end-to-end — use it as the one-shot credibility check after every deploy.
+
+For the full self-hosting walkthrough (TLS, port security, backups, troubleshooting), see [docs/self-hosting.md](./docs/self-hosting.md).
 
 Once the API is up:
 
@@ -131,11 +133,41 @@ openssl rand -base64 32
 
 docker compose up -d --build
 docker compose exec api alembic upgrade head
-docker compose exec api python scripts/seed_demo.py --json
+curl -X POST http://localhost:8000/api/seed-demo \
+  -H 'Content-Type: application/json' \
+  -d '{}'
 curl http://localhost:8000/health/ready
 ```
 
 Leave `LITELLM_API_KEY`, `EXTRACTION_MODEL`, and `EMBEDDING_MODEL` blank for a fully offline OSS run using the local deterministic embedder and rule-based extraction fallback.
+
+## Developer CLI
+
+The stable developer entrypoint is the `ctxe` CLI.
+
+Install it once in a local virtualenv:
+
+```bash
+pip install -e ".[dev]"
+```
+
+Core commands:
+
+```bash
+ctxe up
+ctxe demo
+ctxe ingest ./notes
+ctxe query "What changed?"
+```
+
+Contract and semantics:
+
+- `ctxe up` boots Docker, applies migrations, and waits for `/health/ready`. It does not create or seed a workspace.
+- `ctxe demo` uses `POST /api/seed-demo`, the same HTTP contract used by `scripts/bootstrap.sh`, `scripts/smoke.sh`, and the frontend demo flow.
+- `ctxe demo --workspace NAME_OR_UUID` seeds an existing workspace through the same `POST /api/seed-demo` contract with `workspace_id` set explicitly.
+- `ctxe ingest <path>` uses `POST /api/imports`. The API contract always requires `workspace_id`; the CLI resolves it from `--workspace`, a single existing workspace, or creates `Local Workspace` when none exists.
+- `ctxe query "..."` uses `POST /api/query` and requires an explicit or unambiguous workspace.
+- Add `--json` to `ctxe demo`, `ctxe ingest`, or `ctxe query` to print the raw API payload.
 
 ## Smoke Verification
 
@@ -147,16 +179,61 @@ bash scripts/smoke.sh
 
 It proves:
 
-| Step    | What it checks                                                                     |
-| ------- | ---------------------------------------------------------------------------------- |
-| BOOT    | `postgres`, `redis`, and `api` are running under docker compose                    |
-| HEALTH  | `/health` returns `ok` and `/health/ready` reports db + redis ok                   |
-| SEED    | `POST /api/seed-demo` creates the canonical demo workspace with a full knowledge   |
-|         | model + provenance graph, **and is idempotent** — the script calls it twice and    |
-|         | asserts the second call returns the same `workspaceId` with `status="existing"`    |
-| QUERY   | `POST /api/query` against the seeded workspace returns a source-backed answer      |
+| Step      | What it checks                                                                     |
+| --------- | ---------------------------------------------------------------------------------- |
+| BOOT      | `postgres`, `redis`, and `api` are running under docker compose                    |
+| HEALTH    | `/health` returns `ok` and `/health/ready` reports db + redis ok                   |
+| SEED      | `POST /api/seed-demo` creates the canonical demo workspace with a full knowledge   |
+|           | model + provenance graph, **and is idempotent** — the script calls it twice and    |
+|           | asserts the second call returns the same `workspaceId` with `status="existing"`    |
+| QUERY     | `POST /api/query` against the seeded workspace returns a source-backed answer      |
+| GRAPH     | `GET /api/graph` returns the workspace knowledge graph with 5+ nodes               |
+| MODELS    | `GET /api/models` lists knowledge models; model-scoped graph works                 |
+| BRIEF     | `GET /api/founder-brief` returns a structured brief for the workspace              |
+| DECISIONS | `GET /api/decisions` returns the decision register (non-empty)                     |
+| SOURCES   | `GET /api/source-documents` returns source documents with provenance               |
 
 Exit code is `0` on full pass, non-zero with a descriptive failure otherwise — safe to wire into CI or a post-deploy hook. Override `BASE_URL`, `SMOKE_QUESTION`, or `SMOKE_EXPECT` via env if needed.
+
+## Founder Workflow Contract
+
+These are the stable routes that founder-facing workflows should rely on:
+
+| Workflow | Stable API contract | Frontend surface | CLI / smoke surface | Notes |
+| ------- | ------------------- | ---------------- | ------------------- | ----- |
+| Workspace bootstrap | `GET /api/workspaces`, `POST /api/workspaces` | `useWorkspaces`, `useCreateWorkspace` | `ctxe ingest`, `ctxe query` resolve workspaces before acting | Workspace selection is always explicit at the API layer. |
+| Demo seed | `POST /api/seed-demo` | `useSeedDemoData` | `ctxe demo`, `scripts/bootstrap.sh`, `scripts/smoke.sh` | Omit `workspace_id` to seed the canonical `Acme Accuracy Demo`; include `workspace_id` to seed a specific existing workspace. |
+| Local import | `POST /api/imports` | `useUploadSourceFile` | `ctxe ingest <path>` | This is the stable import path. The API contract requires `workspace_id` plus normalized `documents[]`. |
+| Founder Brief | `GET /api/founder-brief` | `useFounderBrief` | direct API / browser | Reads structured facts + provenance for founder summary. |
+| Query | `POST /api/query` | `useContextQuery` | `ctxe query "..."`, `scripts/smoke.sh` | Query answers are source-backed and workspace-scoped. |
+| Decisions | `GET /api/decisions` | `useDecisionRegister` | direct API / browser | Decision history drilldown remains under `/api/decisions/{component_id}/history`. |
+| Sources | `GET /api/source-documents` | `useSourceDocuments` | direct API / browser | Source visibility should reflect the same imported or seeded workspace. |
+
+Compatibility-only routes may still exist for older admin flows, but founder workflows should not depend on `POST /api/source-documents/upload` or `/api/imports/trigger` as their primary contract.
+
+## OSS v1 Release Checklist
+
+Run this checklist for every release candidate:
+
+1. Bootstrap the stack with `ctxe up` or `bash scripts/bootstrap.sh`, then confirm `GET /health/ready` returns `status=ready` with database and Redis both `ok`.
+2. Run exactly one ingestion path:
+   Seed path: `ctxe demo` or `POST /api/seed-demo`.
+   Import path: `ctxe ingest <path>` or `POST /api/imports`.
+3. Confirm the workspace contract is explicit:
+   `ctxe demo --workspace NAME_OR_UUID` seeds the selected workspace.
+   `ctxe ingest --workspace NAME_OR_UUID` imports into the selected workspace.
+   `ctxe query --workspace NAME_OR_UUID "..."` queries that same workspace.
+4. Verify Founder Brief loads from the real backend with `GET /api/founder-brief?workspace_id=...&lookback_days=7` or `/app/brief`.
+5. Verify Query returns an answer plus provenance with `ctxe query "What changed?" --workspace ...` or `POST /api/query`.
+6. Verify Decisions load with `GET /api/decisions?workspace_id=...&include_historical=true&limit=100` or `/app/decisions`.
+7. Verify Sources load with `GET /api/source-documents?workspace_id=...&limit=25` or `/app/sources`.
+8. Run the verification matrix:
+   `bash scripts/smoke.sh`
+   `python3 -m pytest tests/test_cli/test_main.py tests/test_api/test_imports.py tests/test_api/test_admin.py::TestSeedDemoAPI tests/test_api/test_connectors_upload.py -q`
+   `cd frontend && npm test`
+   `cd frontend && npm run build`
+
+If Docker or Postgres access is sandbox-restricted, treat DB-backed backend suites and the live smoke script as environment-limited rather than product regressions, but keep the contract tests, frontend tests, and build green.
 
 ## Resource Requirements
 
@@ -233,8 +310,15 @@ If you already have PostgreSQL and Redis available locally:
 ```bash
 pip install -e ".[dev]"
 alembic upgrade head
-python scripts/seed_demo.py --json --replace-existing
 uvicorn app.main:app --reload
+```
+
+In a second terminal, seed the demo workspace through the public HTTP contract:
+
+```bash
+curl -X POST http://localhost:8000/api/seed-demo \
+  -H 'Content-Type: application/json' \
+  -d '{}'
 ```
 
 Start the worker separately:
@@ -335,16 +419,22 @@ npm run build
 
 ## API Surface
 
-Main API groups:
+Stable founder-workflow routes:
+
+- `/api/workspaces`
+- `/api/seed-demo`
+- `/api/imports`
+- `/api/founder-brief`
+- `/api/query`
+- `/api/decisions`
+- `/api/source-documents`
+
+Broader operator / system API groups:
 
 - `/api/connectors`
-- `/api/source-documents`
 - `/api/review-items`
-- `/api/decisions`
-- `/api/founder-brief`
 - `/api/timeline`
 - `/api/launch-guard`
-- `/api/query`
 - `/api/evals`
 
 The router lives in [app/api/router.py](./app/api/router.py).

@@ -106,6 +106,8 @@ async def trigger_import(
             run_ingestion=body.run_ingestion,
             options=body.options,
         )
+    except ImportWorkspaceNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ImportServiceError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -220,6 +222,11 @@ async def list_import_documents(
         .select_from(SourceDocument)
         .where(SourceDocument.connector_id == connector_id)
     )
+    if processed is not None:
+        if processed:
+            count_query = count_query.where(SourceDocument.processed_at.isnot(None))
+        else:
+            count_query = count_query.where(SourceDocument.processed_at.is_(None))
     total = await svc.session.scalar(count_query) or 0
 
     return ImportSourceDocumentList(
