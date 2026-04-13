@@ -207,9 +207,5 @@ describe("FounderBrief", () => {
       "href",
       "/app/decisions",
     );
-    expect(screen.getByRole("link", { name: "Open accuracy dashboard" })).toHaveAttribute(
-      "href",
-      "/app/accuracy",
-    );
   });
 });

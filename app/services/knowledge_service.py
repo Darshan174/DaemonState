@@ -9,7 +9,6 @@ from sqlalchemy.orm import selectinload
 
 from app.models.knowledge import (
     Component,
-    ComponentSource,
     KnowledgeModel,
     Relationship,
     RelationshipType,
@@ -22,7 +21,6 @@ from app.schemas.knowledge import (
     GraphRelationshipRead,
     GraphResponse,
 )
-from app.services.truth_visibility import history_where
 
 
 class KnowledgeServiceError(Exception):
@@ -265,9 +263,10 @@ class KnowledgeService:
                     Component.valid_to.is_(None),
                 )
             )
+            # Root component is always included even if rejected
             component_stmt = component_stmt.where(
                 or_(
-                    ~Component.review_item.has(),
+                    Component.id == component_id,
                     ~Component.review_item.has(ReviewItem.status.in_(("rejected", "superseded"))),
                 )
             )
@@ -461,13 +460,6 @@ class KnowledgeService:
         excluded unless ``include_historical`` is True.
         """
         await self.get_model(model_id)
-
-        # Build subquery for rejected component IDs
-        rejected_subq = (
-            select(ReviewItem.component_id)
-            .where(ReviewItem.status == "rejected")
-            .scalar_subquery()
-        )
 
         # Load all components and relationships for the model
         component_stmt = (

@@ -21,16 +21,16 @@ def is_component_visible_as_of(component: Component, *, as_of: datetime) -> bool
     """Python-side check: component was visible at a point in time.
 
     Excludes components that were not yet valid, already expired, or
-    explicitly rejected.  Superseded components are also excluded for
-    consistency with current-truth behaviour — a superseded fact was
-    superseded at a known point in time and should not reappear in
-    historical views.
+    explicitly rejected.  ``superseded`` status is NOT excluded here —
+    a component that was superseded later was still the current truth
+    at the time.  Temporal exclusion (``valid_to``) already handles the
+    supersession boundary.
     """
     if component.valid_from > as_of:
         return False
     if component.valid_to is not None and component.valid_to <= as_of:
         return False
-    return component.review_status not in {"rejected", "superseded"}
+    return component.review_status != "rejected"
 
 
 def is_component_visible_in_history(component: Component) -> bool:

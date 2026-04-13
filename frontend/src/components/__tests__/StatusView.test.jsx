@@ -1,10 +1,15 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import StatusView from "../StatusView";
 
 describe("StatusView", () => {
   it("shows loading spinner", () => {
-    render(<StatusView query={{ isLoading: true, isError: false }} />);
+    render(
+      <MemoryRouter>
+        <StatusView query={{ isLoading: true, isError: false }} />
+      </MemoryRouter>
+    );
 
     expect(screen.getByText("Loading...")).toBeInTheDocument();
     expect(screen.getByRole("status")).toBeInTheDocument();
@@ -13,29 +18,33 @@ describe("StatusView", () => {
   it("shows error with message and retry button", async () => {
     const refetch = vi.fn();
     render(
-      <StatusView
-        query={{
-          isLoading: false,
-          isError: true,
-          error: { message: "Connection refused" },
-          refetch,
-        }}
-      />,
+      <MemoryRouter>
+        <StatusView
+          query={{
+            isLoading: false,
+            isError: true,
+            error: { message: "Connection refused" },
+            refetch,
+          }}
+        />
+      </MemoryRouter>
     );
 
     expect(screen.getByRole("alert")).toBeInTheDocument();
-    expect(screen.getByText("Failed to load")).toBeInTheDocument();
+    expect(screen.getByText("Failed to load data")).toBeInTheDocument();
     expect(screen.getByText("Connection refused")).toBeInTheDocument();
 
-    await userEvent.click(screen.getByText("Retry"));
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(refetch).toHaveBeenCalled();
   });
 
   it("shows default error message when error.message is absent", () => {
     render(
-      <StatusView
-        query={{ isLoading: false, isError: true, error: {}, refetch: vi.fn() }}
-      />,
+      <MemoryRouter>
+        <StatusView
+          query={{ isLoading: false, isError: true, error: {}, refetch: vi.fn() }}
+        />
+      </MemoryRouter>
     );
 
     expect(screen.getByText("Something went wrong.")).toBeInTheDocument();
@@ -43,10 +52,12 @@ describe("StatusView", () => {
 
   it("shows empty state for null data", () => {
     render(
-      <StatusView
-        query={{ isLoading: false, isError: false, data: null }}
-        empty="Nothing here."
-      />,
+      <MemoryRouter>
+        <StatusView
+          query={{ isLoading: false, isError: false, data: null }}
+          empty="Nothing here."
+        />
+      </MemoryRouter>
     );
 
     expect(screen.getByText("Nothing here.")).toBeInTheDocument();
@@ -54,10 +65,12 @@ describe("StatusView", () => {
 
   it("shows empty state for empty array", () => {
     render(
-      <StatusView
-        query={{ isLoading: false, isError: false, data: [] }}
-        empty="No items."
-      />,
+      <MemoryRouter>
+        <StatusView
+          query={{ isLoading: false, isError: false, data: [] }}
+          empty="No items."
+        />
+      </MemoryRouter>
     );
 
     expect(screen.getByText("No items.")).toBeInTheDocument();
@@ -65,9 +78,11 @@ describe("StatusView", () => {
 
   it("shows empty state for empty object", () => {
     render(
-      <StatusView
-        query={{ isLoading: false, isError: false, data: {} }}
-      />,
+      <MemoryRouter>
+        <StatusView
+          query={{ isLoading: false, isError: false, data: {} }}
+        />
+      </MemoryRouter>
     );
 
     expect(screen.getByText("Nothing here yet.")).toBeInTheDocument();
@@ -75,9 +90,11 @@ describe("StatusView", () => {
 
   it("returns null when data is present", () => {
     const { container } = render(
-      <StatusView
-        query={{ isLoading: false, isError: false, data: [{ id: 1 }] }}
-      />,
+      <MemoryRouter>
+        <StatusView
+          query={{ isLoading: false, isError: false, data: [{ id: 1 }] }}
+        />
+      </MemoryRouter>
     );
 
     expect(container.innerHTML).toBe("");

@@ -69,27 +69,49 @@ When it finishes you will see:
 
 ---
 
-## Step 3: Verify with Smoke
+## Step 3: Verify
+
+Run the backend smoke suite — this is the verification path designed for self-hosted deployments and needs nothing beyond what Step 1 already installed (Docker + `curl`). No Python virtualenv, no Node.js, no extra build tooling:
 
 ```bash
 bash scripts/smoke.sh
 ```
 
-The smoke script exercises 9 checks against the running stack:
+The smoke script exercises 10 checks against the running stack:
 
 | Step | What it proves |
 |---|---|
-| BOOT | postgres, redis, api containers are running |
+| BOOT | postgres, redis, api, **and Celery worker** containers are running |
 | HEALTH | `/health` ok, `/health/ready` reports db + redis ok |
 | SEED | `POST /api/seed-demo` is idempotent (same workspace on repeat) |
 | QUERY | `POST /api/query` returns a source-backed answer with provenance |
-| GRAPH | `GET /api/graph` returns the workspace knowledge graph with nodes |
-| MODELS | `GET /api/models` lists knowledge models; model graph works |
-| BRIEF | `GET /api/founder-brief` returns a structured brief |
-| DECISIONS | `GET /api/decisions` returns the decision register |
-| SOURCES | `GET /api/source-documents` returns source documents |
+| GRAPH | `GET /api/graph` returns 15+ nodes, all with provenance |
+| MODELS | `GET /api/models` returns 4+ models; model graph has nodes |
+| BRIEF | `GET /api/founder-brief` returns structured content |
+| DECISIONS | `GET /api/decisions` returns entries with names + values |
+| SOURCES | `GET /api/source-documents` returns processed docs with content |
+| IMPORTS | `POST /api/imports` round-trips a real document through the zero-auth ingest rail (same contract `ctxe ingest` uses), then reads it back via `GET /api/source-documents` to confirm persistence |
 
-Exit code `0` means the full stack is working. Wire it into CI or run it after every deploy.
+Exit code `0` means the full stack is working. Wire it into CI or run it after every deploy. Every failure message includes a diagnostic hint, and **on any failure the script automatically dumps a diagnostic snapshot** (container status + tail of api/worker/postgres/redis logs) so the root cause is visible without running follow-up commands. Set `SMOKE_SKIP_DIAGNOSTICS=1` to silence the snapshot if you're driving smoke from a tool that prefers a quieter output. Set `SMOKE_SKIP_WORKER=1` if you have intentionally removed the Celery worker from your compose stack.
+
+### Optional: full maintainer release gate (`ctxe verify`)
+
+The `ctxe` CLI wraps the smoke script in a broader release gate that also runs the Python contract test suite and (by default) builds the frontend. It is the command maintainers run before cutting a release. **It is not installed by `bootstrap.sh`** — it requires extra tooling that most self-hosters do not need:
+
+```bash
+# One-time install in a local Python virtualenv:
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+
+# Backend-only release gate — no Node.js required:
+ctxe verify --skip-frontend
+
+# Full release gate — requires Node.js AND `cd frontend && npm install`:
+ctxe verify
+```
+
+Skip this unless you are validating a full-stack contract change or cutting a release. `bash scripts/smoke.sh` is the supported day-to-day verification path for self-hosted deployments.
 
 ---
 
@@ -231,11 +253,25 @@ docker compose up -d --build
 # Apply any new migrations.
 docker compose exec -T api alembic upgrade head
 
-# Re-run smoke to confirm.
-bash scripts/smoke.sh
+# Verify the upgrade.
+bash scripts/smoke.sh    # backend smoke — the supported self-host path
+ctxe verify              # optional: full maintainer release gate (needs venv + Node.js)
 ```
 
-If the smoke fails after an upgrade, check `docker compose logs -f api` for startup errors. Most migration issues are resolved by running `alembic upgrade head` explicitly.
+### Rollback
+
+If smoke fails after an upgrade:
+
+1. **Check logs first** — `docker compose logs --tail 60 api` usually reveals the cause.
+2. **Migration issue** — try `docker compose exec api alembic stamp head` then `alembic upgrade head`.
+3. **Code rollback** — if the issue is in the new code, revert to the previous commit:
+   ```bash
+   git log --oneline -5          # find the previous good commit
+   git checkout <good-commit>
+   docker compose up -d --build
+   bash scripts/smoke.sh
+   ```
+4. **Data rollback** — if a migration corrupted data, restore from backup (see Persistent Storage section above), then checkout the matching code version.
 
 ---
 
@@ -313,6 +349,23 @@ curl -v http://localhost:8000/api/seed-demo -X POST -H 'Content-Type: applicatio
 Check the response body. Common issues:
 - 404: API container has stale code — rebuild with `docker compose up -d --build api`
 - 500: Check `docker compose logs api` for the traceback
+
+### Smoke fails at other steps
+
+Every smoke failure emits a `DIAGNOSTIC SNAPSHOT` block to stderr containing `docker compose ps` output and the last 40 lines of api / worker / postgres / redis logs — read that first. Each failure message also carries an inline hint. If you still need to dig deeper:
+
+| Smoke step | First thing to check |
+|---|---|
+| BOOT | `docker compose ps` — is each of postgres/redis/api/worker running? The Celery worker is required; set `SMOKE_SKIP_WORKER=1` only if you have intentionally removed it |
+| HEALTH | `docker compose logs postgres` and `docker compose logs redis` |
+| SEED | Rebuild API: `docker compose up -d --build api`. If seed returns 200 but smoke still fails, the post-seed graph self-check in `bootstrap.sh` catches empty-graph regressions earlier |
+| QUERY | `docker compose logs api` — look for extraction/embedding errors |
+| GRAPH | Same as QUERY — graph uses the same seeded data |
+| MODELS | Check that seed completed — re-run `POST /api/seed-demo` |
+| BRIEF | `docker compose logs api` — briefing aggregates across models |
+| DECISIONS | Check the `Decisions` model exists in the seeded workspace |
+| SOURCES | Check `SourceDocument` rows: `docker compose exec postgres psql -U postgres -d context_engine -c "SELECT count(*) FROM source_documents"` |
+| IMPORTS | Failure means the zero-auth import rail (`POST /api/imports`) is broken. The step POSTs a document and then GETs it back via `/api/source-documents?connector_type=local` — check `docker compose logs api` for the traceback and confirm the router registers imports: `grep imports app/api/router.py` |
 
 ### Postgres disk full
 

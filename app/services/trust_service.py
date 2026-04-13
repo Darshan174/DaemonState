@@ -71,6 +71,7 @@ class TrustService:
         status: str | None = None,
         severity: str | None = None,
         kind: str | None = None,
+        model_id: UUID | None = None,
         source_document_id: UUID | None = None,
     ) -> list[ReviewItem]:
         await self._require_workspace(workspace_id)
@@ -93,11 +94,19 @@ class TrustService:
             query = query.where(ReviewItem.severity == severity)
         if kind is not None:
             query = query.where(ReviewItem.kind == kind)
+        if model_id is not None:
+            query = query.where(Component.model_id == model_id)
         if source_document_id is not None:
             query = query.join(
                 ComponentSource,
                 ComponentSource.component_id == ReviewItem.component_id,
-            ).where(ComponentSource.source_document_id == source_document_id)
+            ).join(
+                SourceDocument,
+                ComponentSource.source_document_id == SourceDocument.id,
+            ).where(
+                ComponentSource.source_document_id == source_document_id,
+                SourceDocument.deleted_at.is_(None),
+            )
 
         result = await self.session.execute(
             query.order_by(

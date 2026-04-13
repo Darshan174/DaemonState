@@ -1,3 +1,5 @@
+import { Link } from "react-router-dom";
+
 /**
  * Shared loading / error / empty-state overlay.
  *
@@ -17,21 +19,36 @@ export default function StatusView({ query, empty = "Nothing here yet." }) {
   }
 
   if (query.isError) {
-    const msg =
+    const rawMsg =
       query.error?.message || query.error?.detail || "Something went wrong.";
+    const isNetworkError = rawMsg.toLowerCase().includes("failed to fetch") || rawMsg.toLowerCase().includes("network error");
+    const actionableText = isNetworkError
+      ? "Check if your Context Engine backend is running. The frontend cannot reach the API."
+      : rawMsg;
+
     return (
-      <div role="alert" className="flex flex-col items-center justify-center py-24">
-        <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center mb-3">
-          <span className="text-red-500 text-lg font-bold">!</span>
+      <div role="alert" className="flex flex-col items-center justify-center py-24 px-6 text-center">
+        <div className="w-12 h-12 rounded-full bg-red-50 text-red-500 flex items-center justify-center mb-4 border border-red-100">
+          <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          </svg>
         </div>
-        <p className="text-sm font-medium text-red-600">Failed to load</p>
-        <p className="text-xs text-gray-400 mt-1 max-w-xs text-center">{msg}</p>
-        <button
-          onClick={() => query.refetch()}
-          className="mt-4 px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
-        >
-          Retry
-        </button>
+        <p className="text-base font-bold text-gray-900">Failed to load data</p>
+        <p className="text-sm text-gray-500 mt-2 max-w-sm">{actionableText}</p>
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+          <button
+            onClick={() => query.refetch?.()}
+            className="px-5 py-2.5 text-sm font-bold rounded-xl bg-gray-900 text-white hover:bg-gray-800 transition-colors shadow-sm"
+          >
+            Try again
+          </button>
+          <Link
+            to="/app"
+            className="px-5 py-2.5 text-sm font-bold rounded-xl bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
+          >
+            Return to dashboard
+          </Link>
+        </div>
       </div>
     );
   }

@@ -92,15 +92,15 @@ export default function Query() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3 text-xs">
-            <a href="/app/sources" className="font-medium text-brand-700 hover:text-brand-800">
+            <Link to="/app/sources" className="font-medium text-brand-700 hover:text-brand-800">
               Inspect sources
-            </a>
-            <a href="/app/review" className="font-medium text-brand-700 hover:text-brand-800">
+            </Link>
+            <Link to="/app/review" className="font-medium text-brand-700 hover:text-brand-800">
               Review trust
-            </a>
-            <a href="/app/accuracy" className="font-medium text-brand-700 hover:text-brand-800">
+            </Link>
+            <Link to="/app/accuracy" className="font-medium text-brand-700 hover:text-brand-800">
               Benchmark accuracy
-            </a>
+            </Link>
           </div>
         </div>
       </div>
@@ -224,21 +224,21 @@ export default function Query() {
             {!isMock && (
               <p className="text-xs text-amber-700">
                 If you recently connected Slack, run a sync from{" "}
-                <a href="/app/connectors" className="underline underline-offset-2">
+                <Link to="/app/connectors" className="underline underline-offset-2">
                   Connectors
-                </a>{" "}
+                </Link>{" "}
                 and try again.
               </p>
             )}
             <p className="text-xs text-amber-700">
               Then inspect{" "}
-              <a href="/app/sources" className="underline underline-offset-2">
+              <Link to="/app/sources" className="underline underline-offset-2">
                 Sources
-              </a>{" "}
+              </Link>{" "}
               and{" "}
-              <a href="/app/review" className="underline underline-offset-2">
+              <Link to="/app/review" className="underline underline-offset-2">
                 Review
-              </a>{" "}
+              </Link>{" "}
               to see whether the problem is missing raw context or unresolved trust state.
             </p>
           </div>

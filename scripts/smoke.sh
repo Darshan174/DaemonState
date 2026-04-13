@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 #
-# scripts/smoke.sh — end-to-end self-hosted smoke verification.
+# scripts/smoke.sh — backend-only self-hosted smoke verification.
 #
-# Proves four things against a running Context Engine stack:
-#   1. BOOT       — docker compose reports api+postgres+redis running
+# Used by `ctxe verify` as the backend half of the release gate.
+#
+# Proves these things against a running Context Engine stack:
+#   1. BOOT       — docker compose reports api+postgres+redis+worker running
 #   2. HEALTH     — /health returns ok AND /health/ready returns ready
 #   3. SEED       — POST /api/seed-demo creates the canonical demo workspace
 #                   and is idempotent (second call returns same workspace
@@ -14,16 +16,25 @@
 #   7. BRIEF      — GET /api/founder-brief returns structured content
 #   8. DECISIONS  — GET /api/decisions returns entries with names + values
 #   9. SOURCES    — GET /api/source-documents returns processed docs with content
+#  10. IMPORTS    — POST /api/imports round-trips a real document through
+#                   the zero-auth ingest rail used by `ctxe ingest`, then
+#                   confirms the LOCAL connector is visible
 #
 # Exit code 0 on success, non-zero (with a descriptive failure) otherwise.
+# This script intentionally focuses on live backend founder workflows; use
+# `ctxe verify` for the full release gate including tests and frontend build.
 #
 # Usage:
 #   bash scripts/smoke.sh
 #
 # Optional env:
-#   BASE_URL         default http://localhost:8000
-#   SMOKE_QUESTION   default "What is the Starter Plan?"
-#   SMOKE_EXPECT     default "$29"    (substring that must appear in answer)
+#   BASE_URL               default http://localhost:8000
+#   SMOKE_QUESTION         default "What is the Starter Plan?"
+#   SMOKE_EXPECT           default "$29"  (substring that must appear in answer)
+#   SMOKE_SKIP_WORKER      set to 1 to allow smoke to pass without a running
+#                          Celery worker (minimal deployments only)
+#   SMOKE_SKIP_DIAGNOSTICS set to 1 to silence the diagnostic snapshot that
+#                          is emitted on failure (useful in tests/CI)
 
 set -euo pipefail
 
@@ -42,21 +53,72 @@ require() {
     command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"
 }
 
+# ── Diagnostic trap ─────────────────────────────────────────────
+#
+# On any non-zero exit, dump the state a user would otherwise have to
+# collect by hand: container status, tail of api/worker/postgres logs,
+# and the hint for a deeper dive. Every smoke failure should be
+# immediately diagnosable from the terminal output with no follow-up
+# commands required.
+#
+# Set SMOKE_SKIP_DIAGNOSTICS=1 to silence this (useful in CI or tests).
+emit_failure_diagnostics() {
+    local exit_code=$?
+    if [ "$exit_code" -eq 0 ]; then
+        return 0
+    fi
+    if [ "${SMOKE_SKIP_DIAGNOSTICS:-0}" = "1" ]; then
+        return 0
+    fi
+    # Avoid calling docker if it is not installed — fail() may have been
+    # triggered by `require docker` itself.
+    command -v docker >/dev/null 2>&1 || return 0
+    docker compose version >/dev/null 2>&1 || return 0
+
+    {
+        printf "\n==> DIAGNOSTIC SNAPSHOT (smoke failed with exit %d)\n" "$exit_code"
+        printf "\n--- docker compose ps ---\n"
+        docker compose ps 2>&1 | head -40 || true
+        printf "\n--- docker compose logs api (last 40 lines) ---\n"
+        docker compose logs --tail 40 api 2>&1 || true
+        printf "\n--- docker compose logs worker (last 20 lines) ---\n"
+        docker compose logs --tail 20 worker 2>&1 || true
+        printf "\n--- docker compose logs postgres (last 15 lines) ---\n"
+        docker compose logs --tail 15 postgres 2>&1 || true
+        printf "\n--- docker compose logs redis (last 10 lines) ---\n"
+        docker compose logs --tail 10 redis 2>&1 || true
+        printf "\nFor deeper investigation:\n"
+        printf "  docker compose logs --tail 200 api\n"
+        printf "  docker compose exec postgres psql -U postgres -d context_engine\n"
+        printf "  docker compose exec api alembic current\n"
+    } >&2
+}
+trap emit_failure_diagnostics EXIT
+
 require curl
 require docker
 
 # ── 1. BOOT ─────────────────────────────────────────────────────
-step "1/9 BOOT — docker compose containers"
+step "1/10 BOOT — docker compose containers"
 docker compose version >/dev/null 2>&1 || fail "docker compose v2 not available"
 running=$(docker compose ps --services --filter "status=running" 2>/dev/null || true)
+# The worker is checked separately below because some minimal self-host
+# deployments intentionally skip it — fail loudly but with a dedicated
+# message so the cause is obvious.
 for svc in postgres redis api; do
     printf "%s\n" "$running" | grep -qx "$svc" \
-        || fail "service '$svc' is not running (docker compose ps output below)\n$(docker compose ps)"
+        || fail "service '$svc' is not running — expected docker compose ps to report it as 'running'. Check: docker compose ps (the DIAGNOSTIC SNAPSHOT below has the output)"
 done
-pass "postgres, redis, api are running"
+if [ "${SMOKE_SKIP_WORKER:-0}" = "1" ]; then
+    pass "postgres, redis, api are running (worker check skipped via SMOKE_SKIP_WORKER=1)"
+else
+    printf "%s\n" "$running" | grep -qx worker \
+        || fail "service 'worker' is not running — the Celery worker is part of the default docker compose stack and is required for async ingestion. If you intentionally removed it, set SMOKE_SKIP_WORKER=1 to allow this check to pass. Otherwise check: docker compose logs worker"
+    pass "postgres, redis, api, worker are running"
+fi
 
 # ── 2. HEALTH ───────────────────────────────────────────────────
-step "2/9 HEALTH — /health and /health/ready"
+step "2/10 HEALTH — /health and /health/ready"
 health=$(curl -fsS --max-time 10 "${BASE_URL}/health") \
     || fail "GET ${BASE_URL}/health did not return 200"
 printf "%s" "$health" | grep -q '"status"[[:space:]]*:[[:space:]]*"ok"' \
@@ -74,7 +136,7 @@ printf "%s" "$ready" | grep -q '"redis"[[:space:]]*:[[:space:]]*"ok"' \
 pass "/health/ready → ready (database + redis ok)"
 
 # ── 3. SEED ─────────────────────────────────────────────────────
-step "3/9 SEED — POST /api/seed-demo (idempotent)"
+step "3/10 SEED — POST /api/seed-demo (idempotent)"
 
 extract_field() {
     # extract_field <json> <key> — pulls the string value for a top-level key
@@ -125,7 +187,7 @@ printf "%s" "$models_out" | grep -q '"id"' \
 pass "seeded workspace has knowledge models (eval-ready seed)"
 
 # ── 4. QUERY ────────────────────────────────────────────────────
-step "4/9 QUERY — source-backed answer"
+step "4/10 QUERY — source-backed answer"
 query_payload=$(printf '{"workspace_id":"%s","question":"%s"}' \
     "$workspace_id" "$SMOKE_QUESTION")
 query_out=$(curl -fsS --max-time 30 \
@@ -144,7 +206,7 @@ printf "%s" "$query_out" | grep -q '"components"' \
 pass "query returned an answer containing '${SMOKE_EXPECT}' with provenance"
 
 # ── 5. GRAPH ───────────────────────────────────────────────────
-step "5/9 GRAPH — workspace knowledge graph"
+step "5/10 GRAPH — workspace knowledge graph"
 graph_out=$(curl -fsS --max-time 15 \
     "${BASE_URL}/api/graph?workspace_id=${workspace_id}") \
     || fail "GET /api/graph failed — is the api container running? Check: docker compose logs api"
@@ -166,7 +228,7 @@ printf "%s" "$graph_out" | grep -q '"name"[[:space:]]*:[[:space:]]*"[^"]' \
 pass "workspace graph has ${node_count} nodes, all with provenance"
 
 # ── 6. MODELS ──────────────────────────────────────────────────
-step "6/9 MODELS — knowledge models"
+step "6/10 MODELS — knowledge models"
 models_list=$(curl -fsS --max-time 15 \
     "${BASE_URL}/api/models?workspace_id=${workspace_id}") \
     || fail "GET /api/models failed — check that the workspace was seeded correctly"
@@ -195,7 +257,7 @@ model_node_count=$(printf "%s" "$model_graph" | grep -o '"model_id"' | wc -l | t
 pass "model graph for ${first_model_id} returned ${model_node_count} nodes"
 
 # ── 7. BRIEF ──────────────────────────────────────────────────
-step "7/9 BRIEF — founder brief"
+step "7/10 BRIEF — founder brief"
 brief_out=$(curl -fsS --max-time 30 \
     "${BASE_URL}/api/founder-brief?workspace_id=${workspace_id}") \
     || fail "GET /api/founder-brief failed — this endpoint aggregates across models; check logs for internal errors: docker compose logs api"
@@ -209,7 +271,7 @@ printf "%s" "$brief_out" | grep -q '"workspace_name"' \
 pass "founder brief returned with structured content"
 
 # ── 8. DECISIONS ──────────────────────────────────────────────
-step "8/9 DECISIONS — decision register"
+step "8/10 DECISIONS — decision register"
 decisions_out=$(curl -fsS --max-time 15 \
     "${BASE_URL}/api/decisions?workspace_id=${workspace_id}") \
     || fail "GET /api/decisions failed — check that the 'Decisions' model exists in the seeded workspace"
@@ -225,7 +287,7 @@ decision_count=$(printf "%s" "$decisions_out" | grep -o '"name"' | wc -l | tr -d
 pass "decisions list returned ${decision_count} entries with names and values"
 
 # ── 9. SOURCES ─────────────────────────────────────────────────
-step "9/9 SOURCES — source documents with provenance"
+step "9/10 SOURCES — source documents with provenance"
 sources_out=$(curl -fsS --max-time 15 \
     "${BASE_URL}/api/source-documents?workspace_id=${workspace_id}&limit=10") \
     || fail "GET /api/source-documents failed — check that SourceDocument rows were created by the seed"
@@ -243,11 +305,107 @@ printf "%s" "$sources_out" | grep -q '"content"' \
     || fail "source documents missing 'content' field — provenance without content is useless for attribution"
 pass "source documents returned ${source_count} entries with content and provenance"
 
+# ── 10. IMPORTS ────────────────────────────────────────────────
+step "10/10 IMPORTS — POST /api/imports (the ctxe ingest contract)"
+
+# The real zero-auth import rail is POST /api/imports. `ctxe ingest` at
+# app/cli/main.py:362 hits this endpoint with a {workspace_id, documents[]}
+# payload and calls validate_import_response() on the reply. A rubber-stamp
+# GET on /api/imports/connectors would not catch regressions in the
+# ImportRequest schema, the ImportService pipeline, or the CLI contract,
+# so send a real document and verify the full shape.
+import_payload=$(cat <<JSON
+{
+  "workspace_id": "${workspace_id}",
+  "documents": [
+    {
+      "external_id": "smoke-test-doc-1",
+      "content": "Smoke test document from scripts/smoke.sh — exercises the POST /api/imports contract used by 'ctxe ingest'. Safe to keep across runs; idempotent by external_id.",
+      "author": "smoke.sh",
+      "source_url": "https://context-engine.local/smoke-test-doc-1"
+    }
+  ]
+}
+JSON
+)
+
+import_out=$(curl -fsS --max-time 60 \
+    -X POST \
+    -H 'Content-Type: application/json' \
+    -d "$import_payload" \
+    "${BASE_URL}/api/imports") \
+    || fail "POST /api/imports failed — the import rail used by 'ctxe ingest' is broken. Check: docker compose logs api"
+
+# Validate the response fields that validate_import_response() in
+# app/cli/main.py:557 requires. A missing field means `ctxe ingest` will
+# fail with a cryptic error even though this endpoint returned 200.
+for key in workspace_id connector_id total_documents \
+           created_documents updated_documents unchanged_documents \
+           processed_documents failed_documents documents; do
+    printf "%s" "$import_out" | grep -q "\"${key}\"" \
+        || fail "POST /api/imports response missing required field '${key}' (required by app/cli/main.py validate_import_response). Response: $import_out"
+done
+
+# failed_documents MUST be zero. A failed document on the default self-host
+# stack means the rule-based ingestion pipeline crashed — release-blocking.
+import_failed=$(printf "%s" "$import_out" \
+    | sed -n 's/.*"failed_documents"[^0-9]*\([0-9][0-9]*\).*/\1/p' | head -n1)
+[ -n "$import_failed" ] \
+    || fail "could not parse failed_documents from import response. Response: $import_out"
+[ "$import_failed" = "0" ] \
+    || fail "POST /api/imports reported failed_documents=${import_failed} — ingestion pipeline is broken. Check: docker compose logs api for extraction/embedding errors"
+
+# total_documents must equal 1 (we sent exactly one). Proves the router
+# parsed the payload and the service dispatched it.
+import_total=$(printf "%s" "$import_out" \
+    | sed -n 's/.*"total_documents"[^0-9]*\([0-9][0-9]*\).*/\1/p' | head -n1)
+[ "$import_total" = "1" ] \
+    || fail "POST /api/imports reported total_documents=${import_total} — expected 1. Response: $import_out"
+
+# The document must settle. created + updated + unchanged >= 1 handles
+# both first-run (created=1) and repeat-run (updated or unchanged = 1).
+import_created=$(printf "%s" "$import_out" \
+    | sed -n 's/.*"created_documents"[^0-9]*\([0-9][0-9]*\).*/\1/p' | head -n1)
+import_updated=$(printf "%s" "$import_out" \
+    | sed -n 's/.*"updated_documents"[^0-9]*\([0-9][0-9]*\).*/\1/p' | head -n1)
+import_unchanged=$(printf "%s" "$import_out" \
+    | sed -n 's/.*"unchanged_documents"[^0-9]*\([0-9][0-9]*\).*/\1/p' | head -n1)
+import_settled=$(( ${import_created:-0} + ${import_updated:-0} + ${import_unchanged:-0} ))
+[ "$import_settled" -ge 1 ] \
+    || fail "POST /api/imports settled 0 documents (created=${import_created:-?}, updated=${import_updated:-?}, unchanged=${import_unchanged:-?}) — import was accepted but never persisted."
+pass "POST /api/imports → total=${import_total} created=${import_created:-0} updated=${import_updated:-0} unchanged=${import_unchanged:-0} failed=0"
+
+# Round-trip the imported document through GET /api/source-documents.
+# This proves the import was actually persisted and is queryable — not just
+# that the POST returned a shaped response. A regression where ImportService
+# returns ok but never commits to the DB would be caught here.
+roundtrip_out=$(curl -fsS --max-time 15 \
+    "${BASE_URL}/api/source-documents?workspace_id=${workspace_id}&connector_type=local&limit=50") \
+    || fail "GET /api/source-documents?connector_type=local failed during import round-trip check — the source documents listing endpoint is broken. Check: docker compose logs api"
+printf "%s" "$roundtrip_out" | grep -q '"items"' \
+    || fail "source-documents response missing 'items' field during round-trip check. Response: $roundtrip_out"
+printf "%s" "$roundtrip_out" | grep -q '"smoke-test-doc-1"' \
+    || fail "POST /api/imports returned success, but the imported document (external_id=smoke-test-doc-1) is NOT visible in GET /api/source-documents?connector_type=local. The endpoint returned 200 but the ImportService did not actually persist the row. Check ImportService.import_documents commit logic and LOCAL connector filtering."
+pass "imported document visible in /api/source-documents (import round-trip OK)"
+
+# After the import, the LOCAL connector must be visible in the connector
+# list — this is the endpoint the frontend uses to show "what have I
+# imported?" state. If the connector was not persisted, this returns [].
+connectors_out=$(curl -fsS --max-time 15 \
+    "${BASE_URL}/api/imports/connectors?workspace_id=${workspace_id}") \
+    || fail "GET /api/imports/connectors failed — the import surface may not be registered in the router. Check app/api/router.py includes imports."
+printf "%s" "$connectors_out" | grep -Eq '^\[' \
+    || fail "imports/connectors did not return a JSON array. Response: $connectors_out"
+import_connector_count=$(printf "%s" "$connectors_out" | grep -o '"connector_type"' | wc -l | tr -d ' ')
+[ "$import_connector_count" -ge 1 ] \
+    || fail "expected at least 1 import connector after POST /api/imports succeeded, got 0 — connector was not persisted. Check ImportService._get_or_create_local_connector."
+pass "GET /api/imports/connectors → ${import_connector_count} connector(s) visible"
+
 cat <<EOF
 
 ==> SMOKE PASSED.
 
-    Boot:      postgres + redis + api running
+    Boot:      postgres + redis + api + worker running
     Health:    /health ok, /health/ready ok (db + redis)
     Seed:      workspace ${workspace_id} via POST /api/seed-demo
                first=${first_status}, second=existing (idempotent)
@@ -258,8 +416,11 @@ cat <<EOF
     Brief:     structured founder brief returned
     Decisions: ${decision_count} decision(s) with names and values
     Sources:   ${source_count} source documents with content + provenance
+    Imports:   POST /api/imports round-tripped (failed=0, settled=${import_settled}),
+               ${import_connector_count} connector(s) visible at /api/imports/connectors
 
     Context Engine is up, healthy, seeded, and answering queries
-    across the main OSS v1 workflows.
+    across the main OSS v1 workflows — including the real zero-auth
+    import rail used by 'ctxe ingest'.
 
 EOF

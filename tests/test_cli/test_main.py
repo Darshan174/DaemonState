@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
 import app.cli.main as cli_main
+import pytest
 
 
 class TestCtxeCLI:
@@ -26,6 +28,24 @@ class TestCtxeCLI:
             return SimpleNamespace(stdout="ok\n", stderr="")
 
         monkeypatch.setattr(cli_main, "boot_stack", fake_boot_stack)
+        monkeypatch.setattr(
+            cli_main,
+            "check_verify_readiness",
+            lambda base_url: (
+                {"status": "ok"},
+                {"status": "ready", "checks": {"database": "ok", "redis": "ok"}},
+            ),
+        )
+        monkeypatch.setattr(
+            cli_main,
+            "seed_demo_workspace",
+            lambda base_url, *, workspace_id=None: {
+                "workspaceId": str(uuid4()),
+                "workspaceName": cli_main.DEFAULT_DEMO_WORKSPACE_NAME,
+                "status": "existing",
+                "seededCaseCount": 5,
+            },
+        )
         monkeypatch.setattr(cli_main, "run_subprocess", fake_run_subprocess)
 
         exit_code = cli_main.main(["verify", "--base-url", "http://example.test"])
@@ -49,7 +69,11 @@ class TestCtxeCLI:
         )
         assert calls[2] == (("npm", "test"), frontend_dir, True, None)
         assert calls[3] == (("npm", "run", "build"), frontend_dir, True, None)
-        assert "OSS v1 verification passed." in capsys.readouterr().out
+        output = capsys.readouterr().out
+        assert "boot: docker services, migrations, and API boot completed" in output
+        assert "readiness: /health=ok | /health/ready=ready" in output
+        assert "seed: Acme Accuracy Demo" in output
+        assert "OSS v1 verification passed." in output
 
     def test_verify_can_skip_frontend_checks(self, monkeypatch, tmp_path):
         project_root = tmp_path / "context-engine"
@@ -60,6 +84,24 @@ class TestCtxeCLI:
             cli_main,
             "boot_stack",
             lambda base_url, *, wait_timeout, quiet=False: project_root,
+        )
+        monkeypatch.setattr(
+            cli_main,
+            "check_verify_readiness",
+            lambda base_url: (
+                {"status": "ok"},
+                {"status": "ready", "checks": {"database": "ok", "redis": "ok"}},
+            ),
+        )
+        monkeypatch.setattr(
+            cli_main,
+            "seed_demo_workspace",
+            lambda base_url, *, workspace_id=None: {
+                "workspaceId": str(uuid4()),
+                "workspaceName": cli_main.DEFAULT_DEMO_WORKSPACE_NAME,
+                "status": "existing",
+                "seededCaseCount": 5,
+            },
         )
 
         def fake_run_subprocess(command, *, cwd, capture_output=False, env=None):
@@ -82,6 +124,167 @@ class TestCtxeCLI:
             ),
             ((sys.executable, "-m", "pytest", *cli_main.VERIFY_TEST_TARGETS, "-q"), None),
         ]
+
+    def test_verify_reports_phase_specific_failures(self, monkeypatch, tmp_path, capsys):
+        project_root = tmp_path / "context-engine"
+        project_root.mkdir()
+
+        monkeypatch.setattr(
+            cli_main,
+            "boot_stack",
+            lambda base_url, *, wait_timeout, quiet=False: project_root,
+        )
+        monkeypatch.setattr(
+            cli_main,
+            "check_verify_readiness",
+            lambda base_url: (
+                {"status": "ok"},
+                {"status": "ready", "checks": {"database": "ok", "redis": "ok"}},
+            ),
+        )
+        monkeypatch.setattr(
+            cli_main,
+            "seed_demo_workspace",
+            lambda base_url, *, workspace_id=None: {
+                "workspaceId": str(uuid4()),
+                "workspaceName": cli_main.DEFAULT_DEMO_WORKSPACE_NAME,
+                "status": "existing",
+                "seededCaseCount": 5,
+            },
+        )
+
+        def fake_run_subprocess(command, *, cwd, capture_output=False, env=None):
+            if command[:2] == ["bash", "scripts/smoke.sh"]:
+                raise cli_main.CLIError("smoke command failed")
+            return SimpleNamespace(stdout="ok\n", stderr="")
+
+        monkeypatch.setattr(cli_main, "run_subprocess", fake_run_subprocess)
+
+        exit_code = cli_main.main(["verify"])
+
+        assert exit_code == 1
+        err = capsys.readouterr().err
+        assert "verify failed during smoke: smoke command failed" in err
+        assert "Next step: rerun 'bash scripts/smoke.sh'" in err
+
+    def test_verify_reports_json_errors_when_requested(self, monkeypatch, tmp_path, capsys):
+        project_root = tmp_path / "context-engine"
+        project_root.mkdir()
+        monkeypatch.setattr(
+            cli_main,
+            "boot_stack",
+            lambda base_url, *, wait_timeout, quiet=False: project_root,
+        )
+        monkeypatch.setattr(
+            cli_main,
+            "check_verify_readiness",
+            lambda base_url: (_ for _ in ()).throw(cli_main.CLIError("readiness check failed")),
+        )
+
+        exit_code = cli_main.main(["verify", "--json"])
+
+        assert exit_code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload == {
+            "status": "error",
+            "detail": (
+                "verify failed during readiness: readiness check failed. Next step: "
+                "probe 'http://localhost:8000/health' and 'http://localhost:8000/health/ready', "
+                "then inspect 'docker compose logs --tail 40 api postgres redis'"
+            ),
+            "phase": "readiness",
+            "next_step": (
+                "probe 'http://localhost:8000/health' and 'http://localhost:8000/health/ready', "
+                "then inspect 'docker compose logs --tail 40 api postgres redis'"
+            ),
+        }
+
+    @pytest.mark.parametrize(
+        ("failing_phase", "expected_fragment"),
+        [
+            ("boot", "boot failed"),
+            ("seed", "seed failed"),
+            ("contract-tests", "contract-tests failed"),
+            ("frontend-tests", "frontend-tests failed"),
+            ("frontend-build", "frontend-build failed"),
+        ],
+    )
+    def test_verify_labels_each_phase_failure(
+        self,
+        monkeypatch,
+        tmp_path,
+        capsys,
+        failing_phase,
+        expected_fragment,
+    ):
+        project_root = tmp_path / "context-engine"
+        frontend_dir = project_root / "frontend"
+        frontend_dir.mkdir(parents=True)
+
+        if failing_phase == "boot":
+            monkeypatch.setattr(
+                cli_main,
+                "boot_stack",
+                lambda base_url, *, wait_timeout, quiet=False: (_ for _ in ()).throw(
+                    cli_main.CLIError("boot failed")
+                ),
+            )
+        else:
+            monkeypatch.setattr(
+                cli_main,
+                "boot_stack",
+                lambda base_url, *, wait_timeout, quiet=False: project_root,
+            )
+
+        monkeypatch.setattr(
+            cli_main,
+            "check_verify_readiness",
+            lambda base_url: (
+                {"status": "ok"},
+                {"status": "ready", "checks": {"database": "ok", "redis": "ok"}},
+            ),
+        )
+
+        if failing_phase == "seed":
+            monkeypatch.setattr(
+                cli_main,
+                "seed_demo_workspace",
+                lambda base_url, *, workspace_id=None: (_ for _ in ()).throw(
+                    cli_main.CLIError("seed failed")
+                ),
+            )
+        else:
+            monkeypatch.setattr(
+                cli_main,
+                "seed_demo_workspace",
+                lambda base_url, *, workspace_id=None: {
+                    "workspaceId": str(uuid4()),
+                    "workspaceName": cli_main.DEFAULT_DEMO_WORKSPACE_NAME,
+                    "status": "existing",
+                    "seededCaseCount": 5,
+                },
+            )
+
+        def fake_run_subprocess(command, *, cwd, capture_output=False, env=None):
+            phase_by_command = {
+                ("bash", "scripts/smoke.sh"): "smoke",
+                (sys.executable, "-m", "pytest", *cli_main.VERIFY_TEST_TARGETS, "-q"): "contract-tests",
+                ("npm", "test"): "frontend-tests",
+                ("npm", "run", "build"): "frontend-build",
+            }
+            phase = phase_by_command.get(tuple(command))
+            if phase == failing_phase:
+                raise cli_main.CLIError(f"{phase} failed")
+            return SimpleNamespace(stdout="ok\n", stderr="")
+
+        monkeypatch.setattr(cli_main, "run_subprocess", fake_run_subprocess)
+
+        exit_code = cli_main.main(["verify"])
+
+        assert exit_code == 1
+        err = capsys.readouterr().err
+        assert f"verify failed during {failing_phase}: {expected_fragment}" in err
+        assert "Next step:" in err
 
     def test_demo_seeds_canonical_workspace_via_http_api(self, monkeypatch, capsys):
         calls: list[tuple[str, str, dict | None]] = []
@@ -149,6 +352,23 @@ class TestCtxeCLI:
         assert "Demo workspace ready: Selected Workspace" in captured.out
         assert calls[0][:2] == ("GET", cli_main.WORKSPACES_PATH)
         assert calls[1][:2] == ("POST", cli_main.SEED_DEMO_PATH)
+
+    def test_demo_rejects_malformed_seed_response(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            cli_main,
+            "boot_stack",
+            lambda base_url, *, wait_timeout, quiet=False: Path("/tmp/context-engine"),
+        )
+        monkeypatch.setattr(
+            cli_main,
+            "api_request",
+            lambda base_url, method, path, **kwargs: {"workspaceName": "Acme Accuracy Demo"},
+        )
+
+        exit_code = cli_main.main(["demo", "--base-url", "http://example.test"])
+
+        assert exit_code == 1
+        assert "POST /api/seed-demo response missing 'workspaceId'." in capsys.readouterr().err
 
     def test_ingest_creates_default_workspace_and_posts_documents(
         self,
@@ -224,6 +444,46 @@ class TestCtxeCLI:
         err = capsys.readouterr().err
         assert "Multiple workspaces found; pass --workspace NAME_OR_UUID." in err
         assert "Alpha" in err and "Beta" in err
+
+    def test_ingest_creates_named_workspace_when_selector_is_missing_and_none_exist(
+        self,
+        monkeypatch,
+        tmp_path,
+        capsys,
+    ):
+        source = tmp_path / "notes.txt"
+        source.write_text("decision: ship Friday", encoding="utf-8")
+        workspace_id = str(uuid4())
+        calls: list[tuple[str, str, dict | None]] = []
+
+        def fake_api_request(base_url, method, path, *, payload=None, params=None, timeout=30):
+            calls.append((method, path, payload))
+            if method == "GET" and path == cli_main.WORKSPACES_PATH:
+                return []
+            if method == "POST" and path == cli_main.WORKSPACES_PATH:
+                assert payload["name"] == "Research"
+                return {"id": workspace_id, "name": "Research"}
+            if method == "POST" and path == cli_main.IMPORTS_PATH:
+                return {
+                    "total_documents": 1,
+                    "created_documents": 1,
+                    "updated_documents": 0,
+                    "unchanged_documents": 0,
+                    "processed_documents": 1,
+                    "failed_documents": 0,
+                    "documents": [],
+                }
+            raise AssertionError(f"Unexpected API call: {method} {path}")
+
+        monkeypatch.setattr(cli_main, "api_request", fake_api_request)
+
+        exit_code = cli_main.main(
+            ["ingest", str(source), "--workspace", "Research", "--base-url", "http://example.test"],
+        )
+
+        assert exit_code == 0
+        assert "Imported 1 documents into Research" in capsys.readouterr().out
+        assert calls[1][:2] == ("POST", cli_main.WORKSPACES_PATH)
 
     def test_query_uses_single_workspace_when_unambiguous(self, monkeypatch, capsys):
         workspace_id = str(uuid4())
@@ -306,6 +566,79 @@ class TestCtxeCLI:
         assert "Workspace not found: Missing." in err
         assert "Alpha" in err
 
+    def test_query_fails_with_missing_uuid_selector_when_no_workspaces_exist(self, monkeypatch, capsys):
+        missing_workspace_id = str(uuid4())
+
+        def fake_api_request(base_url, method, path, *, payload=None, params=None, timeout=30):
+            if method == "GET" and path == cli_main.WORKSPACES_PATH:
+                return []
+            if method == "GET" and path == f"{cli_main.WORKSPACES_PATH}/{missing_workspace_id}":
+                raise cli_main.APIError(
+                    "GET /api/workspaces/uuid failed with 404: Workspace not found",
+                    status_code=404,
+                )
+            raise AssertionError(f"Unexpected API call: {method} {path}")
+
+        monkeypatch.setattr(cli_main, "api_request", fake_api_request)
+
+        exit_code = cli_main.main(
+            [
+                "query",
+                "What changed?",
+                "--workspace",
+                missing_workspace_id,
+                "--base-url",
+                "http://example.test",
+            ],
+        )
+
+        assert exit_code == 1
+        assert (
+            f"Workspace not found: {missing_workspace_id}. No workspaces exist yet."
+            in capsys.readouterr().err
+        )
+
+    def test_query_rejects_blank_workspace_selector_without_listing_workspaces(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            cli_main,
+            "list_workspaces",
+            lambda base_url: (_ for _ in ()).throw(AssertionError("should not list workspaces")),
+        )
+
+        exit_code = cli_main.main(
+            ["query", "What changed?", "--workspace", "   ", "--base-url", "http://example.test"],
+        )
+
+        assert exit_code == 1
+        assert "Workspace selector cannot be blank." in capsys.readouterr().err
+
+    def test_query_rejects_malformed_workspace_list(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            cli_main,
+            "api_request",
+            lambda base_url, method, path, **kwargs: {"items": []} if path == cli_main.WORKSPACES_PATH else None,
+        )
+
+        exit_code = cli_main.main(["query", "What changed?", "--base-url", "http://example.test"])
+
+        assert exit_code == 1
+        assert "GET /api/workspaces returned an unexpected response shape." in capsys.readouterr().err
+
+    def test_query_rejects_malformed_success_response(self, monkeypatch, capsys):
+        def fake_api_request(base_url, method, path, *, payload=None, params=None, timeout=30):
+            if method == "GET" and path == cli_main.WORKSPACES_PATH:
+                return [{"id": str(uuid4()), "name": "Acme Demo"}]
+            if method == "POST" and path == cli_main.QUERY_PATH:
+                return {"confidence": 0.92, "freshness": "current"}
+            raise AssertionError(f"Unexpected API call: {method} {path}")
+
+        monkeypatch.setattr(cli_main, "api_request", fake_api_request)
+
+        exit_code = cli_main.main(["query", "What changed?", "--base-url", "http://example.test"])
+
+        assert exit_code == 1
+        assert "POST /api/query response missing 'answer'." in capsys.readouterr().err
+
     def test_query_surfaces_api_errors(self, monkeypatch, capsys):
         def fake_api_request(base_url, method, path, *, payload=None, params=None, timeout=30):
             if method == "GET" and path == cli_main.WORKSPACES_PATH:
@@ -323,3 +656,25 @@ class TestCtxeCLI:
 
         assert exit_code == 1
         assert "POST /api/query failed with 502: upstream unavailable" in capsys.readouterr().err
+
+    def test_query_json_errors_are_machine_readable(self, monkeypatch, capsys):
+        def fake_api_request(base_url, method, path, *, payload=None, params=None, timeout=30):
+            if method == "GET" and path == cli_main.WORKSPACES_PATH:
+                return [{"id": str(uuid4()), "name": "Acme Demo"}]
+            if method == "POST" and path == cli_main.QUERY_PATH:
+                raise cli_main.APIError(
+                    "POST /api/query failed with 502: upstream unavailable",
+                    status_code=502,
+                )
+            raise AssertionError(f"Unexpected API call: {method} {path}")
+
+        monkeypatch.setattr(cli_main, "api_request", fake_api_request)
+
+        exit_code = cli_main.main(["query", "What changed?", "--base-url", "http://example.test", "--json"])
+
+        assert exit_code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload == {
+            "status": "error",
+            "detail": "POST /api/query failed with 502: upstream unavailable",
+        }

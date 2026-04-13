@@ -12,7 +12,8 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -215,13 +216,27 @@ class TestDecisionHistoryOrdering:
     async def test_decision_history_ordered_newest_first(
         self, client, workspace, db_session
     ):
-        """After multiple actions, both decisions are recorded."""
+        """Decision history is ordered newest-first (created_at DESC, id DESC)."""
         g = await _seed_review_graph(db_session, workspace)
 
         await client.post(
             f"/api/review-items/{g['review_item'].id}/approve",
             params={"workspace_id": str(workspace.id)},
         )
+
+        # Backdate the approved decision's created_at to guarantee ordering
+        # (within the test savepoint, func.now() is the same for all decisions)
+        approved_decision = await db_session.scalar(
+            select(ReviewDecision)
+            .where(ReviewDecision.review_item_id == g["review_item"].id)
+            .where(ReviewDecision.new_status == "approved")
+        )
+        assert approved_decision is not None
+        approved_decision.created_at = approved_decision.created_at - timedelta(hours=1)
+        await db_session.flush()
+        # Force the session to see the updated attribute
+        from sqlalchemy.orm import attributes
+        attributes.flag_modified(approved_decision, "created_at")
 
         # Reset to needs_review so the second action is valid
         g["review_item"].status = "needs_review"
@@ -240,14 +255,165 @@ class TestDecisionHistoryOrdering:
         items = resp.json()
         item = next(i for i in items if i["id"] == str(g["review_item"].id))
         history = item["decision_history"]
-        # Both decisions recorded
         assert len(history) == 2
-        new_statuses = {d["new_status"] for d in history}
-        assert "approved" in new_statuses
-        assert "rejected" in new_statuses
-        # Both transitions from needs_review
-        prev_statuses = {d["previous_status"] for d in history}
-        assert all(p == "needs_review" for p in prev_statuses)
+        # Reject was the later mutation, so it must appear first
+        assert history[0]["new_status"] == "rejected"
+        assert history[0]["previous_status"] == "needs_review"
+        assert history[1]["new_status"] == "approved"
+        assert history[1]["previous_status"] == "needs_review"
+
+
+class TestSoftDeletedProvenanceFiltered:
+    """Soft-deleted source documents must not leak into review-item payloads."""
+
+    async def test_deleted_source_excluded_from_review_item(
+        self, client, workspace, db_session
+    ):
+        """A soft-deleted source document must not appear in review-item sources."""
+        connector = _make_connector(workspace.id)
+        db_session.add(connector)
+
+        model = KnowledgeModel(
+            workspace_id=workspace.id,
+            name="Del Model",
+            description="For deletion tests",
+        )
+        db_session.add(model)
+        await db_session.flush()
+
+        component = Component(
+            model_id=model.id,
+            name="Del Fact",
+            value="test value",
+            confidence=0.5,
+        )
+        db_session.add(component)
+        await db_session.flush()
+
+        # Active document
+        active_doc = _make_source_document(
+            connector.id, ConnectorType.SLACK, "slack-active",
+            processed_at=datetime(2026, 3, 31, 10, 0, tzinfo=timezone.utc),
+        )
+        db_session.add(active_doc)
+
+        # Soft-deleted document
+        deleted_doc = _make_source_document(
+            connector.id, ConnectorType.SLACK, "slack-deleted",
+            processed_at=datetime(2026, 3, 31, 10, 0, tzinfo=timezone.utc),
+        )
+        deleted_doc.deleted_at = datetime(2026, 4, 1, 0, 0, tzinfo=timezone.utc)
+        db_session.add(deleted_doc)
+        await db_session.flush()
+
+        db_session.add_all([
+            ComponentSource(
+                component_id=component.id,
+                source_document_id=active_doc.id,
+                extraction_context="from active doc",
+                extractor_name="test",
+                extractor_kind="test",
+                extractor_schema_version="v1",
+            ),
+            ComponentSource(
+                component_id=component.id,
+                source_document_id=deleted_doc.id,
+                extraction_context="from deleted doc",
+                extractor_name="test",
+                extractor_kind="test",
+                extractor_schema_version="v1",
+            ),
+        ])
+
+        review_item = ReviewItem(
+            component_id=component.id,
+            status="needs_review",
+            severity="medium",
+            kind="low_confidence",
+            title="Test",
+            summary="Test summary",
+            confidence=0.5,
+        )
+        db_session.add(review_item)
+        await db_session.flush()
+
+        resp = await client.get(
+            "/api/review-items",
+            params={"workspace_id": str(workspace.id)},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body) == 1
+        item = body[0]
+        # Only the active document should appear
+        source_ids = {doc["id"] for doc in item["source_documents"]}
+        assert str(active_doc.id) in source_ids
+        assert str(deleted_doc.id) not in source_ids
+        source_labels = set(item["sources"])
+        assert "Source location" in source_labels  # active doc label
+
+    async def test_deleted_source_excluded_from_source_document_filter(
+        self, client, workspace, db_session
+    ):
+        """Filtering by a deleted source_document_id returns no review items."""
+        connector = _make_connector(workspace.id)
+        db_session.add(connector)
+
+        model = KnowledgeModel(
+            workspace_id=workspace.id,
+            name="Del2 Model",
+            description="For deletion filter tests",
+        )
+        db_session.add(model)
+        await db_session.flush()
+
+        component = Component(
+            model_id=model.id,
+            name="Del2 Fact",
+            value="test value",
+            confidence=0.5,
+        )
+        db_session.add(component)
+        await db_session.flush()
+
+        deleted_doc = _make_source_document(
+            connector.id, ConnectorType.SLACK, "slack-del2",
+            processed_at=datetime(2026, 3, 31, 10, 0, tzinfo=timezone.utc),
+        )
+        deleted_doc.deleted_at = datetime(2026, 4, 1, 0, 0, tzinfo=timezone.utc)
+        db_session.add(deleted_doc)
+        await db_session.flush()
+
+        db_session.add(
+            ComponentSource(
+                component_id=component.id,
+                source_document_id=deleted_doc.id,
+                extraction_context="from deleted",
+            )
+        )
+
+        review_item = ReviewItem(
+            component_id=component.id,
+            status="needs_review",
+            severity="medium",
+            kind="low_confidence",
+            title="Test",
+            summary="Test summary",
+            confidence=0.5,
+        )
+        db_session.add(review_item)
+        await db_session.flush()
+
+        resp = await client.get(
+            "/api/review-items",
+            params={
+                "workspace_id": str(workspace.id),
+                "source_document_id": str(deleted_doc.id),
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body == []
 
 
 class TestProvenanceNotFoundAndEmpty:
@@ -659,6 +825,10 @@ class TestFilterAndSortBehavior:
         db_session.add(review2)
         await db_session.flush()
 
+        # Force review1 to have an earlier updated_at to guarantee ordering
+        review1.updated_at = review1.updated_at - timedelta(hours=1)
+        await db_session.flush()
+
         resp = await client.get(
             "/api/review-items",
             params={"workspace_id": str(workspace.id)},
@@ -666,7 +836,7 @@ class TestFilterAndSortBehavior:
         assert resp.status_code == 200
         body = resp.json()
         assert len(body) == 2
-        # review2 was created after review1
+        # review2 has a later updated_at, so it should come first
         assert body[0]["id"] == str(review2.id)
         assert body[1]["id"] == str(review1.id)
 
@@ -830,3 +1000,391 @@ class TestStatusFieldTypedCorrectly:
         assert item["review_state"] in {
             "needs_review", "approved", "rejected", "superseded", "unreviewed",
         }
+
+
+class TestReviewEdgeCases:
+    """Hardened edge cases for review mutations, missing resources, and error handling."""
+
+    async def test_approve_nonexistent_review_item_returns_404(
+        self, client, workspace
+    ):
+        resp = await client.post(
+            f"/api/review-items/{uuid4()}/approve",
+            params={"workspace_id": str(workspace.id)},
+        )
+        assert resp.status_code == 404
+
+    async def test_reject_nonexistent_review_item_returns_404(
+        self, client, workspace
+    ):
+        resp = await client.post(
+            f"/api/review-items/{uuid4()}/reject",
+            params={"workspace_id": str(workspace.id)},
+        )
+        assert resp.status_code == 404
+
+    async def test_supersede_nonexistent_review_item_returns_404(
+        self, client, workspace
+    ):
+        resp = await client.post(
+            f"/api/review-items/{uuid4()}/supersede",
+            params={"workspace_id": str(workspace.id)},
+        )
+        assert resp.status_code == 404
+
+    async def test_list_review_items_nonexistent_source_document_returns_empty(
+        self, client, workspace
+    ):
+        """Filtering by a source_document_id that doesn't exist returns []."""
+        resp = await client.get(
+            "/api/review-items",
+            params={
+                "workspace_id": str(workspace.id),
+                "source_document_id": str(uuid4()),
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    async def test_list_review_items_nonexistent_model_returns_empty(
+        self, client, workspace
+    ):
+        """Filtering by a model_id that doesn't exist returns []."""
+        resp = await client.get(
+            "/api/review-items",
+            params={
+                "workspace_id": str(workspace.id),
+                "model_id": str(uuid4()),
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    async def test_list_review_items_filter_by_model_id(
+        self, client, workspace, db_session
+    ):
+        """model_id filter returns only items for that model."""
+        connector = _make_connector(workspace.id)
+        db_session.add(connector)
+
+        model_a = KnowledgeModel(
+            workspace_id=workspace.id, name="Model A", description="A"
+        )
+        db_session.add(model_a)
+        await db_session.flush()
+
+        comp_a = Component(model_id=model_a.id, name="Fact A", value="a", confidence=0.5)
+        db_session.add(comp_a)
+        await db_session.flush()
+
+        review_a = ReviewItem(
+            component_id=comp_a.id, status="needs_review", severity="medium",
+            kind="low_confidence", title="t", summary="s", confidence=0.5,
+        )
+        db_session.add(review_a)
+        await db_session.flush()
+
+        model_b = KnowledgeModel(
+            workspace_id=workspace.id, name="Model B", description="B"
+        )
+        db_session.add(model_b)
+        await db_session.flush()
+
+        comp_b = Component(model_id=model_b.id, name="Fact B", value="b", confidence=0.5)
+        db_session.add(comp_b)
+        await db_session.flush()
+
+        review_b = ReviewItem(
+            component_id=comp_b.id, status="needs_review", severity="medium",
+            kind="low_confidence", title="t", summary="s", confidence=0.5,
+        )
+        db_session.add(review_b)
+        await db_session.flush()
+
+        resp = await client.get(
+            "/api/review-items",
+            params={
+                "workspace_id": str(workspace.id),
+                "model_id": str(model_a.id),
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body) == 1
+        assert body[0]["id"] == str(review_a.id)
+
+    async def test_source_document_deleted_returns_404_for_components(
+        self, client, workspace, db_session
+    ):
+        """Accessing a soft-deleted source document returns 404."""
+        connector = _make_connector(workspace.id)
+        db_session.add(connector)
+        await db_session.flush()
+
+        doc = _make_source_document(
+            connector.id, ConnectorType.SLACK, "slack-deleted-del",
+            processed_at=datetime(2026, 3, 31, 10, 0, tzinfo=timezone.utc),
+        )
+        doc.deleted_at = datetime(2026, 4, 1, tzinfo=timezone.utc)
+        db_session.add(doc)
+        await db_session.flush()
+
+        resp = await client.get(
+            f"/api/source-documents/{doc.id}/components",
+            params={"workspace_id": str(workspace.id)},
+        )
+        assert resp.status_code == 404
+
+    async def test_source_document_deleted_returns_404_for_reprocess(
+        self, client, workspace, db_session, monkeypatch
+    ):
+        """Reprocessing a soft-deleted source document returns 404."""
+        connector = _make_connector(workspace.id)
+        db_session.add(connector)
+        await db_session.flush()
+
+        doc = _make_source_document(
+            connector.id, ConnectorType.SLACK, "slack-deleted-rep",
+            processed_at=datetime(2026, 3, 31, 10, 0, tzinfo=timezone.utc),
+        )
+        doc.deleted_at = datetime(2026, 4, 1, tzinfo=timezone.utc)
+        db_session.add(doc)
+        await db_session.flush()
+
+        mock_delay = MagicMock()
+        mock_delay.return_value.id = "celery-task-id"
+        monkeypatch.setattr("app.tasks.ingestion.run_ingestion.delay", mock_delay)
+
+        resp = await client.post(
+            f"/api/source-documents/{doc.id}/reprocess",
+            params={"workspace_id": str(workspace.id)},
+        )
+        assert resp.status_code == 404
+
+
+class TestUnreviewedComponentDrilldown:
+    """Source-document drilldowns for components with no review items."""
+
+    async def test_source_document_with_unreviewed_component(
+        self, client, workspace, db_session
+    ):
+        """A component with no review item should still appear in source-documents/components."""
+        connector = _make_connector(workspace.id)
+        db_session.add(connector)
+
+        model = KnowledgeModel(
+            workspace_id=workspace.id,
+            name="Unreviewed Model",
+            description="For unreviewed tests",
+        )
+        db_session.add(model)
+        await db_session.flush()
+
+        component = Component(
+            model_id=model.id,
+            name="Unreviewed Fact",
+            value="no review needed",
+            confidence=0.95,
+        )
+        db_session.add(component)
+        await db_session.flush()
+
+        doc = _make_source_document(
+            connector.id, ConnectorType.SLACK, "slack-unreviewed",
+            processed_at=datetime(2026, 3, 31, 10, 0, tzinfo=timezone.utc),
+        )
+        db_session.add(doc)
+        await db_session.flush()
+
+        db_session.add(
+            ComponentSource(
+                component_id=component.id,
+                source_document_id=doc.id,
+                extraction_context="from source",
+                extractor_name="test",
+                extractor_kind="test",
+                extractor_schema_version="v1",
+            )
+        )
+        await db_session.flush()
+
+        resp = await client.get(
+            f"/api/source-documents/{doc.id}/components",
+            params={"workspace_id": str(workspace.id)},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body) == 1
+        item = body[0]
+        assert item["id"] == str(component.id)
+        assert item["review_status"] is None
+        assert item["review_item_id"] is None
+        assert item["review_state"] == "unreviewed"
+        assert item["is_safe_for_production"] is False
+        assert item["is_stale"] is False
+        assert item["decision_history"] == []
+        assert item["temporal_state"] is None
+
+    async def test_source_document_with_mixed_reviewed_and_unreviewed(
+        self, client, workspace, db_session
+    ):
+        """A document with both reviewed and unreviewed components."""
+        connector = _make_connector(workspace.id)
+        db_session.add(connector)
+
+        model = KnowledgeModel(
+            workspace_id=workspace.id,
+            name="Mixed Model",
+            description="For mixed tests",
+        )
+        db_session.add(model)
+        await db_session.flush()
+
+        # Reviewed component
+        comp_reviewed = Component(
+            model_id=model.id, name="Reviewed Fact", value="v1", confidence=0.5,
+        )
+        db_session.add(comp_reviewed)
+        await db_session.flush()
+
+        review = ReviewItem(
+            component_id=comp_reviewed.id, status="needs_review", severity="medium",
+            kind="low_confidence", title="t", summary="s", confidence=0.5,
+        )
+        db_session.add(review)
+        await db_session.flush()
+
+        # Unreviewed component
+        comp_unreviewed = Component(
+            model_id=model.id, name="Unreviewed Fact", value="v2", confidence=0.95,
+        )
+        db_session.add(comp_unreviewed)
+        await db_session.flush()
+
+        doc = _make_source_document(
+            connector.id, ConnectorType.SLACK, "slack-mixed",
+            processed_at=datetime(2026, 3, 31, 10, 0, tzinfo=timezone.utc),
+        )
+        db_session.add(doc)
+        await db_session.flush()
+
+        db_session.add_all([
+            ComponentSource(
+                component_id=comp_reviewed.id, source_document_id=doc.id,
+                extraction_context="reviewed source",
+            ),
+            ComponentSource(
+                component_id=comp_unreviewed.id, source_document_id=doc.id,
+                extraction_context="unreviewed source",
+            ),
+        ])
+        await db_session.flush()
+
+        resp = await client.get(
+            f"/api/source-documents/{doc.id}/components",
+            params={"workspace_id": str(workspace.id)},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body) == 2
+        # Find each by id
+        by_id = {item["id"]: item for item in body}
+        reviewed = by_id[str(comp_reviewed.id)]
+        assert reviewed["review_state"] == "needs_review"
+        assert reviewed["is_safe_for_production"] is False
+        unreviewed = by_id[str(comp_unreviewed.id)]
+        assert unreviewed["review_state"] == "unreviewed"
+        assert unreviewed["is_safe_for_production"] is False
+
+
+class TestCrossWorkspaceSafety:
+    """Ensure components, source documents, and reviews cannot leak across workspaces."""
+
+    async def test_component_sources_cross_workspace_404(
+        self, client, workspace, db_session
+    ):
+        """A component from workspace A cannot be accessed via workspace B."""
+        connector = _make_connector(workspace.id)
+        db_session.add(connector)
+
+        model = KnowledgeModel(
+            workspace_id=workspace.id, name="WS Model", description="WS"
+        )
+        db_session.add(model)
+        await db_session.flush()
+
+        component = Component(
+            model_id=model.id, name="WS Fact", value="v", confidence=0.9,
+        )
+        db_session.add(component)
+        await db_session.flush()
+
+        doc = _make_source_document(
+            connector.id, ConnectorType.SLACK, "slack-ws",
+            processed_at=datetime(2026, 3, 31, 10, 0, tzinfo=timezone.utc),
+        )
+        db_session.add(doc)
+        await db_session.flush()
+
+        db_session.add(
+            ComponentSource(
+                component_id=component.id, source_document_id=doc.id,
+                extraction_context="ws source",
+            )
+        )
+        await db_session.flush()
+
+        other_ws = Workspace(id=uuid4(), name="Other WS")
+        db_session.add(other_ws)
+        await db_session.flush()
+
+        resp = await client.get(
+            f"/api/components/{component.id}/sources",
+            params={"workspace_id": str(other_ws.id)},
+        )
+        assert resp.status_code == 404
+
+    async def test_source_document_components_cross_workspace_empty(
+        self, client, workspace, db_session
+    ):
+        """A source document from workspace A should not return components via workspace B."""
+        connector = _make_connector(workspace.id)
+        db_session.add(connector)
+
+        model = KnowledgeModel(
+            workspace_id=workspace.id, name="WS Model", description="WS"
+        )
+        db_session.add(model)
+        await db_session.flush()
+
+        component = Component(
+            model_id=model.id, name="WS Fact", value="v", confidence=0.9,
+        )
+        db_session.add(component)
+        await db_session.flush()
+
+        doc = _make_source_document(
+            connector.id, ConnectorType.SLACK, "slack-ws-cross",
+            processed_at=datetime(2026, 3, 31, 10, 0, tzinfo=timezone.utc),
+        )
+        db_session.add(doc)
+        await db_session.flush()
+
+        db_session.add(
+            ComponentSource(
+                component_id=component.id, source_document_id=doc.id,
+                extraction_context="ws cross",
+            )
+        )
+        await db_session.flush()
+
+        other_ws = Workspace(id=uuid4(), name="Other WS")
+        db_session.add(other_ws)
+        await db_session.flush()
+
+        # The document belongs to workspace A, so workspace B gets 404
+        resp = await client.get(
+            f"/api/source-documents/{doc.id}/components",
+            params={"workspace_id": str(other_ws.id)},
+        )
+        assert resp.status_code == 404

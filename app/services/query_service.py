@@ -156,7 +156,10 @@ class QueryService:
             sum(item.blended_confidence for item in selected) / len(selected),
             2,
         )
-        freshness = self._calculate_freshness(item.component for item in selected)
+        freshness = self._calculate_freshness(
+            (item.component for item in selected),
+            as_of=filters.as_of,
+        )
 
         return QueryResult(
             question=question,
@@ -630,12 +633,38 @@ class QueryService:
         return component.last_verified_at >= datetime.now(UTC) - timedelta(days=max_age_days)
 
     @staticmethod
-    def _calculate_freshness(components: Iterable[Component]) -> FreshnessStatus:
-        latest_age = max(
-            (datetime.now(UTC) - component.last_verified_at for component in components),
-            default=timedelta(0),
-        )
-        if latest_age > timedelta(days=30):
+    def _calculate_freshness(
+        components: Iterable[Component],
+        *,
+        as_of: datetime | None = None,
+    ) -> FreshnessStatus:
+        """Compute freshness based on recency and explicit staleness.
+
+        A component is STALE if:
+        - it is flagged ``is_stale`` (explicitly marked by ingestion or review), or
+        - its ``last_verified_at`` is older than 30 days relative to *as_of*
+          (or wall-clock now if *as_of* is not provided).
+
+        A component is POSSIBLY_STALE if ``last_verified_at`` is 7-30 days old
+        relative to *as_of*.
+
+        For ``as_of`` queries, the reference time is the requested point in time,
+        so historical facts that were recently verified at that point are not
+        mislabeled as stale just because time has passed since then.
+        """
+        reference = as_of or datetime.now(UTC)
+        has_any_stale_flag = False
+        latest_age = timedelta(0)
+
+        for component in components:
+            if component.is_stale:
+                has_any_stale_flag = True
+            if component.last_verified_at is not None:
+                age = max(reference - component.last_verified_at, timedelta(0))
+                if age > latest_age:
+                    latest_age = age
+
+        if has_any_stale_flag or latest_age > timedelta(days=30):
             return FreshnessStatus.STALE
         if latest_age > timedelta(days=7):
             return FreshnessStatus.POSSIBLY_STALE

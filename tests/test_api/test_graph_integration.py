@@ -496,3 +496,191 @@ class TestDemoFounderWorkflows:
             "query must return provenance via 'components' field — "
             "without this, the frontend cannot show source attribution."
         )
+
+
+# ── Specific-fact assertions on seeded data ────────────────────────────
+
+
+class TestDemoSeededFacts:
+    """Assert concrete, known facts appear in the seeded graph.
+
+    These tests catch a category of failure the count-based tests miss:
+    the seed runs successfully, returns the expected number of
+    components, but the component *values* are wrong (e.g., the
+    extractor ran but produced garbage, a refactor broke the seed
+    payload wiring, or a migration rewrote content). If the Pricing
+    model no longer contains a Starter Plan with $29/mo in its value,
+    that is a release-blocking regression even if the node count is
+    unchanged.
+
+    The anchors below are the most stable seeded facts — each is
+    asserted independently so a single missing fact gives a precise
+    diagnostic instead of a vague "graph is broken" message.
+    """
+
+    async def _graph_nodes(self, client, ws_id) -> list[dict]:
+        resp = await client.get(f"/api/graph?workspace_id={ws_id}")
+        assert resp.status_code == 200
+        return resp.json()["nodes"]
+
+    @staticmethod
+    def _find_node(
+        nodes: list[dict], *, name_substr: str
+    ) -> dict | None:
+        """Return the first node whose name contains ``name_substr`` (case-insensitive)."""
+        needle = name_substr.lower()
+        return next(
+            (n for n in nodes if needle in (n.get("name") or "").lower()),
+            None,
+        )
+
+    async def test_pricing_starter_plan_carries_dollar_29(
+        self, client, demo_workspace
+    ):
+        """The Pricing model's Starter Plan must have $29 in its value."""
+        nodes = await self._graph_nodes(client, demo_workspace["workspace_id"])
+        node = self._find_node(nodes, name_substr="Starter Plan")
+        assert node is not None, (
+            "Starter Plan component not found in the seeded graph. "
+            "Check demo_seed.py _SEEDS — the Pricing model should include "
+            "a ComponentSeed with name='Starter Plan'."
+        )
+        assert "$29" in (node.get("value") or ""), (
+            f"Starter Plan value='{node.get('value')}' does not contain "
+            f"'$29'. The seed defines 'Starter Plan is $29/mo.' — if this "
+            f"value has drifted, the query smoke test SMOKE_EXPECT='$29' "
+            f"will also start failing."
+        )
+
+    async def test_pricing_enterprise_plan_carries_dollar_600(
+        self, client, demo_workspace
+    ):
+        """The Pricing model's Enterprise Plan must have $600/seat in its value."""
+        nodes = await self._graph_nodes(client, demo_workspace["workspace_id"])
+        node = self._find_node(nodes, name_substr="Enterprise Plan")
+        assert node is not None, "Enterprise Plan component missing from seeded graph"
+        assert "$600" in (node.get("value") or ""), (
+            f"Enterprise Plan value='{node.get('value')}' does not contain "
+            f"'$600'. The seed defines 'Enterprise pricing is $600/seat'."
+        )
+
+    async def test_pricing_growth_plan_carries_dollar_149(
+        self, client, demo_workspace
+    ):
+        """The Pricing model's Growth Plan must have $149 in its value."""
+        nodes = await self._graph_nodes(client, demo_workspace["workspace_id"])
+        node = self._find_node(nodes, name_substr="Growth Plan")
+        assert node is not None, "Growth Plan component missing from seeded graph"
+        assert "$149" in (node.get("value") or ""), (
+            f"Growth Plan value='{node.get('value')}' does not contain "
+            f"'$149'. The seed defines 'Growth tier is $149/mo'."
+        )
+
+    async def test_decisions_model_contains_auth0_choice(
+        self, client, demo_workspace
+    ):
+        """The Decisions model must record the Auth0 provider choice."""
+        nodes = await self._graph_nodes(client, demo_workspace["workspace_id"])
+        # Any decision node whose value names Auth0 is acceptable — the
+        # seed pins the name 'Auth Provider Decision' but we assert on
+        # content so a cosmetic rename does not break this test.
+        auth_nodes = [
+            n for n in nodes
+            if "auth0" in (n.get("value") or "").lower()
+        ]
+        assert auth_nodes, (
+            "No component in the seeded graph mentions Auth0 in its value. "
+            "demo_seed.py _SEEDS should include an 'Auth Provider Decision' "
+            "component with value='We chose Auth0 as our authentication provider.'"
+        )
+
+    async def test_decisions_model_contains_postgres_16_migration(
+        self, client, demo_workspace
+    ):
+        """The Decisions model must record the Postgres 16 migration choice."""
+        nodes = await self._graph_nodes(client, demo_workspace["workspace_id"])
+        pg_nodes = [
+            n for n in nodes
+            if "postgres 16" in (n.get("value") or "").lower()
+        ]
+        assert pg_nodes, (
+            "No component mentions Postgres 16 in its value. Check the "
+            "'DB Migration Decision' ComponentSeed in demo_seed.py."
+        )
+
+    async def test_decisions_model_contains_fastapi_framework(
+        self, client, demo_workspace
+    ):
+        """The Decisions model must record the FastAPI framework choice."""
+        nodes = await self._graph_nodes(client, demo_workspace["workspace_id"])
+        fastapi_nodes = [
+            n for n in nodes
+            if "fastapi" in (n.get("value") or "").lower()
+        ]
+        assert fastapi_nodes, (
+            "No component mentions FastAPI in its value. Check the "
+            "'Framework Decision' ComponentSeed in demo_seed.py."
+        )
+
+    async def test_roadmap_contains_sso_launch_target(
+        self, client, demo_workspace
+    ):
+        """The Roadmap model must record the SSO Q3 launch target."""
+        nodes = await self._graph_nodes(client, demo_workspace["workspace_id"])
+        sso_nodes = [
+            n for n in nodes
+            if "sso" in (n.get("name") or "").lower()
+            and "q3" in (n.get("value") or "").lower()
+        ]
+        assert sso_nodes, (
+            "No component combines an SSO-related name with a Q3 target. "
+            "Check 'SSO Launch Target' ComponentSeed in demo_seed.py."
+        )
+
+    async def test_github_insights_model_has_at_least_one_node(
+        self, client, demo_workspace
+    ):
+        """The GitHub Insights model must produce at least one component."""
+        ws_id = demo_workspace["workspace_id"]
+        # Find the GitHub Insights model in the fixture.
+        github_model = next(
+            (m for m in demo_workspace["models"] if m.name == "GitHub Insights"),
+            None,
+        )
+        assert github_model is not None, (
+            "GitHub Insights model not created by demo seed — check _SEEDS."
+        )
+        resp = await client.get(f"/api/graph/models/{github_model.id}")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["nodes"]) >= 1, (
+            "GitHub Insights model graph returned 0 nodes — "
+            "the 'CI Workflow Follow-up' ComponentSeed should surface here."
+        )
+
+    async def test_query_starter_plan_answer_includes_dollar_29(
+        self, client, demo_workspace
+    ):
+        """End-to-end: query for the Starter Plan should return a $29-bearing answer.
+
+        This is the same assertion the smoke script makes at the HTTP
+        layer — duplicating it here catches the regression inside the
+        test suite too, so CI fails before smoke does.
+        """
+        ws_id = demo_workspace["workspace_id"]
+        resp = await client.post(
+            "/api/query",
+            json={
+                "workspace_id": str(ws_id),
+                "question": "What is the Starter Plan?",
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        answer = body.get("answer") or ""
+        assert "$29" in answer, (
+            f"Query answer did not contain '$29'. Got: {answer!r}. "
+            f"Either the Starter Plan seed drifted, the extractor failed "
+            f"to pull the value, or the query service is not surfacing "
+            f"Pricing-model components."
+        )

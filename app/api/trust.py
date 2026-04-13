@@ -46,9 +46,14 @@ def _serialize_source_document_ref(document) -> dict[str, object]:
 def _serialize_review_item(item) -> ReviewItemRead:
     component = item.component
     model = component.model if component is not None else None
+    # Exclude soft-deleted source documents from provenance
     source_documents = (
         sorted(
-            component.source_documents,
+            [
+                document
+                for document in component.source_documents
+                if document.deleted_at is None
+            ],
             key=lambda document: str(_serialize_source_document_ref(document)["label"]),
         )
         if component is not None
@@ -81,7 +86,11 @@ def _serialize_review_item(item) -> ReviewItemRead:
                 note=decision.note,
                 created_at=decision.created_at,
             )
-            for decision in item.decision_history
+            for decision in sorted(
+                item.decision_history,
+                key=lambda d: (d.created_at, str(d.id)),
+                reverse=True,
+            )
         ],
     )
 
@@ -92,6 +101,7 @@ async def list_review_items(
     review_status: ReviewStatus | None = Query(default=None, alias="status"),
     severity: ReviewSeverity | None = None,
     kind: ReviewKind | None = None,
+    model_id: UUID | None = None,
     source_document_id: UUID | None = None,
     service: TrustService = Depends(get_trust_service),
 ) -> list[ReviewItemRead]:
@@ -101,6 +111,7 @@ async def list_review_items(
             status=review_status,
             severity=severity,
             kind=kind,
+            model_id=model_id,
             source_document_id=source_document_id,
         )
     except WorkspaceNotFoundError:
@@ -277,7 +288,11 @@ async def list_source_document_components(
                     note=decision.note,
                     created_at=decision.created_at,
                 )
-                for decision in (review_item.decision_history if review_item is not None else [])
+                for decision in sorted(
+                    (review_item.decision_history if review_item is not None else []),
+                    key=lambda d: (d.created_at, str(d.id)),
+                    reverse=True,
+                )
             ],
             temporal_state=component.temporal_state,
             is_stale=component.is_stale,

@@ -32,6 +32,7 @@ def api_request(
     payload: dict[str, Any] | None = None,
     params: dict[str, Any] | None = None,
     timeout: int = 30,
+    expect_json: bool = True,
 ) -> Any:
     url = f"{base_url.rstrip('/')}{path}"
     if params:
@@ -70,7 +71,17 @@ def api_request(
     try:
         return json.loads(body)
     except json.JSONDecodeError:
-        return body
+        if not expect_json:
+            return body
+        preview = body.strip().replace("\n", " ")
+        if len(preview) > 200:
+            preview = f"{preview[:197]}..."
+        raise APIError(
+            f"{method} {path} returned invalid JSON: {preview or '<empty response>'}",
+            method=method,
+            path=path,
+            detail="invalid JSON response",
+        )
 
 
 def _extract_detail(body: str) -> str | None:

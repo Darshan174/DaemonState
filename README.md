@@ -90,26 +90,85 @@ The current architecture supports:
 - hybrid lexical + semantic scoring groundwork
 - eval summaries and case-level regressions
 
-## Quick Start (5-minute self-hosted)
+## Quick Start
 
-The fastest path. Requires Docker Engine with Compose v2 and `curl`.
+The OSS v1 release candidate has two primary rails:
+
+1. demo data for immediate time-to-value
+2. real local text import for your own notes, docs, and exports
+
+Prerequisites:
+
+- Docker Engine with Compose v2
+- `python3`
+- `curl`
+- `npm` only if you plan to run the full release gate with `ctxe verify`
+
+Install the CLI once in a local virtualenv:
 
 ```bash
 git clone <this-repo> context-engine
 cd context-engine
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+Leave `LITELLM_API_KEY`, `EXTRACTION_MODEL`, and `EMBEDDING_MODEL` blank for a fully offline OSS run using the local deterministic embedder and rule-based extraction fallback.
+
+### Rail 1: Demo
+
+Boot the stack, apply migrations, and seed the canonical demo workspace:
+
+```bash
+ctxe demo
+ctxe query --workspace "Acme Accuracy Demo" "What is the Starter Plan?"
+```
+
+This rail uses the stable public contracts:
+
+- `POST /api/seed-demo`
+- `POST /api/query`
+
+### Rail 2: Real Local Import
+
+Boot the stack, import local files, then query the imported workspace:
+
+```bash
+ctxe up
+ctxe ingest ./notes
+ctxe query --workspace "Local Workspace" "What changed?"
+```
+
+Import semantics:
+
+- `ctxe ingest <path>` uses `POST /api/imports`
+- if no workspace exists, the CLI creates `Local Workspace`
+- if exactly one workspace exists, the CLI uses it
+- if multiple workspaces exist, pass `--workspace NAME_OR_UUID`
+
+### Release Gate
+
+Run the OSS v1 release gate:
+
+```bash
+ctxe verify
+```
+
+`ctxe verify` is the primary maintainer command before release. It boots the stack, runs the backend smoke flow, executes the contract tests, and runs the frontend test/build checks. Use `ctxe verify --skip-frontend` for a backend-only pass.
+
+`ctxe verify` uses the demo rail internally. It validates boot, readiness, and a canonical `POST /api/seed-demo` before handing off to the broader smoke and test matrix.
+
+### Shell Wrappers (reference)
+
+If you prefer shell-only flows, the lower-level wrappers are still available:
+
+```bash
 bash scripts/bootstrap.sh
 bash scripts/smoke.sh
 ```
 
-`scripts/bootstrap.sh` will:
-
-1. Verify `docker`, `docker compose`, and `curl` are installed.
-2. Create `.env` from `.env.example` if missing, and auto-generate an `ENCRYPTION_KEY`.
-3. `docker compose up -d --build` for Postgres (pgvector), Redis, the API, and the Celery worker.
-4. Wait for `/health/ready` to report both database and Redis as ok.
-5. Run `alembic upgrade head`, then seed the deterministic demo workspace by calling `POST /api/seed-demo` — the same route the frontend "Run Demo Workspace" flow hits, which makes the HTTP surface part of the bootstrap critical path.
-
-`scripts/smoke.sh` then verifies boot, health, seed, query, graph, brief, decisions, and sources end-to-end — use it as the one-shot credibility check after every deploy.
+They exercise the same public HTTP contracts (`/api/seed-demo`, `/api/imports`, `/api/query`, `/api/founder-brief`, `/api/decisions`, `/api/source-documents`) but are wrapper/reference surfaces, not the primary OSS operator interface.
 
 For the full self-hosting walkthrough (TLS, port security, backups, troubleshooting), see [docs/self-hosting.md](./docs/self-hosting.md).
 
@@ -122,34 +181,9 @@ Once the API is up:
 
 To run the operator/admin UI against this backend, see [Run the Frontend](#run-the-frontend) below.
 
-### Manual Quick Start (reference)
-
-If you prefer to run the steps yourself or need to customize the flow:
-
-```bash
-cp .env.example .env
-# Generate an encryption key and paste it into .env as ENCRYPTION_KEY=...
-openssl rand -base64 32
-
-docker compose up -d --build
-docker compose exec api alembic upgrade head
-curl -X POST http://localhost:8000/api/seed-demo \
-  -H 'Content-Type: application/json' \
-  -d '{}'
-curl http://localhost:8000/health/ready
-```
-
-Leave `LITELLM_API_KEY`, `EXTRACTION_MODEL`, and `EMBEDDING_MODEL` blank for a fully offline OSS run using the local deterministic embedder and rule-based extraction fallback.
-
 ## Developer CLI
 
-The stable developer entrypoint is the `ctxe` CLI.
-
-Install it once in a local virtualenv:
-
-```bash
-pip install -e ".[dev]"
-```
+`ctxe` is the canonical OSS operator entrypoint.
 
 Core commands:
 
@@ -158,42 +192,79 @@ ctxe up
 ctxe demo
 ctxe ingest ./notes
 ctxe query "What changed?"
+ctxe verify
 ```
 
 Contract and semantics:
 
-- `ctxe up` boots Docker, applies migrations, and waits for `/health/ready`. It does not create or seed a workspace.
-- `ctxe demo` uses `POST /api/seed-demo`, the same HTTP contract used by `scripts/bootstrap.sh`, `scripts/smoke.sh`, and the frontend demo flow.
-- `ctxe demo --workspace NAME_OR_UUID` seeds an existing workspace through the same `POST /api/seed-demo` contract with `workspace_id` set explicitly.
-- `ctxe ingest <path>` uses `POST /api/imports`. The API contract always requires `workspace_id`; the CLI resolves it from `--workspace`, a single existing workspace, or creates `Local Workspace` when none exists.
-- `ctxe query "..."` uses `POST /api/query` and requires an explicit or unambiguous workspace.
-- Add `--json` to `ctxe demo`, `ctxe ingest`, or `ctxe query` to print the raw API payload.
+- `ctxe up` builds the Docker services, applies migrations, and waits for `/health/ready`. It does not create or seed a workspace.
+- `ctxe demo` uses `POST /api/seed-demo`, the same HTTP contract used by the frontend demo flow and the shell bootstrap/smoke scripts.
+- `ctxe demo --workspace NAME_OR_UUID` seeds an existing workspace by passing `workspace_id` to `POST /api/seed-demo`.
+- `ctxe ingest <path>` uses `POST /api/imports`. The API contract always requires `workspace_id`; the CLI resolves it from `--workspace`, a single existing workspace, or creates `Local Workspace` when none exists. It does not silently choose among multiple workspaces.
+- `ctxe query "..."` uses `POST /api/query` and requires either `--workspace` or exactly one existing workspace.
+- `ctxe verify` runs the release gate: boot, backend smoke, contract tests, and frontend test/build checks.
+- Add `--json` to `ctxe demo`, `ctxe ingest`, `ctxe query`, or `ctxe verify` for machine-readable success and error payloads. `ctxe verify --json` includes the failing `phase` and an actionable `next_step` when the gate stops early.
 
-## Smoke Verification
+Workspace selector rules are consistent across `ctxe demo`, `ctxe ingest`, and `ctxe query`:
 
-`scripts/smoke.sh` is the one-command "is this deploy credible?" check:
+- `--workspace UUID` targets that exact workspace or fails clearly if it does not exist
+- `--workspace NAME` matches case-insensitively on exact name
+- ambiguous names fail; they are never auto-resolved
+- no selector means:
+  `ctxe demo` seeds the canonical demo workspace
+  `ctxe ingest` creates `Local Workspace` when none exists, uses the only workspace when exactly one exists, and fails when multiple exist
+  `ctxe query` uses the only workspace when exactly one exists and fails otherwise
+
+## Release Verification
+
+`ctxe verify` is the primary "is this release candidate credible?" command:
 
 ```bash
-bash scripts/smoke.sh
+ctxe verify
 ```
 
 It proves:
 
-| Step      | What it checks                                                                     |
-| --------- | ---------------------------------------------------------------------------------- |
-| BOOT      | `postgres`, `redis`, and `api` are running under docker compose                    |
-| HEALTH    | `/health` returns `ok` and `/health/ready` reports db + redis ok                   |
-| SEED      | `POST /api/seed-demo` creates the canonical demo workspace with a full knowledge   |
-|           | model + provenance graph, **and is idempotent** — the script calls it twice and    |
-|           | asserts the second call returns the same `workspaceId` with `status="existing"`    |
-| QUERY     | `POST /api/query` against the seeded workspace returns a source-backed answer      |
-| GRAPH     | `GET /api/graph` returns the workspace knowledge graph with 5+ nodes               |
-| MODELS    | `GET /api/models` lists knowledge models; model-scoped graph works                 |
-| BRIEF     | `GET /api/founder-brief` returns a structured brief for the workspace              |
-| DECISIONS | `GET /api/decisions` returns the decision register (non-empty)                     |
-| SOURCES   | `GET /api/source-documents` returns source documents with provenance               |
+| Step | What it checks |
+| ---- | -------------- |
+| BOOT | Docker services are up and migrations apply |
+| READINESS | `GET /health` returns `ok` and `GET /health/ready` returns `ready` |
+| SEED | `POST /api/seed-demo` returns the canonical demo workspace before smoke runs |
+| SMOKE | `scripts/smoke.sh` verifies seed, query, graph, models, brief, decisions, sources, and imports against the live backend (10 checks) |
+| CONTRACT TESTS | CLI + founder contract regression tests stay green |
+| FRONTEND TESTS | `npm test` passes |
+| FRONTEND BUILD | `npm run build` passes |
 
-Exit code is `0` on full pass, non-zero with a descriptive failure otherwise — safe to wire into CI or a post-deploy hook. Override `BASE_URL`, `SMOKE_QUESTION`, or `SMOKE_EXPECT` via env if needed.
+For a backend-only check, run `ctxe verify --skip-frontend`.
+
+If a phase fails, `ctxe verify` reports the exact failing phase and the next command to run for diagnosis.
+
+`bash scripts/smoke.sh` remains the backend-only smoke path. It is useful for targeted debugging or post-deploy checks, but `ctxe verify` is the release gate maintainers should treat as canonical.
+
+## Stability Notes
+
+Stable now:
+
+- `ctxe up`, `ctxe demo`, `ctxe ingest`, `ctxe query`, `ctxe verify`
+- `GET /api/workspaces`, `POST /api/workspaces`, `GET /api/workspaces/{id}`
+- `POST /api/seed-demo`
+- `POST /api/imports`
+- `GET /api/founder-brief`
+- `POST /api/query`
+- `GET /api/decisions`
+- `GET /api/source-documents`
+
+Compatibility-only:
+
+- `GET /api/query` for older callers; founder workflows should use `POST /api/query`
+- `POST /api/source-documents/upload`
+- `POST /api/imports/trigger`
+
+Not production-grade yet:
+
+- internet-facing auth and access control
+- enterprise auth/SSO
+- broad connector breadth beyond the current OSS workflow set
 
 ## Founder Workflow Contract
 
@@ -215,21 +286,26 @@ Compatibility-only routes may still exist for older admin flows, but founder wor
 
 Run this checklist for every release candidate:
 
-1. Bootstrap the stack with `ctxe up` or `bash scripts/bootstrap.sh`, then confirm `GET /health/ready` returns `status=ready` with database and Redis both `ok`.
-2. Run exactly one ingestion path:
-   Seed path: `ctxe demo` or `POST /api/seed-demo`.
-   Import path: `ctxe ingest <path>` or `POST /api/imports`.
-3. Confirm the workspace contract is explicit:
-   `ctxe demo --workspace NAME_OR_UUID` seeds the selected workspace.
+1. Run the canonical release gate: `ctxe verify`
+2. Confirm exactly one founder data rail for the release notes and docs:
+   Demo rail: `ctxe demo`
+   Real import rail: `ctxe ingest <path>`
+3. Confirm workspace semantics are explicit and non-ambiguous:
+   `ctxe demo --workspace NAME_OR_UUID` seeds the selected existing workspace.
    `ctxe ingest --workspace NAME_OR_UUID` imports into the selected workspace.
    `ctxe query --workspace NAME_OR_UUID "..."` queries that same workspace.
-4. Verify Founder Brief loads from the real backend with `GET /api/founder-brief?workspace_id=...&lookback_days=7` or `/app/brief`.
-5. Verify Query returns an answer plus provenance with `ctxe query "What changed?" --workspace ...` or `POST /api/query`.
-6. Verify Decisions load with `GET /api/decisions?workspace_id=...&include_historical=true&limit=100` or `/app/decisions`.
-7. Verify Sources load with `GET /api/source-documents?workspace_id=...&limit=25` or `/app/sources`.
-8. Run the verification matrix:
+   `ctxe ingest` and `ctxe query` do not silently choose among multiple workspaces.
+4. Spot-check the founder routes against the real backend:
+   `GET /api/workspaces`
+   `POST /api/seed-demo`
+   `POST /api/imports`
+   `GET /api/founder-brief?workspace_id=...`
+   `POST /api/query`
+   `GET /api/decisions?workspace_id=...`
+   `GET /api/source-documents?workspace_id=...`
+5. If you need to run the gate manually instead of `ctxe verify`, run:
    `bash scripts/smoke.sh`
-   `python3 -m pytest tests/test_cli/test_main.py tests/test_api/test_imports.py tests/test_api/test_admin.py::TestSeedDemoAPI tests/test_api/test_connectors_upload.py -q`
+   `python3 -m pytest tests/test_cli/test_main.py tests/test_cli/test_http.py tests/test_api/test_imports.py tests/test_api/test_admin.py::TestSeedDemoAPI tests/test_api/test_connectors_upload.py tests/test_api/test_truth_regression.py -q`
    `cd frontend && npm test`
    `cd frontend && npm run build`
 
@@ -391,7 +467,7 @@ GitHub does not require app-level env vars for the first pass. Connect via the b
 
 ## Useful Commands
 
-Backend smoke test (boot + health + seed + query):
+Backend founder-workflow smoke test (boot + health + seed + query + graph + models + brief + decisions + sources + imports):
 
 ```bash
 bash scripts/smoke.sh

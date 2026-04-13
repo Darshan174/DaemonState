@@ -34,6 +34,7 @@ VERIFY_TEST_TARGETS = (
     "tests/test_api/test_imports.py",
     "tests/test_api/test_admin.py::TestSeedDemoAPI",
     "tests/test_api/test_connectors_upload.py",
+    "tests/test_api/test_truth_regression.py",
 )
 
 
@@ -41,10 +42,23 @@ class CLIError(RuntimeError):
     """Raised when CLI execution cannot continue."""
 
 
+class VerifyPhaseError(CLIError):
+    """Raised when a specific verification phase fails."""
+
+    def __init__(self, phase: str, detail: str, *, next_step: str) -> None:
+        message = f"verify failed during {phase}: {detail}"
+        if next_step:
+            message = f"{message}. Next step: {next_step}"
+        super().__init__(message)
+        self.phase = phase
+        self.detail = detail
+        self.next_step = next_step
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ctxe",
-        description="Context Engine developer CLI.",
+        description="Context Engine OSS operator CLI.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -97,7 +111,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     verify_parser = subparsers.add_parser(
         "verify",
-        help="Run the OSS v1 release gate: boot, smoke, contract tests, and frontend checks.",
+        help="Run the OSS v1 release gate: boot, readiness, demo seed, smoke, contract tests, and frontend checks.",
     )
     verify_parser.add_argument(
         "--base-url",
@@ -130,7 +144,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ingest_parser.add_argument("path", help="File or directory to ingest")
     ingest_parser.add_argument(
         "--workspace",
-        help="Workspace name or UUID. If omitted, ctxe will resolve or create a local workspace.",
+        help=(
+            "Workspace name or UUID. If omitted, ctxe uses the only workspace, "
+            "creates Local Workspace when none exist, and fails when multiple exist."
+        ),
     )
     ingest_parser.add_argument(
         "--base-url",
@@ -152,7 +169,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     query_parser.add_argument("question", help="Question to send to the query API")
     query_parser.add_argument(
         "--workspace",
-        help="Workspace name or UUID. If omitted, ctxe auto-resolves when unambiguous.",
+        help=(
+            "Workspace name or UUID. If omitted, ctxe uses the only workspace "
+            "and fails when none or multiple exist."
+        ),
     )
     query_parser.add_argument(
         "--base-url",
@@ -209,7 +229,10 @@ def run_demo(args: argparse.Namespace) -> int:
         )
         workspace_id = workspace["id"]
 
-    response = seed_demo_workspace(args.base_url, workspace_id=workspace_id)
+    response = validate_seed_demo_response(
+        seed_demo_workspace(args.base_url, workspace_id=workspace_id),
+        context=f"POST {SEED_DEMO_PATH}",
+    )
 
     if args.json_output:
         print_json(response)
@@ -223,80 +246,127 @@ def run_demo(args: argparse.Namespace) -> int:
 
 
 def run_verify(args: argparse.Namespace) -> int:
-    project_root = boot_stack(args.base_url, wait_timeout=args.wait_timeout, quiet=True)
-    results: list[dict[str, str]] = [
-        {
-            "step": "boot",
-            "status": "ok",
-            "detail": f"stack ready at {args.base_url.rstrip('/')}",
-        }
-    ]
+    results: list[dict[str, str]] = []
 
-    smoke = run_subprocess(
-        ["bash", "scripts/smoke.sh"],
-        cwd=project_root,
-        capture_output=True,
-        env={
-            "BASE_URL": args.base_url,
-            "SMOKE_QUESTION": DEFAULT_VERIFY_QUESTION,
-            "SMOKE_EXPECT": DEFAULT_VERIFY_EXPECT,
-        },
+    project_root = _verify_phase(
+        "boot",
+        lambda: boot_stack(args.base_url, wait_timeout=args.wait_timeout, quiet=True),
+        next_step=_verify_phase_next_step("boot", base_url=args.base_url),
     )
-    results.append(
-        {
-            "step": "smoke",
-            "status": "ok",
-            "detail": _last_output_line(smoke.stdout) or "backend founder workflows passed",
-        }
+    _record_verify_result(
+        results,
+        step="boot",
+        detail=f"docker services, migrations, and API boot completed at {args.base_url.rstrip('/')}",
+        json_output=args.json_output,
     )
 
-    contract_tests = run_subprocess(
-        [sys.executable, "-m", "pytest", *VERIFY_TEST_TARGETS, "-q"],
-        cwd=project_root,
-        capture_output=True,
+    health, readiness = _verify_phase(
+        "readiness",
+        lambda: check_verify_readiness(args.base_url),
+        next_step=_verify_phase_next_step("readiness", base_url=args.base_url),
     )
-    results.append(
-        {
-            "step": "contract-tests",
-            "status": "ok",
-            "detail": _last_output_line(contract_tests.stdout) or "contract tests passed",
-        }
+    readiness_checks = readiness.get("checks", {})
+    _record_verify_result(
+        results,
+        step="readiness",
+        detail=(
+            f"/health={health.get('status')} | /health/ready={readiness.get('status')} "
+            f"(database={readiness_checks.get('database', 'unknown')}, "
+            f"redis={readiness_checks.get('redis', 'unknown')})"
+        ),
+        json_output=args.json_output,
+    )
+
+    seed = _verify_phase(
+        "seed",
+        lambda: validate_seed_demo_response(
+            seed_demo_workspace(args.base_url),
+            context=f"POST {SEED_DEMO_PATH}",
+        ),
+        next_step=_verify_phase_next_step("seed", base_url=args.base_url),
+    )
+    _record_verify_result(
+        results,
+        step="seed",
+        detail=f"{seed['workspaceName']} ({seed['workspaceId']}) [{seed['status']}]",
+        json_output=args.json_output,
+    )
+
+    smoke = _verify_phase(
+        "smoke",
+        lambda: run_subprocess(
+            ["bash", "scripts/smoke.sh"],
+            cwd=project_root,
+            capture_output=True,
+            env={
+                "BASE_URL": args.base_url,
+                "SMOKE_QUESTION": DEFAULT_VERIFY_QUESTION,
+                "SMOKE_EXPECT": DEFAULT_VERIFY_EXPECT,
+            },
+        ),
+        next_step=_verify_phase_next_step("smoke", base_url=args.base_url),
+    )
+    _record_verify_result(
+        results,
+        step="smoke",
+        detail=_last_output_line(smoke.stdout) or "backend founder workflows passed",
+        json_output=args.json_output,
+    )
+
+    contract_tests = _verify_phase(
+        "contract-tests",
+        lambda: run_subprocess(
+            [sys.executable, "-m", "pytest", *VERIFY_TEST_TARGETS, "-q"],
+            cwd=project_root,
+            capture_output=True,
+        ),
+        next_step=_verify_phase_next_step("contract-tests", base_url=args.base_url),
+    )
+    _record_verify_result(
+        results,
+        step="contract-tests",
+        detail=_last_output_line(contract_tests.stdout) or "contract tests passed",
+        json_output=args.json_output,
     )
 
     if not args.skip_frontend:
         frontend_dir = project_root / "frontend"
-        frontend_tests = run_subprocess(
-            ["npm", "test"],
-            cwd=frontend_dir,
-            capture_output=True,
+        frontend_tests = _verify_phase(
+            "frontend-tests",
+            lambda: run_subprocess(
+                ["npm", "test"],
+                cwd=frontend_dir,
+                capture_output=True,
+            ),
+            next_step=_verify_phase_next_step("frontend-tests", base_url=args.base_url),
         )
-        results.append(
-            {
-                "step": "frontend-tests",
-                "status": "ok",
-                "detail": _last_output_line(frontend_tests.stdout) or "frontend tests passed",
-            }
+        _record_verify_result(
+            results,
+            step="frontend-tests",
+            detail=_last_output_line(frontend_tests.stdout) or "frontend tests passed",
+            json_output=args.json_output,
         )
 
-        frontend_build = run_subprocess(
-            ["npm", "run", "build"],
-            cwd=frontend_dir,
-            capture_output=True,
+        frontend_build = _verify_phase(
+            "frontend-build",
+            lambda: run_subprocess(
+                ["npm", "run", "build"],
+                cwd=frontend_dir,
+                capture_output=True,
+            ),
+            next_step=_verify_phase_next_step("frontend-build", base_url=args.base_url),
         )
-        results.append(
-            {
-                "step": "frontend-build",
-                "status": "ok",
-                "detail": _last_output_line(frontend_build.stdout) or "frontend build passed",
-            }
+        _record_verify_result(
+            results,
+            step="frontend-build",
+            detail=_last_output_line(frontend_build.stdout) or "frontend build passed",
+            json_output=args.json_output,
         )
 
     if args.json_output:
         print_json({"status": "ok", "steps": results})
         return 0
 
-    for item in results:
-        print(f"{item['step']}: {item['detail']}")
     print("\nOSS v1 verification passed.")
     return 0
 
@@ -317,15 +387,18 @@ def run_ingest(args: argparse.Namespace) -> int:
     if not documents:
         raise CLIError(f"No readable text files found in {source_path}")
 
-    response = api_request(
-        args.base_url,
-        "POST",
-        IMPORTS_PATH,
-        payload={
-            "workspace_id": workspace["id"],
-            "documents": documents,
-        },
-        timeout=120,
+    response = validate_import_response(
+        api_request(
+            args.base_url,
+            "POST",
+            IMPORTS_PATH,
+            payload={
+                "workspace_id": workspace["id"],
+                "documents": documents,
+            },
+            timeout=120,
+        ),
+        context=f"POST {IMPORTS_PATH}",
     )
 
     if args.json_output:
@@ -369,12 +442,15 @@ def run_query(args: argparse.Namespace) -> int:
         "max_age_days": args.max_age_days,
         "as_of": args.as_of,
     }
-    response = api_request(
-        args.base_url,
-        "POST",
-        QUERY_PATH,
-        payload=payload,
-        timeout=60,
+    response = validate_query_response(
+        api_request(
+            args.base_url,
+            "POST",
+            QUERY_PATH,
+            payload=payload,
+            timeout=60,
+        ),
+        context=f"POST {QUERY_PATH}",
     )
 
     if args.json_output:
@@ -398,6 +474,9 @@ def resolve_workspace(
     selector: str | None,
     create_if_missing: bool,
 ) -> dict[str, Any]:
+    if selector is not None and not selector.strip():
+        raise CLIError("Workspace selector cannot be blank.")
+
     workspaces = list_workspaces(base_url)
 
     if selector:
@@ -412,8 +491,8 @@ def resolve_workspace(
                 f"Workspace not found: {selector}. Available workspaces: {available}"
             )
         raise CLIError(
-            "No workspaces found. Run 'ctxe demo' for sample data or "
-            "'ctxe ingest <path>' to create a workspace."
+            f"Workspace not found: {selector}. No workspaces exist yet. "
+            "Run 'ctxe demo' for sample data or 'ctxe ingest <path>' to create a workspace."
         )
 
     if len(workspaces) == 1:
@@ -442,7 +521,10 @@ def resolve_workspace_selector(
 ) -> dict[str, Any] | None:
     if looks_like_uuid(selector):
         try:
-            return api_request(base_url, "GET", f"{WORKSPACES_PATH}/{selector}")
+            return validate_workspace_response(
+                api_request(base_url, "GET", f"{WORKSPACES_PATH}/{selector}"),
+                context=f"GET {WORKSPACES_PATH}/{selector}",
+            )
         except APIError as exc:
             if exc.status_code == 404:
                 return None
@@ -460,19 +542,99 @@ def resolve_workspace_selector(
 
 def list_workspaces(base_url: str) -> list[dict[str, Any]]:
     workspaces = api_request(base_url, "GET", WORKSPACES_PATH)
-    return workspaces if isinstance(workspaces, list) else []
+    if not isinstance(workspaces, list):
+        raise CLIError(f"GET {WORKSPACES_PATH} returned an unexpected response shape.")
+    return [
+        validate_workspace_response(item, context=f"GET {WORKSPACES_PATH}")
+        for item in workspaces
+    ]
 
 
 def create_workspace(base_url: str, name: str) -> dict[str, Any]:
-    return api_request(
-        base_url,
-        "POST",
-        WORKSPACES_PATH,
-        payload={
-            "name": name,
-            "description": "Workspace created by the ctxe CLI.",
-        },
+    return validate_workspace_response(
+        api_request(
+            base_url,
+            "POST",
+            WORKSPACES_PATH,
+            payload={
+                "name": name,
+                "description": "Workspace created by the ctxe CLI.",
+            },
+        ),
+        context=f"POST {WORKSPACES_PATH}",
     )
+
+
+def validate_workspace_response(payload: Any, *, context: str) -> dict[str, Any]:
+    data = require_mapping(payload, context=context)
+    workspace_id = data.get("id")
+    workspace_name = data.get("name")
+    if not isinstance(workspace_id, str) or not workspace_id:
+        raise CLIError(f"{context} response missing 'id'.")
+    if not isinstance(workspace_name, str) or not workspace_name.strip():
+        raise CLIError(f"{context} response missing 'name'.")
+    return data
+
+
+def validate_seed_demo_response(payload: Any, *, context: str) -> dict[str, Any]:
+    data = require_mapping(payload, context=context)
+    for key in ("workspaceId", "workspaceName", "status", "seededCaseCount"):
+        if key not in data:
+            raise CLIError(f"{context} response missing '{key}'.")
+    return data
+
+
+def validate_import_response(payload: Any, *, context: str) -> dict[str, Any]:
+    data = require_mapping(payload, context=context)
+    required_keys = (
+        "total_documents",
+        "created_documents",
+        "updated_documents",
+        "unchanged_documents",
+        "processed_documents",
+        "failed_documents",
+        "documents",
+    )
+    for key in required_keys:
+        if key not in data:
+            raise CLIError(f"{context} response missing '{key}'.")
+    if not isinstance(data["documents"], list):
+        raise CLIError(f"{context} response field 'documents' must be a list.")
+    return data
+
+
+def validate_query_response(payload: Any, *, context: str) -> dict[str, Any]:
+    data = require_mapping(payload, context=context)
+    for key in ("answer", "confidence", "freshness"):
+        if key not in data:
+            raise CLIError(f"{context} response missing '{key}'.")
+    sources = data.get("sources")
+    if sources is not None and not isinstance(sources, list):
+        raise CLIError(f"{context} response field 'sources' must be a list when present.")
+    return data
+
+
+def check_verify_readiness(base_url: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    health = require_mapping(
+        api_request(base_url, "GET", HEALTH_PATH, timeout=10),
+        context=f"GET {HEALTH_PATH}",
+    )
+    if health.get("status") != "ok":
+        raise CLIError(f"GET {HEALTH_PATH} did not return status=ok.")
+
+    readiness = require_mapping(
+        api_request(base_url, "GET", READINESS_PATH, timeout=10),
+        context=f"GET {READINESS_PATH}",
+    )
+    if readiness.get("status") != "ready":
+        raise CLIError(f"GET {READINESS_PATH} did not return status=ready.")
+    return health, readiness
+
+
+def require_mapping(payload: Any, *, context: str) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise CLIError(f"{context} returned an unexpected response shape.")
+    return payload
 
 
 def format_workspace_options(workspaces: list[dict[str, Any]]) -> str:
@@ -512,6 +674,41 @@ def _last_output_line(output: str | None) -> str | None:
         return None
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     return lines[-1] if lines else None
+
+
+def _record_verify_result(
+    results: list[dict[str, str]],
+    *,
+    step: str,
+    detail: str,
+    json_output: bool,
+) -> None:
+    item = {"step": step, "status": "ok", "detail": detail}
+    results.append(item)
+    if not json_output:
+        print(f"{step}: {detail}")
+
+
+def _verify_phase(name: str, fn, *, next_step: str):
+    try:
+        return fn()
+    except (APIError, CLIError) as exc:
+        detail = str(exc).strip() or f"{name} failed"
+        raise VerifyPhaseError(name, detail, next_step=next_step) from exc
+
+
+def _verify_phase_next_step(name: str, *, base_url: str) -> str:
+    base = base_url.rstrip("/")
+    next_steps = {
+        "boot": "run 'docker compose ps' and 'docker compose logs --tail 40 api'",
+        "readiness": f"probe '{base}{HEALTH_PATH}' and '{base}{READINESS_PATH}', then inspect 'docker compose logs --tail 40 api postgres redis'",
+        "seed": f"rerun 'curl -X POST {base}{SEED_DEMO_PATH} -H \"Content-Type: application/json\" -d \"{{}}\"'",
+        "smoke": "rerun 'bash scripts/smoke.sh' for the full backend founder-workflow trace",
+        "contract-tests": f"rerun 'python3 -m pytest {' '.join(VERIFY_TEST_TARGETS)} -q'",
+        "frontend-tests": "rerun 'cd frontend && npm test'",
+        "frontend-build": "rerun 'cd frontend && npm run build'",
+    }
+    return next_steps.get(name, "inspect the preceding step output and rerun the failing phase")
 
 
 def find_project_root() -> Path:
@@ -621,7 +818,10 @@ def wait_for_ready(base_url: str, *, timeout_seconds: int) -> None:
     last_error: Exception | None = None
     while time.monotonic() < deadline:
         try:
-            ready = api_request(base_url, "GET", READINESS_PATH, timeout=5)
+            ready = require_mapping(
+                api_request(base_url, "GET", READINESS_PATH, timeout=5),
+                context=f"GET {READINESS_PATH}",
+            )
         except Exception as exc:  # pragma: no cover - exercised through CLI integration
             last_error = exc
             time.sleep(2)
@@ -640,7 +840,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(args.func(args))
     except (APIError, CLIError, ImporterError) as exc:
-        print(str(exc), file=sys.stderr)
+        if getattr(args, "json_output", False):
+            payload = {"status": "error", "detail": str(exc)}
+            if isinstance(exc, VerifyPhaseError):
+                payload["phase"] = exc.phase
+                payload["next_step"] = exc.next_step
+            print_json(payload)
+        else:
+            print(str(exc), file=sys.stderr)
         return 1
 
 

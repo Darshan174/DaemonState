@@ -132,7 +132,7 @@ describe("Dashboard", () => {
     expect(screen.queryByText("Welcome to Context Engine")).not.toBeInTheDocument();
   });
 
-  it("renders trust status counts and review queue link", () => {
+  it("renders recent changes card and view timeline link", () => {
     useDashboard.mockReturnValue({
       isLoading: false,
       isError: false,
@@ -146,22 +146,12 @@ describe("Dashboard", () => {
       },
       refetch: vi.fn(),
     });
-    useReviewQueue.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      data: [
-        { id: "r1", status: "needs_review", kind: "conflict" },
-        { id: "r2", status: "needs_review", kind: "low_confidence" },
-        { id: "r3", status: "superseded", kind: "superseded_fact" },
-      ],
-      refetch: vi.fn(),
-    });
 
     renderDashboard();
 
-    expect(screen.getByText("Trust Status")).toBeInTheDocument();
-    expect(screen.getByText(/2 items need review/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Trust Status.*Check trust/i })).toHaveAttribute("href", "/app/review");
+    expect(screen.getByText("Recent Changes")).toBeInTheDocument();
+    expect(screen.getByText(/View a single timeline of all workspace context updates/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Recent Changes.*View timeline/i })).toHaveAttribute("href", "/app/changes");
   });
 
   it("shows onboarding when no sources exist", () => {

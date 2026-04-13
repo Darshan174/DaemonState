@@ -4,7 +4,7 @@ Stable founder-workflow contracts:
 - workspace bootstrap: ``/api/workspaces`` and ``/api/seed-demo``
 - local import: ``/api/imports``
 - founder brief: ``/api/founder-brief``
-- query: ``/api/query``
+- query: ``POST /api/query``
 - decisions: ``/api/decisions``
 - sources: ``/api/source-documents``
 
@@ -16,13 +16,16 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api import admin, briefing, connectors, decisions, evals, graph, imports, knowledge, query, trust
+from app.api import briefing, connectors, decisions, evals, graph, imports, knowledge, query, trust, workspaces
 
 
 api_router = APIRouter()
 
 # Stable founder-facing workflow routes.
-api_router.include_router(admin.router, prefix="", tags=["admin"])
+# Note: ``connectors.router`` is mounted here because it owns
+# ``GET /api/source-documents``. Compatibility-only upload routes remain
+# isolated behind that module and are not part of the founder contract.
+api_router.include_router(workspaces.router, prefix="", tags=["workspaces"])
 api_router.include_router(imports.router, prefix="", tags=["imports"])
 api_router.include_router(briefing.router, prefix="", tags=["briefing"])
 api_router.include_router(decisions.router, prefix="", tags=["decisions"])

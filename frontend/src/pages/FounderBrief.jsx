@@ -79,9 +79,6 @@ export default function FounderBrief() {
           <Link to="/app/decisions" className="font-medium text-brand-700 hover:text-brand-800">
             Open decision register
           </Link>
-          <Link to="/app/accuracy" className="font-medium text-brand-700 hover:text-brand-800">
-            Open accuracy dashboard
-          </Link>
         </div>
       </div>
 

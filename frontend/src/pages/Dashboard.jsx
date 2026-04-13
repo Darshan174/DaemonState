@@ -1,15 +1,9 @@
 import { Link } from "react-router-dom";
 import {
-  useConnectorProcessingSummary,
-  useConnectors,
   useDashboard,
-  useEvalSummary,
-  useReviewQueue,
 } from "../api/hooks";
-import StatusView from "../components/StatusView";
 import Onboarding from "../components/Onboarding";
 import { 
-  ShieldCheck, 
   Search, 
   MessageSquare, 
   ArrowRight,
@@ -21,8 +15,6 @@ import {
 
 export default function Dashboard() {
   const query = useDashboard();
-  const connectorsQuery = useConnectors();
-  const reviewQuery = useReviewQueue();
   
   if (query.isLoading) {
     return (
@@ -34,8 +26,6 @@ export default function Dashboard() {
 
   const { stats = [], activity = [] } = query.data || {};
   const sourceCount = stats.find((stat) => stat.label === "Sources")?.value ?? 0;
-  const reviewItems = reviewQuery.data ?? [];
-  const needsReviewCount = reviewItems.filter((item) => item.status === "needs_review").length;
 
   // Show onboarding if no sources connected
   if (sourceCount === 0) {
@@ -82,14 +72,11 @@ export default function Dashboard() {
           cta="Review decisions"
         />
         <FounderCard 
-          icon={<ShieldCheck className="w-6 h-6 text-amber-600" />}
-          title="Trust Status"
-          description={needsReviewCount > 0 
-            ? `${needsReviewCount} items need review to maintain workspace accuracy.` 
-            : "Your workspace context is currently high-confidence and fully reviewed."}
-          to="/app/review"
-          cta="Check trust"
-          alert={needsReviewCount > 0}
+          icon={<Clock className="w-6 h-6 text-amber-600" />}
+          title="Recent Changes"
+          description="View a single timeline of all workspace context updates, source additions, and decisions."
+          to="/app/changes"
+          cta="View timeline"
         />
       </div>
 
@@ -146,18 +133,18 @@ export default function Dashboard() {
               <div>
                 <p className="text-sm font-bold text-white">Trust Layer Note</p>
                 <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                  Context Engine prioritizes "Current Truth". If you notice conflicting answers, 
+                  Context Engine prioritizes "Current Truth". If you notice conflicting answers,
                   head to the Review Queue to resolve provenance overlaps.
                 </p>
               </div>
             </div>
           </div>
-          
-          <Link 
-            to="/app/connectors" 
+
+          <Link
+            to="/app/sources"
             className="mt-8 w-full py-3 bg-white/10 hover:bg-white/20 border border-white/10 rounded-xl text-sm font-bold transition-all text-center block"
           >
-            Manage Data Connectors
+            Explore workspace sources
           </Link>
         </div>
       </div>

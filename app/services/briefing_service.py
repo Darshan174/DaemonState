@@ -35,7 +35,6 @@ from app.services.query_service import QueryService
 from app.services.truth_visibility import (
     history_where,
     is_component_visible_in_current_truth,
-    is_component_visible_in_history,
 )
 
 _STOPWORDS = {
