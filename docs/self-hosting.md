@@ -19,6 +19,8 @@ This guide targets a solo founder or small team deploying on a cheap Linux VPS (
 
 No external API keys are required. The default path runs fully offline using a deterministic local embedder and rule-based extractor.
 
+Looking for ops playbooks (backup, upgrade, rollback, triage)? See [runbook.md](runbook.md). Looking for ready-made reverse-proxy configs? See [`deploy/`](../deploy/).
+
 ---
 
 ## Step 1: Install Docker
@@ -113,6 +115,10 @@ ctxe verify
 
 Skip this unless you are validating a full-stack contract change or cutting a release. `bash scripts/smoke.sh` is the supported day-to-day verification path for self-hosted deployments.
 
+### When smoke fails
+
+Run `bash scripts/diagnose.sh --tar` to collect a runtime snapshot (container status, logs, DB stats, Redis state, API health, redacted `.env`) into a timestamped tarball under `diagnostics/`. Then consult [runbook.md](runbook.md) — specifically the [*What broke? — triage*](runbook.md#what-broke--triage) section — which maps symptoms in the snapshot to concrete fixes.
+
 ---
 
 ## Step 4: Run the Frontend (optional)
@@ -131,58 +137,53 @@ The Vite dev server proxies API requests to `http://localhost:8000`. If the API 
 
 ## Securing the Deployment
 
+### Safer-by-default port binding
+
+As of the latest compose file, **all published host ports bind to `127.0.0.1` by default**:
+
+```yaml
+# docker-compose.yml excerpt
+ports:
+  - "${HOST_POSTGRES_BIND:-127.0.0.1}:${HOST_POSTGRES_PORT:-5432}:5432"
+  - "${HOST_REDIS_BIND:-127.0.0.1}:${HOST_REDIS_PORT:-6379}:6379"
+  - "${HOST_API_BIND:-127.0.0.1}:${HOST_API_PORT:-8000}:8000"
+```
+
+This means Postgres, Redis, and the API are only reachable from the host itself. A reverse proxy running on the same host can still talk to them via loopback, but traffic from the internet cannot. **This is the correct default.**
+
+If you need to reach the API from another device on your LAN (e.g., a local dev machine with no reverse proxy), override explicitly in `.env`:
+
+```bash
+HOST_API_BIND=0.0.0.0
+```
+
+Do **not** override `HOST_POSTGRES_BIND` or `HOST_REDIS_BIND` unless you understand the risk — a publicly-reachable Redis is equivalent to handing out your Celery queue.
+
 ### TLS with a Reverse Proxy
 
-Never expose the raw API port to the public internet. Put a TLS-terminating reverse proxy in front of it.
+Never expose the raw API port to the public internet. Put a TLS-terminating reverse proxy in front of it. Ready-made configs live in [`deploy/`](../deploy/):
 
-**Caddy** (easiest — auto-TLS with Let's Encrypt):
+- [`deploy/caddy/Caddyfile`](../deploy/caddy/Caddyfile) — fastest path, auto-TLS via Let's Encrypt, zero cert management.
+- [`deploy/nginx/context-engine.conf`](../deploy/nginx/context-engine.conf) — for hosts that already run nginx; cert via certbot.
+- [`deploy/README.md`](../deploy/README.md) — which one to use when, plus the pre-expose checklist.
 
-```
-# /etc/caddy/Caddyfile
-your-domain.example.com {
-    reverse_proxy localhost:8000
-}
-```
+**Quickest path (Caddy):**
 
 ```bash
 sudo apt install caddy
-sudo systemctl enable caddy
-sudo systemctl start caddy
+sudo cp deploy/caddy/Caddyfile /etc/caddy/Caddyfile
+# Edit /etc/caddy/Caddyfile — replace context-engine.example.com with your domain.
+sudo systemctl reload caddy
+
+# Verify
+curl -sS https://your-domain.example.com/health
 ```
 
-**nginx** (manual cert management):
-
-```nginx
-server {
-    listen 443 ssl;
-    server_name your-domain.example.com;
-    ssl_certificate     /etc/letsencrypt/live/your-domain.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/your-domain.example.com/privkey.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
+The shipped configs include commented-out snippets for basic auth and IP allow-listing — the two quickest ways to lock down a demo while you figure out a real identity story.
 
 ### Lock Down Ports
 
-Postgres and Redis must never be reachable from the public internet.
-
-In `.env`:
-
-```bash
-HOST_POSTGRES_PORT=127.0.0.1:5432
-HOST_REDIS_PORT=127.0.0.1:6379
-```
-
-Or remove their `ports:` entries entirely from `docker-compose.yml` — the containers communicate over the Docker network without published ports.
-
-If your VPS has a firewall (e.g., `ufw`):
+With the default 127.0.0.1 bindings above, the only port that needs to be reachable from the internet is the reverse proxy (80/443). If your VPS has a firewall (e.g., `ufw`):
 
 ```bash
 sudo ufw allow 22/tcp    # SSH
@@ -190,6 +191,17 @@ sudo ufw allow 80/tcp    # HTTP (redirect to HTTPS)
 sudo ufw allow 443/tcp   # HTTPS
 sudo ufw enable
 ```
+
+Verify from a different host that Postgres, Redis, and the raw API are not reachable:
+
+```bash
+# From a machine that is NOT the VPS:
+curl -sS --max-time 5 http://your-vps-ip:8000/health && echo "LEAKED" || echo "blocked (good)"
+curl -sS --max-time 5 http://your-vps-ip:5432/         && echo "LEAKED" || echo "blocked (good)"
+curl -sS --max-time 5 http://your-vps-ip:6379/         && echo "LEAKED" || echo "blocked (good)"
+```
+
+All three should report `blocked (good)`.
 
 ### Authentication
 
@@ -210,34 +222,23 @@ All stateful data lives in two named Docker volumes:
 
 `docker compose down` preserves these volumes. Only `docker compose down -v` destroys them.
 
-### SQL Backup
+**Quick backup:**
 
 ```bash
-# Dump — portable across Postgres minor versions
 docker compose exec -T postgres \
     pg_dump -U postgres -d context_engine --no-owner --format=custom \
-    > "context_engine-$(date +%Y%m%d-%H%M%S).dump"
+    > "context_engine-$(date -u +%Y%m%dT%H%M%SZ).dump"
 ```
 
-### Restore
+**Quick restore:**
 
 ```bash
 docker compose exec -T postgres \
-    pg_restore -U postgres -d context_engine --clean --if-exists \
-    < context_engine-YYYYMMDD-HHMMSS.dump
+    pg_restore -U postgres -d context_engine --clean --if-exists --no-owner \
+    < context_engine-YYYYMMDDTHHMMSSZ.dump
 ```
 
-### Automated Nightly Backup
-
-Add to crontab (`crontab -e`):
-
-```
-0 3 * * * cd /path/to/context-engine && docker compose exec -T postgres pg_dump -U postgres -d context_engine --no-owner --format=custom > /backups/context_engine-$(date +\%Y\%m\%d).dump 2>&1
-```
-
-Rotate old backups with `find /backups -name '*.dump' -mtime +14 -delete`.
-
-For volume-level backups, snapshot the Docker volume directory (typically `/var/lib/docker/volumes/`) while the stack is stopped, or use your provider's block-storage snapshots.
+For automated nightly backups, rotation, off-host copies, sanity-checking a backup without overwriting production, and the full restore-into-fresh-stack path, see [runbook.md → Backups](runbook.md#backups) and [runbook.md → Restore](runbook.md#restore).
 
 ---
 
@@ -245,33 +246,24 @@ For volume-level backups, snapshot the Docker volume directory (typically `/var/
 
 ```bash
 cd context-engine
-git pull origin main
 
-# Rebuild and restart — named volumes persist.
+# 1. Take a backup BEFORE upgrading (strongly recommended).
+docker compose exec -T postgres pg_dump -U postgres -d context_engine \
+    --no-owner --format=custom \
+    > "/backups/context_engine-pre-upgrade-$(date -u +%Y%m%dT%H%M%SZ).dump"
+
+# 2. Pull + rebuild. Named volumes persist across this command.
+git pull origin main
 docker compose up -d --build
 
-# Apply any new migrations.
+# 3. Apply any new migrations.
 docker compose exec -T api alembic upgrade head
 
-# Verify the upgrade.
-bash scripts/smoke.sh    # backend smoke — the supported self-host path
-ctxe verify              # optional: full maintainer release gate (needs venv + Node.js)
+# 4. Verify — smoke is the supported self-host verification path.
+bash scripts/smoke.sh
 ```
 
-### Rollback
-
-If smoke fails after an upgrade:
-
-1. **Check logs first** — `docker compose logs --tail 60 api` usually reveals the cause.
-2. **Migration issue** — try `docker compose exec api alembic stamp head` then `alembic upgrade head`.
-3. **Code rollback** — if the issue is in the new code, revert to the previous commit:
-   ```bash
-   git log --oneline -5          # find the previous good commit
-   git checkout <good-commit>
-   docker compose up -d --build
-   bash scripts/smoke.sh
-   ```
-4. **Data rollback** — if a migration corrupted data, restore from backup (see Persistent Storage section above), then checkout the matching code version.
+If smoke fails after an upgrade, see [runbook.md → Rollback](runbook.md#rollback) for the full code-vs-data rollback decision tree. For zero-downtime caveats and the longer upgrade playbook (including `alembic current`/`heads` comparison), see [runbook.md → Upgrade](runbook.md#upgrade).
 
 ---
 
@@ -316,6 +308,8 @@ Disk grows with source documents + embeddings. Budget ~1 GB per 50k average-size
 
 ## Troubleshooting
 
+**Start here:** `bash scripts/diagnose.sh --tar` writes a timestamped snapshot to `diagnostics/` containing container status, logs (api/worker/postgres/redis, 200 lines each), API health, DB row counts and table sizes, Redis info, Celery queue depth, and a redacted `.env`. The tarball is safe to attach to a bug report (secrets are masked). For a symptom-driven triage walkthrough using the snapshot contents, see [runbook.md → *What broke? — triage*](runbook.md#what-broke--triage).
+
 ### API won't start
 
 ```bash
@@ -326,6 +320,7 @@ Common causes:
 - **`python-multipart` missing**: Should be fixed in current builds. If you see this error, rebuild: `docker compose up -d --build api`
 - **Database not ready**: The API waits for Postgres via `depends_on: service_healthy`. If Postgres is slow to start, increase `HEALTH_TIMEOUT_S` in bootstrap.
 - **Port conflict**: Another process is using 8000/5432/6379. Override in `.env`: `HOST_API_PORT=9000`
+- **`HOST_API_BIND=127.0.0.1` means curl from another host fails**: By design — the API is bound to loopback only and expected to live behind a reverse proxy. From the host itself, `curl http://localhost:8000/health` works. To expose directly on a LAN, set `HOST_API_BIND=0.0.0.0` in `.env` and restart.
 
 ### Migrations fail
 
@@ -352,11 +347,11 @@ Check the response body. Common issues:
 
 ### Smoke fails at other steps
 
-Every smoke failure emits a `DIAGNOSTIC SNAPSHOT` block to stderr containing `docker compose ps` output and the last 40 lines of api / worker / postgres / redis logs — read that first. Each failure message also carries an inline hint. If you still need to dig deeper:
+Every smoke failure emits a `DIAGNOSTIC SNAPSHOT` block to stderr containing `docker compose ps` output and the last 40 lines of api / worker / postgres / redis logs — read that first. Each failure message also carries an inline hint. For a deeper post-failure snapshot (DB row counts, Redis queue depth, alembic current, redacted config), run `bash scripts/diagnose.sh --tar` and cross-reference with the [runbook triage guide](runbook.md#what-broke--triage).
 
 | Smoke step | First thing to check |
 |---|---|
-| BOOT | `docker compose ps` — is each of postgres/redis/api/worker running? The Celery worker is required; set `SMOKE_SKIP_WORKER=1` only if you have intentionally removed it |
+| BOOT | `docker compose ps` — is each of postgres/redis/api/worker running? The Celery worker is required; set `SMOKE_SKIP_WORKER=1` only if you have intentionally removed it. BOOT also checks Celery queue depth via `redis-cli LLEN celery`; a growing queue usually means the worker is stuck — see [runbook.md → Queue backlog](runbook.md#queue-backlog). |
 | HEALTH | `docker compose logs postgres` and `docker compose logs redis` |
 | SEED | Rebuild API: `docker compose up -d --build api`. If seed returns 200 but smoke still fails, the post-seed graph self-check in `bootstrap.sh` catches empty-graph regressions earlier |
 | QUERY | `docker compose logs api` — look for extraction/embedding errors |
@@ -374,9 +369,11 @@ docker system df -v
 docker volume ls
 ```
 
-Prune unused images/containers: `docker system prune -f`. For Postgres specifically, vacuum: `docker compose exec postgres psql -U postgres -d context_engine -c "VACUUM FULL"`.
+Prune unused images/containers: `docker system prune -f`. For Postgres specifically, vacuum: `docker compose exec postgres psql -U postgres -d context_engine -c "VACUUM FULL"`. For the fuller disk-pressure playbook (table size breakdown, analyze after big deletes, when to expand the volume), see [runbook.md → Disk pressure](runbook.md#disk-pressure).
 
 ### Reset everything
+
+This destroys all data. **Take a backup first** if there's anything you want to keep (see [runbook.md → Backups](runbook.md#backups) or the quick dump above).
 
 ```bash
 docker compose down -v   # Destroys all data!

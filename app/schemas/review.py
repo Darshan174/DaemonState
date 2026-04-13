@@ -71,8 +71,8 @@ class ReviewItemPage(BaseModel):
 
     items: list[ReviewItemRead]
     total: int = Field(ge=0)
-    limit: int = Field(ge=1)
-    offset: int = Field(ge=0)
+    limit: int | None = Field(default=None, ge=1)
+    offset: int | None = Field(default=None, ge=0)
     has_more: bool
 
     @computed_field  # type: ignore[prop-decorator]

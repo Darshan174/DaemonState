@@ -6,6 +6,7 @@
 #
 # Proves these things against a running Context Engine stack:
 #   1. BOOT       — docker compose reports api+postgres+redis+worker running
+#                   AND celery queue depth is within the healthy range
 #   2. HEALTH     — /health returns ok AND /health/ready returns ready
 #   3. SEED       — POST /api/seed-demo creates the canonical demo workspace
 #                   and is idempotent (second call returns same workspace
@@ -31,10 +32,12 @@
 #   BASE_URL               default http://localhost:8000
 #   SMOKE_QUESTION         default "What is the Starter Plan?"
 #   SMOKE_EXPECT           default "$29"  (substring that must appear in answer)
-#   SMOKE_SKIP_WORKER      set to 1 to allow smoke to pass without a running
-#                          Celery worker (minimal deployments only)
-#   SMOKE_SKIP_DIAGNOSTICS set to 1 to silence the diagnostic snapshot that
-#                          is emitted on failure (useful in tests/CI)
+#   SMOKE_SKIP_WORKER           set to 1 to allow smoke to pass without a running
+#                               Celery worker (minimal deployments only)
+#   SMOKE_SKIP_DIAGNOSTICS      set to 1 to silence the diagnostic snapshot that
+#                               is emitted on failure (useful in tests/CI)
+#   SMOKE_QUEUE_BACKLOG_LIMIT   default 25 — fail if celery default queue depth
+#                               exceeds this (catches stuck / crashed workers)
 
 set -euo pipefail
 
@@ -115,6 +118,24 @@ else
     printf "%s\n" "$running" | grep -qx worker \
         || fail "service 'worker' is not running — the Celery worker is part of the default docker compose stack and is required for async ingestion. If you intentionally removed it, set SMOKE_SKIP_WORKER=1 to allow this check to pass. Otherwise check: docker compose logs worker"
     pass "postgres, redis, api, worker are running"
+fi
+
+# Celery queue backlog check — catches "worker is up but hung" and
+# "worker was down yesterday and the queue has been piling up since".
+# A healthy stack at rest has a near-zero queue depth. The smoke path
+# only enqueues a handful of jobs end-to-end, so anything above the
+# threshold below is a sign of a backlog that won't drain on its own.
+if [ "${SMOKE_SKIP_WORKER:-0}" != "1" ]; then
+    queue_depth=$(docker compose exec -T redis redis-cli LLEN celery 2>/dev/null | tr -d '\r\n ')
+    if [ -z "$queue_depth" ] || ! printf "%s" "$queue_depth" | grep -qE '^[0-9]+$'; then
+        # Redis not reachable, or LLEN returned a non-numeric error. Not
+        # fatal — the HEALTH step below will catch a real redis outage.
+        pass "celery queue depth check skipped (redis-cli LLEN returned: '${queue_depth:-<empty>}')"
+    elif [ "$queue_depth" -gt "${SMOKE_QUEUE_BACKLOG_LIMIT:-25}" ]; then
+        fail "celery default queue has ${queue_depth} pending jobs — expected <= ${SMOKE_QUEUE_BACKLOG_LIMIT:-25}. The worker may be stuck, crashed, or overloaded. Check: docker compose logs worker; see docs/runbook.md 'Queue backlog' for triage."
+    else
+        pass "celery default queue depth = ${queue_depth} (healthy)"
+    fi
 fi
 
 # ── 2. HEALTH ───────────────────────────────────────────────────
@@ -422,5 +443,9 @@ cat <<EOF
     Context Engine is up, healthy, seeded, and answering queries
     across the main OSS v1 workflows — including the real zero-auth
     import rail used by 'ctxe ingest'.
+
+    When something breaks, run:
+      bash scripts/diagnose.sh --tar       # collect a runtime snapshot
+      docs/runbook.md                       # backup / upgrade / triage playbooks
 
 EOF

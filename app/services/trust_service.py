@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -66,16 +67,43 @@ class ReviewPage:
     """Paginated review items result."""
     items: list[ReviewItem]
     total: int
-    limit: int
-    offset: int
+    limit: int | None
+    offset: int | None
 
 
-_SORT_COLUMNS: dict[str, object] = {
-    "updated_at": ReviewItem.updated_at,
-    "created_at": ReviewItem.created_at,
-    "severity": ReviewItem.severity,
-    "confidence": ReviewItem.confidence,
-}
+def _sort_key(
+    sort: str,
+    sort_dir: Literal["asc", "desc"],
+) -> list:
+    """Return one or more SQLAlchemy order-by expressions.
+
+    For severity we use a CASE expression so ordering reflects
+    operational priority (high > medium > low) rather than
+    alphabetical sort.
+    """
+    _SEVERITY_RANK = case(
+        (ReviewItem.severity == "high", 3),
+        (ReviewItem.severity == "medium", 2),
+        (ReviewItem.severity == "low", 1),
+        else_=0,
+    )
+
+    _COLUMNS: dict[str, object] = {
+        "updated_at": ReviewItem.updated_at,
+        "created_at": ReviewItem.created_at,
+        "severity": _SEVERITY_RANK,
+        "confidence": ReviewItem.confidence,
+    }
+
+    col = _COLUMNS.get(sort, ReviewItem.updated_at)
+    tiebreaker_col = _COLUMNS.get(sort, ReviewItem.id)
+    # Use ReviewItem.id as tiebreaker for all columns except id itself
+    if sort == "id":
+        tiebreaker_col = ReviewItem.id
+
+    if sort_dir == "asc":
+        return [col.asc(), ReviewItem.id.asc()]
+    return [col.desc(), ReviewItem.id.desc()]
 
 
 class TrustService:
@@ -93,7 +121,7 @@ class TrustService:
         source_document_id: UUID | None = None,
         sort: str = "updated_at",
         sort_dir: str = "desc",
-        limit: int = 100,
+        limit: int | None = None,
         offset: int = 0,
     ) -> ReviewPage:
         await self._require_workspace(workspace_id)
@@ -138,13 +166,10 @@ class TrustService:
         )
 
         # Apply sorting
-        sort_col = _SORT_COLUMNS.get(sort, ReviewItem.updated_at)
-        if sort_dir == "asc":
-            query = query.order_by(sort_col.asc(), ReviewItem.id.asc())
-        else:
-            query = query.order_by(sort_col.desc(), ReviewItem.id.desc())
+        query = query.order_by(*_sort_key(sort, sort_dir))
 
-        query = query.limit(limit).offset(offset)
+        if limit is not None:
+            query = query.limit(limit).offset(offset)
 
         result = await self.session.execute(query)
         items = list(result.unique().scalars().all())

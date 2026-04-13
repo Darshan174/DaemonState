@@ -1764,8 +1764,9 @@ function buildMockProcessingSummary(data) {
 }
 
 function normalizeReviewItems(data) {
-  if (!Array.isArray(data)) return [];
-  return data.map((item) => ({
+  const items = Array.isArray(data) ? data : (data?.items && Array.isArray(data.items) ? data.items : []);
+  if (items.length === 0) return [];
+  return items.map((item) => ({
     id: item.id,
     status: item.status ?? "needs_review",
     severity: item.severity ?? "medium",

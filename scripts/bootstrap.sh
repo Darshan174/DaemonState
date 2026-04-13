@@ -129,6 +129,24 @@ if ! docker compose exec -T api alembic upgrade head 2>&1; then
 fi
 ok "alembic upgrade head"
 
+# Post-migration self-check: confirm the DB is actually on the head
+# revision. `alembic upgrade head` can silently no-op if `alembic stamp`
+# was used previously to lie about the revision. Compare `current` to
+# `heads` and fail loudly if they diverge.
+current_rev=$(docker compose exec -T api alembic current 2>/dev/null \
+    | awk '/^[a-f0-9]+/ {print $1; exit}' || true)
+head_rev=$(docker compose exec -T api alembic heads 2>/dev/null \
+    | awk '/^[a-f0-9]+/ {print $1; exit}' || true)
+if [ -z "$current_rev" ] || [ -z "$head_rev" ]; then
+    warn "Could not compare alembic current (${current_rev:-?}) to heads (${head_rev:-?}) — continuing, but schema freshness is unverified."
+elif [ "$current_rev" != "$head_rev" ]; then
+    warn "Alembic reports current=${current_rev} but heads=${head_rev} — the DB is not on the latest schema."
+    warn "Usually caused by a prior 'alembic stamp' that lied about the revision. Fix with: docker compose exec api alembic upgrade head"
+    die "post-migration head check failed: current=${current_rev} heads=${head_rev}"
+else
+    ok "alembic current matches heads (${current_rev})"
+fi
+
 # Seed via the HTTP surface (POST /api/seed-demo) so bootstrap exercises the
 # same endpoint the frontend's "Run Demo Workspace" flow hits. This route
 # delegates to the canonical seed_demo_workspace() and is idempotent.
@@ -179,6 +197,20 @@ cat <<EOF
       docker compose logs -f api      # tail api logs
       docker compose ps               # show container status
       docker compose down             # stop containers (named volumes persist)
+
+    When something breaks:
+      bash scripts/diagnose.sh --tar  # collect a runtime snapshot for triage
+      docs/runbook.md                 # backup / upgrade / rollback / triage playbooks
+
+    Production hardening (VPS):
+      deploy/caddy/Caddyfile          # TLS-terminating reverse proxy (auto-HTTPS)
+      deploy/nginx/context-engine.conf  # alternative nginx proxy config
+      docs/self-hosting.md            # full self-host walkthrough
+
+    Note: the API binds to 127.0.0.1:8000 by default. Put a reverse proxy
+    in front of it (see deploy/) before exposing this host to the internet.
+    For a dev machine on a LAN, set HOST_API_BIND=0.0.0.0 in .env and
+    restart with 'docker compose up -d'.
 
     Maintainer / release-gate path (optional — not installed by bootstrap):
       python3 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
