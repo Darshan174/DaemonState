@@ -68,3 +68,7 @@ jobs:
           name: release-gate-report
           path: release-gate.json
           if-no-files-found: ignore
+
+      - name: Tear down docker stack
+        if: always()
+        run: docker compose down -v --remove-orphans

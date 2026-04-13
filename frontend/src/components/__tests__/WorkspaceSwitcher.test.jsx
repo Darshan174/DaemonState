@@ -72,6 +72,36 @@ describe("WorkspaceSwitcher", () => {
     expect(screen.getByText("Beta")).toBeInTheDocument();
   });
 
+  it("requires explicit selection when multiple workspaces exist and nothing is persisted", () => {
+    useWorkspaces.mockReturnValue({
+      data: [
+        { id: "ws-1", name: "Alpha" },
+        { id: "ws-2", name: "Beta" },
+      ],
+      isLoading: false,
+      isError: false,
+    });
+
+    renderSwitcher();
+
+    const select = screen.getByRole("combobox");
+    expect(select).toHaveValue("");
+    expect(screen.getByRole("option", { name: "Select workspace" })).toBeDisabled();
+  });
+
+  it("auto-selects the only workspace", () => {
+    useWorkspaces.mockReturnValue({
+      data: [{ id: "ws-1", name: "Alpha" }],
+      isLoading: false,
+      isError: false,
+    });
+
+    renderSwitcher();
+
+    expect(screen.getByRole("combobox")).toHaveValue("ws-1");
+    expect(localStorage.getItem("ce:selectedWorkspaceId")).toBe("ws-1");
+  });
+
   it("invalidates workspace-scoped queries on change", async () => {
     useWorkspaces.mockReturnValue({
       data: [

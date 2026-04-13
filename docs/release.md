@@ -2,6 +2,13 @@
 
 This is the maintainer path for deciding whether Context Engine is releasable as an OSS v1 candidate.
 
+## Maintainer Flow
+
+1. Bootstrap the stack with `ctxe demo` or `bash scripts/bootstrap.sh`.
+2. Confirm the backend founder workflows with `bash scripts/smoke.sh`.
+3. Run the full release gate with `ctxe verify --json`.
+4. Merge or tag a release candidate only when local `ctxe verify` and the PR `Release Gate` workflow are both green.
+
 ## What Must Be Green
 
 - Local `ctxe verify`
@@ -78,6 +85,8 @@ TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/context_
     tests/test_api/test_admin.py::TestSeedDemoAPI \
     tests/test_api/test_connectors_upload.py \
     tests/test_api/test_truth_regression.py \
+    tests/test_api/test_query.py \
+    tests/test_api/test_briefing.py \
     -q
 cd frontend && npm test
 cd frontend && npm run build

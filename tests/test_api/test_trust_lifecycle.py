@@ -1400,10 +1400,10 @@ class TestCrossWorkspaceSafety:
 class TestReviewPagination:
     """Paginated list_review_items endpoint behavior."""
 
-    async def test_default_pagination_returns_all_within_limit(
+    async def test_default_no_limit_returns_all(
         self, client, workspace, db_session
     ):
-        """Default limit=100 returns all items when under 100."""
+        """Without explicit limit, all items are returned."""
         connector = _make_connector(workspace.id)
         db_session.add(connector)
         model = KnowledgeModel(
@@ -1433,8 +1433,8 @@ class TestReviewPagination:
         assert resp.status_code == 200
         body = resp.json()
         assert body["total"] == 3
-        assert body["limit"] == 100
-        assert body["offset"] == 0
+        assert body["limit"] is None
+        assert body["offset"] is None
         assert body["has_more"] is False
         assert body["page_size"] == 3
         assert len(body["items"]) == 3
@@ -1509,7 +1509,7 @@ class TestReviewPagination:
 
         resp = await client.get(
             "/api/review-items",
-            params={"workspace_id": str(workspace.id), "offset": 999},
+            params={"workspace_id": str(workspace.id), "limit": 10, "offset": 999},
         )
         assert resp.status_code == 200
         body = resp.json()
@@ -1744,6 +1744,59 @@ class TestReviewItemSort:
             params={"workspace_id": str(workspace.id), "sort": "invalid"},
         )
         assert resp.status_code == 422
+
+    async def test_sort_by_severity_uses_operational_priority(
+        self, client, workspace, db_session
+    ):
+        """severity sort orders high > medium > low, not alphabetically."""
+        connector = _make_connector(workspace.id)
+        db_session.add(connector)
+        model = KnowledgeModel(
+            workspace_id=workspace.id, name="SevSort Model", description="SevSort"
+        )
+        db_session.add(model)
+        await db_session.flush()
+
+        severities = ["low", "high", "medium"]
+        for i, sev in enumerate(severities):
+            comp = Component(
+                model_id=model.id, name=f"SevSort {sev}", value=f"v{i}", confidence=0.5,
+            )
+            db_session.add(comp)
+            await db_session.flush()
+            db_session.add(
+                ReviewItem(
+                    component_id=comp.id, status="needs_review", severity=sev,
+                    kind="low_confidence", title="t", summary="s", confidence=0.5,
+                )
+            )
+            await db_session.flush()
+
+        # Descending: high first, then medium, then low
+        resp = await client.get(
+            "/api/review-items",
+            params={"workspace_id": str(workspace.id), "sort": "severity", "sort_dir": "desc"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        items = body["items"]
+        assert len(items) == 3
+        assert items[0]["severity"] == "high"
+        assert items[1]["severity"] == "medium"
+        assert items[2]["severity"] == "low"
+
+        # Ascending: low first, then medium, then high
+        resp = await client.get(
+            "/api/review-items",
+            params={"workspace_id": str(workspace.id), "sort": "severity", "sort_dir": "asc"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        items = body["items"]
+        assert len(items) == 3
+        assert items[0]["severity"] == "low"
+        assert items[1]["severity"] == "medium"
+        assert items[2]["severity"] == "high"
 
 
 class TestReprocessLifecycle:

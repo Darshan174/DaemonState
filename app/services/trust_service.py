@@ -119,6 +119,7 @@ class TrustService:
         kind: str | None = None,
         model_id: UUID | None = None,
         source_document_id: UUID | None = None,
+        search: str | None = None,
         sort: str = "updated_at",
         sort_dir: str = "desc",
         limit: int | None = None,
@@ -152,6 +153,13 @@ class TrustService:
                 ComponentSource.source_document_id == source_document_id,
                 SourceDocument.deleted_at.is_(None),
             )
+        if search:
+            term = f"%{search.lower()}%"
+            base_query = base_query.where(
+                ReviewItem.title.ilike(term)
+                | ReviewItem.summary.ilike(term)
+                | KnowledgeModel.name.ilike(term)
+            )
 
         # Total count (without pagination)
         count_q = select(func.count()).select_from(base_query.subquery())
@@ -173,7 +181,8 @@ class TrustService:
 
         result = await self.session.execute(query)
         items = list(result.unique().scalars().all())
-        return ReviewPage(items=items, total=total, limit=limit, offset=offset)
+        actual_offset = offset if limit is not None else None
+        return ReviewPage(items=items, total=total, limit=limit, offset=actual_offset)
 
     async def get_review_summary(
         self,

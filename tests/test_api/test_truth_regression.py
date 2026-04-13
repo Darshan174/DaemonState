@@ -740,3 +740,159 @@ class TestAsOfFreshness:
         source = body["sources"][0]
         assert source["source_document_id"] is not None
         assert source["source_document_id"] == str(doc.id)
+
+
+class TestCombinedTemporalFilters:
+    """Tests for combined as_of + max_age_days and scoring edge cases."""
+
+    async def test_as_of_plus_max_age_days_filters_correctly(self, client, db_session, workspace):
+        """as_of with max_age_days should filter relative to as_of, not wall-clock now."""
+        connector = Connector(
+            workspace_id=workspace.id,
+            connector_type=ConnectorType.SLACK,
+            status=ConnectorStatus.CONNECTED,
+            config={},
+        )
+        db_session.add(connector)
+        await db_session.flush()
+
+        model = KnowledgeModel(
+            workspace_id=workspace.id,
+            name="Pricing",
+            description="Pricing model",
+        )
+        db_session.add(model)
+        await db_session.flush()
+
+        # Component verified 20 days before as_of — outside 7-day window relative to as_of
+        old = Component(
+            model_id=model.id,
+            name="Enterprise Pricing",
+            value="$500/seat",
+            confidence=0.9,
+            authority_weight=0.9,
+            valid_from=datetime(2026, 1, 1, tzinfo=UTC),
+            valid_to=datetime(2026, 3, 20, tzinfo=UTC),
+            last_verified_at=datetime(2026, 3, 1, tzinfo=UTC),  # 19 days before as_of
+        )
+        # Component verified 5 days before as_of — inside 7-day window relative to as_of
+        new = Component(
+            model_id=model.id,
+            name="Pricing Pro Plan",
+            value="$99/mo",
+            confidence=0.9,
+            authority_weight=0.9,
+            valid_from=datetime(2026, 3, 10, tzinfo=UTC),
+            last_verified_at=datetime(2026, 3, 15, tzinfo=UTC),  # 5 days before as_of
+        )
+        db_session.add_all([old, new])
+        await db_session.flush()
+        old.superseded_by_id = new.id
+        await db_session.flush()
+        db_session.add_all([
+            ReviewItem(
+                component_id=old.id,
+                status="superseded",
+                severity="low",
+                kind="superseded_fact",
+                title="Old price",
+                summary="Changed",
+                confidence=0.9,
+            ),
+            ReviewItem(
+                component_id=new.id,
+                status="approved",
+                severity="low",
+                kind="fact_update",
+                title="Pro plan",
+                summary="Approved",
+                confidence=0.9,
+            ),
+        ])
+        await db_session.commit()
+
+        # Query as_of March 20 with max_age_days=7:
+        # - old component: last_verified_at=Mar 1 → 19 days before as_of → EXCLUDED
+        # - new component: last_verified_at=Mar 15 → 5 days before as_of → INCLUDED
+        resp = await client.post(
+            "/api/query",
+            json={
+                "question": "What is the pricing?",
+                "workspace_id": str(workspace.id),
+                "as_of": "2026-03-20T00:00:00Z",
+                "max_age_days": 7,
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        values = {c["value"] for c in body["components"]}
+        assert "$500/seat" not in values, "Old component should be excluded (19 days > 7 day window)"
+        assert "$99/mo" in values, "New component should be included (5 days < 7 day window)"
+
+    async def test_as_of_scoring_freshness_uses_historical_reference(self, client, db_session, workspace):
+        """Scoring freshness adjustment should use as_of, not wall-clock now.
+
+        A component verified 5 days before as_of should get a positive
+        freshness bonus, not a stale penalty — even though wall-clock
+        now is months later.
+        """
+        connector = Connector(
+            workspace_id=workspace.id,
+            connector_type=ConnectorType.SLACK,
+            status=ConnectorStatus.CONNECTED,
+            config={},
+        )
+        db_session.add(connector)
+        await db_session.flush()
+
+        model = KnowledgeModel(
+            workspace_id=workspace.id,
+            name="Pricing",
+            description="Pricing model",
+        )
+        db_session.add(model)
+        await db_session.flush()
+
+        # Historical component verified 5 days before as_of
+        old = Component(
+            model_id=model.id,
+            name="Enterprise Plan",
+            value="$500/seat",
+            confidence=0.9,
+            authority_weight=0.9,
+            valid_from=datetime(2026, 1, 1, tzinfo=UTC),
+            valid_to=datetime(2026, 3, 20, tzinfo=UTC),
+            last_verified_at=datetime(2026, 3, 15, tzinfo=UTC),  # 5 days before as_of
+        )
+        db_session.add(old)
+        await db_session.flush()
+        db_session.add(
+            ReviewItem(
+                component_id=old.id,
+                status="superseded",
+                severity="low",
+                kind="superseded_fact",
+                title="Old price",
+                summary="Changed",
+                confidence=0.9,
+            )
+        )
+        await db_session.commit()
+
+        # as_of March 18 — 3 days after verification → should be scored as "fresh"
+        # (5 days old at as_of time), not stale
+        resp = await client.post(
+            "/api/query",
+            json={
+                "question": "What is the enterprise price?",
+                "workspace_id": str(workspace.id),
+                "as_of": "2026-03-18T00:00:00Z",
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["components"]
+        assert body["components"][0]["value"] == "$500/seat"
+        assert body["freshness"] == "current"
+        # Confidence should be reasonable since the scoring treats it as fresh
+        assert body["confidence"] > 0.0

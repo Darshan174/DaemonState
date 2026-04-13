@@ -107,7 +107,7 @@ async def list_review_items(
     source_document_id: UUID | None = None,
     sort: str = Query(default="updated_at", pattern="^(updated_at|created_at|severity|confidence)$"),
     sort_dir: str = Query(default="desc", pattern="^(asc|desc)$"),
-    limit: int = Query(default=100, ge=1, le=500),
+    limit: int | None = Query(default=None, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     service: TrustService = Depends(get_trust_service),
 ) -> ReviewItemPage:
@@ -129,12 +129,17 @@ async def list_review_items(
             status_code=http_status.HTTP_404_NOT_FOUND,
             detail="Workspace not found",
         )
+    has_more = (
+        limit is not None
+        and page.offset is not None
+        and page.offset + limit < page.total
+    )
     return ReviewItemPage(
         items=[_serialize_review_item(item) for item in page.items],
         total=page.total,
         limit=page.limit,
         offset=page.offset,
-        has_more=page.offset + page.limit < page.total,
+        has_more=has_more,
     )
 
 

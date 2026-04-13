@@ -224,7 +224,7 @@ class QueryService:
                     continue
                 if component.confidence < filters.min_confidence:
                     continue
-                if not self._within_age_limit(component, filters.max_age_days):
+                if not self._within_age_limit(component, filters.max_age_days, as_of=filters.as_of):
                     continue
 
                 lexical_score = self._lexical_component_score(
@@ -246,6 +246,7 @@ class QueryService:
                 freshness_adjustment = self._freshness_score_adjustment(
                     component,
                     current_truth_focus=current_truth_focus,
+                    as_of=filters.as_of,
                 )
                 current_truth_bonus = (
                     settings.retrieval_current_truth_bonus
@@ -375,10 +376,12 @@ class QueryService:
         component: Component,
         *,
         current_truth_focus: bool,
+        as_of: datetime | None = None,
     ) -> float:
         if component.last_verified_at is None:
             return 0.0
-        age_days = max((datetime.now(UTC) - component.last_verified_at).days, 0)
+        reference = as_of or datetime.now(UTC)
+        age_days = max((reference - component.last_verified_at).days, 0)
         if age_days <= 7:
             return 0.08 if current_truth_focus else 0.03
         if age_days <= 30:
@@ -628,10 +631,16 @@ class QueryService:
         return {token for token in tokens if token not in STOPWORDS}
 
     @staticmethod
-    def _within_age_limit(component: Component, max_age_days: int | None) -> bool:
+    def _within_age_limit(
+        component: Component,
+        max_age_days: int | None,
+        *,
+        as_of: datetime | None = None,
+    ) -> bool:
         if max_age_days is None:
             return True
-        return component.last_verified_at >= datetime.now(UTC) - timedelta(days=max_age_days)
+        reference = as_of or datetime.now(UTC)
+        return component.last_verified_at >= reference - timedelta(days=max_age_days)
 
     @staticmethod
     def _calculate_freshness(

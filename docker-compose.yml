@@ -25,8 +25,11 @@
 # ──────────────────────────────────────────────────────────────────────
 # All stateful data lives in two named volumes: postgres_data, redis_data.
 # "docker compose down" preserves them; only "docker compose down -v"
-# deletes them. Back them up with scripts/diagnose.sh or pg_dump (see
-# docs/runbook.md for the full backup/restore path).
+# deletes them. Back up the database with pg_dump — see docs/runbook.md
+# for the full backup/restore playbook (manual dump, automated nightly
+# cron, off-host copy, sanity-check-without-overwriting-prod). Note:
+# scripts/diagnose.sh is NOT a backup tool — it only collects a
+# read-only runtime snapshot for post-failure triage.
 #
 # ──────────────────────────────────────────────────────────────────────
 # Resource guidance

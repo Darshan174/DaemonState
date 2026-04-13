@@ -40,11 +40,14 @@ export function useWorkspaceSelection() {
 /**
  * Given a workspaces array, resolve which ID should be active:
  * - If selectedId exists in the list, use it.
- * - Otherwise fall back to the first workspace.
+ * - Otherwise auto-select only when there is exactly one workspace.
+ * - When multiple workspaces exist and no persisted selection is present,
+ *   require an explicit user choice instead of silently picking one.
  * Returns null if no workspaces.
  */
 export function resolveWorkspaceId(workspaces, selectedId) {
   if (!workspaces || workspaces.length === 0) return null;
   if (selectedId && workspaces.some((w) => w.id === selectedId)) return selectedId;
-  return workspaces[0].id;
+  if (workspaces.length === 1) return workspaces[0].id;
+  return null;
 }

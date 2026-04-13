@@ -15,7 +15,8 @@ export default function WorkspaceSwitcher() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // Reconcile: if stored selection is stale (deleted workspace), auto-correct
+  // Reconcile: if stored selection is stale (deleted workspace), auto-correct.
+  // With multiple workspaces we intentionally require an explicit selection.
   const resolved = resolveWorkspaceId(workspaces, selectedId);
   useEffect(() => {
     if (resolved && resolved !== selectedId) {
@@ -47,6 +48,11 @@ export default function WorkspaceSwitcher() {
         onChange={handleChange}
         className="text-xs bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-gray-700 focus:outline-none focus:ring-2 focus:ring-brand-500/40 max-w-[180px] truncate"
       >
+        {!resolved && workspaces.length > 1 ? (
+          <option value="" disabled>
+            Select workspace
+          </option>
+        ) : null}
         {workspaces.map((w) => (
           <option key={w.id} value={w.id}>
             {w.name}

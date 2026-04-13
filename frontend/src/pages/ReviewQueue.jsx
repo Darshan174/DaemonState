@@ -52,10 +52,24 @@ export default function ReviewQueue() {
   const [status, setStatus] = useState(searchParams.get("status") ?? "all");
   const [severity, setSeverity] = useState(searchParams.get("severity") ?? "all");
   const [kind, setKind] = useState(searchParams.get("kind") ?? "all");
-  const query = useReviewQueue({ status, severity, kind });
-  const items = query.data ?? [];
-  const isMock = query.isMock ?? false;
-  const approveMut = useApproveReviewItem();
+  const searchQuery = searchParams.get("search") ?? "";
+  const sourceId = searchParams.get("source_id");
+  const modelId = searchParams.get("model_id");
+  const query = useReviewQueue({ status, severity, kind, source_id: sourceId, model_id: modelId });
+
+  const items = useMemo(() => {
+    const data = query.data ?? [];
+    return data.filter((item) => {
+      const matchSearch = !searchQuery || 
+        item.title?.toLowerCase().includes(searchQuery.toLowerCase()) || 
+        item.summary?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        item.model?.toLowerCase().includes(searchQuery.toLowerCase());
+
+      return matchSearch;
+    });
+  }, [query.data, searchQuery]);
+
+  const isMock = query.isMock ?? false;  const approveMut = useApproveReviewItem();
   const rejectMut = useRejectReviewItem();
   const supersedeMut = useSupersedeReviewItem();
   const [selectedId, setSelectedId] = useState(null);
@@ -69,10 +83,10 @@ export default function ReviewQueue() {
   }, [searchParams]);
 
   useEffect(() => {
-    const next = new URLSearchParams();
-    if (status !== "all") next.set("status", status);
-    if (severity !== "all") next.set("severity", severity);
-    if (kind !== "all") next.set("kind", kind);
+    const next = new URLSearchParams(searchParams);
+    if (status !== "all") next.set("status", status); else next.delete("status");
+    if (severity !== "all") next.set("severity", severity); else next.delete("severity");
+    if (kind !== "all") next.set("kind", kind); else next.delete("kind");
     if (next.toString() !== searchParams.toString()) {
       setSearchParams(next, { replace: true });
     }

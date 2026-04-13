@@ -160,6 +160,13 @@ ctxe verify
 
 `ctxe verify` uses the demo rail internally. It validates boot, readiness, and a canonical `POST /api/seed-demo` before handing off to the broader smoke and test matrix. The CLI also creates `.env` from `.env.example` and generates `ENCRYPTION_KEY` automatically when they are missing, so the CLI boot path and shell bootstrap path behave the same on a fresh checkout.
 
+Maintainer flow:
+
+1. bootstrap a local stack with `ctxe demo` or `bash scripts/bootstrap.sh`
+2. confirm founder workflows with `bash scripts/smoke.sh`
+3. run the full release gate with `ctxe verify --json`
+4. release only when local `ctxe verify` and the PR `Release Gate` workflow are green
+
 ### Shell Wrappers (reference)
 
 If you prefer shell-only flows, the lower-level wrappers are still available:
@@ -217,6 +224,7 @@ Workspace selector rules are consistent across `ctxe demo`, `ctxe ingest`, and `
   `ctxe demo` seeds the canonical demo workspace
   `ctxe ingest` creates `Local Workspace` when none exists, uses the only workspace when exactly one exists, and fails when multiple exist
   `ctxe query` uses the only workspace when exactly one exists and fails otherwise
+- frontend founder workflows use the selected workspace from the workspace switcher, auto-resolve only when exactly one workspace exists, and otherwise require an explicit selection
 
 ## Release Verification
 
@@ -318,7 +326,7 @@ Run this checklist for every release candidate:
    `GET /api/source-documents?workspace_id=...`
 5. If you need to run the gate manually instead of `ctxe verify`, run:
    `bash scripts/smoke.sh`
-   `TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/context_engine_verify python3 -m pytest tests/test_cli/test_main.py tests/test_cli/test_http.py tests/test_api/test_imports.py tests/test_api/test_admin.py::TestSeedDemoAPI tests/test_api/test_connectors_upload.py tests/test_api/test_truth_regression.py -q`
+   `TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/context_engine_verify python3 -m pytest tests/test_cli/test_main.py tests/test_cli/test_http.py tests/test_api/test_imports.py tests/test_api/test_admin.py::TestSeedDemoAPI tests/test_api/test_connectors_upload.py tests/test_api/test_truth_regression.py tests/test_api/test_query.py tests/test_api/test_briefing.py -q`
    `cd frontend && npm test`
    `cd frontend && npm run build`
 

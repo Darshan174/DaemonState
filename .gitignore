@@ -86,3 +86,12 @@ docker-compose.override.yml
 logs/
 tmp/
 temp/
+
+# ===========================
+# Operational artifacts
+# ===========================
+# scripts/backup.sh default output directory
+backups/
+*.dump
+# scripts/diagnose.sh default output directory
+diagnostics/

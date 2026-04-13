@@ -151,9 +151,11 @@ const BROWSER_IMPORT_EXTENSIONS = new Set([
  *
  * Priority:
  * 1. localStorage selection (set by workspace switcher)
- * 2. First workspace from the backend
+ * 2. The only workspace from the backend, when unambiguous
  *
  * Returns null if no workspaces exist.
+ * Throws when multiple workspaces exist but no explicit browser selection
+ * has been made yet.
  */
 async function getWorkspaceId() {
   const workspaces = await api.get(FOUNDER_WORKFLOW_API.workspaces);
@@ -162,7 +164,9 @@ async function getWorkspaceId() {
   const stored = localStorage.getItem(LS_KEY);
   if (stored && workspaces.some((w) => w.id === stored)) return stored;
 
-  return workspaces[0].id;
+  if (workspaces.length === 1) return workspaces[0].id;
+
+  throw new Error("Multiple workspaces found. Select a workspace first.");
 }
 
 function isBrowserFile(value) {
@@ -612,28 +616,44 @@ export function useConnectorProcessingSummary() {
 }
 
 export function useReviewQueue(filters = {}) {
-  const { status = "all", severity = "all", kind = "all" } = filters;
-  const query = useQuery({
-    queryKey: ["review-queue", status, severity, kind],
-    queryFn: async () => {
+  const { status = "all", severity = "all", kind = "all", source_id = null, model_id = null } = filters;
+  const query = useInfiniteQuery({
+    queryKey: ["review-queue", status, severity, kind, source_id, model_id],
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) => {
+      const currentCount = allPages.reduce((acc, page) => acc + page.items.length, 0);
+      if (currentCount < lastPage.total) {
+        return currentCount;
+      }
+      return undefined;
+    },
+    queryFn: async ({ pageParam = 0 }) => {
       const wsId = await getWorkspaceId();
-      if (!wsId) return { items: [], isMock: false };
+      if (!wsId) return { items: [], total: 0, isMock: false };
 
-      const params = new URLSearchParams({ workspace_id: wsId });
+      const params = new URLSearchParams({ workspace_id: wsId, limit: "20", offset: String(pageParam) });
       if (status !== "all") params.set("status", status);
       if (severity !== "all") params.set("severity", severity);
       if (kind !== "all") params.set("kind", kind);
+      if (source_id) params.set("source_document_id", source_id);
+      if (model_id) params.set("model_id", model_id);
 
       try {
         const data = await api.get(`/review-items?${params.toString()}`);
-        return { items: normalizeReviewItems(data), isMock: false };
+        return { 
+          items: normalizeReviewItems(data), 
+          total: data.total ?? data.items?.length ?? 0, 
+          isMock: false 
+        };
       } catch (err) {
         if (err.status && ![404, 501].includes(err.status)) {
           throw err;
         }
         if (!MOCKS_ENABLED) throw err;
+        const mockItems = filterReviewItems(normalizeReviewItems(mockReviewQueue), { status, severity, kind });
         return {
-          items: filterReviewItems(normalizeReviewItems(mockReviewQueue), { status, severity, kind }),
+          items: mockItems.slice(pageParam, pageParam + 20),
+          total: mockItems.length,
           isMock: true,
         };
       }
@@ -641,11 +661,11 @@ export function useReviewQueue(filters = {}) {
   });
   return {
     ...query,
-    data: query.data?.items ?? [],
-    isMock: query.data?.isMock ?? false,
+    data: query.data?.pages.flatMap((page) => page.items) ?? [],
+    total: query.data?.pages[0]?.total ?? 0,
+    isMock: query.data?.pages[0]?.isMock ?? false,
   };
 }
-
 // ── Accuracy / eval summary ──────────────────────────────────
 
 export function useEvalSummary() {
