@@ -244,26 +244,23 @@ For automated nightly backups, rotation, off-host copies, sanity-checking a back
 
 ## Upgrading
 
+The recommended path for upgrading is using the `upgrade.sh` script, which automates the pre-upgrade backup, git update, image rebuild, and schema migration.
+
 ```bash
 cd context-engine
-
-# 1. Take a backup BEFORE upgrading (strongly recommended).
-docker compose exec -T postgres pg_dump -U postgres -d context_engine \
-    --no-owner --format=custom \
-    > "/backups/context_engine-pre-upgrade-$(date -u +%Y%m%dT%H%M%SZ).dump"
-
-# 2. Pull + rebuild. Named volumes persist across this command.
-git pull origin main
-docker compose up -d --build
-
-# 3. Apply any new migrations.
-docker compose exec -T api alembic upgrade head
-
-# 4. Verify — smoke is the supported self-host verification path.
-bash scripts/smoke.sh
+bash scripts/upgrade.sh --yes
 ```
 
-If smoke fails after an upgrade, see [runbook.md → Rollback](runbook.md#rollback) for the full code-vs-data rollback decision tree. For zero-downtime caveats and the longer upgrade playbook (including `alembic current`/`heads` comparison), see [runbook.md → Upgrade](runbook.md#upgrade).
+The script will:
+1.  **Safety backup** — create a `pg_dump` of your current database.
+2.  **`git pull`** — update your checkout (fast-forward only).
+3.  **Rebuild** — `docker compose up -d --build` to refresh images.
+4.  **Migrate** — `alembic upgrade head` to apply any schema changes.
+5.  **Smoke** — run `scripts/smoke.sh` to verify the new stack.
+
+If any stage fails, the script prints **the EXACT copy-paste rollback commands** (including the backup path and pre-upgrade git SHA) to restore your service.
+
+For manual upgrade steps or deeper rollback strategy, see [runbook.md → Upgrade](runbook.md#upgrade).
 
 ---
 

@@ -23,32 +23,32 @@ const PROBLEMS = [
 
 const CAPABILITIES = [
   {
+    icon: BookOpen,
+    title: "Founder Brief & Review",
+    body: "Automatically summarize what changed, what is risky, and resolve flagged conflicts in the Review Queue.",
+  },
+  {
     icon: CheckCircle2,
-    title: "Remember Every Decision",
-    body: "Keep track of exactly what changed in your startup, why it changed, and who made the call.",
+    title: "Decision Register",
+    body: "Track current and historical decisions, including their rationale, blockers, and original source evidence.",
   },
   {
     icon: History,
-    title: "Rewind Your Startup's Brain",
-    body: "Easily look up what your team agreed on last week or before your latest pivot.",
+    title: "What Changed Timeline",
+    body: "Rewind your startup's brain. View a clear timeline across decision changes, tool ingests, and failures.",
   },
   {
     icon: ShieldAlert,
-    title: "Catch Mistakes Before Launch",
-    body: "Automatically spot contradictions in your PRs or launch notes before customers see them.",
-  },
-  {
-    icon: Cpu,
-    title: "Answers You Can Trust",
-    body: "Get answers with a direct link back to the exact Slack message or Notion page they came from.",
+    title: "Launch Guard",
+    body: "Check outbound copy and PRs against current company truth, review states, and verified facts.",
   },
 ];
 
 const DIFFERENTIATORS = [
-  "Built for fast-moving startups, not broad enterprise search.",
-  "Optimized for quick pivots and volatile context.",
-  "Focuses on what is true now, what used to be true, and why.",
-  "Designed to ground AI agents with verified human truth.",
+  "Built for fast-moving startup workflows, not generic enterprise search.",
+  "Self-hostable, source-backed system for complete data control.",
+  "Maintains explicit current truth, historical truth, and review states.",
+  "Creates auditable, structurally proven context for both humans and AI agents.",
 ];
 
 // Animation variants

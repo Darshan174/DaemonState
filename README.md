@@ -169,6 +169,13 @@ Maintainer flow:
 3. run the full release gate with `ctxe verify --json`
 4. release only when local `ctxe verify` and the PR `Release Gate` workflow are green
 
+CI path:
+
+- every PR and push to `main` runs `Release Gate`
+- CI runs the same gate via `ctxe verify --json --test-database-url postgresql+asyncpg://postgres:postgres@localhost:5432/context_engine_verify`
+- the workflow summary reports release status, selected phases, completed phases, and the failing `phase` plus `next_step` when the gate stops early
+- the release story excludes compatibility-only routes such as `GET /api/query`, `POST /api/source-documents/upload`, and `POST /api/imports/trigger`
+
 ### Shell Wrappers (reference)
 
 If you prefer shell-only flows, the lower-level wrappers are still available:
@@ -260,7 +267,7 @@ ctxe verify --phase contract-tests
 ctxe verify --phase frontend-tests --phase frontend-build
 ```
 
-The GitHub Actions workflow [`.github/workflows/release-gate.yml`](./.github/workflows/release-gate.yml) runs the same core checks as `ctxe verify` on pull requests. It uploads the raw `release-gate.json` report as an artifact and mirrors that JSON into the Actions step summary so maintainers can see the gate result without downloading artifacts first.
+The GitHub Actions workflow [`.github/workflows/release-gate.yml`](./.github/workflows/release-gate.yml) runs the same core checks as `ctxe verify` on pull requests. It uploads the raw `release-gate.json` report as an artifact and renders the same result in the Actions step summary with the overall status, selected phases, completed phases, and the failing `phase` plus `next_step` when the gate fails.
 
 `bash scripts/smoke.sh` remains the backend-only smoke path. It is useful for targeted debugging or post-deploy checks, but `ctxe verify` is the release gate maintainers should treat as canonical.
 

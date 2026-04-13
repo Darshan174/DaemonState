@@ -9,6 +9,13 @@ This is the maintainer path for deciding whether Context Engine is releasable as
 3. Run the full release gate with `ctxe verify --json`.
 4. Merge or tag a release candidate only when local `ctxe verify` and the PR `Release Gate` workflow are both green.
 
+## CI Path
+
+- The GitHub Actions workflow `Release Gate` is the CI mirror of the local maintainer flow.
+- CI runs `ctxe verify --json --test-database-url postgresql+asyncpg://postgres:postgres@localhost:5432/context_engine_verify`.
+- The workflow summary must show the release `status`, selected phases, completed phases, and the failing `phase` plus `next_step` when the gate stops early.
+- Compatibility-only routes are not part of the release story: `GET /api/query`, `POST /api/source-documents/upload`, and `POST /api/imports/trigger` do not count as founder-workflow release coverage.
+
 ## What Must Be Green
 
 - Local `ctxe verify`
@@ -22,7 +29,7 @@ This is the maintainer path for deciding whether Context Engine is releasable as
   - `frontend-tests`
   - `frontend-build`
 
-`Release Gate` is the CI mirror of the local maintainer command. It installs backend + frontend dependencies, boots the Docker stack, runs `ctxe verify --json`, uploads `release-gate.json` as an artifact, and mirrors that JSON into the GitHub Actions step summary.
+`Release Gate` is the CI mirror of the local maintainer command. It installs backend + frontend dependencies, boots the Docker stack, runs `ctxe verify --json`, uploads `release-gate.json` as an artifact, and renders the result in the GitHub Actions step summary.
 
 ## Prerequisites
 
@@ -116,7 +123,7 @@ OSS v1 verification passed.
 In CI, the same JSON should be visible in both places:
 
 - the `release-gate-report` workflow artifact
-- the `Release Gate` step summary on the PR or push run
+- the `Release Gate` step summary on the PR or push run, alongside a human-readable status/phase summary
 
 ## Rollback Notes
 

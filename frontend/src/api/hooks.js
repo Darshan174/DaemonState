@@ -576,6 +576,7 @@ export function useSourceDocumentReviewItems(documentId) {
           source_document_id: documentId,
         });
         const data = await api.get(`/review-items?${params.toString()}`);
+        // data can be an array or { items: [], total: N }
         return normalizeReviewItems(data);
       } catch (err) {
         if (err.status && ![404, 422, 500, 501, 502, 503].includes(err.status)) {

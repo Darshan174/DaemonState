@@ -52,25 +52,24 @@ export default function ReviewQueue() {
   const [status, setStatus] = useState(searchParams.get("status") ?? "all");
   const [severity, setSeverity] = useState(searchParams.get("severity") ?? "all");
   const [kind, setKind] = useState(searchParams.get("kind") ?? "all");
-  const searchQuery = searchParams.get("search") ?? "";
+  const [searchQuery, setSearchQuery] = useState(searchParams.get("search") ?? "");
   const sourceId = searchParams.get("source_id");
   const modelId = searchParams.get("model_id");
-  const query = useReviewQueue({ status, severity, kind, source_id: sourceId, model_id: modelId, search: searchQuery });
+  const query = useReviewQueue({ 
+    status, 
+    severity, 
+    kind, 
+    source_id: sourceId, 
+    model_id: modelId, 
+    search: searchQuery 
+  });
 
   const items = useMemo(() => {
-    const data = query.data ?? [];
-    return data.filter((item) => {
-      // Backend already applied search + model_id filtering;
-      // client-side filter retained only for source_id deep links.
-      const matchSource = !sourceId ||
-        item.sourceDocuments?.some(s => s === sourceId || s.id === sourceId || s.sourceDocumentId === sourceId) ||
-        item.sources?.some(s => s === sourceId || s.id === sourceId || s.sourceDocumentId === sourceId);
+    return query.data ?? [];
+  }, [query.data]);
 
-      return matchSource;
-    });
-  }, [query.data, sourceId]);
-
-  const isMock = query.isMock ?? false;  const approveMut = useApproveReviewItem();
+  const isMock = query.isMock ?? false;
+  const approveMut = useApproveReviewItem();
   const rejectMut = useRejectReviewItem();
   const supersedeMut = useSupersedeReviewItem();
   const [selectedId, setSelectedId] = useState(null);
@@ -81,6 +80,7 @@ export default function ReviewQueue() {
     setStatus(searchParams.get("status") ?? "all");
     setSeverity(searchParams.get("severity") ?? "all");
     setKind(searchParams.get("kind") ?? "all");
+    setSearchQuery(searchParams.get("search") ?? "");
   }, [searchParams]);
 
   useEffect(() => {
@@ -88,14 +88,23 @@ export default function ReviewQueue() {
     if (status !== "all") next.set("status", status); else next.delete("status");
     if (severity !== "all") next.set("severity", severity); else next.delete("severity");
     if (kind !== "all") next.set("kind", kind); else next.delete("kind");
-    // Persist deep-link params that came from graph inspector or other surfaces
     if (searchQuery) next.set("search", searchQuery); else next.delete("search");
     if (sourceId) next.set("source_id", sourceId); else next.delete("source_id");
     if (modelId) next.set("model_id", modelId); else next.delete("model_id");
+    
     if (next.toString() !== searchParams.toString()) {
       setSearchParams(next, { replace: true });
     }
   }, [kind, modelId, searchParams, setSearchParams, searchQuery, severity, sourceId, status]);
+
+  const clearFilters = () => {
+    setStatus("all");
+    setSeverity("all");
+    setKind("all");
+    setSearchQuery("");
+    const next = new URLSearchParams();
+    setSearchParams(next, { replace: true });
+  };
 
   useEffect(() => {
     if (items.length === 0) {

@@ -180,12 +180,31 @@ bash scripts/smoke.sh
 
 ## Upgrade
 
-### Standard upgrade
+### Recommended: `scripts/upgrade.sh`
+
+The `upgrade.sh` script automates the standard upgrade path. It captures the pre-upgrade state (git SHA and database) **before** it changes, so it can print exact copy-paste rollback hints if anything fails.
+
+```bash
+cd /path/to/context-engine
+bash scripts/upgrade.sh --yes
+```
+
+The script runs these stages in order:
+1.  **Preflight** — confirms `docker`, `git`, and `curl` are present.
+2.  **Safety backup** — runs `scripts/backup.sh` to a timestamped file.
+3.  **`git pull`** — updates your local checkout (fast-forward only).
+4.  **Rebuild** — `docker compose up -d --build`.
+5.  **Migrate** — `alembic upgrade head`.
+6.  **Smoke** — runs `scripts/smoke.sh` to confirm health.
+
+### Manual upgrade (fallback)
+
+Use these raw commands if `upgrade.sh` is unavailable or you need to perform a non-standard update (e.g., merging diverged branches).
 
 ```bash
 cd /path/to/context-engine
 
-# 1. Take a backup BEFORE upgrading. You will want this if step 5 fails.
+# 1. Take a backup BEFORE upgrading.
 docker compose exec -T postgres pg_dump -U postgres -d context_engine \
     --no-owner --format=custom \
     > "/backups/context_engine-pre-upgrade-$(date -u +%Y%m%dT%H%M%SZ).dump"
@@ -193,18 +212,15 @@ docker compose exec -T postgres pg_dump -U postgres -d context_engine \
 # 2. Pull the new code.
 git pull origin main
 
-# 3. Rebuild and restart. Named volumes persist across this command.
+# 3. Rebuild and restart.
 docker compose up -d --build
 
 # 4. Apply any new migrations.
 docker compose exec -T api alembic upgrade head
 
-# 5. Verify — smoke.sh is the supported self-host verification path.
+# 5. Verify.
 bash scripts/smoke.sh
 ```
-
-If smoke passes, the upgrade is done. If it fails, jump to
-[Rollback](#rollback).
 
 ### Zero-downtime caveat
 

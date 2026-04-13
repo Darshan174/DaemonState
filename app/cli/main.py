@@ -139,6 +139,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     verify_parser = subparsers.add_parser(
         "verify",
         help="Run the OSS v1 release gate: boot, readiness, demo seed, smoke, contract tests, and frontend checks.",
+        description=(
+            "Run the OSS v1 release gate in canonical phase order. "
+            "On failure, ctxe reports the failing phase, completed phases, and the next command to run."
+        ),
     )
     verify_parser.add_argument(
         "--base-url",

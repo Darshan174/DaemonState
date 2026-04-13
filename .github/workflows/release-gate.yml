@@ -74,19 +74,69 @@ jobs:
       - name: Publish release gate summary
         if: always()
         run: |
-          {
-            echo "## Release Gate"
-            if [ -f release-gate.json ]; then
-              echo
-              echo '```json'
-              cat release-gate.json
-              echo
-              echo '```'
-            else
-              echo
-              echo "No \`release-gate.json\` report was produced."
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          summary_path = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          report_path = Path("release-gate.json")
+          lines = ["## Release Gate", ""]
+
+          if not report_path.exists():
+              lines.append("No `release-gate.json` report was produced.")
+          else:
+              try:
+                  payload = json.loads(report_path.read_text(encoding="utf-8"))
+              except json.JSONDecodeError as exc:
+                  lines.append(f"Failed to parse `release-gate.json`: `{exc}`")
+                  lines.extend(["", "```text", report_path.read_text(encoding="utf-8"), "```"])
+              else:
+                  status = payload.get("status", "unknown")
+                  selected = payload.get("selected_phases") or []
+                  skipped = payload.get("skipped_phases") or []
+                  steps = payload.get("steps") or payload.get("completed_steps") or []
+
+                  lines.append(f"- Status: `{status}`")
+                  if selected:
+                      lines.append(f"- Selected phases: `{', '.join(selected)}`")
+                  if skipped:
+                      lines.append(f"- Skipped phases: `{', '.join(skipped)}`")
+                  if payload.get("phase"):
+                      lines.append(f"- Failing phase: `{payload['phase']}`")
+                  if payload.get("next_step"):
+                      lines.append(f"- Next step: `{payload['next_step']}`")
+
+                  if steps:
+                      lines.extend(
+                          [
+                              "",
+                              "| Phase | Status | Detail |",
+                              "| --- | --- | --- |",
+                          ]
+                      )
+                      for step in steps:
+                          phase = str(step.get("step", "unknown")).replace("|", "\\|")
+                          phase_status = str(step.get("status", "unknown")).replace("|", "\\|")
+                          detail = str(step.get("detail", "")).replace("|", "\\|").replace("\n", " ")
+                          lines.append(f"| {phase} | {phase_status} | {detail} |")
+
+                  lines.extend(
+                      [
+                          "",
+                          "<details><summary>Raw JSON</summary>",
+                          "",
+                          "```json",
+                          json.dumps(payload, indent=2, sort_keys=True),
+                          "```",
+                          "</details>",
+                      ]
+                  )
+
+          with summary_path.open("a", encoding="utf-8") as handle:
+              handle.write("\n".join(lines))
+              handle.write("\n")
+          PY
 
       - name: Tear down docker stack
         if: always()

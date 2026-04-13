@@ -93,7 +93,8 @@ while [ $# -gt 0 ]; do
         --branch|-b)
             TARGET_BRANCH=$2; shift 2 ;;
         -h|--help)
-            grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'
+            # Only show the initial comment block as the help output.
+            sed -n '2,/^[^#]/p' "$0" | sed 's/^# \{0,1\}//' | sed '$d'
             exit 0
             ;;
         *)
