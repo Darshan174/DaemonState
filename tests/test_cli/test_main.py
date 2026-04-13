@@ -65,7 +65,7 @@ class TestCtxeCLI:
             (sys.executable, "-m", "pytest", *cli_main.VERIFY_TEST_TARGETS, "-q"),
             project_root,
             True,
-            None,
+            {"TEST_DATABASE_URL": cli_main.DEFAULT_VERIFY_TEST_DATABASE_URL},
         )
         assert calls[2] == (("npm", "test"), frontend_dir, True, None)
         assert calls[3] == (("npm", "run", "build"), frontend_dir, True, None)
@@ -122,8 +122,86 @@ class TestCtxeCLI:
                     "SMOKE_EXPECT": cli_main.DEFAULT_VERIFY_EXPECT,
                 },
             ),
-            ((sys.executable, "-m", "pytest", *cli_main.VERIFY_TEST_TARGETS, "-q"), None),
+            (
+                (sys.executable, "-m", "pytest", *cli_main.VERIFY_TEST_TARGETS, "-q"),
+                {"TEST_DATABASE_URL": cli_main.DEFAULT_VERIFY_TEST_DATABASE_URL},
+            ),
         ]
+
+    def test_verify_supports_phase_selection_and_contract_test_database(
+        self,
+        monkeypatch,
+        tmp_path,
+        capsys,
+    ):
+        project_root = tmp_path / "context-engine"
+        frontend_dir = project_root / "frontend"
+        frontend_dir.mkdir(parents=True)
+        calls: list[tuple[tuple[str, ...], Path, dict[str, str] | None]] = []
+
+        monkeypatch.setattr(
+            cli_main,
+            "find_project_root",
+            lambda: project_root,
+        )
+        monkeypatch.setattr(
+            cli_main,
+            "boot_stack",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("boot should not run")),
+        )
+        monkeypatch.setattr(
+            cli_main,
+            "check_verify_readiness",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("readiness should not run")
+            ),
+        )
+        monkeypatch.setattr(
+            cli_main,
+            "seed_demo_workspace",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("seed should not run")),
+        )
+
+        def fake_run_subprocess(command, *, cwd, capture_output=False, env=None):
+            calls.append((tuple(command), cwd, env))
+            return SimpleNamespace(stdout="ok\n", stderr="")
+
+        monkeypatch.setattr(cli_main, "run_subprocess", fake_run_subprocess)
+
+        exit_code = cli_main.main(
+            [
+                "verify",
+                "--phase",
+                "contract-tests",
+                "--phase",
+                "frontend-build",
+                "--test-database-url",
+                "postgresql+asyncpg://postgres:postgres@localhost:5432/release_gate_db",
+            ]
+        )
+
+        assert exit_code == 0
+        assert calls == [
+            (
+                (sys.executable, "-m", "pytest", *cli_main.VERIFY_TEST_TARGETS, "-q"),
+                project_root,
+                {
+                    "TEST_DATABASE_URL": "postgresql+asyncpg://postgres:postgres@localhost:5432/release_gate_db",
+                },
+            ),
+            (("npm", "run", "build"), frontend_dir, None),
+        ]
+        output = capsys.readouterr().out
+        assert "verify phases: contract-tests, frontend-build" in output
+
+    def test_verify_rejects_skip_frontend_with_explicit_frontend_phase(self, capsys):
+        exit_code = cli_main.main(["verify", "--skip-frontend", "--phase", "frontend-tests"])
+
+        assert exit_code == 1
+        assert (
+            "--skip-frontend cannot be combined with --phase frontend-tests/frontend-build."
+            in capsys.readouterr().err
+        )
 
     def test_verify_reports_phase_specific_failures(self, monkeypatch, tmp_path, capsys):
         project_root = tmp_path / "context-engine"
@@ -197,6 +275,15 @@ class TestCtxeCLI:
                 "probe 'http://localhost:8000/health' and 'http://localhost:8000/health/ready', "
                 "then inspect 'docker compose logs --tail 40 api postgres redis'"
             ),
+            "selected_phases": list(cli_main.VERIFY_PHASES),
+            "skipped_phases": [],
+            "completed_steps": [
+                {
+                    "step": "boot",
+                    "status": "ok",
+                    "detail": "docker services, migrations, and API boot completed at http://localhost:8000",
+                }
+            ],
         }
 
     @pytest.mark.parametrize(
@@ -285,6 +372,23 @@ class TestCtxeCLI:
         err = capsys.readouterr().err
         assert f"verify failed during {failing_phase}: {expected_fragment}" in err
         assert "Next step:" in err
+
+    def test_ensure_local_env_creates_env_and_encryption_key(self, tmp_path):
+        project_root = tmp_path / "context-engine"
+        project_root.mkdir()
+        (project_root / ".env.example").write_text(
+            "ENVIRONMENT=development\nENCRYPTION_KEY=\n",
+            encoding="utf-8",
+        )
+
+        cli_main.ensure_local_env(project_root)
+
+        env_contents = (project_root / ".env").read_text(encoding="utf-8")
+        assert "ENVIRONMENT=development" in env_contents
+        key_line = next(
+            line for line in env_contents.splitlines() if line.startswith("ENCRYPTION_KEY=")
+        )
+        assert key_line != "ENCRYPTION_KEY="
 
     def test_demo_seeds_canonical_workspace_via_http_api(self, monkeypatch, capsys):
         calls: list[tuple[str, str, dict | None]] = []

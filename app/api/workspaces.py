@@ -1,3 +1,5 @@
+"""Stable founder-facing workspace lifecycle and demo-seed routes."""
+
 from __future__ import annotations
 
 from typing import Literal

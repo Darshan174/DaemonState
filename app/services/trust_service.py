@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -60,6 +61,23 @@ _ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
 }
 
 
+@dataclass
+class ReviewPage:
+    """Paginated review items result."""
+    items: list[ReviewItem]
+    total: int
+    limit: int
+    offset: int
+
+
+_SORT_COLUMNS: dict[str, object] = {
+    "updated_at": ReviewItem.updated_at,
+    "created_at": ReviewItem.created_at,
+    "severity": ReviewItem.severity,
+    "confidence": ReviewItem.confidence,
+}
+
+
 class TrustService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -73,31 +91,30 @@ class TrustService:
         kind: str | None = None,
         model_id: UUID | None = None,
         source_document_id: UUID | None = None,
-    ) -> list[ReviewItem]:
+        sort: str = "updated_at",
+        sort_dir: str = "desc",
+        limit: int = 100,
+        offset: int = 0,
+    ) -> ReviewPage:
         await self._require_workspace(workspace_id)
 
-        query = (
+        base_query = (
             select(ReviewItem)
             .join(Component, ReviewItem.component_id == Component.id)
             .join(KnowledgeModel, Component.model_id == KnowledgeModel.id)
             .where(KnowledgeModel.workspace_id == workspace_id)
-            .options(
-                selectinload(ReviewItem.component).selectinload(Component.model),
-                selectinload(ReviewItem.component).selectinload(Component.source_documents),
-                selectinload(ReviewItem.decision_history),
-            )
         )
 
         if status is not None:
-            query = query.where(ReviewItem.status == status)
+            base_query = base_query.where(ReviewItem.status == status)
         if severity is not None:
-            query = query.where(ReviewItem.severity == severity)
+            base_query = base_query.where(ReviewItem.severity == severity)
         if kind is not None:
-            query = query.where(ReviewItem.kind == kind)
+            base_query = base_query.where(ReviewItem.kind == kind)
         if model_id is not None:
-            query = query.where(Component.model_id == model_id)
+            base_query = base_query.where(Component.model_id == model_id)
         if source_document_id is not None:
-            query = query.join(
+            base_query = base_query.join(
                 ComponentSource,
                 ComponentSource.component_id == ReviewItem.component_id,
             ).join(
@@ -108,14 +125,91 @@ class TrustService:
                 SourceDocument.deleted_at.is_(None),
             )
 
-        result = await self.session.execute(
-            query.order_by(
-                ReviewItem.updated_at.desc(),
-                ReviewItem.created_at.desc(),
-                ReviewItem.id.desc(),
-            )
+        # Total count (without pagination)
+        count_q = select(func.count()).select_from(base_query.subquery())
+        total_result = await self.session.execute(count_q)
+        total = total_result.scalar() or 0
+
+        # Fetch paginated items
+        query = base_query.options(
+            selectinload(ReviewItem.component).selectinload(Component.model),
+            selectinload(ReviewItem.component).selectinload(Component.source_documents),
+            selectinload(ReviewItem.decision_history),
         )
-        return list(result.unique().scalars().all())
+
+        # Apply sorting
+        sort_col = _SORT_COLUMNS.get(sort, ReviewItem.updated_at)
+        if sort_dir == "asc":
+            query = query.order_by(sort_col.asc(), ReviewItem.id.asc())
+        else:
+            query = query.order_by(sort_col.desc(), ReviewItem.id.desc())
+
+        query = query.limit(limit).offset(offset)
+
+        result = await self.session.execute(query)
+        items = list(result.unique().scalars().all())
+        return ReviewPage(items=items, total=total, limit=limit, offset=offset)
+
+    async def get_review_summary(
+        self,
+        workspace_id: UUID,
+    ) -> dict[str, object]:
+        """Return review state summary for operator dashboard."""
+        await self._require_workspace(workspace_id)
+
+        subq = (
+            select(ReviewItem)
+            .join(Component, ReviewItem.component_id == Component.id)
+            .join(KnowledgeModel, Component.model_id == KnowledgeModel.id)
+            .where(KnowledgeModel.workspace_id == workspace_id)
+        ).subquery()
+
+        # By status
+        status_rows = await self.session.execute(
+            select(subq.c.status, func.count())
+            .group_by(subq.c.status)
+        )
+        status_counts = dict(status_rows.all())
+
+        # By severity
+        severity_rows = await self.session.execute(
+            select(subq.c.severity, func.count())
+            .group_by(subq.c.severity)
+        )
+        severity_counts = dict(severity_rows.all())
+
+        # By kind
+        kind_rows = await self.session.execute(
+            select(subq.c.kind, func.count())
+            .group_by(subq.c.kind)
+        )
+        kind_counts = dict(kind_rows.all())
+
+        total = sum(status_counts.values())
+        actionable = status_counts.get("needs_review", 0)
+
+        return {
+            "total": total,
+            "actionable": actionable,
+            "by_status": {
+                "needs_review": status_counts.get("needs_review", 0),
+                "approved": status_counts.get("approved", 0),
+                "rejected": status_counts.get("rejected", 0),
+                "superseded": status_counts.get("superseded", 0),
+            },
+            "by_severity": {
+                "high": severity_counts.get("high", 0),
+                "medium": severity_counts.get("medium", 0),
+                "low": severity_counts.get("low", 0),
+            },
+            "by_kind": {
+                "review_item": kind_counts.get("review_item", 0),
+                "conflict": kind_counts.get("conflict", 0),
+                "low_confidence": kind_counts.get("low_confidence", 0),
+                "fact_update": kind_counts.get("fact_update", 0),
+                "superseded_fact": kind_counts.get("superseded_fact", 0),
+            },
+        }
 
     async def get_review_item(self, review_item_id: UUID) -> ReviewItem:
         item = await self.session.scalar(

@@ -174,7 +174,8 @@ class TestOperatorDecisionHistory:
             params={"workspace_id": str(workspace.id)},
         )
         assert resp.status_code == 200
-        items = resp.json()
+        body = resp.json()
+        items = body["items"]
         assert len(items) >= 1
         item = next(i for i in items if i["id"] == str(g["review"].id))
         assert len(item["decision_history"]) >= 1

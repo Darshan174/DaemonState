@@ -526,3 +526,217 @@ class TestProvenanceInWorkflows:
         fact = facts[0]
         assert "source_document_ids" in fact
         assert str(doc.id) in fact["source_document_ids"]
+
+    async def test_risk_items_have_source_document_ids(self, client, workspace, db_session):
+        """Stale high-risk items in founder brief include source_document_ids for provenance."""
+        connector = Connector(
+            workspace_id=workspace.id,
+            connector_type=ConnectorType.SLACK,
+            status=ConnectorStatus.CONNECTED,
+            config={},
+        )
+        db_session.add(connector)
+        await db_session.flush()
+
+        model = KnowledgeModel(
+            workspace_id=workspace.id,
+            name="Risk Test",
+            description="Test model",
+        )
+        db_session.add(model)
+        await db_session.flush()
+
+        doc = SourceDocument(
+            connector_id=connector.id,
+            connector_type=ConnectorType.SLACK,
+            external_id="slack:risk-test",
+            content="blocker: need security review",
+            metadata_json={"channel_name": "engineering"},
+        )
+        db_session.add(doc)
+        await db_session.flush()
+
+        component = Component(
+            model_id=model.id,
+            name="Blocker in #engineering",
+            value="Need security review",
+            confidence=0.4,
+            authority_weight=0.75,
+            valid_from=datetime.now(timezone.utc) - timedelta(hours=2),
+            last_verified_at=datetime.now(timezone.utc),
+            is_stale=True,
+        )
+        db_session.add(component)
+        await db_session.flush()
+
+        db_session.add(
+            ComponentSource(
+                component_id=component.id,
+                source_document_id=doc.id,
+                extraction_context="Test",
+                extracted_value=component.value,
+                extractor_name="regex",
+                extractor_kind="regex",
+                extractor_schema_version="fact_extraction.v1",
+            )
+        )
+        db_session.add(
+            ReviewItem(
+                component_id=component.id,
+                status="needs_review",
+                severity="medium",
+                kind="low_confidence",
+                title="Low confidence blocker",
+                summary="Needs review",
+                confidence=0.4,
+            )
+        )
+        await db_session.commit()
+
+        resp = await client.get(
+            "/api/founder-brief",
+            params={"workspace_id": str(workspace.id), "lookback_days": 7},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        risks = body.get("stale_high_risk_items", [])
+        assert risks
+        risk = risks[0]
+        assert "source_document_ids" in risk
+        assert str(doc.id) in risk["source_document_ids"]
+
+
+class TestAsOfFreshness:
+    """as_of queries compute freshness relative to the requested time, not wall-clock now."""
+
+    async def test_as_of_freshness_uses_requested_time(self, client, db_session, workspace):
+        """A historical fact verified recently at the as_of time should not be stale."""
+        connector = Connector(
+            workspace_id=workspace.id,
+            connector_type=ConnectorType.SLACK,
+            status=ConnectorStatus.CONNECTED,
+            config={},
+        )
+        db_session.add(connector)
+        await db_session.flush()
+
+        model = KnowledgeModel(
+            workspace_id=workspace.id,
+            name="Pricing",
+            description="Pricing model",
+        )
+        db_session.add(model)
+        await db_session.flush()
+
+        # Historical component: verified 5 days before as_of time (2026-03-15)
+        # as_of is 2026-03-20, so age = 5 days → should be CURRENT
+        old = Component(
+            model_id=model.id,
+            name="Enterprise Plan",
+            value="$500/seat",
+            confidence=0.9,
+            authority_weight=0.9,
+            valid_from=datetime(2026, 1, 1, tzinfo=UTC),
+            valid_to=datetime(2026, 3, 20, tzinfo=UTC),
+            last_verified_at=datetime(2026, 3, 15, tzinfo=UTC),
+        )
+        db_session.add(old)
+        await db_session.flush()
+        db_session.add(
+            ReviewItem(
+                component_id=old.id,
+                status="superseded",
+                severity="low",
+                kind="superseded_fact",
+                title="Old price",
+                summary="Price changed",
+                confidence=0.9,
+            )
+        )
+        await db_session.commit()
+
+        # Query as_of March 18 — 3 days after last_verified_at → should be CURRENT
+        resp = await client.post(
+            "/api/query",
+            json={
+                "question": "What is the enterprise price?",
+                "workspace_id": str(workspace.id),
+                "as_of": "2026-03-18T00:00:00Z",
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["components"]
+        assert body["components"][0]["value"] == "$500/seat"
+        # Freshness should be CURRENT (5 days old at as_of time), not stale
+        assert body["freshness"] == "current"
+
+    async def test_query_sources_include_source_document_id(self, client, db_session, workspace):
+        """Query result sources include source_document_id for provenance linking."""
+        connector = Connector(
+            workspace_id=workspace.id,
+            connector_type=ConnectorType.SLACK,
+            status=ConnectorStatus.CONNECTED,
+            config={},
+        )
+        db_session.add(connector)
+        await db_session.flush()
+
+        model = KnowledgeModel(
+            workspace_id=workspace.id,
+            name="Pricing",
+            description="Pricing model",
+        )
+        db_session.add(model)
+        await db_session.flush()
+
+        doc = SourceDocument(
+            connector_id=connector.id,
+            connector_type=ConnectorType.SLACK,
+            external_id="slack:source-prov",
+            content="Enterprise pricing: $600/seat",
+            author="ceo@example.com",
+            source_url="https://slack.example.com/pricing",
+            metadata_json={"channel_name": "pricing"},
+        )
+        db_session.add(doc)
+        await db_session.flush()
+
+        component = Component(
+            model_id=model.id,
+            name="Enterprise Plan",
+            value="$600/seat",
+            confidence=0.9,
+            authority_weight=0.75,
+            valid_from=datetime.now(timezone.utc) - timedelta(hours=1),
+            last_verified_at=datetime.now(timezone.utc),
+        )
+        db_session.add(component)
+        await db_session.flush()
+
+        db_session.add(
+            ComponentSource(
+                component_id=component.id,
+                source_document_id=doc.id,
+                extraction_context="Test",
+                extracted_value=component.value,
+                extractor_name="regex",
+                extractor_kind="regex",
+                extractor_schema_version="fact_extraction.v1",
+            )
+        )
+        await db_session.commit()
+
+        resp = await client.post(
+            "/api/query",
+            json={
+                "question": "What is enterprise pricing?",
+                "workspace_id": str(workspace.id),
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["sources"]
+        source = body["sources"][0]
+        assert source["source_document_id"] is not None
+        assert source["source_document_id"] == str(doc.id)

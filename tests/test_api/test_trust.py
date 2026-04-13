@@ -134,8 +134,11 @@ class TestReviewItems:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body) == 1
-        item = body[0]
+        assert body["total"] == 1
+        assert body["has_more"] is False
+        items = body["items"]
+        assert len(items) == 1
+        item = items[0]
         assert item["id"] == str(seeded["review_item"].id)
         assert item["status"] == "needs_review"
         assert item["severity"] == "high"
@@ -168,8 +171,9 @@ class TestReviewItems:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body) == 1
-        assert body[0]["id"] == str(seeded["review_item"].id)
+        items = body["items"]
+        assert len(items) == 1
+        assert items[0]["id"] == str(seeded["review_item"].id)
 
     async def test_approve_review_item(self, client, workspace, db_session):
         seeded = await _seed_component_graph(db_session, workspace)

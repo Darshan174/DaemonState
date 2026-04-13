@@ -19,6 +19,7 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from app.models.connector import Connector, ConnectorStatus
+from app.models.job import SyncJob, SyncJobStatus
 from app.models.knowledge import Component, ComponentSource, KnowledgeModel
 from app.models.review import ReviewDecision, ReviewItem
 from app.models.source import ConnectorType, SourceDocument
@@ -252,7 +253,7 @@ class TestDecisionHistoryOrdering:
             params={"workspace_id": str(workspace.id)},
         )
         assert resp.status_code == 200
-        items = resp.json()
+        items = resp.json()["items"]
         item = next(i for i in items if i["id"] == str(g["review_item"].id))
         history = item["decision_history"]
         assert len(history) == 2
@@ -343,8 +344,9 @@ class TestSoftDeletedProvenanceFiltered:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body) == 1
-        item = body[0]
+        items = body["items"]
+        assert len(items) == 1
+        item = items[0]
         # Only the active document should appear
         source_ids = {doc["id"] for doc in item["source_documents"]}
         assert str(active_doc.id) in source_ids
@@ -413,7 +415,7 @@ class TestSoftDeletedProvenanceFiltered:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert body == []
+        assert body["items"] == []
 
 
 class TestProvenanceNotFoundAndEmpty:
@@ -581,7 +583,7 @@ class TestTrustVisibilityInvariants:
             params={"workspace_id": str(workspace.id)},
         )
         assert resp.status_code == 200
-        items = resp.json()
+        items = resp.json()["items"]
         assert len(items) == 1
         assert items[0]["is_actionable"] is True
         assert items[0]["status"] == "needs_review"
@@ -593,7 +595,7 @@ class TestTrustVisibilityInvariants:
             params={"workspace_id": str(workspace.id)},
         )
         assert resp.status_code == 200
-        items = resp.json()
+        items = resp.json()["items"]
         assert len(items) == 1
         assert items[0]["is_actionable"] is False
         assert items[0]["status"] == "approved"
@@ -605,7 +607,7 @@ class TestTrustVisibilityInvariants:
             params={"workspace_id": str(workspace.id)},
         )
         assert resp.status_code == 200
-        items = resp.json()
+        items = resp.json()["items"]
         assert len(items) == 1
         assert items[0]["is_actionable"] is False
 
@@ -616,7 +618,7 @@ class TestTrustVisibilityInvariants:
             params={"workspace_id": str(workspace.id)},
         )
         assert resp.status_code == 200
-        items = resp.json()
+        items = resp.json()["items"]
         assert len(items) == 1
         assert items[0]["is_actionable"] is False
 
@@ -725,8 +727,9 @@ class TestFilterAndSortBehavior:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body) == 1
-        assert body[0]["id"] == str(review1.id)
+        items = body["items"]
+        assert len(items) == 1
+        assert items[0]["id"] == str(review1.id)
 
     async def test_filter_by_severity(self, client, workspace, db_session):
         connector = _make_connector(workspace.id)
@@ -765,8 +768,9 @@ class TestFilterAndSortBehavior:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body) == 1
-        assert body[0]["id"] == str(review1.id)
+        items = body["items"]
+        assert len(items) == 1
+        assert items[0]["id"] == str(review1.id)
 
     async def test_filter_by_kind(self, client, workspace, db_session):
         g = await _seed_review_graph(db_session, workspace, status="needs_review")
@@ -779,8 +783,9 @@ class TestFilterAndSortBehavior:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body) == 1
-        assert body[0]["id"] == str(g["review_item"].id)
+        items = body["items"]
+        assert len(items) == 1
+        assert items[0]["id"] == str(g["review_item"].id)
 
     async def test_empty_filter_result(self, client, workspace, db_session):
         """Filters that match nothing should return empty list, not error."""
@@ -789,7 +794,7 @@ class TestFilterAndSortBehavior:
             params={"workspace_id": str(workspace.id), "status": "approved"},
         )
         assert resp.status_code == 200
-        assert resp.json() == []
+        assert resp.json()["items"] == []
 
     async def test_list_ordered_by_updated_desc(
         self, client, workspace, db_session
@@ -835,10 +840,11 @@ class TestFilterAndSortBehavior:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body) == 2
+        items = body["items"]
+        assert len(items) == 2
         # review2 has a later updated_at, so it should come first
-        assert body[0]["id"] == str(review2.id)
-        assert body[1]["id"] == str(review1.id)
+        assert items[0]["id"] == str(review2.id)
+        assert items[1]["id"] == str(review1.id)
 
 
 class TestWorkspaceScopeReviewItems:
@@ -859,7 +865,7 @@ class TestWorkspaceScopeReviewItems:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body) == 0
+        assert len(body["items"]) == 0
 
     async def test_list_review_items_missing_workspace_422(
         self, client, workspace, db_session
@@ -917,7 +923,7 @@ class TestIngestionSeedCreatesReviewItems:
         )
         assert resp.status_code == 200
         body = resp.json()
-        review_ids = {item["id"] for item in body}
+        review_ids = {item["id"] for item in body["items"]}
         assert str(review.id) in review_ids
 
     async def test_ingestion_review_item_has_system_decision(
@@ -977,7 +983,7 @@ class TestStatusFieldTypedCorrectly:
         )
         assert resp.status_code == 200
         body = resp.json()
-        item = body[0]
+        item = body["items"][0]
         # These should be valid typed values, not None or empty
         assert item["status"] in {"needs_review", "approved", "rejected", "superseded"}
         assert item["severity"] in {"high", "medium", "low"}
@@ -1035,7 +1041,7 @@ class TestReviewEdgeCases:
     async def test_list_review_items_nonexistent_source_document_returns_empty(
         self, client, workspace
     ):
-        """Filtering by a source_document_id that doesn't exist returns []."""
+        """Filtering by a source_document_id that doesn't exist returns empty items."""
         resp = await client.get(
             "/api/review-items",
             params={
@@ -1044,12 +1050,12 @@ class TestReviewEdgeCases:
             },
         )
         assert resp.status_code == 200
-        assert resp.json() == []
+        assert resp.json()["items"] == []
 
     async def test_list_review_items_nonexistent_model_returns_empty(
         self, client, workspace
     ):
-        """Filtering by a model_id that doesn't exist returns []."""
+        """Filtering by a model_id that doesn't exist returns empty items."""
         resp = await client.get(
             "/api/review-items",
             params={
@@ -1058,7 +1064,7 @@ class TestReviewEdgeCases:
             },
         )
         assert resp.status_code == 200
-        assert resp.json() == []
+        assert resp.json()["items"] == []
 
     async def test_list_review_items_filter_by_model_id(
         self, client, workspace, db_session
@@ -1110,8 +1116,9 @@ class TestReviewEdgeCases:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body) == 1
-        assert body[0]["id"] == str(review_a.id)
+        items = body["items"]
+        assert len(items) == 1
+        assert items[0]["id"] == str(review_a.id)
 
     async def test_source_document_deleted_returns_404_for_components(
         self, client, workspace, db_session
@@ -1388,3 +1395,482 @@ class TestCrossWorkspaceSafety:
             params={"workspace_id": str(other_ws.id)},
         )
         assert resp.status_code == 404
+
+
+class TestReviewPagination:
+    """Paginated list_review_items endpoint behavior."""
+
+    async def test_default_pagination_returns_all_within_limit(
+        self, client, workspace, db_session
+    ):
+        """Default limit=100 returns all items when under 100."""
+        connector = _make_connector(workspace.id)
+        db_session.add(connector)
+        model = KnowledgeModel(
+            workspace_id=workspace.id, name="Pag Model", description="Pag"
+        )
+        db_session.add(model)
+        await db_session.flush()
+
+        for i in range(3):
+            comp = Component(
+                model_id=model.id, name=f"Pag Fact {i}", value=f"v{i}", confidence=0.5,
+            )
+            db_session.add(comp)
+            await db_session.flush()
+            db_session.add(
+                ReviewItem(
+                    component_id=comp.id, status="needs_review", severity="medium",
+                    kind="low_confidence", title="t", summary="s", confidence=0.5,
+                )
+            )
+            await db_session.flush()
+
+        resp = await client.get(
+            "/api/review-items",
+            params={"workspace_id": str(workspace.id)},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 3
+        assert body["limit"] == 100
+        assert body["offset"] == 0
+        assert body["has_more"] is False
+        assert body["page_size"] == 3
+        assert len(body["items"]) == 3
+
+    async def test_pagination_with_limit_and_offset(
+        self, client, workspace, db_session
+    ):
+        """Limit and offset correctly paginate results."""
+        connector = _make_connector(workspace.id)
+        db_session.add(connector)
+        model = KnowledgeModel(
+            workspace_id=workspace.id, name="Pag2 Model", description="Pag2"
+        )
+        db_session.add(model)
+        await db_session.flush()
+
+        review_ids = []
+        for i in range(5):
+            comp = Component(
+                model_id=model.id, name=f"Pag2 Fact {i}", value=f"v{i}", confidence=0.5,
+            )
+            db_session.add(comp)
+            await db_session.flush()
+            review = ReviewItem(
+                component_id=comp.id, status="needs_review", severity="medium",
+                kind="low_confidence", title="t", summary="s", confidence=0.5,
+            )
+            db_session.add(review)
+            await db_session.flush()
+            review_ids.append(review.id)
+
+        # First page: limit=2
+        resp = await client.get(
+            "/api/review-items",
+            params={"workspace_id": str(workspace.id), "limit": 2, "offset": 0},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 5
+        assert body["limit"] == 2
+        assert body["offset"] == 0
+        assert body["has_more"] is True
+        assert len(body["items"]) == 2
+
+        # Second page: offset=2
+        resp = await client.get(
+            "/api/review-items",
+            params={"workspace_id": str(workspace.id), "limit": 2, "offset": 2},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 5
+        assert body["offset"] == 2
+        assert body["has_more"] is True
+        assert len(body["items"]) == 2
+
+        # Last page: offset=4
+        resp = await client.get(
+            "/api/review-items",
+            params={"workspace_id": str(workspace.id), "limit": 2, "offset": 4},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 5
+        assert body["offset"] == 4
+        assert body["has_more"] is False
+        assert len(body["items"]) == 1
+
+    async def test_pagination_beyond_results_returns_empty(self, client, workspace, db_session):
+        """Offset beyond total returns empty items list."""
+        g = await _seed_review_graph(db_session, workspace)
+
+        resp = await client.get(
+            "/api/review-items",
+            params={"workspace_id": str(workspace.id), "offset": 999},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 1
+        assert body["items"] == []
+        assert body["has_more"] is False
+
+
+class TestReviewSummary:
+    """Review state summary endpoint for operator dashboards."""
+
+    async def test_summary_returns_zero_counts_for_empty_workspace(
+        self, client, workspace
+    ):
+        resp = await client.get(
+            "/api/review-items/summary",
+            params={"workspace_id": str(workspace.id)},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 0
+        assert body["actionable"] == 0
+        assert body["by_status"]["needs_review"] == 0
+        assert body["by_severity"]["high"] == 0
+        assert body["by_kind"]["conflict"] == 0
+
+    async def test_summary_returns_correct_counts(
+        self, client, workspace, db_session
+    ):
+        connector = _make_connector(workspace.id)
+        db_session.add(connector)
+        model = KnowledgeModel(
+            workspace_id=workspace.id, name="Sum Model", description="Sum"
+        )
+        db_session.add(model)
+        await db_session.flush()
+
+        # Create items in different states
+        for i, status in enumerate(["needs_review", "needs_review", "approved", "rejected"]):
+            comp = Component(
+                model_id=model.id, name=f"Sum Fact {i}", value=f"v{i}", confidence=0.5,
+            )
+            db_session.add(comp)
+            await db_session.flush()
+            db_session.add(
+                ReviewItem(
+                    component_id=comp.id, status=status,
+                    severity="high" if i < 2 else "low",
+                    kind="conflict" if i == 0 else "low_confidence",
+                    title="t", summary="s", confidence=0.5,
+                )
+            )
+            await db_session.flush()
+
+        resp = await client.get(
+            "/api/review-items/summary",
+            params={"workspace_id": str(workspace.id)},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 4
+        assert body["actionable"] == 2
+        assert body["by_status"]["needs_review"] == 2
+        assert body["by_status"]["approved"] == 1
+        assert body["by_status"]["rejected"] == 1
+        assert body["by_severity"]["high"] == 2
+        assert body["by_severity"]["low"] == 2
+        assert body["by_kind"]["conflict"] == 1
+        assert body["by_kind"]["low_confidence"] == 3
+
+    async def test_summary_missing_workspace_returns_404(
+        self, client, workspace
+    ):
+        resp = await client.get(
+            "/api/review-items/summary",
+            params={"workspace_id": str(uuid4())},
+        )
+        assert resp.status_code == 404
+
+    async def test_summary_workspace_cross_check(
+        self, client, workspace, db_session
+    ):
+        """Items in workspace A should not affect workspace B's summary."""
+        await _seed_review_graph(db_session, workspace)
+
+        other_ws = Workspace(id=uuid4(), name="Other WS")
+        db_session.add(other_ws)
+        await db_session.flush()
+
+        resp = await client.get(
+            "/api/review-items/summary",
+            params={"workspace_id": str(other_ws.id)},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 0
+
+
+class TestGetSingleReviewItem:
+    """GET /review-items/{id} single-item endpoint."""
+
+    async def test_get_review_item_returns_full_payload(
+        self, client, workspace, db_session
+    ):
+        g = await _seed_review_graph(db_session, workspace)
+        resp = await client.get(
+            f"/api/review-items/{g['review_item'].id}",
+            params={"workspace_id": str(workspace.id)},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["id"] == str(g["review_item"].id)
+        assert body["status"] == "needs_review"
+        assert body["is_actionable"] is True
+
+    async def test_get_review_item_nonexistent_returns_404(
+        self, client, workspace
+    ):
+        resp = await client.get(
+            f"/api/review-items/{uuid4()}",
+            params={"workspace_id": str(workspace.id)},
+        )
+        assert resp.status_code == 404
+
+    async def test_get_review_item_cross_workspace_returns_404(
+        self, client, workspace, db_session
+    ):
+        g = await _seed_review_graph(db_session, workspace)
+        other_ws = Workspace(id=uuid4(), name="Other WS")
+        db_session.add(other_ws)
+        await db_session.flush()
+
+        resp = await client.get(
+            f"/api/review-items/{g['review_item'].id}",
+            params={"workspace_id": str(other_ws.id)},
+        )
+        assert resp.status_code == 404
+
+
+class TestReviewItemSort:
+    """Sort parameter behavior on list_review_items."""
+
+    async def test_sort_by_updated_at_desc(self, client, workspace, db_session):
+        connector = _make_connector(workspace.id)
+        db_session.add(connector)
+        model = KnowledgeModel(
+            workspace_id=workspace.id, name="Sort Model", description="Sort"
+        )
+        db_session.add(model)
+        await db_session.flush()
+
+        comp1 = Component(model_id=model.id, name="Sort1", value="v1", confidence=0.5)
+        db_session.add(comp1)
+        await db_session.flush()
+        review1 = ReviewItem(
+            component_id=comp1.id, status="needs_review", severity="medium",
+            kind="low_confidence", title="t", summary="s", confidence=0.5,
+        )
+        db_session.add(review1)
+        await db_session.flush()
+
+        comp2 = Component(model_id=model.id, name="Sort2", value="v2", confidence=0.4)
+        db_session.add(comp2)
+        await db_session.flush()
+        review2 = ReviewItem(
+            component_id=comp2.id, status="needs_review", severity="high",
+            kind="low_confidence", title="t", summary="s", confidence=0.4,
+        )
+        db_session.add(review2)
+        await db_session.flush()
+
+        # Force distinct updated_at
+        review1.updated_at = review1.updated_at - timedelta(hours=1)
+        await db_session.flush()
+
+        resp = await client.get(
+            "/api/review-items",
+            params={"workspace_id": str(workspace.id), "sort": "updated_at", "sort_dir": "desc"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        items = body["items"]
+        assert len(items) == 2
+        assert items[0]["id"] == str(review2.id)
+        assert items[1]["id"] == str(review1.id)
+
+    async def test_sort_by_confidence_asc(self, client, workspace, db_session):
+        connector = _make_connector(workspace.id)
+        db_session.add(connector)
+        model = KnowledgeModel(
+            workspace_id=workspace.id, name="SortC Model", description="SortC"
+        )
+        db_session.add(model)
+        await db_session.flush()
+
+        comp_lo = Component(model_id=model.id, name="SortC Lo", value="lo", confidence=0.3)
+        db_session.add(comp_lo)
+        await db_session.flush()
+        db_session.add(
+            ReviewItem(
+                component_id=comp_lo.id, status="needs_review", severity="high",
+                kind="low_confidence", title="t", summary="s", confidence=0.3,
+            )
+        )
+        await db_session.flush()
+
+        comp_hi = Component(model_id=model.id, name="SortC Hi", value="hi", confidence=0.8)
+        db_session.add(comp_hi)
+        await db_session.flush()
+        db_session.add(
+            ReviewItem(
+                component_id=comp_hi.id, status="needs_review", severity="low",
+                kind="low_confidence", title="t", summary="s", confidence=0.8,
+            )
+        )
+        await db_session.flush()
+
+        resp = await client.get(
+            "/api/review-items",
+            params={"workspace_id": str(workspace.id), "sort": "confidence", "sort_dir": "asc"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        items = body["items"]
+        assert len(items) == 2
+        assert items[0]["confidence"] == 0.3
+        assert items[1]["confidence"] == 0.8
+
+    async def test_invalid_sort_param_returns_422(self, client, workspace):
+        resp = await client.get(
+            "/api/review-items",
+            params={"workspace_id": str(workspace.id), "sort": "invalid"},
+        )
+        assert resp.status_code == 422
+
+
+class TestReprocessLifecycle:
+    """Reprocess endpoint edge cases and lifecycle."""
+
+    async def test_reprocess_completed_job_allows_new_job(
+        self, client, workspace, db_session, monkeypatch
+    ):
+        """A connector with a completed job can still accept a new reprocess job."""
+        connector = _make_connector(workspace.id)
+        db_session.add(connector)
+        await db_session.flush()
+
+        db_session.add(
+            SyncJob(
+                connector_id=connector.id, job_type="sync",
+                status=SyncJobStatus.COMPLETED,
+            )
+        )
+        await db_session.flush()
+
+        document = _make_source_document(
+            connector.id, ConnectorType.SLACK, "slack-reproc-done",
+            processed_at=datetime(2026, 3, 31, 10, 5, tzinfo=timezone.utc),
+        )
+        db_session.add(document)
+        await db_session.flush()
+
+        mock_delay = MagicMock()
+        mock_delay.return_value.id = "celery-new-reproc"
+        monkeypatch.setattr("app.tasks.ingestion.run_ingestion.delay", mock_delay)
+
+        resp = await client.post(
+            f"/api/source-documents/{document.id}/reprocess",
+            params={"workspace_id": str(workspace.id)},
+        )
+        assert resp.status_code == 202
+
+    async def test_reprocess_failed_job_allows_new_job(
+        self, client, workspace, db_session, monkeypatch
+    ):
+        """A connector with a failed job can accept a new reprocess job."""
+        connector = _make_connector(workspace.id)
+        db_session.add(connector)
+        await db_session.flush()
+
+        db_session.add(
+            SyncJob(
+                connector_id=connector.id, job_type="sync",
+                status=SyncJobStatus.FAILED,
+            )
+        )
+        await db_session.flush()
+
+        document = _make_source_document(
+            connector.id, ConnectorType.SLACK, "slack-reproc-fail",
+            processed_at=datetime(2026, 3, 31, 10, 5, tzinfo=timezone.utc),
+        )
+        db_session.add(document)
+        await db_session.flush()
+
+        mock_delay = MagicMock()
+        mock_delay.return_value.id = "celery-new-reproc-fail"
+        monkeypatch.setattr("app.tasks.ingestion.run_ingestion.delay", mock_delay)
+
+        resp = await client.post(
+            f"/api/source-documents/{document.id}/reprocess",
+            params={"workspace_id": str(workspace.id)},
+        )
+        assert resp.status_code == 202
+
+
+class TestSoftDeletedProvenanceReject:
+    """Additional soft-deletion edge cases."""
+
+    async def test_list_component_sources_excludes_deleted(
+        self, client, workspace, db_session
+    ):
+        """Component sources endpoint must exclude soft-deleted documents."""
+        connector = _make_connector(workspace.id)
+        db_session.add(connector)
+
+        model = KnowledgeModel(
+            workspace_id=workspace.id, name="CsDel Model", description="CsDel"
+        )
+        db_session.add(model)
+        await db_session.flush()
+
+        component = Component(
+            model_id=model.id, name="CsDel Fact", value="v", confidence=0.9,
+        )
+        db_session.add(component)
+        await db_session.flush()
+
+        active_doc = _make_source_document(
+            connector.id, ConnectorType.SLACK, "slack-csdel-active",
+            processed_at=datetime(2026, 3, 31, 10, 0, tzinfo=timezone.utc),
+        )
+        db_session.add(active_doc)
+
+        deleted_doc = _make_source_document(
+            connector.id, ConnectorType.SLACK, "slack-csdel-deleted",
+            processed_at=datetime(2026, 3, 31, 10, 0, tzinfo=timezone.utc),
+        )
+        deleted_doc.deleted_at = datetime(2026, 4, 1, tzinfo=timezone.utc)
+        db_session.add(deleted_doc)
+        await db_session.flush()
+
+        db_session.add_all([
+            ComponentSource(
+                component_id=component.id, source_document_id=active_doc.id,
+                extraction_context="active", extractor_name="test", extractor_kind="test",
+                extractor_schema_version="v1",
+            ),
+            ComponentSource(
+                component_id=component.id, source_document_id=deleted_doc.id,
+                extraction_context="deleted", extractor_name="test", extractor_kind="test",
+                extractor_schema_version="v1",
+            ),
+        ])
+        await db_session.flush()
+
+        resp = await client.get(
+            f"/api/components/{component.id}/sources",
+            params={"workspace_id": str(workspace.id)},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body) == 1
+        assert body[0]["external_id"] == "slack-csdel-active"

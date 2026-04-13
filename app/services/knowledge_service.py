@@ -390,10 +390,13 @@ class KnowledgeService:
             component_stmt = component_stmt.where(
                 Component.valid_to.is_(None)
             )
+            # Exclude rejected and superseded components via a NOT IN subquery.
+            # valid_to IS NULL catches most superseded components, but explicit
+            # review-status exclusion provides defense-in-depth.
             component_stmt = component_stmt.where(
                 Component.id.notin_(
                     select(ReviewItem.component_id).where(
-                        ReviewItem.status == "rejected"
+                        ReviewItem.status.in_(("rejected", "superseded"))
                     )
                 )
             )
@@ -481,11 +484,13 @@ class KnowledgeService:
             component_stmt = component_stmt.where(
                 Component.valid_to.is_(None)
             )
-            # Exclude rejected components via a NOT IN subquery
+            # Exclude rejected and superseded components via a NOT IN subquery.
+            # valid_to IS NULL catches most superseded components, but explicit
+            # review-status exclusion provides defense-in-depth.
             component_stmt = component_stmt.where(
                 Component.id.notin_(
                     select(ReviewItem.component_id).where(
-                        ReviewItem.status == "rejected"
+                        ReviewItem.status.in_(("rejected", "superseded"))
                     )
                 )
             )

@@ -138,6 +138,7 @@ class BriefingService:
                     confidence=component.confidence,
                     review_status=component.review_status,
                     source_labels=self._source_labels(component),
+                    source_document_ids=self._source_document_ids(component),
                 )
             )
         stale_high_risk_items = stale_high_risk_items[:10]

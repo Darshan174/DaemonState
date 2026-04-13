@@ -287,6 +287,32 @@ export default function KnowledgeGraph() {
                     ? "Showing first-degree neighborhood around this node."
                     : "Selected from the workspace graph."}
                 </p>
+                <div className="mt-4 flex flex-col gap-2 border-t border-gray-100 pt-4">
+                  {selectedNode.type === "source" && (
+                    <Link
+                      to={`/app/sources/${selectedNode.id}`}
+                      className="block w-full rounded-lg bg-brand-600 px-4 py-2 text-center text-sm font-semibold text-white shadow-sm transition-colors hover:bg-brand-500"
+                    >
+                      Inspect source details
+                    </Link>
+                  )}
+                  {selectedNode.type === "model" && (
+                    <Link
+                      to={`/app/model/${selectedNode.id}`}
+                      className="block w-full rounded-lg bg-brand-600 px-4 py-2 text-center text-sm font-semibold text-white shadow-sm transition-colors hover:bg-brand-500"
+                    >
+                      Inspect model facts
+                    </Link>
+                  )}
+                  <Link
+                    to={selectedNode.type === "source" 
+                      ? `/app/review` 
+                      : `/app/review?search=${encodeURIComponent(selectedNode.label)}`}
+                    className="block w-full rounded-lg border border-gray-200 bg-white px-4 py-2 text-center text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                  >
+                    Review trust state
+                  </Link>
+                </div>
               </div>
 
               <div>

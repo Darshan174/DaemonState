@@ -371,6 +371,7 @@ export default function Query() {
               <SourceDocumentLinks
                 items={result.sourceDocuments ?? result.source_documents}
                 label="Supporting documents"
+                showMeta={true}
               />
             </div>
           )}

@@ -42,6 +42,7 @@ class QuerySourceRead(BaseModel):
     author: str | None = None
     date: str | None = None
     url: str | None = None
+    source_document_id: UUID | None = None
 
 
 class QuerySourceDocumentRead(BaseModel):

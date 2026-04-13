@@ -103,6 +103,7 @@ Prerequisites:
 - `python3`
 - `curl`
 - `npm` only if you plan to run the full release gate with `ctxe verify`
+- PostgreSQL client tools (`dropdb`, `createdb`, `psql`) only if you plan to run the contract-test phase in `ctxe verify`
 
 Install the CLI once in a local virtualenv:
 
@@ -155,9 +156,9 @@ Run the OSS v1 release gate:
 ctxe verify
 ```
 
-`ctxe verify` is the primary maintainer command before release. It boots the stack, runs the backend smoke flow, executes the contract tests, and runs the frontend test/build checks. Use `ctxe verify --skip-frontend` for a backend-only pass.
+`ctxe verify` is the primary maintainer command before release. It boots the stack, runs the backend smoke flow, executes the contract tests against a dedicated disposable test database, and runs the frontend test/build checks. Use `ctxe verify --skip-frontend` for a backend-only pass.
 
-`ctxe verify` uses the demo rail internally. It validates boot, readiness, and a canonical `POST /api/seed-demo` before handing off to the broader smoke and test matrix.
+`ctxe verify` uses the demo rail internally. It validates boot, readiness, and a canonical `POST /api/seed-demo` before handing off to the broader smoke and test matrix. The CLI also creates `.env` from `.env.example` and generates `ENCRYPTION_KEY` automatically when they are missing, so the CLI boot path and shell bootstrap path behave the same on a fresh checkout.
 
 ### Shell Wrappers (reference)
 
@@ -170,7 +171,7 @@ bash scripts/smoke.sh
 
 They exercise the same public HTTP contracts (`/api/seed-demo`, `/api/imports`, `/api/query`, `/api/founder-brief`, `/api/decisions`, `/api/source-documents`) but are wrapper/reference surfaces, not the primary OSS operator interface.
 
-For the full self-hosting walkthrough (TLS, port security, backups, troubleshooting), see [docs/self-hosting.md](./docs/self-hosting.md).
+For the full self-hosting walkthrough (TLS, port security, backups, troubleshooting), see [docs/self-hosting.md](./docs/self-hosting.md). For exact release-candidate steps, expected green checks, and rollback notes, see [docs/release.md](./docs/release.md).
 
 Once the API is up:
 
@@ -203,7 +204,9 @@ Contract and semantics:
 - `ctxe ingest <path>` uses `POST /api/imports`. The API contract always requires `workspace_id`; the CLI resolves it from `--workspace`, a single existing workspace, or creates `Local Workspace` when none exists. It does not silently choose among multiple workspaces.
 - `ctxe query "..."` uses `POST /api/query` and requires either `--workspace` or exactly one existing workspace.
 - `ctxe verify` runs the release gate: boot, backend smoke, contract tests, and frontend test/build checks.
-- Add `--json` to `ctxe demo`, `ctxe ingest`, `ctxe query`, or `ctxe verify` for machine-readable success and error payloads. `ctxe verify --json` includes the failing `phase` and an actionable `next_step` when the gate stops early.
+- `ctxe verify --phase ...` reruns only the selected slice of the release gate in canonical phase order.
+- `ctxe verify --test-database-url ...` points the contract-tests phase at a disposable database; by default it uses `context_engine_verify` on local Postgres so the test reset does not collide with the live app database.
+- Add `--json` to `ctxe demo`, `ctxe ingest`, `ctxe query`, or `ctxe verify` for machine-readable success and error payloads. `ctxe verify --json` includes the failing `phase`, actionable `next_step`, and `completed_steps` when the gate stops early.
 
 Workspace selector rules are consistent across `ctxe demo`, `ctxe ingest`, and `ctxe query`:
 
@@ -238,6 +241,16 @@ It proves:
 For a backend-only check, run `ctxe verify --skip-frontend`.
 
 If a phase fails, `ctxe verify` reports the exact failing phase and the next command to run for diagnosis.
+
+To rerun only part of the gate, pass `--phase` one or more times:
+
+```bash
+ctxe verify --phase boot --phase readiness --phase seed --phase smoke --skip-frontend
+ctxe verify --phase contract-tests
+ctxe verify --phase frontend-tests --phase frontend-build
+```
+
+The GitHub Actions workflow [`.github/workflows/release-gate.yml`](./.github/workflows/release-gate.yml) runs the same core checks as `ctxe verify` on pull requests.
 
 `bash scripts/smoke.sh` remains the backend-only smoke path. It is useful for targeted debugging or post-deploy checks, but `ctxe verify` is the release gate maintainers should treat as canonical.
 
@@ -305,7 +318,7 @@ Run this checklist for every release candidate:
    `GET /api/source-documents?workspace_id=...`
 5. If you need to run the gate manually instead of `ctxe verify`, run:
    `bash scripts/smoke.sh`
-   `python3 -m pytest tests/test_cli/test_main.py tests/test_cli/test_http.py tests/test_api/test_imports.py tests/test_api/test_admin.py::TestSeedDemoAPI tests/test_api/test_connectors_upload.py tests/test_api/test_truth_regression.py -q`
+   `TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/context_engine_verify python3 -m pytest tests/test_cli/test_main.py tests/test_cli/test_http.py tests/test_api/test_imports.py tests/test_api/test_admin.py::TestSeedDemoAPI tests/test_api/test_connectors_upload.py tests/test_api/test_truth_regression.py -q`
    `cd frontend && npm test`
    `cd frontend && npm run build`
 

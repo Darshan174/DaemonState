@@ -12,10 +12,12 @@ from app.schemas.connector import SyncJobResponse
 from app.schemas.review import (
     ComponentSourceRead,
     ReviewDecisionRead,
+    ReviewItemPage,
     ReviewItemRead,
     ReviewKind,
     ReviewStatus,
     ReviewSeverity,
+    ReviewSummaryRead,
     SourceDocumentComponentRead,
 )
 from app.services.trust_service import (
@@ -95,7 +97,7 @@ def _serialize_review_item(item) -> ReviewItemRead:
     )
 
 
-@router.get("/review-items", response_model=list[ReviewItemRead])
+@router.get("/review-items", response_model=ReviewItemPage)
 async def list_review_items(
     workspace_id: UUID,
     review_status: ReviewStatus | None = Query(default=None, alias="status"),
@@ -103,23 +105,73 @@ async def list_review_items(
     kind: ReviewKind | None = None,
     model_id: UUID | None = None,
     source_document_id: UUID | None = None,
+    sort: str = Query(default="updated_at", pattern="^(updated_at|created_at|severity|confidence)$"),
+    sort_dir: str = Query(default="desc", pattern="^(asc|desc)$"),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     service: TrustService = Depends(get_trust_service),
-) -> list[ReviewItemRead]:
+) -> ReviewItemPage:
     try:
-        items = await service.list_review_items(
+        page = await service.list_review_items(
             workspace_id,
             status=review_status,
             severity=severity,
             kind=kind,
             model_id=model_id,
             source_document_id=source_document_id,
+            sort=sort,
+            sort_dir=sort_dir,
+            limit=limit,
+            offset=offset,
         )
     except WorkspaceNotFoundError:
         raise HTTPException(
             status_code=http_status.HTTP_404_NOT_FOUND,
             detail="Workspace not found",
         )
-    return [_serialize_review_item(item) for item in items]
+    return ReviewItemPage(
+        items=[_serialize_review_item(item) for item in page.items],
+        total=page.total,
+        limit=page.limit,
+        offset=page.offset,
+        has_more=page.offset + page.limit < page.total,
+    )
+
+
+@router.get("/review-items/summary", response_model=ReviewSummaryRead)
+async def review_summary(
+    workspace_id: UUID,
+    service: TrustService = Depends(get_trust_service),
+) -> ReviewSummaryRead:
+    try:
+        summary = await service.get_review_summary(workspace_id)
+    except WorkspaceNotFoundError:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail="Workspace not found",
+        )
+    return ReviewSummaryRead(**summary)
+
+
+@router.get("/review-items/{review_item_id}", response_model=ReviewItemRead)
+async def get_review_item(
+    review_item_id: UUID,
+    workspace_id: UUID,
+    service: TrustService = Depends(get_trust_service),
+) -> ReviewItemRead:
+    try:
+        item = await service.get_review_item_for_workspace(review_item_id, workspace_id)
+    except WorkspaceNotFoundError:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail="Workspace not found",
+        )
+    except TrustResourceNotFoundError:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail="Review item not found",
+        )
+    return _serialize_review_item(item)
 
 
 @router.post("/review-items/{review_item_id}/approve", response_model=ReviewItemRead)

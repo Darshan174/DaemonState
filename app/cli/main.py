@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import subprocess
@@ -28,6 +29,16 @@ FOUNDER_BRIEF_PATH = "/api/founder-brief"
 QUERY_PATH = "/api/query"
 DECISIONS_PATH = "/api/decisions"
 SOURCE_DOCUMENTS_PATH = "/api/source-documents"
+VERIFY_PHASES = (
+    "boot",
+    "readiness",
+    "seed",
+    "smoke",
+    "contract-tests",
+    "frontend-tests",
+    "frontend-build",
+)
+FRONTEND_VERIFY_PHASES = ("frontend-tests", "frontend-build")
 VERIFY_TEST_TARGETS = (
     "tests/test_cli/test_main.py",
     "tests/test_cli/test_http.py",
@@ -35,6 +46,12 @@ VERIFY_TEST_TARGETS = (
     "tests/test_api/test_admin.py::TestSeedDemoAPI",
     "tests/test_api/test_connectors_upload.py",
     "tests/test_api/test_truth_regression.py",
+    "tests/test_api/test_query.py",
+    "tests/test_api/test_briefing.py",
+)
+DEFAULT_VERIFY_TEST_DATABASE_URL = os.environ.get(
+    "TEST_DATABASE_URL",
+    "postgresql+asyncpg://postgres:postgres@localhost:5432/context_engine_verify",
 )
 
 
@@ -45,7 +62,15 @@ class CLIError(RuntimeError):
 class VerifyPhaseError(CLIError):
     """Raised when a specific verification phase fails."""
 
-    def __init__(self, phase: str, detail: str, *, next_step: str) -> None:
+    def __init__(
+        self,
+        phase: str,
+        detail: str,
+        *,
+        next_step: str,
+        completed_steps: list[dict[str, str]] | None = None,
+        selected_phases: list[str] | None = None,
+    ) -> None:
         message = f"verify failed during {phase}: {detail}"
         if next_step:
             message = f"{message}. Next step: {next_step}"
@@ -53,6 +78,8 @@ class VerifyPhaseError(CLIError):
         self.phase = phase
         self.detail = detail
         self.next_step = next_step
+        self.completed_steps = list(completed_steps or [])
+        self.selected_phases = list(selected_phases or [])
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -125,9 +152,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Seconds to wait for /health/ready after boot (default: 90)",
     )
     verify_parser.add_argument(
+        "--phase",
+        action="append",
+        choices=VERIFY_PHASES,
+        dest="phases",
+        help=(
+            "Run only the selected verify phase. Repeat to run multiple phases; "
+            "default is the full canonical release gate."
+        ),
+    )
+    verify_parser.add_argument(
         "--skip-frontend",
         action="store_true",
         help="Skip frontend test/build checks and run the backend release gate only.",
+    )
+    verify_parser.add_argument(
+        "--test-database-url",
+        default=DEFAULT_VERIFY_TEST_DATABASE_URL,
+        help=(
+            "Dedicated TEST_DATABASE_URL used by the contract-tests phase "
+            "(default: %(default)s)"
+        ),
     )
     verify_parser.add_argument(
         "--json",
@@ -246,125 +291,163 @@ def run_demo(args: argparse.Namespace) -> int:
 
 
 def run_verify(args: argparse.Namespace) -> int:
+    selected_phases = resolve_verify_phases(args)
+    skipped_phases = [phase for phase in VERIFY_PHASES if phase not in selected_phases]
     results: list[dict[str, str]] = []
+    project_root = find_project_root()
 
-    project_root = _verify_phase(
-        "boot",
-        lambda: boot_stack(args.base_url, wait_timeout=args.wait_timeout, quiet=True),
-        next_step=_verify_phase_next_step("boot", base_url=args.base_url),
-    )
-    _record_verify_result(
-        results,
-        step="boot",
-        detail=f"docker services, migrations, and API boot completed at {args.base_url.rstrip('/')}",
-        json_output=args.json_output,
-    )
+    if not args.json_output:
+        print(f"verify phases: {', '.join(selected_phases)}")
 
-    health, readiness = _verify_phase(
-        "readiness",
-        lambda: check_verify_readiness(args.base_url),
-        next_step=_verify_phase_next_step("readiness", base_url=args.base_url),
-    )
-    readiness_checks = readiness.get("checks", {})
-    _record_verify_result(
-        results,
-        step="readiness",
-        detail=(
-            f"/health={health.get('status')} | /health/ready={readiness.get('status')} "
-            f"(database={readiness_checks.get('database', 'unknown')}, "
-            f"redis={readiness_checks.get('redis', 'unknown')})"
-        ),
-        json_output=args.json_output,
-    )
+    if "boot" in selected_phases:
+        project_root = _verify_phase(
+            "boot",
+            lambda: boot_stack(args.base_url, wait_timeout=args.wait_timeout, quiet=True),
+            next_step=_verify_phase_next_step("boot", base_url=args.base_url),
+            results=results,
+            selected_phases=selected_phases,
+        )
+        _record_verify_result(
+            results,
+            step="boot",
+            detail=f"docker services, migrations, and API boot completed at {args.base_url.rstrip('/')}",
+            json_output=args.json_output,
+        )
 
-    seed = _verify_phase(
-        "seed",
-        lambda: validate_seed_demo_response(
-            seed_demo_workspace(args.base_url),
-            context=f"POST {SEED_DEMO_PATH}",
-        ),
-        next_step=_verify_phase_next_step("seed", base_url=args.base_url),
-    )
-    _record_verify_result(
-        results,
-        step="seed",
-        detail=f"{seed['workspaceName']} ({seed['workspaceId']}) [{seed['status']}]",
-        json_output=args.json_output,
-    )
+    if "readiness" in selected_phases:
+        health, readiness = _verify_phase(
+            "readiness",
+            lambda: check_verify_readiness(args.base_url),
+            next_step=_verify_phase_next_step("readiness", base_url=args.base_url),
+            results=results,
+            selected_phases=selected_phases,
+        )
+        readiness_checks = readiness.get("checks", {})
+        _record_verify_result(
+            results,
+            step="readiness",
+            detail=(
+                f"/health={health.get('status')} | /health/ready={readiness.get('status')} "
+                f"(database={readiness_checks.get('database', 'unknown')}, "
+                f"redis={readiness_checks.get('redis', 'unknown')})"
+            ),
+            json_output=args.json_output,
+        )
 
-    smoke = _verify_phase(
-        "smoke",
-        lambda: run_subprocess(
-            ["bash", "scripts/smoke.sh"],
-            cwd=project_root,
-            capture_output=True,
-            env={
-                "BASE_URL": args.base_url,
-                "SMOKE_QUESTION": DEFAULT_VERIFY_QUESTION,
-                "SMOKE_EXPECT": DEFAULT_VERIFY_EXPECT,
-            },
-        ),
-        next_step=_verify_phase_next_step("smoke", base_url=args.base_url),
-    )
-    _record_verify_result(
-        results,
-        step="smoke",
-        detail=_last_output_line(smoke.stdout) or "backend founder workflows passed",
-        json_output=args.json_output,
-    )
+    if "seed" in selected_phases:
+        seed = _verify_phase(
+            "seed",
+            lambda: validate_seed_demo_response(
+                seed_demo_workspace(args.base_url),
+                context=f"POST {SEED_DEMO_PATH}",
+            ),
+            next_step=_verify_phase_next_step("seed", base_url=args.base_url),
+            results=results,
+            selected_phases=selected_phases,
+        )
+        _record_verify_result(
+            results,
+            step="seed",
+            detail=f"{seed['workspaceName']} ({seed['workspaceId']}) [{seed['status']}]",
+            json_output=args.json_output,
+        )
 
-    contract_tests = _verify_phase(
-        "contract-tests",
-        lambda: run_subprocess(
-            [sys.executable, "-m", "pytest", *VERIFY_TEST_TARGETS, "-q"],
-            cwd=project_root,
-            capture_output=True,
-        ),
-        next_step=_verify_phase_next_step("contract-tests", base_url=args.base_url),
-    )
-    _record_verify_result(
-        results,
-        step="contract-tests",
-        detail=_last_output_line(contract_tests.stdout) or "contract tests passed",
-        json_output=args.json_output,
-    )
+    if "smoke" in selected_phases:
+        smoke = _verify_phase(
+            "smoke",
+            lambda: run_subprocess(
+                ["bash", "scripts/smoke.sh"],
+                cwd=project_root,
+                capture_output=True,
+                env={
+                    "BASE_URL": args.base_url,
+                    "SMOKE_QUESTION": DEFAULT_VERIFY_QUESTION,
+                    "SMOKE_EXPECT": DEFAULT_VERIFY_EXPECT,
+                },
+            ),
+            next_step=_verify_phase_next_step("smoke", base_url=args.base_url),
+            results=results,
+            selected_phases=selected_phases,
+        )
+        _record_verify_result(
+            results,
+            step="smoke",
+            detail=_last_output_line(smoke.stdout) or "backend founder workflows passed",
+            json_output=args.json_output,
+        )
 
-    if not args.skip_frontend:
+    if "contract-tests" in selected_phases:
+        contract_tests = _verify_phase(
+            "contract-tests",
+            lambda: run_subprocess(
+                [sys.executable, "-m", "pytest", *VERIFY_TEST_TARGETS, "-q"],
+                cwd=project_root,
+                capture_output=True,
+                env={"TEST_DATABASE_URL": args.test_database_url},
+            ),
+            next_step=_verify_phase_next_step("contract-tests", base_url=args.base_url),
+            results=results,
+            selected_phases=selected_phases,
+        )
+        _record_verify_result(
+            results,
+            step="contract-tests",
+            detail=(
+                _last_output_line(contract_tests.stdout)
+                or f"contract tests passed against {args.test_database_url}"
+            ),
+            json_output=args.json_output,
+        )
+
+    if any(phase in selected_phases for phase in FRONTEND_VERIFY_PHASES):
         frontend_dir = project_root / "frontend"
-        frontend_tests = _verify_phase(
-            "frontend-tests",
-            lambda: run_subprocess(
-                ["npm", "test"],
-                cwd=frontend_dir,
-                capture_output=True,
-            ),
-            next_step=_verify_phase_next_step("frontend-tests", base_url=args.base_url),
-        )
-        _record_verify_result(
-            results,
-            step="frontend-tests",
-            detail=_last_output_line(frontend_tests.stdout) or "frontend tests passed",
-            json_output=args.json_output,
-        )
+        if "frontend-tests" in selected_phases:
+            frontend_tests = _verify_phase(
+                "frontend-tests",
+                lambda: run_subprocess(
+                    ["npm", "test"],
+                    cwd=frontend_dir,
+                    capture_output=True,
+                ),
+                next_step=_verify_phase_next_step("frontend-tests", base_url=args.base_url),
+                results=results,
+                selected_phases=selected_phases,
+            )
+            _record_verify_result(
+                results,
+                step="frontend-tests",
+                detail=_last_output_line(frontend_tests.stdout) or "frontend tests passed",
+                json_output=args.json_output,
+            )
 
-        frontend_build = _verify_phase(
-            "frontend-build",
-            lambda: run_subprocess(
-                ["npm", "run", "build"],
-                cwd=frontend_dir,
-                capture_output=True,
-            ),
-            next_step=_verify_phase_next_step("frontend-build", base_url=args.base_url),
-        )
-        _record_verify_result(
-            results,
-            step="frontend-build",
-            detail=_last_output_line(frontend_build.stdout) or "frontend build passed",
-            json_output=args.json_output,
-        )
+        if "frontend-build" in selected_phases:
+            frontend_build = _verify_phase(
+                "frontend-build",
+                lambda: run_subprocess(
+                    ["npm", "run", "build"],
+                    cwd=frontend_dir,
+                    capture_output=True,
+                ),
+                next_step=_verify_phase_next_step("frontend-build", base_url=args.base_url),
+                results=results,
+                selected_phases=selected_phases,
+            )
+            _record_verify_result(
+                results,
+                step="frontend-build",
+                detail=_last_output_line(frontend_build.stdout) or "frontend build passed",
+                json_output=args.json_output,
+            )
 
     if args.json_output:
-        print_json({"status": "ok", "steps": results})
+        print_json(
+            {
+                "status": "ok",
+                "selected_phases": selected_phases,
+                "skipped_phases": skipped_phases,
+                "steps": results,
+            }
+        )
         return 0
 
     print("\nOSS v1 verification passed.")
@@ -614,6 +697,19 @@ def validate_query_response(payload: Any, *, context: str) -> dict[str, Any]:
     return data
 
 
+def resolve_verify_phases(args: argparse.Namespace) -> list[str]:
+    requested = set(args.phases or VERIFY_PHASES)
+    if args.skip_frontend and args.phases and requested.intersection(FRONTEND_VERIFY_PHASES):
+        raise CLIError("--skip-frontend cannot be combined with --phase frontend-tests/frontend-build.")
+    if args.skip_frontend:
+        requested = requested.difference(FRONTEND_VERIFY_PHASES)
+
+    selected = [phase for phase in VERIFY_PHASES if phase in requested]
+    if not selected:
+        raise CLIError("No verify phases selected.")
+    return selected
+
+
 def check_verify_readiness(base_url: str) -> tuple[dict[str, Any], dict[str, Any]]:
     health = require_mapping(
         api_request(base_url, "GET", HEALTH_PATH, timeout=10),
@@ -689,12 +785,25 @@ def _record_verify_result(
         print(f"{step}: {detail}")
 
 
-def _verify_phase(name: str, fn, *, next_step: str):
+def _verify_phase(
+    name: str,
+    fn,
+    *,
+    next_step: str,
+    results: list[dict[str, str]],
+    selected_phases: list[str],
+):
     try:
         return fn()
     except (APIError, CLIError) as exc:
         detail = str(exc).strip() or f"{name} failed"
-        raise VerifyPhaseError(name, detail, next_step=next_step) from exc
+        raise VerifyPhaseError(
+            name,
+            detail,
+            next_step=next_step,
+            completed_steps=results,
+            selected_phases=selected_phases,
+        ) from exc
 
 
 def _verify_phase_next_step(name: str, *, base_url: str) -> str:
@@ -704,7 +813,10 @@ def _verify_phase_next_step(name: str, *, base_url: str) -> str:
         "readiness": f"probe '{base}{HEALTH_PATH}' and '{base}{READINESS_PATH}', then inspect 'docker compose logs --tail 40 api postgres redis'",
         "seed": f"rerun 'curl -X POST {base}{SEED_DEMO_PATH} -H \"Content-Type: application/json\" -d \"{{}}\"'",
         "smoke": "rerun 'bash scripts/smoke.sh' for the full backend founder-workflow trace",
-        "contract-tests": f"rerun 'python3 -m pytest {' '.join(VERIFY_TEST_TARGETS)} -q'",
+        "contract-tests": (
+            "ensure dropdb/createdb/psql are installed and TEST_DATABASE_URL points at a disposable "
+            f"database, then rerun 'python3 -m pytest {' '.join(VERIFY_TEST_TARGETS)} -q'"
+        ),
         "frontend-tests": "rerun 'cd frontend && npm test'",
         "frontend-build": "rerun 'cd frontend && npm run build'",
     }
@@ -739,8 +851,48 @@ def resolve_compose_command(project_root: Path) -> list[str]:
     raise CLIError("Docker Compose is required for 'ctxe up', 'ctxe demo', and 'ctxe verify'")
 
 
+def ensure_local_env(project_root: Path) -> None:
+    env_path = project_root / ".env"
+    env_example_path = project_root / ".env.example"
+
+    if not env_path.exists():
+        if not env_example_path.exists():
+            raise CLIError("Missing .env and .env.example; cannot bootstrap the local stack.")
+        env_path.write_text(env_example_path.read_text(encoding="utf-8"), encoding="utf-8")
+
+    contents = env_path.read_text(encoding="utf-8")
+    lines = contents.splitlines()
+    key_prefix = "ENCRYPTION_KEY="
+    updated = False
+    found_key = False
+
+    for index, line in enumerate(lines):
+        if not line.startswith(key_prefix):
+            continue
+        found_key = True
+        if line[len(key_prefix):].strip():
+            break
+        lines[index] = f"{key_prefix}{generate_encryption_key()}"
+        updated = True
+        break
+
+    if not found_key:
+        if lines and lines[-1] != "":
+            lines.append("")
+        lines.append(f"{key_prefix}{generate_encryption_key()}")
+        updated = True
+
+    if updated:
+        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def generate_encryption_key() -> str:
+    return base64.urlsafe_b64encode(os.urandom(32)).decode("ascii")
+
+
 def boot_stack(base_url: str, *, wait_timeout: int, quiet: bool = False) -> Path:
     project_root = find_project_root()
+    ensure_local_env(project_root)
     compose = resolve_compose_command(project_root)
 
     run_subprocess(
@@ -845,6 +997,11 @@ def main(argv: list[str] | None = None) -> int:
             if isinstance(exc, VerifyPhaseError):
                 payload["phase"] = exc.phase
                 payload["next_step"] = exc.next_step
+                payload["selected_phases"] = exc.selected_phases
+                payload["skipped_phases"] = [
+                    phase for phase in VERIFY_PHASES if phase not in exc.selected_phases
+                ]
+                payload["completed_steps"] = exc.completed_steps
             print_json(payload)
         else:
             print(str(exc), file=sys.stderr)

@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 ReviewStatus = Literal["needs_review", "approved", "rejected", "superseded"]
@@ -65,6 +65,63 @@ class ReviewItemRead(BaseModel):
         return self.status == "needs_review"
 
 
+class ReviewItemPage(BaseModel):
+    """Paginated response wrapper for review items."""
+    model_config = ConfigDict(from_attributes=True)
+
+    items: list[ReviewItemRead]
+    total: int = Field(ge=0)
+    limit: int = Field(ge=1)
+    offset: int = Field(ge=0)
+    has_more: bool
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def page_size(self) -> int:
+        return len(self.items)
+
+
+class ReviewStatusCounts(BaseModel):
+    """Counts of review items by status."""
+    model_config = ConfigDict(from_attributes=True)
+
+    needs_review: int = 0
+    approved: int = 0
+    rejected: int = 0
+    superseded: int = 0
+
+
+class ReviewSeverityCounts(BaseModel):
+    """Counts of review items by severity."""
+    model_config = ConfigDict(from_attributes=True)
+
+    high: int = 0
+    medium: int = 0
+    low: int = 0
+
+
+class ReviewKindCounts(BaseModel):
+    """Counts of review items by kind."""
+    model_config = ConfigDict(from_attributes=True)
+
+    review_item: int = 0
+    conflict: int = 0
+    low_confidence: int = 0
+    fact_update: int = 0
+    superseded_fact: int = 0
+
+
+class ReviewSummaryRead(BaseModel):
+    """Summary of review state for an operator dashboard."""
+    model_config = ConfigDict(from_attributes=True)
+
+    total: int = 0
+    actionable: int = 0
+    by_status: ReviewStatusCounts
+    by_severity: ReviewSeverityCounts
+    by_kind: ReviewKindCounts
+
+
 class ComponentSourceRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -77,7 +134,6 @@ class ComponentSourceRead(BaseModel):
     created_at_source: datetime | None
     ingested_at: datetime
     processed_at: datetime | None
-    deleted_at: datetime | None
     extraction_context: str | None
     extractor_name: str | None = None
     extractor_kind: str | None = None

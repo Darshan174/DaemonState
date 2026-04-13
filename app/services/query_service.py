@@ -478,6 +478,7 @@ class QueryService:
                     if doc.created_at_source is not None
                     else None,
                     url=doc.source_url,
+                    source_document_id=doc.id,
                 )
             )
             if len(serialized) >= 5:

@@ -3,22 +3,61 @@
 # Runs on a 2-vCPU / 4-GB VPS comfortably. Resource limits below prevent
 # any single service from consuming the entire host.
 #
-# Override host-facing ports via .env:
-#   HOST_API_PORT=8000  HOST_POSTGRES_PORT=5432  HOST_REDIS_PORT=6379
+# ──────────────────────────────────────────────────────────────────────
+# Safer-by-default port binding
+# ──────────────────────────────────────────────────────────────────────
+# Postgres, Redis, and the API bind to 127.0.0.1 by default so they are
+# NOT reachable from the public internet — only from the host itself.
+# This is the correct default for a VPS running a reverse proxy (Caddy
+# or nginx) in front of the API. See deploy/caddy/Caddyfile for a ready
+# config, and docs/self-hosting.md for the full story.
 #
-# Persistent data is stored in named volumes (postgres_data, redis_data).
-# "docker compose down" preserves them; only "docker compose down -v" deletes.
+# To expose the API directly on all interfaces (e.g., for a trusted
+# internal network or a local dev machine), set HOST_API_BIND=0.0.0.0
+# in .env.
+#
+# Postgres and Redis should almost never be bound to 0.0.0.0 — do not
+# change HOST_POSTGRES_BIND / HOST_REDIS_BIND unless you understand the
+# risk and have a firewall in front of the host.
+#
+# ──────────────────────────────────────────────────────────────────────
+# Persistence
+# ──────────────────────────────────────────────────────────────────────
+# All stateful data lives in two named volumes: postgres_data, redis_data.
+# "docker compose down" preserves them; only "docker compose down -v"
+# deletes them. Back them up with scripts/diagnose.sh or pg_dump (see
+# docs/runbook.md for the full backup/restore path).
+#
+# ──────────────────────────────────────────────────────────────────────
+# Resource guidance
+# ──────────────────────────────────────────────────────────────────────
+#                  RAM limit   RAM reservation   Notes
+#   postgres       1536 MB     768 MB            pgvector benefits from page cache
+#   redis           256 MB     128 MB            maxmemory capped at 128 MB data
+#   api             512 MB     256 MB            FastAPI + uvicorn
+#   worker          512 MB     256 MB            Celery with --concurrency=2
+#                  ────────
+#   total          ~2816 MB   (fits comfortably on a 4 GB VPS with headroom)
+#
+# On a 2 GB host, drop postgres to 1024 MB and redis to 128 MB. On an
+# 8 GB host you can bump postgres to 3072 MB for better query performance.
 
 services:
   postgres:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
+    # SIGTERM → graceful shutdown via postgres smart shutdown. 30 s
+    # gives it room to flush dirty buffers before the SIGKILL hammer.
+    stop_grace_period: 30s
     environment:
       POSTGRES_DB: context_engine
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "${HOST_POSTGRES_PORT:-5432}:5432"
+      # Default: bind to 127.0.0.1 only — Postgres is never exposed to
+      # the public internet. Set HOST_POSTGRES_BIND=0.0.0.0 at your own
+      # risk (requires a host firewall).
+      - "${HOST_POSTGRES_BIND:-127.0.0.1}:${HOST_POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -26,10 +65,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
     deploy:
       resources:
         limits:
           memory: 1536M
+        reservations:
+          memory: 768M
     logging:
       driver: json-file
       options:
@@ -39,9 +81,13 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    stop_grace_period: 15s
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru --appendonly yes
     ports:
-      - "${HOST_REDIS_PORT:-6379}:6379"
+      # Default: bind to 127.0.0.1 only — Redis is never exposed to the
+      # public internet. Celery tasks can contain arbitrary payloads;
+      # exposing Redis is equivalent to exposing your queue.
+      - "${HOST_REDIS_BIND:-127.0.0.1}:${HOST_REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -49,10 +95,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 5s
     deploy:
       resources:
         limits:
           memory: 256M
+        reservations:
+          memory: 128M
     logging:
       driver: json-file
       options:
@@ -64,6 +113,7 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    stop_grace_period: 20s
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     env_file:
       - ./.env
@@ -76,7 +126,12 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "${HOST_API_PORT:-8000}:8000"
+      # Default: bind to 127.0.0.1 only — the API is intended to live
+      # behind a TLS-terminating reverse proxy. See deploy/caddy/Caddyfile
+      # for a ready-made config. Set HOST_API_BIND=0.0.0.0 if you are
+      # running on a local dev machine and want to reach the API from
+      # another device on your LAN.
+      - "${HOST_API_BIND:-127.0.0.1}:${HOST_API_PORT:-8000}:8000"
     healthcheck:
       test:
         - "CMD"
@@ -86,11 +141,17 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 20s
+      # 30 s start_period is enough for uvicorn + async SQLAlchemy pool
+      # warmup on a cold VPS. Increase if your host is particularly slow
+      # or if you are using provider-backed embeddings that warm up on
+      # first request.
+      start_period: 30s
     deploy:
       resources:
         limits:
           memory: 512M
+        reservations:
+          memory: 256M
     logging:
       driver: json-file
       options:
@@ -102,6 +163,7 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    stop_grace_period: 30s
     command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
     env_file:
       - ./.env
@@ -114,15 +176,21 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
+      # celery inspect ping is broadcast-based and can take ~2-5 s to
+      # converge even on a healthy worker. The 60 s start_period gives
+      # the worker room to fully register with the broker before
+      # failures count against it.
       test: ["CMD-SHELL", "celery -A app.tasks.celery_app inspect ping --timeout 5"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 15s
+      start_period: 60s
     deploy:
       resources:
         limits:
           memory: 512M
+        reservations:
+          memory: 256M
     logging:
       driver: json-file
       options:

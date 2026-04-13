@@ -44,6 +44,7 @@ class FounderBriefRiskRead(BaseModel):
     confidence: float
     review_status: str | None = None
     source_labels: list[str] = []
+    source_document_ids: list[UUID] = []
 
 
 class FounderBriefConnectorFailureRead(BaseModel):
