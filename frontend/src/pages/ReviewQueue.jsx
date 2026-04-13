@@ -192,7 +192,19 @@ export default function ReviewQueue() {
         </div>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-[220px_220px_220px_minmax(0,1fr)]">
+      <div className="grid gap-3 md:grid-cols-[1fr_160px_160px_160px_auto]">
+        <label className="block">
+          <span className="block text-xs font-medium text-gray-600 mb-1">Search</span>
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search items..."
+            aria-label="Search review items"
+            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+          />
+        </label>
+
         <label className="block">
           <span className="block text-xs font-medium text-gray-600 mb-1">Status</span>
           <select
@@ -241,11 +253,16 @@ export default function ReviewQueue() {
           </select>
         </label>
 
-        <div className="rounded-xl border border-gray-200 bg-white px-4 py-3">
-          <p className="text-xs uppercase tracking-wide text-gray-400">Policy</p>
-          <p className="mt-1 text-sm text-gray-700">
-            Only high-impact, conflicting, or ambiguous facts should require human review.
-          </p>
+        <div className="flex items-end">
+          <button
+            type="button"
+            onClick={clearFilters}
+            className={`px-3 py-2 text-sm font-medium rounded-lg border border-gray-200 bg-white hover:bg-gray-50 transition-colors ${
+              !filtersActive ? "opacity-0 pointer-events-none" : "opacity-100"
+            }`}
+          >
+            Clear
+          </button>
         </div>
       </div>
 
