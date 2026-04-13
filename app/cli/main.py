@@ -298,6 +298,8 @@ def run_verify(args: argparse.Namespace) -> int:
 
     if not args.json_output:
         print(f"verify phases: {', '.join(selected_phases)}")
+        if skipped_phases:
+            print(f"skipped phases: {', '.join(skipped_phases)}")
 
     if "boot" in selected_phases:
         project_root = _verify_phase(
@@ -1004,7 +1006,19 @@ def main(argv: list[str] | None = None) -> int:
                 payload["completed_steps"] = exc.completed_steps
             print_json(payload)
         else:
-            print(str(exc), file=sys.stderr)
+            if isinstance(exc, VerifyPhaseError):
+                if exc.selected_phases:
+                    print(f"verify phases: {', '.join(exc.selected_phases)}", file=sys.stderr)
+                skipped_phases = [phase for phase in VERIFY_PHASES if phase not in exc.selected_phases]
+                if skipped_phases:
+                    print(f"skipped phases: {', '.join(skipped_phases)}", file=sys.stderr)
+                if exc.completed_steps:
+                    completed = ", ".join(step["step"] for step in exc.completed_steps)
+                    print(f"completed phases: {completed}", file=sys.stderr)
+                print(f"verify failed during {exc.phase}: {exc.detail}", file=sys.stderr)
+                print(f"next step: {exc.next_step}", file=sys.stderr)
+            else:
+                print(str(exc), file=sys.stderr)
         return 1
 
 

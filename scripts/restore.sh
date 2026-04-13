@@ -198,7 +198,12 @@ ok "pg_restore completed"
 
 # ── Restart stack ───────────────────────────────────────────────
 log "Starting api + worker"
-docker compose up -d api worker 2>&1 | sed 's/^/    /' || true
+# Intentionally `start`, NOT `up -d`: we want to resume the exact
+# containers we just stopped, not trigger a recreate if the compose
+# file drifted since the containers were built. A restore is not a
+# rebuild — those are separate operations. If the operator needs to
+# rebuild, they should do it before or after the restore cycle.
+docker compose start api worker 2>&1 | sed 's/^/    /' || true
 
 # ── Wait for readiness ──────────────────────────────────────────
 log "Waiting for /health/ready (up to ${HEALTH_TIMEOUT_S}s)"
@@ -220,20 +225,37 @@ ok "/health/ready → ready"
 
 # ── Post-restore sanity check ───────────────────────────────────
 # Prove the restored data is actually usable, not just structurally
-# valid. /api/models returning at least one model means the restore
-# landed real workspace data, not an empty schema.
+# valid. /api/workspaces is the right probe: it needs no query params
+# and returns every workspace in the DB, so non-zero count proves the
+# restore landed real data (not an empty schema).
 log "Post-restore sanity check"
-models_out=$(curl -fsS --max-time 10 "${BASE_URL}/api/models" 2>&1) \
-    || die "GET /api/models failed after restore. The DB is readable (/health/ready passed) but the models endpoint errored. Check: docker compose logs --tail 40 api"
+workspaces_out=$(curl -fsS --max-time 10 "${BASE_URL}/api/workspaces" 2>&1) \
+    || die "GET /api/workspaces failed after restore. The DB is readable (/health/ready passed) but the workspaces endpoint errored. Check: docker compose logs --tail 40 api"
 
-# Count models by counting "id" fields.
-model_count=$(printf "%s" "$models_out" | grep -o '"id"' | wc -l | tr -d ' ')
-if [ "$model_count" -lt 1 ]; then
-    warn "restored DB contains 0 knowledge models — either the backup was from an empty workspace, or something is wrong."
-    warn "Re-seed the demo workspace with: curl -X POST ${BASE_URL}/api/seed-demo -H 'Content-Type: application/json' -d '{}'"
-    die "post-restore sanity check failed: 0 models"
+# Count workspaces by counting top-level "id" occurrences. The response
+# is a JSON array of {id, name, ...} objects.
+workspace_count=$(printf "%s" "$workspaces_out" | grep -o '"id"' | wc -l | tr -d ' ')
+if [ "$workspace_count" -lt 1 ]; then
+    warn "restored DB contains 0 workspaces — either the backup was from a blank DB, or something is wrong."
+    warn "If the backup was intentionally empty: re-seed the demo with:"
+    warn "  curl -X POST ${BASE_URL}/api/seed-demo -H 'Content-Type: application/json' -d '{}'"
+    die "post-restore sanity check failed: 0 workspaces"
 fi
-ok "restored workspace contains ${model_count} knowledge model(s)"
+ok "restored DB contains ${workspace_count} workspace(s)"
+
+# If there's at least one workspace, probe /api/models scoped to the
+# first one — this proves the schema is not only structurally valid,
+# but that the knowledge graph tables were also restored. An empty
+# model list on a non-empty workspace would indicate that the backup
+# only captured workspaces and lost their contents.
+first_ws=$(printf "%s" "$workspaces_out" \
+    | sed -n 's/.*"id"[^"]*"\([^"]*\)".*/\1/p' | head -n1)
+if [ -n "$first_ws" ]; then
+    models_out=$(curl -fsS --max-time 10 "${BASE_URL}/api/models?workspace_id=${first_ws}" 2>&1) \
+        || warn "could not probe /api/models for workspace ${first_ws} — check docker compose logs api"
+    model_count=$(printf "%s" "${models_out:-}" | grep -o '"id"' | wc -l | tr -d ' ')
+    ok "first workspace (${first_ws}) has ${model_count} knowledge model(s)"
+fi
 
 # Verify schema state matches deployed code.
 current_rev=$(docker compose exec -T api alembic current 2>/dev/null \
@@ -255,9 +277,10 @@ cat <<EOF
 
 ==> Restore complete.
 
-    Source:     ${DUMP_PATH}
-    Models:     ${model_count} knowledge model(s) restored
-    API:        ${BASE_URL} (ready)
+    Source:      ${DUMP_PATH}
+    Workspaces:  ${workspace_count}
+    First model count:  ${model_count:-?}
+    API:         ${BASE_URL} (ready)
 
     Next steps:
       bash scripts/smoke.sh           # full verification of the restored stack

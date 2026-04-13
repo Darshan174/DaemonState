@@ -18,6 +18,8 @@ jobs:
   release-gate:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      CI: "true"
 
     steps:
       - name: Check out repository
@@ -68,6 +70,23 @@ jobs:
           name: release-gate-report
           path: release-gate.json
           if-no-files-found: ignore
+
+      - name: Publish release gate summary
+        if: always()
+        run: |
+          {
+            echo "## Release Gate"
+            if [ -f release-gate.json ]; then
+              echo
+              echo '```json'
+              cat release-gate.json
+              echo
+              echo '```'
+            else
+              echo
+              echo "No \`release-gate.json\` report was produced."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Tear down docker stack
         if: always()

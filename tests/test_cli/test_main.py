@@ -193,6 +193,7 @@ class TestCtxeCLI:
         ]
         output = capsys.readouterr().out
         assert "verify phases: contract-tests, frontend-build" in output
+        assert "skipped phases: boot, readiness, seed, smoke, frontend-tests" in output
 
     def test_verify_rejects_skip_frontend_with_explicit_frontend_phase(self, capsys):
         exit_code = cli_main.main(["verify", "--skip-frontend", "--phase", "frontend-tests"])
@@ -242,8 +243,10 @@ class TestCtxeCLI:
 
         assert exit_code == 1
         err = capsys.readouterr().err
+        assert f"verify phases: {', '.join(cli_main.VERIFY_PHASES)}" in err
+        assert "completed phases: boot, readiness, seed" in err
         assert "verify failed during smoke: smoke command failed" in err
-        assert "Next step: rerun 'bash scripts/smoke.sh'" in err
+        assert "next step: rerun 'bash scripts/smoke.sh'" in err
 
     def test_verify_reports_json_errors_when_requested(self, monkeypatch, tmp_path, capsys):
         project_root = tmp_path / "context-engine"
@@ -371,7 +374,7 @@ class TestCtxeCLI:
         assert exit_code == 1
         err = capsys.readouterr().err
         assert f"verify failed during {failing_phase}: {expected_fragment}" in err
-        assert "Next step:" in err
+        assert "next step:" in err
 
     def test_ensure_local_env_creates_env_and_encryption_key(self, tmp_path):
         project_root = tmp_path / "context-engine"

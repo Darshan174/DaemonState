@@ -128,10 +128,7 @@ export default function ReviewQueue() {
     );
   }
 
-  const pendingCount = items.filter((item) => item.status === "needs_review").length;
-  const approvedCount = items.filter((item) => item.status === "approved").length;
-  const conflictCount = items.filter((item) => item.kind === "conflict").length;
-  const filtersActive = status !== "all" || severity !== "all" || kind !== "all";
+  const filtersActive = status !== "all" || severity !== "all" || kind !== "all" || searchQuery !== "" || sourceId != null || modelId != null;
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
@@ -157,15 +154,9 @@ export default function ReviewQueue() {
         <div className="rounded-xl border border-gray-200 bg-white px-4 py-3 text-right">
           <p className="text-[11px] uppercase tracking-wide text-gray-400">Queue</p>
           <p className="text-sm font-medium text-gray-700">
-            {pendingCount} pending · {approvedCount} approved · {conflictCount} conflicts
+            {query.total ?? items.length} matching item{(query.total ?? items.length) === 1 ? "" : "s"}
           </p>
         </div>
-      </div>
-
-      <div className="grid gap-3 md:grid-cols-3">
-        <SummaryCard label="Needs review" value={pendingCount} tone="amber" />
-        <SummaryCard label="Conflicts" value={conflictCount} tone="red" />
-        <SummaryCard label="Approved" value={approvedCount} tone="emerald" />
       </div>
 
       <div className="rounded-xl border border-gray-200 bg-white px-4 py-4">
@@ -300,6 +291,17 @@ export default function ReviewQueue() {
                   </div>
                 </button>
               ))}
+              {query.hasNextPage && (
+                <div className="p-4 border-t border-gray-100 flex justify-center">
+                  <button
+                    onClick={() => query.fetchNextPage()}
+                    disabled={query.isFetchingNextPage}
+                    className="px-4 py-2 text-xs font-bold rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors shadow-sm disabled:opacity-50"
+                  >
+                    {query.isFetchingNextPage ? "Loading..." : "Load more items"}
+                  </button>
+                </div>
+              )}
             </div>
           </section>
 

@@ -616,9 +616,9 @@ export function useConnectorProcessingSummary() {
 }
 
 export function useReviewQueue(filters = {}) {
-  const { status = "all", severity = "all", kind = "all", source_id = null, model_id = null } = filters;
+  const { status = "all", severity = "all", kind = "all", source_id = null, model_id = null, search = "" } = filters;
   const query = useInfiniteQuery({
-    queryKey: ["review-queue", status, severity, kind, source_id, model_id],
+    queryKey: ["review-queue", status, severity, kind, source_id, model_id, search],
     initialPageParam: 0,
     getNextPageParam: (lastPage, allPages) => {
       const currentCount = allPages.reduce((acc, page) => acc + page.items.length, 0);
@@ -637,6 +637,7 @@ export function useReviewQueue(filters = {}) {
       if (kind !== "all") params.set("kind", kind);
       if (source_id) params.set("source_document_id", source_id);
       if (model_id) params.set("model_id", model_id);
+      if (search) params.set("search", search);
 
       try {
         const data = await api.get(`/review-items?${params.toString()}`);

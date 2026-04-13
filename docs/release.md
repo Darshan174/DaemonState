@@ -22,7 +22,7 @@ This is the maintainer path for deciding whether Context Engine is releasable as
   - `frontend-tests`
   - `frontend-build`
 
-`Release Gate` is the CI mirror of the local maintainer command. It installs backend + frontend dependencies, boots the Docker stack, and runs `ctxe verify --json`.
+`Release Gate` is the CI mirror of the local maintainer command. It installs backend + frontend dependencies, boots the Docker stack, runs `ctxe verify --json`, uploads `release-gate.json` as an artifact, and mirrors that JSON into the GitHub Actions step summary.
 
 ## Prerequisites
 
@@ -94,10 +94,11 @@ cd frontend && npm run build
 
 ## Expected Output
 
-Human output should identify the selected phases first and then print one line per successful phase:
+Human output should identify the selected phases first, print skipped phases when applicable, and then print one line per successful phase:
 
 ```text
 verify phases: boot, readiness, seed, smoke, contract-tests, frontend-tests, frontend-build
+skipped phases: frontend-tests, frontend-build
 boot: ...
 readiness: ...
 ...
@@ -111,6 +112,11 @@ OSS v1 verification passed.
 - `skipped_phases`
 - `steps`
 - on failure: `phase`, `next_step`, `completed_steps`
+
+In CI, the same JSON should be visible in both places:
+
+- the `release-gate-report` workflow artifact
+- the `Release Gate` step summary on the PR or push run
 
 ## Rollback Notes
 

@@ -162,7 +162,7 @@ describe("ReviewQueue", () => {
     const detail = screen.getByRole("region", { name: "Review detail" });
     expect(screen.getByText("Review Queue")).toBeInTheDocument();
     expect(screen.getByText("Self-host review loop")).toBeInTheDocument();
-    expect(screen.getByText(/2 pending · 1 approved · 1 conflicts/)).toBeInTheDocument();
+    expect(screen.getByText(/3 matching items/)).toBeInTheDocument();
     expect(within(detail).getByText("Enterprise pricing changed across Slack and Notion")).toBeInTheDocument();
     expect(within(detail).getByText(/Two high-authority sources disagree/)).toBeInTheDocument();
     expect(within(detail).getByText("Slack #pricing")).toBeInTheDocument();

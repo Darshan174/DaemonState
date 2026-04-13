@@ -160,6 +160,8 @@ ctxe verify
 
 `ctxe verify` uses the demo rail internally. It validates boot, readiness, and a canonical `POST /api/seed-demo` before handing off to the broader smoke and test matrix. The CLI also creates `.env` from `.env.example` and generates `ENCRYPTION_KEY` automatically when they are missing, so the CLI boot path and shell bootstrap path behave the same on a fresh checkout.
 
+In human-readable mode, `ctxe verify` prints the selected phases first, shows any skipped phases when you use `--phase` or `--skip-frontend`, then prints one line per completed phase. On failure it prints the failing phase, the phases that already passed, and the exact next command to run.
+
 Maintainer flow:
 
 1. bootstrap a local stack with `ctxe demo` or `bash scripts/bootstrap.sh`
@@ -258,7 +260,7 @@ ctxe verify --phase contract-tests
 ctxe verify --phase frontend-tests --phase frontend-build
 ```
 
-The GitHub Actions workflow [`.github/workflows/release-gate.yml`](./.github/workflows/release-gate.yml) runs the same core checks as `ctxe verify` on pull requests.
+The GitHub Actions workflow [`.github/workflows/release-gate.yml`](./.github/workflows/release-gate.yml) runs the same core checks as `ctxe verify` on pull requests. It uploads the raw `release-gate.json` report as an artifact and mirrors that JSON into the Actions step summary so maintainers can see the gate result without downloading artifacts first.
 
 `bash scripts/smoke.sh` remains the backend-only smoke path. It is useful for targeted debugging or post-deploy checks, but `ctxe verify` is the release gate maintainers should treat as canonical.
 
