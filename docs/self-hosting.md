@@ -222,23 +222,40 @@ All stateful data lives in two named Docker volumes:
 
 `docker compose down` preserves these volumes. Only `docker compose down -v` destroys them.
 
-**Quick backup:**
+> **`scripts/diagnose.sh` is NOT a backup.** It produces a read-only
+> runtime snapshot (logs, health, redacted config) for triage — it
+> contains zero application data and cannot be restored from. Use
+> `scripts/backup.sh` for anything you need to restore later.
+
+**Quick backup (the supported path):**
 
 ```bash
-docker compose exec -T postgres \
-    pg_dump -U postgres -d context_engine --no-owner --format=custom \
-    > "context_engine-$(date -u +%Y%m%dT%H%M%SZ).dump"
+bash scripts/backup.sh
 ```
 
-**Quick restore:**
+Writes a validated, timestamped `pg_dump` custom-format file to
+`./backups/`, rotates old dumps (default: keep 14), and refuses to
+return success unless the archive is readable. The exact dump path is
+printed at the end; pass `--quiet` in cron to get just the path on
+stdout.
+
+**Quick restore (the supported path):**
 
 ```bash
-docker compose exec -T postgres \
-    pg_restore -U postgres -d context_engine --clean --if-exists --no-owner \
-    < context_engine-YYYYMMDDTHHMMSSZ.dump
+bash scripts/restore.sh backups/context_engine-YYYYMMDDTHHMMSSZ.dump --yes --safety-backup
 ```
 
-For automated nightly backups, rotation, off-host copies, sanity-checking a backup without overwriting production, and the full restore-into-fresh-stack path, see [runbook.md → Backups](runbook.md#backups) and [runbook.md → Restore](runbook.md#restore).
+`restore.sh` stops the API and worker, validates the dump's TOC,
+snapshots the current DB (via `--safety-backup`), runs `pg_restore`,
+restarts the stack, waits for `/health/ready`, and runs a live sanity
+probe against `/api/workspaces` and `/api/models` to prove the
+restored data is actually queryable — not just structurally valid.
+
+For automated nightly backups via cron, rotation, off-host copies,
+sanity-checking a backup without overwriting production, the
+fresh-stack restore path, and the raw `pg_dump`/`pg_restore` fallback
+for when the scripts are unavailable, see [runbook.md → Backups](runbook.md#backups)
+and [runbook.md → Restore](runbook.md#restore).
 
 ---
 
@@ -252,13 +269,14 @@ bash scripts/upgrade.sh --yes
 ```
 
 The script will:
-1.  **Safety backup** — create a `pg_dump` of your current database.
-2.  **`git pull`** — update your checkout (fast-forward only).
-3.  **Rebuild** — `docker compose up -d --build` to refresh images.
-4.  **Migrate** — `alembic upgrade head` to apply any schema changes.
-5.  **Smoke** — run `scripts/smoke.sh` to verify the new stack.
+1.  **Preflight** — refuses to run on a dirty working tree or without a live postgres container.
+2.  **Safety backup** — runs `scripts/backup.sh` to `./backups/pre-upgrade/`.
+3.  **`git pull --ff-only`** — refuses non-fast-forward pulls (diverged branches need manual intervention).
+4.  **Rebuild** — `docker compose up -d --build` to refresh images, then waits for `/health/ready`.
+5.  **Migrate** — `alembic upgrade head`, confirms `current` matches `heads`.
+6.  **Smoke** — runs `scripts/smoke.sh` to verify the new stack.
 
-If any stage fails, the script prints **the EXACT copy-paste rollback commands** (including the backup path and pre-upgrade git SHA) to restore your service.
+If any stage fails, the script prints **the EXACT copy-paste rollback commands** — with the real backup path and pre-upgrade git SHA baked in, including a `bash scripts/restore.sh <path> --yes` line when a backup was taken — so recovery is mechanical, not creative.
 
 For manual upgrade steps or deeper rollback strategy, see [runbook.md → Upgrade](runbook.md#upgrade).
 
@@ -370,13 +388,16 @@ Prune unused images/containers: `docker system prune -f`. For Postgres specifica
 
 ### Reset everything
 
-This destroys all data. **Take a backup first** if there's anything you want to keep (see [runbook.md → Backups](runbook.md#backups) or the quick dump above).
+This destroys all data. **Take a backup first** if there's anything you want to keep:
 
 ```bash
-docker compose down -v   # Destroys all data!
+bash scripts/backup.sh           # validated dump under ./backups/
+docker compose down -v           # Destroys all data!
 bash scripts/bootstrap.sh
 bash scripts/smoke.sh
 ```
+
+If you regret the reset, restore the dump with `bash scripts/restore.sh <path> --yes`. See [runbook.md → Backups](runbook.md#backups) for rotation, off-host copies, and the full restore playbook.
 
 ---
 

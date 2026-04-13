@@ -11,6 +11,9 @@ import pytest
 
 
 class TestCtxeCLI:
+    def test_verify_targets_include_trust_review_api_suite(self):
+        assert "tests/test_api/test_trust.py" in cli_main.VERIFY_TEST_TARGETS
+
     def test_verify_runs_release_gate_steps(self, monkeypatch, tmp_path, capsys):
         project_root = tmp_path / "context-engine"
         frontend_dir = project_root / "frontend"

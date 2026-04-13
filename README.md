@@ -251,7 +251,7 @@ It proves:
 | READINESS | `GET /health` returns `ok` and `GET /health/ready` returns `ready` |
 | SEED | `POST /api/seed-demo` returns the canonical demo workspace before smoke runs |
 | SMOKE | `scripts/smoke.sh` verifies seed, query, graph, models, brief, decisions, sources, and imports against the live backend (10 checks) |
-| CONTRACT TESTS | CLI + founder contract regression tests stay green |
+| CONTRACT TESTS | CLI + founder + trust/review API regression tests stay green |
 | FRONTEND TESTS | `npm test` passes |
 | FRONTEND BUILD | `npm run build` passes |
 
@@ -335,7 +335,7 @@ Run this checklist for every release candidate:
    `GET /api/source-documents?workspace_id=...`
 5. If you need to run the gate manually instead of `ctxe verify`, run:
    `bash scripts/smoke.sh`
-   `TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/context_engine_verify python3 -m pytest tests/test_cli/test_main.py tests/test_cli/test_http.py tests/test_api/test_imports.py tests/test_api/test_admin.py::TestSeedDemoAPI tests/test_api/test_connectors_upload.py tests/test_api/test_truth_regression.py tests/test_api/test_query.py tests/test_api/test_briefing.py -q`
+   `TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/context_engine_verify python3 -m pytest tests/test_cli/test_main.py tests/test_cli/test_http.py tests/test_api/test_imports.py tests/test_api/test_admin.py::TestSeedDemoAPI tests/test_api/test_connectors_upload.py tests/test_api/test_trust.py tests/test_api/test_truth_regression.py tests/test_api/test_query.py tests/test_api/test_briefing.py -q`
    `cd frontend && npm test`
    `cd frontend && npm run build`
 
@@ -367,19 +367,23 @@ All stateful data lives in two named Docker volumes declared in `docker-compose.
 
 `docker compose down` leaves these volumes intact; only `docker compose down -v` destroys them. Back them up before every upgrade.
 
-Minimal backup recipe:
+The supported backup/restore path is two scripts, not hand-rolled `pg_dump`:
 
 ```bash
-# SQL dump — portable across Postgres minor versions
-docker compose exec -T postgres \
-    pg_dump -U postgres -d context_engine --no-owner --format=custom \
-    > "context_engine-$(date +%Y%m%d-%H%M%S).dump"
+# Validated pg_dump with rotation. Writes to ./backups/ by default.
+bash scripts/backup.sh
 
-# Restore into a fresh stack
-docker compose exec -T postgres \
-    pg_restore -U postgres -d context_engine --clean --if-exists \
-    < context_engine-YYYYMMDD-HHMMSS.dump
+# Safe restore: validates the dump, snapshots the current DB first,
+# stops api/worker, runs pg_restore, restarts, and probes the API
+# to prove the restored data is actually queryable.
+bash scripts/restore.sh backups/context_engine-YYYYMMDDTHHMMSSZ.dump --yes --safety-backup
 ```
+
+`backup.sh` is cron-friendly (`--quiet --retention 30 --output /backups`), and `scripts/upgrade.sh` runs it automatically before every upgrade.
+
+> **`scripts/diagnose.sh` is not a backup.** It's a read-only triage snapshot (logs, health, redacted config) — it contains no application data and cannot be restored from.
+
+For automated nightly cron, off-host copies, fresh-stack restore, the raw `pg_dump`/`pg_restore` fallback, and the full operations playbook (upgrade, rollback, queue backlog, worker health, schema drift, seed/import recovery, container failures, disk pressure), see [docs/runbook.md](./docs/runbook.md).
 
 For volume-level backups on a cheap VPS, snapshot the entire docker volume directory (typically under `/var/lib/docker/volumes/`) while the stack is stopped, or rely on your provider's block-storage snapshots.
 

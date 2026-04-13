@@ -108,7 +108,7 @@ async def list_review_items(
     search: str | None = Query(default=None, min_length=1, max_length=200),
     sort: str = Query(default="updated_at", pattern="^(updated_at|created_at|severity|confidence)$"),
     sort_dir: str = Query(default="desc", pattern="^(asc|desc)$"),
-    limit: int | None = Query(default=None, ge=1, le=500),
+    limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     service: TrustService = Depends(get_trust_service),
 ) -> ReviewItemPage:
@@ -131,11 +131,7 @@ async def list_review_items(
             status_code=http_status.HTTP_404_NOT_FOUND,
             detail="Workspace not found",
         )
-    has_more = (
-        limit is not None
-        and page.offset is not None
-        and page.offset + limit < page.total
-    )
+    has_more = page.offset is not None and page.offset + limit < page.total
     return ReviewItemPage(
         items=[_serialize_review_item(item) for item in page.items],
         total=page.total,
@@ -148,10 +144,24 @@ async def list_review_items(
 @router.get("/review-items/summary", response_model=ReviewSummaryRead)
 async def review_summary(
     workspace_id: UUID,
+    review_status: ReviewStatus | None = Query(default=None, alias="status"),
+    severity: ReviewSeverity | None = None,
+    kind: ReviewKind | None = None,
+    model_id: UUID | None = None,
+    source_document_id: UUID | None = None,
+    search: str | None = Query(default=None, min_length=1, max_length=200),
     service: TrustService = Depends(get_trust_service),
 ) -> ReviewSummaryRead:
     try:
-        summary = await service.get_review_summary(workspace_id)
+        summary = await service.get_review_summary(
+            workspace_id,
+            status=review_status,
+            severity=severity,
+            kind=kind,
+            model_id=model_id,
+            source_document_id=source_document_id,
+            search=search,
+        )
     except WorkspaceNotFoundError:
         raise HTTPException(
             status_code=http_status.HTTP_404_NOT_FOUND,

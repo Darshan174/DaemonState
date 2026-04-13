@@ -1563,8 +1563,9 @@ class TestReviewPagination:
         assert resp.status_code == 200
         body = resp.json()
         assert body["total"] == 3
-        assert body["limit"] is None
-        assert body["offset"] is None
+        # Default limit is 50; all 3 items fit in the first page
+        assert body["limit"] == 50
+        assert body["offset"] == 0
         assert body["has_more"] is False
         assert body["page_size"] == 3
         assert len(body["items"]) == 3

@@ -7,7 +7,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -33,8 +33,10 @@ from app.schemas.briefing import (
 from app.services.decision_service import DecisionService
 from app.services.query_service import QueryService
 from app.services.truth_visibility import (
+    current_truth_where,
     history_where,
     is_component_visible_in_current_truth,
+    is_component_visible_in_history,
 )
 
 _STOPWORDS = {
@@ -94,15 +96,25 @@ class BriefingService:
         await self._require_workspace(workspace_id)
         since = datetime.now(UTC) - timedelta(days=lookback_days)
         current_components = await self._load_components(workspace_id=workspace_id, current_only=True)
+        # Also load recently-superseded components so the brief shows what changed
+        # within the lookback window, not just what is currently active.
+        historical_components = await self._load_components(
+            workspace_id=workspace_id, current_only=False
+        )
+        recently_changed = [
+            c for c in historical_components
+            if c.valid_to is not None and c.valid_to >= since
+        ]
+        all_visible_components = current_components + recently_changed
 
         changed_facts = [
             self._serialize_fact(component)
-            for component in current_components
+            for component in all_visible_components
             if component.valid_from >= since
         ][:10]
         new_blockers = [
             self._serialize_fact(component)
-            for component in current_components
+            for component in all_visible_components
             if component.valid_from >= since and self._is_blocker(component)
         ][:10]
 
@@ -279,30 +291,30 @@ class BriefingService:
 
         events: list[TimelineEventRead] = []
 
-        decision_components = list(
-            await self.session.scalars(
-                select(Component)
-                .join(KnowledgeModel, Component.model_id == KnowledgeModel.id)
-                .options(
-                    selectinload(Component.model),
-                    selectinload(Component.review_item),
-                    selectinload(Component.source_documents),
-                    selectinload(Component.outgoing_relationships)
-                    .selectinload(Relationship.target_component)
-                    .selectinload(Component.review_item),
-                    selectinload(Component.incoming_relationships)
-                    .selectinload(Relationship.source_component)
-                    .selectinload(Component.review_item),
-                )
-                .where(
-                    KnowledgeModel.workspace_id == workspace_id,
-                    func.lower(Component.name).like("%decision%"),
-                )
-                .order_by(Component.valid_from.desc(), Component.id.desc())
+        # Push history filter into SQL — exclude only rejected components.
+        stmt = history_where(
+            select(Component)
+            .join(KnowledgeModel, Component.model_id == KnowledgeModel.id)
+            .options(
+                selectinload(Component.model),
+                selectinload(Component.review_item),
+                selectinload(Component.source_documents),
+                selectinload(Component.outgoing_relationships)
+                .selectinload(Relationship.target_component)
+                .selectinload(Component.review_item),
+                selectinload(Component.incoming_relationships)
+                .selectinload(Relationship.source_component)
+                .selectinload(Component.review_item),
             )
+            .where(
+                KnowledgeModel.workspace_id == workspace_id,
+                func.lower(Component.name).like("%decision%"),
+            )
+            .order_by(Component.valid_from.desc(), Component.id.desc())
         )
+        decision_components = list(await self.session.scalars(stmt))
         for component in decision_components:
-            if not is_component_visible_in_current_truth(component):
+            if not is_component_visible_in_history(component):
                 continue
             primary_source = self._primary_source_document(component)
             events.append(
@@ -498,20 +510,27 @@ class BriefingService:
 
         # Push truth filtering into SQL — no Python-side double-filter needed.
         if current_only:
-            stmt = stmt.where(Component.valid_to.is_(None))
-            stmt = stmt.where(
-                or_(
-                    ~Component.review_item.has(),
-                    ~Component.review_item.has(
-                        ReviewItem.status.in_(("rejected", "superseded"))
-                    ),
-                )
-            )
+            stmt = current_truth_where(stmt)
         else:
             stmt = history_where(stmt)
 
         rows = await self.session.scalars(stmt)
-        return list(rows)
+        components = list(rows)
+
+        # Python-side safety net: ensure rejected components are never returned
+        # (SQL-level filters may not apply in all ORM configurations)
+        if current_only:
+            components = [
+                c for c in components
+                if is_component_visible_in_current_truth(c)
+            ]
+        else:
+            components = [
+                c for c in components
+                if is_component_visible_in_history(c)
+            ]
+
+        return components
 
     @staticmethod
     def _serialize_fact(component: Component) -> FounderBriefFactRead:

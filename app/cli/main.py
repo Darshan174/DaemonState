@@ -45,6 +45,7 @@ VERIFY_TEST_TARGETS = (
     "tests/test_api/test_imports.py",
     "tests/test_api/test_admin.py::TestSeedDemoAPI",
     "tests/test_api/test_connectors_upload.py",
+    "tests/test_api/test_trust.py",
     "tests/test_api/test_truth_regression.py",
     "tests/test_api/test_query.py",
     "tests/test_api/test_briefing.py",

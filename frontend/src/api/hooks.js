@@ -1121,6 +1121,7 @@ function normalizeGraphResponse(graph) {
       type: "component",
       modelId: node.model_id,
       reviewStatus: node.review_status,
+      reviewItemId: node.review_item_id,
       temporalState: node.temporal_state,
       authorityWeight: node.authority_weight,
       sourceCount: node.source_count,

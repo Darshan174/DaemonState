@@ -25,11 +25,15 @@
 # ──────────────────────────────────────────────────────────────────────
 # All stateful data lives in two named volumes: postgres_data, redis_data.
 # "docker compose down" preserves them; only "docker compose down -v"
-# deletes them. Back up the database with pg_dump — see docs/runbook.md
-# for the full backup/restore playbook (manual dump, automated nightly
-# cron, off-host copy, sanity-check-without-overwriting-prod). Note:
-# scripts/diagnose.sh is NOT a backup tool — it only collects a
-# read-only runtime snapshot for post-failure triage.
+# deletes them. The supported backup path is `bash scripts/backup.sh`
+# (validated pg_dump with rotation and cron-friendly --quiet mode); the
+# supported restore path is `bash scripts/restore.sh <dump> --yes`
+# (dump TOC validation, optional safety snapshot, post-restore API
+# probe). See docs/runbook.md → Backups for automated nightly cron,
+# off-host copies, and fresh-stack restore. Note: scripts/diagnose.sh
+# is NOT a backup tool — it only collects a read-only runtime snapshot
+# (logs, health, redacted config) for post-failure triage and contains
+# ZERO application data. A diagnose tarball cannot be restored from.
 #
 # ──────────────────────────────────────────────────────────────────────
 # Resource guidance

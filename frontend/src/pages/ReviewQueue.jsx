@@ -267,18 +267,34 @@ export default function ReviewQueue() {
       </div>
 
       {items.length === 0 ? (
-        <ReviewEmptyState filtersActive={filtersActive} />
+        <ReviewEmptyState filtersActive={filtersActive} onClear={clearFilters} />
       ) : (
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1.05fr)_minmax(320px,0.95fr)]">
           <section
             aria-label="Review items"
             className="bg-white rounded-xl border border-gray-200 overflow-hidden"
           >
-            <div className="px-4 py-3 border-b border-gray-100">
-              <p className="text-sm font-semibold text-gray-700">Items requiring trust decisions</p>
-              <p className="text-xs text-gray-400 mt-1">
-                Review conflicts, low-confidence facts, and superseded knowledge before it becomes active truth.
-              </p>
+            <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+              <div>
+                <p className="text-sm font-semibold text-gray-700">Items requiring trust decisions</p>
+                <p className="text-xs text-gray-400 mt-1">
+                  {sourceId || modelId || searchQuery ? (
+                    <span className="text-brand-700 font-medium italic">
+                      Filtering by {sourceId ? "source" : modelId ? "model" : "search"}
+                    </span>
+                  ) : (
+                    "Review conflicts, low-confidence facts, and superseded knowledge before it becomes active truth."
+                  )}
+                </p>
+              </div>
+              {filtersActive && (
+                <button
+                  onClick={clearFilters}
+                  className="text-xs font-medium text-brand-700 hover:text-brand-800"
+                >
+                  Clear all
+                </button>
+              )}
             </div>
             <div className="divide-y divide-gray-100">
               {items.map((item) => (
@@ -566,7 +582,7 @@ export default function ReviewQueue() {
   );
 }
 
-function ReviewEmptyState({ filtersActive }) {
+function ReviewEmptyState({ filtersActive, onClear }) {
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-6 text-center">
       <p className="text-sm font-semibold text-gray-800">
@@ -578,6 +594,14 @@ function ReviewEmptyState({ filtersActive }) {
           : "That usually means either the workspace has not been synced yet, or the current ingestion pass did not produce conflicts or low-confidence facts that need operator review."}
       </p>
       <div className="mt-4 flex flex-wrap items-center justify-center gap-4 text-xs">
+        {filtersActive && (
+          <button
+            onClick={onClear}
+            className="font-medium text-brand-700 hover:text-brand-800"
+          >
+            Clear all filters
+          </button>
+        )}
         <Link to="/app/sources" className="font-medium text-brand-700 hover:text-brand-800">
           Open sources
         </Link>

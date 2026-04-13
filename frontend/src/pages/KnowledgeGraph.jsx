@@ -305,9 +305,11 @@ export default function KnowledgeGraph() {
                     </Link>
                   )}
                   <Link
-                    to={selectedNode.type === "source"
-                      ? `/app/review?source_id=${selectedNode.id}`
-                      : `/app/review?search=${encodeURIComponent(selectedNode.label)}`}
+                    to={selectedNode.reviewItemId 
+                      ? `/app/review/${selectedNode.reviewItemId}` 
+                      : selectedNode.type === "source"
+                        ? `/app/review?source_id=${selectedNode.id}`
+                        : `/app/review?search=${encodeURIComponent(selectedNode.label)}`}
                     className="block w-full rounded-lg border border-gray-200 bg-white px-4 py-2 text-center text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
                   >
                     Review trust state

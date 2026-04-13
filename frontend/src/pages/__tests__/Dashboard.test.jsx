@@ -121,7 +121,7 @@ describe("Dashboard", () => {
     renderDashboard();
     expect(screen.getByText("Workspace Overview")).toBeInTheDocument();
     expect(screen.getByText(/42 source documents/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "View Founder Brief" })).toHaveAttribute("href", "/app/brief");
+    expect(screen.getByRole("link", { name: "Founder Brief" })).toHaveAttribute("href", "/app/brief");
     
     expect(screen.getByText("Ask Context")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Ask Context.*Ask a question/i })).toHaveAttribute("href", "/app/query");

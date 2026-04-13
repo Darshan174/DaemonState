@@ -71,14 +71,30 @@ class ReviewItemPage(BaseModel):
 
     items: list[ReviewItemRead]
     total: int = Field(ge=0)
-    limit: int | None = Field(default=None, ge=1)
-    offset: int | None = Field(default=None, ge=0)
+    limit: int = Field(ge=1)
+    offset: int = Field(ge=0)
     has_more: bool
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def page_size(self) -> int:
         return len(self.items)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def page(self) -> int:
+        """1-based page number derived from offset and limit."""
+        if self.limit is None or self.limit <= 0:
+            return 1
+        return (self.offset // self.limit) + 1
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def total_pages(self) -> int:
+        """Total number of pages based on total and limit."""
+        if self.limit is None or self.limit <= 0:
+            return 1
+        return (self.total + self.limit - 1) // self.limit
 
 
 class ReviewStatusCounts(BaseModel):

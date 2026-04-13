@@ -331,8 +331,17 @@ class TestDecisionRegisterApi:
             item for item in timeline_resp.json()["items"]
             if item["event_type"] == "decision_change"
         ]
-        assert [item["summary"] for item in decision_events] == ["Use Auth0."]
-        assert decision_events[0]["payload"]["related_blocker"] == "Security review still pending."
+        # Timeline uses history view: includes current + superseded, excludes rejected
+        timeline_summaries = {item["summary"] for item in decision_events}
+        assert "Use Auth0." in timeline_summaries, "Timeline must include current decision"
+        assert "Use Clerk." in timeline_summaries, "Timeline must include superseded (history view)"
+        assert "Use Okta." not in timeline_summaries, "Timeline must exclude rejected"
+        # Verify the current decision event has the correct blocker
+        current_event = next(
+            e for e in decision_events
+            if e["summary"] == "Use Auth0." and e["status"] == "current"
+        )
+        assert current_event["payload"]["related_blocker"] == "Security review still pending."
 
     async def test_decision_history_returns_current_and_superseded_versions(
         self, client, workspace, db_session

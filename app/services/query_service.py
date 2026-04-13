@@ -651,7 +651,9 @@ class QueryService:
         """Compute freshness based on recency and explicit staleness.
 
         A component is STALE if:
-        - it is flagged ``is_stale`` (explicitly marked by ingestion or review), or
+        - it is flagged ``is_stale`` **and** that flag was already set at the
+          requested *as_of* time (i.e. the component was superseded/rejected
+          *before* the reference point), or
         - its ``last_verified_at`` is older than 30 days relative to *as_of*
           (or wall-clock now if *as_of* is not provided).
 
@@ -661,14 +663,23 @@ class QueryService:
         For ``as_of`` queries, the reference time is the requested point in time,
         so historical facts that were recently verified at that point are not
         mislabeled as stale just because time has passed since then.
+
+        Crucially, a component that was superseded *after* the as_of time should
+        not be considered stale at the as_of time — it was still the current truth.
         """
         reference = as_of or datetime.now(UTC)
         has_any_stale_flag = False
         latest_age = timedelta(0)
 
         for component in components:
+            # Only honor the is_stale flag when the staleness boundary (valid_to)
+            # occurred at or before the reference time.  If valid_to is in the
+            # future relative to as_of, the component was still "active truth" at
+            # that point and should not be penalized for being superseded later.
             if component.is_stale:
-                has_any_stale_flag = True
+                stale_at = component.valid_to
+                if stale_at is None or stale_at <= reference:
+                    has_any_stale_flag = True
             if component.last_verified_at is not None:
                 age = max(reference - component.last_verified_at, timedelta(0))
                 if age > latest_age:

@@ -80,6 +80,9 @@ def _sort_key(
     For severity we use a CASE expression so ordering reflects
     operational priority (high > medium > low) rather than
     alphabetical sort.
+
+    ReviewItem.id is always used as a deterministic tiebreaker
+    to guarantee stable sort order across pages.
     """
     _SEVERITY_RANK = case(
         (ReviewItem.severity == "high", 3),
@@ -96,12 +99,9 @@ def _sort_key(
     }
 
     col = _COLUMNS.get(sort, ReviewItem.updated_at)
-    tiebreaker_col = _COLUMNS.get(sort, ReviewItem.id)
-    # Use ReviewItem.id as tiebreaker for all columns except id itself
-    if sort == "id":
-        tiebreaker_col = ReviewItem.id
+    direction = "asc" if sort_dir == "asc" else "desc"
 
-    if sort_dir == "asc":
+    if direction == "asc":
         return [col.asc(), ReviewItem.id.asc()]
     return [col.desc(), ReviewItem.id.desc()]
 
@@ -122,7 +122,7 @@ class TrustService:
         search: str | None = None,
         sort: str = "updated_at",
         sort_dir: str = "desc",
-        limit: int | None = None,
+        limit: int = 50,
         offset: int = 0,
     ) -> ReviewPage:
         await self._require_workspace(workspace_id)
@@ -176,17 +176,22 @@ class TrustService:
         # Apply sorting
         query = query.order_by(*_sort_key(sort, sort_dir))
 
-        if limit is not None:
-            query = query.limit(limit).offset(offset)
+        query = query.limit(limit).offset(offset)
 
         result = await self.session.execute(query)
         items = list(result.unique().scalars().all())
-        actual_offset = offset if limit is not None else None
-        return ReviewPage(items=items, total=total, limit=limit, offset=actual_offset)
+        return ReviewPage(items=items, total=total, limit=limit, offset=offset)
 
     async def get_review_summary(
         self,
         workspace_id: UUID,
+        *,
+        status: str | None = None,
+        severity: str | None = None,
+        kind: str | None = None,
+        model_id: UUID | None = None,
+        source_document_id: UUID | None = None,
+        search: str | None = None,
     ) -> dict[str, object]:
         """Return review state summary for operator dashboard."""
         await self._require_workspace(workspace_id)
@@ -196,7 +201,36 @@ class TrustService:
             .join(Component, ReviewItem.component_id == Component.id)
             .join(KnowledgeModel, Component.model_id == KnowledgeModel.id)
             .where(KnowledgeModel.workspace_id == workspace_id)
-        ).subquery()
+        )
+
+        if status is not None:
+            subq = subq.where(ReviewItem.status == status)
+        if severity is not None:
+            subq = subq.where(ReviewItem.severity == severity)
+        if kind is not None:
+            subq = subq.where(ReviewItem.kind == kind)
+        if model_id is not None:
+            subq = subq.where(Component.model_id == model_id)
+        if source_document_id is not None:
+            subq = subq.join(
+                ComponentSource,
+                ComponentSource.component_id == ReviewItem.component_id,
+            ).join(
+                SourceDocument,
+                ComponentSource.source_document_id == SourceDocument.id,
+            ).where(
+                ComponentSource.source_document_id == source_document_id,
+                SourceDocument.deleted_at.is_(None),
+            )
+        if search:
+            term = f"%{search.lower()}%"
+            subq = subq.where(
+                ReviewItem.title.ilike(term)
+                | ReviewItem.summary.ilike(term)
+                | KnowledgeModel.name.ilike(term)
+            )
+
+        subq = subq.subquery()
 
         # By status
         status_rows = await self.session.execute(

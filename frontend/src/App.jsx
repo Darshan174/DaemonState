@@ -64,16 +64,17 @@ function SidebarContent({ onNavigate }) {
             to={to}
             onClick={onNavigate}
             className={({ isActive }) =>
-              `group flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${isActive
-                ? "bg-brand-600/30 text-white scale-[1.02] shadow-sm shadow-brand-500/10"
-                : "text-slate-400 hover:bg-slate-800/50 hover:text-white"
+              `group relative flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-300 overflow-hidden ${isActive
+                ? "bg-brand-500/10 text-brand-300 shadow-[inset_0_0_20px_rgba(79,70,229,0.05)]"
+                : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
               }`
             }
           >
             {({ isActive }) => (
               <>
-                <Icon className={`w-[18px] h-[18px] shrink-0 transition-transform duration-200 ${isActive ? "scale-110 drop-shadow-sm" : "group-hover:scale-110"}`} />
-                {label}
+                {isActive && <div className="absolute left-0 top-1.5 bottom-1.5 w-1 bg-brand-500 rounded-r-full shadow-[0_0_10px_rgba(79,70,229,0.8)]" />}
+                <Icon className={`w-[18px] h-[18px] shrink-0 transition-transform duration-300 relative z-10 ${isActive ? "scale-110 drop-shadow-[0_0_8px_rgba(79,70,229,0.4)]" : "group-hover:scale-110"}`} />
+                <span className="relative z-10">{label}</span>
               </>
             )}
           </NavLink>
@@ -85,14 +86,14 @@ function SidebarContent({ onNavigate }) {
             className="w-full flex items-center justify-between px-3 py-2 text-xs font-bold uppercase tracking-widest text-slate-500 hover:text-slate-300 transition-colors"
           >
             <span>Operator Tools</span>
-            <svg 
-              className={`w-4 h-4 transition-transform duration-200 ${showAdmin ? 'rotate-180' : ''}`} 
+            <svg
+              className={`w-4 h-4 transition-transform duration-200 ${showAdmin ? 'rotate-180' : ''}`}
               fill="none" viewBox="0 0 24 24" stroke="currentColor"
             >
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
             </svg>
           </button>
-          
+
           {showAdmin && (
             <div className="mt-2 space-y-1">
               {ADMIN_NAV.map(({ to, label, icon: Icon }) => (
@@ -102,14 +103,19 @@ function SidebarContent({ onNavigate }) {
                   end={to === "/app"}
                   onClick={onNavigate}
                   className={({ isActive }) =>
-                    `group flex items-center gap-3 px-3 py-2 rounded-md text-xs font-medium transition-all duration-200 ${isActive
-                      ? "bg-slate-800 text-white"
-                      : "text-slate-500 hover:bg-slate-800/30 hover:text-slate-300"
+                    `group relative flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-all duration-300 ${isActive
+                      ? "bg-white/10 text-white shadow-inner"
+                      : "text-slate-500 hover:bg-white/5 hover:text-slate-300"
                     }`
                   }
                 >
-                  <Icon className="w-4 h-4 shrink-0" />
-                  {label}
+                  {({ isActive }) => (
+                    <>
+                      {isActive && <div className="absolute left-0 top-1.5 bottom-1.5 w-0.5 bg-slate-300 rounded-r-full" />}
+                      <Icon className={`w-4 h-4 shrink-0 transition-transform ${isActive ? "scale-110" : ""}`} />
+                      <span className="relative z-10">{label}</span>
+                    </>
+                  )}
                 </NavLink>
               ))}
             </div>
@@ -178,8 +184,10 @@ function AdminShell() {
         </aside>
 
         {/* ── Main area ───────────────────────────── */}
-        <div className="flex-1 flex flex-col overflow-hidden bg-slate-50/50">
-          <header className="h-16 border-b border-slate-200/60 bg-white/70 backdrop-blur-md flex items-center px-6 shrink-0 gap-4 z-10 supports-[backdrop-filter]:bg-white/60">
+        <div className="flex-1 flex flex-col overflow-hidden bg-slate-50/50 relative">
+          <div className="absolute inset-0 z-0 pointer-events-none bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-brand-100/40 via-transparent to-transparent"></div>
+
+          <header className="h-16 border-b border-black/5 bg-slate-50/70 backdrop-blur-xl flex items-center px-6 shrink-0 gap-4 z-30 supports-[backdrop-filter]:bg-slate-50/50 relative">
             <button
               className="md:hidden p-2 -ml-2 rounded-lg text-slate-500 hover:bg-slate-100 transition-colors"
               onClick={() => setMobileNavOpen(true)}
