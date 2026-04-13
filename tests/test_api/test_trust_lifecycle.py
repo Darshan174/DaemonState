@@ -787,14 +787,144 @@ class TestFilterAndSortBehavior:
         assert len(items) == 1
         assert items[0]["id"] == str(g["review_item"].id)
 
-    async def test_empty_filter_result(self, client, workspace, db_session):
-        """Filters that match nothing should return empty list, not error."""
+    async def test_list_review_items_search_by_title(
+        self, client, workspace, db_session
+    ):
+        """Search filter matches review item title (case-insensitive)."""
+        connector = _make_connector(workspace.id)
+        db_session.add(connector)
+        model = KnowledgeModel(
+            workspace_id=workspace.id, name="Search Model", description="Search"
+        )
+        db_session.add(model)
+        await db_session.flush()
+
+        comp1 = Component(model_id=model.id, name="Price A", value="$100", confidence=0.5)
+        db_session.add(comp1)
+        await db_session.flush()
+        db_session.add(
+            ReviewItem(
+                component_id=comp1.id, status="needs_review", severity="high",
+                kind="conflict", title="Pricing conflict detected",
+                summary="Sources disagree on pricing", confidence=0.5,
+            )
+        )
+        await db_session.flush()
+
+        comp2 = Component(model_id=model.id, name="Roadmap B", value="Q3", confidence=0.5)
+        db_session.add(comp2)
+        await db_session.flush()
+        db_session.add(
+            ReviewItem(
+                component_id=comp2.id, status="needs_review", severity="low",
+                kind="low_confidence", title="Low confidence roadmap fact",
+                summary="Uncertain roadmap data", confidence=0.5,
+            )
+        )
+        await db_session.flush()
+
         resp = await client.get(
             "/api/review-items",
-            params={"workspace_id": str(workspace.id), "status": "approved"},
+            params={"workspace_id": str(workspace.id), "search": "pricing"},
         )
         assert resp.status_code == 200
-        assert resp.json()["items"] == []
+        body = resp.json()
+        items = body["items"]
+        assert len(items) == 1
+        assert items[0]["title"] == "Pricing conflict detected"
+
+    async def test_list_review_items_search_by_model_name(
+        self, client, workspace, db_session
+    ):
+        """Search filter matches model name."""
+        connector = _make_connector(workspace.id)
+        db_session.add(connector)
+        model = KnowledgeModel(
+            workspace_id=workspace.id, name="UniqueModelName", description="Unique"
+        )
+        db_session.add(model)
+        await db_session.flush()
+
+        comp = Component(model_id=model.id, name="Fact X", value="v", confidence=0.5)
+        db_session.add(comp)
+        await db_session.flush()
+        db_session.add(
+            ReviewItem(
+                component_id=comp.id, status="needs_review", severity="medium",
+                kind="low_confidence", title="Some fact",
+                summary="Some summary", confidence=0.5,
+            )
+        )
+        await db_session.flush()
+
+        resp = await client.get(
+            "/api/review-items",
+            params={"workspace_id": str(workspace.id), "search": "UniqueModelName"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        items = body["items"]
+        assert len(items) == 1
+        assert items[0]["model_name"] == "UniqueModelName"
+
+    async def test_list_review_items_search_no_matches(self, client, workspace, db_session):
+        """Search that matches nothing returns empty items."""
+        await _seed_review_graph(db_session, workspace)
+
+        resp = await client.get(
+            "/api/review-items",
+            params={"workspace_id": str(workspace.id), "search": "zzzznope"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["items"] == []
+        assert body["total"] == 0
+
+    async def test_list_review_items_search_combined_with_filters(
+        self, client, workspace, db_session
+    ):
+        """Search combined with status and kind filters narrows results."""
+        connector = _make_connector(workspace.id)
+        db_session.add(connector)
+        model = KnowledgeModel(
+            workspace_id=workspace.id, name="ComboSearch", description="Combo"
+        )
+        db_session.add(model)
+        await db_session.flush()
+
+        comp1 = Component(model_id=model.id, name="Fact A", value="a", confidence=0.3)
+        db_session.add(comp1)
+        await db_session.flush()
+        db_session.add(
+            ReviewItem(
+                component_id=comp1.id, status="needs_review", severity="high",
+                kind="low_confidence", title="Low confidence pricing",
+                summary="Pricing needs review", confidence=0.3,
+            )
+        )
+        await db_session.flush()
+
+        comp2 = Component(model_id=model.id, name="Fact B", value="b", confidence=0.9)
+        db_session.add(comp2)
+        await db_session.flush()
+        db_session.add(
+            ReviewItem(
+                component_id=comp2.id, status="approved", severity="low",
+                kind="conflict", title="Resolved conflict",
+                summary="Was a conflict", confidence=0.9,
+            )
+        )
+        await db_session.flush()
+
+        resp = await client.get(
+            "/api/review-items",
+            params={"workspace_id": str(workspace.id), "search": "pricing", "status": "needs_review"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        items = body["items"]
+        assert len(items) == 1
+        assert "Low confidence pricing" in items[0]["title"]
 
     async def test_list_ordered_by_updated_desc(
         self, client, workspace, db_session

@@ -55,19 +55,20 @@ export default function ReviewQueue() {
   const searchQuery = searchParams.get("search") ?? "";
   const sourceId = searchParams.get("source_id");
   const modelId = searchParams.get("model_id");
-  const query = useReviewQueue({ status, severity, kind, source_id: sourceId, model_id: modelId });
+  const query = useReviewQueue({ status, severity, kind, source_id: sourceId, model_id: modelId, search: searchQuery });
 
   const items = useMemo(() => {
     const data = query.data ?? [];
     return data.filter((item) => {
-      const matchSearch = !searchQuery || 
-        item.title?.toLowerCase().includes(searchQuery.toLowerCase()) || 
-        item.summary?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        item.model?.toLowerCase().includes(searchQuery.toLowerCase());
+      // Backend already applied search + model_id filtering;
+      // client-side filter retained only for source_id deep links.
+      const matchSource = !sourceId ||
+        item.sourceDocuments?.some(s => s === sourceId || s.id === sourceId || s.sourceDocumentId === sourceId) ||
+        item.sources?.some(s => s === sourceId || s.id === sourceId || s.sourceDocumentId === sourceId);
 
-      return matchSearch;
+      return matchSource;
     });
-  }, [query.data, searchQuery]);
+  }, [query.data, sourceId]);
 
   const isMock = query.isMock ?? false;  const approveMut = useApproveReviewItem();
   const rejectMut = useRejectReviewItem();
@@ -87,10 +88,14 @@ export default function ReviewQueue() {
     if (status !== "all") next.set("status", status); else next.delete("status");
     if (severity !== "all") next.set("severity", severity); else next.delete("severity");
     if (kind !== "all") next.set("kind", kind); else next.delete("kind");
+    // Persist deep-link params that came from graph inspector or other surfaces
+    if (searchQuery) next.set("search", searchQuery); else next.delete("search");
+    if (sourceId) next.set("source_id", sourceId); else next.delete("source_id");
+    if (modelId) next.set("model_id", modelId); else next.delete("model_id");
     if (next.toString() !== searchParams.toString()) {
       setSearchParams(next, { replace: true });
     }
-  }, [kind, searchParams, setSearchParams, severity, status]);
+  }, [kind, modelId, searchParams, setSearchParams, searchQuery, severity, sourceId, status]);
 
   useEffect(() => {
     if (items.length === 0) {

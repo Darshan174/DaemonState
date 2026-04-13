@@ -97,7 +97,7 @@ cd frontend && npm run build
 Human output should identify the selected phases first, print skipped phases when applicable, and then print one line per successful phase:
 
 ```text
-verify phases: boot, readiness, seed, smoke, contract-tests, frontend-tests, frontend-build
+verify phases: boot, readiness, seed, smoke, contract-tests
 skipped phases: frontend-tests, frontend-build
 boot: ...
 readiness: ...
