@@ -80,6 +80,57 @@ async def _link_source(db_session, component, document):
     await db_session.flush()
 
 
+class TestDeletedSourceVisibility:
+    """Deleting the only source for a fact should remove it from founder workflows."""
+
+    async def test_query_excludes_component_when_only_source_is_deleted(
+        self, client, db_session, workspace
+    ):
+        seeded = await _seed_base(db_session, workspace)
+
+        component = Component(
+            model_id=seeded["model"].id,
+            name="Starter Plan",
+            value="$29/month",
+            confidence=0.93,
+            authority_weight=0.9,
+            valid_from=datetime(2026, 3, 1, tzinfo=UTC),
+            last_verified_at=datetime(2026, 3, 20, tzinfo=UTC),
+        )
+        db_session.add(component)
+        await db_session.flush()
+        await _link_source(db_session, component, seeded["doc"])
+        await db_session.commit()
+
+        before = await client.post(
+            "/api/query",
+            json={
+                "question": "What is the Starter Plan?",
+                "workspace_id": str(workspace.id),
+            },
+        )
+        assert before.status_code == 200
+        assert before.json()["components"]
+
+        deleted = await client.delete(
+            f"/api/source-documents/{seeded['doc'].id}",
+            params={"workspace_id": str(workspace.id)},
+        )
+        assert deleted.status_code == 204
+
+        after = await client.post(
+            "/api/query",
+            json={
+                "question": "What is the Starter Plan?",
+                "workspace_id": str(workspace.id),
+            },
+        )
+        assert after.status_code == 200
+        body = after.json()
+        assert body["components"] == []
+        assert body["sources"] == []
+
+
 class TestAsOfQueries:
     """Historical (as-of) queries return the correct fact version."""
 

@@ -5,7 +5,9 @@ import Sources from "../Sources";
 
 vi.mock("../../api/hooks", () => ({
   useConnectorProcessingSummary: vi.fn(),
+  useDeleteSourceDocument: vi.fn(),
   useReprocessSourceDocument: vi.fn(),
+  useRestoreSourceDocument: vi.fn(),
   useSourceDocument: vi.fn(),
   useSourceDocumentComponents: vi.fn(),
   useSourceDocumentReviewItems: vi.fn(),
@@ -14,7 +16,9 @@ vi.mock("../../api/hooks", () => ({
 
 import {
   useConnectorProcessingSummary,
+  useDeleteSourceDocument,
   useReprocessSourceDocument,
+  useRestoreSourceDocument,
   useSourceDocument,
   useSourceDocumentComponents,
   useSourceDocumentReviewItems,
@@ -22,6 +26,18 @@ import {
 } from "../../api/hooks";
 
 const reprocessMut = {
+  mutate: vi.fn(),
+  isPending: false,
+  variables: undefined,
+};
+
+const deleteMut = {
+  mutate: vi.fn(),
+  isPending: false,
+  variables: undefined,
+};
+
+const restoreMut = {
   mutate: vi.fn(),
   isPending: false,
   variables: undefined,
@@ -128,7 +144,11 @@ function renderSources(initialEntries = ["/app/sources"]) {
 beforeEach(() => {
   vi.clearAllMocks();
   reprocessMut.mutate.mockReset();
+  deleteMut.mutate.mockReset();
+  restoreMut.mutate.mockReset();
   useReprocessSourceDocument.mockReturnValue(reprocessMut);
+  useDeleteSourceDocument.mockReturnValue(deleteMut);
+  useRestoreSourceDocument.mockReturnValue(restoreMut);
   useConnectorProcessingSummary.mockReturnValue({
     data: {
       items: [

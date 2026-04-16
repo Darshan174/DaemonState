@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   useConnectorProcessingSummary,
+  useDeleteSourceDocument,
   useReprocessSourceDocument,
+  useRestoreSourceDocument,
   useSourceDocument,
   useSourceDocumentComponents,
   useSourceDocumentReviewItems,
@@ -54,9 +56,14 @@ export default function Sources() {
   } = useSourceDocuments({ connector, processed, search });
   const summaryQuery = useConnectorProcessingSummary();
   const reprocessMut = useReprocessSourceDocument();
+  const deleteMut = useDeleteSourceDocument();
+  const restoreMut = useRestoreSourceDocument();
   const documents = data ?? [];
   const [reprocessMessage, setReprocessMessage] = useState("");
   const [reprocessError, setReprocessError] = useState("");
+  const [deleteMessage, setDeleteMessage] = useState("");
+  const [deleteError, setDeleteError] = useState("");
+  const [lastDeletedDocument, setLastDeletedDocument] = useState(null);
   const filtersActive = connector !== "all" || processed !== "all" || search.trim().length > 0;
   const selectedFromList = useMemo(
     () => documents.find((doc) => doc.id === documentId) ?? null,
@@ -86,6 +93,7 @@ export default function Sources() {
   useEffect(() => {
     setReprocessMessage("");
     setReprocessError("");
+    setDeleteError("");
   }, [selectedDocument?.id]);
 
   const componentRefsQuery = useSourceDocumentComponents(selectedDocument?.id ?? null);
@@ -367,6 +375,52 @@ export default function Sources() {
                             : "Run extraction"}
                       </button>
                     )}
+                    {!isMock && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!window.confirm("Remove this source document from the workspace? You can undo this immediately after deletion.")) {
+                            return;
+                          }
+                          setDeleteMessage("");
+                          setDeleteError("");
+                          deleteMut.mutate(selectedDocument.id, {
+                            onSuccess: () => {
+                              const label =
+                                selectedDocument.documentTitle ||
+                                selectedDocument.location ||
+                                selectedDocument.author ||
+                                selectedDocument.externalId;
+                              const fallbackDocument = documents.find(
+                                (doc) => doc.id !== selectedDocument.id,
+                              );
+                              setLastDeletedDocument({
+                                id: selectedDocument.id,
+                                label,
+                              });
+                              setDeleteMessage(`Removed ${label} from the workspace.`);
+                              navigate(
+                                fallbackDocument
+                                  ? `/app/sources/${fallbackDocument.id}`
+                                  : "/app/sources",
+                              );
+                            },
+                            onError: (err) => {
+                              setDeleteError(err?.message || "Failed to delete document.");
+                            },
+                          });
+                        }}
+                        disabled={
+                          deleteMut.isPending &&
+                          deleteMut.variables === selectedDocument.id
+                        }
+                        className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {deleteMut.isPending && deleteMut.variables === selectedDocument.id
+                          ? "Removing..."
+                          : "Remove source"}
+                      </button>
+                    )}
                     <span
                       className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
                         selectedDocument.processed
@@ -384,9 +438,46 @@ export default function Sources() {
                     {reprocessMessage}
                   </p>
                 )}
+                {deleteMessage && (
+                  <div
+                    role="status"
+                    className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700"
+                  >
+                    <span>{deleteMessage}</span>
+                    {lastDeletedDocument && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDeleteError("");
+                          restoreMut.mutate(lastDeletedDocument.id, {
+                            onSuccess: (document) => {
+                              setDeleteMessage(`Restored ${lastDeletedDocument.label}.`);
+                              setLastDeletedDocument(null);
+                              if (document?.id) {
+                                navigate(`/app/sources/${document.id}`);
+                              }
+                            },
+                            onError: (err) => {
+                              setDeleteError(err?.message || "Failed to restore document.");
+                            },
+                          });
+                        }}
+                        disabled={restoreMut.isPending}
+                        className="rounded-lg border border-emerald-300 bg-white px-2.5 py-1 font-medium text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {restoreMut.isPending ? "Restoring..." : "Undo"}
+                      </button>
+                    )}
+                  </div>
+                )}
                 {reprocessError && (
                   <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
                     {reprocessError}
+                  </p>
+                )}
+                {deleteError && (
+                  <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                    {deleteError}
                   </p>
                 )}
 

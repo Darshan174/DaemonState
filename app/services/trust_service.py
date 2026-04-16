@@ -513,6 +513,32 @@ class TrustService:
 
         return job
 
+    async def soft_delete_source_document(
+        self,
+        document_id: UUID,
+        workspace_id: UUID,
+    ) -> SourceDocument:
+        document = await self._get_source_document_for_workspace(document_id, workspace_id)
+        document.deleted_at = datetime.now(timezone.utc)
+        await self.session.commit()
+        await self.session.refresh(document)
+        return document
+
+    async def restore_source_document(
+        self,
+        document_id: UUID,
+        workspace_id: UUID,
+    ) -> SourceDocument:
+        document = await self._get_source_document_for_workspace(
+            document_id,
+            workspace_id,
+            include_deleted=True,
+        )
+        document.deleted_at = None
+        await self.session.commit()
+        await self.session.refresh(document)
+        return document
+
     async def _require_workspace(self, workspace_id: UUID) -> None:
         workspace = await self.session.scalar(
             select(Workspace.id).where(Workspace.id == workspace_id)
@@ -521,20 +547,25 @@ class TrustService:
             raise WorkspaceNotFoundError("Workspace not found")
 
     async def _get_source_document_for_workspace(
-        self, document_id: UUID, workspace_id: UUID
+        self,
+        document_id: UUID,
+        workspace_id: UUID,
+        *,
+        include_deleted: bool = False,
     ) -> SourceDocument:
         await self._require_workspace(workspace_id)
 
         connector_ids_q = select(Connector.id).where(
             Connector.workspace_id == workspace_id
         )
-        document = await self.session.scalar(
-            select(SourceDocument).where(
-                SourceDocument.id == document_id,
-                SourceDocument.connector_id.in_(connector_ids_q),
-                SourceDocument.deleted_at.is_(None),
-            )
+        stmt = select(SourceDocument).where(
+            SourceDocument.id == document_id,
+            SourceDocument.connector_id.in_(connector_ids_q),
         )
+        if not include_deleted:
+            stmt = stmt.where(SourceDocument.deleted_at.is_(None))
+
+        document = await self.session.scalar(stmt)
         if document is None:
             raise TrustResourceNotFoundError("Source document not found")
         return document

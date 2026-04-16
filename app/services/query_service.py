@@ -307,7 +307,7 @@ class QueryService:
                 authority_weight=item.authority_score,
                 review_status=item.component.review_status,
                 last_verified_at=item.component.last_verified_at,
-                source_count=len(item.component.source_documents),
+                source_count=len(self._active_source_documents(item.component)),
                 is_current=item.component.valid_to is None,
                 is_stale=item.component.is_stale,
             )
@@ -347,8 +347,16 @@ class QueryService:
         return max(0.0, similarity)
 
     @staticmethod
-    def _source_support_score(component: Component) -> float:
-        return min(len(component.source_documents), 3) * settings.retrieval_source_support_bonus
+    def _active_source_documents(component: Component) -> list[SourceDocument]:
+        return [
+            document
+            for document in component.source_documents
+            if document.deleted_at is None
+        ]
+
+    @classmethod
+    def _source_support_score(cls, component: Component) -> float:
+        return min(len(cls._active_source_documents(component)), 3) * settings.retrieval_source_support_bonus
 
     @staticmethod
     def _question_prefers_current_truth(question_tokens: set[str]) -> bool:
@@ -452,7 +460,7 @@ class QueryService:
                     "label": document.label,
                     "connector_type": document.connector_type.value,
                 }
-                for document in scored.component.source_documents
+                for document in self._active_source_documents(scored.component)
             ],
         )
 
@@ -462,7 +470,7 @@ class QueryService:
         documents: list[SourceDocument] = []
 
         for item in scored:
-            documents.extend(item.component.source_documents)
+            documents.extend(self._active_source_documents(item.component))
 
         documents.sort(
             key=lambda doc: doc.created_at_source or doc.ingested_at,

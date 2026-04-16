@@ -1452,6 +1452,57 @@ export function useReprocessSourceDocument() {
   });
 }
 
+export function useDeleteSourceDocument() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (documentId) => {
+      const wsId = await getWorkspaceId();
+      await api.delete(
+        `${FOUNDER_WORKFLOW_API.sourceDocuments}/${documentId}?workspace_id=${wsId}`,
+      );
+      return { documentId };
+    },
+    onSuccess: (_result, documentId) => {
+      qc.invalidateQueries({ queryKey: ["source-documents"] });
+      qc.invalidateQueries({ queryKey: ["source-document", documentId] });
+      qc.invalidateQueries({ queryKey: ["source-document-components", documentId] });
+      qc.invalidateQueries({ queryKey: ["source-document-review-items", documentId] });
+      qc.invalidateQueries({ queryKey: ["connector-processing-summary"] });
+      qc.invalidateQueries({ queryKey: ["review-queue"] });
+      qc.invalidateQueries({ queryKey: ["founder-brief"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+}
+
+export function useRestoreSourceDocument() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (documentId) => {
+      const wsId = await getWorkspaceId();
+      const data = await api.post(
+        `${FOUNDER_WORKFLOW_API.sourceDocuments}/${documentId}/restore?workspace_id=${wsId}`,
+        {},
+      );
+      return normalizeSourceDocuments([data])[0] ?? null;
+    },
+    onSuccess: (document, documentId) => {
+      qc.invalidateQueries({ queryKey: ["source-documents"] });
+      qc.invalidateQueries({ queryKey: ["source-document", documentId] });
+      qc.invalidateQueries({ queryKey: ["source-document-components", documentId] });
+      qc.invalidateQueries({ queryKey: ["source-document-review-items", documentId] });
+      qc.invalidateQueries({ queryKey: ["connector-processing-summary"] });
+      qc.invalidateQueries({ queryKey: ["review-queue"] });
+      qc.invalidateQueries({ queryKey: ["founder-brief"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      if (document?.connectorId) {
+        qc.invalidateQueries({ queryKey: ["connector-sync-status", document.connectorId] });
+        qc.invalidateQueries({ queryKey: ["connector-sync-jobs", document.connectorId] });
+      }
+    },
+  });
+}
+
 export function useConnectNotion() {
   const qc = useQueryClient();
   return useMutation({
@@ -1672,6 +1723,7 @@ function normalizeSourceDocuments(data) {
     const metadata = item.metadata ?? item.metadata_json ?? {};
     return {
       id: item.id,
+      connectorId: item.connectorId ?? item.connector_id ?? null,
       connectorType,
       externalId: item.externalId ?? item.external_id,
       author: item.author ?? "Unknown",
@@ -1681,6 +1733,8 @@ function normalizeSourceDocuments(data) {
       createdAtSource: item.createdAtSource ?? item.created_at_source ?? null,
       ingestedAt: item.ingestedAt ?? item.ingested_at ?? null,
       processedAt: item.processedAt ?? item.processed_at ?? null,
+      deletedAt: item.deletedAt ?? item.deleted_at ?? null,
+      deleted: Boolean(item.deletedAt ?? item.deleted_at),
       processed: Boolean(item.processedAt ?? item.processed_at),
       location:
         metadata.location ??

@@ -1,6 +1,7 @@
 """Tests for operator/observability APIs.
 
 TestReprocessDocument    — POST /source-documents/{id}/reprocess
+TestDeleteRestoreDocument — DELETE/POST restore for /source-documents/{id}
 TestComponentSources     — GET /components/{id}/sources
 TestDocumentComponents   — GET /source-documents/{id}/components
 """
@@ -190,6 +191,107 @@ class TestReprocessDocument:
 
         resp = await client.post(
             f"/api/source-documents/{doc_id}/reprocess",
+            params={"workspace_id": str(uuid4())},
+        )
+        assert resp.status_code == 404
+
+
+class TestDeleteRestoreDocument:
+    def test_delete_route_registered_once(self):
+        routes = [
+            route
+            for route in app.router.routes
+            if getattr(route, "path", None) == "/api/source-documents/{document_id}"
+            and "DELETE" in getattr(route, "methods", set())
+        ]
+        assert len(routes) == 1
+
+    def test_restore_route_registered_once(self):
+        routes = [
+            route
+            for route in app.router.routes
+            if getattr(route, "path", None) == "/api/source-documents/{document_id}/restore"
+            and "POST" in getattr(route, "methods", set())
+        ]
+        assert len(routes) == 1
+
+    async def test_delete_marks_document_deleted(
+        self, client, workspace, db_session
+    ):
+        conn = _make_slack_connector(workspace)
+        db_session.add(conn)
+        await db_session.flush()
+
+        doc = _make_source_doc(conn, processed=True)
+        db_session.add(doc)
+        await db_session.flush()
+
+        resp = await client.delete(
+            f"/api/source-documents/{doc.id}",
+            params={"workspace_id": str(workspace.id)},
+        )
+        assert resp.status_code == 204
+
+        await db_session.refresh(doc)
+        assert doc.deleted_at is not None
+
+        hidden = await client.get(
+            f"/api/source-documents/{doc.id}",
+            params={"workspace_id": str(workspace.id)},
+        )
+        assert hidden.status_code == 404
+
+    async def test_delete_missing_document_returns_404(self, client, workspace):
+        resp = await client.delete(
+            f"/api/source-documents/{uuid4()}",
+            params={"workspace_id": str(workspace.id)},
+        )
+        assert resp.status_code == 404
+
+    async def test_restore_undeletes_document(
+        self, client, workspace, db_session
+    ):
+        conn = _make_slack_connector(workspace)
+        db_session.add(conn)
+        await db_session.flush()
+
+        doc = _make_source_doc(conn, processed=True)
+        doc.deleted_at = datetime.now(timezone.utc)
+        db_session.add(doc)
+        await db_session.flush()
+
+        resp = await client.post(
+            f"/api/source-documents/{doc.id}/restore",
+            params={"workspace_id": str(workspace.id)},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["id"] == str(doc.id)
+        assert body["deleted_at"] is None
+
+        await db_session.refresh(doc)
+        assert doc.deleted_at is None
+
+        visible = await client.get(
+            f"/api/source-documents/{doc.id}",
+            params={"workspace_id": str(workspace.id)},
+        )
+        assert visible.status_code == 200
+
+    async def test_restore_wrong_workspace_returns_404(
+        self, client, workspace, db_session
+    ):
+        conn = _make_slack_connector(workspace)
+        db_session.add(conn)
+        await db_session.flush()
+
+        doc = _make_source_doc(conn)
+        doc.deleted_at = datetime.now(timezone.utc)
+        db_session.add(doc)
+        await db_session.flush()
+
+        resp = await client.post(
+            f"/api/source-documents/{doc.id}/restore",
             params={"workspace_id": str(uuid4())},
         )
         assert resp.status_code == 404

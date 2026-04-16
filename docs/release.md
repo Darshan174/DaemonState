@@ -14,6 +14,7 @@ This is the maintainer path for deciding whether Context Engine is releasable as
 - The GitHub Actions workflow `Release Gate` is the CI mirror of the local maintainer flow.
 - CI runs `ctxe verify --json --test-database-url postgresql+asyncpg://postgres:postgres@localhost:5432/context_engine_verify`.
 - The workflow summary must show the release `status`, selected phases, completed phases, and the failing `phase` plus `next_step` when the gate stops early.
+- The contract-tests slice includes `tests/test_api/test_trust.py`, so review-queue and trust API regressions fail the same gate as imports, query, and brief.
 - Compatibility-only routes are not part of the release story: `GET /api/query`, `POST /api/source-documents/upload`, and `POST /api/imports/trigger` do not count as founder-workflow release coverage.
 
 ## What Must Be Green

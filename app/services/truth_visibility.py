@@ -5,6 +5,19 @@ from datetime import datetime
 from sqlalchemy import Select, or_
 
 from app.models.knowledge import Component
+from app.models.source import SourceDocument
+
+
+def has_visible_provenance(component: Component) -> bool:
+    """True when a component still has usable provenance.
+
+    Components with no source documents are treated as manually curated and
+    remain visible. Source-backed components must retain at least one
+    non-deleted source document to stay visible in founder workflows.
+    """
+    if not component.source_documents:
+        return True
+    return any(document.deleted_at is None for document in component.source_documents)
 
 
 def is_component_visible_in_current_truth(component: Component) -> bool:
@@ -12,6 +25,8 @@ def is_component_visible_in_current_truth(component: Component) -> bool:
 
     Excludes historical (valid_to set), rejected, and superseded components.
     """
+    if not has_visible_provenance(component):
+        return False
     if component.valid_to is not None:
         return False
     return component.review_status not in {"rejected", "superseded"}
@@ -26,6 +41,8 @@ def is_component_visible_as_of(component: Component, *, as_of: datetime) -> bool
     at the time.  Temporal exclusion (``valid_to``) already handles the
     supersession boundary.
     """
+    if not has_visible_provenance(component):
+        return False
     if component.valid_from > as_of:
         return False
     if component.valid_to is not None and component.valid_to <= as_of:
@@ -39,6 +56,8 @@ def is_component_visible_in_history(component: Component) -> bool:
     Excludes only rejected components.  Historical and superseded
     components are included (they represent the evolution of truth).
     """
+    if not has_visible_provenance(component):
+        return False
     return component.review_status != "rejected"
 
 
@@ -82,6 +101,12 @@ def current_truth_where(
     try:
         stmt = stmt.where(
             or_(
+                ~Component.source_documents.any(),
+                Component.source_documents.any(SourceDocument.deleted_at.is_(None)),
+            )
+        )
+        stmt = stmt.where(
+            or_(
                 ~Component.review_item.has(),
                 ~Component.review_item.has(
                     Component.review_item.property.argument.class_.status.in_(
@@ -110,7 +135,19 @@ def history_where(
         from app.models.review import ReviewItem
 
         stmt = stmt.where(
+            or_(
+                ~Component.source_documents.any(),
+                Component.source_documents.any(SourceDocument.deleted_at.is_(None)),
+            )
+        )
+        stmt = stmt.where(
             ~Component.review_item.has(ReviewItem.status == "rejected")
         )
+    else:
+        stmt = stmt.where(
+            or_(
+                ~Component.source_documents.any(),
+                Component.source_documents.any(SourceDocument.deleted_at.is_(None)),
+            )
+        )
     return stmt
-

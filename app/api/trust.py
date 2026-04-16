@@ -20,6 +20,7 @@ from app.schemas.review import (
     ReviewSummaryRead,
     SourceDocumentComponentRead,
 )
+from app.schemas.source import SourceDocumentRead
 from app.services.trust_service import (
     DispatchError,
     InvalidStatusTransitionError,
@@ -43,6 +44,23 @@ def _serialize_source_document_ref(document) -> dict[str, object]:
         "label": document.label,
         "connector_type": document.connector_type.value,
     }
+
+
+def _serialize_source_document(document) -> SourceDocumentRead:
+    return SourceDocumentRead(
+        id=document.id,
+        connector_id=document.connector_id,
+        connector_type=document.connector_type.value,
+        external_id=document.external_id,
+        content=document.content,
+        author=document.author,
+        source_url=document.source_url,
+        created_at_source=document.created_at_source,
+        ingested_at=document.ingested_at,
+        processed_at=document.processed_at,
+        deleted_at=document.deleted_at,
+        metadata=document.metadata_json,
+    )
 
 
 def _serialize_review_item(item) -> ReviewItemRead:
@@ -410,3 +428,51 @@ async def reprocess_source_document(
         status=job.status.value,
         created_at=job.created_at,
     )
+
+
+@router.delete(
+    "/source-documents/{document_id}",
+    status_code=http_status.HTTP_204_NO_CONTENT,
+)
+async def delete_source_document(
+    document_id: UUID,
+    workspace_id: UUID,
+    service: TrustService = Depends(get_trust_service),
+) -> None:
+    try:
+        await service.soft_delete_source_document(document_id, workspace_id)
+    except WorkspaceNotFoundError:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail="Workspace not found",
+        )
+    except TrustResourceNotFoundError:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail="Source document not found",
+        )
+
+
+@router.post(
+    "/source-documents/{document_id}/restore",
+    response_model=SourceDocumentRead,
+)
+async def restore_source_document(
+    document_id: UUID,
+    workspace_id: UUID,
+    service: TrustService = Depends(get_trust_service),
+) -> SourceDocumentRead:
+    try:
+        document = await service.restore_source_document(document_id, workspace_id)
+    except WorkspaceNotFoundError:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail="Workspace not found",
+        )
+    except TrustResourceNotFoundError:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail="Source document not found",
+        )
+
+    return _serialize_source_document(document)
