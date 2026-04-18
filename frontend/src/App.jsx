@@ -11,6 +11,7 @@ const Changes = lazy(() => import("./pages/Changes"));
 const LaunchGuard = lazy(() => import("./pages/LaunchGuard"));
 const Meetings = lazy(() => import("./pages/Meetings"));
 const Engineering = lazy(() => import("./pages/Engineering"));
+const SystemHealth = lazy(() => import("./pages/SystemHealth"));
 const Accuracy = lazy(() => import("./pages/Accuracy"));
 const Models = lazy(() => import("./pages/Models"));
 const Connectors = lazy(() => import("./pages/Connectors"));
@@ -31,6 +32,7 @@ const CORE_NAV = [
 
 const ADMIN_NAV = [
   { to: "/app", label: "Dashboard", icon: BarChartIcon },
+  { to: "/app/status", label: "System Health", icon: PulseIcon },
   { to: "/app/graph", label: "Knowledge Graph", icon: GraphIcon },
   { to: "/app/launch-guard", label: "Launch Guard", icon: GuardIcon },
   { to: "/app/meetings", label: "Meetings", icon: MeetingIcon },
@@ -213,6 +215,7 @@ function AdminShell() {
                 <Route path="meetings/:documentId" element={<Meetings />} />
                 <Route path="engineering" element={<Engineering />} />
                 <Route path="engineering/:documentId" element={<Engineering />} />
+                <Route path="status" element={<SystemHealth />} />
                 <Route path="accuracy" element={<Accuracy />} />
                 <Route path="models" element={<Models />} />
                 <Route path="query" element={<Query />} />
@@ -268,6 +271,14 @@ function PlugIcon({ className }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M12 2v4m-4-2h8m-6 4v4a2 2 0 002 2h0a2 2 0 002-2V8m-4 6v4m0 0H8m4 0h4" />
+    </svg>
+  );
+}
+
+function PulseIcon({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3 12h4l2-6 4 12 2-6h6" />
     </svg>
   );
 }

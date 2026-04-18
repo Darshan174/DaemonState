@@ -1,73 +1,47 @@
 # Context Engine
 
-Context Engine is an open-source context layer for startups and AI systems.
+Structured context infrastructure for AI systems and fast-moving teams.
 
-It is a self-hostable knowledge platform for startups. It solves a specific problem: company knowledge is scattered across Slack messages, Notion docs, Zoom meeting transcripts, and GitHub issues. When someone asks "what's the current pricing?" or "who decided to delay the launch?", the answer might be buried in a Slack thread from two weeks ago — and it might contradict what's written in Notion.
-Context Engine ingests all of that raw data, extracts structured facts from it using LLMs, tracks where each fact came from (provenance), flags conflicts, and serves source-backed answers through a query API and operator dashboard.
+Context Engine turns scattered company knowledge into source-backed, reviewable
+context. It ingests documents and operational data, extracts structured facts,
+tracks provenance, flags conflicts, and exposes the result through an API and an
+operator UI.
 
-## Architecture:
+It is designed for teams that need answers with evidence, not generic retrieval.
 
-![Context Engine Architecture](./assets/context-engine-architecture.svg)
+## What It Does
 
-## Who It Is For
+- Ingests company context from local files and connector-backed sources.
+- Extracts structured facts, decisions, blockers, relationships, and timelines.
+- Stores every fact with provenance back to source documents.
+- Serves source-backed answers through `POST /api/query`.
+- Provides workflow views for founder briefs, decisions, changes, launch checks,
+  engineering context, review items, sources, models, and graph exploration.
+- Runs self-hosted with Postgres, pgvector, Redis, Celery, FastAPI, and React.
 
-- startups that want a source-backed internal context layer
-- founders and operators who need trustworthy answers, not vague retrieval
-- engineering and product teams that want decisions, blockers, and changes made explicit
-- agent builders who want auditable context instead of generic RAG
+## Why It Exists
 
-### Sources
+Company knowledge usually lives across Slack threads, Notion pages, Zoom
+transcripts, GitHub issues, meeting notes, support tickets, and local documents.
+Those sources often disagree, age out, or lose the rationale behind decisions.
 
-Current connector surface includes:
+Context Engine is built around a stricter model:
 
-- Slack
-- Notion
-- Zoom transcripts
-- GitHub issues and pull requests
-
-### Core Data Model
-
-The backend stores:
-
-- `source_documents`: raw ingested evidence
-- `components`: extracted facts
-- `relationships`: links between facts
-- `component_sources`: provenance from fact back to source
-- `review_items`: conflicts, low-confidence facts, superseded facts
-- `sync_jobs`: background sync and reprocess tracking
-
-### Product Workflows
-
-The app currently includes:
-
-- **Founder Brief**: summarize what changed, what is risky, and what needs attention
-- **Decision Register**: view current and historical decisions with rationale and blockers
-- **What Changed**: timeline across decision changes, reviews, ingests, and failures
-- **Launch Guard**: check outbound copy against current truth, review state, and evidence
-- **Meetings**: inspect transcript-backed decisions and blockers
-- **Engineering**: inspect GitHub-backed engineering context
-- **Accuracy**: review eval results, domains, cases, and benchmark queries
-- **Review Queue**: resolve conflicts and low-confidence facts
-- **Connectors / Sources / Models / Query / Graph**: operate the underlying system
-
-## Product Principles
-
-Context Engine is intentionally opinionated:
-
-- **source-backed over similarity-only**
-- **reviewable over opaque**
-- **current truth by default**
-- **historical truth when requested**
-- **structured facts over free-form memory**
-- **self-hostable by default**
+- facts should be structured
+- answers should cite sources
+- stale or conflicting information should be visible
+- operators should be able to inspect and correct the system
+- self-hosting should be possible without a managed SaaS dependency
 
 ## Architecture
+
+![Context Engine Architecture](./assets/context-engine-architecture.svg)
 
 ### Backend
 
 - FastAPI
 - SQLAlchemy async ORM
-- PostgreSQL + `pgvector`
+- PostgreSQL with `pgvector`
 - Redis
 - Celery
 - Alembic migrations
@@ -79,365 +53,179 @@ Context Engine is intentionally opinionated:
 - React Query
 - React Router
 
-### Retrieval / Accuracy
+### Runtime Services
 
-The current architecture supports:
+The default Docker Compose stack runs:
 
-- schema-constrained extraction with rule fallback
-- structured fact storage in Postgres
-- provenance-aware query responses
-- temporal fact visibility
-- hybrid lexical + semantic scoring groundwork
-- eval summaries and case-level regressions
+- `postgres`: durable source documents, facts, relationships, reviews, evals
+- `redis`: Celery broker and transient queue state
+- `api`: FastAPI backend and production frontend assets
+- `worker`: background ingestion and processing tasks
 
 ## Quick Start
-
-The OSS v1 release candidate has two primary rails:
-
-1. demo data for immediate time-to-value
-2. real local text import for your own notes, docs, and exports
 
 Prerequisites:
 
 - Docker Engine with Compose v2
-- `python3`
+- Docker daemon running
 - `curl`
-- `npm` only if you plan to run the full release gate with `ctxe verify`
-- PostgreSQL client tools (`dropdb`, `createdb`, `psql`) only if you plan to run the contract-test phase in `ctxe verify`
 
-Install the CLI once in a local virtualenv:
+On macOS or Windows, start Docker Desktop first. On Linux, start the Docker
+service if it is not already running:
 
 ```bash
-git clone <this-repo> context-engine
+sudo systemctl start docker
+```
+
+Then bootstrap the full stack:
+
+```bash
+git clone <repo-url> context-engine
 cd context-engine
+bash scripts/bootstrap.sh
+```
+
+The bootstrap script is idempotent. It will:
+
+1. check for Docker, Docker Compose v2, and `curl`
+2. create `.env` from `.env.example` if needed
+3. generate `ENCRYPTION_KEY` if missing
+4. build the frontend into the Docker image
+5. start Postgres, Redis, the API, and the Celery worker
+6. run database migrations
+7. seed the demo workspace through `POST /api/seed-demo`
+
+Open the app:
+
+```text
+http://localhost:8000
+```
+
+Useful local URLs:
+
+- App UI: `http://localhost:8000`
+- System health: `http://localhost:8000/app/status`
+- API docs: `http://localhost:8000/docs`
+- Health: `http://localhost:8000/health`
+- Readiness: `http://localhost:8000/health/ready`
+
+Verify the running stack:
+
+```bash
+bash scripts/smoke.sh
+```
+
+Stop the stack:
+
+```bash
+docker compose down
+```
+
+Restart it later:
+
+```bash
+docker compose up -d
+```
+
+## Default Self-Hosted Mode
+
+No external API keys are required for the default OSS path. If model provider
+settings are blank, Context Engine uses local deterministic embeddings and a
+rule-based extraction fallback.
+
+This keeps the first-run path simple:
+
+- no hosted database
+- no managed queue
+- no Node.js required on the host for normal self-hosting
+- no Python virtualenv required for normal self-hosting
+- frontend is served by the API container at `http://localhost:8000`
+
+For production or VPS deployment notes, see
+[docs/self-hosting.md](./docs/self-hosting.md).
+
+## Product Workflows
+
+The app includes:
+
+- **Founder Brief**: recent changes, blockers, conflicts, and risk signals
+- **Ask**: source-backed question answering over a selected workspace
+- **Decision Register**: current and historical decisions with rationale
+- **Changes**: timeline of updates, ingests, reviews, and failures
+- **Launch Guard**: check outbound claims against current known truth
+- **Sources**: source documents and imported evidence
+- **Models**: extracted knowledge models and their components
+- **Knowledge Graph**: model and component graph exploration
+- **Review Queue**: low-confidence, stale, or conflicting facts
+- **System Health**: read-only operator status for self-hosted deployments
+
+## Stable API Surface
+
+Founder-workflow routes:
+
+| Workflow | Endpoint |
+| --- | --- |
+| Workspaces | `GET /api/workspaces`, `POST /api/workspaces` |
+| Demo seed | `POST /api/seed-demo` |
+| Local import | `POST /api/imports` |
+| Query | `POST /api/query` |
+| Founder brief | `GET /api/founder-brief` |
+| Decisions | `GET /api/decisions` |
+| Sources | `GET /api/source-documents` |
+| System health | `GET /api/operator/status` |
+
+The broader operator and system API also includes graph, models, connectors,
+trust/review, launch guard, timeline, and eval routes. The router entrypoint is
+[app/api/router.py](./app/api/router.py).
+
+## CLI
+
+The `ctxe` CLI is available for maintainers and local development after
+installing the Python package. It is not required for the one-command Docker
+self-host flow.
+
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-Leave `LITELLM_API_KEY`, `EXTRACTION_MODEL`, and `EMBEDDING_MODEL` blank for a fully offline OSS run using the local deterministic embedder and rule-based extraction fallback.
-
-### Rail 1: Demo
-
-Boot the stack, apply migrations, and seed the canonical demo workspace:
-
-```bash
-ctxe demo
-ctxe query --workspace "Acme Accuracy Demo" "What is the Starter Plan?"
-```
-
-This rail uses the stable public contracts:
-
-- `POST /api/seed-demo`
-- `POST /api/query`
-
-### Rail 2: Real Local Import
-
-Boot the stack, import local files, then query the imported workspace:
+Common commands:
 
 ```bash
 ctxe up
+ctxe demo
 ctxe ingest ./notes
 ctxe query --workspace "Local Workspace" "What changed?"
-```
-
-Import semantics:
-
-- `ctxe ingest <path>` uses `POST /api/imports`
-- if no workspace exists, the CLI creates `Local Workspace`
-- if exactly one workspace exists, the CLI uses it
-- if multiple workspaces exist, pass `--workspace NAME_OR_UUID`
-
-### Release Gate
-
-Run the OSS v1 release gate:
-
-```bash
 ctxe verify
 ```
 
-`ctxe verify` is the primary maintainer command before release. It boots the stack, runs the backend smoke flow, executes the contract tests against a dedicated disposable test database, and runs the frontend test/build checks. Use `ctxe verify --skip-frontend` for a backend-only pass.
+Workspace selection rules are explicit:
 
-`ctxe verify` uses the demo rail internally. It validates boot, readiness, and a canonical `POST /api/seed-demo` before handing off to the broader smoke and test matrix. The CLI also creates `.env` from `.env.example` and generates `ENCRYPTION_KEY` automatically when they are missing, so the CLI boot path and shell bootstrap path behave the same on a fresh checkout.
+- `--workspace UUID` targets that exact workspace
+- `--workspace NAME` matches an exact workspace name case-insensitively
+- ambiguous names fail
+- API calls always remain workspace-scoped
 
-In human-readable mode, `ctxe verify` prints the selected phases first, shows any skipped phases when you use `--phase` or `--skip-frontend`, then prints one line per completed phase. On failure it prints the failing phase, the phases that already passed, and the exact next command to run.
+## Local Development
 
-Maintainer flow:
-
-1. bootstrap a local stack with `ctxe demo` or `bash scripts/bootstrap.sh`
-2. confirm founder workflows with `bash scripts/smoke.sh`
-3. run the full release gate with `ctxe verify --json`
-4. release only when local `ctxe verify` and the PR `Release Gate` workflow are green
-
-CI path:
-
-- every PR and push to `main` runs `Release Gate`
-- CI runs the same gate via `ctxe verify --json --test-database-url postgresql+asyncpg://postgres:postgres@localhost:5432/context_engine_verify`
-- the workflow summary reports release status, selected phases, completed phases, and the failing `phase` plus `next_step` when the gate stops early
-- the release story excludes compatibility-only routes such as `GET /api/query`, `POST /api/source-documents/upload`, and `POST /api/imports/trigger`
-
-### Shell Wrappers (reference)
-
-If you prefer shell-only flows, the lower-level wrappers are still available:
+Run the backend with local Python dependencies:
 
 ```bash
-bash scripts/bootstrap.sh
-bash scripts/smoke.sh
-```
-
-They exercise the same public HTTP contracts (`/api/seed-demo`, `/api/imports`, `/api/query`, `/api/founder-brief`, `/api/decisions`, `/api/source-documents`) but are wrapper/reference surfaces, not the primary OSS operator interface.
-
-For the full self-hosting walkthrough (TLS, port security, backups, troubleshooting), see [docs/self-hosting.md](./docs/self-hosting.md). For exact release-candidate steps, expected green checks, and rollback notes, see [docs/release.md](./docs/release.md).
-
-Once the API is up:
-
-- API:          `http://localhost:8000`
-- Health:       `http://localhost:8000/health`
-- Readiness:    `http://localhost:8000/health/ready`
-- OpenAPI docs: `http://localhost:8000/docs`
-
-To run the operator/admin UI against this backend, see [Run the Frontend](#run-the-frontend) below.
-
-## Developer CLI
-
-`ctxe` is the canonical OSS operator entrypoint.
-
-Core commands:
-
-```bash
-ctxe up
-ctxe demo
-ctxe ingest ./notes
-ctxe query "What changed?"
-ctxe verify
-```
-
-Contract and semantics:
-
-- `ctxe up` builds the Docker services, applies migrations, and waits for `/health/ready`. It does not create or seed a workspace.
-- `ctxe demo` uses `POST /api/seed-demo`, the same HTTP contract used by the frontend demo flow and the shell bootstrap/smoke scripts.
-- `ctxe demo --workspace NAME_OR_UUID` seeds an existing workspace by passing `workspace_id` to `POST /api/seed-demo`.
-- `ctxe ingest <path>` uses `POST /api/imports`. The API contract always requires `workspace_id`; the CLI resolves it from `--workspace`, a single existing workspace, or creates `Local Workspace` when none exists. It does not silently choose among multiple workspaces.
-- `ctxe query "..."` uses `POST /api/query` and requires either `--workspace` or exactly one existing workspace.
-- `ctxe verify` runs the release gate: boot, backend smoke, contract tests, and frontend test/build checks.
-- `ctxe verify --phase ...` reruns only the selected slice of the release gate in canonical phase order.
-- `ctxe verify --test-database-url ...` points the contract-tests phase at a disposable database; by default it uses `context_engine_verify` on local Postgres so the test reset does not collide with the live app database.
-- Add `--json` to `ctxe demo`, `ctxe ingest`, `ctxe query`, or `ctxe verify` for machine-readable success and error payloads. `ctxe verify --json` includes the failing `phase`, actionable `next_step`, and `completed_steps` when the gate stops early.
-
-Workspace selector rules are consistent across `ctxe demo`, `ctxe ingest`, and `ctxe query`:
-
-- `--workspace UUID` targets that exact workspace or fails clearly if it does not exist
-- `--workspace NAME` matches case-insensitively on exact name
-- ambiguous names fail; they are never auto-resolved
-- no selector means:
-  `ctxe demo` seeds the canonical demo workspace
-  `ctxe ingest` creates `Local Workspace` when none exists, uses the only workspace when exactly one exists, and fails when multiple exist
-  `ctxe query` uses the only workspace when exactly one exists and fails otherwise
-- frontend founder workflows use the selected workspace from the workspace switcher, auto-resolve only when exactly one workspace exists, and otherwise require an explicit selection
-
-## Release Verification
-
-`ctxe verify` is the primary "is this release candidate credible?" command:
-
-```bash
-ctxe verify
-```
-
-It proves:
-
-| Step | What it checks |
-| ---- | -------------- |
-| BOOT | Docker services are up and migrations apply |
-| READINESS | `GET /health` returns `ok` and `GET /health/ready` returns `ready` |
-| SEED | `POST /api/seed-demo` returns the canonical demo workspace before smoke runs |
-| SMOKE | `scripts/smoke.sh` verifies seed, query, graph, models, brief, decisions, sources, and imports against the live backend (10 checks) |
-| CONTRACT TESTS | CLI + founder + trust/review API regression tests stay green |
-| FRONTEND TESTS | `npm test` passes |
-| FRONTEND BUILD | `npm run build` passes |
-
-For a backend-only check, run `ctxe verify --skip-frontend`.
-
-If a phase fails, `ctxe verify` reports the exact failing phase and the next command to run for diagnosis.
-
-To rerun only part of the gate, pass `--phase` one or more times:
-
-```bash
-ctxe verify --phase boot --phase readiness --phase seed --phase smoke --skip-frontend
-ctxe verify --phase contract-tests
-ctxe verify --phase frontend-tests --phase frontend-build
-```
-
-The GitHub Actions workflow [`.github/workflows/release-gate.yml`](./.github/workflows/release-gate.yml) runs the same core checks as `ctxe verify` on pull requests. It uploads the raw `release-gate.json` report as an artifact and renders the same result in the Actions step summary with the overall status, selected phases, completed phases, and the failing `phase` plus `next_step` when the gate fails.
-
-`bash scripts/smoke.sh` remains the backend-only smoke path. It is useful for targeted debugging or post-deploy checks, but `ctxe verify` is the release gate maintainers should treat as canonical.
-
-## Stability Notes
-
-Stable now:
-
-- `ctxe up`, `ctxe demo`, `ctxe ingest`, `ctxe query`, `ctxe verify`
-- `GET /api/workspaces`, `POST /api/workspaces`, `GET /api/workspaces/{id}`
-- `POST /api/seed-demo`
-- `POST /api/imports`
-- `GET /api/founder-brief`
-- `POST /api/query`
-- `GET /api/decisions`
-- `GET /api/source-documents`
-
-Compatibility-only:
-
-- `GET /api/query` for older callers; founder workflows should use `POST /api/query`
-- `POST /api/source-documents/upload`
-- `POST /api/imports/trigger`
-
-Not production-grade yet:
-
-- internet-facing auth and access control
-- enterprise auth/SSO
-- broad connector breadth beyond the current OSS workflow set
-
-## Founder Workflow Contract
-
-These are the stable routes that founder-facing workflows should rely on:
-
-| Workflow | Stable API contract | Frontend surface | CLI / smoke surface | Notes |
-| ------- | ------------------- | ---------------- | ------------------- | ----- |
-| Workspace bootstrap | `GET /api/workspaces`, `POST /api/workspaces` | `useWorkspaces`, `useCreateWorkspace` | `ctxe ingest`, `ctxe query` resolve workspaces before acting | Workspace selection is always explicit at the API layer. |
-| Demo seed | `POST /api/seed-demo` | `useSeedDemoData` | `ctxe demo`, `scripts/bootstrap.sh`, `scripts/smoke.sh` | Omit `workspace_id` to seed the canonical `Acme Accuracy Demo`; include `workspace_id` to seed a specific existing workspace. |
-| Local import | `POST /api/imports` | `useUploadSourceFile` | `ctxe ingest <path>` | This is the stable import path. The API contract requires `workspace_id` plus normalized `documents[]`. |
-| Founder Brief | `GET /api/founder-brief` | `useFounderBrief` | direct API / browser | Reads structured facts + provenance for founder summary. |
-| Query | `POST /api/query` | `useContextQuery` | `ctxe query "..."`, `scripts/smoke.sh` | Query answers are source-backed and workspace-scoped. |
-| Decisions | `GET /api/decisions` | `useDecisionRegister` | direct API / browser | Decision history drilldown remains under `/api/decisions/{component_id}/history`. |
-| Sources | `GET /api/source-documents` | `useSourceDocuments` | direct API / browser | Source visibility should reflect the same imported or seeded workspace. |
-
-Compatibility-only routes may still exist for older admin flows, but founder workflows should not depend on `POST /api/source-documents/upload` or `/api/imports/trigger` as their primary contract.
-
-## OSS v1 Release Checklist
-
-Run this checklist for every release candidate:
-
-1. Run the canonical release gate: `ctxe verify`
-2. Confirm exactly one founder data rail for the release notes and docs:
-   Demo rail: `ctxe demo`
-   Real import rail: `ctxe ingest <path>`
-3. Confirm workspace semantics are explicit and non-ambiguous:
-   `ctxe demo --workspace NAME_OR_UUID` seeds the selected existing workspace.
-   `ctxe ingest --workspace NAME_OR_UUID` imports into the selected workspace.
-   `ctxe query --workspace NAME_OR_UUID "..."` queries that same workspace.
-   `ctxe ingest` and `ctxe query` do not silently choose among multiple workspaces.
-4. Spot-check the founder routes against the real backend:
-   `GET /api/workspaces`
-   `POST /api/seed-demo`
-   `POST /api/imports`
-   `GET /api/founder-brief?workspace_id=...`
-   `POST /api/query`
-   `GET /api/decisions?workspace_id=...`
-   `GET /api/source-documents?workspace_id=...`
-5. If you need to run the gate manually instead of `ctxe verify`, run:
-   `bash scripts/smoke.sh`
-   `TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/context_engine_verify python3 -m pytest tests/test_cli/test_main.py tests/test_cli/test_http.py tests/test_api/test_imports.py tests/test_api/test_admin.py::TestSeedDemoAPI tests/test_api/test_connectors_upload.py tests/test_api/test_trust.py tests/test_api/test_truth_regression.py tests/test_api/test_query.py tests/test_api/test_briefing.py -q`
-   `cd frontend && npm test`
-   `cd frontend && npm run build`
-
-If Docker or Postgres access is sandbox-restricted, treat DB-backed backend suites and the live smoke script as environment-limited rather than product regressions, but keep the contract tests, frontend tests, and build green.
-
-## Resource Requirements
-
-Context Engine runs comfortably on a small VPS. The resource envelope below assumes the default offline OSS path (local embedder + rule extractor, no provider LLM calls):
-
-| Tier        | vCPU | RAM   | Disk  | Suitable for                                                         |
-| ----------- | ---- | ----- | ----- | -------------------------------------------------------------------- |
-| Minimum     | 2    | 2 GB  | 10 GB | Bootstrap, smoke, small demo workspace                               |
-| Recommended | 2    | 4 GB  | 20 GB | Everyday self-hosted use, a few thousand source documents            |
-| Comfortable | 4    | 8 GB  | 40 GB | Many connectors + provider-backed extraction + denser embedding use  |
-
-Notes:
-
-- Postgres with `pgvector` is the main memory consumer — embeddings and ANN indexes benefit from page cache.
-- Switching to provider-backed extraction/embeddings (`LITELLM_API_KEY` + `EXTRACTION_MODEL` + `EMBEDDING_MODEL`) does not meaningfully increase host RAM — the model runs remotely.
-- The Celery worker is light by default (`--concurrency=2`). Scale it by raising the concurrency or running additional worker containers.
-- Disk usage grows with `source_documents` + embeddings; budget ~1 GB per 50k average-sized documents, then add headroom for pgvector indexes.
-
-## Persistent Storage and Backups
-
-All stateful data lives in two named Docker volumes declared in `docker-compose.yml`:
-
-- `postgres_data` — Postgres database (source documents, components, relationships, review items, evals, everything)
-- `redis_data`    — Redis (Celery queue + transient caches)
-
-`docker compose down` leaves these volumes intact; only `docker compose down -v` destroys them. Back them up before every upgrade.
-
-The supported backup/restore path is two scripts, not hand-rolled `pg_dump`:
-
-```bash
-# Validated pg_dump with rotation. Writes to ./backups/ by default.
-bash scripts/backup.sh
-
-# Safe restore: validates the dump, snapshots the current DB first,
-# stops api/worker, runs pg_restore, restarts, and probes the API
-# to prove the restored data is actually queryable.
-bash scripts/restore.sh backups/context_engine-YYYYMMDDTHHMMSSZ.dump --yes --safety-backup
-```
-
-`backup.sh` is cron-friendly (`--quiet --retention 30 --output /backups`), and `scripts/upgrade.sh` runs it automatically before every upgrade.
-
-> **`scripts/diagnose.sh` is not a backup.** It's a read-only triage snapshot (logs, health, redacted config) — it contains no application data and cannot be restored from.
-
-For automated nightly cron, off-host copies, fresh-stack restore, the raw `pg_dump`/`pg_restore` fallback, and the full operations playbook (upgrade, rollback, queue backlog, worker health, schema drift, seed/import recovery, container failures, disk pressure), see [docs/runbook.md](./docs/runbook.md).
-
-For volume-level backups on a cheap VPS, snapshot the entire docker volume directory (typically under `/var/lib/docker/volumes/`) while the stack is stopped, or rely on your provider's block-storage snapshots.
-
-## Deploying on a Cheap VPS
-
-Context Engine is designed to run on a single small VPS. A 2 vCPU / 4 GB RAM instance from any mainstream provider is enough for a real self-hosted deployment; the "minimum" tier above works for demos.
-
-A reasonable shape for a cheap VPS deploy:
-
-1. Provision a Linux host (Ubuntu 24.04 LTS or Debian 12 are the least-friction picks) with at least 4 GB RAM and 20 GB disk.
-2. Install Docker Engine + Compose v2 (the official Docker convenience script or your distro's packages are both fine).
-3. `git clone` this repo and run `bash scripts/bootstrap.sh`.
-4. Put a TLS-terminating reverse proxy (Caddy, Traefik, or nginx) in front of `http://localhost:8000`. Block direct public access to the compose-published port if possible.
-5. Set `HOST_POSTGRES_PORT` and `HOST_REDIS_PORT` in `.env` to `127.0.0.1:5432` / `127.0.0.1:6379` bindings — or remove the `ports:` entries entirely — so Postgres and Redis are never exposed to the public internet.
-6. Enable automated snapshots on the host (provider-level) and a nightly `pg_dump` to object storage.
-7. Run `bash scripts/smoke.sh` after every deploy.
-
-> Auth note: Context Engine does not yet ship a production-grade auth layer. For a real internet-facing deploy, restrict access at the reverse proxy (basic auth, an allowlist, Tailscale, or a Cloudflare Access tunnel) until proper auth lands.
-
-## Run the Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-The Vite dev server will proxy API requests to the backend at `http://localhost:8000`.
-
-## Local Development Without Docker
-
-If you already have PostgreSQL and Redis available locally:
-
-```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e ".[dev]"
 alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
-In a second terminal, seed the demo workspace through the public HTTP contract:
-
-```bash
-curl -X POST http://localhost:8000/api/seed-demo \
-  -H 'Content-Type: application/json' \
-  -d '{}'
-```
-
-Start the worker separately:
+Run the worker:
 
 ```bash
 celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
 ```
 
-Run the frontend:
+Run the frontend with hot reload:
 
 ```bash
 cd frontend
@@ -445,63 +233,40 @@ npm install
 npm run dev
 ```
 
-## Accuracy / Eval Workflow
+The Vite dev server proxies API requests to `http://localhost:8000`.
 
-Run the eval regression harness against a workspace:
+For normal self-hosting, skip the dev server. The Docker image already includes
+the production frontend build.
 
-```bash
-context-engine-eval-regression --workspace-id REPLACE_WITH_WORKSPACE_ID --json
-```
+## Configuration
 
-The script wrapper also works:
-
-```bash
-python scripts/run_eval_regression.py --workspace-id REPLACE_WITH_WORKSPACE_ID --json
-```
-
-The current v1 accuracy gate is built around:
-
-- `25` gold-set cases
-- `5` domains: `pricing`, `blocker`, `roadmap`, `decision`, `meeting`
-- `>= 0.80` pass rate
-- `>= 0.80` retrieval quality
-- `>= 0.80` extracted fact correctness
-- `>= 0.75` final answer correctness
-- `<= 0.25` confidence calibration error
-
-## Optional Provider-Backed Models
-
-If you want real extraction / embedding models instead of local fallbacks:
+The default `.env.example` is enough for local self-hosting. Important optional
+settings:
 
 ```bash
+# Provider-backed extraction and embeddings
 LITELLM_API_KEY=...
 EXTRACTION_MODEL=openai/gpt-4.1-mini
 EMBEDDING_MODEL=openai/text-embedding-3-large
 EMBEDDING_DIMENSIONS=1024
+
+# Port binding
+HOST_API_BIND=127.0.0.1
+HOST_API_PORT=8000
+HOST_POSTGRES_BIND=127.0.0.1
+HOST_REDIS_BIND=127.0.0.1
 ```
 
-## Connector Notes
+By default, compose-published ports bind to `127.0.0.1`. This is intentional:
+Postgres, Redis, and the raw API should not be exposed directly to the public
+internet.
 
-### Zoom
+For an internet-facing deployment, put a TLS-terminating reverse proxy in front
+of the API. Ready-made examples live in [deploy/](./deploy/).
 
-For Zoom OAuth + webhooks:
+## Verification
 
-```bash
-ZOOM_CLIENT_ID=...
-ZOOM_CLIENT_SECRET=...
-ZOOM_REDIRECT_URI=https://your-api.example.com/api/connectors/zoom/callback
-ZOOM_WEBHOOK_SECRET=...
-```
-
-The Zoom connector is transcript-first. Manual-token Zoom remains polling-based; OAuth-installed Zoom can support webhook-driven sync.
-
-### GitHub
-
-GitHub does not require app-level env vars for the first pass. Connect via the backend API with a manual token and repository list.
-
-## Useful Commands
-
-Backend founder-workflow smoke test (boot + health + seed + query + graph + models + brief + decisions + sources + imports):
+Self-host smoke test:
 
 ```bash
 bash scripts/smoke.sh
@@ -510,7 +275,7 @@ bash scripts/smoke.sh
 Backend tests:
 
 ```bash
-python -m pytest tests/ -x --tb=short
+python3 -m pytest tests/
 ```
 
 Frontend tests:
@@ -527,61 +292,104 @@ cd frontend
 npm run build
 ```
 
-## API Surface
+Full maintainer release gate:
 
-Stable founder-workflow routes:
+```bash
+ctxe verify
+```
 
-- `/api/workspaces`
-- `/api/seed-demo`
-- `/api/imports`
-- `/api/founder-brief`
-- `/api/query`
-- `/api/decisions`
-- `/api/source-documents`
+Backend-only release gate:
 
-Broader operator / system API groups:
+```bash
+ctxe verify --skip-frontend
+```
 
-- `/api/connectors`
-- `/api/review-items`
-- `/api/timeline`
-- `/api/launch-guard`
-- `/api/evals`
+## Operations
 
-The router lives in [app/api/router.py](./app/api/router.py).
+State lives in Docker volumes:
+
+- `postgres_data`: source documents, facts, relationships, reviews, evals
+- `redis_data`: Celery queue and transient cache state
+
+`docker compose down` preserves volumes. `docker compose down -v` deletes them.
+
+Supported backup and restore scripts:
+
+```bash
+bash scripts/backup.sh
+bash scripts/restore.sh backups/context_engine-YYYYMMDDTHHMMSSZ.dump --yes --safety-backup
+```
+
+Diagnostics:
+
+```bash
+bash scripts/diagnose.sh --tar
+```
+
+`diagnose.sh` is for troubleshooting only. It collects logs, health checks, and
+redacted runtime state. It is not a backup.
+
+For backup, restore, upgrade, rollback, queue backlog, worker health, and schema
+drift procedures, see [docs/runbook.md](./docs/runbook.md).
+
+## Resource Requirements
+
+| Tier | vCPU | RAM | Disk | Suitable for |
+| --- | ---: | ---: | ---: | --- |
+| Minimum | 2 | 2 GB | 10 GB | local bootstrap and demo |
+| Recommended | 2 | 4 GB | 20 GB | everyday self-hosted use |
+| Comfortable | 4 | 8 GB | 40 GB | larger imports, more workers, provider-backed extraction |
+
+Postgres with `pgvector` is the main memory consumer. Disk usage grows with
+source documents, embeddings, and indexes.
 
 ## Repository Layout
 
 ```text
 app/
-  api/           FastAPI route groups
-  connectors/    Connector implementations and strategy metadata
-  models/        SQLAlchemy models
-  processing/    Extraction, embeddings, reranking
-  services/      Core business logic
-  tasks/         Celery tasks
-alembic/         Database migrations
-frontend/        Operator/admin UI
-scripts/         Preflight, seeding, smoke, eval entrypoints
-tests/           Backend tests
+  api/          FastAPI route groups
+  connectors/   Connector implementations and metadata
+  models/       SQLAlchemy models
+  processing/   Extraction, embeddings, reranking
+  services/     Core application logic
+  tasks/        Celery tasks
+alembic/        Database migrations
+assets/         Architecture and project assets
+deploy/         Reverse proxy examples
+docs/           Self-hosting, runbooks, release notes
+frontend/       React operator UI
+scripts/        Bootstrap, smoke, backup, restore, diagnostics
+tests/          Backend tests
 ```
 
 ## Current Status
 
-Context Engine is in late OSS v1 / hardening territory:
+Context Engine is in OSS v1 hardening.
 
-- core product workflows exist
-- the operator UI is largely built
-- accuracy, provenance, review, and timeline surfaces are present
-- the remaining work is mostly runtime verification, hardening, and connector/workflow refinement
+Stable today:
 
-## Positioning
+- Docker-based self-hosting
+- demo workspace bootstrap
+- local document import
+- source-backed query API
+- founder workflow views
+- operator health endpoint and UI
+- smoke test and release verification path
 
-Context Engine is not trying to be generic enterprise search.
+Still hardening:
 
-It is a self-hostable, source-backed context system for fast-moving teams that need:
+- production authentication and access control
+- broader connector coverage
+- long-running sync reliability at larger scale
+- hosted deployment packaging
 
-- current truth
-- historical truth
-- explicit review state
-- source paths for every answer
-- startup-relevant workflows on top of raw company context
+If you expose this outside a trusted local network, put it behind a reverse
+proxy with authentication or an access-control layer such as Tailscale,
+Cloudflare Access, or basic auth until first-class app auth is available.
+
+## Documentation
+
+- [Self-hosting guide](./docs/self-hosting.md)
+- [Operations runbook](./docs/runbook.md)
+- [Release notes and verification](./docs/release.md)
+- [Reverse proxy examples](./deploy/)

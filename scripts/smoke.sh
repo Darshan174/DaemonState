@@ -56,6 +56,36 @@ require() {
     command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"
 }
 
+response_has() {
+    local response=$1
+    local pattern=$2
+    grep -q "$pattern" <<< "$response"
+}
+
+response_has_fixed() {
+    local response=$1
+    local pattern=$2
+    grep -Fq "$pattern" <<< "$response"
+}
+
+response_has_extended() {
+    local response=$1
+    local pattern=$2
+    grep -Eq "$pattern" <<< "$response"
+}
+
+response_count() {
+    local response=$1
+    local pattern=$2
+    local matches
+    matches=$(grep -o "$pattern" <<< "$response" || true)
+    if [ -z "$matches" ]; then
+        printf "0"
+    else
+        wc -l <<< "$matches" | tr -d ' '
+    fi
+}
+
 # ── Diagnostic trap ─────────────────────────────────────────────
 #
 # On any non-zero exit, dump the state a user would otherwise have to
@@ -142,17 +172,17 @@ fi
 step "2/10 HEALTH — /health and /health/ready"
 health=$(curl -fsS --max-time 10 "${BASE_URL}/health") \
     || fail "GET ${BASE_URL}/health did not return 200"
-printf "%s" "$health" | grep -q '"status"[[:space:]]*:[[:space:]]*"ok"' \
+response_has "$health" '"status"[[:space:]]*:[[:space:]]*"ok"' \
     || fail "/health did not return status=ok: $health"
 pass "/health → ok"
 
 ready=$(curl -fsS --max-time 10 "${BASE_URL}/health/ready") \
     || fail "GET ${BASE_URL}/health/ready did not return 200 (DB or Redis unreachable?)"
-printf "%s" "$ready" | grep -q '"status"[[:space:]]*:[[:space:]]*"ready"' \
+response_has "$ready" '"status"[[:space:]]*:[[:space:]]*"ready"' \
     || fail "/health/ready did not return status=ready: $ready"
-printf "%s" "$ready" | grep -q '"database"[[:space:]]*:[[:space:]]*"ok"' \
+response_has "$ready" '"database"[[:space:]]*:[[:space:]]*"ok"' \
     || fail "/health/ready reports database not ok: $ready"
-printf "%s" "$ready" | grep -q '"redis"[[:space:]]*:[[:space:]]*"ok"' \
+response_has "$ready" '"redis"[[:space:]]*:[[:space:]]*"ok"' \
     || fail "/health/ready reports redis not ok: $ready"
 pass "/health/ready → ready (database + redis ok)"
 
@@ -203,7 +233,7 @@ pass "second POST → same workspaceId, status=existing (idempotent)"
 models_out=$(curl -fsS --max-time 15 \
     "${BASE_URL}/api/models?workspace_id=${workspace_id}") \
     || fail "GET /api/models for seeded workspace failed"
-printf "%s" "$models_out" | grep -q '"id"' \
+response_has "$models_out" '"id"' \
     || fail "seeded workspace has zero knowledge models — the seed path is not eval-ready:\n$models_out"
 pass "seeded workspace has knowledge models (eval-ready seed)"
 
@@ -218,11 +248,11 @@ query_out=$(curl -fsS --max-time 30 \
     "${BASE_URL}/api/query") \
     || fail "POST /api/query failed"
 
-printf "%s" "$query_out" | grep -q '"answer"' \
+response_has "$query_out" '"answer"' \
     || fail "query response missing 'answer' field:\n$query_out"
-printf "%s" "$query_out" | grep -Fq "$SMOKE_EXPECT" \
+response_has_fixed "$query_out" "$SMOKE_EXPECT" \
     || fail "query answer did not contain expected token '${SMOKE_EXPECT}':\n$query_out"
-printf "%s" "$query_out" | grep -q '"components"' \
+response_has "$query_out" '"components"' \
     || fail "query response missing 'components' field (no provenance attached):\n$query_out"
 pass "query returned an answer containing '${SMOKE_EXPECT}' with provenance"
 
@@ -231,20 +261,20 @@ step "5/10 GRAPH — workspace knowledge graph"
 graph_out=$(curl -fsS --max-time 15 \
     "${BASE_URL}/api/graph?workspace_id=${workspace_id}") \
     || fail "GET /api/graph failed — is the api container running? Check: docker compose logs api"
-printf "%s" "$graph_out" | grep -q '"nodes"' \
+response_has "$graph_out" '"nodes"' \
     || fail "graph response missing 'nodes' field. Response: $graph_out"
 # The demo seed creates 20 components across 5 models. Count nodes by
 # counting "model_id" occurrences inside the nodes array (avoids double-
 # counting edge ids).
-node_count=$(printf "%s" "$graph_out" | grep -o '"model_id"' | wc -l | tr -d ' ')
+node_count=$(response_count "$graph_out" '"model_id"')
 [ "$node_count" -ge 15 ] \
     || fail "workspace graph returned only ${node_count} nodes — expected 15+ from the 20 seeded components. Check: docker compose exec api python -c 'from app.evals.demo_seed import _SEEDS; print(len(_SEEDS))'"
 # Verify provenance: every node should have source_count >= 1.
-zero_source_nodes=$(printf "%s" "$graph_out" | grep -o '"source_count"[[:space:]]*:[[:space:]]*0' | wc -l | tr -d ' ')
+zero_source_nodes=$(response_count "$graph_out" '"source_count"[[:space:]]*:[[:space:]]*0')
 [ "$zero_source_nodes" -eq 0 ] \
     || fail "${zero_source_nodes} graph node(s) have source_count=0 — demo seed should attach sources to every component. Check ComponentSource links in demo_seed.py."
 # Verify graph is not all-nulls: at least one node should have a non-empty name.
-printf "%s" "$graph_out" | grep -q '"name"[[:space:]]*:[[:space:]]*"[^"]' \
+response_has "$graph_out" '"name"[[:space:]]*:[[:space:]]*"[^"]' \
     || fail "graph nodes have empty names — the graph is structurally valid but useless for display"
 pass "workspace graph has ${node_count} nodes, all with provenance"
 
@@ -253,11 +283,11 @@ step "6/10 MODELS — knowledge models"
 models_list=$(curl -fsS --max-time 15 \
     "${BASE_URL}/api/models?workspace_id=${workspace_id}") \
     || fail "GET /api/models failed — check that the workspace was seeded correctly"
-printf "%s" "$models_list" | grep -q '"name"' \
+response_has "$models_list" '"name"' \
     || fail "models list is empty or malformed. Response: $models_list"
 # The demo seed creates 5 models: Decisions, GitHub Insights, Pricing,
 # Roadmap, Zoom Insights. Count them.
-model_count=$(printf "%s" "$models_list" | grep -o '"name"' | wc -l | tr -d ' ')
+model_count=$(response_count "$models_list" '"name"')
 [ "$model_count" -ge 4 ] \
     || fail "expected 4+ knowledge models from demo seed, got ${model_count}. Check _SEEDS in demo_seed.py for model_name entries."
 # Extract first model id for downstream checks.
@@ -270,9 +300,9 @@ pass "models list returned ${model_count} models (first: ${first_model_id})"
 model_graph=$(curl -fsS --max-time 15 \
     "${BASE_URL}/api/graph/models/${first_model_id}") \
     || fail "GET /api/graph/models/${first_model_id} failed — model graph endpoint may be broken"
-printf "%s" "$model_graph" | grep -q '"nodes"' \
+response_has "$model_graph" '"nodes"' \
     || fail "model graph response missing 'nodes' field. Response: $model_graph"
-model_node_count=$(printf "%s" "$model_graph" | grep -o '"model_id"' | wc -l | tr -d ' ')
+model_node_count=$(response_count "$model_graph" '"model_id"')
 [ "$model_node_count" -ge 1 ] \
     || fail "model graph returned 0 nodes — the model has no components in the graph"
 pass "model graph for ${first_model_id} returned ${model_node_count} nodes"
@@ -283,13 +313,18 @@ brief_out=$(curl -fsS --max-time 30 \
     "${BASE_URL}/api/founder-brief?workspace_id=${workspace_id}") \
     || fail "GET /api/founder-brief failed — this endpoint aggregates across models; check logs for internal errors: docker compose logs api"
 # The founder brief must contain structured content, not just an id.
-printf "%s" "$brief_out" | grep -q '"workspace_id"' \
+response_has "$brief_out" '"workspace_id"' \
     || fail "founder brief missing workspace_id. Response: $brief_out"
-# Brief should contain at least one section with content from the seeded data.
-# Check for known fields that should be populated.
-printf "%s" "$brief_out" | grep -q '"workspace_name"' \
-    || fail "founder brief missing workspace_name — the brief is structurally empty"
-pass "founder brief returned with structured content"
+# Check for known top-level fields from the FounderBriefRead contract.
+response_has "$brief_out" '"generated_at"' \
+    || fail "founder brief missing generated_at. Response: $brief_out"
+response_has "$brief_out" '"lookback_days"' \
+    || fail "founder brief missing lookback_days. Response: $brief_out"
+response_has "$brief_out" '"changed_facts"' \
+    || fail "founder brief missing changed_facts section. Response: $brief_out"
+response_has "$brief_out" '"open_conflicts"' \
+    || fail "founder brief missing open_conflicts section. Response: $brief_out"
+pass "founder brief returned with structured sections"
 
 # ── 8. DECISIONS ──────────────────────────────────────────────
 step "8/10 DECISIONS — decision register"
@@ -297,12 +332,12 @@ decisions_out=$(curl -fsS --max-time 15 \
     "${BASE_URL}/api/decisions?workspace_id=${workspace_id}") \
     || fail "GET /api/decisions failed — check that the 'Decisions' model exists in the seeded workspace"
 # The demo seed creates 3 components in the "Decisions" model.
-printf "%s" "$decisions_out" | grep -q '"name"' \
+response_has "$decisions_out" '"name"' \
     || fail "decisions list is empty or malformed. Response: $decisions_out"
 # Decisions should have meaningful content — check for value field.
-printf "%s" "$decisions_out" | grep -q '"value"' \
+response_has "$decisions_out" '"value"' \
     || fail "decisions returned but missing 'value' field — entries are shaped incorrectly"
-decision_count=$(printf "%s" "$decisions_out" | grep -o '"name"' | wc -l | tr -d ' ')
+decision_count=$(response_count "$decisions_out" '"name"')
 [ "$decision_count" -ge 1 ] \
     || fail "expected at least 1 decision from the 3 seeded in the Decisions model, got 0"
 pass "decisions list returned ${decision_count} entries with names and values"
@@ -312,17 +347,17 @@ step "9/10 SOURCES — source documents with provenance"
 sources_out=$(curl -fsS --max-time 15 \
     "${BASE_URL}/api/source-documents?workspace_id=${workspace_id}&limit=10") \
     || fail "GET /api/source-documents failed — check that SourceDocument rows were created by the seed"
-printf "%s" "$sources_out" | grep -q '"items"' \
+response_has "$sources_out" '"items"' \
     || fail "source documents response missing 'items' field. Response: $sources_out"
 # Verify there are actual documents, not just an empty list.
-source_count=$(printf "%s" "$sources_out" | grep -o '"connector_type"' | wc -l | tr -d ' ')
+source_count=$(response_count "$sources_out" '"connector_type"')
 [ "$source_count" -ge 3 ] \
     || fail "expected 3+ source documents, got ${source_count}. The demo seed creates ~25 source documents across multiple connector types."
 # Verify documents have been processed (processed_at is set by the seed).
-printf "%s" "$sources_out" | grep -q '"processed_at"' \
+response_has "$sources_out" '"processed_at"' \
     || fail "source documents missing 'processed_at' — documents appear unprocessed"
 # Verify content is present, not just metadata stubs.
-printf "%s" "$sources_out" | grep -q '"content"' \
+response_has "$sources_out" '"content"' \
     || fail "source documents missing 'content' field — provenance without content is useless for attribution"
 pass "source documents returned ${source_count} entries with content and provenance"
 
@@ -363,7 +398,7 @@ import_out=$(curl -fsS --max-time 60 \
 for key in workspace_id connector_id total_documents \
            created_documents updated_documents unchanged_documents \
            processed_documents failed_documents documents; do
-    printf "%s" "$import_out" | grep -q "\"${key}\"" \
+    response_has "$import_out" "\"${key}\"" \
         || fail "POST /api/imports response missing required field '${key}' (required by app/cli/main.py validate_import_response). Response: $import_out"
 done
 
@@ -403,9 +438,9 @@ pass "POST /api/imports → total=${import_total} created=${import_created:-0} u
 roundtrip_out=$(curl -fsS --max-time 15 \
     "${BASE_URL}/api/source-documents?workspace_id=${workspace_id}&connector_type=local&limit=50") \
     || fail "GET /api/source-documents?connector_type=local failed during import round-trip check — the source documents listing endpoint is broken. Check: docker compose logs api"
-printf "%s" "$roundtrip_out" | grep -q '"items"' \
+response_has "$roundtrip_out" '"items"' \
     || fail "source-documents response missing 'items' field during round-trip check. Response: $roundtrip_out"
-printf "%s" "$roundtrip_out" | grep -q '"smoke-test-doc-1"' \
+response_has "$roundtrip_out" '"smoke-test-doc-1"' \
     || fail "POST /api/imports returned success, but the imported document (external_id=smoke-test-doc-1) is NOT visible in GET /api/source-documents?connector_type=local. The endpoint returned 200 but the ImportService did not actually persist the row. Check ImportService.import_documents commit logic and LOCAL connector filtering."
 pass "imported document visible in /api/source-documents (import round-trip OK)"
 
@@ -415,9 +450,9 @@ pass "imported document visible in /api/source-documents (import round-trip OK)"
 connectors_out=$(curl -fsS --max-time 15 \
     "${BASE_URL}/api/imports/connectors?workspace_id=${workspace_id}") \
     || fail "GET /api/imports/connectors failed — the import surface may not be registered in the router. Check app/api/router.py includes imports."
-printf "%s" "$connectors_out" | grep -Eq '^\[' \
+response_has_extended "$connectors_out" '^\[' \
     || fail "imports/connectors did not return a JSON array. Response: $connectors_out"
-import_connector_count=$(printf "%s" "$connectors_out" | grep -o '"connector_type"' | wc -l | tr -d ' ')
+import_connector_count=$(response_count "$connectors_out" '"connector_type"')
 [ "$import_connector_count" -ge 1 ] \
     || fail "expected at least 1 import connector after POST /api/imports succeeded, got 0 — connector was not persisted. Check ImportService._get_or_create_local_connector."
 pass "GET /api/imports/connectors → ${import_connector_count} connector(s) visible"

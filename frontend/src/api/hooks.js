@@ -41,6 +41,7 @@ const FOUNDER_WORKFLOW_API = Object.freeze({
   sourceDocuments: "/source-documents",
   query: "/query",
 });
+const OPERATOR_STATUS_ENDPOINTS = ["/operator/status", "/admin/status"];
 
 /**
  * Wrap an API call so it falls back to mock data on network failure,
@@ -299,6 +300,35 @@ export function useDashboard() {
         alerts: staleAlerts, // no backend endpoint yet
       };
     }, MOCK_DASHBOARD),
+  });
+}
+
+// ── Operator status ────────────────────────────────────────────
+
+export function useOperatorStatus() {
+  return useQuery({
+    queryKey: ["operator-status"],
+    queryFn: async () => {
+      let lastNotFound = null;
+
+      for (const endpoint of OPERATOR_STATUS_ENDPOINTS) {
+        try {
+          const data = await api.get(endpoint);
+          return { endpoint: `/api${endpoint}`, data };
+        } catch (err) {
+          if (err.status === 404) {
+            lastNotFound = err;
+            continue;
+          }
+          throw err;
+        }
+      }
+
+      throw lastNotFound ?? new Error("No operator status endpoint is available.");
+    },
+    retry: 1,
+    refetchInterval: 30000,
+    refetchIntervalInBackground: false,
   });
 }
 

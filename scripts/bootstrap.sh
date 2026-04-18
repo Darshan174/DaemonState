@@ -2,9 +2,9 @@
 #
 # scripts/bootstrap.sh — shell bootstrap wrapper for Context Engine.
 #
-# Brings up the full backend stack (Postgres + pgvector, Redis, API, worker)
-# via docker compose, applies Alembic migrations, and seeds the deterministic
-# demo workspace so you can immediately run the backend smoke path.
+# Brings up the full self-host stack (Postgres + pgvector, Redis, API/web UI,
+# worker) via docker compose, applies Alembic migrations, and seeds the
+# deterministic demo workspace so you can immediately run the smoke path.
 #
 # Safe to re-run: every step is idempotent. This script is a lower-level shell
 # wrapper around the same public contracts used by `ctxe demo` and `ctxe verify`.
@@ -78,7 +78,7 @@ else
 fi
 
 # ── 3. Start containers ─────────────────────────────────────────
-log "3/5  Starting containers (postgres, redis, api, worker)"
+log "3/5  Starting containers (postgres, redis, api/web UI, worker)"
 if ! docker compose up -d --build 2>&1; then
     warn "docker compose up failed. Common causes:"
     warn "  - Port conflict: another process using 8000/5432/6379 (override in .env)"
@@ -174,7 +174,12 @@ graph_probe=$(curl -fsS --max-time 15 \
     || die "GET ${BASE_URL}/api/graph for the seeded workspace failed. Seed returned 200 but the graph endpoint errored. Check: docker compose logs api"
 # Count nodes by matching "model_id" occurrences (one per node).
 # The demo seed creates 20 components; anything below ~15 is a regression.
-probe_nodes=$(printf "%s" "$graph_probe" | grep -o '"model_id"' | wc -l | tr -d ' ')
+probe_node_matches=$(grep -o '"model_id"' <<< "$graph_probe" || true)
+if [ -z "$probe_node_matches" ]; then
+    probe_nodes=0
+else
+    probe_nodes=$(wc -l <<< "$probe_node_matches" | tr -d ' ')
+fi
 if [ "$probe_nodes" -lt 15 ]; then
     warn "Demo seed completed but workspace graph has only ${probe_nodes} node(s) — expected 15+ (seed defines 20 components)."
     warn "This usually means _populate_demo_workspace() in app/evals/demo_seed.py encountered a silent error."
@@ -187,7 +192,8 @@ cat <<EOF
 
 ==> Bootstrap complete.
 
-    API:           ${BASE_URL}
+    App UI:        ${BASE_URL}
+    API:           ${BASE_URL}/api
     Health:        ${BASE_URL}/health
     OpenAPI docs:  ${BASE_URL}/docs
     Workspace id:  ${workspace_id}

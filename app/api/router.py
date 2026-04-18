@@ -16,7 +16,19 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api import briefing, connectors, decisions, evals, graph, imports, knowledge, query, trust, workspaces
+from app.api import (
+    briefing,
+    connectors,
+    decisions,
+    evals,
+    graph,
+    imports,
+    knowledge,
+    operator,
+    query,
+    trust,
+    workspaces,
+)
 
 
 api_router = APIRouter()
@@ -37,3 +49,4 @@ api_router.include_router(knowledge.router, prefix="", tags=["knowledge"])
 api_router.include_router(graph.router, prefix="", tags=["graph"])
 api_router.include_router(trust.router, prefix="", tags=["trust"])
 api_router.include_router(evals.router, prefix="", tags=["evals"])
+api_router.include_router(operator.router, prefix="", tags=["operator"])

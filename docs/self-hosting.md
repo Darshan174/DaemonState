@@ -55,7 +55,7 @@ bash scripts/bootstrap.sh
 
 1. Check that `docker`, `docker compose`, and `curl` are installed.
 2. Create `.env` from `.env.example` if missing, and auto-generate an `ENCRYPTION_KEY`.
-3. Build and start four containers: Postgres (pgvector), Redis, the API, and a Celery worker.
+3. Build and start four containers: Postgres (pgvector), Redis, the API/web UI, and a Celery worker.
 4. Wait for the API to report healthy at `/health/ready`.
 5. Run Alembic migrations and seed the deterministic demo workspace via `POST /api/seed-demo`.
 
@@ -63,7 +63,8 @@ When it finishes you will see:
 
 ```
 ==> Bootstrap complete.
-    API:           http://localhost:8000
+    App UI:        http://localhost:8000
+    API:           http://localhost:8000/api
     Health:        http://localhost:8000/health
     OpenAPI docs:  http://localhost:8000/docs
     Workspace id:  <uuid>
@@ -121,9 +122,17 @@ Run `bash scripts/diagnose.sh --tar` to collect a runtime snapshot (container st
 
 ---
 
-## Step 4: Run the Frontend (optional)
+## Step 4: Open the Frontend
 
-On your local machine (not the VPS), or on the VPS if you have Node.js:
+For self-hosting, the Docker image includes the production frontend build and
+serves it from the API container:
+
+```bash
+# Open this URL in your browser:
+http://localhost:8000
+```
+
+For frontend development with hot reload, run Vite separately:
 
 ```bash
 cd frontend
@@ -131,7 +140,7 @@ npm install
 npm run dev
 ```
 
-The Vite dev server proxies API requests to `http://localhost:8000`. If the API is on a remote VPS, set `VITE_API_URL` in `frontend/.env` or update `vite.config.js`.
+The Vite dev server proxies API requests to `http://localhost:8000`.
 
 ---
 
