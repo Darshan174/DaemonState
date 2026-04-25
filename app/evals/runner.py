@@ -30,7 +30,7 @@ import sys
 from typing import Sequence
 from uuid import UUID
 
-from app.evals.harness import DomainSummary, EvalCaseResult, EvalSummary
+from app.evals.harness import EvalSummary
 
 
 def format_report(summary: EvalSummary) -> str:
@@ -52,7 +52,10 @@ def format_report(summary: EvalSummary) -> str:
         lines.append(
             f"         retrieval={r.retrieval_hit_quality:.2f}  "
             f"extraction={r.extracted_fact_correctness:.2f}  "
-            f"answer={r.final_answer_correctness:.2f}"
+            f"answer={r.final_answer_correctness:.2f}  "
+            f"citation={r.citation_accuracy:.2f}  "
+            f"stale={r.stale_context_detection:.2f}  "
+            f"lift={r.context_answer_lift:+.2f}"
         )
         if r.detail:
             lines.append(f"         >> {r.detail}")
@@ -68,6 +71,9 @@ def format_report(summary: EvalSummary) -> str:
             f"retrieval={ds.avg_retrieval:.2f}  "
             f"extraction={ds.avg_extraction:.2f}  "
             f"answer={ds.avg_answer:.2f}  "
+            f"citation={ds.avg_citation:.2f}  "
+            f"stale={ds.avg_staleness:.2f}  "
+            f"lift={ds.avg_context_lift:+.2f}  "
             f"pass_rate={ds.pass_rate:.0%}"
         )
     lines.append("")
@@ -89,6 +95,18 @@ def format_report(summary: EvalSummary) -> str:
     )
     lines.append(
         f"  Avg answer:      {summary.average_final_answer_correctness:.2f}"
+    )
+    lines.append(
+        f"  Avg citation:    {summary.average_citation_accuracy:.2f}"
+    )
+    lines.append(
+        f"  Avg staleness:   {summary.average_stale_context_detection:.2f}"
+    )
+    lines.append(
+        f"  Naive answer:    {summary.average_naive_answer_correctness:.2f}"
+    )
+    lines.append(
+        f"  Context lift:    {summary.average_context_answer_lift:+.2f}"
     )
     lines.append(
         f"  Calibration ECE: {summary.confidence_calibration_error:.2f}"
@@ -124,6 +142,10 @@ def summary_to_json(summary: EvalSummary) -> dict:
         "average_retrieval_hit_quality": summary.average_retrieval_hit_quality,
         "average_extracted_fact_correctness": summary.average_extracted_fact_correctness,
         "average_final_answer_correctness": summary.average_final_answer_correctness,
+        "average_citation_accuracy": summary.average_citation_accuracy,
+        "average_stale_context_detection": summary.average_stale_context_detection,
+        "average_naive_answer_correctness": summary.average_naive_answer_correctness,
+        "average_context_answer_lift": summary.average_context_answer_lift,
         "confidence_calibration_error": summary.confidence_calibration_error,
         "all_passed": summary.all_passed,
         "blockers": blockers,
@@ -134,6 +156,9 @@ def summary_to_json(summary: EvalSummary) -> dict:
                 "avg_retrieval": ds.avg_retrieval,
                 "avg_extraction": ds.avg_extraction,
                 "avg_answer": ds.avg_answer,
+                "avg_citation": ds.avg_citation,
+                "avg_staleness": ds.avg_staleness,
+                "avg_context_lift": ds.avg_context_lift,
                 "pass_rate": ds.pass_rate,
             }
             for ds in summary.domain_summaries
@@ -147,6 +172,10 @@ def summary_to_json(summary: EvalSummary) -> dict:
                 "retrieval_hit_quality": r.retrieval_hit_quality,
                 "extracted_fact_correctness": r.extracted_fact_correctness,
                 "final_answer_correctness": r.final_answer_correctness,
+                "citation_accuracy": r.citation_accuracy,
+                "stale_context_detection": r.stale_context_detection,
+                "naive_answer_correctness": r.naive_answer_correctness,
+                "context_answer_lift": r.context_answer_lift,
                 "passed": r.passed,
                 "detail": r.detail,
             }
@@ -169,7 +198,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--domains",
         nargs="+",
         default=None,
-        help="Only run cases from these domains (pricing, blocker, roadmap, decision, meeting)",
+        help="Only run cases from these domains (pricing, blocker, roadmap, decision, meeting, staleness)",
     )
     parser.add_argument(
         "--threshold",
@@ -196,6 +225,7 @@ async def _run(
     from sqlalchemy.pool import NullPool
 
     from app.config import settings
+    from app.evals.baseline import NaiveRagBaseline
     from app.evals.gold_set import load_default_cases
     from app.evals.harness import StartupEvalHarness
     from app.models.user import Workspace
@@ -228,6 +258,7 @@ async def _run(
 
                 harness = StartupEvalHarness(
                     QueryService(session),
+                    baseline_runner=NaiveRagBaseline(session),
                     pass_threshold=threshold,
                 )
                 summary = await harness.run(

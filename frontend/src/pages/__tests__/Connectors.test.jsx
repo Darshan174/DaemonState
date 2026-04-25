@@ -223,6 +223,34 @@ describe("Connectors", () => {
     );
   });
 
+  it("shows Slack setup guidance instead of OAuth links when configuration is missing", () => {
+    mockConnectorsQuery({
+      data: [
+        {
+          type: "slack",
+          connectorId: null,
+          name: "Slack",
+          description: "Channels",
+          status: "disconnected",
+          lastSync: "Never",
+          itemsSynced: 0,
+          color: "#4A154B",
+          availability: "available",
+          isConfigured: false,
+          missingConfig: ["SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET", "SLACK_REDIRECT_URI"],
+        },
+      ],
+    });
+
+    renderConnectors();
+
+    expect(screen.getByText("Slack OAuth is not configured yet.")).toBeInTheDocument();
+    expect(screen.getAllByText(/SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, SLACK_REDIRECT_URI/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("docs/slack.md").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("link", { name: "Start Slack OAuth" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Connect Slack" })).not.toBeInTheDocument();
+  });
+
   it("shows coming-soon connector as disabled", () => {
     mockConnectorsQuery({
       data: [

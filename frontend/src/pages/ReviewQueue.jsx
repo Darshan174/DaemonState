@@ -33,16 +33,16 @@ const KIND_OPTIONS = [
 ];
 
 const STATUS_PILL = {
-  needs_review: "bg-amber-100 text-amber-700",
-  approved: "bg-emerald-100 text-emerald-700",
-  superseded: "bg-slate-100 text-slate-600",
-  rejected: "bg-red-100 text-red-700",
+  needs_review: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400",
+  approved: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400",
+  superseded: "bg-slate-100 dark:bg-slate-900/40 text-slate-600 dark:text-slate-400",
+  rejected: "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400",
 };
 
 const SEVERITY_PILL = {
-  high: "bg-red-100 text-red-700",
-  medium: "bg-amber-100 text-amber-700",
-  low: "bg-emerald-100 text-emerald-700",
+  high: "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400",
+  medium: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400",
+  low: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400",
 };
 
 export default function ReviewQueue() {
@@ -149,43 +149,43 @@ export default function ReviewQueue() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
-            <h2 className="text-lg font-semibold text-gray-800">Review Queue</h2>
+            <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-300">Review Queue</h2>
             {isMock && <MockBadge />}
           </div>
           <p className="text-xs text-gray-400 mt-1">
             Human-in-the-loop review for low-confidence facts, conflicts, and superseded company context.
           </p>
           {isMock ? (
-            <p className="text-xs text-amber-600 mt-2">
+            <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
               Review actions are staged in demo mode until the backend review workflow is live.
             </p>
           ) : (
-            <p className="text-xs text-emerald-700 mt-2">
+            <p className="text-xs text-emerald-700 dark:text-emerald-400 mt-2">
               Review actions are live. Approvals and rejections update trust state immediately.
             </p>
           )}
         </div>
-        <div className="rounded-xl border border-gray-200 bg-white px-4 py-3 text-right">
+        <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-4 py-3 text-right">
           <p className="text-[11px] uppercase tracking-wide text-gray-400">Queue</p>
-          <p className="text-sm font-medium text-gray-700">
+          <p className="text-sm font-medium text-gray-700 dark:text-gray-400">
             {query.total ?? items.length} matching item{(query.total ?? items.length) === 1 ? "" : "s"}
           </p>
         </div>
       </div>
 
-      <div className="rounded-xl border border-gray-200 bg-white px-4 py-4">
+      <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-4 py-4">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h3 className="text-sm font-semibold text-gray-700">Self-host review loop</h3>
+            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-400">Self-host review loop</h3>
             <p className="text-xs text-gray-400 mt-1">
               This queue should stay focused on high-impact conflicts and low-confidence facts, not every extraction event.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3 text-xs">
-            <Link to="/app/sources" className="font-medium text-brand-700 hover:text-brand-800">
+            <Link to="/app/sources" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
               Inspect sources
             </Link>
-            <Link to="/app/query" className="font-medium text-brand-700 hover:text-brand-800">
+            <Link to="/app/query" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
               Pressure-test query
             </Link>
           </div>
@@ -194,24 +194,24 @@ export default function ReviewQueue() {
 
       <div className="grid gap-3 md:grid-cols-[1fr_160px_160px_160px_auto]">
         <label className="block">
-          <span className="block text-xs font-medium text-gray-600 mb-1">Search</span>
+          <span className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Search</span>
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search items..."
             aria-label="Search review items"
-            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-800/50 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
           />
         </label>
 
         <label className="block">
-          <span className="block text-xs font-medium text-gray-600 mb-1">Status</span>
+          <span className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Status</span>
           <select
             value={status}
             onChange={(event) => setStatus(event.target.value)}
             aria-label="Filter review queue by status"
-            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-800/50 rounded-lg bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
           >
             {STATUS_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
@@ -222,12 +222,12 @@ export default function ReviewQueue() {
         </label>
 
         <label className="block">
-          <span className="block text-xs font-medium text-gray-600 mb-1">Severity</span>
+          <span className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Severity</span>
           <select
             value={severity}
             onChange={(event) => setSeverity(event.target.value)}
             aria-label="Filter review queue by severity"
-            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-800/50 rounded-lg bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
           >
             {SEVERITY_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
@@ -238,12 +238,12 @@ export default function ReviewQueue() {
         </label>
 
         <label className="block">
-          <span className="block text-xs font-medium text-gray-600 mb-1">Type</span>
+          <span className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Type</span>
           <select
             value={kind}
             onChange={(event) => setKind(event.target.value)}
             aria-label="Filter review queue by type"
-            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-800/50 rounded-lg bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
           >
             {KIND_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
@@ -257,7 +257,7 @@ export default function ReviewQueue() {
           <button
             type="button"
             onClick={clearFilters}
-            className={`px-3 py-2 text-sm font-medium rounded-lg border border-gray-200 bg-white hover:bg-gray-50 transition-colors ${
+            className={`px-3 py-2 text-sm font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 hover:bg-gray-50 dark:bg-gray-900/30 transition-colors ${
               !filtersActive ? "opacity-0 pointer-events-none" : "opacity-100"
             }`}
           >
@@ -272,14 +272,14 @@ export default function ReviewQueue() {
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1.05fr)_minmax(320px,0.95fr)]">
           <section
             aria-label="Review items"
-            className="bg-white rounded-xl border border-gray-200 overflow-hidden"
+            className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-gray-800/50 overflow-hidden"
           >
-            <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+            <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-800/30 flex items-center justify-between">
               <div>
-                <p className="text-sm font-semibold text-gray-700">Items requiring trust decisions</p>
+                <p className="text-sm font-semibold text-gray-700 dark:text-gray-400">Items requiring trust decisions</p>
                 <p className="text-xs text-gray-400 mt-1">
                   {sourceId || modelId || searchQuery ? (
-                    <span className="text-brand-700 font-medium italic">
+                    <span className="text-brand-700 dark:text-brand-400 font-medium italic">
                       Filtering by {sourceId ? "source" : modelId ? "model" : "search"}
                     </span>
                   ) : (
@@ -290,7 +290,7 @@ export default function ReviewQueue() {
               {filtersActive && (
                 <button
                   onClick={clearFilters}
-                  className="text-xs font-medium text-brand-700 hover:text-brand-800"
+                  className="text-xs font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300"
                 >
                   Clear all
                 </button>
@@ -310,7 +310,7 @@ export default function ReviewQueue() {
                   }}
                   aria-pressed={selectedId === item.id}
                   className={`w-full text-left px-4 py-4 transition-colors ${
-                    selectedId === item.id ? "bg-brand-50" : "hover:bg-gray-50"
+                    selectedId === item.id ? "bg-brand-50 dark:bg-brand-900/30" : "hover:bg-gray-50 dark:bg-gray-900/30"
                   }`}
                 >
                   <div className="flex items-start justify-between gap-3">
@@ -324,7 +324,7 @@ export default function ReviewQueue() {
                         </span>
                         <span className="text-[11px] text-gray-400 capitalize">{item.kind.replaceAll("_", " ")}</span>
                       </div>
-                      <p className="mt-2 text-sm font-medium text-gray-800">{item.title}</p>
+                      <p className="mt-2 text-sm font-medium text-gray-800 dark:text-gray-300">{item.title}</p>
                       <p className="mt-1 text-xs text-gray-500 line-clamp-2">{item.summary}</p>
                     </div>
                     <div className="text-right shrink-0">
@@ -339,11 +339,11 @@ export default function ReviewQueue() {
                 </button>
               ))}
               {query.hasNextPage && (
-                <div className="p-4 border-t border-gray-100 flex justify-center">
+                <div className="p-4 border-t border-gray-100 dark:border-gray-800/30 flex justify-center">
                   <button
                     onClick={() => query.fetchNextPage()}
                     disabled={query.isFetchingNextPage}
-                    className="px-4 py-2 text-xs font-bold rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors shadow-sm disabled:opacity-50"
+                    className="px-4 py-2 text-xs font-bold rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 transition-colors shadow-sm disabled:opacity-50"
                   >
                     {query.isFetchingNextPage ? "Loading..." : "Load more items"}
                   </button>
@@ -354,20 +354,20 @@ export default function ReviewQueue() {
 
           <section
             aria-label="Review detail"
-            className="bg-white rounded-xl border border-gray-200 p-5 space-y-4"
+            className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-gray-800/50 p-5 space-y-4"
           >
             {selectedItem ? (
               <>
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <h3 className="text-sm font-semibold text-gray-700">{selectedItem.title}</h3>
+                    <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-400">{selectedItem.title}</h3>
                     <p className="text-xs text-gray-400 mt-1">
                       {selectedItem.model && (
                         <>
                           {selectedItem.modelId ? (
                             <Link
                               to={`/app/model/${selectedItem.modelId}`}
-                              className="text-brand-600 hover:text-brand-700"
+                              className="text-brand-600 dark:text-brand-400 hover:text-brand-700 dark:text-brand-400"
                             >
                               {selectedItem.model}
                             </Link>
@@ -385,19 +385,19 @@ export default function ReviewQueue() {
                   </span>
                 </div>
 
-                <div className="rounded-xl border border-gray-100 bg-gray-50 p-4 space-y-3">
+                <div className="rounded-xl border border-gray-100 dark:border-gray-800/30 bg-gray-50 dark:bg-gray-900/30 p-4 space-y-3">
                   <div>
                     <p className="text-[11px] uppercase tracking-wide text-gray-400">Summary</p>
-                    <p className="mt-1 text-sm text-gray-700">{selectedItem.summary}</p>
+                    <p className="mt-1 text-sm text-gray-700 dark:text-gray-400">{selectedItem.summary}</p>
                   </div>
                   <div>
                     <p className="text-[11px] uppercase tracking-wide text-gray-400">Why this needs review</p>
-                    <p className="mt-1 text-sm text-gray-700">{selectedItem.rationale}</p>
+                    <p className="mt-1 text-sm text-gray-700 dark:text-gray-400">{selectedItem.rationale}</p>
                   </div>
                   {selectedItem.suggestedAction && (
                     <div>
                       <p className="text-[11px] uppercase tracking-wide text-gray-400">Suggested action</p>
-                      <p className="mt-1 text-sm text-gray-700">{selectedItem.suggestedAction}</p>
+                      <p className="mt-1 text-sm text-gray-700 dark:text-gray-400">{selectedItem.suggestedAction}</p>
                     </div>
                   )}
                 </div>
@@ -418,7 +418,7 @@ export default function ReviewQueue() {
                           {selectedItem.sources.map((source) => (
                             <span
                               key={source}
-                              className="px-2 py-1 rounded-full bg-slate-100 text-slate-700 text-xs"
+                              className="px-2 py-1 rounded-full bg-slate-100 dark:bg-slate-900/40 text-slate-700 dark:text-slate-400 text-xs"
                             >
                               {source}
                             </span>
@@ -447,11 +447,11 @@ export default function ReviewQueue() {
                       {selectedItem.decisionHistory.map((decision) => (
                         <div
                           key={decision.id ?? `${decision.createdAt}-${decision.newStatus}`}
-                          className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-3"
+                          className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 px-3 py-3"
                         >
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
-                              <p className="text-sm font-medium text-gray-700">
+                              <p className="text-sm font-medium text-gray-700 dark:text-gray-400">
                                 {formatDecisionTransition(decision)}
                               </p>
                               <p className="mt-1 text-[11px] text-gray-500">
@@ -466,7 +466,7 @@ export default function ReviewQueue() {
                             )}
                           </div>
                           {decision.note && (
-                            <p className="mt-2 text-xs text-gray-600">{decision.note}</p>
+                            <p className="mt-2 text-xs text-gray-600 dark:text-gray-400">{decision.note}</p>
                           )}
                         </div>
                       ))}
@@ -475,12 +475,12 @@ export default function ReviewQueue() {
                 )}
 
                 {actionMessage && (
-                  <p role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+                  <p role="status" className="rounded-lg border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/30 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-400">
                     {actionMessage}
                   </p>
                 )}
                 {actionError && (
-                  <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                  <p role="alert" className="rounded-lg border border-red-200 dark:border-red-800/50 bg-red-50 dark:bg-red-900/30 px-3 py-2 text-xs text-red-700 dark:text-red-400">
                     {actionError}
                   </p>
                 )}
@@ -507,7 +507,7 @@ export default function ReviewQueue() {
                         },
                       });
                     }}
-                    className="px-4 py-2 rounded-lg bg-emerald-100 text-emerald-700 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60"
+                    className="px-4 py-2 rounded-lg bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {approveMut.isPending && approveMut.variables === selectedItem.id ? "Approving..." : "Approve"}
                   </button>
@@ -533,7 +533,7 @@ export default function ReviewQueue() {
                         },
                       });
                     }}
-                    className="px-4 py-2 rounded-lg bg-slate-100 text-slate-700 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60"
+                    className="px-4 py-2 rounded-lg bg-slate-100 dark:bg-slate-900/40 text-slate-700 dark:text-slate-400 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {supersedeMut.isPending && supersedeMut.variables === selectedItem.id ? "Superseding..." : "Supersede"}
                   </button>
@@ -558,7 +558,7 @@ export default function ReviewQueue() {
                         },
                       });
                     }}
-                    className="px-4 py-2 rounded-lg bg-red-100 text-red-700 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60"
+                    className="px-4 py-2 rounded-lg bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {rejectMut.isPending && rejectMut.variables === selectedItem.id ? "Rejecting..." : "Reject"}
                   </button>
@@ -584,8 +584,8 @@ export default function ReviewQueue() {
 
 function ReviewEmptyState({ filtersActive, onClear }) {
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-6 text-center">
-      <p className="text-sm font-semibold text-gray-800">
+    <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-6 text-center">
+      <p className="text-sm font-semibold text-gray-800 dark:text-gray-300">
         {filtersActive ? "No review items match the current filters." : "No review items yet."}
       </p>
       <p className="mt-2 text-xs text-gray-500 max-w-2xl mx-auto">
@@ -597,15 +597,15 @@ function ReviewEmptyState({ filtersActive, onClear }) {
         {filtersActive && (
           <button
             onClick={onClear}
-            className="font-medium text-brand-700 hover:text-brand-800"
+            className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300"
           >
             Clear all filters
           </button>
         )}
-        <Link to="/app/sources" className="font-medium text-brand-700 hover:text-brand-800">
+        <Link to="/app/sources" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
           Open sources
         </Link>
-        <Link to="/app/connectors" className="font-medium text-brand-700 hover:text-brand-800">
+        <Link to="/app/connectors" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
           Open connectors
         </Link>
       </div>
@@ -643,9 +643,9 @@ function formatDecisionActor(actorType) {
 
 function SummaryCard({ label, value, tone }) {
   const style = {
-    amber: "bg-amber-50 border-amber-200 text-amber-700",
-    red: "bg-red-50 border-red-200 text-red-700",
-    emerald: "bg-emerald-50 border-emerald-200 text-emerald-700",
+    amber: "bg-amber-50 dark:bg-amber-900/30 border-amber-200 dark:border-amber-800/50 text-amber-700 dark:text-amber-400",
+    red: "bg-red-50 dark:bg-red-900/30 border-red-200 dark:border-red-800/50 text-red-700 dark:text-red-400",
+    emerald: "bg-emerald-50 dark:bg-emerald-900/30 border-emerald-200 dark:border-emerald-800/50 text-emerald-700 dark:text-emerald-400",
   }[tone];
 
   return (

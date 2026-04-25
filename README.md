@@ -159,6 +159,52 @@ The app includes:
 - **Review Queue**: low-confidence, stale, or conflicting facts
 - **System Health**: read-only operator status for self-hosted deployments
 
+## Evals and Proof
+
+Context Engine includes a startup-memory benchmark that compares the system
+against a deterministic naive source-only RAG baseline.
+
+| Track | What It Shows |
+| --- | --- |
+| Answer quality | Whether expected facts appear in the answer |
+| Citation accuracy | Whether cited sources support the answer and avoid superseded sources |
+| Stale context detection | Whether current answers avoid old decisions after newer evidence appears |
+| Context lift | Whether Context Engine improves on naive raw-document retrieval |
+
+Run the local regression gate:
+
+```bash
+python3 scripts/run_eval_regression.py --workspace-id <workspace-id>
+```
+
+The benchmark dataset lives in [app/evals/fixtures.jsonl](./app/evals/fixtures.jsonl)
+and is seeded by [app/evals/demo_seed.py](./app/evals/demo_seed.py). See
+[docs/evals.md](./docs/evals.md) for the full workflow and thresholds.
+
+## Positioning
+
+Context Engine is for teams building AI copilots over internal knowledge where
+trust, change, and review state matter.
+
+It is not:
+
+- a LangChain replacement
+- a LlamaIndex replacement
+- a general vector database
+- a generic chatbot UI
+
+It works alongside orchestration and indexing frameworks when the product needs
+to answer:
+
+- Where did this answer come from?
+- Is this still true?
+- What changed?
+- Has a human reviewed this?
+- Which decision superseded the old one?
+
+See [docs/context-engine-vs-rag-frameworks.md](./docs/context-engine-vs-rag-frameworks.md)
+for LangChain, LlamaIndex, Ragas, and plain-RAG positioning.
+
 ## Stable API Surface
 
 Founder-workflow routes:
@@ -250,12 +296,20 @@ EXTRACTION_MODEL=openai/gpt-4.1-mini
 EMBEDDING_MODEL=openai/text-embedding-3-large
 EMBEDDING_DIMENSIONS=1024
 
+# Slack OAuth connector
+SLACK_CLIENT_ID=...
+SLACK_CLIENT_SECRET=...
+SLACK_REDIRECT_URI=http://localhost:8000/api/connectors/slack/callback
+
 # Port binding
 HOST_API_BIND=127.0.0.1
 HOST_API_PORT=8000
 HOST_POSTGRES_BIND=127.0.0.1
 HOST_REDIS_BIND=127.0.0.1
 ```
+
+For the Slack app manifest and no-OAuth import path, see
+[docs/slack.md](./docs/slack.md).
 
 By default, compose-published ports bind to `127.0.0.1`. This is intentional:
 Postgres, Redis, and the raw API should not be exposed directly to the public
@@ -390,6 +444,9 @@ Cloudflare Access, or basic auth until first-class app auth is available.
 ## Documentation
 
 - [Self-hosting guide](./docs/self-hosting.md)
+- [Slack setup](./docs/slack.md)
+- [Evals and benchmarks](./docs/evals.md)
+- [Context Engine vs RAG frameworks](./docs/context-engine-vs-rag-frameworks.md)
 - [Operations runbook](./docs/runbook.md)
 - [Release notes and verification](./docs/release.md)
 - [Reverse proxy examples](./deploy/)

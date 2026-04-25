@@ -75,28 +75,28 @@ export default function ComponentCard({
   // ── Edit mode ──
   if (mode === "edit") {
     return (
-      <div className="bg-white border-2 border-brand-300 rounded-xl p-5 space-y-3">
+      <div className="bg-white dark:bg-slate-800 border-2 border-brand-300 rounded-xl p-5 space-y-3">
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Name</label>
+          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Name</label>
           <input
             type="text"
             value={editName}
             onChange={(e) => setEditName(e.target.value)}
-            className="w-full px-2.5 py-1.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            className="w-full px-2.5 py-1.5 text-sm border border-gray-200 dark:border-gray-800/50 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
           />
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Value</label>
+          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Value</label>
           <input
             type="text"
             value={editValue}
             onChange={(e) => setEditValue(e.target.value)}
-            className="w-full px-2.5 py-1.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            className="w-full px-2.5 py-1.5 text-sm border border-gray-200 dark:border-gray-800/50 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
           />
         </div>
         <div className="grid grid-cols-2 gap-2">
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Confidence</label>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Confidence</label>
             <input
               type="number"
               step="0.01"
@@ -104,21 +104,21 @@ export default function ComponentCard({
               max="1"
               value={editConfidence}
               onChange={(e) => setEditConfidence(e.target.value)}
-              className="w-full px-2.5 py-1.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+              className="w-full px-2.5 py-1.5 text-sm border border-gray-200 dark:border-gray-800/50 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
             />
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Source</label>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Source</label>
             <input
               type="text"
               value={editAuthority}
               onChange={(e) => setEditAuthority(e.target.value)}
-              className="w-full px-2.5 py-1.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+              className="w-full px-2.5 py-1.5 text-sm border border-gray-200 dark:border-gray-800/50 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
             />
           </div>
         </div>
         {mutationError && (
-          <p className="text-xs text-red-600">{mutationError}</p>
+          <p className="text-xs text-red-600 dark:text-red-400">{mutationError}</p>
         )}
         <div className="flex gap-2 pt-1">
           <button
@@ -130,7 +130,7 @@ export default function ComponentCard({
           </button>
           <button
             onClick={() => setMode("view")}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
+            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 transition-colors"
           >
             Cancel
           </button>
@@ -142,13 +142,13 @@ export default function ComponentCard({
   // ── Confirm delete mode ──
   if (mode === "confirmDelete") {
     return (
-      <div className="bg-red-50 border-2 border-red-200 rounded-xl p-5 space-y-3">
-        <p className="text-sm font-medium text-red-800">
+      <div className="bg-red-50 dark:bg-red-900/30 border-2 border-red-200 dark:border-red-800/50 rounded-xl p-5 space-y-3">
+        <p className="text-sm font-medium text-red-800 dark:text-red-300">
           Delete "{name}"?
         </p>
-        <p className="text-xs text-red-600">This action cannot be undone.</p>
+        <p className="text-xs text-red-600 dark:text-red-400">This action cannot be undone.</p>
         {mutationError && (
-          <p className="text-xs text-red-600">{mutationError}</p>
+          <p className="text-xs text-red-600 dark:text-red-400">{mutationError}</p>
         )}
         <div className="flex gap-2">
           <button
@@ -160,7 +160,7 @@ export default function ComponentCard({
           </button>
           <button
             onClick={() => setMode("view")}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
+            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 transition-colors"
           >
             Cancel
           </button>
@@ -171,10 +171,10 @@ export default function ComponentCard({
 
   // ── View mode (default) ──
   return (
-    <div className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-md transition-shadow group">
+    <div className="bg-white dark:bg-slate-800 border border-gray-200 dark:border-gray-800/50 rounded-xl p-5 hover:shadow-md transition-shadow group">
       <div className="flex items-start justify-between mb-3">
-        <h3 className="text-sm font-semibold text-gray-800">{name}</h3>
-        <span className="text-lg font-bold text-gray-900">{value}</span>
+        <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-300">{name}</h3>
+        <span className="text-lg font-bold text-gray-900 dark:text-gray-200">{value}</span>
       </div>
 
       {/* Confidence bar */}
@@ -183,7 +183,7 @@ export default function ComponentCard({
           <span>Confidence</span>
           <span>{confidencePct}%</span>
         </div>
-        <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+        <div className="h-1.5 bg-gray-100 dark:bg-gray-900/40 rounded-full overflow-hidden">
           <div className={`h-full rounded-full ${barColor}`} style={{ width: `${confidencePct}%` }} />
         </div>
       </div>
@@ -208,7 +208,7 @@ export default function ComponentCard({
           {displaySources.map((s) => (
             <span
               key={s}
-              className="inline-block px-2 py-0.5 text-[11px] rounded-full bg-gray-100 text-gray-600"
+              className="inline-block px-2 py-0.5 text-[11px] rounded-full bg-gray-100 dark:bg-gray-900/40 text-gray-600 dark:text-gray-400"
             >
               {s}
             </span>
@@ -229,14 +229,14 @@ export default function ComponentCard({
       )}
 
       {decisionHistory?.length > 0 && (
-        <div className="mb-3 rounded-lg border border-gray-100 bg-gray-50 px-3 py-3">
+        <div className="mb-3 rounded-lg border border-gray-100 dark:border-gray-800/30 bg-gray-50 dark:bg-gray-900/30 px-3 py-3">
           <p className="text-[11px] font-medium uppercase tracking-wide text-gray-500">
             Review history
           </p>
           <div className="mt-2 space-y-2">
             {decisionHistory.map((decision) => (
-              <div key={decision.id ?? `${decision.createdAt}-${decision.newStatus}`} className="text-xs text-gray-600">
-                <p className="font-medium text-gray-700">{formatDecisionTransition(decision)}</p>
+              <div key={decision.id ?? `${decision.createdAt}-${decision.newStatus}`} className="text-xs text-gray-600 dark:text-gray-400">
+                <p className="font-medium text-gray-700 dark:text-gray-400">{formatDecisionTransition(decision)}</p>
                 <p className="mt-0.5 text-[11px] text-gray-500">
                   {formatDecisionActor(decision.actorType)}
                   {decision.createdAt ? ` · ${formatDate(decision.createdAt)}` : ""}
@@ -262,14 +262,14 @@ export default function ComponentCard({
               setMode("edit");
             }}
             aria-label={`Edit ${name}`}
-            className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 transition-colors"
+            className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-500 hover:bg-gray-50 dark:bg-gray-900/30 transition-colors"
           >
             Edit
           </button>
           <button
             onClick={() => setMode("confirmDelete")}
             aria-label={`Delete ${name}`}
-            className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors"
+            className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-red-200 dark:border-red-800/50 text-red-500 hover:bg-red-50 dark:bg-red-900/30 transition-colors"
           >
             Delete
           </button>

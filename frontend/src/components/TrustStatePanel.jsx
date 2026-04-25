@@ -1,10 +1,10 @@
 import { Link } from "react-router-dom";
 
 const REVIEW_STYLE = {
-  approved: "bg-emerald-100 text-emerald-700",
-  needs_review: "bg-amber-100 text-amber-700",
-  superseded: "bg-slate-100 text-slate-600",
-  rejected: "bg-red-100 text-red-700",
+  approved: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400",
+  needs_review: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400",
+  superseded: "bg-slate-100 dark:bg-slate-900/40 text-slate-600 dark:text-slate-400",
+  rejected: "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400",
 };
 
 const REVIEW_LABEL = {
@@ -44,21 +44,21 @@ export default function TrustStatePanel({
         {normalizedStatus && (
           <span
             className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
-              REVIEW_STYLE[normalizedStatus] ?? "bg-slate-100 text-slate-600"
+              REVIEW_STYLE[normalizedStatus] ?? "bg-slate-100 dark:bg-slate-900/40 text-slate-600 dark:text-slate-400"
             }`}
           >
             {REVIEW_LABEL[normalizedStatus] ?? normalizedStatus.replaceAll("_", " ")}
           </span>
         )}
         {showHistorical && (
-          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-600">
+          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 dark:bg-slate-900/40 text-slate-600 dark:text-slate-400">
             Historical context
           </span>
         )}
         {showReviewLink && (
           <Link
             to={reviewItemId ? `/app/review/${reviewItemId}` : "/app/review"}
-            className="text-[11px] font-medium text-brand-700 hover:text-brand-800"
+            className="text-[11px] font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300"
           >
             {reviewItemId ? "Open review item" : "Open review queue"}
           </Link>

@@ -152,6 +152,10 @@ class TestEvalApis:
         assert body["pass_rate"] == 0.0
         assert body["pass_threshold"] == 0.5
         assert body["confidence_calibration_error"] == 0.0
+        assert body["average_citation_accuracy"] == 0.0
+        assert body["average_stale_context_detection"] == 0.0
+        assert body["average_naive_answer_correctness"] == 0.0
+        assert body["average_context_answer_lift"] == 0.0
         assert body["blockers"] == []
         assert body["domain_summaries"] == []
 
@@ -171,7 +175,7 @@ class TestEvalApis:
                     domain="pricing",
                 ),
                 EvalCase(
-                    question="What blockers are active?",
+                    question="Why is SSO blocked?",
                     expected_answer_substrings=("engineering bandwidth",),
                     expected_component_names=("SSO Blocker",),
                     expected_source_types=("zoom",),
@@ -194,10 +198,16 @@ class TestEvalApis:
         assert body["pass_rate"] == 1.0
         assert body["pass_threshold"] == 0.5
         assert body["confidence_calibration_error"] >= 0.0
+        assert body["average_citation_accuracy"] == 1.0
+        assert body["average_stale_context_detection"] == 1.0
+        assert body["average_context_answer_lift"] >= 0.0
         assert body["blockers"] == []
         assert len(body["domain_summaries"]) == 2
         assert len(body["cases"]) == 2
         assert body["cases"][0]["predicted_confidence"] >= 0.0
+        assert body["cases"][0]["citation_accuracy"] == 1.0
+        assert body["cases"][0]["stale_context_detection"] == 1.0
+        assert body["cases"][0]["context_answer_lift"] >= 0.0
 
         summary = await client.get(
             "/api/evals/summary",

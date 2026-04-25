@@ -44,6 +44,18 @@ class EvalRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     average_final_answer_correctness: Mapped[float] = mapped_column(
         Float, nullable=False, default=0.0, server_default=text("0")
     )
+    average_citation_accuracy: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default=text("0")
+    )
+    average_stale_context_detection: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default=text("0")
+    )
+    average_naive_answer_correctness: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default=text("0")
+    )
+    average_context_answer_lift: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default=text("0")
+    )
     confidence_calibration_error: Mapped[float] = mapped_column(
         Float, nullable=False, default=0.0, server_default=text("0")
     )
@@ -82,6 +94,18 @@ class EvalCaseResultRecord(UUIDPrimaryKeyMixin, Base):
     retrieval_hit_quality: Mapped[float] = mapped_column(Float, nullable=False)
     extracted_fact_correctness: Mapped[float] = mapped_column(Float, nullable=False)
     final_answer_correctness: Mapped[float] = mapped_column(Float, nullable=False)
+    citation_accuracy: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default=text("0")
+    )
+    stale_context_detection: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default=text("0")
+    )
+    naive_answer_correctness: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default=text("0")
+    )
+    context_answer_lift: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default=text("0")
+    )
     passed: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,

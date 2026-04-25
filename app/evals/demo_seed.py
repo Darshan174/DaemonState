@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import bindparam, select, text
@@ -72,6 +72,10 @@ class ComponentSeed:
     value: str
     sources: tuple[SourceSeed, ...]
     authority_weight: float = 0.9
+    valid_from_days_ago: int = 0
+    valid_to_days_ago: int | None = None
+    last_verified_days_ago: int = 0
+    is_stale: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +110,25 @@ _SEEDS: tuple[ComponentSeed, ...] = (
                 {"channel_name": "pricing"},
             ),
         ),
+    ),
+    ComponentSeed(
+        model_name="Pricing",
+        model_description="Pricing facts",
+        name="Legacy Enterprise Plan",
+        value="Legacy enterprise pricing was $500/seat before the April pricing update.",
+        sources=(
+            SourceSeed(
+                ConnectorType.NOTION,
+                "notion-enterprise-plan-legacy",
+                "Legacy memo: enterprise pricing was $500/seat before April 2026. Superseded by the pricing handbook.",
+                {"page_title": "Old Pricing Memo"},
+            ),
+        ),
+        authority_weight=0.2,
+        valid_from_days_ago=120,
+        valid_to_days_ago=20,
+        last_verified_days_ago=120,
+        is_stale=True,
     ),
     ComponentSeed(
         model_name="Pricing",
@@ -290,6 +313,25 @@ _SEEDS: tuple[ComponentSeed, ...] = (
     ComponentSeed(
         model_name="Decisions",
         model_description="Decision facts",
+        name="Legacy DB Migration Decision",
+        value="The old database migration plan proposed a MySQL lift-and-shift.",
+        sources=(
+            SourceSeed(
+                ConnectorType.NOTION,
+                "notion-db-migration-legacy",
+                "Old decision: use a MySQL lift-and-shift for the database migration. Superseded by the Postgres 16 rolling upgrade decision.",
+                {"page_title": "Legacy Architecture Decisions"},
+            ),
+        ),
+        authority_weight=0.2,
+        valid_from_days_ago=110,
+        valid_to_days_ago=14,
+        last_verified_days_ago=110,
+        is_stale=True,
+    ),
+    ComponentSeed(
+        model_name="Decisions",
+        model_description="Decision facts",
         name="Auth Provider Decision",
         value="We chose Auth0 as our authentication provider.",
         sources=(
@@ -382,6 +424,105 @@ _SEEDS: tuple[ComponentSeed, ...] = (
                 {"location": "Customer Success Call"},
             ),
         ),
+    ),
+    ComponentSeed(
+        model_name="Customer Success",
+        model_description="Customer-facing operating policies and feedback",
+        name="Support SLA Decision",
+        value="Current enterprise support SLA is 4 hours for Sev-1 incidents.",
+        sources=(
+            SourceSeed(
+                ConnectorType.NOTION,
+                "notion-support-sla-current",
+                "Current policy: enterprise support SLA is 4 hours for Sev-1 incidents.",
+                {"page_title": "Support Handbook"},
+            ),
+        ),
+    ),
+    ComponentSeed(
+        model_name="Customer Success",
+        model_description="Customer-facing operating policies and feedback",
+        name="Legacy Support SLA",
+        value="Legacy enterprise support SLA was 24 hours before customer escalations.",
+        sources=(
+            SourceSeed(
+                ConnectorType.NOTION,
+                "notion-support-sla-legacy",
+                "Old policy: enterprise support SLA was 24 hours. Superseded after customer escalations.",
+                {"page_title": "Old Support Handbook"},
+            ),
+        ),
+        authority_weight=0.2,
+        valid_from_days_ago=100,
+        valid_to_days_ago=10,
+        last_verified_days_ago=100,
+        is_stale=True,
+    ),
+    ComponentSeed(
+        model_name="Growth",
+        model_description="Growth metrics and operating targets",
+        name="Activation KPI Target",
+        value="Current onboarding activation target is 42% by the end of Q2.",
+        sources=(
+            SourceSeed(
+                ConnectorType.SLACK,
+                "slack-activation-kpi-current",
+                "Current KPI: onboarding activation target is 42% by end of Q2.",
+                {"channel_name": "growth"},
+            ),
+        ),
+    ),
+    ComponentSeed(
+        model_name="Growth",
+        model_description="Growth metrics and operating targets",
+        name="Legacy Activation KPI Target",
+        value="The old onboarding activation target was 35%.",
+        sources=(
+            SourceSeed(
+                ConnectorType.SLACK,
+                "slack-activation-kpi-legacy",
+                "Old KPI: onboarding activation target was 35%. This was replaced by the 42% target.",
+                {"channel_name": "growth"},
+            ),
+        ),
+        authority_weight=0.2,
+        valid_from_days_ago=90,
+        valid_to_days_ago=12,
+        last_verified_days_ago=90,
+        is_stale=True,
+    ),
+    ComponentSeed(
+        model_name="Pricing",
+        model_description="Pricing facts",
+        name="AI Credits Policy",
+        value="AI credits are included in Growth and Enterprise plans under fair-use limits.",
+        sources=(
+            SourceSeed(
+                ConnectorType.NOTION,
+                "notion-ai-credits-current",
+                "Current policy: AI credits are included in Growth and Enterprise under fair-use limits.",
+                {"page_title": "Pricing Handbook"},
+            ),
+        ),
+    ),
+    ComponentSeed(
+        model_name="Pricing",
+        model_description="Pricing facts",
+        name="Legacy AI Credits Policy",
+        value="AI credits used to be a paid add-on.",
+        sources=(
+            SourceSeed(
+                ConnectorType.NOTION,
+                "notion-ai-credits-legacy",
+                "Old policy: AI credits were a paid add-on. Superseded by included fair-use credits.",
+                {"page_title": "Old Pricing Memo"},
+            ),
+        ),
+        authority_weight=0.2,
+        valid_from_days_ago=80,
+        valid_to_days_ago=8,
+        last_verified_days_ago=80,
+        is_stale=True,
     ),
     ComponentSeed(
         model_name="GitHub Insights",
@@ -504,7 +645,14 @@ async def _populate_demo_workspace(
             confidence=0.95,
             authority_source="seeded-demo",
             authority_weight=seed.authority_weight,
-            last_verified_at=now,
+            valid_from=now - timedelta(days=seed.valid_from_days_ago),
+            valid_to=(
+                now - timedelta(days=seed.valid_to_days_ago)
+                if seed.valid_to_days_ago is not None
+                else None
+            ),
+            last_verified_at=now - timedelta(days=seed.last_verified_days_ago),
+            is_stale=seed.is_stale,
             embedding=await _EMBEDDER.embed_text(f"{seed.name}\n{seed.value}"),
         )
         session.add(component)

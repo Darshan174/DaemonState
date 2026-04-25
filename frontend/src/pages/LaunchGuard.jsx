@@ -68,7 +68,7 @@ export default function LaunchGuard() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
-            <h2 className="text-lg font-semibold text-gray-800">Launch Guard</h2>
+            <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-300">Launch Guard</h2>
             {query.isMock && <MockBadge />}
           </div>
           <p className="text-xs text-gray-400 mt-1">
@@ -76,10 +76,10 @@ export default function LaunchGuard() {
           </p>
         </div>
         <div className="flex items-center gap-3 text-xs">
-          <Link to="/app/changes" className="font-medium text-brand-700 hover:text-brand-800">
+          <Link to="/app/changes" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
             Open timeline
           </Link>
-          <Link to="/app/review" className="font-medium text-brand-700 hover:text-brand-800">
+          <Link to="/app/review" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
             Open review queue
           </Link>
         </div>
@@ -91,9 +91,9 @@ export default function LaunchGuard() {
         <SummaryCard label="Historical facts" value={summary.historical} tone="slate" />
       </div>
 
-      <div className="rounded-xl border border-gray-200 bg-white p-5 space-y-4">
+      <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-5 space-y-4">
         <div>
-          <h3 className="text-sm font-semibold text-gray-700">Draft to check</h3>
+          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-400">Draft to check</h3>
           <p className="mt-1 text-xs text-gray-400">
             Use this before sending pricing updates, launch notes, roadmap statements, or founder/customer replies.
           </p>
@@ -104,7 +104,7 @@ export default function LaunchGuard() {
           placeholder="Paste the draft you want to verify against current company context..."
           aria-label="Launch guard draft"
           rows={7}
-          className="w-full rounded-xl border border-gray-200 px-4 py-3 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+          className="w-full rounded-xl border border-gray-200 dark:border-gray-800/50 px-4 py-3 text-sm text-gray-800 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
         />
         <div className="flex flex-wrap items-center gap-2">
           {EXAMPLES.map((example) => (
@@ -115,7 +115,7 @@ export default function LaunchGuard() {
                 setDraft(example.value);
                 handleAnalyze(example.value);
               }}
-              className="rounded-full bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-200"
+              className="rounded-full bg-gray-100 dark:bg-gray-900/40 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-400 hover:bg-gray-200"
             >
               {example.label}
             </button>
@@ -141,10 +141,10 @@ export default function LaunchGuard() {
           <GuardBanner report={report} />
 
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-            <section className="rounded-xl border border-gray-200 bg-white p-5">
+            <section className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-5">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <h3 className="text-sm font-semibold text-gray-700">Findings</h3>
+                  <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-400">Findings</h3>
                   <p className="mt-1 text-xs text-gray-400">
                     Claims that look risky, stale, or unsupported in the current trust graph.
                   </p>
@@ -166,10 +166,10 @@ export default function LaunchGuard() {
               )}
             </section>
 
-            <section className="rounded-xl border border-gray-200 bg-white p-5">
+            <section className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-5">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <h3 className="text-sm font-semibold text-gray-700">Grounding evidence</h3>
+                  <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-400">Grounding evidence</h3>
                   <p className="mt-1 text-xs text-gray-400">
                     Matching decisions and facts the draft appears to rely on.
                   </p>
@@ -192,10 +192,10 @@ export default function LaunchGuard() {
             </section>
           </div>
 
-          <section className="rounded-xl border border-gray-200 bg-white p-5">
+          <section className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-5">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h3 className="text-sm font-semibold text-gray-700">Recommended next steps</h3>
+                <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-400">Recommended next steps</h3>
                 <p className="mt-1 text-xs text-gray-400">
                   Where to go next before approving or shipping this draft.
                 </p>
@@ -206,7 +206,7 @@ export default function LaunchGuard() {
                 <Link
                   key={step.label}
                   to={step.to}
-                  className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700 hover:border-brand-200 hover:text-brand-700"
+                  className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 px-4 py-3 text-sm text-gray-700 dark:text-gray-400 hover:border-brand-200 dark:border-brand-800/50 hover:text-brand-700 dark:text-brand-400"
                 >
                   <p className="font-medium">{step.label}</p>
                   <p className="mt-1 text-xs text-gray-500">{step.detail}</p>
@@ -627,9 +627,9 @@ function tokenize(value) {
 
 function SummaryCard({ label, value, tone = "default" }) {
   const tones = {
-    default: "border-gray-200 bg-white text-gray-800",
-    amber: "border-amber-200 bg-amber-50 text-amber-800",
-    slate: "border-gray-200 bg-gray-50 text-gray-800",
+    default: "border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 text-gray-800 dark:text-gray-300",
+    amber: "border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300",
+    slate: "border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 text-gray-800 dark:text-gray-300",
   };
 
   return (
@@ -642,9 +642,9 @@ function SummaryCard({ label, value, tone = "default" }) {
 
 function GuardBanner({ report }) {
   const styles = {
-    emerald: "border-emerald-200 bg-emerald-50 text-emerald-800",
-    amber: "border-amber-200 bg-amber-50 text-amber-800",
-    rose: "border-rose-200 bg-rose-50 text-rose-800",
+    emerald: "border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-300",
+    amber: "border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300",
+    rose: "border-rose-200 dark:border-rose-800/50 bg-rose-50 dark:bg-rose-900/30 text-rose-800 dark:text-rose-300",
   };
 
   return (
@@ -657,9 +657,9 @@ function GuardBanner({ report }) {
 
 function FindingCard({ item }) {
   const styles = {
-    high: "border-rose-200 bg-rose-50 text-rose-800",
-    medium: "border-amber-200 bg-amber-50 text-amber-800",
-    low: "border-gray-200 bg-gray-50 text-gray-800",
+    high: "border-rose-200 dark:border-rose-800/50 bg-rose-50 dark:bg-rose-900/30 text-rose-800 dark:text-rose-300",
+    medium: "border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300",
+    low: "border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 text-gray-800 dark:text-gray-300",
   };
   return (
     <div className={`rounded-lg border px-4 py-3 ${styles[item.severity] ?? styles.low}`}>
@@ -691,25 +691,25 @@ function FindingCard({ item }) {
 
 function EvidenceCard({ item }) {
   return (
-    <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+    <div className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 px-4 py-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <p className="text-sm font-medium text-gray-800">{item.title}</p>
+            <p className="text-sm font-medium text-gray-800 dark:text-gray-300">{item.title}</p>
             {item.status && (
-              <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-600">
+              <span className="rounded-full bg-gray-100 dark:bg-gray-900/40 px-2 py-0.5 text-[10px] font-medium text-gray-600 dark:text-gray-400">
                 {String(item.status).replace(/_/g, " ")}
               </span>
             )}
           </div>
-          <p className="mt-1 text-sm text-gray-600">{item.summary}</p>
+          <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">{item.summary}</p>
           {resolveCardLinks(item).length > 1 && (
             <div className="mt-3 flex flex-wrap gap-2">
               {resolveCardLinks(item).map((link) => (
                 <Link
                   key={`${item.id}-${link.to}-${link.label}`}
                   to={link.to}
-                  className="rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-medium text-gray-600 hover:border-brand-200 hover:text-brand-700"
+                  className="rounded-full border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-2.5 py-1 text-[11px] font-medium text-gray-600 dark:text-gray-400 hover:border-brand-200 dark:border-brand-800/50 hover:text-brand-700 dark:text-brand-400"
                 >
                   {link.label}
                 </Link>
@@ -717,7 +717,7 @@ function EvidenceCard({ item }) {
             </div>
           )}
         </div>
-        <Link to={item.to} className="shrink-0 text-xs font-medium text-brand-700 hover:text-brand-800">
+        <Link to={item.to} className="shrink-0 text-xs font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
           {item.toLabel}
         </Link>
       </div>
@@ -748,16 +748,16 @@ function dedupeLinks(items) {
 
 function LaunchGuardEmptyState() {
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-6 text-center">
-      <p className="text-sm font-semibold text-gray-800">Launch Guard does not have enough context yet.</p>
+    <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-6 text-center">
+      <p className="text-sm font-semibold text-gray-800 dark:text-gray-300">Launch Guard does not have enough context yet.</p>
       <p className="mt-2 text-xs text-gray-500 max-w-2xl mx-auto">
         Sync sources and let the system extract current facts and review state before checking draft copy.
       </p>
       <div className="mt-4 flex flex-wrap items-center justify-center gap-4 text-xs">
-        <Link to="/app/connectors" className="font-medium text-brand-700 hover:text-brand-800">
+        <Link to="/app/connectors" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
           Connect sources
         </Link>
-        <Link to="/app/sources" className="font-medium text-brand-700 hover:text-brand-800">
+        <Link to="/app/sources" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
           Inspect sources
         </Link>
       </div>

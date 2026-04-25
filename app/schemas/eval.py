@@ -12,6 +12,9 @@ class EvalDomainSummaryRead(BaseModel):
     avg_retrieval: float
     avg_extraction: float
     avg_answer: float
+    avg_citation: float = 0.0
+    avg_staleness: float = 0.0
+    avg_context_lift: float = 0.0
     pass_rate: float
 
 
@@ -23,6 +26,10 @@ class EvalCaseRead(BaseModel):
     retrieval_hit_quality: float
     extracted_fact_correctness: float
     final_answer_correctness: float
+    citation_accuracy: float = 0.0
+    stale_context_detection: float = 0.0
+    naive_answer_correctness: float = 0.0
+    context_answer_lift: float = 0.0
     passed: bool
     detail: str = ""
 
@@ -46,6 +53,10 @@ class EvalSummaryRead(BaseModel):
     average_retrieval_hit_quality: float = 0.0
     average_extracted_fact_correctness: float = 0.0
     average_final_answer_correctness: float = 0.0
+    average_citation_accuracy: float = 0.0
+    average_stale_context_detection: float = 0.0
+    average_naive_answer_correctness: float = 0.0
+    average_context_answer_lift: float = 0.0
     confidence_calibration_error: float = 0.0
     all_passed: bool = False
     domain_summaries: list[EvalDomainSummaryRead] = []

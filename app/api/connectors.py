@@ -14,6 +14,7 @@ from app.connectors.strategy import get_connector_strategy
 from app.database import get_db_session
 from app.models.source import ConnectorType, SourceDocument
 from app.schemas.connector import (
+    ConnectorSetupStatus,
     ConnectorProcessingSummary,
     ConnectorRead,
     GitHubConnectRequest,
@@ -22,6 +23,7 @@ from app.schemas.connector import (
     SyncJobResponse,
     ZoomConnectRequest,
 )
+from app.config import settings
 from app.schemas.imports import ImportDocumentInput
 from app.schemas.source import SourceDocumentList, SourceDocumentRead
 from app.services.connector_service import (
@@ -91,6 +93,39 @@ def _serialize_connector(connector) -> ConnectorRead:
         provider=strategy.provider.value,
         provider_label=strategy.provider_label,
         provider_note=provider_note,
+        setup_status=_connector_setup_status(connector.connector_type).model_dump(),
+    )
+
+
+def _connector_setup_status(connector_type: ConnectorType) -> ConnectorSetupStatus:
+    if connector_type == ConnectorType.SLACK:
+        missing = []
+        if not settings.slack_client_id:
+            missing.append("SLACK_CLIENT_ID")
+        if not settings.slack_client_secret:
+            missing.append("SLACK_CLIENT_SECRET")
+        if not settings.slack_redirect_uri:
+            missing.append("SLACK_REDIRECT_URI")
+        configured = not missing
+        return ConnectorSetupStatus(
+            connector_type=connector_type.value,
+            configured=configured,
+            missing=missing,
+            setup_url="/docs/slack.md",
+            docs_url="/docs/slack.md",
+            message=(
+                "Slack OAuth is configured. You can connect a workspace."
+                if configured
+                else "Slack OAuth needs a Slack app client ID, client secret, and redirect URI before users can connect."
+            ),
+        )
+    return ConnectorSetupStatus(
+        connector_type=connector_type.value,
+        configured=True,
+        missing=[],
+        setup_url=None,
+        docs_url=None,
+        message="Connector setup is available.",
     )
 
 
@@ -183,6 +218,17 @@ async def list_connectors(
             detail="Workspace not found",
         )
     return [_serialize_connector(c) for c in connectors]
+
+
+@router.get(
+    "/connectors/setup-status",
+    response_model=list[ConnectorSetupStatus],
+)
+async def connector_setup_status() -> list[ConnectorSetupStatus]:
+    return [
+        _connector_setup_status(connector_type)
+        for connector_type in ConnectorType
+    ]
 
 
 @router.get(

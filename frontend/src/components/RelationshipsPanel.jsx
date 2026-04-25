@@ -11,15 +11,15 @@ const RELATIONSHIP_TYPES = [
 ];
 
 const SENTIMENTS = [
-  { value: "positive", label: "Positive", color: "text-emerald-600" },
-  { value: "negative", label: "Negative", color: "text-red-600" },
+  { value: "positive", label: "Positive", color: "text-emerald-600 dark:text-emerald-400" },
+  { value: "negative", label: "Negative", color: "text-red-600 dark:text-red-400" },
   { value: "neutral", label: "Neutral", color: "text-gray-500" },
 ];
 
 const SENTIMENT_BADGE = {
-  positive: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  negative: "bg-red-50 text-red-700 border-red-200",
-  neutral: "bg-gray-50 text-gray-600 border-gray-200",
+  positive: "bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/50",
+  negative: "bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-400 border-red-200 dark:border-red-800/50",
+  neutral: "bg-gray-50 dark:bg-gray-900/30 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-800/50",
 };
 
 const TYPE_LABEL = Object.fromEntries(RELATIONSHIP_TYPES.map((t) => [t.value, t.label]));
@@ -40,7 +40,7 @@ export default function RelationshipsPanel({ modelId, components, isBackendData 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-gray-800">
+        <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-300">
           Relationships
           {relationships.length > 0 && (
             <span className="ml-2 text-xs font-normal text-gray-400">
@@ -80,14 +80,14 @@ export default function RelationshipsPanel({ modelId, components, isBackendData 
           </button>
         </div>
       ) : relationships.length === 0 ? (
-        <div className="bg-white rounded-xl border border-gray-200 p-6 text-center">
+        <div className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-gray-800/50 p-6 text-center">
           <p className="text-sm text-gray-400">No relationships yet.</p>
           <p className="text-xs text-gray-300 mt-1">
             Relationships connect components to show how they influence each other.
           </p>
         </div>
       ) : (
-        <div className="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
+        <div className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-gray-800/50 divide-y divide-gray-100">
           {relationships.map((r) => (
             <RelationshipRow
               key={r.id}
@@ -114,7 +114,7 @@ function RelationshipRow({ rel, componentMap }) {
   return (
     <div className="px-4 py-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
       {/* Source → Type → Target */}
-      <span className="font-medium text-gray-700 truncate max-w-[160px]" title={srcName}>
+      <span className="font-medium text-gray-700 dark:text-gray-400 truncate max-w-[160px]" title={srcName}>
         {srcName}
       </span>
       <span className="flex items-center gap-1 text-xs text-gray-400 shrink-0">
@@ -126,7 +126,7 @@ function RelationshipRow({ rel, componentMap }) {
           <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
         </svg>
       </span>
-      <span className="font-medium text-gray-700 truncate max-w-[160px]" title={tgtName}>
+      <span className="font-medium text-gray-700 dark:text-gray-400 truncate max-w-[160px]" title={tgtName}>
         {tgtName}
       </span>
 
@@ -174,17 +174,17 @@ function CreateRelationshipForm({ components, onClose }) {
   };
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-5">
-      <h4 className="text-sm font-semibold text-gray-700 mb-4">Add relationship</h4>
+    <div className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-gray-800/50 p-5">
+      <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-400 mb-4">Add relationship</h4>
       <form onSubmit={handleSubmit} className="grid sm:grid-cols-2 gap-3">
         {/* Source */}
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Source component</label>
+          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Source component</label>
           <select
             value={sourceId}
             onChange={(e) => setSourceId(e.target.value)}
             required
-            className="w-full px-2.5 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40 bg-white"
+            className="w-full px-2.5 py-2 text-sm border border-gray-200 dark:border-gray-800/50 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40 bg-white dark:bg-slate-800"
           >
             <option value="">Select...</option>
             {components.map((c) => (
@@ -195,12 +195,12 @@ function CreateRelationshipForm({ components, onClose }) {
 
         {/* Target */}
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Target component</label>
+          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Target component</label>
           <select
             value={targetId}
             onChange={(e) => setTargetId(e.target.value)}
             required
-            className="w-full px-2.5 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40 bg-white"
+            className="w-full px-2.5 py-2 text-sm border border-gray-200 dark:border-gray-800/50 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40 bg-white dark:bg-slate-800"
           >
             <option value="">Select...</option>
             {components.filter((c) => c.id !== sourceId).map((c) => (
@@ -211,11 +211,11 @@ function CreateRelationshipForm({ components, onClose }) {
 
         {/* Type */}
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Type</label>
+          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Type</label>
           <select
             value={relType}
             onChange={(e) => setRelType(e.target.value)}
-            className="w-full px-2.5 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40 bg-white"
+            className="w-full px-2.5 py-2 text-sm border border-gray-200 dark:border-gray-800/50 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40 bg-white dark:bg-slate-800"
           >
             {RELATIONSHIP_TYPES.map((t) => (
               <option key={t.value} value={t.value}>{t.label}</option>
@@ -225,11 +225,11 @@ function CreateRelationshipForm({ components, onClose }) {
 
         {/* Sentiment */}
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Sentiment</label>
+          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Sentiment</label>
           <select
             value={sentiment}
             onChange={(e) => setSentiment(e.target.value)}
-            className="w-full px-2.5 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40 bg-white"
+            className="w-full px-2.5 py-2 text-sm border border-gray-200 dark:border-gray-800/50 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40 bg-white dark:bg-slate-800"
           >
             {SENTIMENTS.map((s) => (
               <option key={s.value} value={s.value}>{s.label}</option>
@@ -239,7 +239,7 @@ function CreateRelationshipForm({ components, onClose }) {
 
         {/* Confidence */}
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Confidence (0–1)</label>
+          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Confidence (0–1)</label>
           <input
             type="number"
             step="0.01"
@@ -247,31 +247,31 @@ function CreateRelationshipForm({ components, onClose }) {
             max="1"
             value={confidence}
             onChange={(e) => setConfidence(e.target.value)}
-            className="w-full px-2.5 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            className="w-full px-2.5 py-2 text-sm border border-gray-200 dark:border-gray-800/50 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
           />
         </div>
 
         {/* Description */}
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Description</label>
+          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Description</label>
           <input
             type="text"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Optional note"
-            className="w-full px-2.5 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            className="w-full px-2.5 py-2 text-sm border border-gray-200 dark:border-gray-800/50 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
           />
         </div>
 
         {/* Validation */}
         {sourceId && targetId && sourceId === targetId && (
-          <p className="sm:col-span-2 text-xs text-amber-600">
+          <p className="sm:col-span-2 text-xs text-amber-600 dark:text-amber-400">
             Source and target must be different components.
           </p>
         )}
 
         {create.isError && (
-          <p className="sm:col-span-2 text-xs text-red-600">
+          <p className="sm:col-span-2 text-xs text-red-600 dark:text-red-400">
             {create.error?.message || "Failed to create relationship."}
           </p>
         )}
@@ -287,7 +287,7 @@ function CreateRelationshipForm({ components, onClose }) {
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 text-sm font-medium rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
+            className="px-4 py-2 text-sm font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 transition-colors"
           >
             Cancel
           </button>

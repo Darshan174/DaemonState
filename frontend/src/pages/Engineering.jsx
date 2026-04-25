@@ -81,7 +81,7 @@ export default function Engineering() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
-            <h2 className="text-lg font-semibold text-gray-800">Engineering</h2>
+            <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-300">Engineering</h2>
             {isMock && <MockBadge />}
           </div>
           <p className="text-xs text-gray-400 mt-1">
@@ -89,37 +89,37 @@ export default function Engineering() {
           </p>
         </div>
         <div className="flex items-center gap-3 text-xs">
-          <Link to="/app/changes" className="font-medium text-brand-700 hover:text-brand-800">
+          <Link to="/app/changes" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
             Open timeline
           </Link>
-          <Link to="/app/decisions" className="font-medium text-brand-700 hover:text-brand-800">
+          <Link to="/app/decisions" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
             Open decision register
           </Link>
         </div>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1.05fr)_minmax(340px,0.95fr)]">
-        <section className="overflow-hidden rounded-xl border border-gray-200 bg-white">
-          <div className="flex items-start justify-between gap-4 border-b border-gray-100 px-4 py-3">
+        <section className="overflow-hidden rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800">
+          <div className="flex items-start justify-between gap-4 border-b border-gray-100 dark:border-gray-800/30 px-4 py-3">
             <div>
-              <p className="text-sm font-semibold text-gray-700">GitHub activity</p>
+              <p className="text-sm font-semibold text-gray-700 dark:text-gray-400">GitHub activity</p>
               <p className="text-xs text-gray-400">
                 {visibleItems.length}
                 {items.length !== visibleItems.length ? ` of ${items.length}` : ""} loaded engineering item
                 {visibleItems.length === 1 ? "" : "s"} from GitHub.
               </p>
             </div>
-            <Link to="/app/connectors" className="text-xs font-medium text-brand-700 hover:text-brand-800">
+            <Link to="/app/connectors" className="text-xs font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
               Manage GitHub
             </Link>
           </div>
-          <div className="border-b border-gray-100 px-4 py-3 space-y-3 bg-gray-50/70">
+          <div className="border-b border-gray-100 dark:border-gray-800/30 px-4 py-3 space-y-3 bg-gray-50/70">
             <input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="Search repository, title, author, or discussion text..."
               aria-label="Search engineering activity"
-              className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-gray-800 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
             />
             <div className="flex flex-wrap gap-2">
               {ENGINEERING_FILTERS.map((item) => {
@@ -133,7 +133,7 @@ export default function Engineering() {
                     className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
                       active
                         ? "bg-brand-600 text-white"
-                        : "bg-white text-gray-600 border border-gray-200 hover:bg-gray-100"
+                        : "bg-white dark:bg-slate-800 text-gray-600 dark:text-gray-400 border border-gray-200 dark:border-gray-800/50 hover:bg-gray-100 dark:bg-gray-900/40"
                     }`}
                   >
                     {item.label}
@@ -152,26 +152,26 @@ export default function Engineering() {
                   onClick={() => navigate(`/app/engineering/${item.id}`)}
                   aria-pressed={documentId === item.id}
                   className={`w-full px-4 py-4 text-left transition-colors ${
-                    documentId === item.id ? "bg-brand-50" : "hover:bg-gray-50"
+                    documentId === item.id ? "bg-brand-50 dark:bg-brand-900/30" : "hover:bg-gray-50 dark:bg-gray-900/30"
                   }`}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-700">
+                        <span className="rounded-full bg-slate-100 dark:bg-slate-900/40 px-2 py-0.5 text-[10px] font-medium text-slate-700 dark:text-slate-400">
                           {formatGitHubItemType(item.githubItemType)}
                         </span>
                         <span
                           className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
                             item.processed
-                              ? "bg-emerald-100 text-emerald-700"
-                              : "bg-amber-100 text-amber-700"
+                              ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400"
+                              : "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400"
                           }`}
                         >
                           {item.processed ? "Processed" : "Pending"}
                         </span>
                       </div>
-                      <p className="mt-2 truncate text-sm font-medium text-gray-800">
+                      <p className="mt-2 truncate text-sm font-medium text-gray-800 dark:text-gray-300">
                         {item.documentTitle || item.location || item.externalId || "Untitled GitHub item"}
                       </p>
                       <p className="mt-1 text-xs text-gray-500">
@@ -191,7 +191,7 @@ export default function Engineering() {
               );
             }) : (
               <div className="px-4 py-8 text-center">
-                <p className="text-sm font-semibold text-gray-800">No engineering activity matches this view.</p>
+                <p className="text-sm font-semibold text-gray-800 dark:text-gray-300">No engineering activity matches this view.</p>
                 <p className="mt-2 text-xs text-gray-500">
                   Clear the search or switch filters to bring more GitHub context back into scope.
                 </p>
@@ -201,7 +201,7 @@ export default function Engineering() {
                     setSearch("");
                     setFilter("all");
                   }}
-                  className="mt-4 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                  className="mt-4 rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-medium text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30"
                 >
                   Clear filters
                 </button>
@@ -209,12 +209,12 @@ export default function Engineering() {
             )}
           </div>
           {showLoadMore && (
-            <div className="border-t border-gray-100 bg-gray-50 px-4 py-3">
+            <div className="border-t border-gray-100 dark:border-gray-800/30 bg-gray-50 dark:bg-gray-900/30 px-4 py-3">
               <button
                 type="button"
                 onClick={() => fetchNextPage()}
                 disabled={isFetchingNextPage}
-                className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+                className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 disabled:opacity-60"
               >
                 {isFetchingNextPage ? "Loading more..." : "Load more engineering activity"}
               </button>
@@ -222,7 +222,7 @@ export default function Engineering() {
           )}
         </section>
 
-        <section className="space-y-4 rounded-xl border border-gray-200 bg-white p-5">
+        <section className="space-y-4 rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-5">
           {selectedItem ? (
             <EngineeringDetail
               item={selectedItem}
@@ -251,7 +251,7 @@ function EngineeringDetail({ item, components, reviewItems }) {
     <>
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h3 className="text-sm font-semibold text-gray-700">
+          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-400">
             {item.documentTitle || item.location || "Engineering detail"}
           </h3>
           <p className="mt-1 text-xs text-gray-400">
@@ -260,7 +260,7 @@ function EngineeringDetail({ item, components, reviewItems }) {
         </div>
         <Link
           to={`/app/sources/${item.id}`}
-          className="text-xs font-medium text-brand-700 hover:text-brand-800"
+          className="text-xs font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300"
         >
           Open source
         </Link>
@@ -299,7 +299,7 @@ function EngineeringDetail({ item, components, reviewItems }) {
         </div>
         {item.parentExternalId ? (
           <p className="text-xs text-gray-500">
-            Parent thread: <span className="font-mono text-gray-700">{item.parentExternalId}</span>
+            Parent thread: <span className="font-mono text-gray-700 dark:text-gray-400">{item.parentExternalId}</span>
           </p>
         ) : null}
       </section>
@@ -354,13 +354,13 @@ function EngineeringDetail({ item, components, reviewItems }) {
         {reviewItems.length > 0 ? (
           <div className="space-y-3">
             {reviewItems.map((review) => (
-              <div key={review.id} className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+              <div key={review.id} className="rounded-lg border border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30 px-4 py-3">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="text-sm font-medium text-amber-800">{review.title}</p>
-                    <p className="mt-1 text-sm text-amber-700">{review.summary}</p>
+                    <p className="text-sm font-medium text-amber-800 dark:text-amber-300">{review.title}</p>
+                    <p className="mt-1 text-sm text-amber-700 dark:text-amber-400">{review.summary}</p>
                   </div>
-                  <Link to={`/app/review/${review.id}`} className="text-xs font-medium text-amber-800 underline underline-offset-2">
+                  <Link to={`/app/review/${review.id}`} className="text-xs font-medium text-amber-800 dark:text-amber-300 underline underline-offset-2">
                     Open
                   </Link>
                 </div>
@@ -374,7 +374,7 @@ function EngineeringDetail({ item, components, reviewItems }) {
 
       <section className="space-y-2">
         <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Source excerpt</h4>
-        <div className="max-h-64 overflow-y-auto rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm leading-relaxed text-gray-700">
+        <div className="max-h-64 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 px-4 py-3 text-sm leading-relaxed text-gray-700 dark:text-gray-400">
           {item.content || "No source content is available."}
         </div>
       </section>
@@ -384,19 +384,19 @@ function EngineeringDetail({ item, components, reviewItems }) {
 
 function DetailStat({ label, value }) {
   return (
-    <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+    <div className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 px-4 py-3">
       <p className="text-[11px] uppercase tracking-wide text-gray-500">{label}</p>
-      <p className="mt-1 text-sm text-gray-700">{value}</p>
+      <p className="mt-1 text-sm text-gray-700 dark:text-gray-400">{value}</p>
     </div>
   );
 }
 
 function OutcomeStat({ label, value, tone }) {
   const classes = {
-    emerald: "border-emerald-200 bg-emerald-50 text-emerald-800",
-    amber: "border-amber-200 bg-amber-50 text-amber-800",
-    rose: "border-rose-200 bg-rose-50 text-rose-800",
-    slate: "border-gray-200 bg-gray-50 text-gray-800",
+    emerald: "border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-300",
+    amber: "border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300",
+    rose: "border-rose-200 dark:border-rose-800/50 bg-rose-50 dark:bg-rose-900/30 text-rose-800 dark:text-rose-300",
+    slate: "border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 text-gray-800 dark:text-gray-300",
   };
   return (
     <div className={`rounded-lg border px-4 py-3 ${classes[tone] ?? classes.slate}`}>
@@ -408,12 +408,12 @@ function OutcomeStat({ label, value, tone }) {
 
 function ReferencePanel({ title, items, empty }) {
   return (
-    <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
-      <p className="text-sm font-medium text-gray-800">{title}</p>
+    <div className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 px-4 py-3">
+      <p className="text-sm font-medium text-gray-800 dark:text-gray-300">{title}</p>
       {items.length > 0 ? (
         <div className="mt-3 flex flex-wrap gap-2">
           {items.map((item) => (
-            <span key={`${title}-${item}`} className="rounded-full bg-white px-2 py-1 text-[11px] font-medium text-gray-700">
+            <span key={`${title}-${item}`} className="rounded-full bg-white dark:bg-slate-800 px-2 py-1 text-[11px] font-medium text-gray-700 dark:text-gray-400">
               {item}
             </span>
           ))}
@@ -427,52 +427,52 @@ function ReferencePanel({ title, items, empty }) {
 
 function EngineeringComponentCard({ component, label, tone }) {
   const toneClasses = {
-    emerald: "border-emerald-200 bg-emerald-50/70",
-    amber: "border-amber-200 bg-amber-50/70",
-    slate: "border-gray-200 bg-gray-50",
+    emerald: "border-emerald-200 dark:border-emerald-800/50 bg-emerald-50/70",
+    amber: "border-amber-200 dark:border-amber-800/50 bg-amber-50/70",
+    slate: "border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30",
   };
   return (
     <div className={`rounded-lg border px-4 py-3 ${toneClasses[tone] ?? toneClasses.slate}`}>
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full bg-white/80 px-2 py-0.5 text-[10px] font-medium text-gray-600">
+            <span className="rounded-full bg-white/80 px-2 py-0.5 text-[10px] font-medium text-gray-600 dark:text-gray-400">
               {label}
             </span>
-            <p className="text-sm font-medium text-gray-800">{component.name}</p>
+            <p className="text-sm font-medium text-gray-800 dark:text-gray-300">{component.name}</p>
             {component.reviewStatus ? (
-              <span className="rounded-full bg-white/80 px-2 py-0.5 text-[10px] font-medium text-gray-600">
+              <span className="rounded-full bg-white/80 px-2 py-0.5 text-[10px] font-medium text-gray-600 dark:text-gray-400">
                 {component.reviewStatus.replace(/_/g, " ")}
               </span>
             ) : null}
           </div>
-          <p className="mt-1 text-sm text-gray-600">{component.value}</p>
+          <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">{component.value}</p>
           <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-gray-500">
             {component.modelName ? (
               <span className="rounded-full bg-white/80 px-2 py-1">
-                <span className="font-medium text-gray-700">Model:</span> {component.modelName}
+                <span className="font-medium text-gray-700 dark:text-gray-400">Model:</span> {component.modelName}
               </span>
             ) : null}
             {component.authorityWeight != null ? (
               <span className="rounded-full bg-white/80 px-2 py-1">
-                <span className="font-medium text-gray-700">Authority:</span> {component.authorityWeight.toFixed(2)}
+                <span className="font-medium text-gray-700 dark:text-gray-400">Authority:</span> {component.authorityWeight.toFixed(2)}
               </span>
             ) : null}
             {component.validFrom ? (
               <span className="rounded-full bg-white/80 px-2 py-1">
-                <span className="font-medium text-gray-700">Active from:</span> {formatDate(component.validFrom)}
+                <span className="font-medium text-gray-700 dark:text-gray-400">Active from:</span> {formatDate(component.validFrom)}
               </span>
             ) : null}
           </div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-2">
           {component.modelId ? (
-            <Link to={`/app/model/${component.modelId}`} className="text-xs font-medium text-brand-700 hover:text-brand-800">
+            <Link to={`/app/model/${component.modelId}`} className="text-xs font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
               Open model
             </Link>
           ) : null}
           {component.reviewItemId ? (
-            <Link to={`/app/review/${component.reviewItemId}`} className="text-xs font-medium text-brand-700 hover:text-brand-800">
+            <Link to={`/app/review/${component.reviewItemId}`} className="text-xs font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
               Open review
             </Link>
           ) : null}
@@ -567,16 +567,16 @@ function formatDate(value) {
 
 function EngineeringEmptyState() {
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-6 text-center">
-      <p className="text-sm font-semibold text-gray-800">No GitHub activity yet.</p>
+    <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-6 text-center">
+      <p className="text-sm font-semibold text-gray-800 dark:text-gray-300">No GitHub activity yet.</p>
       <p className="mt-2 text-xs text-gray-500 max-w-2xl mx-auto">
         Connect GitHub and sync issues, pull requests, and review comments so engineering rationale becomes part of the operating context.
       </p>
       <div className="mt-4 flex flex-wrap items-center justify-center gap-4 text-xs">
-        <Link to="/app/connectors" className="font-medium text-brand-700 hover:text-brand-800">
+        <Link to="/app/connectors" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
           Connect GitHub
         </Link>
-        <Link to="/app/sources?connector=github" className="font-medium text-brand-700 hover:text-brand-800">
+        <Link to="/app/sources?connector=github" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
           Open sources
         </Link>
       </div>

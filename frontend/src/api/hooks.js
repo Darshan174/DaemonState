@@ -372,7 +372,11 @@ export function useConnectors() {
       async () => {
         const wsId = await getWorkspaceId();
         if (!wsId) return [];
-        return api.get(`/connectors?workspace_id=${wsId}`);
+        const [connectors, setupStatus] = await Promise.all([
+          api.get(`/connectors?workspace_id=${wsId}`),
+          api.get("/connectors/setup-status").catch(() => []),
+        ]);
+        return { connectors, setupStatus };
       },
       mockConnectors,
       { fallbackStatuses: [404, 501] },
@@ -1153,6 +1157,7 @@ function normalizeGraphResponse(graph) {
       reviewStatus: node.review_status,
       reviewItemId: node.review_item_id,
       temporalState: node.temporal_state,
+      isStale: Boolean(node.is_stale),
       authorityWeight: node.authority_weight,
       sourceCount: node.source_count,
       confidence: node.confidence,
@@ -1174,6 +1179,9 @@ function normalizeGraphResponse(graph) {
       source: edge.source_component_id ?? edge.source_id,
       target: edge.target_component_id ?? edge.target_id,
       label: formatRelationshipLabel(edge.relationship_type),
+      sentiment: edge.sentiment,
+      confidence: edge.confidence,
+      temporalState: edge.temporal_state,
     });
   });
 
@@ -1645,11 +1653,19 @@ export function useUploadSourceFile() {
 }
 
 function normalizeConnectors(data) {
-  if (!Array.isArray(data)) return [];
+  const rawConnectors = Array.isArray(data) ? data : data?.connectors;
+  const setupStatus = Array.isArray(data?.setupStatus) ? data.setupStatus : [];
+  if (!Array.isArray(rawConnectors)) return [];
 
-  const isMockShape = data.every((item) => item && "lastSync" in item);
+  const setupByType = new Map(
+    setupStatus
+      .filter((item) => item?.connector_type)
+      .map((item) => [item.connector_type, item]),
+  );
+
+  const isMockShape = rawConnectors.every((item) => item && "lastSync" in item);
   if (isMockShape) {
-    return data.map((item) => {
+    return rawConnectors.map((item) => {
       const type = item.type ?? item.id;
       const catalogItem = CONNECTOR_CATALOG[type] ?? {};
       return {
@@ -1666,18 +1682,23 @@ function normalizeConnectors(data) {
         provider: item.provider ?? catalogItem.provider,
         providerLabel: item.providerLabel ?? catalogItem.providerLabel,
         providerNote: item.providerNote ?? catalogItem.providerNote,
+        setupStatus: item.setupStatus ?? null,
+        isConfigured: item.isConfigured ?? item.setupStatus?.configured ?? true,
+        missingConfig: item.missingConfig ?? item.setupStatus?.missing ?? [],
       };
     });
   }
 
   const recordsByType = new Map(
-    data
+    rawConnectors
       .filter((item) => item?.connector_type)
       .map((item) => [item.connector_type, item]),
   );
 
   return Object.values(CONNECTOR_CATALOG).map((catalogItem) => {
     const record = recordsByType.get(catalogItem.type);
+    const setup = record?.setup_status ?? setupByType.get(catalogItem.type) ?? null;
+    const isConfigured = setup?.configured ?? true;
     if (!record) {
       return {
         ...catalogItem,
@@ -1688,8 +1709,13 @@ function normalizeConnectors(data) {
         isInstalled: false,
         lastSync: "Never",
         itemsSynced: 0,
+        setupStatus: setup,
+        isConfigured,
+        missingConfig: Array.isArray(setup?.missing) ? setup.missing : [],
         message:
-          catalogItem.availability === "available"
+          catalogItem.type === "slack" && !isConfigured
+            ? setup?.message ?? "Slack OAuth is not configured yet."
+            : catalogItem.availability === "available"
             ? "Not connected yet."
             : "Planned after the Slack reference connector ships.",
       };
@@ -1724,6 +1750,9 @@ function normalizeConnectors(data) {
       provider: record.provider ?? catalogItem.provider,
       providerLabel: record.provider_label ?? catalogItem.providerLabel,
       providerNote: record.provider_note ?? catalogItem.providerNote,
+      setupStatus: setup,
+      isConfigured,
+      missingConfig: Array.isArray(setup?.missing) ? setup.missing : [],
     };
   });
 }
@@ -1942,6 +1971,9 @@ function normalizeEvalSummary(data) {
       passRate: toNumber(item.passRate ?? item.pass_rate ?? 0),
       passed: toNumber(item.passed ?? item.passed_cases ?? item.case_count ?? 0),
       total: toNumber(item.total ?? item.total_cases ?? item.case_count ?? 0),
+      avgCitation: toNumber(item.avgCitation ?? item.avg_citation ?? null),
+      avgStaleness: toNumber(item.avgStaleness ?? item.avg_staleness ?? null),
+      avgContextLift: toNumber(item.avgContextLift ?? item.avg_context_lift ?? null),
     })),
     metrics: normalizeEvalMetrics(
       source.metrics ??
@@ -2001,6 +2033,38 @@ function buildEvalMetricSummary(source) {
       direction: "up",
     });
   }
+  if (source.average_citation_accuracy != null) {
+    metrics.push({
+      key: "average_citation_accuracy",
+      label: "Citation accuracy",
+      value: source.average_citation_accuracy,
+      direction: "up",
+    });
+  }
+  if (source.average_stale_context_detection != null) {
+    metrics.push({
+      key: "average_stale_context_detection",
+      label: "Stale context detection",
+      value: source.average_stale_context_detection,
+      direction: "up",
+    });
+  }
+  if (source.average_naive_answer_correctness != null) {
+    metrics.push({
+      key: "average_naive_answer_correctness",
+      label: "Naive RAG answer correctness",
+      value: source.average_naive_answer_correctness,
+      direction: "up",
+    });
+  }
+  if (source.average_context_answer_lift != null) {
+    metrics.push({
+      key: "average_context_answer_lift",
+      label: "Context answer lift",
+      value: source.average_context_answer_lift,
+      direction: "up",
+    });
+  }
   if (source.confidence_calibration_error != null) {
     metrics.push({
       key: "confidence_calibration_error",
@@ -2037,6 +2101,14 @@ function normalizeEvalCaseItems(data) {
     finalAnswerCorrectness: toNumber(
       item.finalAnswerCorrectness ?? item.final_answer_correctness ?? null,
     ),
+    citationAccuracy: toNumber(item.citationAccuracy ?? item.citation_accuracy ?? null),
+    staleContextDetection: toNumber(
+      item.staleContextDetection ?? item.stale_context_detection ?? null,
+    ),
+    naiveAnswerCorrectness: toNumber(
+      item.naiveAnswerCorrectness ?? item.naive_answer_correctness ?? null,
+    ),
+    contextAnswerLift: toNumber(item.contextAnswerLift ?? item.context_answer_lift ?? null),
     passed: Boolean(item.passed),
     detail: item.detail ?? "",
   }));

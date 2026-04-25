@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { CheckCircle2, History, ShieldAlert, Cpu, ArrowRight, BookOpen, AlertCircle, Database } from "lucide-react";
+import ThemeToggle from "../components/ThemeToggle";
 
 const PROBLEMS = [
   {
@@ -67,32 +68,33 @@ const itemVariants = {
 
 export default function Landing() {
   return (
-    <div className="min-h-screen relative bg-slate-50 text-slate-900 overflow-x-hidden">
+    <div className="min-h-screen relative bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-x-hidden transition-colors duration-300">
       {/* Animated modern background */}
-      <div className="absolute inset-0 -z-10 h-full w-full bg-[linear-gradient(to_right,#8080800a_1px,transparent_1px),linear-gradient(to_bottom,#8080800a_1px,transparent_1px)] bg-[size:14px_24px]">
-        <div className="absolute top-0 -left-4 w-96 h-96 bg-brand-300 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob"></div>
-        <div className="absolute top-0 -right-4 w-96 h-96 bg-brand-200 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob" style={{ animationDelay: "2s" }}></div>
-        <div className="absolute -bottom-8 left-20 w-96 h-96 bg-brand-400 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob" style={{ animationDelay: "4s" }}></div>
+      <div className="absolute inset-0 -z-10 h-full w-full bg-[linear-gradient(to_right,#8080800a_1px,transparent_1px),linear-gradient(to_bottom,#8080800a_1px,transparent_1px)] dark:bg-[linear-gradient(to_right,#ffffff06_1px,transparent_1px),linear-gradient(to_bottom,#ffffff06_1px,transparent_1px)] bg-[size:14px_24px]">
+        <div className="absolute top-0 -left-4 w-96 h-96 bg-brand-300 dark:bg-brand-600 rounded-full mix-blend-multiply dark:mix-blend-screen filter blur-3xl opacity-30 dark:opacity-15 animate-blob"></div>
+        <div className="absolute top-0 -right-4 w-96 h-96 bg-brand-200 dark:bg-brand-500 rounded-full mix-blend-multiply dark:mix-blend-screen filter blur-3xl opacity-30 dark:opacity-15 animate-blob" style={{ animationDelay: "2s" }}></div>
+        <div className="absolute -bottom-8 left-20 w-96 h-96 bg-brand-400 dark:bg-brand-700 rounded-full mix-blend-multiply dark:mix-blend-screen filter blur-3xl opacity-30 dark:opacity-15 animate-blob" style={{ animationDelay: "4s" }}></div>
       </div>
-      <header className="sticky top-0 z-50 border-b border-slate-200/50 bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/60">
+      <header className="sticky top-0 z-50 border-b border-slate-200/50 dark:border-slate-800/50 bg-white/70 dark:bg-slate-950/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/60 dark:supports-[backdrop-filter]:bg-slate-950/60 transition-colors">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-3">
             <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-brand-600 shadow-[0_4px_20px_rgba(79,70,229,0.4)] text-sm font-semibold text-white">
               CE
             </span>
             <div>
-              <p className="text-sm font-semibold text-slate-900">Context Engine</p>
-              <p className="text-xs text-slate-500">Source-backed startup memory</p>
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">Context Engine</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Source-backed startup memory</p>
             </div>
           </div>
 
-          <nav className="hidden items-center gap-6 text-sm font-medium text-slate-500 md:flex">
-            <a href="#problem" className="transition-colors hover:text-brand-600">Problem</a>
-            <a href="#solution" className="transition-colors hover:text-brand-600">Solution</a>
-            <a href="#fit" className="transition-colors hover:text-brand-600">Why startups</a>
+          <nav className="hidden items-center gap-6 text-sm font-medium text-slate-500 dark:text-slate-400 md:flex">
+            <a href="#problem" className="transition-colors hover:text-brand-600 dark:hover:text-brand-400">Problem</a>
+            <a href="#solution" className="transition-colors hover:text-brand-600 dark:hover:text-brand-400">Solution</a>
+            <a href="#fit" className="transition-colors hover:text-brand-600 dark:hover:text-brand-400">Why startups</a>
           </nav>
 
           <div className="flex items-center gap-3">
+            <ThemeToggle />
             <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
               <Link
                 to="/app"
@@ -118,7 +120,7 @@ export default function Landing() {
             transition={{ duration: 0.6 }}
             className="space-y-8"
           >
-            <div className="inline-flex items-center gap-2 rounded-full border border-brand-200 bg-brand-50 px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-brand-700 shadow-sm">
+            <div className="inline-flex items-center gap-2 rounded-full border border-brand-200 dark:border-brand-700 bg-brand-50 dark:bg-brand-900/40 px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-brand-700 dark:text-brand-300 shadow-sm">
               <span className="relative flex h-2 w-2">
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-brand-400 opacity-75"></span>
                 <span className="relative inline-flex h-2 w-2 rounded-full bg-brand-500"></span>
@@ -127,10 +129,10 @@ export default function Landing() {
             </div>
 
             <div className="space-y-5">
-              <h1 className="max-w-3xl text-5xl font-bold tracking-tight text-slate-950 md:text-6xl md:leading-[1.05]">
+              <h1 className="max-w-3xl text-5xl font-bold tracking-tight text-slate-950 dark:text-white md:text-6xl md:leading-[1.05]">
                 Your startup moves <span className="inline-block text-transparent bg-clip-text bg-[linear-gradient(110deg,#4f46e5,45%,#818cf8,55%,#4f46e5)] bg-[length:200%_100%] animate-shimmer">faster</span> than its docs.
               </h1>
-              <p className="max-w-2xl text-lg leading-relaxed text-slate-600">
+              <p className="max-w-2xl text-lg leading-relaxed text-slate-600 dark:text-slate-300">
                 Context Engine turns Slack, Notion, GitHub, and other internal sources into a
                 source-backed memory of what your company believes, what changed, and why.
               </p>
@@ -153,7 +155,7 @@ export default function Landing() {
               <motion.a
                 whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
                 href="#solution"
-                className="rounded-2xl border border-slate-200 bg-white/80 backdrop-blur-sm px-6 py-3.5 text-sm font-semibold text-slate-700 shadow-sm transition-all duration-300 hover:bg-slate-50 hover:shadow-md"
+                className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm px-6 py-3.5 text-sm font-semibold text-slate-700 dark:text-slate-200 shadow-sm transition-all duration-300 hover:bg-slate-50 dark:hover:bg-slate-700 hover:shadow-md"
               >
                 See how it works
               </motion.a>
@@ -170,16 +172,16 @@ export default function Landing() {
             initial={{ opacity: 0, scale: 0.95, y: 30 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             transition={{ duration: 0.7, delay: 0.2 }}
-            className="rounded-[32px] border border-white/40 bg-white/60 p-2 shadow-[0_32px_80px_-24px_rgba(79,70,229,0.2)] backdrop-blur-xl"
+            className="rounded-[32px] border border-white/40 dark:border-slate-700/40 bg-white/60 dark:bg-slate-900/60 p-2 shadow-[0_32px_80px_-24px_rgba(79,70,229,0.2)] backdrop-blur-xl"
           >
             <ContextGraphAnimation />
           </motion.div>
         </section>
 
         {/* LOGOS SECTION */}
-        <section className="border-y border-slate-200/50 bg-white/40 py-10 backdrop-blur-sm overflow-hidden">
+        <section className="border-y border-slate-200/50 dark:border-slate-800/50 bg-white/40 dark:bg-slate-900/40 py-10 backdrop-blur-sm overflow-hidden transition-colors">
           <div className="mx-auto max-w-6xl px-6 text-center mb-8">
-            <p className="text-xs font-semibold uppercase tracking-widest text-slate-400">Works smoothly with your favorite tools</p>
+            <p className="text-xs font-semibold uppercase tracking-widest text-slate-400 dark:text-slate-500">Works smoothly with your favorite tools</p>
           </div>
           <div className="relative flex overflow-hidden group w-full opacity-60 hover:opacity-100 transition-opacity [mask-image:_linear-gradient(to_right,transparent_0,_black_128px,_black_calc(100%-128px),transparent_100%)]">
             <div className="animate-marquee flex min-w-full shrink-0 items-center justify-around gap-14 py-2">
@@ -191,16 +193,16 @@ export default function Landing() {
           </div>
         </section>
 
-        <section id="problem" className="bg-white/70 backdrop-blur-md">
+        <section id="problem" className="bg-white/70 dark:bg-slate-900/70 backdrop-blur-md transition-colors">
           <div className="mx-auto max-w-6xl px-6 py-24">
             <motion.div
               initial="hidden" whileInView="visible" viewport={{ once: true, margin: "-100px" }}
               variants={itemVariants}
               className="max-w-3xl"
             >
-              <p className="text-lg font-bold uppercase tracking-widest text-brand-600">The Startup Problem</p>
-              <h2 className="mt-4 text-3xl font-bold tracking-tight text-slate-950 md:text-5xl">
-                Search is not the hard part. <span className="text-slate-400">Keeping company truth aligned is.</span>
+              <p className="text-lg font-bold uppercase tracking-widest text-brand-600 dark:text-brand-400">The Startup Problem</p>
+              <h2 className="mt-4 text-3xl font-bold tracking-tight text-slate-950 dark:text-white md:text-5xl">
+                Search is not the hard part. <span className="text-slate-400 dark:text-slate-500">Keeping company truth aligned is.</span>
               </h2>
             </motion.div>
 
@@ -216,11 +218,11 @@ export default function Landing() {
                   className="h-full"
                 >
                   <SpotlightCard className="group h-full p-8">
-                    <div className="mb-6 inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-brand-50 text-brand-600 transition-colors group-hover:bg-brand-600 group-hover:text-white relative z-10">
+                    <div className="mb-6 inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-brand-50 dark:bg-brand-900/40 text-brand-600 dark:text-brand-400 transition-colors group-hover:bg-brand-600 group-hover:text-white relative z-10">
                       <item.icon className="h-6 w-6" />
                     </div>
-                    <h3 className="text-xl font-bold text-slate-900 relative z-10">{item.title}</h3>
-                    <p className="mt-3 text-base leading-relaxed text-slate-600 relative z-10">{item.body}</p>
+                    <h3 className="text-xl font-bold text-slate-900 dark:text-white relative z-10">{item.title}</h3>
+                    <p className="mt-3 text-base leading-relaxed text-slate-600 dark:text-slate-300 relative z-10">{item.body}</p>
                   </SpotlightCard>
                 </motion.div>
               ))}
@@ -234,8 +236,8 @@ export default function Landing() {
             variants={itemVariants}
             className="max-w-3xl"
           >
-            <p className="text-lg font-bold uppercase tracking-widest text-brand-600">What Context Engine Does</p>
-            <h2 className="mt-4 text-3xl font-bold tracking-tight text-slate-950 md:text-5xl">
+            <p className="text-lg font-bold uppercase tracking-widest text-brand-600 dark:text-brand-400">What Context Engine Does</p>
+            <h2 className="mt-4 text-3xl font-bold tracking-tight text-slate-950 dark:text-white md:text-5xl">
               Gives your team a <span className="text-transparent bg-clip-text bg-gradient-to-r from-brand-600 to-brand-400">grounded memory.</span>
             </h2>
           </motion.div>
@@ -252,11 +254,11 @@ export default function Landing() {
                   className="h-full"
                 >
                   <SpotlightCard className="group h-full p-8">
-                    <div className="mb-5 inline-flex h-10 w-10 items-center justify-center rounded-xl bg-slate-50 text-slate-600 transition-colors group-hover:bg-brand-50 group-hover:text-brand-600 relative z-10">
+                    <div className="mb-5 inline-flex h-10 w-10 items-center justify-center rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 transition-colors group-hover:bg-brand-50 dark:group-hover:bg-brand-900/40 group-hover:text-brand-600 dark:group-hover:text-brand-400 relative z-10">
                       <item.icon className="h-5 w-5" />
                     </div>
-                    <h3 className="text-lg font-bold text-slate-900 relative z-10">{item.title}</h3>
-                    <p className="mt-3 text-sm leading-relaxed text-slate-600 relative z-10">{item.body}</p>
+                    <h3 className="text-lg font-bold text-slate-900 dark:text-white relative z-10">{item.title}</h3>
+                    <p className="mt-3 text-sm leading-relaxed text-slate-600 dark:text-slate-300 relative z-10">{item.body}</p>
                   </SpotlightCard>
                 </motion.div>
             ))}
@@ -309,17 +311,17 @@ export default function Landing() {
             whileInView={{ opacity: 1, scale: 1 }}
             viewport={{ once: true, margin: "-100px" }}
             transition={{ duration: 0.6 }}
-            className="relative overflow-hidden rounded-[40px] border border-brand-200 bg-white p-10 shadow-2xl shadow-brand-500/10 md:p-16"
+            className="relative overflow-hidden rounded-[40px] border border-brand-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-10 shadow-2xl shadow-brand-500/10 md:p-16 transition-colors"
           >
-            <div className="absolute top-0 right-0 -mr-20 -mt-20 h-64 w-64 rounded-full bg-brand-500/10 blur-3xl mix-blend-multiply" />
-            <div className="absolute bottom-0 left-0 -ml-20 -mb-20 h-64 w-64 rounded-full bg-brand-400/10 blur-3xl mix-blend-multiply" />
+            <div className="absolute top-0 right-0 -mr-20 -mt-20 h-64 w-64 rounded-full bg-brand-500/10 blur-3xl mix-blend-multiply dark:mix-blend-screen" />
+            <div className="absolute bottom-0 left-0 -ml-20 -mb-20 h-64 w-64 rounded-full bg-brand-400/10 blur-3xl mix-blend-multiply dark:mix-blend-screen" />
 
             <div className="relative max-w-3xl space-y-6">
-              <p className="text-lg font-bold uppercase tracking-widest text-brand-600">The Pitch</p>
-              <h2 className="text-4xl font-bold tracking-tight text-slate-950 md:text-5xl">
+              <p className="text-lg font-bold uppercase tracking-widest text-brand-600 dark:text-brand-400">The Pitch</p>
+              <h2 className="text-4xl font-bold tracking-tight text-slate-950 dark:text-white md:text-5xl">
                 Search finds documents. <br />Context Engine tells your team <span className="text-transparent bg-clip-text bg-gradient-to-r from-brand-600 to-brand-400">what is actually true.</span>
               </h2>
-              <p className="text-lg leading-relaxed text-slate-600 md:text-xl">
+              <p className="text-lg leading-relaxed text-slate-600 dark:text-slate-300 md:text-xl">
                 Use it to answer questions with provenance, understand how decisions evolved, and stop
                 stale or contradictory context from slipping into product, engineering, or customer work.
               </p>
@@ -341,17 +343,17 @@ export default function Landing() {
         </section>
       </main>
 
-      <footer className="border-t border-slate-200/50 bg-white/80 py-12 text-center text-sm font-medium text-slate-500 backdrop-blur-sm">
+      <footer className="border-t border-slate-200/50 dark:border-slate-800/50 bg-white/80 dark:bg-slate-950/80 py-12 text-center text-sm font-medium text-slate-500 dark:text-slate-400 backdrop-blur-sm transition-colors">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-6 px-6 md:flex-row">
           <div className="flex items-center gap-3">
             <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-brand-600 text-xs font-bold text-white">CE</span>
             <p>© {new Date().getFullYear()} Context Engine. All rights reserved.</p>
           </div>
           <div className="flex gap-8">
-            <a href="#" className="transition-colors hover:text-brand-600">Documentation</a>
-            <a href="#" className="transition-colors hover:text-brand-600">Pricing</a>
-            <a href="#" className="transition-colors hover:text-brand-600">Privacy & Security</a>
-            <a href="#" className="transition-colors hover:text-brand-600">GitHub</a>
+            <a href="#" className="transition-colors hover:text-brand-600 dark:hover:text-brand-400">Documentation</a>
+            <a href="#" className="transition-colors hover:text-brand-600 dark:hover:text-brand-400">Pricing</a>
+            <a href="#" className="transition-colors hover:text-brand-600 dark:hover:text-brand-400">Privacy & Security</a>
+            <a href="#" className="transition-colors hover:text-brand-600 dark:hover:text-brand-400">GitHub</a>
           </div>
         </div>
       </footer>
@@ -361,9 +363,9 @@ export default function Landing() {
 
 function Metric({ label, value }) {
   return (
-    <div className="rounded-2xl border border-brand-100 bg-white/60 px-5 py-4 shadow-[0_4px_20px_-4px_rgba(79,70,229,0.05)] backdrop-blur-sm transition-all hover:-translate-y-0.5 hover:border-brand-200 hover:shadow-[0_8px_30px_-4px_rgba(79,70,229,0.1)]">
-      <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-brand-600">{label}</p>
-      <p className="mt-2 text-sm font-bold text-slate-900">{value}</p>
+    <div className="rounded-2xl border border-brand-100 dark:border-brand-800/50 bg-white/60 dark:bg-slate-800/60 px-5 py-4 shadow-[0_4px_20px_-4px_rgba(79,70,229,0.05)] backdrop-blur-sm transition-all hover:-translate-y-0.5 hover:border-brand-200 dark:hover:border-brand-700 hover:shadow-[0_8px_30px_-4px_rgba(79,70,229,0.1)]">
+      <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-brand-600 dark:text-brand-400">{label}</p>
+      <p className="mt-2 text-sm font-bold text-slate-900 dark:text-white">{value}</p>
     </div>
   );
 }
@@ -406,7 +408,7 @@ function SpotlightCard({ children, className = "" }) {
       onBlur={handleBlur}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
-      className={`relative overflow-hidden rounded-3xl border border-slate-200/80 bg-white shadow-sm transition-all duration-300 hover:-translate-y-1.5 hover:border-brand-300 hover:shadow-xl hover:shadow-brand-500/10 ${className}`}
+      className={`relative overflow-hidden rounded-3xl border border-slate-200/80 dark:border-slate-700/80 bg-white dark:bg-slate-800/90 shadow-sm transition-all duration-300 hover:-translate-y-1.5 hover:border-brand-300 dark:hover:border-brand-600 hover:shadow-xl hover:shadow-brand-500/10 dark:hover:shadow-brand-500/5 ${className}`}
     >
       <div
         className="pointer-events-none absolute -inset-px opacity-0 transition duration-300 z-0"
@@ -423,23 +425,23 @@ function SpotlightCard({ children, className = "" }) {
 function Logos() {
   return (
     <>
-      <div className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-slate-800">
+      <div className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-slate-800 dark:text-slate-200">
         <svg role="img" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" className="h-7 w-7"><title>Slack</title><path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zm1.27 0a2.527 2.527 0 0 1 2.521-2.52 2.528 2.528 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zm0 1.27a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zm10.122 2.523a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.835zm-1.27 0a2.528 2.528 0 0 1-2.521 2.521 2.528 2.528 0 0 1-2.521-2.521V2.522A2.528 2.528 0 0 1 15.166 0a2.528 2.528 0 0 1 2.52 2.522v6.313zM15.166 18.958a2.528 2.528 0 0 1 2.52 2.522A2.528 2.528 0 0 1 15.166 24a2.528 2.528 0 0 1-2.521-2.522v-2.52h2.521zm0-1.27a2.528 2.528 0 0 1-2.52-2.521 2.528 2.528 0 0 1 2.52-2.521h6.313A2.528 2.528 0 0 1 24 15.166a2.528 2.528 0 0 1-2.522 2.52h-6.313z"/></svg>
         Slack
       </div>
-      <div className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-slate-800">
+      <div className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-slate-800 dark:text-slate-200">
         <svg role="img" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" className="h-7 w-7"><title>Notion</title><path d="M4.1 3.511a1.27 1.27 0 0 1 1.282-1.2h12.5a1.27 1.27 0 0 1 1.283 1.2l.006 17a1.27 1.27 0 0 1-1.281 1.21h-12.5a1.28 1.28 0 0 1-1.283-1.196zm2.4 2.87v10.15l7.98-10.15h1.99V17h-1.84V7.53L7.33 17.02H5.34v-10.64h1.16z" /></svg>
         Notion
       </div>
-      <div className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-slate-800">
+      <div className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-slate-800 dark:text-slate-200">
         <svg role="img" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" className="h-7 w-7"><title>GitHub</title><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
         GitHub
       </div>
-      <div className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-slate-800">
+      <div className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-slate-800 dark:text-slate-200">
         <svg role="img" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" className="h-7 w-7"><title>Jira</title><path d="M11.53 17.53A4.53 4.53 0 0 1 7 13V2.47a.47.47 0 0 0-.47-.47H2.47A.47.47 0 0 0 2 2.47V13a9.06 9.06 0 0 0 9.06 9.06h8.47a.47.47 0 0 0 .47-.47v-4.06a.47.47 0 0 0-.47-.47h-8.06zM21.53 9.47A9.06 9.06 0 0 0 12.47.41h-2A.47.47 0 0 0 10 .88v4.06A.47.47 0 0 0 10.47 5.4h2A4.53 4.53 0 0 1 17 9.94v8.06a.47.47 0 0 0 .47.47h4.06a.47.47 0 0 0 .47-.47V9.47z"/></svg>
         Jira
       </div>
-      <div className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-slate-800">
+      <div className="flex items-center gap-2.5 text-2xl font-bold tracking-tight text-slate-800 dark:text-slate-200">
         <svg role="img" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 -ml-1"><title>Zoom</title><path d="M4.5 9A2.5 2.5 0 0 0 2 11.5v4A2.5 2.5 0 0 0 4.5 18h8A2.5 2.5 0 0 0 15 15.5v-4A2.5 2.5 0 0 0 12.5 9h-8zm11.2 5.5v-4a1 1 0 0 1 1.5-.86l4 2.5a1 1 0 0 1 0 1.72l-4 2.5a1 1 0 0 1-1.5-.86z"/></svg>
         Zoom
       </div>

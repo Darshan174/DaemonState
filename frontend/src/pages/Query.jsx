@@ -6,9 +6,9 @@ import SourceDocumentLinks from "../components/SourceDocumentLinks";
 import TrustStatePanel from "../components/TrustStatePanel";
 
 const FRESHNESS_STYLE = {
-  current: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  possibly_stale: "bg-amber-50 text-amber-700 border-amber-200",
-  stale: "bg-red-50 text-red-700 border-red-200",
+  current: "bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/50",
+  possibly_stale: "bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800/50",
+  stale: "bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-400 border-red-200 dark:border-red-800/50",
 };
 
 const FRESHNESS_LABEL = {
@@ -71,10 +71,10 @@ export default function Query() {
   return (
     <div className="max-w-3xl mx-auto space-y-6">
       <div className="flex items-center gap-3">
-        <h2 className="text-lg font-semibold text-gray-800">Ask the workspace</h2>
+        <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-300">Ask the workspace</h2>
         {isMock && result && <MockBadge />}
         {!isMock && result && (
-          <span className="px-2 py-0.5 text-[11px] rounded-full border border-emerald-200 bg-emerald-50 text-emerald-700">
+          <span className="px-2 py-0.5 text-[11px] rounded-full border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400">
             Live backend
           </span>
         )}
@@ -83,22 +83,22 @@ export default function Query() {
         Query your workspace context. Live backend answers are preferred; demo answers only appear when the backend is unreachable.
       </p>
 
-      <div className="rounded-xl border border-gray-200 bg-white p-4">
+      <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-4">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h3 className="text-sm font-semibold text-gray-700">Self-host query flow</h3>
+            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-400">Self-host query flow</h3>
             <p className="text-xs text-gray-400 mt-1">
               Query works best after raw sources are synced, extracted facts are reviewed, and benchmark cases clear the current accuracy gate.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3 text-xs">
-            <Link to="/app/sources" className="font-medium text-brand-700 hover:text-brand-800">
+            <Link to="/app/sources" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
               Inspect sources
             </Link>
-            <Link to="/app/review" className="font-medium text-brand-700 hover:text-brand-800">
+            <Link to="/app/review" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
               Review trust
             </Link>
-            <Link to="/app/accuracy" className="font-medium text-brand-700 hover:text-brand-800">
+            <Link to="/app/accuracy" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
               Benchmark accuracy
             </Link>
           </div>
@@ -114,7 +114,7 @@ export default function Query() {
             onChange={(e) => setInput(e.target.value)}
             placeholder="Ask a question about your company data..."
             aria-label="Query input"
-            className="flex-1 px-4 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            className="flex-1 px-4 py-2.5 text-sm border border-gray-200 dark:border-gray-800/50 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
           />
           <button
             type="submit"
@@ -131,7 +131,7 @@ export default function Query() {
               value={windowDays}
               onChange={(e) => setWindowDays(e.target.value)}
               aria-label="Context window"
-              className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-700 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+              className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-2.5 py-1.5 text-xs text-gray-700 dark:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
             >
               {WINDOW_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -147,14 +147,14 @@ export default function Query() {
               value={asOfDate}
               onChange={(e) => setAsOfDate(e.target.value)}
               aria-label="As of date"
-              className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-700 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+              className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-2.5 py-1.5 text-xs text-gray-700 dark:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
             />
           </label>
           {asOfDate && (
             <button
               type="button"
               onClick={() => setAsOfDate("")}
-              className="text-[11px] font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700"
+              className="text-[11px] font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700 dark:text-gray-400"
             >
               Clear historical mode
             </button>
@@ -168,7 +168,7 @@ export default function Query() {
       {/* ── Loading ─────────────────────────────── */}
       {mutation.isPending && (
         <div role="status" aria-live="polite" className="flex items-center gap-3 py-8 justify-center text-gray-400">
-          <svg className="animate-spin h-5 w-5 text-brand-600" viewBox="0 0 24 24" fill="none">
+          <svg className="animate-spin h-5 w-5 text-brand-600 dark:text-brand-400" viewBox="0 0 24 24" fill="none">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
           </svg>
@@ -178,8 +178,8 @@ export default function Query() {
 
       {/* ── Error ───────────────────────────────── */}
       {mutation.isError && (
-        <div role="alert" className="bg-red-50 border border-red-200 rounded-xl p-4 text-center">
-          <p className="text-sm text-red-600">
+        <div role="alert" className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800/50 rounded-xl p-4 text-center">
+          <p className="text-sm text-red-600 dark:text-red-400">
             {mutation.error?.message || "Failed to get an answer."}
           </p>
           <button
@@ -193,7 +193,7 @@ export default function Query() {
               mutation.mutate(payload.maxAgeDays != null || payload.asOf ? payload : payload.question);
             }}
             disabled={!input.trim()}
-            className="mt-3 px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
+            className="mt-3 px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 transition-colors"
           >
             Retry
           </button>
@@ -203,26 +203,26 @@ export default function Query() {
       {/* ── No-match ─────────────────────────────── */}
       {result && !mutation.isPending && isNoMatch && (
         <div className="space-y-4">
-          <div className="bg-gray-100 rounded-xl px-5 py-3">
-            <p className="text-sm text-gray-600 font-medium">{result.question}</p>
+          <div className="bg-gray-100 dark:bg-gray-900/40 rounded-xl px-5 py-3">
+            <p className="text-sm text-gray-600 dark:text-gray-400 font-medium">{result.question}</p>
           </div>
-          <div className="bg-amber-50 border border-amber-200 rounded-xl p-5 text-center space-y-2">
-            <p className="text-sm font-medium text-amber-700">No grounded answer found</p>
-            <p className="text-xs text-amber-600">
+          <div className="bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800/50 rounded-xl p-5 text-center space-y-2">
+            <p className="text-sm font-medium text-amber-700 dark:text-amber-400">No grounded answer found</p>
+            <p className="text-xs text-amber-600 dark:text-amber-400">
               {result.answer || "The knowledge graph does not contain enough structured context to answer this question."}
             </p>
             {lastRequestMeta.maxAgeDays != null && (
-              <p className="text-xs text-amber-700">
+              <p className="text-xs text-amber-700 dark:text-amber-400">
                 Try widening the context window if this answer may depend on older company context.
               </p>
             )}
             {lastRequestMeta.asOf && (
-              <p className="text-xs text-amber-700">
+              <p className="text-xs text-amber-700 dark:text-amber-400">
                 Try a more recent as-of date or clear historical mode if this answer depends on the current state of the company.
               </p>
             )}
             {!isMock && (
-              <p className="text-xs text-amber-700">
+              <p className="text-xs text-amber-700 dark:text-amber-400">
                 If you recently connected Slack, run a sync from{" "}
                 <Link to="/app/connectors" className="underline underline-offset-2">
                   Connectors
@@ -230,7 +230,7 @@ export default function Query() {
                 and try again.
               </p>
             )}
-            <p className="text-xs text-amber-700">
+            <p className="text-xs text-amber-700 dark:text-amber-400">
               Then inspect{" "}
               <Link to="/app/sources" className="underline underline-offset-2">
                 Sources
@@ -249,24 +249,24 @@ export default function Query() {
       {result && !mutation.isPending && !isNoMatch && (
         <div className="space-y-4">
           {/* Question echo */}
-          <div className="bg-gray-100 rounded-xl px-5 py-3">
-            <p className="text-sm text-gray-600 font-medium">{result.question}</p>
+          <div className="bg-gray-100 dark:bg-gray-900/40 rounded-xl px-5 py-3">
+            <p className="text-sm text-gray-600 dark:text-gray-400 font-medium">{result.question}</p>
           </div>
 
           {/* Answer body */}
-          <div className="bg-white border border-gray-200 rounded-xl p-5 space-y-4">
+          <div className="bg-white dark:bg-slate-800 border border-gray-200 dark:border-gray-800/50 rounded-xl p-5 space-y-4">
             {!isMock && (
               <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-500">
-                <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
+                <span className="px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-900/40 text-gray-600 dark:text-gray-400">
                   Live workspace context
                 </span>
                 {lastRequestMeta.maxAgeDays != null && (
-                  <span className="px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+                  <span className="px-2 py-0.5 rounded-full bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-800/50">
                     Window: {formatWindowLabel(lastRequestMeta.maxAgeDays)}
                   </span>
                 )}
                 {lastRequestMeta.asOf && (
-                  <span className="px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+                  <span className="px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800/50">
                     As of: {formatAsOfLabel(lastRequestMeta.asOf)}
                   </span>
                 )}
@@ -284,7 +284,7 @@ export default function Query() {
               className="mt-1"
             />
             {result.answer ? (
-              <div className="text-sm text-gray-800 leading-relaxed space-y-2">
+              <div className="text-sm text-gray-800 dark:text-gray-300 leading-relaxed space-y-2">
                 {result.answer.split("\n").filter(Boolean).map((line, i) => (
                   <p key={i}>{line}</p>
                 ))}
@@ -297,7 +297,7 @@ export default function Query() {
             {result.confidence != null && (
               <div className="flex items-center gap-3">
                 <span className="text-xs text-gray-400">Confidence</span>
-                <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden max-w-[200px]">
+                <div className="flex-1 h-1.5 bg-gray-100 dark:bg-gray-900/40 rounded-full overflow-hidden max-w-[200px]">
                   <div
                     className={`h-full rounded-full ${
                       result.confidence >= 0.9
@@ -318,7 +318,7 @@ export default function Query() {
               {result.freshness && (
                 <span
                   className={`px-2 py-0.5 text-[11px] rounded-full border ${
-                    FRESHNESS_STYLE[result.freshness] || "bg-blue-50 text-blue-700 border-blue-200"
+                    FRESHNESS_STYLE[result.freshness] || "bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 border-blue-200 dark:border-blue-800/50"
                   }`}
                 >
                   {FRESHNESS_LABEL[result.freshness] || result.freshness}
@@ -332,7 +332,7 @@ export default function Query() {
 
           {/* Cited components */}
           {components.length > 0 && (
-            <div className="bg-white border border-gray-200 rounded-xl p-5">
+            <div className="bg-white dark:bg-slate-800 border border-gray-200 dark:border-gray-800/50 rounded-xl p-5">
               {currentComponents.length > 0 && (
                 <>
                   <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
@@ -347,7 +347,7 @@ export default function Query() {
               )}
 
               {historicalComponents.length > 0 && (
-                <div className={currentComponents.length > 0 ? "mt-5 pt-5 border-t border-gray-100" : ""}>
+                <div className={currentComponents.length > 0 ? "mt-5 pt-5 border-t border-gray-100 dark:border-gray-800/30" : ""}>
                   <div className="mb-3">
                     <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
                       Historical Context
@@ -367,7 +367,7 @@ export default function Query() {
           )}
 
           {(result.sourceDocuments ?? result.source_documents)?.length > 0 && (
-            <div className="bg-white border border-gray-200 rounded-xl p-5">
+            <div className="bg-white dark:bg-slate-800 border border-gray-200 dark:border-gray-800/50 rounded-xl p-5">
               <SourceDocumentLinks
                 items={result.sourceDocuments ?? result.source_documents}
                 label="Supporting documents"
@@ -378,7 +378,7 @@ export default function Query() {
 
           {/* Sources */}
           {result.sources?.length > 0 && (
-            <div className="bg-white border border-gray-200 rounded-xl p-5">
+            <div className="bg-white dark:bg-slate-800 border border-gray-200 dark:border-gray-800/50 rounded-xl p-5">
               <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
                 Sources
               </h3>
@@ -394,13 +394,13 @@ export default function Query() {
 
       {/* ── Empty / hint ────────────────────────── */}
       {!result && !mutation.isPending && !mutation.isError && (
-        <div className="rounded-[32px] border border-gray-200 bg-white p-12 text-center shadow-sm mt-8">
-          <div className="mx-auto w-16 h-16 bg-brand-50 text-brand-600 rounded-full flex items-center justify-center mb-6">
+        <div className="rounded-[32px] border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-12 text-center shadow-sm mt-8">
+          <div className="mx-auto w-16 h-16 bg-brand-50 dark:bg-brand-900/30 text-brand-600 dark:text-brand-400 rounded-full flex items-center justify-center mb-6">
             <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
             </svg>
           </div>
-          <h2 className="text-xl font-bold text-gray-900">Ask a question to query your knowledge graph.</h2>
+          <h2 className="text-xl font-bold text-gray-900 dark:text-gray-200">Ask a question to query your knowledge graph.</h2>
           <p className="mt-3 text-sm text-gray-500 max-w-lg mx-auto leading-relaxed">
             For a self-hosted install, the fastest path is sync real sources first, review conflicts, then use query to pressure-test the current trust graph.
           </p>
@@ -418,20 +418,20 @@ export default function Query() {
                   });
                   mutation.mutate(payload.maxAgeDays != null || payload.asOf ? payload : payload.question);
                 }}
-                className="px-4 py-2 text-sm font-medium rounded-xl border border-gray-200 text-gray-600 hover:bg-brand-50 hover:text-brand-700 hover:border-brand-200 transition-colors shadow-sm"
+                className="px-4 py-2 text-sm font-medium rounded-xl border border-gray-200 dark:border-gray-800/50 text-gray-600 dark:text-gray-400 hover:bg-brand-50 dark:bg-brand-900/30 hover:text-brand-700 dark:text-brand-400 hover:border-brand-200 dark:border-brand-800/50 transition-colors shadow-sm"
               >
                 {q}
               </button>
             ))}
           </div>
           <div className="flex flex-wrap justify-center gap-4 text-xs mt-8">
-            <Link to="/app" className="font-medium text-brand-700 hover:text-brand-800">
+            <Link to="/app" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
               Add context
             </Link>
-            <Link to="/app/review" className="font-medium text-brand-700 hover:text-brand-800">
+            <Link to="/app/review" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
               Review trust issues
             </Link>
-            <Link to="/app/accuracy" className="font-medium text-brand-700 hover:text-brand-800">
+            <Link to="/app/accuracy" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
               Benchmark accuracy
             </Link>
           </div>
@@ -454,12 +454,12 @@ function ComponentEvidenceRow({ component: c }) {
     <div className="py-2.5">
       <div className="flex items-center justify-between">
         <div>
-          <span className="text-sm font-medium text-gray-700">{c.name}</span>
+          <span className="text-sm font-medium text-gray-700 dark:text-gray-400">{c.name}</span>
           {c.model && (
             <span className="ml-2 text-xs text-gray-400">{c.model}</span>
           )}
         </div>
-        <span className="text-sm font-semibold text-gray-900">{c.value}</span>
+        <span className="text-sm font-semibold text-gray-900 dark:text-gray-200">{c.value}</span>
       </div>
       {(c.confidence != null || c.authority_source || c.last_verified_at) && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-[11px] text-gray-400">
@@ -510,7 +510,7 @@ function SourceChip({ source }) {
   if (!source) return null;
   if (typeof source !== "object") {
     return (
-      <span className="px-2.5 py-1 text-xs rounded-full bg-gray-100 text-gray-600">
+      <span className="px-2.5 py-1 text-xs rounded-full bg-gray-100 dark:bg-gray-900/40 text-gray-600 dark:text-gray-400">
         {String(source)}
       </span>
     );
@@ -519,7 +519,7 @@ function SourceChip({ source }) {
   const meta = [source.author, source.date].filter(Boolean).join(" · ");
   return (
     <span
-      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-full bg-gray-100 text-gray-600"
+      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-full bg-gray-100 dark:bg-gray-900/40 text-gray-600 dark:text-gray-400"
       title={meta || undefined}
     >
       {source.url ? (

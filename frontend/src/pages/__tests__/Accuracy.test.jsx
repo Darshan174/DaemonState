@@ -80,7 +80,7 @@ describe("Accuracy", () => {
     renderAccuracy();
 
     expect(screen.getByText("Accuracy data is not ready yet for this workspace.")).toBeInTheDocument();
-    expect(screen.getByText(/python scripts\/run_eval_regression.py --workspace-id/i)).toBeInTheDocument();
+    expect(screen.getByText(/python3 scripts\/run_eval_regression.py --workspace-id/i)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Open sources" })).toHaveAttribute("href", "/app/sources");
     expect(screen.getByRole("button", { name: "Run evals now" })).toBeInTheDocument();
   });

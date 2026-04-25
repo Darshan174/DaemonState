@@ -2,6 +2,7 @@ import { Suspense, lazy, useState } from "react";
 import { Routes, Route, NavLink, Navigate, useLocation, Link } from "react-router-dom";
 import WorkspaceBootstrap from "./components/WorkspaceBootstrap";
 import WorkspaceSwitcher from "./components/WorkspaceSwitcher";
+import ThemeToggle from "./components/ThemeToggle";
 
 const Landing = lazy(() => import("./pages/Landing"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
@@ -22,7 +23,8 @@ const Query = lazy(() => import("./pages/Query"));
 const ReviewQueue = lazy(() => import("./pages/ReviewQueue"));
 const Sources = lazy(() => import("./pages/Sources"));
 
-const CORE_NAV = [
+const PRIMARY_NAV = [
+  { to: "/app", label: "Dashboard", icon: BarChartIcon, primary: true },
   { to: "/app/brief", label: "Founder Brief", icon: BriefIcon },
   { to: "/app/query", label: "Ask", icon: SearchIcon },
   { to: "/app/decisions", label: "Decisions", icon: DecisionIcon },
@@ -31,7 +33,6 @@ const CORE_NAV = [
 ];
 
 const ADMIN_NAV = [
-  { to: "/app", label: "Dashboard", icon: BarChartIcon },
   { to: "/app/status", label: "System Health", icon: PulseIcon },
   { to: "/app/graph", label: "Knowledge Graph", icon: GraphIcon },
   { to: "/app/launch-guard", label: "Launch Guard", icon: GuardIcon },
@@ -44,92 +45,93 @@ const ADMIN_NAV = [
 ];
 
 function SidebarContent({ onNavigate }) {
-  const [showAdmin, setShowAdmin] = useState(false);
-
   return (
     <>
-      <div className="flex items-center gap-3 px-6 py-6 border-b border-slate-800/60">
-        <Link to="/" className="flex items-center gap-3 group">
-          <span className="w-9 h-9 rounded-xl bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white font-bold text-[13px] shadow-[0_0_12px_rgba(79,70,229,0.4)] group-hover:scale-105 transition-transform">
-            CE
-          </span>
-          <span className="font-bold text-white text-sm tracking-wide">
-            Context Engine
-          </span>
-        </Link>
-      </div>
+      <nav className="flex-1 overflow-y-auto py-5 px-4 custom-scrollbar">
+        <div>
+          <p className="px-3 py-2 text-xs font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400">
+            Operator Tools
+          </p>
 
-      <nav className="flex-1 overflow-y-auto py-5 space-y-1 px-4 custom-scrollbar">
-        {CORE_NAV.map(({ to, label, icon: Icon }) => (
-          <NavLink
-            key={to}
-            to={to}
-            onClick={onNavigate}
-            className={({ isActive }) =>
-              `group relative flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-300 overflow-hidden ${isActive
-                ? "bg-brand-500/10 text-brand-300 shadow-[inset_0_0_20px_rgba(79,70,229,0.05)]"
-                : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
-              }`
-            }
-          >
-            {({ isActive }) => (
-              <>
-                {isActive && <div className="absolute left-0 top-1.5 bottom-1.5 w-1 bg-brand-500 rounded-r-full shadow-[0_0_10px_rgba(79,70,229,0.8)]" />}
-                <Icon className={`w-[18px] h-[18px] shrink-0 transition-transform duration-300 relative z-10 ${isActive ? "scale-110 drop-shadow-[0_0_8px_rgba(79,70,229,0.4)]" : "group-hover:scale-110"}`} />
-                <span className="relative z-10">{label}</span>
-              </>
-            )}
-          </NavLink>
-        ))}
-
-        <div className="pt-4 mt-4 border-t border-slate-800/40">
-          <button
-            onClick={() => setShowAdmin(!showAdmin)}
-            className="w-full flex items-center justify-between px-3 py-2 text-xs font-bold uppercase tracking-widest text-slate-500 hover:text-slate-300 transition-colors"
-          >
-            <span>Operator Tools</span>
-            <svg
-              className={`w-4 h-4 transition-transform duration-200 ${showAdmin ? 'rotate-180' : ''}`}
-              fill="none" viewBox="0 0 24 24" stroke="currentColor"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-            </svg>
-          </button>
-
-          {showAdmin && (
-            <div className="mt-2 space-y-1">
-              {ADMIN_NAV.map(({ to, label, icon: Icon }) => (
-                <NavLink
-                  key={to}
-                  to={to}
-                  end={to === "/app"}
-                  onClick={onNavigate}
-                  className={({ isActive }) =>
-                    `group relative flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-all duration-300 ${isActive
-                      ? "bg-white/10 text-white shadow-inner"
-                      : "text-slate-500 hover:bg-white/5 hover:text-slate-300"
-                    }`
-                  }
-                >
-                  {({ isActive }) => (
-                    <>
-                      {isActive && <div className="absolute left-0 top-1.5 bottom-1.5 w-0.5 bg-slate-300 rounded-r-full" />}
-                      <Icon className={`w-4 h-4 shrink-0 transition-transform ${isActive ? "scale-110" : ""}`} />
-                      <span className="relative z-10">{label}</span>
-                    </>
-                  )}
-                </NavLink>
-              ))}
-            </div>
-          )}
+          <div className="mt-2 space-y-1">
+            {ADMIN_NAV.map(({ to, label, icon: Icon }) => (
+              <NavLink
+                key={to}
+                to={to}
+                end={to === "/app"}
+                onClick={onNavigate}
+                className={({ isActive }) =>
+                  `group relative flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-all duration-300 ${isActive
+                    ? "bg-slate-100 dark:bg-white/10 text-brand-700 dark:text-white shadow-inner"
+                    : "text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-slate-300"
+                  }`
+                }
+              >
+                {({ isActive }) => (
+                  <>
+                    {isActive && <div className="absolute left-0 top-1.5 bottom-1.5 w-0.5 bg-brand-500 dark:bg-slate-300 rounded-r-full" />}
+                    <Icon className={`w-4 h-4 shrink-0 transition-transform ${isActive ? "scale-110" : ""}`} />
+                    <span className="relative z-10">{label}</span>
+                  </>
+                )}
+              </NavLink>
+            ))}
+          </div>
         </div>
       </nav>
 
-      <div className="px-6 py-5 border-t border-slate-800/60 flex items-center justify-between text-[10px] font-bold uppercase tracking-widest text-slate-600">
+      <div className="px-6 py-5 border-t border-slate-200 dark:border-slate-800/60 flex items-center justify-between text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-600">
         <span>v1.0.0-oss</span>
         <span className="flex h-1.5 w-1.5"><span className="animate-ping absolute inline-flex h-1.5 w-1.5 rounded-full bg-brand-400 opacity-75"></span><span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-brand-500"></span></span>
       </div>
     </>
+  );
+}
+
+function PrimaryNav() {
+  return (
+    <nav
+      aria-label="Primary workspace navigation"
+      className="flex min-w-0 items-center justify-start gap-1 overflow-x-auto custom-scrollbar md:justify-center lg:gap-2"
+    >
+      {PRIMARY_NAV.map(({ to, label, primary }) => (
+        <NavLink
+          key={to}
+          to={to}
+          end={to === "/app"}
+          className={({ isActive }) => {
+            if (primary) {
+              return `inline-flex h-10 shrink-0 items-center rounded-xl px-4 text-sm font-bold transition-all duration-200 ${
+                isActive
+                  ? "bg-brand-600 text-white shadow-lg shadow-brand-500/20"
+                  : "bg-slate-900 text-white shadow-sm hover:bg-slate-800 dark:bg-white dark:text-slate-950 dark:hover:bg-slate-200"
+              }`;
+            }
+
+            return `inline-flex h-10 shrink-0 items-center rounded-xl px-3.5 text-sm font-semibold transition-all duration-200 ${
+              isActive
+                ? "bg-slate-100 text-slate-950 ring-1 ring-slate-200 dark:bg-white/10 dark:text-white dark:ring-white/10"
+                : "text-slate-600 hover:bg-slate-100/80 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white"
+            }`;
+          }}
+        >
+          {label}
+        </NavLink>
+      ))}
+    </nav>
+  );
+}
+
+function HeaderBrand() {
+  return (
+    <Link to="/" className="flex min-w-0 items-center gap-3 group">
+      <span className="w-9 h-9 rounded-xl bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white font-bold text-[13px] shadow-[0_0_12px_rgba(79,70,229,0.4)] group-hover:scale-105 transition-transform">
+        CE
+      </span>
+      <span className="font-bold text-slate-900 dark:text-white text-sm tracking-wide">
+        Context Engine
+      </span>
+    </Link>
   );
 }
 
@@ -154,7 +156,7 @@ function AdminShell() {
   if (modelMatch) {
     pageTitle = "Model Detail";
   } else {
-    const allNav = [...CORE_NAV, ...ADMIN_NAV];
+    const allNav = [...PRIMARY_NAV, ...ADMIN_NAV];
     pageTitle =
       allNav.find((n) =>
         n.to === "/app" ? location.pathname === "/app" : location.pathname.startsWith(n.to),
@@ -163,7 +165,7 @@ function AdminShell() {
 
   return (
     <WorkspaceBootstrap>
-      <div className="flex h-screen overflow-hidden">
+      <div className="flex h-screen flex-col overflow-hidden bg-slate-50/50 dark:bg-slate-900 transition-colors duration-300">
         {/* ── Mobile overlay ──────────────────────── */}
         {mobileNavOpen && (
           <div
@@ -172,38 +174,54 @@ function AdminShell() {
           />
         )}
 
+        <header className="relative z-30 shrink-0 border-b border-slate-200/70 bg-white/90 backdrop-blur-xl transition-colors duration-300 supports-[backdrop-filter]:bg-white/75 dark:border-white/10 dark:bg-[#090b0d]/95 dark:supports-[backdrop-filter]:bg-[#090b0d]/85">
+          <div className="grid min-h-20 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 md:grid-cols-[16rem_minmax(0,1fr)_auto] md:px-6">
+            <div className="flex min-w-0 items-center gap-3">
+              <button
+                className="-ml-2 rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-white/10 md:hidden"
+                onClick={() => setMobileNavOpen(true)}
+                aria-label="Open operator tools"
+              >
+                <HamburgerIcon className="h-5 w-5" />
+              </button>
+              <HeaderBrand />
+            </div>
+
+            <div className="hidden min-w-0 justify-center md:flex">
+              <PrimaryNav />
+            </div>
+
+            <div className="flex min-w-0 shrink-0 items-center justify-end gap-3">
+              <WorkspaceSwitcher />
+              <ThemeToggle />
+            </div>
+
+            <div className="col-span-3 min-w-0 md:hidden">
+              <PrimaryNav />
+            </div>
+          </div>
+        </header>
+
+        <div className="flex min-h-0 flex-1 overflow-hidden">
         {/* ── Mobile drawer ───────────────────────── */}
         <aside
-          className={`fixed inset-y-0 left-0 z-50 w-64 flex flex-col bg-slate-950 text-slate-300 transform transition-transform duration-300 ease-in-out md:hidden shadow-2xl ${mobileNavOpen ? "translate-x-0" : "-translate-x-full"
+          className={`fixed inset-y-0 left-0 z-50 w-64 flex flex-col bg-white dark:bg-slate-950 text-slate-700 dark:text-slate-300 transform transition-transform duration-300 ease-in-out md:hidden shadow-2xl ${mobileNavOpen ? "translate-x-0" : "-translate-x-full"
             }`}
         >
           <SidebarContent onNavigate={() => setMobileNavOpen(false)} />
         </aside>
 
         {/* ── Desktop sidebar ─────────────────────── */}
-        <aside className="hidden md:flex md:w-64 flex-col bg-slate-950 border-r border-slate-900 shadow-xl z-20">
+        <aside className="hidden md:flex md:w-64 flex-col bg-white dark:bg-slate-950 border-r border-slate-200/60 dark:border-slate-900 shadow-xl z-20 transition-colors duration-300">
           <SidebarContent onNavigate={() => { }} />
         </aside>
 
         {/* ── Main area ───────────────────────────── */}
-        <div className="flex-1 flex flex-col overflow-hidden bg-slate-50/50 relative">
-          <div className="absolute inset-0 z-0 pointer-events-none bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-brand-100/40 via-transparent to-transparent"></div>
+        <div className="flex-1 flex flex-col overflow-hidden bg-slate-50/50 dark:bg-slate-900 relative transition-colors duration-300">
+          <div className="absolute inset-0 z-0 pointer-events-none bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-brand-100/40 via-transparent to-transparent dark:from-brand-900/20"></div>
 
-          <header className="h-16 border-b border-black/5 bg-slate-50/70 backdrop-blur-xl flex items-center px-6 shrink-0 gap-4 z-30 supports-[backdrop-filter]:bg-slate-50/50 relative">
-            <button
-              className="md:hidden p-2 -ml-2 rounded-lg text-slate-500 hover:bg-slate-100 transition-colors"
-              onClick={() => setMobileNavOpen(true)}
-              aria-label="Open navigation"
-            >
-              <HamburgerIcon className="w-5 h-5" />
-            </button>
-            <h1 className="text-base font-bold tracking-tight text-slate-800">{pageTitle}</h1>
-            <div className="ml-auto flex items-center gap-3">
-              <WorkspaceSwitcher />
-            </div>
-          </header>
-
-          <main className="flex-1 overflow-y-auto p-6 md:p-8">
+          <main className="flex-1 overflow-y-auto p-6 md:p-8 dark:text-slate-100">
+            <h1 className="sr-only">{pageTitle}</h1>
             <Suspense fallback={<PageLoader />}>
               <Routes>
                 <Route index element={<Dashboard />} />
@@ -232,6 +250,7 @@ function AdminShell() {
             </Suspense>
           </main>
         </div>
+        </div>
       </div>
     </WorkspaceBootstrap>
   );
@@ -242,14 +261,14 @@ function PageLoader({ fullscreen = false }) {
     <div
       className={
         fullscreen
-          ? "min-h-screen bg-slate-50 flex items-center justify-center px-6"
-          : "min-h-[300px] flex items-center justify-center rounded-2xl border border-slate-200/60 bg-white/50 backdrop-blur-sm px-6 shadow-sm"
+          ? "min-h-screen bg-slate-50 dark:bg-slate-900 flex items-center justify-center px-6 transition-colors"
+          : "min-h-[300px] flex items-center justify-center rounded-2xl border border-slate-200/60 dark:border-slate-700/60 bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm px-6 shadow-sm transition-colors"
       }
     >
       <div className="text-center flex flex-col items-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-brand-200 border-t-brand-600 mb-4" />
-        <p className="text-sm font-bold text-slate-800 tracking-tight">Loading view...</p>
-        <p className="mt-1.5 text-xs font-medium text-slate-500">
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-brand-200 dark:border-brand-800 border-t-brand-600 dark:border-t-brand-400 mb-4" />
+        <p className="text-sm font-bold text-slate-800 dark:text-slate-200 tracking-tight">Loading view...</p>
+        <p className="mt-1.5 text-xs font-medium text-slate-500 dark:text-slate-400">
           Pulling context into the shell
         </p>
       </div>

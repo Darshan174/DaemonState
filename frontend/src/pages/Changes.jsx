@@ -69,7 +69,7 @@ export default function Changes() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
-            <h2 className="text-lg font-semibold text-gray-800">Changes</h2>
+            <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-300">Changes</h2>
             {usesMockData && <MockBadge />}
           </div>
           <p className="text-xs text-gray-400 mt-1">
@@ -81,16 +81,16 @@ export default function Changes() {
           </p>
         </div>
         <div className="flex items-center gap-3 text-xs">
-          <Link to="/app/brief" className="font-medium text-brand-700 hover:text-brand-800">
+          <Link to="/app/brief" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
             Open founder brief
           </Link>
-          <Link to={sourceId ? `/app/decisions?source_id=${sourceId}` : "/app/decisions"} className="font-medium text-brand-700 hover:text-brand-800">
+          <Link to={sourceId ? `/app/decisions?source_id=${sourceId}` : "/app/decisions"} className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
             Open decision register
           </Link>
         </div>
       </div>
 
-      <div className="rounded-xl border border-gray-200 bg-white p-4">
+      <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-4">
         <div className="flex flex-wrap items-center gap-2">
           {FILTERS.map((item) => {
             const active = type === item.key;
@@ -107,7 +107,7 @@ export default function Changes() {
                 className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
                   active
                     ? "bg-brand-600 text-white"
-                    : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                    : "bg-gray-100 dark:bg-gray-900/40 text-gray-600 dark:text-gray-400 hover:bg-gray-200"
                 }`}
               >
                 {item.label}
@@ -121,8 +121,8 @@ export default function Changes() {
       </div>
 
       {filteredChanges.length === 0 ? (
-        <div className="rounded-xl border border-gray-200 bg-white p-6 text-center">
-          <p className="text-sm font-semibold text-gray-800">No changes match this filter.</p>
+        <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-6 text-center">
+          <p className="text-sm font-semibold text-gray-800 dark:text-gray-300">No changes match this filter.</p>
           <p className="mt-2 text-xs text-gray-500">
             Widen the filter to view more recent changes across the workspace.
           </p>
@@ -133,12 +133,12 @@ export default function Changes() {
             <ChangeCard key={item.id} item={item} />
           ))}
           {showLoadMore && (
-            <div className="rounded-xl border border-gray-200 bg-white p-4">
+            <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-4">
               <button
                 type="button"
                 onClick={() => timelineQuery.fetchNextPage()}
                 disabled={timelineQuery.isFetchingNextPage}
-                className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-60"
+                className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-400 hover:bg-gray-100 dark:bg-gray-900/40 disabled:opacity-60"
               >
                 {timelineQuery.isFetchingNextPage ? "Loading more..." : "Load more changes"}
               </button>
@@ -157,28 +157,28 @@ function ChangeCard({ item }) {
   const metadata = buildChangeMetadata(item);
 
   return (
-    <article className="rounded-xl border border-gray-200 bg-white p-5">
+    <article className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-5">
       <div className="flex items-start justify-between gap-4">
         <div className="flex items-start gap-3">
           <TimelineDot tone={tone} />
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <h3 className="text-sm font-semibold text-gray-800">{item.title}</h3>
+              <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-300">{item.title}</h3>
               <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${badgeClass(tone)}`}>
                 {formatLabel(item.type)}
               </span>
               {item.status && (
-                <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-600">
+                <span className="rounded-full bg-gray-100 dark:bg-gray-900/40 px-2 py-0.5 text-[10px] font-medium text-gray-600 dark:text-gray-400">
                   {formatLabel(item.status)}
                 </span>
               )}
             </div>
-            <p className="mt-2 text-sm text-gray-600">{item.summary}</p>
+            <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">{item.summary}</p>
             {metadata.length > 0 && (
               <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-gray-500">
                 {metadata.map((entry) => (
-                  <span key={`${item.id}-${entry.label}`} className="rounded-full bg-gray-100 px-2 py-1">
-                    <span className="font-medium text-gray-700">{entry.label}:</span> {entry.value}
+                  <span key={`${item.id}-${entry.label}`} className="rounded-full bg-gray-100 dark:bg-gray-900/40 px-2 py-1">
+                    <span className="font-medium text-gray-700 dark:text-gray-400">{entry.label}:</span> {entry.value}
                   </span>
                 ))}
               </div>
@@ -189,7 +189,7 @@ function ChangeCard({ item }) {
           <p>{formatDateTime(item.occurredAt)}</p>
           {destination ? (
             <div className="flex flex-col items-end gap-2 text-right">
-              <Link to={destination.href} className="block font-medium text-brand-700 hover:text-brand-800">
+              <Link to={destination.href} className="block font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
                 {destination.label}
               </Link>
               {graphDestination ? (
@@ -222,10 +222,10 @@ function TimelineDot({ tone }) {
 
 function badgeClass(tone) {
   const styles = {
-    emerald: "bg-emerald-100 text-emerald-700",
-    amber: "bg-amber-100 text-amber-700",
-    rose: "bg-rose-100 text-rose-700",
-    slate: "bg-gray-100 text-gray-600",
+    emerald: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400",
+    amber: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400",
+    rose: "bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-400",
+    slate: "bg-gray-100 dark:bg-gray-900/40 text-gray-600 dark:text-gray-400",
   };
   return styles[tone] ?? styles.slate;
 }
@@ -308,13 +308,13 @@ function formatDateTime(value) {
 
 function ChangesEmptyState() {
   return (
-    <div className="rounded-[32px] border border-gray-200 bg-white p-12 text-center shadow-sm">
-      <div className="mx-auto w-16 h-16 bg-brand-50 text-brand-600 rounded-full flex items-center justify-center mb-6">
+    <div className="rounded-[32px] border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-12 text-center shadow-sm">
+      <div className="mx-auto w-16 h-16 bg-brand-50 dark:bg-brand-900/30 text-brand-600 dark:text-brand-400 rounded-full flex items-center justify-center mb-6">
         <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
       </div>
-      <h2 className="text-xl font-bold text-gray-900">No changes are visible yet.</h2>
+      <h2 className="text-xl font-bold text-gray-900 dark:text-gray-200">No changes are visible yet.</h2>
       <p className="mt-3 text-sm text-gray-500 max-w-lg mx-auto leading-relaxed">
         This timeline starts filling in once source documents, review transitions, and decisions begin flowing through the workspace.
       </p>
@@ -322,7 +322,7 @@ function ChangesEmptyState() {
         <Link to="/app" className="px-6 py-2.5 bg-brand-600 text-white text-sm font-bold rounded-xl hover:bg-brand-500 transition-colors shadow-lg shadow-brand-500/20">
           Add context
         </Link>
-        <Link to="/app/review" className="px-6 py-2.5 bg-gray-100 text-gray-700 text-sm font-bold rounded-xl hover:bg-gray-200 transition-colors">
+        <Link to="/app/review" className="px-6 py-2.5 bg-gray-100 dark:bg-gray-900/40 text-gray-700 dark:text-gray-400 text-sm font-bold rounded-xl hover:bg-gray-200 transition-colors">
           Open review
         </Link>
       </div>

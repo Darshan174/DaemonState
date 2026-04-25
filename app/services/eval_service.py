@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.evals.baseline import NaiveRagBaseline
 from app.evals.gold_set import load_default_cases
 from app.evals.harness import DomainSummary, EvalSummary, StartupEvalHarness
 from app.models.eval import EvalCaseResultRecord, EvalRun
@@ -53,6 +54,7 @@ class EvalService:
 
         summary = await StartupEvalHarness(
             QueryService(self.session),
+            baseline_runner=NaiveRagBaseline(self.session),
             pass_threshold=pass_threshold,
         ).run(
             workspace_id=workspace_id,
@@ -70,6 +72,10 @@ class EvalService:
             average_retrieval_hit_quality=summary.average_retrieval_hit_quality,
             average_extracted_fact_correctness=summary.average_extracted_fact_correctness,
             average_final_answer_correctness=summary.average_final_answer_correctness,
+            average_citation_accuracy=summary.average_citation_accuracy,
+            average_stale_context_detection=summary.average_stale_context_detection,
+            average_naive_answer_correctness=summary.average_naive_answer_correctness,
+            average_context_answer_lift=summary.average_context_answer_lift,
             confidence_calibration_error=summary.confidence_calibration_error,
             trigger_source=trigger_source,
         )
@@ -87,6 +93,10 @@ class EvalService:
                     retrieval_hit_quality=case.retrieval_hit_quality,
                     extracted_fact_correctness=case.extracted_fact_correctness,
                     final_answer_correctness=case.final_answer_correctness,
+                    citation_accuracy=case.citation_accuracy,
+                    stale_context_detection=case.stale_context_detection,
+                    naive_answer_correctness=case.naive_answer_correctness,
+                    context_answer_lift=case.context_answer_lift,
                     passed=case.passed,
                     detail=case.detail or "",
                 )
@@ -158,6 +168,10 @@ class EvalService:
             average_retrieval_hit_quality=run.average_retrieval_hit_quality,
             average_extracted_fact_correctness=run.average_extracted_fact_correctness,
             average_final_answer_correctness=run.average_final_answer_correctness,
+            average_citation_accuracy=run.average_citation_accuracy,
+            average_stale_context_detection=run.average_stale_context_detection,
+            average_naive_answer_correctness=run.average_naive_answer_correctness,
+            average_context_answer_lift=run.average_context_answer_lift,
             confidence_calibration_error=run.confidence_calibration_error,
             domain_summaries=self._build_domain_summaries(case_results),
             pass_rate=run.pass_rate,
@@ -177,6 +191,10 @@ class EvalService:
             average_retrieval_hit_quality=summary.average_retrieval_hit_quality,
             average_extracted_fact_correctness=summary.average_extracted_fact_correctness,
             average_final_answer_correctness=summary.average_final_answer_correctness,
+            average_citation_accuracy=summary.average_citation_accuracy,
+            average_stale_context_detection=summary.average_stale_context_detection,
+            average_naive_answer_correctness=summary.average_naive_answer_correctness,
+            average_context_answer_lift=summary.average_context_answer_lift,
             confidence_calibration_error=summary.confidence_calibration_error,
             all_passed=summary.all_passed,
             domain_summaries=[
@@ -186,6 +204,9 @@ class EvalService:
                     avg_retrieval=item.avg_retrieval,
                     avg_extraction=item.avg_extraction,
                     avg_answer=item.avg_answer,
+                    avg_citation=item.avg_citation,
+                    avg_staleness=item.avg_staleness,
+                    avg_context_lift=item.avg_context_lift,
                     pass_rate=item.pass_rate,
                 )
                 for item in summary.domain_summaries
@@ -212,6 +233,10 @@ class EvalService:
             retrieval_hit_quality=case.retrieval_hit_quality,
             extracted_fact_correctness=case.extracted_fact_correctness,
             final_answer_correctness=case.final_answer_correctness,
+            citation_accuracy=case.citation_accuracy,
+            stale_context_detection=case.stale_context_detection,
+            naive_answer_correctness=case.naive_answer_correctness,
+            context_answer_lift=case.context_answer_lift,
             passed=case.passed,
             detail=case.detail,
         )
@@ -228,6 +253,10 @@ class EvalService:
             retrieval_hit_quality=case.retrieval_hit_quality,
             extracted_fact_correctness=case.extracted_fact_correctness,
             final_answer_correctness=case.final_answer_correctness,
+            citation_accuracy=case.citation_accuracy,
+            stale_context_detection=case.stale_context_detection,
+            naive_answer_correctness=case.naive_answer_correctness,
+            context_answer_lift=case.context_answer_lift,
             passed=case.passed,
             detail=case.detail,
         )
@@ -255,6 +284,18 @@ class EvalService:
                     ),
                     avg_answer=round(
                         sum(item.final_answer_correctness for item in items) / len(items),
+                        2,
+                    ),
+                    avg_citation=round(
+                        sum(item.citation_accuracy for item in items) / len(items),
+                        2,
+                    ),
+                    avg_staleness=round(
+                        sum(item.stale_context_detection for item in items) / len(items),
+                        2,
+                    ),
+                    avg_context_lift=round(
+                        sum(item.context_answer_lift for item in items) / len(items),
                         2,
                     ),
                     pass_rate=round(passed / len(items), 2),

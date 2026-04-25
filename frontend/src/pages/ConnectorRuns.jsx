@@ -8,10 +8,10 @@ import MockBadge from "../components/MockBadge";
 import StatusView from "../components/StatusView";
 
 const STATUS_PILL = {
-  completed: "bg-emerald-100 text-emerald-700",
-  failed: "bg-red-100 text-red-700",
-  pending: "bg-blue-100 text-blue-700",
-  running: "bg-blue-100 text-blue-700",
+  completed: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400",
+  failed: "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400",
+  pending: "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400",
+  running: "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400",
 };
 
 export default function ConnectorRuns() {
@@ -51,39 +51,39 @@ export default function ConnectorRuns() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
-            <h2 className="text-lg font-semibold text-gray-800">{connector.name} Run History</h2>
+            <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-300">{connector.name} Run History</h2>
             {isMock && <MockBadge />}
           </div>
           <p className="text-xs text-gray-400 mt-1">
             Inspect background sync and reprocess jobs for this connector.
           </p>
           {isMock && (
-            <p className="text-xs text-amber-600 mt-2">
+            <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
               Job history is only available when the backend sync-job endpoints are live for this connector.
             </p>
           )}
         </div>
         <Link
           to="/app/connectors"
-          className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50"
+          className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-medium text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30"
         >
           Back to connectors
         </Link>
       </div>
 
-      <div className="rounded-xl border border-gray-200 bg-white p-4">
+      <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-4">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h3 className="text-sm font-semibold text-gray-700">How this page gets populated</h3>
+            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-400">How this page gets populated</h3>
             <p className="text-xs text-gray-400 mt-1">
               Run history appears after a connector sync or document reprocess is queued. Use this page to verify worker outcomes before trusting downstream extraction and query state.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3 text-xs">
-            <Link to="/app/connectors" className="font-medium text-brand-700 hover:text-brand-800">
+            <Link to="/app/connectors" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
               Queue syncs
             </Link>
-            <Link to="/app/sources" className="font-medium text-brand-700 hover:text-brand-800">
+            <Link to="/app/sources" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
               Inspect sources
             </Link>
           </div>
@@ -91,26 +91,26 @@ export default function ConnectorRuns() {
       </div>
 
       <div className="grid gap-4 md:grid-cols-[minmax(0,1.1fr)_minmax(280px,0.9fr)]">
-        <section className="rounded-xl border border-gray-200 bg-white p-5 space-y-4">
+        <section className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-5 space-y-4">
           <div>
             <p className="text-xs uppercase tracking-wide text-gray-400">Connector</p>
-            <p className="mt-1 text-sm font-semibold text-gray-800">{connector.name}</p>
+            <p className="mt-1 text-sm font-semibold text-gray-800 dark:text-gray-300">{connector.name}</p>
             <p className="mt-1 text-xs text-gray-500">{connector.description}</p>
           </div>
 
           <div className="grid grid-cols-2 gap-y-2 text-xs">
             <span className="text-gray-400">Status</span>
-            <span className="text-right text-gray-700">{connector.status}</span>
+            <span className="text-right text-gray-700 dark:text-gray-400">{connector.status}</span>
             <span className="text-gray-400">Last sync</span>
-            <span className="text-right text-gray-700">{connector.lastSync}</span>
+            <span className="text-right text-gray-700 dark:text-gray-400">{connector.lastSync}</span>
             <span className="text-gray-400">Stored docs</span>
-            <span className="text-right text-gray-700">
+            <span className="text-right text-gray-700 dark:text-gray-400">
               {Number(connector.itemsSynced || 0).toLocaleString()}
             </span>
             {connector.processedCount != null && (
               <>
                 <span className="text-gray-400">Processed docs</span>
-                <span className="text-right text-gray-700">
+                <span className="text-right text-gray-700 dark:text-gray-400">
                   {Number(connector.processedCount || 0).toLocaleString()}
                 </span>
               </>
@@ -118,16 +118,16 @@ export default function ConnectorRuns() {
           </div>
         </section>
 
-        <section className="rounded-xl border border-gray-200 bg-white p-5 space-y-3">
+        <section className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-5 space-y-3">
           <div className="flex items-center justify-between gap-3">
             <p className="text-xs uppercase tracking-wide text-gray-400">Latest job</p>
             {latestJob ? <StatusBadge status={latestJob.status} /> : null}
           </div>
           {latestJob ? (
-            <div className="space-y-2 text-xs text-gray-600">
+            <div className="space-y-2 text-xs text-gray-600 dark:text-gray-400">
               <p>
                 <span className="text-gray-400">Type:</span>{" "}
-                <span className="text-gray-700 capitalize">{latestJob.jobType ?? "sync"}</span>
+                <span className="text-gray-700 dark:text-gray-400 capitalize">{latestJob.jobType ?? "sync"}</span>
               </p>
               <p>
                 <span className="text-gray-400">Created:</span> {formatDateTime(latestJob.createdAt)}
@@ -143,18 +143,18 @@ export default function ConnectorRuns() {
                 </p>
               )}
               {latestJob.status === "completed" && (
-                <p className="rounded-lg bg-emerald-50 px-3 py-2 text-emerald-700">
+                <p className="rounded-lg bg-emerald-50 dark:bg-emerald-900/30 px-3 py-2 text-emerald-700 dark:text-emerald-400">
                   {formatCompletedSyncNotice(connector.name, latestJob.resultMetadata)}
                 </p>
               )}
               {latestJob.status === "failed" && (
-                <p className="rounded-lg bg-red-50 px-3 py-2 text-red-700">
+                <p className="rounded-lg bg-red-50 dark:bg-red-900/30 px-3 py-2 text-red-700 dark:text-red-400">
                   {latestJob.errorType ? `${latestJob.errorType}: ` : ""}
                   {latestJob.errorMessage || "Job failed."}
                 </p>
               )}
               {(latestJob.status === "pending" || latestJob.status === "running") && (
-                <p className="rounded-lg bg-blue-50 px-3 py-2 text-blue-700">
+                <p className="rounded-lg bg-blue-50 dark:bg-blue-900/30 px-3 py-2 text-blue-700 dark:text-blue-400">
                   Worker is {latestJob.status === "running" ? "running" : "queued"} for this job.
                 </p>
               )}
@@ -165,9 +165,9 @@ export default function ConnectorRuns() {
         </section>
       </div>
 
-      <section className="rounded-xl border border-gray-200 bg-white overflow-hidden">
-        <div className="border-b border-gray-100 px-5 py-4">
-          <p className="text-sm font-semibold text-gray-700">Recent runs</p>
+      <section className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 overflow-hidden">
+        <div className="border-b border-gray-100 dark:border-gray-800/30 px-5 py-4">
+          <p className="text-sm font-semibold text-gray-700 dark:text-gray-400">Recent runs</p>
           <p className="mt-1 text-xs text-gray-400">
             Completed, failed, queued, and reprocess jobs are listed here in reverse chronological order.
           </p>
@@ -191,11 +191,11 @@ export default function ConnectorRuns() {
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <StatusBadge status={job.status} />
-                      <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-600 capitalize">
+                      <span className="rounded-full bg-gray-100 dark:bg-gray-900/40 px-2 py-0.5 text-[10px] font-medium text-gray-600 dark:text-gray-400 capitalize">
                         {job.jobType ?? "sync"}
                       </span>
                     </div>
-                    <p className="mt-2 text-sm text-gray-800">
+                    <p className="mt-2 text-sm text-gray-800 dark:text-gray-300">
                       {job.status === "completed"
                         ? summarizeSyncJob(job.resultMetadata)
                         : job.status === "failed"
@@ -223,7 +223,7 @@ function StatusBadge({ status }) {
   return (
     <span
       className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-        STATUS_PILL[status] ?? "bg-slate-100 text-slate-600"
+        STATUS_PILL[status] ?? "bg-slate-100 dark:bg-slate-900/40 text-slate-600 dark:text-slate-400"
       }`}
     >
       {status}

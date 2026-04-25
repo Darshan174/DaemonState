@@ -42,11 +42,13 @@ export default function WorkspaceSwitcher() {
 
   return (
     <div className="flex items-center gap-2">
-      <label className="text-xs text-gray-400 hidden sm:inline">Workspace:</label>
+      <label className="hidden text-xs font-semibold text-slate-500 dark:text-slate-400 sm:inline">
+        Workspace
+      </label>
       <select
         value={resolved || ""}
         onChange={handleChange}
-        className="text-xs bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-gray-700 focus:outline-none focus:ring-2 focus:ring-brand-500/40 max-w-[180px] truncate"
+        className="max-w-[220px] truncate rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500/40 dark:border-white/10 dark:bg-white/10 dark:text-slate-200"
       >
         {!resolved && workspaces.length > 1 ? (
           <option value="" disabled>

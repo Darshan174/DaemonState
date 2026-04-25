@@ -58,6 +58,13 @@ def load_fixtures(
                     expected_source_types=tuple(
                         row.get("expected_source_types", ())
                     ),
+                    expected_source_external_ids=tuple(
+                        row.get("expected_source_external_ids", ())
+                    ),
+                    excluded_source_external_ids=tuple(
+                        row.get("excluded_source_external_ids", ())
+                    ),
+                    expected_freshness=row.get("expected_freshness"),
                     case_id=row.get("id", ""),
                     domain=row.get("domain", ""),
                 )
@@ -86,6 +93,11 @@ STARTUP_GOLD_SET: tuple[EvalCase, ...] = (
         expected_answer_substrings=("$600/seat",),
         expected_component_names=("Enterprise Plan",),
         expected_source_types=("notion", "slack"),
+        expected_source_external_ids=(
+            "notion-enterprise-plan",
+            "slack-enterprise-plan",
+        ),
+        expected_freshness="current",
         case_id="pricing-001",
         domain="pricing",
     ),
@@ -94,6 +106,8 @@ STARTUP_GOLD_SET: tuple[EvalCase, ...] = (
         expected_answer_substrings=("$29/mo",),
         expected_component_names=("Starter Plan",),
         expected_source_types=("notion",),
+        expected_source_external_ids=("notion-starter-plan",),
+        expected_freshness="current",
         case_id="pricing-002",
         domain="pricing",
     ),

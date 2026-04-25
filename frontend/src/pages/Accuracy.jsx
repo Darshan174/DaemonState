@@ -79,21 +79,21 @@ export default function Accuracy() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
-            <h2 className="text-lg font-semibold text-gray-800">Accuracy</h2>
+            <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-300">Accuracy</h2>
             {query.isMock && <MockBadge />}
           </div>
           <p className="text-xs text-gray-400 mt-1">
             Evaluate how well the context engine retrieves, extracts, and answers across startup-critical domains.
           </p>
           {query.isMock && (
-            <p className="text-xs text-amber-600 mt-2">
+            <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
               Showing demo accuracy data until the eval summary endpoint is available.
             </p>
           )}
         </div>
         <Link
           to="/app/review"
-          className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50"
+          className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-medium text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30"
         >
           Open review queue
         </Link>
@@ -123,7 +123,7 @@ export default function Accuracy() {
             })
           }
           disabled={runMutation.isPending}
-          className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+          className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-medium text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {runMutation.isPending ? "Running evals..." : "Run all evals"}
         </button>
@@ -133,13 +133,13 @@ export default function Accuracy() {
       </div>
 
       {runMutation.isError && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+        <div className="rounded-xl border border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30 px-4 py-3 text-sm text-amber-800 dark:text-amber-300">
           {formatEvalRunError(runMutation.error)}
         </div>
       )}
 
       {runMutation.isSuccess && (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        <div className="rounded-xl border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/30 px-4 py-3 text-sm text-emerald-800 dark:text-emerald-300">
           Eval run completed. Summary and case views have been refreshed.
         </div>
       )}
@@ -147,23 +147,23 @@ export default function Accuracy() {
       <div
         className={`rounded-xl border p-5 ${
           isHealthy
-            ? "border-emerald-200 bg-emerald-50"
-            : "border-amber-200 bg-amber-50"
+            ? "border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/30"
+            : "border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30"
         }`}
       >
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className={`text-sm font-medium ${isHealthy ? "text-emerald-800" : "text-amber-800"}`}>
+            <p className={`text-sm font-medium ${isHealthy ? "text-emerald-800 dark:text-emerald-300" : "text-amber-800 dark:text-amber-300"}`}>
               {isHealthy ? "Accuracy is above the current threshold" : "Accuracy still needs hardening"}
             </p>
-            <p className={`mt-1 text-xs ${isHealthy ? "text-emerald-700" : "text-amber-700"}`}>
+            <p className={`mt-1 text-xs ${isHealthy ? "text-emerald-700 dark:text-emerald-400" : "text-amber-700 dark:text-amber-400"}`}>
               Latest eval run {formatDateTime(summary.latestRunAt)}.
               {summary.threshold != null ? ` Current gate: ${formatPercent(summary.threshold)}.` : ""}
             </p>
           </div>
           <div className="text-right">
             <p className="text-[11px] uppercase tracking-wide text-gray-500">Pass rate</p>
-            <p className="mt-1 text-3xl font-semibold text-gray-900">
+            <p className="mt-1 text-3xl font-semibold text-gray-900 dark:text-gray-200">
               {formatPercent(summary.passRate)}
             </p>
           </div>
@@ -178,10 +178,10 @@ export default function Accuracy() {
       </div>
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
-        <section className="bg-white rounded-xl border border-gray-200 p-5">
+        <section className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-gray-800/50 p-5">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h3 className="text-sm font-semibold text-gray-700">Domain breakdown</h3>
+              <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-400">Domain breakdown</h3>
               <p className="text-xs text-gray-400 mt-1">
                 High-value startup workflows should clear the threshold before you market strong trust claims.
               </p>
@@ -189,10 +189,10 @@ export default function Accuracy() {
           </div>
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             {(summary.domains ?? []).map((domain) => (
-              <div key={domain.domain} className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-4">
+              <div key={domain.domain} className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 px-4 py-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="text-sm font-semibold text-gray-800 capitalize">
+                    <p className="text-sm font-semibold text-gray-800 dark:text-gray-300 capitalize">
                       {domain.domain}
                     </p>
                     <p className="mt-1 text-xs text-gray-500">
@@ -202,8 +202,8 @@ export default function Accuracy() {
                   <span
                     className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
                       domain.passRate != null && summary.threshold != null && domain.passRate >= summary.threshold
-                        ? "bg-emerald-100 text-emerald-700"
-                        : "bg-amber-100 text-amber-700"
+                        ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400"
+                        : "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400"
                     }`}
                   >
                     {formatPercent(domain.passRate)}
@@ -225,13 +225,13 @@ export default function Accuracy() {
                         next.set("domain", domain.domain);
                         setSearchParams(next);
                       }}
-                      className="shrink-0 text-xs font-medium text-gray-600 hover:text-gray-800"
+                      className="shrink-0 text-xs font-medium text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:text-gray-300"
                     >
                       Inspect cases
                     </button>
                     <Link
                       to={buildBenchmarkQueryLink(domain.domain)}
-                      className="shrink-0 text-xs font-medium text-brand-700 hover:text-brand-800"
+                      className="shrink-0 text-xs font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300"
                     >
                       Try benchmark query
                     </Link>
@@ -242,8 +242,8 @@ export default function Accuracy() {
           </div>
         </section>
 
-        <section className="bg-white rounded-xl border border-gray-200 p-5">
-          <h3 className="text-sm font-semibold text-gray-700">Current blockers</h3>
+        <section className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-gray-800/50 p-5">
+          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-400">Current blockers</h3>
           <p className="text-xs text-gray-400 mt-1">
             The biggest remaining issues before you can credibly market source-backed accuracy.
           </p>
@@ -252,7 +252,7 @@ export default function Accuracy() {
               {summary.blockers.map((blocker) => (
                 <li
                   key={blocker}
-                  className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800"
+                  className="rounded-lg border border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30 px-3 py-3 text-sm text-amber-800 dark:text-amber-300"
                 >
                   {blocker}
                 </li>
@@ -264,11 +264,11 @@ export default function Accuracy() {
         </section>
       </div>
 
-      <section className="bg-white rounded-xl border border-gray-200 p-5">
+      <section className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-gray-800/50 p-5">
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
-              <h3 className="text-sm font-semibold text-gray-700">
+              <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-400">
                 {selectedDomainSummary ? `${selectedDomainSummary.domain} cases` : "Eval cases"}
               </h3>
               {casesQuery.isMock && selectedDomain && <MockBadge />}
@@ -280,7 +280,7 @@ export default function Accuracy() {
           {selectedDomainSummary && (
             <Link
               to={buildBenchmarkQueryLink(selectedDomainSummary.domain)}
-              className="text-xs font-medium text-brand-700 hover:text-brand-800"
+              className="text-xs font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300"
             >
               Run domain benchmark query
             </Link>
@@ -308,10 +308,10 @@ export default function Accuracy() {
         )}
       </section>
 
-      <section className="bg-white rounded-xl border border-gray-200 p-5">
-        <h3 className="text-sm font-semibold text-gray-700">Metric summary</h3>
+      <section className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-gray-800/50 p-5">
+        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-400">Metric summary</h3>
         <p className="text-xs text-gray-400 mt-1">
-          Retrieval, extraction, and answer-level metrics are shown separately so regressions stay visible.
+          Retrieval, citations, freshness, answer quality, and baseline lift are shown separately so regressions stay visible.
         </p>
         <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {(summary.metrics ?? []).map((metric) => (
@@ -331,17 +331,17 @@ export default function Accuracy() {
 
 function AccuracyEmptyState({ runMutation }) {
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-6">
+    <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-6">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 className="text-lg font-semibold text-gray-800">Accuracy</h2>
+          <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-300">Accuracy</h2>
           <p className="text-xs text-gray-400 mt-1">
             Accuracy data is not ready yet for this workspace.
           </p>
         </div>
         <Link
           to="/app/sources"
-          className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50"
+          className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-medium text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30"
         >
           Open sources
         </Link>
@@ -376,30 +376,30 @@ function AccuracyEmptyState({ runMutation }) {
         />
       </div>
 
-      <div className="mt-5 rounded-xl border border-gray-200 bg-gray-50 px-4 py-4">
-        <p className="text-xs font-medium text-gray-700">Typical self-host flow</p>
+      <div className="mt-5 rounded-xl border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 px-4 py-4">
+        <p className="text-xs font-medium text-gray-700 dark:text-gray-400">Typical self-host flow</p>
         <code className="mt-2 block rounded-lg bg-gray-900 px-3 py-3 text-xs text-gray-100 overflow-x-auto">
-          python scripts/run_eval_regression.py --workspace-id &lt;workspace-id&gt;
+          python3 scripts/run_eval_regression.py --workspace-id &lt;workspace-id&gt;
         </code>
       </div>
 
       <div className="mt-4 flex flex-wrap gap-4 text-xs">
-        <Link to="/app/review" className="font-medium text-brand-700 hover:text-brand-800">
+        <Link to="/app/review" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
           Open review queue
         </Link>
-        <Link to="/app/query" className="font-medium text-brand-700 hover:text-brand-800">
+        <Link to="/app/query" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
           Open query
         </Link>
       </div>
 
       {runMutation.isError && (
-        <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+        <div className="mt-5 rounded-xl border border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30 px-4 py-3 text-sm text-amber-800 dark:text-amber-300">
           {formatEvalRunError(runMutation.error)}
         </div>
       )}
 
       {runMutation.isSuccess && (
-        <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        <div className="mt-5 rounded-xl border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/30 px-4 py-3 text-sm text-emerald-800 dark:text-emerald-300">
           Eval run completed. Refreshing accuracy results.
         </div>
       )}
@@ -409,32 +409,32 @@ function AccuracyEmptyState({ runMutation }) {
 
 function QuickStartCard({ title, description }) {
   return (
-    <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-4">
-      <p className="text-sm font-semibold text-gray-800">{title}</p>
-      <p className="mt-2 text-xs text-gray-600">{description}</p>
+    <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 px-4 py-4">
+      <p className="text-sm font-semibold text-gray-800 dark:text-gray-300">{title}</p>
+      <p className="mt-2 text-xs text-gray-600 dark:text-gray-400">{description}</p>
     </div>
   );
 }
 
 function EvalCaseCard({ item }) {
   return (
-    <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+    <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 p-4">
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
             <span
               className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                item.passed ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"
+                item.passed ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400" : "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400"
               }`}
             >
               {item.passed ? "Passed" : "Needs work"}
             </span>
             {item.caseId && <span className="text-[11px] text-gray-400">{item.caseId}</span>}
           </div>
-          <p className="mt-2 text-sm font-medium text-gray-800">{item.question}</p>
+          <p className="mt-2 text-sm font-medium text-gray-800 dark:text-gray-300">{item.question}</p>
           {item.detail && <p className="mt-2 text-xs text-gray-500">{item.detail}</p>}
         </div>
-        <span className="text-sm font-semibold text-gray-900">
+        <span className="text-sm font-semibold text-gray-900 dark:text-gray-200">
           {formatPercent(item.finalAnswerCorrectness)}
         </span>
       </div>
@@ -442,6 +442,9 @@ function EvalCaseCard({ item }) {
         <SmallMetric label="Retrieval" value={item.retrievalHitQuality} />
         <SmallMetric label="Extraction" value={item.extractedFactCorrectness} />
         <SmallMetric label="Answer" value={item.finalAnswerCorrectness} />
+        <SmallMetric label="Citation" value={item.citationAccuracy} />
+        <SmallMetric label="Staleness" value={item.staleContextDetection} />
+        <SmallMetric label="Lift" value={item.contextAnswerLift} signed />
       </div>
       {item.predictedConfidence != null && (
         <p className="mt-3 text-[11px] text-gray-500">
@@ -454,18 +457,20 @@ function EvalCaseCard({ item }) {
 
 function MetricCard({ label, value }) {
   return (
-    <div className="rounded-xl border border-gray-200 bg-white px-4 py-4">
+    <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-4 py-4">
       <p className="text-[11px] uppercase tracking-wide text-gray-400">{label}</p>
-      <p className="mt-2 text-2xl font-semibold text-gray-900">{value}</p>
+      <p className="mt-2 text-2xl font-semibold text-gray-900 dark:text-gray-200">{value}</p>
     </div>
   );
 }
 
-function SmallMetric({ label, value }) {
+function SmallMetric({ label, value, signed = false }) {
   return (
-    <div className="rounded-lg border border-gray-200 bg-white px-3 py-3">
+    <div className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-3">
       <p className="text-[11px] uppercase tracking-wide text-gray-400">{label}</p>
-      <p className="mt-1 text-lg font-semibold text-gray-900">{formatPercent(value)}</p>
+      <p className="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-200">
+        {signed ? formatSignedScore(value) : formatPercent(value)}
+      </p>
     </div>
   );
 }
@@ -479,18 +484,18 @@ function EvalMetricCard({ label, value, target, direction }) {
         : value >= target;
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-4">
+    <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 px-4 py-4">
       <div className="flex items-start justify-between gap-3">
-        <p className="text-sm font-medium text-gray-800">{label}</p>
+        <p className="text-sm font-medium text-gray-800 dark:text-gray-300">{label}</p>
         <span
           className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-            isHealthy ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"
+            isHealthy ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400" : "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400"
           }`}
         >
           {direction === "down" ? "Lower is better" : "Higher is better"}
         </span>
       </div>
-      <p className="mt-3 text-2xl font-semibold text-gray-900">{formatPercent(value)}</p>
+      <p className="mt-3 text-2xl font-semibold text-gray-900 dark:text-gray-200">{formatPercent(value)}</p>
       {target != null && (
         <p className="mt-1 text-xs text-gray-500">
           Target {formatPercent(target)}
@@ -503,6 +508,12 @@ function EvalMetricCard({ label, value, target, direction }) {
 function formatPercent(value) {
   if (value == null) return "—";
   return `${Math.round(value * 100)}%`;
+}
+
+function formatSignedScore(value) {
+  if (value == null) return "—";
+  const rounded = Math.round(value * 100);
+  return `${rounded >= 0 ? "+" : ""}${rounded} pts`;
 }
 
 function formatDateTime(value) {

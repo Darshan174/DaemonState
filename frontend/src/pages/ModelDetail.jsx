@@ -37,7 +37,7 @@ export default function ModelDetail() {
       {/* ── Header ──────────────────────────────── */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 className="text-lg font-semibold text-gray-800">{model.name}</h2>
+          <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-300">{model.name}</h2>
           <p className="text-sm text-gray-500 mt-1">{model.description}</p>
           <div className="flex gap-4 mt-3 text-xs text-gray-400">
             <span>
@@ -61,22 +61,22 @@ export default function ModelDetail() {
         )}
       </div>
 
-      <div className="rounded-xl border border-gray-200 bg-white p-4">
+      <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-4">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h3 className="text-sm font-semibold text-gray-700">Trust path for this model</h3>
+            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-400">Trust path for this model</h3>
             <p className="text-xs text-gray-400 mt-1">
               Use this page to inspect current facts, historical versions, evidence links, and review history before treating a model as operational truth.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3 text-xs">
-            <Link to="/app/sources" className="font-medium text-brand-700 hover:text-brand-800">
+            <Link to="/app/sources" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
               Sources
             </Link>
-            <Link to="/app/review" className="font-medium text-brand-700 hover:text-brand-800">
+            <Link to="/app/review" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
               Review
             </Link>
-            <Link to="/app/graph" className="font-medium text-brand-700 hover:text-brand-800">
+            <Link to="/app/graph" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
               Graph
             </Link>
           </div>
@@ -90,18 +90,18 @@ export default function ModelDetail() {
 
       {/* ── Component grid ──────────────────────── */}
       {components.length === 0 ? (
-        <div className="rounded-xl border border-gray-200 bg-white p-6 text-center">
-          <p className="text-sm font-semibold text-gray-800">No components yet.</p>
+        <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-6 text-center">
+          <p className="text-sm font-semibold text-gray-800 dark:text-gray-300">No components yet.</p>
           <p className="mt-2 text-xs text-gray-500 max-w-2xl mx-auto">
             Components are the facts inside this model. In a self-hosted setup, they usually appear after source documents are synced and extracted, or you can add them manually to shape the graph first.
           </p>
           <div className="mt-4 flex flex-wrap items-center justify-center gap-4 text-xs">
             {isBackendData && (
-              <button type="button" onClick={() => setShowForm(true)} className="font-medium text-brand-700 hover:text-brand-800">
+              <button type="button" onClick={() => setShowForm(true)} className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
                 Add a component
               </button>
             )}
-            <Link to="/app/sources" className="font-medium text-brand-700 hover:text-brand-800">
+            <Link to="/app/sources" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
               Inspect sources
             </Link>
           </div>
@@ -238,11 +238,11 @@ function AddComponentForm({ modelId, onClose }) {
   };
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-5">
-      <h3 className="text-sm font-semibold text-gray-700 mb-4">Add component</h3>
+    <div className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-gray-800/50 p-5">
+      <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-400 mb-4">Add component</h3>
       <form onSubmit={handleSubmit} className="grid sm:grid-cols-2 gap-3">
         <div>
-          <label htmlFor="comp-name" className="block text-xs font-medium text-gray-600 mb-1">Name</label>
+          <label htmlFor="comp-name" className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Name</label>
           <input
             id="comp-name"
             type="text"
@@ -251,11 +251,11 @@ function AddComponentForm({ modelId, onClose }) {
             placeholder="e.g. Monthly Recurring Revenue"
             required
             autoFocus
-            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-800/50 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
           />
         </div>
         <div>
-          <label htmlFor="comp-value" className="block text-xs font-medium text-gray-600 mb-1">Value</label>
+          <label htmlFor="comp-value" className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Value</label>
           <input
             id="comp-value"
             type="text"
@@ -263,11 +263,11 @@ function AddComponentForm({ modelId, onClose }) {
             onChange={(e) => setValue(e.target.value)}
             placeholder="e.g. $2.4M"
             required
-            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-800/50 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
           />
         </div>
         <div>
-          <label htmlFor="comp-confidence" className="block text-xs font-medium text-gray-600 mb-1">Confidence (0–1)</label>
+          <label htmlFor="comp-confidence" className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Confidence (0–1)</label>
           <input
             id="comp-confidence"
             type="number"
@@ -276,22 +276,22 @@ function AddComponentForm({ modelId, onClose }) {
             max="1"
             value={confidence}
             onChange={(e) => setConfidence(e.target.value)}
-            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-800/50 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
           />
         </div>
         <div>
-          <label htmlFor="comp-authority" className="block text-xs font-medium text-gray-600 mb-1">Authority source</label>
+          <label htmlFor="comp-authority" className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Authority source</label>
           <input
             id="comp-authority"
             type="text"
             value={authoritySource}
             onChange={(e) => setAuthoritySource(e.target.value)}
             placeholder="e.g. Stripe export"
-            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-800/50 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
           />
         </div>
         {create.isError && (
-          <p className="sm:col-span-2 text-xs text-red-600">
+          <p className="sm:col-span-2 text-xs text-red-600 dark:text-red-400">
             {create.error?.message || "Failed to add component."}
           </p>
         )}
@@ -306,7 +306,7 @@ function AddComponentForm({ modelId, onClose }) {
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 text-sm font-medium rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
+            className="px-4 py-2 text-sm font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 transition-colors"
           >
             Cancel
           </button>

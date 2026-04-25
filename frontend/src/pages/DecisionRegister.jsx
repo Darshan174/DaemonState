@@ -58,7 +58,7 @@ export default function DecisionRegister() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
-            <h2 className="text-lg font-semibold text-gray-800">Decisions</h2>
+            <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-300">Decisions</h2>
             {query.isMock && <MockBadge />}
           </div>
           <p className="text-xs text-gray-400 mt-1">
@@ -66,13 +66,13 @@ export default function DecisionRegister() {
           </p>
         </div>
         <div className="flex items-center gap-3 text-xs">
-          <Link to={sourceId ? `/app/changes?source_id=${sourceId}` : "/app/changes"} className="font-medium text-brand-700 hover:text-brand-800">
+          <Link to={sourceId ? `/app/changes?source_id=${sourceId}` : "/app/changes"} className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
             Open timeline
           </Link>
-          <Link to="/app/review" className="font-medium text-brand-700 hover:text-brand-800">
+          <Link to="/app/review" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
             Open review queue
           </Link>
-          <Link to={sourceId ? `/app/sources/${sourceId}` : "/app/sources"} className="font-medium text-brand-700 hover:text-brand-800">
+          <Link to={sourceId ? `/app/sources/${sourceId}` : "/app/sources"} className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
             Inspect sources
           </Link>
         </div>
@@ -84,7 +84,7 @@ export default function DecisionRegister() {
         <SummaryCard label="Historical changes" value={summary.historical} tone="slate" />
       </div>
 
-      <div className="rounded-xl border border-gray-200 bg-white p-4">
+      <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-4">
         <div className="flex flex-wrap items-center gap-2">
           {FILTERS.map((item) => {
             const active = filter === item.key;
@@ -101,7 +101,7 @@ export default function DecisionRegister() {
                 className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
                   active
                     ? "bg-brand-600 text-white"
-                    : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                    : "bg-gray-100 dark:bg-gray-900/40 text-gray-600 dark:text-gray-400 hover:bg-gray-200"
                 }`}
               >
                 {item.label}
@@ -112,8 +112,8 @@ export default function DecisionRegister() {
       </div>
 
       {filteredItems.length === 0 ? (
-        <div className="rounded-xl border border-gray-200 bg-white p-6 text-center">
-          <p className="text-sm font-semibold text-gray-800">No decisions match this filter.</p>
+        <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-6 text-center">
+          <p className="text-sm font-semibold text-gray-800 dark:text-gray-300">No decisions match this filter.</p>
           <p className="mt-2 text-xs text-gray-500">
             Change the state filter or sync more source documents to widen the register.
           </p>
@@ -131,9 +131,9 @@ export default function DecisionRegister() {
 
 function SummaryCard({ label, value, tone }) {
   const tones = {
-    emerald: "border-emerald-200 bg-emerald-50 text-emerald-800",
-    amber: "border-amber-200 bg-amber-50 text-amber-800",
-    slate: "border-gray-200 bg-white text-gray-800",
+    emerald: "border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-300",
+    amber: "border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300",
+    slate: "border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 text-gray-800 dark:text-gray-300",
   };
 
   return (
@@ -155,19 +155,19 @@ function DecisionCard({ item }) {
   const historyEntries = historyQuery.data?.entries ?? [];
 
   return (
-    <article className="rounded-xl border border-gray-200 bg-white p-5">
+    <article className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-5">
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-sm font-semibold text-gray-800">{item.title}</h3>
+            <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-300">{item.title}</h3>
             <StatusBadge status={item.status} />
             {item.connectorType && (
-              <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-600">
+              <span className="rounded-full bg-gray-100 dark:bg-gray-900/40 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-600 dark:text-gray-400">
                 {item.connectorType}
               </span>
             )}
           </div>
-          <p className="mt-2 text-sm text-gray-600">{item.summary}</p>
+          <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">{item.summary}</p>
         </div>
         <div className="flex flex-col items-end gap-3 text-xs text-gray-400">
           <div className="text-right">
@@ -196,7 +196,7 @@ function DecisionCard({ item }) {
                 {item.modelNames.map((modelName) => (
                   <span
                     key={modelName}
-                    className="rounded-full bg-gray-100 px-2 py-1 text-[11px] font-medium text-gray-700"
+                    className="rounded-full bg-gray-100 dark:bg-gray-900/40 px-2 py-1 text-[11px] font-medium text-gray-700 dark:text-gray-400"
                   >
                     {modelName}
                   </span>
@@ -212,7 +212,7 @@ function DecisionCard({ item }) {
                   <Link
                     key={component.id}
                     to={component.modelId ? `/app/model/${component.modelId}` : "/app/models"}
-                    className="rounded-full border border-gray-200 bg-white px-2 py-1 text-[11px] font-medium text-gray-700 hover:border-brand-200 hover:text-brand-700"
+                    className="rounded-full border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-2 py-1 text-[11px] font-medium text-gray-700 dark:text-gray-400 hover:border-brand-200 dark:border-brand-800/50 hover:text-brand-700 dark:text-brand-400"
                   >
                     {component.name}
                   </Link>
@@ -222,16 +222,16 @@ function DecisionCard({ item }) {
           )}
         </div>
 
-        <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+        <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 p-4">
           <p className="text-[11px] uppercase tracking-wide text-gray-500">Trust path</p>
           {latestDecisionEvent ? (
-            <p className="mt-2 text-sm text-gray-700">
+            <p className="mt-2 text-sm text-gray-700 dark:text-gray-400">
               Last change:{" "}
               <span className="font-medium">{formatStatus(latestDecisionEvent.newStatus)}</span>
               {latestDecisionEvent.note ? ` — ${latestDecisionEvent.note}` : ""}
             </p>
           ) : (
-            <p className="mt-2 text-sm text-gray-600">
+            <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
               No explicit review transitions recorded for this decision yet.
             </p>
           )}
@@ -242,9 +242,9 @@ function DecisionCard({ item }) {
                 {item.rationaleSources.slice(0, 2).map((source, index) => (
                   <div
                     key={source.id ?? source.sourceDocumentId ?? `${source.label ?? "source"}-${index}`}
-                    className="text-xs text-gray-600"
+                    className="text-xs text-gray-600 dark:text-gray-400"
                   >
-                    <p className="font-medium text-gray-700">{source.label}</p>
+                    <p className="font-medium text-gray-700 dark:text-gray-400">{source.label}</p>
                     <p className="mt-0.5 text-[11px] text-gray-500">
                       {[source.author, source.connectorType].filter(Boolean).join(" · ")}
                     </p>
@@ -264,7 +264,7 @@ function DecisionCard({ item }) {
                   <Link
                     key={`${link.label}-${link.to}`}
                     to={link.to}
-                    className="rounded-full border border-gray-200 bg-white px-2 py-1 text-[11px] font-medium text-gray-700 hover:border-brand-200 hover:text-brand-700"
+                    className="rounded-full border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-2 py-1 text-[11px] font-medium text-gray-700 dark:text-gray-400 hover:border-brand-200 dark:border-brand-800/50 hover:text-brand-700 dark:text-brand-400"
                   >
                     {link.label}
                   </Link>
@@ -276,14 +276,14 @@ function DecisionCard({ item }) {
             {item.sourceDocumentId ? (
               <Link
                 to={`/app/sources/${item.sourceDocumentId}`}
-                className="font-medium text-brand-700 hover:text-brand-800"
+                className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300"
               >
                 View source
               </Link>
             ) : (
               <Link
                 to="/app/sources"
-                className="font-medium text-brand-700 hover:text-brand-800"
+                className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300"
               >
                 Inspect sources
               </Link>
@@ -291,7 +291,7 @@ function DecisionCard({ item }) {
             {primaryReviewItemId && (
               <Link
                 to={`/app/review/${primaryReviewItemId}`}
-                className="font-medium text-brand-700 hover:text-brand-800"
+                className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300"
               >
                 Open review thread
               </Link>
@@ -300,7 +300,7 @@ function DecisionCard({ item }) {
               <button
                 type="button"
                 onClick={() => setShowHistory((value) => !value)}
-                className="font-medium text-brand-700 hover:text-brand-800"
+                className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300"
               >
                 {showHistory ? "Hide history" : "Inspect history"}
               </button>
@@ -310,11 +310,11 @@ function DecisionCard({ item }) {
       </div>
 
       {showHistory && (
-        <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50 p-4">
+        <div className="mt-4 rounded-xl border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 p-4">
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="text-[11px] uppercase tracking-wide text-gray-500">Decision timeline</p>
-              <p className="mt-1 text-sm text-gray-600">
+              <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
                 Current and historical versions of this decision.
               </p>
             </div>
@@ -324,14 +324,14 @@ function DecisionCard({ item }) {
           ) : historyEntries.length > 0 ? (
             <div className="mt-4 space-y-3">
               {historyEntries.map((entry) => (
-                <div key={entry.id} className="rounded-lg border border-gray-200 bg-white px-4 py-3">
+                <div key={entry.id} className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-4 py-3">
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-sm font-medium text-gray-800">{entry.title}</p>
+                        <p className="text-sm font-medium text-gray-800 dark:text-gray-300">{entry.title}</p>
                         <StatusBadge status={entry.status} />
                       </div>
-                      <p className="mt-1 text-sm text-gray-600">{entry.summary}</p>
+                      <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">{entry.summary}</p>
                       <p className="mt-2 text-[11px] text-gray-500">
                         {[entry.sourceLabel, entry.author].filter(Boolean).join(" · ")}
                       </p>
@@ -360,7 +360,7 @@ function DecisionCard({ item }) {
 }
 
 function MetadataRow({ label, value, tone = "default" }) {
-  const colorClass = tone === "amber" ? "text-amber-700" : "text-gray-700";
+  const colorClass = tone === "amber" ? "text-amber-700 dark:text-amber-400" : "text-gray-700 dark:text-gray-400";
   return (
     <div>
       <p className="text-[11px] uppercase tracking-wide text-gray-500">{label}</p>
@@ -371,9 +371,9 @@ function MetadataRow({ label, value, tone = "default" }) {
 
 function StatusBadge({ status }) {
   const styles = {
-    current: "bg-emerald-100 text-emerald-700",
-    needs_review: "bg-amber-100 text-amber-700",
-    historical: "bg-gray-100 text-gray-600",
+    current: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400",
+    needs_review: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400",
+    historical: "bg-gray-100 dark:bg-gray-900/40 text-gray-600 dark:text-gray-400",
   };
 
   return (
@@ -441,13 +441,13 @@ function formatDateTime(value) {
 
 function DecisionEmptyState() {
   return (
-    <div className="rounded-[32px] border border-gray-200 bg-white p-12 text-center shadow-sm">
-      <div className="mx-auto w-16 h-16 bg-brand-50 text-brand-600 rounded-full flex items-center justify-center mb-6">
+    <div className="rounded-[32px] border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-12 text-center shadow-sm">
+      <div className="mx-auto w-16 h-16 bg-brand-50 dark:bg-brand-900/30 text-brand-600 dark:text-brand-400 rounded-full flex items-center justify-center mb-6">
         <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
         </svg>
       </div>
-      <h2 className="text-xl font-bold text-gray-900">No decisions have been registered yet.</h2>
+      <h2 className="text-xl font-bold text-gray-900 dark:text-gray-200">No decisions have been registered yet.</h2>
       <p className="mt-3 text-sm text-gray-500 max-w-lg mx-auto leading-relaxed">
         The register populates automatically from synced source documents that contain decisions, action items, or major technical choices.
       </p>
@@ -455,7 +455,7 @@ function DecisionEmptyState() {
         <Link to="/app" className="px-6 py-2.5 bg-brand-600 text-white text-sm font-bold rounded-xl hover:bg-brand-500 transition-colors shadow-lg shadow-brand-500/20">
           Add context
         </Link>
-        <Link to="/app/sources" className="px-6 py-2.5 bg-gray-100 text-gray-700 text-sm font-bold rounded-xl hover:bg-gray-200 transition-colors">
+        <Link to="/app/sources" className="px-6 py-2.5 bg-gray-100 dark:bg-gray-900/40 text-gray-700 dark:text-gray-400 text-sm font-bold rounded-xl hover:bg-gray-200 transition-colors">
           Inspect sources
         </Link>
       </div>

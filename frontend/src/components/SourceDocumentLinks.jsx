@@ -1,12 +1,12 @@
 import { Link } from "react-router-dom";
 
 const CONNECTOR_STYLE = {
-  slack: "bg-violet-100 text-violet-700",
-  notion: "bg-gray-100 text-gray-700",
-  zoom: "bg-sky-100 text-sky-700",
-  gdrive: "bg-emerald-100 text-emerald-700",
-  gong: "bg-indigo-100 text-indigo-700",
-  unknown: "bg-slate-100 text-slate-600",
+  slack: "bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-400",
+  notion: "bg-gray-100 dark:bg-gray-900/40 text-gray-700 dark:text-gray-400",
+  zoom: "bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-400",
+  gdrive: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400",
+  gong: "bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-400",
+  unknown: "bg-slate-100 dark:bg-slate-900/40 text-slate-600 dark:text-slate-400",
 };
 
 export default function SourceDocumentLinks({
@@ -29,7 +29,7 @@ export default function SourceDocumentLinks({
           {documents.map((doc) => (
             <div
               key={doc.id}
-              className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-3"
+              className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 px-3 py-3"
             >
               <div className="flex items-center gap-2">
                 {doc.connectorType && (
@@ -43,7 +43,7 @@ export default function SourceDocumentLinks({
                 )}
                 <Link
                   to={`/app/sources/${doc.id}`}
-                  className="text-xs font-medium text-gray-700 hover:text-brand-700"
+                  className="text-xs font-medium text-gray-700 dark:text-gray-400 hover:text-brand-700 dark:text-brand-400"
                 >
                   {doc.label}
                 </Link>
@@ -80,7 +80,7 @@ export default function SourceDocumentLinks({
           <Link
             key={doc.id}
             to={`/app/sources/${doc.id}`}
-            className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-xs text-gray-700 hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700 transition-colors"
+            className="inline-flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 px-2.5 py-1.5 text-xs text-gray-700 dark:text-gray-400 hover:border-brand-200 dark:border-brand-800/50 hover:bg-brand-50 dark:bg-brand-900/30 hover:text-brand-700 dark:text-brand-400 transition-colors"
           >
             {doc.connectorType && (
               <span

@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 from base64 import b64encode
+from typing import TYPE_CHECKING
 from uuid import UUID
 from urllib.parse import urlencode
 
@@ -20,6 +21,9 @@ from app.models.source import ConnectorType, SourceDocument
 from app.services.ingestion_service import IngestionService
 from app.models.user import Workspace
 from app.utils.crypto import EncryptionError, decrypt_token, encrypt_token
+
+if TYPE_CHECKING:
+    from app.models.job import SyncJob
 
 
 class ConnectorServiceError(Exception):
@@ -887,10 +891,18 @@ class ConnectorService:
         return body
 
     def _require_slack_config(self) -> None:
-        if not settings.slack_client_id or not settings.slack_client_secret:
+        missing = []
+        if not settings.slack_client_id:
+            missing.append("SLACK_CLIENT_ID")
+        if not settings.slack_client_secret:
+            missing.append("SLACK_CLIENT_SECRET")
+        if not settings.slack_redirect_uri:
+            missing.append("SLACK_REDIRECT_URI")
+        if missing:
             raise ConfigurationError(
-                "Slack integration is not configured. "
-                "Set SLACK_CLIENT_ID and SLACK_CLIENT_SECRET environment variables."
+                "Slack OAuth is not configured yet. "
+                f"Set {', '.join(missing)} in .env, restart Context Engine, "
+                "then connect Slack again. See docs/slack.md for the Slack app manifest."
             )
 
     def _require_zoom_oauth_config(self) -> None:

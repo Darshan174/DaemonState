@@ -14,6 +14,7 @@ export default function KnowledgeGraph() {
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [viewMode, setViewMode] = useState("workspace");
+  const [signalMode, setSignalMode] = useState("all");
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [hoveredNodeId, setHoveredNodeId] = useState(null);
   const { data, isMock, ...query } = useKnowledgeGraph({
@@ -30,18 +31,53 @@ export default function KnowledgeGraph() {
     () => new Map(graphNodes.map((node) => [node.id, node])),
     [graphNodes],
   );
+  const nodeDegree = useMemo(() => {
+    const degree = new Map(graphNodes.map((node) => [node.id, 0]));
+    for (const edge of graphEdges) {
+      degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
+      degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
+    }
+    return degree;
+  }, [graphEdges, graphNodes]);
+  const graphStats = useMemo(() => buildGraphStats(graphNodes, graphEdges), [graphEdges, graphNodes]);
+
+  const signalNodeIds = useMemo(() => {
+    if (signalMode !== "signal") return null;
+    const ranked = [...graphNodes]
+      .filter(
+        (node) =>
+          node.type === "model" ||
+          node.reviewStatus === "needs_review" ||
+          node.isStale ||
+          node.temporalState === "historical" ||
+          Number(node.sourceCount ?? 0) >= 2 ||
+          Number(nodeDegree.get(node.id) ?? 0) >= 2,
+      )
+      .sort((a, b) => (nodeDegree.get(b.id) ?? 0) - (nodeDegree.get(a.id) ?? 0))
+      .slice(0, 80)
+      .map((node) => node.id);
+    if (selectedNodeId) ranked.push(selectedNodeId);
+    const signalIds = new Set(ranked);
+    for (const edge of graphEdges) {
+      if (signalIds.has(edge.source)) signalIds.add(edge.target);
+      if (signalIds.has(edge.target)) signalIds.add(edge.source);
+    }
+    return signalIds;
+  }, [graphEdges, graphNodes, nodeDegree, selectedNodeId, signalMode]);
 
   useEffect(() => {
     setSearch(searchParams.get("q") ?? "");
     setTypeFilter(searchParams.get("type") ?? "all");
     setViewMode(searchParams.get("view") === "local" ? "local" : "workspace");
+    setSignalMode(searchParams.get("signal") === "1" ? "signal" : "all");
   }, [searchParams]);
 
   const filteredNodes = graphNodes.filter((n) => {
     const matchesSearch =
       !search || n.label.toLowerCase().includes(search.toLowerCase());
     const matchesType = typeFilter === "all" || n.type === typeFilter;
-    return matchesSearch && matchesType;
+    const matchesSignal = !signalNodeIds || signalNodeIds.has(n.id);
+    return matchesSearch && matchesType && matchesSignal;
   });
 
   const filteredNodeIds = new Set(filteredNodes.map((n) => n.id));
@@ -124,24 +160,25 @@ export default function KnowledgeGraph() {
     <div className="max-w-6xl mx-auto space-y-6">
       <div>
         <div className="flex items-center gap-3">
-          <h2 className="text-lg font-semibold text-gray-800">Graph Explorer</h2>
+          <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-300">Knowledge Graph</h2>
           {isMock && <MockBadge />}
         </div>
         {isMock && (
           <p className="text-xs text-gray-400 mt-1">
-            Visual map of decisions, sources, and relationships. Showing demo data — live graph is coming in a future phase.
+            Showing demo data until live workspace graph data is available.
           </p>
         )}
       </div>
 
-      <div className="rounded-xl border border-gray-200 bg-white p-4">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h3 className="text-sm font-semibold text-gray-700">How to use this graph</h3>
-            <p className="text-xs text-gray-400 mt-1">
-              Use the workspace graph to scan the whole knowledge space, then click into a node to switch into a local graph around that object. This works best for tracing a decision back to its sources and nearby blockers.
-            </p>
-          </div>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <GraphStat label="Models" value={graphStats.models} />
+        <GraphStat label="Components" value={graphStats.components} />
+        <GraphStat label="Sources" value={graphStats.sources} />
+        <GraphStat label="Relationships" value={graphStats.relationships} />
+      </div>
+
+      <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <button
               type="button"
@@ -152,7 +189,7 @@ export default function KnowledgeGraph() {
               className={`rounded-full px-3 py-1.5 font-medium transition-colors ${
                 viewMode === "workspace"
                   ? "bg-brand-600 text-white"
-                  : "border border-gray-200 bg-white text-gray-600 hover:bg-gray-50"
+                  : "border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30"
               }`}
             >
               Workspace graph
@@ -171,15 +208,38 @@ export default function KnowledgeGraph() {
               className={`rounded-full px-3 py-1.5 font-medium transition-colors ${
                 viewMode === "local"
                   ? "bg-slate-900 text-white"
-                  : "border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                  : "border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 disabled:cursor-not-allowed disabled:opacity-40"
               }`}
             >
               Local graph
             </button>
-            <Link to="/app/models" className="font-medium text-brand-700 hover:text-brand-800">
+            <button
+              type="button"
+              onClick={() => {
+                const nextMode = signalMode === "signal" ? "all" : "signal";
+                setSignalMode(nextMode);
+                updateGraphParams({ signal: nextMode === "signal" ? "1" : null });
+              }}
+              className={`rounded-full px-3 py-1.5 font-medium transition-colors ${
+                signalMode === "signal"
+                  ? "bg-amber-600 text-white"
+                  : "border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30"
+              }`}
+            >
+              High-signal
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center gap-3 text-xs">
+            <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 font-medium text-amber-700 dark:border-amber-800/50 dark:bg-amber-900/30 dark:text-amber-300">
+              {graphStats.reviewItems} review
+            </span>
+            <span className="rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 font-medium text-violet-700 dark:border-violet-800/50 dark:bg-violet-900/30 dark:text-violet-300">
+              {graphStats.historical} historical
+            </span>
+            <Link to="/app/models" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
               Models
             </Link>
-            <Link to="/app/sources" className="font-medium text-brand-700 hover:text-brand-800">
+            <Link to="/app/sources" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
               Sources
             </Link>
           </div>
@@ -198,7 +258,7 @@ export default function KnowledgeGraph() {
             updateGraphParams({ q: nextValue });
           }}
           aria-label="Search graph nodes"
-          className="px-3 py-2 text-sm border border-gray-200 rounded-lg w-full sm:w-64 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+          className="px-3 py-2 text-sm border border-gray-200 dark:border-gray-800/50 rounded-lg w-full sm:w-64 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
         />
         <div className="flex gap-1">
           {NODE_TYPES.map((t) => (
@@ -211,7 +271,7 @@ export default function KnowledgeGraph() {
               className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${
                 typeFilter === t
                   ? "bg-brand-600 text-white border-brand-600"
-                  : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
+                  : "bg-white dark:bg-slate-800 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-800/50 hover:bg-gray-50 dark:bg-gray-900/30"
               }`}
             >
               {t === "all" ? "All types" : t}
@@ -249,10 +309,10 @@ export default function KnowledgeGraph() {
           />
         </div>
 
-        <div className="rounded-xl border border-gray-200 bg-white p-5">
+        <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-5">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h3 className="text-sm font-semibold text-gray-800">Inspector</h3>
+              <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-300">Inspector</h3>
               <p className="mt-1 text-xs text-gray-400">
                 Click a node to inspect its nearby graph.
               </p>
@@ -264,7 +324,7 @@ export default function KnowledgeGraph() {
                   setViewMode("workspace");
                   updateGraphParams({ view: "workspace" });
                 }}
-                className="text-xs font-medium text-brand-700 hover:text-brand-800"
+                className="text-xs font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300"
               >
                 Back to workspace
               </button>
@@ -278,16 +338,16 @@ export default function KnowledgeGraph() {
           ) : (
             <div className="mt-5 space-y-5">
               <div>
-                <span className="inline-flex rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.08em] text-gray-500">
+                <span className="inline-flex rounded-full border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.08em] text-gray-500">
                   {selectedNode.type}
                 </span>
-                <h4 className="mt-3 text-base font-semibold text-gray-900">{selectedNode.label}</h4>
+                <h4 className="mt-3 text-base font-semibold text-gray-900 dark:text-gray-200">{selectedNode.label}</h4>
                 <p className="mt-1 text-xs text-gray-500">
                   {viewMode === "local"
                     ? "Showing first-degree neighborhood around this node."
                     : "Selected from the workspace graph."}
                 </p>
-                <div className="mt-4 flex flex-col gap-2 border-t border-gray-100 pt-4">
+                <div className="mt-4 flex flex-col gap-2 border-t border-gray-100 dark:border-gray-800/30 pt-4">
                   {selectedNode.type === "source" && (
                     <Link
                       to={`/app/sources/${selectedNode.id}`}
@@ -310,7 +370,7 @@ export default function KnowledgeGraph() {
                       : selectedNode.type === "source"
                         ? `/app/review?source_id=${selectedNode.id}`
                         : `/app/review?search=${encodeURIComponent(selectedNode.label)}`}
-                    className="block w-full rounded-lg border border-gray-200 bg-white px-4 py-2 text-center text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                    className="block w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-4 py-2 text-center text-sm font-medium text-gray-700 dark:text-gray-400 transition-colors hover:bg-gray-50 dark:bg-gray-900/30"
                   >
                     Review trust state
                   </Link>
@@ -337,7 +397,7 @@ export default function KnowledgeGraph() {
                             view: "local",
                           });
                         }}
-                        className="rounded-full border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:border-brand-200 hover:bg-brand-50 hover:text-brand-800"
+                        className="rounded-full border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-400 transition-colors hover:border-brand-200 dark:border-brand-800/50 hover:bg-brand-50 dark:bg-brand-900/30 hover:text-brand-800 dark:text-brand-300"
                       >
                         {node.label}
                       </button>
@@ -375,8 +435,8 @@ export default function KnowledgeGraph() {
       </div>
 
       {/* ── Edge list ───────────────────────────── */}
-      <div className="bg-white rounded-xl border border-gray-200 p-5">
-        <h3 className="text-sm font-semibold text-gray-700 mb-3">
+      <div className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-gray-800/50 p-5">
+        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-400 mb-3">
           {selectedNode ? "Visible relationships" : "Relationships"}
         </h3>
         {filteredEdges.length === 0 ? (
@@ -403,6 +463,26 @@ export default function KnowledgeGraph() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function buildGraphStats(nodes, edges) {
+  return {
+    models: nodes.filter((node) => node.type === "model").length,
+    components: nodes.filter((node) => node.type === "component").length,
+    sources: nodes.filter((node) => node.type === "source").length,
+    relationships: edges.length,
+    reviewItems: nodes.filter((node) => node.reviewStatus === "needs_review").length,
+    historical: nodes.filter((node) => node.temporalState === "historical" || node.isStale).length,
+  };
+}
+
+function GraphStat({ label, value }) {
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white px-4 py-3 dark:border-gray-800/50 dark:bg-slate-800">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">{label}</p>
+      <p className="mt-1 text-2xl font-semibold text-gray-900 dark:text-gray-100">{value}</p>
     </div>
   );
 }

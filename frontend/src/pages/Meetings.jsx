@@ -81,7 +81,7 @@ export default function Meetings() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
-            <h2 className="text-lg font-semibold text-gray-800">Meetings</h2>
+            <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-300">Meetings</h2>
             {isMock && <MockBadge />}
           </div>
           <p className="text-xs text-gray-400 mt-1">
@@ -89,37 +89,37 @@ export default function Meetings() {
           </p>
         </div>
         <div className="flex items-center gap-3 text-xs">
-          <Link to="/app/changes" className="font-medium text-brand-700 hover:text-brand-800">
+          <Link to="/app/changes" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
             Open timeline
           </Link>
-          <Link to="/app/launch-guard" className="font-medium text-brand-700 hover:text-brand-800">
+          <Link to="/app/launch-guard" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
             Open launch guard
           </Link>
         </div>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1.05fr)_minmax(340px,0.95fr)]">
-        <section className="overflow-hidden rounded-xl border border-gray-200 bg-white">
-          <div className="flex items-start justify-between gap-4 border-b border-gray-100 px-4 py-3">
+        <section className="overflow-hidden rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800">
+          <div className="flex items-start justify-between gap-4 border-b border-gray-100 dark:border-gray-800/30 px-4 py-3">
             <div>
-              <p className="text-sm font-semibold text-gray-700">Meeting transcripts</p>
+              <p className="text-sm font-semibold text-gray-700 dark:text-gray-400">Meeting transcripts</p>
               <p className="text-xs text-gray-400">
                 {visibleMeetings.length}
                 {meetings.length !== visibleMeetings.length ? ` of ${meetings.length}` : ""} loaded transcript
                 {visibleMeetings.length === 1 ? "" : "s"} from Zoom.
               </p>
             </div>
-            <Link to="/app/connectors" className="text-xs font-medium text-brand-700 hover:text-brand-800">
+            <Link to="/app/connectors" className="text-xs font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
               Manage Zoom
             </Link>
           </div>
-          <div className="border-b border-gray-100 px-4 py-3 space-y-3 bg-gray-50/70">
+          <div className="border-b border-gray-100 dark:border-gray-800/30 px-4 py-3 space-y-3 bg-gray-50/70">
             <input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="Search topic, host, participant, or transcript text..."
               aria-label="Search meetings"
-              className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-gray-800 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
             />
             <div className="flex flex-wrap gap-2">
               {MEETING_FILTERS.map((item) => {
@@ -133,7 +133,7 @@ export default function Meetings() {
                     className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
                       active
                         ? "bg-brand-600 text-white"
-                        : "bg-white text-gray-600 border border-gray-200 hover:bg-gray-100"
+                        : "bg-white dark:bg-slate-800 text-gray-600 dark:text-gray-400 border border-gray-200 dark:border-gray-800/50 hover:bg-gray-100 dark:bg-gray-900/40"
                     }`}
                   >
                     {item.label}
@@ -152,26 +152,26 @@ export default function Meetings() {
                   onClick={() => navigate(`/app/meetings/${meeting.id}`)}
                   aria-pressed={documentId === meeting.id}
                   className={`w-full px-4 py-4 text-left transition-colors ${
-                    documentId === meeting.id ? "bg-brand-50" : "hover:bg-gray-50"
+                    documentId === meeting.id ? "bg-brand-50 dark:bg-brand-900/30" : "hover:bg-gray-50 dark:bg-gray-900/30"
                   }`}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-medium text-sky-700">
+                        <span className="rounded-full bg-sky-100 dark:bg-sky-900/40 px-2 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-400">
                           Zoom transcript
                         </span>
                         <span
                           className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
                             meeting.processed
-                              ? "bg-emerald-100 text-emerald-700"
-                              : "bg-amber-100 text-amber-700"
+                              ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400"
+                              : "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400"
                           }`}
                         >
                           {meeting.processed ? "Processed" : "Pending"}
                         </span>
                       </div>
-                      <p className="mt-2 truncate text-sm font-medium text-gray-800">
+                      <p className="mt-2 truncate text-sm font-medium text-gray-800 dark:text-gray-300">
                         {meeting.meetingTopic || meeting.location || "Untitled meeting"}
                       </p>
                       <p className="mt-1 text-xs text-gray-500">
@@ -191,7 +191,7 @@ export default function Meetings() {
               );
             }) : (
               <div className="px-4 py-8 text-center">
-                <p className="text-sm font-semibold text-gray-800">No transcripts match this view.</p>
+                <p className="text-sm font-semibold text-gray-800 dark:text-gray-300">No transcripts match this view.</p>
                 <p className="mt-2 text-xs text-gray-500">
                   Change the filter or broaden the search to bring more meetings back into scope.
                 </p>
@@ -201,7 +201,7 @@ export default function Meetings() {
                     setSearch("");
                     setFilter("all");
                   }}
-                  className="mt-4 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                  className="mt-4 rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-medium text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30"
                 >
                   Clear filters
                 </button>
@@ -209,12 +209,12 @@ export default function Meetings() {
             )}
           </div>
           {showLoadMore && (
-            <div className="border-t border-gray-100 bg-gray-50 px-4 py-3">
+            <div className="border-t border-gray-100 dark:border-gray-800/30 bg-gray-50 dark:bg-gray-900/30 px-4 py-3">
               <button
                 type="button"
                 onClick={() => fetchNextPage()}
                 disabled={isFetchingNextPage}
-                className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+                className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 disabled:opacity-60"
               >
                 {isFetchingNextPage ? "Loading more..." : "Load more transcripts"}
               </button>
@@ -222,7 +222,7 @@ export default function Meetings() {
           )}
         </section>
 
-        <section className="space-y-4 rounded-xl border border-gray-200 bg-white p-5">
+        <section className="space-y-4 rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-5">
           {selectedMeeting ? (
             <MeetingDetail
               meeting={selectedMeeting}
@@ -278,7 +278,7 @@ function MeetingDetail({ meeting, components, reviewItems }) {
     <>
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h3 className="text-sm font-semibold text-gray-700">
+          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-400">
             {meeting.meetingTopic || meeting.location || "Meeting detail"}
           </h3>
           <p className="mt-1 text-xs text-gray-400">
@@ -287,7 +287,7 @@ function MeetingDetail({ meeting, components, reviewItems }) {
         </div>
         <Link
           to={`/app/sources/${meeting.id}`}
-          className="text-xs font-medium text-brand-700 hover:text-brand-800"
+          className="text-xs font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300"
         >
           Open source
         </Link>
@@ -345,7 +345,7 @@ function MeetingDetail({ meeting, components, reviewItems }) {
             ))}
           </div>
         ) : currentComponents.length > 0 ? (
-          <p className="text-sm text-gray-600">
+          <p className="text-sm text-gray-600 dark:text-gray-400">
             This meeting has current linked facts, but none are still open blockers or pending loops.
           </p>
         ) : (
@@ -373,13 +373,13 @@ function MeetingDetail({ meeting, components, reviewItems }) {
         {reviewItems.length > 0 ? (
           <div className="space-y-3">
             {reviewItems.map((item) => (
-              <div key={item.id} className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+              <div key={item.id} className="rounded-lg border border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30 px-4 py-3">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="text-sm font-medium text-amber-800">{item.title}</p>
-                    <p className="mt-1 text-sm text-amber-700">{item.summary}</p>
+                    <p className="text-sm font-medium text-amber-800 dark:text-amber-300">{item.title}</p>
+                    <p className="mt-1 text-sm text-amber-700 dark:text-amber-400">{item.summary}</p>
                   </div>
-                  <Link to={`/app/review/${item.id}`} className="text-xs font-medium text-amber-800 underline underline-offset-2">
+                  <Link to={`/app/review/${item.id}`} className="text-xs font-medium text-amber-800 dark:text-amber-300 underline underline-offset-2">
                     Open
                   </Link>
                 </div>
@@ -387,7 +387,7 @@ function MeetingDetail({ meeting, components, reviewItems }) {
             ))}
           </div>
         ) : blockerComponents.length > 0 ? (
-          <p className="text-sm text-gray-600">
+          <p className="text-sm text-gray-600 dark:text-gray-400">
             This meeting produced blocker facts, but there are no explicit review items attached yet.
           </p>
         ) : (
@@ -397,7 +397,7 @@ function MeetingDetail({ meeting, components, reviewItems }) {
 
       <section className="space-y-2">
         <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Transcript preview</h4>
-        <div className="max-h-64 overflow-y-auto rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm leading-relaxed text-gray-700">
+        <div className="max-h-64 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 px-4 py-3 text-sm leading-relaxed text-gray-700 dark:text-gray-400">
           {meeting.content || "No transcript content is available."}
         </div>
       </section>
@@ -406,8 +406,8 @@ function MeetingDetail({ meeting, components, reviewItems }) {
 }
 
 function HighlightPanel({ title, items, empty, tone }) {
-  const toneClass = tone === "emerald" ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50";
-  const textClass = tone === "emerald" ? "text-emerald-800" : "text-amber-800";
+  const toneClass = tone === "emerald" ? "border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/30" : "border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30";
+  const textClass = tone === "emerald" ? "text-emerald-800 dark:text-emerald-300" : "text-amber-800 dark:text-amber-300";
   return (
     <div className={`rounded-lg border px-4 py-3 ${toneClass}`}>
       <p className={`text-sm font-medium ${textClass}`}>{title}</p>
@@ -428,19 +428,19 @@ function HighlightPanel({ title, items, empty, tone }) {
 
 function DetailStat({ label, value }) {
   return (
-    <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+    <div className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 px-4 py-3">
       <p className="text-[11px] uppercase tracking-wide text-gray-500">{label}</p>
-      <p className="mt-1 text-sm text-gray-700">{value}</p>
+      <p className="mt-1 text-sm text-gray-700 dark:text-gray-400">{value}</p>
     </div>
   );
 }
 
 function OutcomeStat({ label, value, tone }) {
   const classes = {
-    emerald: "border-emerald-200 bg-emerald-50 text-emerald-800",
-    amber: "border-amber-200 bg-amber-50 text-amber-800",
-    rose: "border-rose-200 bg-rose-50 text-rose-800",
-    slate: "border-gray-200 bg-gray-50 text-gray-800",
+    emerald: "border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-300",
+    amber: "border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300",
+    rose: "border-rose-200 dark:border-rose-800/50 bg-rose-50 dark:bg-rose-900/30 text-rose-800 dark:text-rose-300",
+    slate: "border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 text-gray-800 dark:text-gray-300",
   };
   return (
     <div className={`rounded-lg border px-4 py-3 ${classes[tone] ?? classes.slate}`}>
@@ -452,70 +452,70 @@ function OutcomeStat({ label, value, tone }) {
 
 function OutcomeCard({ component, label, tone }) {
   const toneClasses = {
-    emerald: "border-emerald-200 bg-emerald-50/70",
-    amber: "border-amber-200 bg-amber-50/70",
-    slate: "border-gray-200 bg-gray-50",
+    emerald: "border-emerald-200 dark:border-emerald-800/50 bg-emerald-50/70",
+    amber: "border-amber-200 dark:border-amber-800/50 bg-amber-50/70",
+    slate: "border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30",
   };
   return (
     <div className={`rounded-lg border px-4 py-3 ${toneClasses[tone] ?? toneClasses.slate}`}>
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full bg-white/80 px-2 py-0.5 text-[10px] font-medium text-gray-600">
+            <span className="rounded-full bg-white/80 px-2 py-0.5 text-[10px] font-medium text-gray-600 dark:text-gray-400">
               {label}
             </span>
-            <p className="text-sm font-medium text-gray-800">{component.name}</p>
+            <p className="text-sm font-medium text-gray-800 dark:text-gray-300">{component.name}</p>
             {component.reviewStatus && (
               <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
                 component.reviewStatus === "needs_review"
-                  ? "bg-amber-100 text-amber-700"
+                  ? "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400"
                   : component.reviewStatus === "approved"
-                    ? "bg-emerald-100 text-emerald-700"
+                    ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400"
                     : component.reviewStatus === "historical"
-                      ? "bg-gray-100 text-gray-600"
-                      : "bg-slate-100 text-slate-700"
+                      ? "bg-gray-100 dark:bg-gray-900/40 text-gray-600 dark:text-gray-400"
+                      : "bg-slate-100 dark:bg-slate-900/40 text-slate-700 dark:text-slate-400"
               }`}>
                 {component.reviewStatus.replace(/_/g, " ")}
               </span>
             )}
             {component.temporalState && (
-              <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-600">
+              <span className="rounded-full bg-gray-100 dark:bg-gray-900/40 px-2 py-0.5 text-[10px] font-medium text-gray-600 dark:text-gray-400">
                 {component.temporalState.replace(/_/g, " ")}
               </span>
             )}
           </div>
-          <p className="mt-1 text-sm text-gray-600">{component.value}</p>
+          <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">{component.value}</p>
           <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-gray-500">
             {component.modelName ? (
               <span className="rounded-full bg-white/80 px-2 py-1">
-                <span className="font-medium text-gray-700">Model:</span> {component.modelName}
+                <span className="font-medium text-gray-700 dark:text-gray-400">Model:</span> {component.modelName}
               </span>
             ) : null}
             {component.authorityWeight != null ? (
               <span className="rounded-full bg-white/80 px-2 py-1">
-                <span className="font-medium text-gray-700">Authority:</span> {component.authorityWeight.toFixed(2)}
+                <span className="font-medium text-gray-700 dark:text-gray-400">Authority:</span> {component.authorityWeight.toFixed(2)}
               </span>
             ) : null}
             {component.validFrom ? (
               <span className="rounded-full bg-white/80 px-2 py-1">
-                <span className="font-medium text-gray-700">Active from:</span> {formatDate(component.validFrom)}
+                <span className="font-medium text-gray-700 dark:text-gray-400">Active from:</span> {formatDate(component.validFrom)}
               </span>
             ) : null}
             {component.validTo ? (
               <span className="rounded-full bg-white/80 px-2 py-1">
-                <span className="font-medium text-gray-700">Until:</span> {formatDate(component.validTo)}
+                <span className="font-medium text-gray-700 dark:text-gray-400">Until:</span> {formatDate(component.validTo)}
               </span>
             ) : null}
           </div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-2">
           {component.modelId ? (
-            <Link to={`/app/model/${component.modelId}`} className="text-xs font-medium text-brand-700 hover:text-brand-800">
+            <Link to={`/app/model/${component.modelId}`} className="text-xs font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
               Open model
             </Link>
           ) : null}
           {component.reviewItemId ? (
-            <Link to={`/app/review/${component.reviewItemId}`} className="text-xs font-medium text-brand-700 hover:text-brand-800">
+            <Link to={`/app/review/${component.reviewItemId}`} className="text-xs font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
               Open review
             </Link>
           ) : null}
@@ -584,16 +584,16 @@ function formatDate(value) {
 
 function MeetingsEmptyState() {
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-6 text-center">
-      <p className="text-sm font-semibold text-gray-800">No Zoom meeting transcripts yet.</p>
+    <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-6 text-center">
+      <p className="text-sm font-semibold text-gray-800 dark:text-gray-300">No Zoom meeting transcripts yet.</p>
       <p className="mt-2 text-xs text-gray-500 max-w-2xl mx-auto">
         Connect Zoom and run a transcript sync to turn meetings into source-backed context for decisions and blockers.
       </p>
       <div className="mt-4 flex flex-wrap items-center justify-center gap-4 text-xs">
-        <Link to="/app/connectors" className="font-medium text-brand-700 hover:text-brand-800">
+        <Link to="/app/connectors" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
           Connect Zoom
         </Link>
-        <Link to="/app/sources?connector=zoom" className="font-medium text-brand-700 hover:text-brand-800">
+        <Link to="/app/sources?connector=zoom" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
           Open sources
         </Link>
       </div>

@@ -8,6 +8,7 @@ import json
 from uuid import UUID
 
 from app.database import AsyncSessionLocal
+from app.evals.baseline import NaiveRagBaseline
 from app.evals.gold_set import load_default_cases
 from app.evals.harness import StartupEvalHarness
 from app.evals.policy import PHASE_3B_POLICY, evaluate_exit_criteria
@@ -45,6 +46,7 @@ async def _run(args: argparse.Namespace) -> tuple[dict[str, object], int]:
         try:
             summary = await StartupEvalHarness(
                 QueryService(session),
+                baseline_runner=NaiveRagBaseline(session),
                 pass_threshold=args.pass_threshold,
             ).run(
                 workspace_id=args.workspace_id,
@@ -69,6 +71,8 @@ async def _run(args: argparse.Namespace) -> tuple[dict[str, object], int]:
         "min_retrieval_hit_quality": PHASE_3B_POLICY.min_retrieval_hit_quality,
         "min_extracted_fact_correctness": PHASE_3B_POLICY.min_extracted_fact_correctness,
         "min_final_answer_correctness": PHASE_3B_POLICY.min_final_answer_correctness,
+        "min_citation_accuracy": PHASE_3B_POLICY.min_citation_accuracy,
+        "min_stale_context_detection": PHASE_3B_POLICY.min_stale_context_detection,
         "max_confidence_calibration_error": PHASE_3B_POLICY.max_confidence_calibration_error,
     }
     payload["status"] = "passed" if not failures else "failed"
@@ -109,6 +113,9 @@ def format_report_payload(payload: dict[str, object]) -> str:
         f"retrieval={payload['average_retrieval_hit_quality']:.2f}, "
         f"extraction={payload['average_extracted_fact_correctness']:.2f}, "
         f"answer={payload['average_final_answer_correctness']:.2f}, "
+        f"citation={payload['average_citation_accuracy']:.2f}, "
+        f"stale={payload['average_stale_context_detection']:.2f}, "
+        f"lift={payload['average_context_answer_lift']:+.2f}, "
         f"calibration={payload['confidence_calibration_error']:.2f}"
     )
     failures = payload.get("failures") or []

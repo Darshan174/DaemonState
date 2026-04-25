@@ -75,10 +75,10 @@ export default function Onboarding({ onComplete }) {
   if (step === "demo") {
     return (
       <div className="flex flex-col items-center justify-center py-12 text-center">
-        <div className="w-16 h-16 rounded-full bg-brand-50 flex items-center justify-center mb-6">
-          <Loader2 className="w-8 h-8 text-brand-600 animate-spin" />
+        <div className="w-16 h-16 rounded-full bg-brand-50 dark:bg-brand-900/30 flex items-center justify-center mb-6">
+          <Loader2 className="w-8 h-8 text-brand-600 dark:text-brand-400 animate-spin" />
         </div>
-        <h2 className="text-xl font-bold text-slate-900">Seeding Demo Workspace</h2>
+        <h2 className="text-xl font-bold text-slate-900 dark:text-slate-200">Seeding Demo Workspace</h2>
         <p className="mt-2 text-slate-500 max-w-sm">
           We're setting up a realistic startup environment with Slack threads, Notion docs, and Zoom transcripts.
         </p>
@@ -91,18 +91,18 @@ export default function Onboarding({ onComplete }) {
       <div className="py-6">
         <button 
           onClick={() => setStep("choice")}
-          className="mb-6 flex items-center gap-2 text-sm font-medium text-slate-500 hover:text-slate-800 transition-colors"
+          className="mb-6 flex items-center gap-2 text-sm font-medium text-slate-500 hover:text-slate-800 dark:text-slate-300 transition-colors"
         >
           <ArrowRight className="w-4 h-4 rotate-180" />
           Back to options
         </button>
 
-        <h2 className="text-xl font-bold text-slate-900 mb-2">Import your context</h2>
+        <h2 className="text-xl font-bold text-slate-900 dark:text-slate-200 mb-2">Import your context</h2>
         <p className="text-slate-500 mb-8">Upload Markdown, text, JSON, CSV, or HTML files to ground your workspace truth.</p>
 
         <div className="space-y-6">
           <div 
-            className="border-2 border-dashed border-slate-200 rounded-2xl p-10 flex flex-col items-center justify-center bg-slate-50/50 hover:bg-slate-50 transition-colors cursor-pointer group"
+            className="border-2 border-dashed border-slate-200 dark:border-slate-800/50 rounded-2xl p-10 flex flex-col items-center justify-center bg-slate-50/50 hover:bg-slate-50 dark:bg-slate-900/30 transition-colors cursor-pointer group"
             onClick={() => document.getElementById('file-upload').click()}
           >
             <input 
@@ -113,10 +113,10 @@ export default function Onboarding({ onComplete }) {
               className="hidden" 
               onChange={handleFileUpload}
             />
-            <div className="w-12 h-12 rounded-full bg-white shadow-sm flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-              <UploadCloud className="w-6 h-6 text-brand-600" />
+            <div className="w-12 h-12 rounded-full bg-white dark:bg-slate-800 shadow-sm flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+              <UploadCloud className="w-6 h-6 text-brand-600 dark:text-brand-400" />
             </div>
-            <p className="text-sm font-bold text-slate-900">Click to select files</p>
+            <p className="text-sm font-bold text-slate-900 dark:text-slate-200">Click to select files</p>
             <p className="text-xs text-slate-500 mt-1">MD, TXT, JSON, CSV, HTML, YAML, XML, LOG (up to 10MB each)</p>
           </div>
 
@@ -124,10 +124,10 @@ export default function Onboarding({ onComplete }) {
             <div className="space-y-2">
               <p className="text-xs font-bold uppercase tracking-widest text-slate-400 mb-2">Selected Files ({files.length})</p>
               {files.map((file, i) => (
-                <div key={i} className="flex items-center justify-between p-3 bg-white border border-slate-200 rounded-xl">
+                <div key={i} className="flex items-center justify-between p-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-800/50 rounded-xl">
                   <div className="flex items-center gap-3">
                     <FileText className="w-4 h-4 text-slate-400" />
-                    <span className="text-sm font-medium text-slate-700 truncate max-w-[200px]">{file.name}</span>
+                    <span className="text-sm font-medium text-slate-700 dark:text-slate-400 truncate max-w-[200px]">{file.name}</span>
                   </div>
                   <button onClick={(e) => { e.stopPropagation(); removeFile(i); }} className="p-1 text-slate-400 hover:text-red-500">
                     <X className="w-4 h-4" />
@@ -157,9 +157,9 @@ export default function Onboarding({ onComplete }) {
 
           {importStatus && (
             <div className={`p-4 rounded-xl flex items-start gap-3 ${
-              importStatus.status === 'success' ? 'bg-emerald-50 text-emerald-800 border border-emerald-100' :
-              importStatus.status === 'error' ? 'bg-red-50 text-red-800 border border-red-100' :
-              'bg-brand-50 text-brand-800 border border-brand-100'
+              importStatus.status === 'success' ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-300 border border-emerald-100 dark:border-emerald-800/30' :
+              importStatus.status === 'error' ? 'bg-red-50 dark:bg-red-900/30 text-red-800 dark:text-red-300 border border-red-100 dark:border-red-800/30' :
+              'bg-brand-50 dark:bg-brand-900/30 text-brand-800 dark:text-brand-300 border border-brand-100 dark:border-brand-800/30'
             }`}>
               {importStatus.status === 'success' ? <CheckCircle2 className="w-5 h-5 shrink-0" /> :
                importStatus.status === 'error' ? <AlertCircle className="w-5 h-5 shrink-0" /> :
@@ -175,13 +175,13 @@ export default function Onboarding({ onComplete }) {
   return (
     <div className="py-6">
       <div className="mb-10">
-        <h2 className="text-2xl font-bold text-slate-900">Welcome to Context Engine</h2>
+        <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-200">Welcome to Context Engine</h2>
         <p className="text-slate-500 mt-2">Get started by seeding your workspace with initial truth.</p>
       </div>
 
       <div className="grid gap-4">
         <OnboardingCard 
-          icon={<PlayCircle className="w-6 h-6 text-emerald-600" />}
+          icon={<PlayCircle className="w-6 h-6 text-emerald-600 dark:text-emerald-400" />}
           title="Run Demo Workspace"
           description="Instant setup with high-quality mock data from Slack, Notion, and Zoom. Best for exploration."
           action="Start demo"
@@ -190,7 +190,7 @@ export default function Onboarding({ onComplete }) {
         />
 
         <OnboardingCard 
-          icon={<UploadCloud className="w-6 h-6 text-brand-600" />}
+          icon={<UploadCloud className="w-6 h-6 text-brand-600 dark:text-brand-400" />}
           title="Import Local Files"
           description="Upload your product specs, roadmap, or meeting notes directly into the engine."
           action="Upload files"
@@ -199,7 +199,7 @@ export default function Onboarding({ onComplete }) {
         />
 
         <OnboardingCard 
-          icon={<Key className="w-6 h-6 text-amber-600" />}
+          icon={<Key className="w-6 h-6 text-amber-600 dark:text-amber-400" />}
           title="Connect Live Sources"
           description="Link Slack, GitHub, or Notion tokens to start continuous ingestion of live company data."
           action="Configure tokens"
@@ -213,13 +213,13 @@ export default function Onboarding({ onComplete }) {
 
 function OnboardingCard({ icon, title, description, action, onClick, to, color }) {
   const CardContent = (
-    <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 p-6 bg-white border border-slate-200 rounded-[24px] hover:border-brand-300 hover:shadow-xl hover:shadow-brand-500/5 transition-all group">
+    <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 p-6 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-800/50 rounded-[24px] hover:border-brand-300 hover:shadow-xl hover:shadow-brand-500/5 transition-all group">
       <div className="flex items-start gap-5">
         <div className={`w-14 h-14 rounded-2xl bg-${color}-50 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform`}>
           {icon}
         </div>
         <div>
-          <h3 className="text-lg font-bold text-slate-900">{title}</h3>
+          <h3 className="text-lg font-bold text-slate-900 dark:text-slate-200">{title}</h3>
           <p className="mt-1 text-sm text-slate-500 max-w-md">{description}</p>
         </div>
       </div>

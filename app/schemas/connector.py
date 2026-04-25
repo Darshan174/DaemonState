@@ -22,6 +22,7 @@ class ConnectorRead(BaseModel):
     provider: str | None = None
     provider_label: str | None = None
     provider_note: str | None = None
+    setup_status: dict[str, Any] | None = None
 
 
 class ConnectorSyncResponse(BaseModel):
@@ -60,6 +61,15 @@ class SyncJobDetail(BaseModel):
 
 class SlackInstallResponse(BaseModel):
     redirect_url: str
+
+
+class ConnectorSetupStatus(BaseModel):
+    connector_type: str
+    configured: bool
+    missing: list[str] = []
+    setup_url: str | None = None
+    docs_url: str | None = None
+    message: str
 
 
 class NotionConnectRequest(BaseModel):

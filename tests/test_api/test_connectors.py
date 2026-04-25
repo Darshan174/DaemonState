@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import httpx
@@ -61,6 +61,41 @@ class TestListConnectors:
         )
         assert resp.status_code == 404
         assert resp.json()["detail"] == "Workspace not found"
+
+
+class TestConnectorSetupStatus:
+    async def test_slack_reports_missing_oauth_configuration(self, client, monkeypatch):
+        monkeypatch.setattr(connector_module.settings, "slack_client_id", None)
+        monkeypatch.setattr(connector_module.settings, "slack_client_secret", None)
+        monkeypatch.setattr(connector_module.settings, "slack_redirect_uri", None)
+
+        resp = await client.get("/api/connectors/setup-status")
+
+        assert resp.status_code == 200
+        slack_status = next(item for item in resp.json() if item["connector_type"] == "slack")
+        assert slack_status["configured"] is False
+        assert slack_status["missing"] == [
+            "SLACK_CLIENT_ID",
+            "SLACK_CLIENT_SECRET",
+            "SLACK_REDIRECT_URI",
+        ]
+        assert slack_status["docs_url"] == "/docs/slack.md"
+
+    async def test_slack_reports_configured_oauth(self, client, monkeypatch):
+        monkeypatch.setattr(connector_module.settings, "slack_client_id", "client-id")
+        monkeypatch.setattr(connector_module.settings, "slack_client_secret", "secret")
+        monkeypatch.setattr(
+            connector_module.settings,
+            "slack_redirect_uri",
+            "https://example.com/api/connectors/slack/callback",
+        )
+
+        resp = await client.get("/api/connectors/setup-status")
+
+        assert resp.status_code == 200
+        slack_status = next(item for item in resp.json() if item["connector_type"] == "slack")
+        assert slack_status["configured"] is True
+        assert slack_status["missing"] == []
 
 
 class TestDisconnectConnector:
@@ -186,6 +221,11 @@ class TestSlackCallback:
         """Common monkeypatch setup for callback tests."""
         monkeypatch.setattr(connector_module.settings, "slack_client_id", "xoxb-fake")
         monkeypatch.setattr(connector_module.settings, "slack_client_secret", "secret")
+        monkeypatch.setattr(
+            connector_module.settings,
+            "slack_redirect_uri",
+            "https://example.com/api/connectors/slack/callback",
+        )
         monkeypatch.setattr(connector_module.settings, "encryption_key", _TEST_FERNET_KEY)
         monkeypatch.setattr(
             connector_module.aioredis, "from_url", lambda *a, **kw: fake_redis
@@ -381,6 +421,11 @@ class TestSlackCallback:
         # Set up everything EXCEPT encryption_key
         monkeypatch.setattr(connector_module.settings, "slack_client_id", "xoxb-fake")
         monkeypatch.setattr(connector_module.settings, "slack_client_secret", "secret")
+        monkeypatch.setattr(
+            connector_module.settings,
+            "slack_redirect_uri",
+            "https://example.com/api/connectors/slack/callback",
+        )
         monkeypatch.setattr(connector_module.settings, "encryption_key", None)
         monkeypatch.setattr(
             connector_module.aioredis, "from_url", lambda *a, **kw: fake_redis
@@ -414,6 +459,11 @@ class TestSlackCallback:
         fake_redis = _FakeRedis()
         monkeypatch.setattr(connector_module.settings, "slack_client_id", "xoxb-fake")
         monkeypatch.setattr(connector_module.settings, "slack_client_secret", "secret")
+        monkeypatch.setattr(
+            connector_module.settings,
+            "slack_redirect_uri",
+            "https://example.com/api/connectors/slack/callback",
+        )
         monkeypatch.setattr(connector_module.settings, "encryption_key", "not-a-valid-fernet-key")
         monkeypatch.setattr(
             connector_module.aioredis, "from_url", lambda *a, **kw: fake_redis

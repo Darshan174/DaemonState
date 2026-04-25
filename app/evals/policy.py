@@ -17,18 +17,22 @@ class EvalPolicy:
     min_retrieval_hit_quality: float
     min_extracted_fact_correctness: float
     min_final_answer_correctness: float
+    min_citation_accuracy: float
+    min_stale_context_detection: float
     max_confidence_calibration_error: float
 
 
 PHASE_3B_POLICY = EvalPolicy(
-    min_total_cases=25,
+    min_total_cases=30,
     min_cases_per_domain=5,
-    required_domains=("pricing", "blocker", "roadmap", "decision", "meeting"),
+    required_domains=("pricing", "blocker", "roadmap", "decision", "meeting", "staleness"),
     pass_threshold=0.5,
     min_pass_rate=0.80,
     min_retrieval_hit_quality=0.80,
     min_extracted_fact_correctness=0.80,
     min_final_answer_correctness=0.75,
+    min_citation_accuracy=0.80,
+    min_stale_context_detection=0.90,
     max_confidence_calibration_error=0.25,
 )
 
@@ -67,6 +71,18 @@ def evaluate_exit_criteria(
             "answer "
             f"{summary.average_final_answer_correctness:.2f} < "
             f"{policy.min_final_answer_correctness:.2f}"
+        )
+    if summary.average_citation_accuracy < policy.min_citation_accuracy:
+        failures.append(
+            "citation "
+            f"{summary.average_citation_accuracy:.2f} < "
+            f"{policy.min_citation_accuracy:.2f}"
+        )
+    if summary.average_stale_context_detection < policy.min_stale_context_detection:
+        failures.append(
+            "stale_context "
+            f"{summary.average_stale_context_detection:.2f} < "
+            f"{policy.min_stale_context_detection:.2f}"
         )
     if (
         summary.confidence_calibration_error

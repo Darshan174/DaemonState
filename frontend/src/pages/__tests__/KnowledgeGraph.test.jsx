@@ -70,8 +70,8 @@ describe("KnowledgeGraph", () => {
 
     renderGraph();
 
-    expect(screen.getByText("Graph Explorer")).toBeInTheDocument();
-    expect(screen.getByText("How to use this graph")).toBeInTheDocument();
+    expect(screen.getByText("Knowledge Graph")).toBeInTheDocument();
+    expect(screen.getByText("Relationships")).toBeInTheDocument();
     expect(screen.getByText(/Demo data/)).toBeInTheDocument();
     expect(screen.getByText(/Showing demo data/)).toBeInTheDocument();
     expect(screen.getByTestId("graph-viz")).toHaveTextContent("3 nodes, 2 edges");
@@ -88,7 +88,7 @@ describe("KnowledgeGraph", () => {
 
     renderGraph();
 
-    expect(screen.getByText("Graph Explorer")).toBeInTheDocument();
+    expect(screen.getByText("Knowledge Graph")).toBeInTheDocument();
     expect(screen.queryByText(/Demo data/)).not.toBeInTheDocument();
   });
 
@@ -175,6 +175,27 @@ describe("KnowledgeGraph", () => {
 
     expect(screen.getByText(/3\/3 nodes/)).toBeInTheDocument();
     expect(screen.getByText(/2\/2 edges/)).toBeInTheDocument();
+  });
+
+  it("can reduce the graph to high-signal nodes", async () => {
+    useKnowledgeGraph.mockReturnValue({
+      data: {
+        nodes: [
+          ...mockNodes,
+          { id: "n4", label: "Loose note", type: "component", x: 640, y: 440 },
+        ],
+        edges: mockEdges,
+      },
+      isMock: false,
+      isLoading: false,
+      isError: false,
+    });
+
+    renderGraph();
+
+    await userEvent.click(screen.getByRole("button", { name: "High-signal" }));
+
+    expect(screen.getByTestId("graph-viz")).toHaveTextContent("3 nodes, 2 edges");
   });
 
   it("shows linked nodes in the inspector", () => {

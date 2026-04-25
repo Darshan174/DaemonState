@@ -17,11 +17,11 @@ import StatusView from "../components/StatusView";
 import { resolveWorkspaceId, useWorkspaceSelection } from "../context/WorkspaceContext";
 
 const STATUS_PILL = {
-  connected: "bg-emerald-100 text-emerald-700",
-  disconnected: "bg-gray-100 text-gray-600",
-  warning: "bg-amber-100 text-amber-700",
-  error: "bg-red-100 text-red-700",
-  coming_soon: "bg-slate-100 text-slate-600",
+  connected: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400",
+  disconnected: "bg-gray-100 dark:bg-gray-900/40 text-gray-600 dark:text-gray-400",
+  warning: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400",
+  error: "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400",
+  coming_soon: "bg-slate-100 dark:bg-slate-900/40 text-slate-600 dark:text-slate-400",
 };
 
 const STATUS_LABEL = {
@@ -33,10 +33,10 @@ const STATUS_LABEL = {
 };
 
 const PROVIDER_PILL = {
-  native: "bg-gray-100 text-gray-700",
-  dlt: "bg-sky-100 text-sky-700",
-  unstructured: "bg-orange-100 text-orange-700",
-  official_api: "bg-indigo-100 text-indigo-700",
+  native: "bg-gray-100 dark:bg-gray-900/40 text-gray-700 dark:text-gray-400",
+  dlt: "bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-400",
+  unstructured: "bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-400",
+  official_api: "bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-400",
 };
 
 const OAUTH_POLL_INTERVAL_MS = 1500;
@@ -208,7 +208,7 @@ export default function Connectors() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
-            <h2 className="text-lg font-semibold text-gray-800">Connectors</h2>
+            <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-300">Connectors</h2>
             {isMock && <MockBadge />}
           </div>
           <p className="text-xs text-gray-400 mt-1">
@@ -217,27 +217,27 @@ export default function Connectors() {
             while the backend expands.
           </p>
           {isMock && (
-            <p className="text-xs text-amber-600 mt-2">
+            <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
               Connector cards are in demo mode right now. OAuth and sync actions unlock once the backend
               endpoints are live.
             </p>
           )}
         </div>
-        <div className="px-3 py-2 rounded-lg border border-gray-200 bg-white text-right">
+        <div className="px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 text-right">
           <p className="text-[11px] uppercase tracking-wide text-gray-400">Phase</p>
-          <p className="text-sm font-medium text-gray-700">Slack + Notion + Zoom + GitHub</p>
+          <p className="text-sm font-medium text-gray-700 dark:text-gray-400">Slack + Notion + Zoom + GitHub</p>
         </div>
       </div>
 
-      <div className="rounded-xl border border-gray-200 bg-white p-4">
+      <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-4">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h3 className="text-sm font-semibold text-gray-700">Self-host quick path</h3>
+            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-400">Self-host quick path</h3>
             <p className="text-xs text-gray-400 mt-1">
               For a fresh install, the shortest path is connect a source, run the first sync, then inspect Sources before trusting Query answers.
             </p>
           </div>
-          <Link to="/app/sources" className="text-xs font-medium text-brand-700 hover:text-brand-800">
+          <Link to="/app/sources" className="text-xs font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
             Open sources
           </Link>
         </div>
@@ -264,13 +264,13 @@ export default function Connectors() {
       </div>
 
       {actionError && (
-        <div className="rounded-xl border border-red-200 bg-red-50 p-4">
-          <p className="text-sm text-red-700">{actionError}</p>
+        <div className="rounded-xl border border-red-200 dark:border-red-800/50 bg-red-50 dark:bg-red-900/30 p-4">
+          <p className="text-sm text-red-700 dark:text-red-400">{actionError}</p>
         </div>
       )}
       {actionNotice && (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-          <p className="text-sm text-emerald-700">{actionNotice}</p>
+        <div className="rounded-xl border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/30 p-4">
+          <p className="text-sm text-emerald-700 dark:text-emerald-400">{actionNotice}</p>
         </div>
       )}
       {slackConnector && (
@@ -328,10 +328,10 @@ export default function Connectors() {
 
 function QuickPathStep({ title, description, to, action }) {
   return (
-    <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-4">
-      <p className="text-sm font-semibold text-gray-800">{title}</p>
-      <p className="mt-2 text-xs text-gray-600">{description}</p>
-      <Link to={to} className="mt-4 inline-flex text-xs font-medium text-brand-700 hover:text-brand-800">
+    <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 px-4 py-4">
+      <p className="text-sm font-semibold text-gray-800 dark:text-gray-300">{title}</p>
+      <p className="mt-2 text-xs text-gray-600 dark:text-gray-400">{description}</p>
+      <Link to={to} className="mt-4 inline-flex text-xs font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
         {action}
       </Link>
     </div>
@@ -395,14 +395,24 @@ function ConnectorCard({
     provider,
     providerLabel,
     providerNote,
+    isConfigured = true,
+    missingConfig = [],
   } = connector;
 
   const isSlack = type === "slack";
   const isNotion = type === "notion";
   const isZoom = type === "zoom";
   const isGitHub = type === "github";
-  const canConnect = !isDemo && !oauthPending && availability === "available" && status === "disconnected" && !!workspaceId;
+  const slackNeedsSetup = isSlack && isConfigured === false;
+  const canConnect =
+    !slackNeedsSetup &&
+    !isDemo &&
+    !oauthPending &&
+    availability === "available" &&
+    status === "disconnected" &&
+    !!workspaceId;
   const canReconnect =
+    !slackNeedsSetup &&
     !isDemo &&
     !oauthPending &&
     availability === "available" &&
@@ -542,7 +552,7 @@ function ConnectorCard({
   }, [latestSyncJob, name, onSyncJobSettled]);
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-5 flex flex-col gap-4 hover:shadow-sm transition-shadow">
+    <div className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-gray-800/50 p-5 flex flex-col gap-4 hover:shadow-sm transition-shadow">
       <div className="flex items-center gap-3">
         <span
           className="w-10 h-10 rounded-lg flex items-center justify-center text-white text-sm font-bold shrink-0"
@@ -552,7 +562,7 @@ function ConnectorCard({
         </span>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <h3 className="text-sm font-semibold text-gray-800">{name}</h3>
+            <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-300">{name}</h3>
             {providerLabel && (
               <span
                 className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${PROVIDER_PILL[provider] ?? PROVIDER_PILL.native}`}
@@ -570,20 +580,20 @@ function ConnectorCard({
         </span>
       </div>
 
-      <div className="rounded-lg bg-gray-50 border border-gray-100 p-3">
+      <div className="rounded-lg bg-gray-50 dark:bg-gray-900/30 border border-gray-100 dark:border-gray-800/30 p-3">
         <div className="grid grid-cols-2 text-xs text-gray-500 gap-y-1">
           <span>Last sync</span>
-          <span className="text-right text-gray-700">{lastSync}</span>
+          <span className="text-right text-gray-700 dark:text-gray-400">{lastSync}</span>
           <span>Items synced</span>
-          <span className="text-right text-gray-700">{Number(itemsSynced || 0).toLocaleString()}</span>
+          <span className="text-right text-gray-700 dark:text-gray-400">{Number(itemsSynced || 0).toLocaleString()}</span>
           <span>Processed</span>
-          <span className="text-right text-gray-700">{Number(processedDocuments || 0).toLocaleString()}</span>
+          <span className="text-right text-gray-700 dark:text-gray-400">{Number(processedDocuments || 0).toLocaleString()}</span>
           <span>Pending</span>
-          <span className="text-right text-gray-700">{Number(pendingDocuments || 0).toLocaleString()}</span>
+          <span className="text-right text-gray-700 dark:text-gray-400">{Number(pendingDocuments || 0).toLocaleString()}</span>
           {teamName && (
             <>
               <span>Workspace</span>
-              <span className="text-right text-gray-700">{teamName}</span>
+              <span className="text-right text-gray-700 dark:text-gray-400">{teamName}</span>
             </>
           )}
         </div>
@@ -598,22 +608,22 @@ function ConnectorCard({
           </p>
         )}
         {syncQueuedAt && (
-          <div className="mt-2 inline-flex items-center gap-2 rounded-full bg-blue-50 px-2.5 py-1 text-[11px] text-blue-700">
+          <div className="mt-2 inline-flex items-center gap-2 rounded-full bg-blue-50 dark:bg-blue-900/30 px-2.5 py-1 text-[11px] text-blue-700 dark:text-blue-400">
             <span className="inline-block h-1.5 w-1.5 rounded-full bg-blue-500" />
             Sync queued {syncQueuedAt}
           </div>
         )}
         {latestSyncJob && (
-          <div className="mt-3 rounded-lg border border-gray-200 bg-white px-3 py-3">
+          <div className="mt-3 rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-3">
             <div className="flex items-center justify-between gap-3">
               <p className="text-[11px] uppercase tracking-wide text-gray-400">Latest job</p>
               <span
                 className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
                   latestSyncJob.status === "completed"
-                    ? "bg-emerald-100 text-emerald-700"
+                    ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400"
                     : latestSyncJob.status === "failed"
-                      ? "bg-red-100 text-red-700"
-                      : "bg-blue-100 text-blue-700"
+                      ? "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400"
+                      : "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400"
                 }`}
               >
                 {latestSyncJob.status}
@@ -625,31 +635,31 @@ function ConnectorCard({
               {latestSyncJob.completedAt ? ` · Finished ${formatDateTime(latestSyncJob.completedAt)}` : ""}
             </p>
             {latestSyncJob.status === "completed" && (
-              <p className="mt-2 text-[11px] text-emerald-700">
+              <p className="mt-2 text-[11px] text-emerald-700 dark:text-emerald-400">
                 {formatCompletedSyncNotice(name, latestSyncJob.resultMetadata)}
               </p>
             )}
             {latestSyncJob.status === "failed" && (
-              <p className="mt-2 text-[11px] text-red-600">
+              <p className="mt-2 text-[11px] text-red-600 dark:text-red-400">
                 {latestSyncJob.errorType ? `${latestSyncJob.errorType}: ` : ""}
                 {latestSyncJob.errorMessage || "Sync failed."}
               </p>
             )}
             {activeSyncStatus && (
-              <p className="mt-2 text-[11px] text-blue-700">
+              <p className="mt-2 text-[11px] text-blue-700 dark:text-blue-400">
                 Worker is {activeSyncStatus === "running" ? "running" : "queued"} for this connector.
               </p>
             )}
           </div>
         )}
         {recentSyncJobs.length > 1 && (
-          <div className="mt-3 rounded-lg border border-gray-200 bg-white px-3 py-3">
+          <div className="mt-3 rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-3">
             <div className="flex items-center justify-between gap-3">
               <p className="text-[11px] uppercase tracking-wide text-gray-400">Recent runs</p>
               {connectorId && (
                 <Link
                   to={`/app/connectors/${type}/runs`}
-                  className="text-[11px] font-medium text-brand-700 hover:text-brand-800"
+                  className="text-[11px] font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300"
                 >
                   View all runs
                 </Link>
@@ -659,7 +669,7 @@ function ConnectorCard({
               {recentSyncJobs.slice(0, 4).map((job) => (
                 <div key={job.jobId ?? `${job.status}-${job.createdAt}`} className="flex items-start justify-between gap-3 text-[11px]">
                   <div className="min-w-0">
-                    <p className="text-gray-700">
+                    <p className="text-gray-700 dark:text-gray-400">
                       {job.status === "completed"
                         ? summarizeSyncJob(job.resultMetadata)
                         : job.status === "failed"
@@ -673,10 +683,10 @@ function ConnectorCard({
                   <span
                     className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${
                       job.status === "completed"
-                        ? "bg-emerald-100 text-emerald-700"
+                        ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400"
                         : job.status === "failed"
-                          ? "bg-red-100 text-red-700"
-                          : "bg-blue-100 text-blue-700"
+                          ? "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400"
+                          : "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400"
                     }`}
                   >
                     {job.status}
@@ -715,9 +725,7 @@ function ConnectorCard({
           </p>
         )}
         {isSlack && status === "disconnected" && availability === "available" && (
-          <p className="text-[11px] text-gray-500 mt-2">
-            Connect Slack to start ingesting messages, threads, and source-backed pricing or roadmap facts.
-          </p>
+          <SlackSetupHint isConfigured={isConfigured} missingConfig={missingConfig} />
         )}
         {isNotion && status === "disconnected" && availability === "available" && (
           <p className="text-[11px] text-gray-500 mt-2">
@@ -735,36 +743,36 @@ function ConnectorCard({
           </p>
         )}
         {isSlack && status === "error" && (
-          <p className="text-[11px] text-red-600 mt-2">
+          <p className="text-[11px] text-red-600 dark:text-red-400 mt-2">
             Slack needs attention. Reconnect the workspace or retry sync after checking OAuth and connector health.
           </p>
         )}
         {isNotion && status === "error" && (
-          <p className="text-[11px] text-red-600 mt-2">
+          <p className="text-[11px] text-red-600 dark:text-red-400 mt-2">
             Notion needs attention. Update the integration token, then run another sync.
           </p>
         )}
         {isZoom && status === "error" && (
-          <p className="text-[11px] text-red-600 mt-2">
+          <p className="text-[11px] text-red-600 dark:text-red-400 mt-2">
             Zoom needs attention. Reconnect OAuth or update the manual token, then run another sync.
           </p>
         )}
         {isGitHub && status === "error" && (
-          <p className="text-[11px] text-red-600 mt-2">
+          <p className="text-[11px] text-red-600 dark:text-red-400 mt-2">
             GitHub needs attention. Update the token or repository list, then run another sync.
           </p>
         )}
         {status === "connected" && teamName && (
-          <p className="text-[11px] text-emerald-700 mt-2">
+          <p className="text-[11px] text-emerald-700 dark:text-emerald-400 mt-2">
             Connected and ready for ingestion.
           </p>
         )}
         {status === "connected" && itemsSynced > 0 && (
           <div className="mt-2">
-            <p className="text-[11px] text-emerald-700">
+            <p className="text-[11px] text-emerald-700 dark:text-emerald-400">
               {formatDocumentCount(itemsSynced)} available for extraction and query.
             </p>
-            <Link to="/app/sources" className="inline-flex mt-1 text-[11px] font-medium text-emerald-700 underline">
+            <Link to="/app/sources" className="inline-flex mt-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-400 underline">
               Inspect stored documents
             </Link>
           </div>
@@ -799,9 +807,9 @@ function ConnectorCard({
       </div>
 
       {isNotion && notionFormOpen && (
-        <form onSubmit={handleNotionConnect} className="rounded-lg border border-gray-200 bg-gray-50 p-3 space-y-3">
+        <form onSubmit={handleNotionConnect} className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 p-3 space-y-3">
           <div>
-            <label htmlFor="notion-token" className="block text-xs font-medium text-gray-600 mb-1">
+            <label htmlFor="notion-token" className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
               Notion integration token
             </label>
             <input
@@ -810,7 +818,7 @@ function ConnectorCard({
               value={notionToken}
               onChange={(event) => onChangeNotionToken(event.target.value)}
               placeholder="secret_xxx"
-              className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
             />
           </div>
           <div className="flex gap-2">
@@ -828,7 +836,7 @@ function ConnectorCard({
             <button
               type="button"
               onClick={onToggleNotionForm}
-              className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 text-gray-700 hover:bg-white"
+              className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-white dark:bg-slate-800"
             >
               Cancel
             </button>
@@ -837,9 +845,9 @@ function ConnectorCard({
       )}
 
       {isZoom && zoomFormOpen && (
-        <form onSubmit={handleZoomConnect} className="rounded-lg border border-gray-200 bg-gray-50 p-3 space-y-3">
+        <form onSubmit={handleZoomConnect} className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 p-3 space-y-3">
           <div>
-            <label htmlFor="zoom-token" className="block text-xs font-medium text-gray-600 mb-1">
+            <label htmlFor="zoom-token" className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
               Zoom access token
             </label>
             <input
@@ -848,7 +856,7 @@ function ConnectorCard({
               value={zoomToken}
               onChange={(event) => onChangeZoomToken(event.target.value)}
               placeholder="zoom_access_token"
-              className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
             />
           </div>
           <div className="flex gap-2">
@@ -862,7 +870,7 @@ function ConnectorCard({
             <button
               type="button"
               onClick={onToggleZoomForm}
-              className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 text-gray-700 hover:bg-white"
+              className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-white dark:bg-slate-800"
             >
               Cancel
             </button>
@@ -871,9 +879,9 @@ function ConnectorCard({
       )}
 
       {isGitHub && githubFormOpen && (
-        <form onSubmit={handleGitHubConnect} className="rounded-lg border border-gray-200 bg-gray-50 p-3 space-y-3">
+        <form onSubmit={handleGitHubConnect} className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 p-3 space-y-3">
           <div>
-            <label htmlFor="github-token" className="block text-xs font-medium text-gray-600 mb-1">
+            <label htmlFor="github-token" className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
               GitHub access token
             </label>
             <input
@@ -882,11 +890,11 @@ function ConnectorCard({
               value={githubToken}
               onChange={(event) => onChangeGitHubToken(event.target.value)}
               placeholder="ghp_xxx"
-              className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
             />
           </div>
           <div>
-            <label htmlFor="github-repositories" className="block text-xs font-medium text-gray-600 mb-1">
+            <label htmlFor="github-repositories" className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
               Repositories
             </label>
             <textarea
@@ -895,7 +903,7 @@ function ConnectorCard({
               onChange={(event) => onChangeGitHubRepositories(event.target.value)}
               placeholder={"acme/context-engine\nacme/platform"}
               rows={3}
-              className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
             />
             <p className="mt-1 text-[11px] text-gray-500">
               One `owner/repo` per line or comma separated.
@@ -916,7 +924,7 @@ function ConnectorCard({
             <button
               type="button"
               onClick={onToggleGitHubForm}
-              className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 text-gray-700 hover:bg-white"
+              className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-white dark:bg-slate-800"
             >
               Cancel
             </button>
@@ -929,9 +937,17 @@ function ConnectorCard({
           <button
             type="button"
             disabled
-            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 text-gray-400 cursor-not-allowed"
+            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-400 cursor-not-allowed"
           >
             Coming soon
+          </button>
+        ) : isSlack && slackNeedsSetup ? (
+          <button
+            type="button"
+            disabled
+            className="px-3 py-1.5 text-xs font-medium rounded-lg bg-amber-100 text-amber-800 cursor-default"
+          >
+            See docs/slack.md
           </button>
         ) : isSlack && canConnect ? (
           <a
@@ -951,7 +967,7 @@ function ConnectorCard({
               event.preventDefault();
               onStartOAuth(installHref, status);
             }}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50 transition-colors"
+            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 transition-colors"
           >
             Reconnect Slack
           </a>
@@ -969,7 +985,7 @@ function ConnectorCard({
             type="button"
             disabled={isDemo}
             onClick={onToggleNotionForm}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed"
+            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 disabled:text-gray-400 disabled:cursor-not-allowed"
           >
             Update Notion token
           </button>
@@ -987,7 +1003,7 @@ function ConnectorCard({
             type="button"
             disabled={isDemo}
             onClick={onToggleZoomForm}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed"
+            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 disabled:text-gray-400 disabled:cursor-not-allowed"
           >
             Update Zoom token
           </button>
@@ -1005,7 +1021,7 @@ function ConnectorCard({
             type="button"
             disabled={isDemo}
             onClick={onToggleGitHubForm}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed"
+            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 disabled:text-gray-400 disabled:cursor-not-allowed"
           >
             Update GitHub token
           </button>
@@ -1013,7 +1029,7 @@ function ConnectorCard({
           <button
             type="button"
             disabled
-            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 text-gray-400 cursor-not-allowed"
+            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-400 cursor-not-allowed"
           >
           {isDemo
               ? "Demo mode"
@@ -1029,7 +1045,7 @@ function ConnectorCard({
           type="button"
           disabled={!canSync || syncMut.isPending || !!activeSyncStatus}
           onClick={handleSync}
-          className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed transition-colors"
+          className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 disabled:text-gray-400 disabled:cursor-not-allowed transition-colors"
         >
           {activeSyncStatus === "running"
             ? "Running..."
@@ -1044,7 +1060,7 @@ function ConnectorCard({
           type="button"
           disabled={!canDisconnect || disconnectMut.isPending}
           onClick={handleDisconnect}
-          className="px-3 py-1.5 text-xs font-medium rounded-lg border border-red-200 text-red-600 hover:bg-red-50 disabled:text-gray-400 disabled:border-gray-200 disabled:cursor-not-allowed transition-colors"
+          className="px-3 py-1.5 text-xs font-medium rounded-lg border border-red-200 dark:border-red-800/50 text-red-600 dark:text-red-400 hover:bg-red-50 dark:bg-red-900/30 disabled:text-gray-400 disabled:border-gray-200 dark:border-gray-800/50 disabled:cursor-not-allowed transition-colors"
         >
           {disconnectMut.isPending && disconnectMut.variables === connectorId
             ? "Disconnecting..."
@@ -1110,10 +1126,10 @@ function ZoomCapabilityPanel({
   const mode = authMode === "oauth" ? "oauth" : authMode === "manual_token" ? "manual_token" : "unknown";
   const badgeClass =
     mode === "oauth"
-      ? "bg-emerald-100 text-emerald-700"
+      ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400"
       : mode === "manual_token"
-        ? "bg-amber-100 text-amber-700"
-        : "bg-gray-100 text-gray-600";
+        ? "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400"
+        : "bg-gray-100 dark:bg-gray-900/40 text-gray-600 dark:text-gray-400";
 
   const modeLabel =
     mode === "oauth"
@@ -1137,27 +1153,27 @@ function ZoomCapabilityPanel({
       : "Connect Zoom OAuth";
 
   return (
-    <div className="mt-3 rounded-lg border border-sky-100 bg-sky-50/70 px-3 py-3">
+    <div className="mt-3 rounded-lg border border-sky-100 dark:border-sky-800/30 bg-sky-50/70 px-3 py-3">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-[11px] uppercase tracking-wide text-sky-700">Zoom sync mode</p>
+        <p className="text-[11px] uppercase tracking-wide text-sky-700 dark:text-sky-400">Zoom sync mode</p>
         <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${badgeClass}`}>
           {modeLabel}
         </span>
       </div>
-      <p className="mt-2 text-[11px] text-sky-900">{modeSummary}</p>
+      <p className="mt-2 text-[11px] text-sky-900 dark:text-sky-200">{modeSummary}</p>
       {(ingestionMode || sourceFocus) && (
-        <p className="mt-2 text-[11px] text-sky-800">
+        <p className="mt-2 text-[11px] text-sky-800 dark:text-sky-300">
           {ingestionMode === "transcripts_only" ? "Transcript-only ingestion" : ingestionMode || "Ingestion configured"}
           {sourceFocus ? ` · ${sourceFocus.replaceAll("_", " ")}` : ""}
         </p>
       )}
       {accountId && (
-        <p className="mt-1 text-[11px] text-sky-800">
+        <p className="mt-1 text-[11px] text-sky-800 dark:text-sky-300">
           Account: {accountId}
         </p>
       )}
       {(lastWebhookEvent || lastWebhookReceivedAt) && (
-        <p className="mt-1 text-[11px] text-sky-800">
+        <p className="mt-1 text-[11px] text-sky-800 dark:text-sky-300">
           Last webhook:
           {lastWebhookEvent ? ` ${lastWebhookEvent}` : " event received"}
           {lastWebhookReceivedAt ? ` · ${lastWebhookReceivedAt}` : ""}
@@ -1166,7 +1182,7 @@ function ZoomCapabilityPanel({
       {!isDemo && !oauthPending && oauthHref && (
         <a
           href={oauthHref}
-          className="inline-flex mt-3 text-[11px] font-medium text-sky-800 underline underline-offset-2 hover:text-sky-900"
+          className="inline-flex mt-3 text-[11px] font-medium text-sky-800 dark:text-sky-300 underline underline-offset-2 hover:text-sky-900 dark:text-sky-200"
         >
           {ctaLabel}
         </a>
@@ -1178,9 +1194,9 @@ function ZoomCapabilityPanel({
 function GitHubCapabilityPanel({ repositories }) {
   const repoList = Array.isArray(repositories) ? repositories : [];
   return (
-    <div className="mt-3 rounded-lg border border-gray-100 bg-gray-50 px-3 py-3">
+    <div className="mt-3 rounded-lg border border-gray-100 dark:border-gray-800/30 bg-gray-50 dark:bg-gray-900/30 px-3 py-3">
       <p className="text-[11px] uppercase tracking-wide text-gray-500">GitHub scope</p>
-      <p className="mt-2 text-[11px] text-gray-700">
+      <p className="mt-2 text-[11px] text-gray-700 dark:text-gray-400">
         Polling-first engineering context from issues, pull requests, reviews, and comments.
       </p>
       {repoList.length > 0 && (
@@ -1188,13 +1204,33 @@ function GitHubCapabilityPanel({ repositories }) {
           {repoList.map((repo) => (
             <span
               key={repo}
-              className="rounded-full bg-white px-2 py-0.5 text-[10px] font-medium text-gray-700 border border-gray-200"
+              className="rounded-full bg-white dark:bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-gray-700 dark:text-gray-400 border border-gray-200 dark:border-gray-800/50"
             >
               {repo}
             </span>
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function SlackSetupHint({ isConfigured, missingConfig }) {
+  if (isConfigured) {
+    return (
+      <p className="text-[11px] text-gray-500 mt-2">
+        Connect Slack to start ingesting messages, threads, and source-backed pricing or roadmap facts.
+      </p>
+    );
+  }
+
+  return (
+    <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800 dark:border-amber-800/50 dark:bg-amber-900/30 dark:text-amber-300">
+      <p className="font-medium">Slack OAuth needs setup before users can connect.</p>
+      <p className="mt-1">
+        Missing: {missingConfig.length > 0 ? missingConfig.join(", ") : "Slack OAuth environment variables"}.
+      </p>
+      <p className="mt-1 font-semibold">Setup guide: docs/slack.md</p>
     </div>
   );
 }
@@ -1206,12 +1242,12 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
 
   if (connector.status === "connected") {
     return (
-      <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 flex items-start justify-between gap-4">
+      <div className="rounded-xl border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/30 p-4 flex items-start justify-between gap-4">
         <div>
-          <p className="text-sm font-medium text-emerald-800">
+          <p className="text-sm font-medium text-emerald-800 dark:text-emerald-300">
             Slack is connected{connector.teamName ? ` to ${connector.teamName}` : ""}.
           </p>
-          <p className="text-xs text-emerald-700 mt-1">
+          <p className="text-xs text-emerald-700 dark:text-emerald-400 mt-1">
             {connector.syncQueuedAt
               ? `A sync is queued for ${connector.syncQueuedAt}.`
               : connector.itemsSynced > 0
@@ -1219,7 +1255,7 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
                 : `Last completed sync: ${connector.lastSync}. Run a sync to store Slack history.`}
           </p>
           {connector.itemsSynced > 0 && (
-            <Link to="/app/sources" className="inline-flex mt-3 text-xs font-medium text-emerald-800 underline">
+            <Link to="/app/sources" className="inline-flex mt-3 text-xs font-medium text-emerald-800 dark:text-emerald-300 underline">
               Inspect stored documents
             </Link>
           )}
@@ -1231,7 +1267,7 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
               event.preventDefault();
               onStartOAuth(reconnectHref, connector.status);
             }}
-            className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg border border-emerald-200 text-emerald-800 hover:bg-white/70 transition-colors"
+            className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg border border-emerald-200 dark:border-emerald-800/50 text-emerald-800 dark:text-emerald-300 hover:bg-white/70 transition-colors"
           >
             Refresh OAuth
           </a>
@@ -1242,10 +1278,10 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
 
   if (connector.status === "error") {
     return (
-      <div className="rounded-xl border border-red-200 bg-red-50 p-4 flex items-start justify-between gap-4">
+      <div className="rounded-xl border border-red-200 dark:border-red-800/50 bg-red-50 dark:bg-red-900/30 p-4 flex items-start justify-between gap-4">
         <div>
-          <p className="text-sm font-medium text-red-800">Slack needs attention.</p>
-          <p className="text-xs text-red-700 mt-1">
+          <p className="text-sm font-medium text-red-800 dark:text-red-300">Slack needs attention.</p>
+          <p className="text-xs text-red-700 dark:text-red-400 mt-1">
             Reconnect the workspace to refresh credentials, then run another sync.
           </p>
         </div>
@@ -1266,11 +1302,30 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
   }
 
   if (connector.status === "disconnected") {
+    if (connector.isConfigured === false) {
+      return (
+        <div className="rounded-xl border border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30 p-4 flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-amber-800 dark:text-amber-300">Slack OAuth is not configured yet.</p>
+            <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
+              Add the Slack app credentials to `.env`, restart Context Engine, then connect the workspace.
+            </p>
+            <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
+              Missing: {(connector.missingConfig ?? []).join(", ") || "Slack OAuth environment variables"}.
+            </p>
+          </div>
+          <span className="shrink-0 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white">
+            docs/slack.md
+          </span>
+        </div>
+      );
+    }
+
     return (
-      <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 flex items-start justify-between gap-4">
+      <div className="rounded-xl border border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30 p-4 flex items-start justify-between gap-4">
         <div>
-          <p className="text-sm font-medium text-amber-800">Slack is not connected yet.</p>
-          <p className="text-xs text-amber-700 mt-1">
+          <p className="text-sm font-medium text-amber-800 dark:text-amber-300">Slack is not connected yet.</p>
+          <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
             Phase 2 starts with Slack so you can ingest channel history before adding other sources.
           </p>
         </div>
