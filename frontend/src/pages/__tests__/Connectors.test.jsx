@@ -8,6 +8,7 @@ vi.mock("../../api/hooks", () => ({
   useConnectGitHub: vi.fn(),
   useConnectZoom: vi.fn(),
   useConnectNotion: vi.fn(),
+  useSaveSlackOAuthSettings: vi.fn(),
   useConnectorSyncJobs: vi.fn(),
   useConnectorSyncStatus: vi.fn(),
   useConnectors: vi.fn(),
@@ -26,6 +27,7 @@ import {
   useConnectGitHub,
   useConnectZoom,
   useConnectNotion,
+  useSaveSlackOAuthSettings,
   useConnectorSyncJobs,
   useConnectorSyncStatus,
   useConnectors,
@@ -66,6 +68,12 @@ const connectGitHubMut = {
   variables: undefined,
 };
 
+const saveSlackOAuthMut = {
+  mutate: vi.fn(),
+  isPending: false,
+  variables: undefined,
+};
+
 function mockConnectorsQuery(overrides = {}) {
   const value = {
     data: [],
@@ -94,9 +102,11 @@ beforeEach(() => {
   connectNotionMut.mutate.mockReset();
   connectZoomMut.mutate.mockReset();
   connectGitHubMut.mutate.mockReset();
+  saveSlackOAuthMut.mutate.mockReset();
   useConnectGitHub.mockReturnValue(connectGitHubMut);
   useConnectZoom.mockReturnValue(connectZoomMut);
   useConnectNotion.mockReturnValue(connectNotionMut);
+  useSaveSlackOAuthSettings.mockReturnValue(saveSlackOAuthMut);
   useConnectorSyncJobs.mockReturnValue({
     data: [],
     isLoading: false,
@@ -213,17 +223,17 @@ describe("Connectors", () => {
 
     renderConnectors();
 
-    const link = screen.getByRole("link", { name: "Start Slack OAuth" });
+    const link = screen.getAllByRole("link", { name: "Connect Slack" })[0];
     expect(link).toHaveAttribute("href", "/api/connectors/slack/install?workspace_id=ws_1");
     expect(screen.getByText("Not connected")).toBeInTheDocument();
     expect(screen.getByText("Slack is not connected yet.")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Connect Slack" })).toHaveAttribute(
+    expect(screen.getAllByRole("link", { name: "Connect Slack" })[1]).toHaveAttribute(
       "href",
       "/api/connectors/slack/install?workspace_id=ws_1",
     );
   });
 
-  it("shows Slack setup guidance instead of OAuth links when configuration is missing", () => {
+  it("keeps Connect Slack as the primary action when self-hosted config is missing", () => {
     mockConnectorsQuery({
       data: [
         {
@@ -244,11 +254,101 @@ describe("Connectors", () => {
 
     renderConnectors();
 
-    expect(screen.getByText("Slack OAuth is not configured yet.")).toBeInTheDocument();
-    expect(screen.getAllByText(/SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, SLACK_REDIRECT_URI/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("docs/slack.md").length).toBeGreaterThan(0);
-    expect(screen.queryByRole("link", { name: "Start Slack OAuth" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Connect Slack" })).not.toBeInTheDocument();
+    expect(screen.getByText("Slack is not connected yet.")).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "Connect Slack" })[0]).toHaveAttribute(
+      "href",
+      "/api/connectors/slack/managed/install?workspace_id=ws_1",
+    );
+    expect(screen.getAllByRole("link", { name: "Connect Slack" })[1]).toHaveAttribute(
+      "href",
+      "/api/connectors/slack/managed/install?workspace_id=ws_1",
+    );
+    expect(screen.getByRole("button", { name: "Advanced self-hosted setup" })).toBeInTheDocument();
+    expect(screen.queryByText("Slack OAuth is not configured yet.")).not.toBeInTheDocument();
+  });
+
+  it("uses the managed Slack install path when available", async () => {
+    const user = userEvent.setup();
+    const popup = { closed: false, close: vi.fn(), focus: vi.fn() };
+    vi.spyOn(window, "open").mockReturnValue(popup);
+    mockConnectorsQuery({
+      data: [
+        {
+          type: "slack",
+          connectorId: null,
+          name: "Slack",
+          description: "Channels",
+          status: "disconnected",
+          lastSync: "Never",
+          itemsSynced: 0,
+          color: "#4A154B",
+          availability: "available",
+          managedConnectAvailable: true,
+          managedInstallUrl: "/api/connectors/slack/managed/install",
+          setupStatus: {
+            configured: false,
+            managed_available: true,
+            managed_install_url: "/api/connectors/slack/managed/install",
+            missing: ["SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET", "SLACK_REDIRECT_URI"],
+          },
+        },
+      ],
+    });
+
+    renderConnectors();
+
+    const link = screen.getAllByRole("link", { name: "Connect Slack" })[1];
+    expect(link).toHaveAttribute("href", "/api/connectors/slack/managed/install?workspace_id=ws_1");
+    await user.click(link);
+    expect(screen.getByText("Managed by Context Engine")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Continue to Slack Context Engine App" }));
+    expect(window.open).toHaveBeenCalledWith(
+      "/api/connectors/slack/managed/install?workspace_id=ws_1",
+      "ce-slack-oauth",
+      expect.stringContaining("width=640"),
+    );
+  });
+
+  it("saves Slack OAuth settings from the setup panel", async () => {
+    const user = userEvent.setup();
+    mockConnectorsQuery({
+      data: [
+        {
+          type: "slack",
+          connectorId: null,
+          name: "Slack",
+          description: "Channels",
+          status: "disconnected",
+          lastSync: "Never",
+          itemsSynced: 0,
+          color: "#4A154B",
+          availability: "available",
+          isConfigured: false,
+          missingConfig: ["SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET", "SLACK_REDIRECT_URI"],
+        },
+      ],
+    });
+
+    renderConnectors();
+
+    await user.click(screen.getByRole("button", { name: "Advanced self-hosted setup" }));
+    await user.type(screen.getByLabelText("Slack client ID"), "111.222");
+    await user.type(screen.getByLabelText("Slack client secret"), "secret");
+    await user.clear(screen.getByLabelText("Redirect URL"));
+    await user.type(
+      screen.getByLabelText("Redirect URL"),
+      "https://context.example.com/api/connectors/slack/callback",
+    );
+    await user.click(screen.getByRole("button", { name: "Save Slack settings" }));
+
+    expect(saveSlackOAuthMut.mutate).toHaveBeenCalledWith(
+      {
+        clientId: "111.222",
+        clientSecret: "secret",
+        redirectUri: "https://context.example.com/api/connectors/slack/callback",
+      },
+      expect.any(Object),
+    );
   });
 
   it("shows coming-soon connector as disabled", () => {
@@ -833,7 +933,9 @@ describe("Connectors", () => {
 
     renderConnectors();
 
-    await userEvent.click(screen.getByRole("link", { name: "Connect Slack" }));
+    await userEvent.click(screen.getAllByRole("link", { name: "Connect Slack" })[1]);
+    expect(screen.getByText("Connect Slack Context Engine App")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Continue to Slack Context Engine App" }));
 
     expect(window.open).toHaveBeenCalledWith(
       "/api/connectors/slack/install?workspace_id=ws_1",
@@ -890,7 +992,8 @@ describe("Connectors", () => {
 
     renderConnectors();
 
-    await user.click(screen.getByRole("link", { name: "Connect Slack" }));
+    await user.click(screen.getAllByRole("link", { name: "Connect Slack" })[1]);
+    await user.click(screen.getByRole("button", { name: "Continue to Slack Context Engine App" }));
     popup.closed = true;
 
     await act(async () => {

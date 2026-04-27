@@ -9,7 +9,7 @@ from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, UniqueConstrain
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship as orm_relationship
 
-from app.models.base import Base, UUIDPrimaryKeyMixin
+from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 from app.models.source import ConnectorType, enum_values
 
 if TYPE_CHECKING:
@@ -82,3 +82,26 @@ class SyncState(UUIDPrimaryKeyMixin, Base):
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     connector: Mapped["Connector"] = orm_relationship(back_populates="sync_state")
+
+
+class ConnectorAppConfig(TimestampMixin, Base):
+    __tablename__ = "connector_app_configs"
+    __table_args__ = (UniqueConstraint("connector_type"),)
+
+    connector_type: Mapped[ConnectorType] = mapped_column(
+        Enum(
+            ConnectorType,
+            name="connector_type_enum",
+            values_callable=enum_values,
+        ),
+        primary_key=True,
+    )
+    client_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    client_secret_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    redirect_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    config: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )

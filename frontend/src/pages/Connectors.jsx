@@ -4,6 +4,7 @@ import {
   useConnectGitHub,
   useConnectZoom,
   useConnectNotion,
+  useSaveSlackOAuthSettings,
   useConnectorSyncJobs,
   useConnectorSyncStatus,
   useConnectors,
@@ -52,6 +53,7 @@ export default function Connectors() {
   const workspaces = useWorkspaces();
   const { selectedId } = useWorkspaceSelection();
   const connectNotionMut = useConnectNotion();
+  const saveSlackOAuthMut = useSaveSlackOAuthSettings();
   const connectZoomMut = useConnectZoom();
   const connectGitHubMut = useConnectGitHub();
   const syncMut = useSyncConnector();
@@ -59,6 +61,13 @@ export default function Connectors() {
   const [actionError, setActionError] = useState(null);
   const [actionNotice, setActionNotice] = useState(null);
   const [oauthFlow, setOauthFlow] = useState(null);
+  const [slackConnectIntent, setSlackConnectIntent] = useState(null);
+  const [slackSetupOpen, setSlackSetupOpen] = useState(false);
+  const [slackClientId, setSlackClientId] = useState("");
+  const [slackClientSecret, setSlackClientSecret] = useState("");
+  const [slackRedirectUri, setSlackRedirectUri] = useState(
+    "http://localhost:8000/api/connectors/slack/callback",
+  );
   const [notionFormOpen, setNotionFormOpen] = useState(false);
   const [notionToken, setNotionToken] = useState("");
   const [zoomFormOpen, setZoomFormOpen] = useState(false);
@@ -168,9 +177,16 @@ export default function Connectors() {
     };
   }, [isMock, oauthFlow, query.refetch]);
 
+  const openSlackConnectModal = (installHref, currentStatus, mode = "self_hosted") => {
+    setActionError(null);
+    setActionNotice(null);
+    setSlackConnectIntent({ installHref, currentStatus, mode });
+  };
+
   const startSlackOAuth = (installHref, currentStatus) => {
     setActionError(null);
     setActionNotice(null);
+    setSlackConnectIntent(null);
 
     const popup = window.open(
       installHref,
@@ -279,7 +295,14 @@ export default function Connectors() {
           isDemo={isMock}
           oauthPending={!!oauthFlow}
           workspaceId={workspaceId}
-          onStartOAuth={startSlackOAuth}
+          onStartOAuth={openSlackConnectModal}
+        />
+      )}
+      {slackConnectIntent && (
+        <SlackConnectModal
+          mode={slackConnectIntent.mode}
+          onCancel={() => setSlackConnectIntent(null)}
+          onContinue={() => startSlackOAuth(slackConnectIntent.installHref, slackConnectIntent.currentStatus)}
         />
       )}
 
@@ -295,6 +318,15 @@ export default function Connectors() {
               oauthPending={!!oauthFlow}
               workspaceId={workspaceId}
               processing={processingByType.get(connector.type) ?? null}
+              slackSetupOpen={connector.type === "slack" ? slackSetupOpen : false}
+              slackClientId={slackClientId}
+              slackClientSecret={slackClientSecret}
+              slackRedirectUri={slackRedirectUri}
+              onChangeSlackClientId={setSlackClientId}
+              onChangeSlackClientSecret={setSlackClientSecret}
+              onChangeSlackRedirectUri={setSlackRedirectUri}
+              onToggleSlackSetup={() => setSlackSetupOpen((current) => !current)}
+              saveSlackOAuthMut={saveSlackOAuthMut}
               notionFormOpen={connector.type === "notion" ? notionFormOpen : false}
               notionToken={notionToken}
               onChangeNotionToken={setNotionToken}
@@ -317,7 +349,7 @@ export default function Connectors() {
               onActionError={setActionError}
               onActionNotice={setActionNotice}
               onSyncJobSettled={handleSyncJobSettled}
-              onStartOAuth={startSlackOAuth}
+              onStartOAuth={openSlackConnectModal}
             />
           ))}
         </div>
@@ -344,6 +376,15 @@ function ConnectorCard({
   oauthPending,
   workspaceId,
   processing,
+  slackSetupOpen,
+  slackClientId,
+  slackClientSecret,
+  slackRedirectUri,
+  onChangeSlackClientId,
+  onChangeSlackClientSecret,
+  onChangeSlackRedirectUri,
+  onToggleSlackSetup,
+  saveSlackOAuthMut,
   notionFormOpen,
   notionToken,
   onChangeNotionToken,
@@ -396,23 +437,22 @@ function ConnectorCard({
     providerLabel,
     providerNote,
     isConfigured = true,
-    missingConfig = [],
+    managedConnectAvailable = false,
+    managedInstallUrl = null,
   } = connector;
 
   const isSlack = type === "slack";
   const isNotion = type === "notion";
   const isZoom = type === "zoom";
   const isGitHub = type === "github";
-  const slackNeedsSetup = isSlack && isConfigured === false;
+  const slackSelfHostedSetupAvailable = isSlack && isConfigured === false;
   const canConnect =
-    !slackNeedsSetup &&
     !isDemo &&
     !oauthPending &&
     availability === "available" &&
     status === "disconnected" &&
     !!workspaceId;
   const canReconnect =
-    !slackNeedsSetup &&
     !isDemo &&
     !oauthPending &&
     availability === "available" &&
@@ -421,8 +461,15 @@ function ConnectorCard({
   const canSync = !isDemo && !oauthPending && !!connectorId && (status === "connected" || status === "error");
   const canDisconnect = !isDemo && !oauthPending && !!connectorId && (status === "connected" || status === "error");
   const installHref = workspaceId
-    ? `/api/connectors/${type}/install?workspace_id=${workspaceId}`
+    ? isSlack
+      ? managedConnectAvailable && managedInstallUrl
+        ? `${managedInstallUrl}?workspace_id=${workspaceId}`
+        : isConfigured
+          ? `/api/connectors/slack/install?workspace_id=${workspaceId}`
+          : `/api/connectors/slack/managed/install?workspace_id=${workspaceId}`
+      : `/api/connectors/${type}/install?workspace_id=${workspaceId}`
     : null;
+  const slackConnectMode = managedConnectAvailable || !isConfigured ? "managed" : "self_hosted";
   const zoomOauthHref = isZoom ? installHref : null;
   const processedDocuments = processing?.processedDocuments ?? totalProcessedCount;
   const pendingDocuments = processing?.unprocessedDocuments ?? Math.max(Number(itemsSynced || 0) - processedDocuments, 0);
@@ -462,6 +509,27 @@ function ConnectorCard({
       onError: (err) => onActionError(err?.message || `Failed to disconnect ${name}.`),
       onSuccess: () => onActionNotice(`${name} disconnected.`),
     });
+  };
+
+  const handleSlackOAuthSettingsSave = (event) => {
+    event.preventDefault();
+    onActionError(null);
+    onActionNotice(null);
+    saveSlackOAuthMut.mutate(
+      {
+        clientId: slackClientId,
+        clientSecret: slackClientSecret,
+        redirectUri: slackRedirectUri,
+      },
+      {
+        onError: (err) => onActionError(formatActionError(err) || "Failed to save Slack OAuth settings."),
+        onSuccess: () => {
+          onChangeSlackClientSecret("");
+          onToggleSlackSetup();
+          onActionNotice("Slack OAuth settings saved. You can connect Slack now.");
+        },
+      },
+    );
   };
 
   const handleNotionConnect = (event) => {
@@ -696,7 +764,7 @@ function ConnectorCard({
             </div>
           </div>
         )}
-        {message && (
+        {message && !isSlack && (
           <p className="text-[11px] text-gray-500 mt-2">{message}</p>
         )}
         {providerNote && (
@@ -725,7 +793,20 @@ function ConnectorCard({
           </p>
         )}
         {isSlack && status === "disconnected" && availability === "available" && (
-          <SlackSetupHint isConfigured={isConfigured} missingConfig={missingConfig} />
+          <SlackSetupHint isConfigured={isConfigured} managedConnectAvailable={managedConnectAvailable} />
+        )}
+        {isSlack && slackSetupOpen && (
+          <SlackOAuthSettingsForm
+            clientId={slackClientId}
+            clientSecret={slackClientSecret}
+            redirectUri={slackRedirectUri}
+            isSaving={saveSlackOAuthMut.isPending}
+            onChangeClientId={onChangeSlackClientId}
+            onChangeClientSecret={onChangeSlackClientSecret}
+            onChangeRedirectUri={onChangeSlackRedirectUri}
+            onSubmit={handleSlackOAuthSettingsSave}
+            onCancel={onToggleSlackSetup}
+          />
         )}
         {isNotion && status === "disconnected" && availability === "available" && (
           <p className="text-[11px] text-gray-500 mt-2">
@@ -941,20 +1022,12 @@ function ConnectorCard({
           >
             Coming soon
           </button>
-        ) : isSlack && slackNeedsSetup ? (
-          <button
-            type="button"
-            disabled
-            className="px-3 py-1.5 text-xs font-medium rounded-lg bg-amber-100 text-amber-800 cursor-default"
-          >
-            See docs/slack.md
-          </button>
         ) : isSlack && canConnect ? (
           <a
             href={installHref}
             onClick={(event) => {
               event.preventDefault();
-              onStartOAuth(installHref, status);
+              onStartOAuth(installHref, status, slackConnectMode);
             }}
             className="px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 transition-colors"
           >
@@ -965,7 +1038,7 @@ function ConnectorCard({
             href={installHref}
             onClick={(event) => {
               event.preventDefault();
-              onStartOAuth(installHref, status);
+              onStartOAuth(installHref, status, slackConnectMode);
             }}
             className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 transition-colors"
           >
@@ -1038,6 +1111,16 @@ function ConnectorCard({
                 : workspaceId
                   ? "Already connected"
                   : "Select workspace"}
+          </button>
+        )}
+
+        {isSlack && slackSelfHostedSetupAvailable && status === "disconnected" && !isDemo && (
+          <button
+            type="button"
+            onClick={onToggleSlackSetup}
+            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 transition-colors"
+          >
+            Advanced self-hosted setup
           </button>
         )}
 
@@ -1215,8 +1298,8 @@ function GitHubCapabilityPanel({ repositories }) {
   );
 }
 
-function SlackSetupHint({ isConfigured, missingConfig }) {
-  if (isConfigured) {
+function SlackSetupHint({ isConfigured, managedConnectAvailable }) {
+  if (isConfigured || managedConnectAvailable) {
     return (
       <p className="text-[11px] text-gray-500 mt-2">
         Connect Slack to start ingesting messages, threads, and source-backed pricing or roadmap facts.
@@ -1225,20 +1308,172 @@ function SlackSetupHint({ isConfigured, missingConfig }) {
   }
 
   return (
-    <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800 dark:border-amber-800/50 dark:bg-amber-900/30 dark:text-amber-300">
-      <p className="font-medium">Slack OAuth needs setup before users can connect.</p>
-      <p className="mt-1">
-        Missing: {missingConfig.length > 0 ? missingConfig.join(", ") : "Slack OAuth environment variables"}.
-      </p>
-      <p className="mt-1 font-semibold">Setup guide: docs/slack.md</p>
+    <p className="text-[11px] text-gray-500 mt-2">
+      Connect Slack through the managed app flow. Self-hosted Slack app credentials are available under advanced setup.
+    </p>
+  );
+}
+
+function SlackConnectModal({ mode, onCancel, onContinue }) {
+  const isManaged = mode === "managed";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+      <div className="w-full max-w-lg rounded-2xl border border-gray-200 dark:border-gray-800/60 bg-white dark:bg-slate-900 p-6 shadow-2xl">
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+            aria-label="Close Slack connection dialog"
+          >
+            X
+          </button>
+        </div>
+        <div className="flex items-center justify-center gap-5">
+          <div className="flex h-14 w-14 items-center justify-center rounded-xl border border-gray-200 dark:border-gray-800 text-xl font-semibold">
+            CE
+          </div>
+          <div className="text-2xl text-gray-400">...</div>
+          <div className="flex h-14 w-14 items-center justify-center rounded-xl border border-gray-200 dark:border-gray-800 text-xl">
+            Slack
+          </div>
+        </div>
+        <div className="mt-6 text-center">
+          <h3 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">
+            Connect Slack Context Engine App
+          </h3>
+          <p className="mt-2 text-sm text-gray-500">
+            {isManaged ? "Managed by Context Engine" : "Self-hosted Slack app"}
+          </p>
+        </div>
+
+        <div className="mt-6 rounded-xl border border-gray-200 dark:border-gray-800/60 p-4 text-sm text-gray-700 dark:text-gray-300">
+          <div>
+            <p className="font-semibold text-gray-900 dark:text-gray-100">Permissions always respected</p>
+            <p className="mt-2">
+              Context Engine only reads Slack scopes granted during install and stores messages as source-backed context.
+            </p>
+          </div>
+          <div className="my-4 border-t border-gray-200 dark:border-gray-800/60" />
+          <div>
+            <p className="font-semibold text-gray-900 dark:text-gray-100">You're in control</p>
+            <p className="mt-2">
+              You can revoke the Slack app from Slack at any time, and disconnect the workspace from Context Engine.
+            </p>
+          </div>
+          <div className="my-4 border-t border-gray-200 dark:border-gray-800/60" />
+          <div>
+            <p className="font-semibold text-gray-900 dark:text-gray-100">Connector data can be sensitive</p>
+            <p className="mt-2">
+              Connect only workspaces whose documents and messages should be available to this Context Engine instance.
+            </p>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={onContinue}
+          className="mt-6 w-full rounded-full bg-gray-900 px-5 py-3 text-sm font-semibold text-white hover:bg-gray-800 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100"
+        >
+          Continue to Slack Context Engine App
+        </button>
+      </div>
     </div>
   );
 }
 
+function SlackOAuthSettingsForm({
+  clientId,
+  clientSecret,
+  redirectUri,
+  isSaving,
+  onChangeClientId,
+  onChangeClientSecret,
+  onChangeRedirectUri,
+  onSubmit,
+  onCancel,
+}) {
+  const canSave = clientId.trim() && clientSecret.trim() && redirectUri.trim();
+
+  return (
+    <form
+      onSubmit={onSubmit}
+      className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-xs text-amber-900 dark:border-amber-800/50 dark:bg-amber-900/30 dark:text-amber-200"
+    >
+      <div className="grid gap-3">
+        <div>
+          <label htmlFor="slack-client-id" className="block font-medium">
+            Slack client ID
+          </label>
+          <input
+            id="slack-client-id"
+            value={clientId}
+            onChange={(event) => onChangeClientId(event.target.value)}
+            placeholder="123456789.123456789"
+            className="mt-1 w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-amber-500/40 dark:border-amber-800/50 dark:bg-slate-900 dark:text-gray-100"
+          />
+        </div>
+        <div>
+          <label htmlFor="slack-client-secret" className="block font-medium">
+            Slack client secret
+          </label>
+          <input
+            id="slack-client-secret"
+            type="password"
+            value={clientSecret}
+            onChange={(event) => onChangeClientSecret(event.target.value)}
+            placeholder="Slack app client secret"
+            className="mt-1 w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-amber-500/40 dark:border-amber-800/50 dark:bg-slate-900 dark:text-gray-100"
+          />
+        </div>
+        <div>
+          <label htmlFor="slack-redirect-uri" className="block font-medium">
+            Redirect URL
+          </label>
+          <input
+            id="slack-redirect-uri"
+            value={redirectUri}
+            onChange={(event) => onChangeRedirectUri(event.target.value)}
+            className="mt-1 w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-amber-500/40 dark:border-amber-800/50 dark:bg-slate-900 dark:text-gray-100"
+          />
+        </div>
+      </div>
+      <p className="mt-3 text-[11px]">
+        Use the manifest in docs/slack.md, paste these values once, then the normal Slack connect button becomes available.
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          type="submit"
+          disabled={isSaving || !canSave}
+          className="px-3 py-1.5 text-xs font-medium rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+        >
+          {isSaving ? "Saving..." : "Save Slack settings"}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="px-3 py-1.5 text-xs font-medium rounded-lg border border-amber-200 bg-white text-amber-900 hover:bg-amber-100 dark:border-amber-800/50 dark:bg-slate-900 dark:text-amber-200"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
 function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onStartOAuth }) {
+  const isConfigured = connector.isConfigured ?? true;
+  const managedConnectAvailable = connector.managedConnectAvailable ?? false;
+  const managedInstallUrl = connector.managedInstallUrl ?? null;
   const reconnectHref = workspaceId
-    ? `/api/connectors/slack/install?workspace_id=${workspaceId}`
+    ? managedConnectAvailable && managedInstallUrl
+      ? `${managedInstallUrl}?workspace_id=${workspaceId}`
+      : isConfigured
+        ? `/api/connectors/slack/install?workspace_id=${workspaceId}`
+        : `/api/connectors/slack/managed/install?workspace_id=${workspaceId}`
     : null;
+  const slackConnectMode = managedConnectAvailable || !isConfigured ? "managed" : "self_hosted";
 
   if (connector.status === "connected") {
     return (
@@ -1265,7 +1500,7 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
             href={reconnectHref}
             onClick={(event) => {
               event.preventDefault();
-              onStartOAuth(reconnectHref, connector.status);
+              onStartOAuth(reconnectHref, connector.status, slackConnectMode);
             }}
             className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg border border-emerald-200 dark:border-emerald-800/50 text-emerald-800 dark:text-emerald-300 hover:bg-white/70 transition-colors"
           >
@@ -1290,7 +1525,7 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
             href={reconnectHref}
             onClick={(event) => {
               event.preventDefault();
-              onStartOAuth(reconnectHref, connector.status);
+              onStartOAuth(reconnectHref, connector.status, slackConnectMode);
             }}
             className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors"
           >
@@ -1302,31 +1537,12 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
   }
 
   if (connector.status === "disconnected") {
-    if (connector.isConfigured === false) {
-      return (
-        <div className="rounded-xl border border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30 p-4 flex items-start justify-between gap-4">
-          <div>
-            <p className="text-sm font-medium text-amber-800 dark:text-amber-300">Slack OAuth is not configured yet.</p>
-            <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
-              Add the Slack app credentials to `.env`, restart Context Engine, then connect the workspace.
-            </p>
-            <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
-              Missing: {(connector.missingConfig ?? []).join(", ") || "Slack OAuth environment variables"}.
-            </p>
-          </div>
-          <span className="shrink-0 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white">
-            docs/slack.md
-          </span>
-        </div>
-      );
-    }
-
     return (
       <div className="rounded-xl border border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30 p-4 flex items-start justify-between gap-4">
         <div>
           <p className="text-sm font-medium text-amber-800 dark:text-amber-300">Slack is not connected yet.</p>
           <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
-            Phase 2 starts with Slack so you can ingest channel history before adding other sources.
+            Connect Slack to ingest channel history, threads, and source-backed team context.
           </p>
         </div>
         {!isDemo && !oauthPending && reconnectHref && (
@@ -1334,11 +1550,11 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
             href={reconnectHref}
             onClick={(event) => {
               event.preventDefault();
-              onStartOAuth(reconnectHref, connector.status);
+              onStartOAuth(reconnectHref, connector.status, slackConnectMode);
             }}
             className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 transition-colors"
           >
-            Start Slack OAuth
+            Connect Slack
           </a>
         )}
       </div>

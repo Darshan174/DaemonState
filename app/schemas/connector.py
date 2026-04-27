@@ -66,10 +66,45 @@ class SlackInstallResponse(BaseModel):
 class ConnectorSetupStatus(BaseModel):
     connector_type: str
     configured: bool
+    managed_available: bool = False
+    managed_install_url: str | None = None
     missing: list[str] = []
     setup_url: str | None = None
     docs_url: str | None = None
+    source: str | None = None
     message: str
+
+
+class SlackOAuthSettingsRead(BaseModel):
+    configured: bool
+    client_id: str | None = None
+    redirect_uri: str | None = None
+    secret_configured: bool = False
+    source: str | None = None
+    missing: list[str] = []
+    message: str | None = None
+
+
+class SlackOAuthSettingsUpdate(BaseModel):
+    client_id: str
+    client_secret: str
+    redirect_uri: str
+
+    @field_validator("client_id", "client_secret", "redirect_uri")
+    @classmethod
+    def value_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Slack OAuth setting must not be blank")
+        return value.strip()
+
+    @field_validator("redirect_uri")
+    @classmethod
+    def redirect_uri_must_be_callback(cls, value: str) -> str:
+        if "/api/connectors/slack/callback" not in value:
+            raise ValueError("Redirect URI must point to /api/connectors/slack/callback")
+        if not value.startswith(("http://", "https://")):
+            raise ValueError("Redirect URI must start with http:// or https://")
+        return value
 
 
 class NotionConnectRequest(BaseModel):

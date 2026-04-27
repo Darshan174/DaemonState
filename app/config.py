@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     slack_client_id: str | None = None
     slack_client_secret: str | None = None
     slack_redirect_uri: str | None = None
+    slack_managed_install_url: str | None = None
     zoom_client_id: str | None = None
     zoom_client_secret: str | None = None
     zoom_redirect_uri: str | None = None

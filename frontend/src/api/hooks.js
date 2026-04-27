@@ -1593,6 +1593,20 @@ export function useConnectGitHub() {
   });
 }
 
+export function useSaveSlackOAuthSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ clientId, clientSecret, redirectUri }) => api.post("/connectors/slack/oauth-settings", {
+      client_id: clientId,
+      client_secret: clientSecret,
+      redirect_uri: redirectUri,
+    }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["connectors"] });
+    },
+  });
+}
+
 export function useSeedDemoData() {
   const qc = useQueryClient();
   return useMutation({
@@ -1684,6 +1698,8 @@ function normalizeConnectors(data) {
         providerNote: item.providerNote ?? catalogItem.providerNote,
         setupStatus: item.setupStatus ?? null,
         isConfigured: item.isConfigured ?? item.setupStatus?.configured ?? true,
+        managedConnectAvailable: item.managedConnectAvailable ?? item.setupStatus?.managed_available ?? false,
+        managedInstallUrl: item.managedInstallUrl ?? item.setupStatus?.managed_install_url ?? null,
         missingConfig: item.missingConfig ?? item.setupStatus?.missing ?? [],
       };
     });
@@ -1697,8 +1713,9 @@ function normalizeConnectors(data) {
 
   return Object.values(CONNECTOR_CATALOG).map((catalogItem) => {
     const record = recordsByType.get(catalogItem.type);
-    const setup = record?.setup_status ?? setupByType.get(catalogItem.type) ?? null;
+    const setup = setupByType.get(catalogItem.type) ?? record?.setup_status ?? null;
     const isConfigured = setup?.configured ?? true;
+    const managedConnectAvailable = Boolean(setup?.managed_available);
     if (!record) {
       return {
         ...catalogItem,
@@ -1711,9 +1728,11 @@ function normalizeConnectors(data) {
         itemsSynced: 0,
         setupStatus: setup,
         isConfigured,
+        managedConnectAvailable,
+        managedInstallUrl: setup?.managed_install_url ?? null,
         missingConfig: Array.isArray(setup?.missing) ? setup.missing : [],
         message:
-          catalogItem.type === "slack" && !isConfigured
+          catalogItem.type === "slack" && !isConfigured && !managedConnectAvailable
             ? setup?.message ?? "Slack OAuth is not configured yet."
             : catalogItem.availability === "available"
             ? "Not connected yet."
@@ -1752,6 +1771,8 @@ function normalizeConnectors(data) {
       providerNote: record.provider_note ?? catalogItem.providerNote,
       setupStatus: setup,
       isConfigured,
+      managedConnectAvailable,
+      managedInstallUrl: setup?.managed_install_url ?? null,
       missingConfig: Array.isArray(setup?.missing) ? setup.missing : [],
     };
   });

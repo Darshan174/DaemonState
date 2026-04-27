@@ -2,15 +2,36 @@
 
 Context Engine supports three practical Slack paths:
 
-1. **Slack OAuth app** — best for real self-hosted use and recurring sync.
-2. **Slack export ZIP import** — easiest first-time path when you do not want OAuth yet.
-3. **Manual bot token** — useful for local experiments, but not the main product path yet.
+1. **Managed Slack app** — Codex-style UX: click Connect, review permissions, continue to Slack.
+2. **Self-hosted Slack OAuth app** — best for OSS installs without a hosted broker.
+3. **Slack export ZIP import** — easiest first-time path when you do not want OAuth yet.
+4. **Manual bot token** — useful for local experiments, but not the main product path yet.
 
 Use OAuth for production-like installs. Use export ZIPs for quick evaluation.
 
-## Option 1: Slack OAuth App
+## Option 1: Managed Slack App
 
-Slack OAuth needs three environment variables:
+This is the same product shape as Codex:
+
+1. User clicks **Connect Slack**.
+2. Context Engine shows a short permission review modal.
+3. User continues to Slack and signs into a workspace.
+
+This requires a hosted Context Engine Slack app because the Slack app client
+secret cannot be shipped in an open-source repo or browser bundle. Configure the
+self-hosted app to use your hosted connector broker:
+
+```bash
+SLACK_MANAGED_INSTALL_URL=https://connect.context.example/slack/install
+```
+
+When this is set, the Connectors page uses the managed install path first. The
+self-hosted Client ID / Client Secret form remains available only as an
+advanced fallback.
+
+## Option 2: Self-hosted Slack OAuth App
+
+Slack OAuth needs one Slack app and three values from that app:
 
 ```bash
 SLACK_CLIENT_ID=
@@ -24,6 +45,37 @@ For a deployed host, replace `localhost:8000` with your public HTTPS origin:
 SLACK_REDIRECT_URI=https://context.example.com/api/connectors/slack/callback
 ```
 
+### Recommended: Save Credentials In The Dashboard
+
+This is the closest self-hosted flow to a one-click Slack connector.
+
+1. Create the Slack app from the manifest below.
+2. Open **Basic Information** in Slack and copy the **Client ID** and
+   **Client Secret**.
+3. Open Context Engine -> **Connectors**.
+4. Click **Set up Slack OAuth**.
+5. Paste the Client ID, Client Secret, and Redirect URL.
+6. Click **Save Slack settings**.
+7. Click **Connect Slack**.
+
+Context Engine stores the Slack app secret encrypted in the database. This
+requires `ENCRYPTION_KEY` to be configured on the backend. Workspace install
+tokens are still created through Slack OAuth and stored separately per
+workspace.
+
+### Operator Alternative: Environment Variables
+
+Operators can still set the same values in `.env` instead of saving them from
+the dashboard:
+
+```bash
+SLACK_CLIENT_ID=
+SLACK_CLIENT_SECRET=
+SLACK_REDIRECT_URI=http://localhost:8000/api/connectors/slack/callback
+```
+
+Restart Context Engine after editing `.env`.
+
 ### Create The Slack App From A Manifest
 
 1. Open [Slack API Apps](https://api.slack.com/apps).
@@ -34,11 +86,10 @@ SLACK_REDIRECT_URI=https://context.example.com/api/connectors/slack/callback
 6. Change the `redirect_urls` value to match your `SLACK_REDIRECT_URI`.
 7. Create the app.
 8. Open **Basic Information** and copy:
-   - **Client ID** -> `SLACK_CLIENT_ID`
-   - **Client Secret** -> `SLACK_CLIENT_SECRET`
-9. Save the values in `.env`.
-10. Restart Context Engine.
-11. Go to **Connectors** and click **Connect Slack**.
+   - **Client ID**
+   - **Client Secret**
+9. Save the values in the Context Engine dashboard or `.env`.
+10. Go to **Connectors** and click **Connect Slack**.
 
 ```yaml
 display_information:
@@ -91,7 +142,7 @@ Then open:
 http://localhost:8000/app/connectors
 ```
 
-## Option 2: Slack Export ZIP Import
+## Option 3: Slack Export ZIP Import
 
 Use this when you want to evaluate Context Engine without creating a Slack app.
 
@@ -109,7 +160,7 @@ Limitations:
 - Export availability depends on Slack workspace plan and admin permissions.
 - It will not refresh automatically after new Slack messages appear.
 
-## Option 3: Manual Bot Token
+## Option 4: Manual Bot Token
 
 Manual bot token setup is useful for local connector experiments, but OAuth is
 the recommended app path because it gives each workspace a proper install flow.

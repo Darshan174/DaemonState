@@ -1,5 +1,5 @@
 from app.models.base import Base
-from app.models.connector import Connector, ConnectorStatus, SyncState
+from app.models.connector import Connector, ConnectorAppConfig, ConnectorStatus, SyncState
 from app.models.eval import EvalCaseResultRecord, EvalRun
 from app.models.job import SyncJob, SyncJobStatus
 from app.models.knowledge import (
@@ -24,6 +24,7 @@ __all__ = [
     "Component",
     "ComponentSource",
     "Connector",
+    "ConnectorAppConfig",
     "ConnectorStatus",
     "ConnectorType",
     "KnowledgeModel",

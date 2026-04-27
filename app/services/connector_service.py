@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import secrets
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
@@ -16,7 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models.connector import Connector, ConnectorStatus
+from app.models.connector import Connector, ConnectorAppConfig, ConnectorStatus
 from app.models.source import ConnectorType, SourceDocument
 from app.services.ingestion_service import IngestionService
 from app.models.user import Workspace
@@ -68,6 +69,29 @@ class WebhookVerificationError(ConnectorServiceError):
 
 # Redis key prefix for OAuth state nonces
 _STATE_PREFIX = "ce:oauth_state:"
+
+
+@dataclass(frozen=True)
+class SlackOAuthConfig:
+    client_id: str | None
+    client_secret: str | None
+    redirect_uri: str | None
+    source: str | None
+
+    @property
+    def missing(self) -> list[str]:
+        missing = []
+        if not self.client_id:
+            missing.append("SLACK_CLIENT_ID")
+        if not self.client_secret:
+            missing.append("SLACK_CLIENT_SECRET")
+        if not self.redirect_uri:
+            missing.append("SLACK_REDIRECT_URI")
+        return missing
+
+    @property
+    def configured(self) -> bool:
+        return not self.missing
 
 
 class ConnectorService:
@@ -331,6 +355,73 @@ class ConnectorService:
         await self.session.commit()
         await self.session.refresh(connector)
         return connector
+
+    async def get_slack_oauth_config(self) -> SlackOAuthConfig:
+        """Return Slack app OAuth settings from DB, falling back to env vars."""
+        app_config = await self.session.scalar(
+            select(ConnectorAppConfig).where(
+                ConnectorAppConfig.connector_type == ConnectorType.SLACK
+            )
+        )
+        if app_config is not None:
+            try:
+                client_secret = decrypt_token(app_config.client_secret_encrypted)
+            except EncryptionError as exc:
+                raise ConfigurationError(str(exc)) from exc
+            return SlackOAuthConfig(
+                client_id=app_config.client_id,
+                client_secret=client_secret,
+                redirect_uri=app_config.redirect_uri,
+                source="database",
+            )
+
+        has_env_value = bool(
+            settings.slack_client_id
+            or settings.slack_client_secret
+            or settings.slack_redirect_uri
+        )
+        return SlackOAuthConfig(
+            client_id=settings.slack_client_id,
+            client_secret=settings.slack_client_secret,
+            redirect_uri=settings.slack_redirect_uri,
+            source="environment" if has_env_value else None,
+        )
+
+    async def save_slack_oauth_config(
+        self, *, client_id: str, client_secret: str, redirect_uri: str
+    ) -> SlackOAuthConfig:
+        try:
+            encrypted_secret = encrypt_token(client_secret)
+        except EncryptionError as exc:
+            raise ConfigurationError(str(exc)) from exc
+
+        app_config = await self.session.scalar(
+            select(ConnectorAppConfig).where(
+                ConnectorAppConfig.connector_type == ConnectorType.SLACK
+            )
+        )
+        if app_config is None:
+            app_config = ConnectorAppConfig(
+                connector_type=ConnectorType.SLACK,
+                client_id=client_id,
+                client_secret_encrypted=encrypted_secret,
+                redirect_uri=redirect_uri,
+                config={"configured_from": "dashboard"},
+            )
+            self.session.add(app_config)
+        else:
+            app_config.client_id = client_id
+            app_config.client_secret_encrypted = encrypted_secret
+            app_config.redirect_uri = redirect_uri
+            app_config.config = {**(app_config.config or {}), "configured_from": "dashboard"}
+
+        await self.session.commit()
+        return SlackOAuthConfig(
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri=redirect_uri,
+            source="database",
+        )
 
     async def build_zoom_install_url(self, workspace_id: UUID) -> str:
         self._require_zoom_oauth_config()
@@ -685,7 +776,7 @@ class ConnectorService:
     # ── Slack install URL with Redis-backed state ──────────────────
 
     async def build_slack_install_url(self, workspace_id: UUID) -> str:
-        self._require_slack_config()
+        oauth_config = await self._require_slack_config()
 
         nonce = secrets.token_urlsafe(24)
         state = f"{workspace_id}:{nonce}"
@@ -702,11 +793,11 @@ class ConnectorService:
             await redis.aclose()
 
         scopes = "channels:history,channels:read,groups:history,groups:read,users:read,team:read"
-        redirect_uri = settings.slack_redirect_uri or ""
+        redirect_uri = oauth_config.redirect_uri or ""
 
         url = (
             "https://slack.com/oauth/v2/authorize"
-            f"?client_id={settings.slack_client_id}"
+            f"?client_id={oauth_config.client_id}"
             f"&scope={scopes}"
             f"&state={state}"
         )
@@ -809,17 +900,17 @@ class ConnectorService:
 
     async def _exchange_slack_code(self, code: str) -> dict:
         """POST to Slack's oauth.v2.access to exchange code for token."""
-        self._require_slack_config()
+        oauth_config = await self._require_slack_config()
 
         async with httpx.AsyncClient(timeout=15) as http:
             try:
                 resp = await http.post(
                     "https://slack.com/api/oauth.v2.access",
                     data={
-                        "client_id": settings.slack_client_id,
-                        "client_secret": settings.slack_client_secret,
+                        "client_id": oauth_config.client_id,
+                        "client_secret": oauth_config.client_secret,
                         "code": code,
-                        "redirect_uri": settings.slack_redirect_uri or "",
+                        "redirect_uri": oauth_config.redirect_uri or "",
                     },
                 )
             except httpx.HTTPError as exc:
@@ -890,20 +981,16 @@ class ConnectorService:
             raise OAuthError(f"Zoom refresh failed: {body['error']}")
         return body
 
-    def _require_slack_config(self) -> None:
-        missing = []
-        if not settings.slack_client_id:
-            missing.append("SLACK_CLIENT_ID")
-        if not settings.slack_client_secret:
-            missing.append("SLACK_CLIENT_SECRET")
-        if not settings.slack_redirect_uri:
-            missing.append("SLACK_REDIRECT_URI")
+    async def _require_slack_config(self) -> SlackOAuthConfig:
+        oauth_config = await self.get_slack_oauth_config()
+        missing = oauth_config.missing
         if missing:
             raise ConfigurationError(
                 "Slack OAuth is not configured yet. "
-                f"Set {', '.join(missing)} in .env, restart Context Engine, "
-                "then connect Slack again. See docs/slack.md for the Slack app manifest."
+                f"Add {', '.join(missing)} in the Connectors Slack setup panel or .env, "
+                "then connect Slack again. See docs/slack.md for the Slack app manifest and setup options."
             )
+        return oauth_config
 
     def _require_zoom_oauth_config(self) -> None:
         if not settings.zoom_client_id or not settings.zoom_client_secret:

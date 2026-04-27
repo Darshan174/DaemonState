@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 import app.services.connector_service as connector_module
 from app.connectors.base import NormalizedDocument
-from app.models.connector import Connector, ConnectorStatus
+from app.models.connector import Connector, ConnectorAppConfig, ConnectorStatus
 from app.models.source import ConnectorType, SourceDocument
 from app.utils.crypto import decrypt_token, encrypt_token
 
@@ -97,6 +97,75 @@ class TestConnectorSetupStatus:
         assert slack_status["configured"] is True
         assert slack_status["missing"] == []
 
+    async def test_slack_reports_managed_connector_availability(
+        self, client, monkeypatch
+    ):
+        monkeypatch.setattr(
+            connector_module.settings,
+            "slack_managed_install_url",
+            "https://connect.example/slack/install",
+        )
+        monkeypatch.setattr(connector_module.settings, "slack_client_id", None)
+        monkeypatch.setattr(connector_module.settings, "slack_client_secret", None)
+        monkeypatch.setattr(connector_module.settings, "slack_redirect_uri", None)
+
+        resp = await client.get("/api/connectors/setup-status")
+
+        assert resp.status_code == 200
+        slack_status = next(item for item in resp.json() if item["connector_type"] == "slack")
+        assert slack_status["configured"] is False
+        assert slack_status["managed_available"] is True
+        assert slack_status["managed_install_url"] == "/api/connectors/slack/managed/install"
+
+    async def test_saves_slack_oauth_settings_for_dashboard_setup(
+        self, client, monkeypatch
+    ):
+        monkeypatch.setattr(connector_module.settings, "encryption_key", _TEST_FERNET_KEY)
+
+        resp = await client.post(
+            "/api/connectors/slack/oauth-settings",
+            json={
+                "client_id": "111.222",
+                "client_secret": "secret",
+                "redirect_uri": "https://context.example.com/api/connectors/slack/callback",
+            },
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["configured"] is True
+        assert body["client_id"] == "111.222"
+        assert body["secret_configured"] is True
+        assert body["redirect_uri"] == "https://context.example.com/api/connectors/slack/callback"
+        assert body["source"] == "database"
+        assert "client_secret" not in body
+
+    async def test_slack_setup_status_uses_saved_dashboard_settings(
+        self, client, db_session, monkeypatch
+    ):
+        monkeypatch.setattr(connector_module.settings, "encryption_key", _TEST_FERNET_KEY)
+        monkeypatch.setattr(connector_module.settings, "slack_client_id", None)
+        monkeypatch.setattr(connector_module.settings, "slack_client_secret", None)
+        monkeypatch.setattr(connector_module.settings, "slack_redirect_uri", None)
+        db_session.add(
+            ConnectorAppConfig(
+                connector_type=ConnectorType.SLACK,
+                client_id="saved-client",
+                client_secret_encrypted=encrypt_token("saved-secret"),
+                redirect_uri="https://context.example.com/api/connectors/slack/callback",
+                config={"configured_from": "dashboard"},
+            )
+        )
+        await db_session.flush()
+
+        resp = await client.get("/api/connectors/setup-status")
+
+        assert resp.status_code == 200
+        slack_status = next(item for item in resp.json() if item["connector_type"] == "slack")
+        assert slack_status["configured"] is True
+        assert slack_status["missing"] == []
+        assert slack_status["source"] == "database"
+
 
 class TestDisconnectConnector:
     async def test_disconnect_clears_token_and_marks_disconnected(
@@ -145,6 +214,60 @@ class _FakeRedis:
 
 
 class TestSlackInstall:
+    async def test_managed_install_redirects_to_hosted_connector(
+        self, client, workspace, monkeypatch
+    ):
+        monkeypatch.setattr(
+            connector_module.settings,
+            "slack_managed_install_url",
+            "https://connect.example/slack/install",
+        )
+
+        resp = await client.get(
+            "/api/connectors/slack/managed/install",
+            params={"workspace_id": str(workspace.id)},
+            follow_redirects=False,
+        )
+
+        assert resp.status_code == 302
+        assert resp.headers["location"] == (
+            f"https://connect.example/slack/install?workspace_id={workspace.id}"
+        )
+
+    async def test_redirect_with_dashboard_saved_oauth_settings(
+        self, client, workspace, db_session, monkeypatch
+    ):
+        monkeypatch.setattr(connector_module.settings, "encryption_key", _TEST_FERNET_KEY)
+        monkeypatch.setattr(connector_module.settings, "slack_client_id", None)
+        monkeypatch.setattr(connector_module.settings, "slack_client_secret", None)
+        monkeypatch.setattr(connector_module.settings, "slack_redirect_uri", None)
+        db_session.add(
+            ConnectorAppConfig(
+                connector_type=ConnectorType.SLACK,
+                client_id="saved-client",
+                client_secret_encrypted=encrypt_token("saved-secret"),
+                redirect_uri="https://context.example.com/api/connectors/slack/callback",
+                config={"configured_from": "dashboard"},
+            )
+        )
+        await db_session.flush()
+
+        fake_redis = _FakeRedis()
+        monkeypatch.setattr(
+            connector_module.aioredis, "from_url", lambda *a, **kw: fake_redis
+        )
+
+        resp = await client.get(
+            "/api/connectors/slack/install",
+            params={"workspace_id": str(workspace.id)},
+            follow_redirects=False,
+        )
+
+        assert resp.status_code == 302
+        location = resp.headers["location"]
+        assert "client_id=saved-client" in location
+        assert "redirect_uri=https://context.example.com/api/connectors/slack/callback" in location
+
     async def test_redirect_when_configured(self, client, workspace, monkeypatch):
         monkeypatch.setattr(connector_module.settings, "slack_client_id", "xoxb-fake")
         monkeypatch.setattr(connector_module.settings, "slack_client_secret", "secret")

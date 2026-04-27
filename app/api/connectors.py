@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.parse import urlencode
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
@@ -14,11 +15,13 @@ from app.connectors.strategy import get_connector_strategy
 from app.database import get_db_session
 from app.models.source import ConnectorType, SourceDocument
 from app.schemas.connector import (
-    ConnectorSetupStatus,
     ConnectorProcessingSummary,
     ConnectorRead,
+    ConnectorSetupStatus,
     GitHubConnectRequest,
     NotionConnectRequest,
+    SlackOAuthSettingsRead,
+    SlackOAuthSettingsUpdate,
     SyncJobDetail,
     SyncJobResponse,
     ZoomConnectRequest,
@@ -62,7 +65,10 @@ def _serialize_sync_job(job) -> SyncJobDetail:
     )
 
 
-def _serialize_connector(connector) -> ConnectorRead:
+def _serialize_connector(
+    connector,
+    setup_status: ConnectorSetupStatus | None = None,
+) -> ConnectorRead:
     strategy = get_connector_strategy(connector.connector_type)
     provider_note = strategy.note
     if connector.connector_type == ConnectorType.ZOOM:
@@ -93,26 +99,35 @@ def _serialize_connector(connector) -> ConnectorRead:
         provider=strategy.provider.value,
         provider_label=strategy.provider_label,
         provider_note=provider_note,
-        setup_status=_connector_setup_status(connector.connector_type).model_dump(),
+        setup_status=(setup_status or _connector_setup_status(connector.connector_type)).model_dump(),
     )
 
 
-def _connector_setup_status(connector_type: ConnectorType) -> ConnectorSetupStatus:
+def _connector_setup_status(connector_type: ConnectorType, slack_config=None) -> ConnectorSetupStatus:
     if connector_type == ConnectorType.SLACK:
-        missing = []
-        if not settings.slack_client_id:
-            missing.append("SLACK_CLIENT_ID")
-        if not settings.slack_client_secret:
-            missing.append("SLACK_CLIENT_SECRET")
-        if not settings.slack_redirect_uri:
-            missing.append("SLACK_REDIRECT_URI")
+        if slack_config is None:
+            missing = []
+            if not settings.slack_client_id:
+                missing.append("SLACK_CLIENT_ID")
+            if not settings.slack_client_secret:
+                missing.append("SLACK_CLIENT_SECRET")
+            if not settings.slack_redirect_uri:
+                missing.append("SLACK_REDIRECT_URI")
+            source = "environment" if not missing else None
+        else:
+            missing = slack_config.missing
+            source = slack_config.source
         configured = not missing
+        managed_available = bool(settings.slack_managed_install_url)
         return ConnectorSetupStatus(
             connector_type=connector_type.value,
             configured=configured,
+            managed_available=managed_available,
+            managed_install_url="/api/connectors/slack/managed/install" if managed_available else None,
             missing=missing,
             setup_url="/docs/slack.md",
             docs_url="/docs/slack.md",
+            source=source,
             message=(
                 "Slack OAuth is configured. You can connect a workspace."
                 if configured
@@ -122,10 +137,44 @@ def _connector_setup_status(connector_type: ConnectorType) -> ConnectorSetupStat
     return ConnectorSetupStatus(
         connector_type=connector_type.value,
         configured=True,
+        managed_available=False,
+        managed_install_url=None,
         missing=[],
         setup_url=None,
         docs_url=None,
+        source=None,
         message="Connector setup is available.",
+    )
+
+
+def _slack_oauth_settings_read(slack_config) -> SlackOAuthSettingsRead:
+    missing = slack_config.missing
+    return SlackOAuthSettingsRead(
+        configured=slack_config.configured,
+        client_id=slack_config.client_id,
+        redirect_uri=slack_config.redirect_uri,
+        secret_configured=bool(slack_config.client_secret),
+        source=slack_config.source,
+        missing=missing,
+        message=(
+            "Slack OAuth is ready."
+            if not missing
+            else "Slack OAuth needs a client ID, client secret, and redirect URI."
+        ),
+    )
+
+
+def _slack_encryption_setup_status(message: str) -> ConnectorSetupStatus:
+    return ConnectorSetupStatus(
+        connector_type=ConnectorType.SLACK.value,
+        configured=False,
+        managed_available=bool(settings.slack_managed_install_url),
+        managed_install_url="/api/connectors/slack/managed/install" if settings.slack_managed_install_url else None,
+        missing=["ENCRYPTION_KEY"],
+        setup_url="/docs/slack.md",
+        docs_url="/docs/slack.md",
+        source="database",
+        message=message,
     )
 
 
@@ -217,16 +266,79 @@ async def list_connectors(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Workspace not found",
         )
-    return [_serialize_connector(c) for c in connectors]
+    try:
+        slack_setup_status = _connector_setup_status(
+            ConnectorType.SLACK,
+            await svc.get_slack_oauth_config(),
+        )
+    except ConfigurationError as exc:
+        slack_setup_status = _slack_encryption_setup_status(str(exc))
+
+    return [
+        _serialize_connector(
+            connector,
+            slack_setup_status if connector.connector_type == ConnectorType.SLACK else None,
+        )
+        for connector in connectors
+    ]
+
+
+@router.get(
+    "/connectors/slack/oauth-settings",
+    response_model=SlackOAuthSettingsRead,
+)
+async def get_slack_oauth_settings(
+    svc: ConnectorService = Depends(_service),
+) -> SlackOAuthSettingsRead:
+    try:
+        slack_config = await svc.get_slack_oauth_config()
+    except ConfigurationError as exc:
+        return SlackOAuthSettingsRead(
+            configured=False,
+            source="database",
+            missing=["ENCRYPTION_KEY"],
+            secret_configured=False,
+            message=str(exc),
+        )
+    return _slack_oauth_settings_read(slack_config)
+
+
+@router.post(
+    "/connectors/slack/oauth-settings",
+    response_model=SlackOAuthSettingsRead,
+)
+async def save_slack_oauth_settings(
+    payload: SlackOAuthSettingsUpdate,
+    svc: ConnectorService = Depends(_service),
+) -> SlackOAuthSettingsRead:
+    try:
+        slack_config = await svc.save_slack_oauth_config(
+            client_id=payload.client_id,
+            client_secret=payload.client_secret,
+            redirect_uri=payload.redirect_uri,
+        )
+    except ConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail=str(exc),
+        )
+    return _slack_oauth_settings_read(slack_config)
 
 
 @router.get(
     "/connectors/setup-status",
     response_model=list[ConnectorSetupStatus],
 )
-async def connector_setup_status() -> list[ConnectorSetupStatus]:
+async def connector_setup_status(
+    svc: ConnectorService = Depends(_service),
+) -> list[ConnectorSetupStatus]:
+    try:
+        slack_config = await svc.get_slack_oauth_config()
+        slack_status = _connector_setup_status(ConnectorType.SLACK, slack_config)
+    except ConfigurationError as exc:
+        slack_status = _slack_encryption_setup_status(str(exc))
     return [
-        _connector_setup_status(connector_type)
+        slack_status if connector_type == ConnectorType.SLACK else _connector_setup_status(connector_type)
         for connector_type in ConnectorType
     ]
 
@@ -274,6 +386,36 @@ async def slack_install(
         )
 
     return RedirectResponse(url=url, status_code=status.HTTP_302_FOUND)
+
+
+@router.get("/connectors/slack/managed/install")
+async def slack_managed_install(
+    workspace_id: UUID,
+    svc: ConnectorService = Depends(_service),
+):
+    try:
+        await svc._require_workspace(workspace_id)
+    except WorkspaceNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace not found",
+        )
+
+    if not settings.slack_managed_install_url:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail=(
+                "Managed Slack OAuth is not configured for this build. "
+                "A Codex-style Slack button requires a hosted Context Engine Slack app."
+            ),
+        )
+
+    params = urlencode({"workspace_id": str(workspace_id)})
+    separator = "&" if "?" in settings.slack_managed_install_url else "?"
+    return RedirectResponse(
+        url=f"{settings.slack_managed_install_url}{separator}{params}",
+        status_code=status.HTTP_302_FOUND,
+    )
 
 
 @router.get("/connectors/slack/callback", response_model=ConnectorRead)

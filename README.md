@@ -296,7 +296,10 @@ EXTRACTION_MODEL=openai/gpt-4.1-mini
 EMBEDDING_MODEL=openai/text-embedding-3-large
 EMBEDDING_DIMENSIONS=1024
 
-# Slack OAuth connector
+# Codex-style managed Slack connector, when you operate a hosted Slack app broker
+SLACK_MANAGED_INSTALL_URL=https://connect.context.example/slack/install
+
+# Self-hosted Slack OAuth connector fallback
 SLACK_CLIENT_ID=...
 SLACK_CLIENT_SECRET=...
 SLACK_REDIRECT_URI=http://localhost:8000/api/connectors/slack/callback
@@ -308,7 +311,7 @@ HOST_POSTGRES_BIND=127.0.0.1
 HOST_REDIS_BIND=127.0.0.1
 ```
 
-For the Slack app manifest and no-OAuth import path, see
+For dashboard setup, the Slack app manifest, and the no-OAuth import path, see
 [docs/slack.md](./docs/slack.md).
 
 By default, compose-published ports bind to `127.0.0.1`. This is intentional:
