@@ -220,14 +220,14 @@ export default function Connectors() {
   }
 
   return (
-    <div className="max-w-5xl mx-auto space-y-6">
+    <div className="max-w-5xl mx-auto space-y-7">
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
-            <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-300">Connectors</h2>
+            <h2 className="text-3xl font-bold tracking-tight text-slate-950 dark:text-white">Workspace Connectors</h2>
             {isMock && <MockBadge />}
           </div>
-          <p className="text-xs text-gray-400 mt-1">
+          <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-500 dark:text-slate-400">
             Slack is the native reference connector, Notion is the first OSS-backed path, and Zoom is the
             transcript-first meeting source. GitHub adds PRs, issues, and reviews so engineering context is first-class. Drive and Gong stay visible here so the admin surface is stable
             while the backend expands.
@@ -238,10 +238,6 @@ export default function Connectors() {
               endpoints are live.
             </p>
           )}
-        </div>
-        <div className="px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 text-right">
-          <p className="text-[11px] uppercase tracking-wide text-gray-400">Phase</p>
-          <p className="text-sm font-medium text-gray-700 dark:text-gray-400">Slack + Notion + Zoom + GitHub</p>
         </div>
       </div>
 
@@ -466,10 +462,10 @@ function ConnectorCard({
         ? `${managedInstallUrl}?workspace_id=${workspaceId}`
         : isConfigured
           ? `/api/connectors/slack/install?workspace_id=${workspaceId}`
-          : `/api/connectors/slack/managed/install?workspace_id=${workspaceId}`
+          : null
       : `/api/connectors/${type}/install?workspace_id=${workspaceId}`
     : null;
-  const slackConnectMode = managedConnectAvailable || !isConfigured ? "managed" : "self_hosted";
+  const slackConnectMode = managedConnectAvailable ? "managed" : "self_hosted";
   const zoomOauthHref = isZoom ? installHref : null;
   const processedDocuments = processing?.processedDocuments ?? totalProcessedCount;
   const pendingDocuments = processing?.unprocessedDocuments ?? Math.max(Number(itemsSynced || 0) - processedDocuments, 0);
@@ -1022,18 +1018,20 @@ function ConnectorCard({
           >
             Coming soon
           </button>
-        ) : isSlack && canConnect ? (
-          <a
-            href={installHref}
-            onClick={(event) => {
-              event.preventDefault();
-              onStartOAuth(installHref, status, slackConnectMode);
-            }}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 transition-colors"
+        ) : isSlack && canConnect && installHref ? (
+          <button
+            type="button"
+            onClick={() => onStartOAuth(installHref, status, slackConnectMode)}
+            className="inline-flex items-center gap-2 rounded-full bg-white border border-gray-200 px-4 py-2 text-sm font-medium text-gray-900 hover:bg-gray-50 shadow-sm transition-colors dark:bg-slate-800 dark:border-gray-700 dark:text-white dark:hover:bg-slate-700"
           >
-            Connect Slack
-          </a>
-        ) : isSlack && canReconnect ? (
+            <SlackLogoIcon className="w-5 h-5" />
+            Connect to Slack
+          </button>
+        ) : isSlack && canConnect && !installHref ? (
+          <span className="inline-flex items-center rounded-lg bg-amber-50 dark:bg-amber-900/30 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800/50">
+            Slack OAuth not configured
+          </span>
+        ) : isSlack && canReconnect && installHref ? (
           <a
             href={installHref}
             onClick={(event) => {
@@ -1044,6 +1042,10 @@ function ConnectorCard({
           >
             Reconnect Slack
           </a>
+        ) : isSlack && canReconnect && !installHref ? (
+          <span className="inline-flex items-center rounded-lg bg-amber-50 dark:bg-amber-900/30 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800/50">
+            Slack OAuth not configured
+          </span>
         ) : isNotion && status === "disconnected" ? (
           <button
             type="button"
@@ -1236,27 +1238,27 @@ function ZoomCapabilityPanel({
       : "Connect Zoom OAuth";
 
   return (
-    <div className="mt-3 rounded-lg border border-sky-100 dark:border-sky-800/30 bg-sky-50/70 px-3 py-3">
+    <div className="mt-3 rounded-lg border border-sky-200 bg-sky-50 px-3 py-3 dark:border-sky-500/20 dark:bg-sky-500/10">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-[11px] uppercase tracking-wide text-sky-700 dark:text-sky-400">Zoom sync mode</p>
-        <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${badgeClass}`}>
+        <p className="text-[11px] font-bold uppercase tracking-wide text-sky-800 dark:text-sky-200">Zoom sync mode</p>
+        <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${badgeClass}`}>
           {modeLabel}
         </span>
       </div>
-      <p className="mt-2 text-[11px] text-sky-900 dark:text-sky-200">{modeSummary}</p>
+      <p className="mt-2 text-sm leading-5 text-sky-900 dark:text-sky-100">{modeSummary}</p>
       {(ingestionMode || sourceFocus) && (
-        <p className="mt-2 text-[11px] text-sky-800 dark:text-sky-300">
+        <p className="mt-2 text-xs text-sky-800 dark:text-sky-200/80">
           {ingestionMode === "transcripts_only" ? "Transcript-only ingestion" : ingestionMode || "Ingestion configured"}
           {sourceFocus ? ` · ${sourceFocus.replaceAll("_", " ")}` : ""}
         </p>
       )}
       {accountId && (
-        <p className="mt-1 text-[11px] text-sky-800 dark:text-sky-300">
+        <p className="mt-1 text-xs text-sky-800 dark:text-sky-200/80">
           Account: {accountId}
         </p>
       )}
       {(lastWebhookEvent || lastWebhookReceivedAt) && (
-        <p className="mt-1 text-[11px] text-sky-800 dark:text-sky-300">
+        <p className="mt-1 text-xs text-sky-800 dark:text-sky-200/80">
           Last webhook:
           {lastWebhookEvent ? ` ${lastWebhookEvent}` : " event received"}
           {lastWebhookReceivedAt ? ` · ${lastWebhookReceivedAt}` : ""}
@@ -1265,7 +1267,7 @@ function ZoomCapabilityPanel({
       {!isDemo && !oauthPending && oauthHref && (
         <a
           href={oauthHref}
-          className="inline-flex mt-3 text-[11px] font-medium text-sky-800 dark:text-sky-300 underline underline-offset-2 hover:text-sky-900 dark:text-sky-200"
+          className="mt-3 inline-flex rounded-lg border border-sky-300 bg-white/80 px-3 py-1.5 text-xs font-bold text-sky-800 transition-colors hover:bg-white hover:text-sky-950 dark:border-sky-400/30 dark:bg-sky-950/40 dark:text-sky-100 dark:hover:bg-sky-900/60"
         >
           {ctaLabel}
         </a>
@@ -1324,48 +1326,61 @@ function SlackConnectModal({ mode, onCancel, onContinue }) {
           <button
             type="button"
             onClick={onCancel}
-            className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+            className="rounded-lg p-1 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
             aria-label="Close Slack connection dialog"
           >
-            X
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
           </button>
         </div>
-        <div className="flex items-center justify-center gap-5">
-          <div className="flex h-14 w-14 items-center justify-center rounded-xl border border-gray-200 dark:border-gray-800 text-xl font-semibold">
+        <div className="flex items-center justify-center gap-4">
+          <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-gradient-to-br from-brand-400 to-brand-600 text-white text-xl font-bold shadow-lg">
             CE
           </div>
-          <div className="text-2xl text-gray-400">...</div>
-          <div className="flex h-14 w-14 items-center justify-center rounded-xl border border-gray-200 dark:border-gray-800 text-xl">
-            Slack
+          <div className="flex gap-1">
+            <span className="inline-block h-2 w-2 rounded-full bg-gray-300 dark:bg-gray-600" />
+            <span className="inline-block h-2 w-2 rounded-full bg-gray-300 dark:bg-gray-600" />
+            <span className="inline-block h-2 w-2 rounded-full bg-gray-300 dark:bg-gray-600" />
+          </div>
+          <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-white border border-gray-200 shadow-sm">
+            <SlackLogoIcon className="w-8 h-8" />
           </div>
         </div>
         <div className="mt-6 text-center">
           <h3 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">
-            Connect Slack Context Engine App
+            Connect Context Engine to Slack
           </h3>
           <p className="mt-2 text-sm text-gray-500">
-            {isManaged ? "Managed by Context Engine" : "Self-hosted Slack app"}
+            {isManaged ? "Managed install" : "Self-hosted Slack app"}
           </p>
         </div>
 
-        <div className="mt-6 rounded-xl border border-gray-200 dark:border-gray-800/60 p-4 text-sm text-gray-700 dark:text-gray-300">
+        <div className="mt-6 rounded-xl border border-gray-200 dark:border-gray-800/60 p-5 text-sm text-gray-700 dark:text-gray-300 space-y-4">
           <div>
             <p className="font-semibold text-gray-900 dark:text-gray-100">Permissions always respected</p>
-            <p className="mt-2">
-              Context Engine only reads Slack scopes granted during install and stores messages as source-backed context.
+            <p className="mt-1.5 leading-relaxed">
+              Context Engine is strictly limited to the scopes you explicitly approve during install. You can revoke access anytime from your Slack workspace settings.
             </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {["channels:history", "channels:read", "groups:history", "groups:read", "users:read", "team:read"].map((scope) => (
+                <span key={scope} className="inline-flex items-center rounded-md bg-gray-100 dark:bg-gray-800 px-2 py-1 text-[11px] font-medium text-gray-600 dark:text-gray-400">
+                  {scope}
+                </span>
+              ))}
+            </div>
           </div>
-          <div className="my-4 border-t border-gray-200 dark:border-gray-800/60" />
+          <div className="border-t border-gray-200 dark:border-gray-800/60" />
           <div>
             <p className="font-semibold text-gray-900 dark:text-gray-100">You're in control</p>
-            <p className="mt-2">
-              You can revoke the Slack app from Slack at any time, and disconnect the workspace from Context Engine.
+            <p className="mt-1.5 leading-relaxed">
+              You can disconnect the workspace from Context Engine at any time. No messages are sent or posted to Slack.
             </p>
           </div>
-          <div className="my-4 border-t border-gray-200 dark:border-gray-800/60" />
+          <div className="border-t border-gray-200 dark:border-gray-800/60" />
           <div>
-            <p className="font-semibold text-gray-900 dark:text-gray-100">Connector data can be sensitive</p>
-            <p className="mt-2">
+            <p className="font-semibold text-gray-900 dark:text-gray-100">Connectors may introduce risk</p>
+            <p className="mt-1.5 leading-relaxed">
               Connect only workspaces whose documents and messages should be available to this Context Engine instance.
             </p>
           </div>
@@ -1374,9 +1389,12 @@ function SlackConnectModal({ mode, onCancel, onContinue }) {
         <button
           type="button"
           onClick={onContinue}
-          className="mt-6 w-full rounded-full bg-gray-900 px-5 py-3 text-sm font-semibold text-white hover:bg-gray-800 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100"
+          className="mt-6 w-full rounded-full bg-gray-900 px-5 py-3 text-sm font-semibold text-white hover:bg-gray-800 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100 transition-colors inline-flex items-center justify-center gap-2"
         >
-          Continue to Slack Context Engine App
+          Continue to Slack
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M7 17L17 7M17 7H7M17 7v10" />
+          </svg>
         </button>
       </div>
     </div>
@@ -1471,9 +1489,9 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
       ? `${managedInstallUrl}?workspace_id=${workspaceId}`
       : isConfigured
         ? `/api/connectors/slack/install?workspace_id=${workspaceId}`
-        : `/api/connectors/slack/managed/install?workspace_id=${workspaceId}`
+        : null
     : null;
-  const slackConnectMode = managedConnectAvailable || !isConfigured ? "managed" : "self_hosted";
+  const slackConnectMode = managedConnectAvailable ? "managed" : "self_hosted";
 
   if (connector.status === "connected") {
     return (
@@ -1537,29 +1555,41 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
   }
 
   if (connector.status === "disconnected") {
+    const isConfiguredBanner = connector.isConfigured ?? true;
     return (
       <div className="rounded-xl border border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30 p-4 flex items-start justify-between gap-4">
         <div>
           <p className="text-sm font-medium text-amber-800 dark:text-amber-300">Slack is not connected yet.</p>
           <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
-            Connect Slack to ingest channel history, threads, and source-backed team context.
+            {isConfiguredBanner
+              ? "Connect Slack to ingest channel history, threads, and source-backed team context."
+              : "A Slack app is required before connecting. Use Advanced self-hosted setup below to add your credentials, or ask your operator to set environment variables."}
           </p>
         </div>
         {!isDemo && !oauthPending && reconnectHref && (
-          <a
-            href={reconnectHref}
-            onClick={(event) => {
-              event.preventDefault();
-              onStartOAuth(reconnectHref, connector.status, slackConnectMode);
-            }}
-            className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 transition-colors"
+          <button
+            type="button"
+            onClick={() => onStartOAuth(reconnectHref, connector.status, slackConnectMode)}
+            className="shrink-0 inline-flex items-center gap-2 rounded-full bg-white border border-gray-200 px-4 py-2 text-sm font-medium text-gray-900 hover:bg-gray-50 shadow-sm transition-colors dark:bg-slate-800 dark:border-gray-700 dark:text-white dark:hover:bg-slate-700"
           >
-            Connect Slack
-          </a>
+            <SlackLogoIcon className="w-5 h-5" />
+            Connect to Slack
+          </button>
         )}
       </div>
     );
   }
 
   return null;
+}
+
+function SlackLogoIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 127 127" xmlns="http://www.w3.org/2000/svg">
+      <path d="M27.2 80c0 7.3-5.9 13.2-13.2 13.2S.8 87.3.8 80s5.9-13.2 13.2-13.2h13.2V80zm6.6 0c0-7.3 5.9-13.2 13.2-13.2s13.2 5.9 13.2 13.2v33c0 7.3-5.9 13.2-13.2 13.2s-13.2-5.9-13.2-13.2V80z" fill="#E01E5A"/>
+      <path d="M47 27c-7.3 0-13.2-5.9-13.2-13.2S39.7.6 47 .6s13.2 5.9 13.2 13.2V27H47zm0 6.7c7.3 0 13.2 5.9 13.2 13.2s-5.9 13.2-13.2 13.2H13.9C6.6 60.1.7 54.2.7 46.9s5.9-13.2 13.2-13.2H47z" fill="#36C5F0"/>
+      <path d="M99.9 46.9c0-7.3 5.9-13.2 13.2-13.2s13.2 5.9 13.2 13.2-5.9 13.2-13.2 13.2H99.9V46.9zm-6.6 0c0 7.3-5.9 13.2-13.2 13.2s-13.2-5.9-13.2-13.2V13.8C66.9 6.5 72.8.6 80.1.6s13.2 5.9 13.2 13.2v33.1z" fill="#2EB67D"/>
+      <path d="M80.1 99.8c7.3 0 13.2 5.9 13.2 13.2s-5.9 13.2-13.2 13.2-13.2-5.9-13.2-13.2V99.8h13.2zm0-6.6c-7.3 0-13.2-5.9-13.2-13.2s5.9-13.2 13.2-13.2h33.1c7.3 0 13.2 5.9 13.2 13.2s-5.9 13.2-13.2 13.2H80.1z" fill="#ECB22E"/>
+    </svg>
+  );
 }

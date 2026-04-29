@@ -157,14 +157,14 @@ export default function KnowledgeGraph() {
   }
 
   return (
-    <div className="max-w-6xl mx-auto space-y-6">
+    <div className="max-w-6xl mx-auto space-y-7">
       <div>
         <div className="flex items-center gap-3">
-          <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-300">Knowledge Graph</h2>
+          <h2 className="text-3xl font-bold tracking-tight text-slate-950 dark:text-white">Knowledge Graph</h2>
           {isMock && <MockBadge />}
         </div>
         {isMock && (
-          <p className="text-xs text-gray-400 mt-1">
+          <p className="mt-2 text-sm leading-6 text-slate-500 dark:text-slate-400">
             Showing demo data until live workspace graph data is available.
           </p>
         )}

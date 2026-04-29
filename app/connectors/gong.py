@@ -1,2 +1,0 @@
-"""Gong connector implementation placeholder."""
-

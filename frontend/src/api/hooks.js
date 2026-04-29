@@ -1611,8 +1611,13 @@ export function useSeedDemoData() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (input) => {
-      const payload = input ?? {};
-      const workspaceId = payload.workspaceId ?? payload.workspace_id ?? await getWorkspaceId();
+      const payload = input && typeof input === "object" ? input : {};
+      const hasExplicitWorkspace =
+        Object.prototype.hasOwnProperty.call(payload, "workspaceId") ||
+        Object.prototype.hasOwnProperty.call(payload, "workspace_id");
+      const workspaceId = hasExplicitWorkspace
+        ? (payload.workspaceId ?? payload.workspace_id ?? null)
+        : null;
       return api.post(
         FOUNDER_WORKFLOW_API.seedDemo,
         workspaceId ? { workspace_id: workspaceId } : {},

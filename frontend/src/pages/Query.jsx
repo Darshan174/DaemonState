@@ -69,57 +69,59 @@ export default function Query() {
   };
 
   return (
-    <div className="max-w-3xl mx-auto space-y-6">
-      <div className="flex items-center gap-3">
-        <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-300">Ask the workspace</h2>
-        {isMock && result && <MockBadge />}
-        {!isMock && result && (
-          <span className="px-2 py-0.5 text-[11px] rounded-full border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400">
-            Live backend
-          </span>
-        )}
+    <div className="max-w-4xl mx-auto space-y-7">
+      <div>
+        <div className="flex flex-wrap items-center gap-3">
+          <h2 className="text-3xl font-bold tracking-tight text-slate-950 dark:text-white">Workspace Ask</h2>
+          {isMock && result && <MockBadge />}
+          {!isMock && result && (
+            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300">
+              Live backend
+            </span>
+          )}
+        </div>
+        <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500 dark:text-slate-400">
+          Query your workspace context. Live backend answers are preferred; demo answers only appear when the backend is unreachable.
+        </p>
       </div>
-      <p className="text-xs text-gray-400">
-        Query your workspace context. Live backend answers are preferred; demo answers only appear when the backend is unreachable.
-      </p>
 
-      <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-4">
-        <div className="flex items-start justify-between gap-4">
+      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700/70 dark:bg-slate-800">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>
-            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-400">Self-host query flow</h3>
-            <p className="text-xs text-gray-400 mt-1">
+            <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">Self-host query flow</h3>
+            <p className="mt-1 max-w-2xl text-sm leading-5 text-slate-500 dark:text-slate-400">
               Query works best after raw sources are synced, extracted facts are reviewed, and benchmark cases clear the current accuracy gate.
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-3 text-xs">
-            <Link to="/app/sources" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <ActionLink to="/app/sources">
               Inspect sources
-            </Link>
-            <Link to="/app/review" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
+            </ActionLink>
+            <ActionLink to="/app/review">
               Review trust
-            </Link>
-            <Link to="/app/accuracy" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
+            </ActionLink>
+            <ActionLink to="/app/accuracy">
               Benchmark accuracy
-            </Link>
+            </ActionLink>
           </div>
         </div>
       </div>
 
       {/* ── Input ───────────────────────────────── */}
       <form onSubmit={handleSubmit} className="space-y-3">
-        <div className="flex gap-3">
+        <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_112px]">
           <input
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="Ask a question about your company data..."
             aria-label="Query input"
-            className="flex-1 px-4 py-2.5 text-sm border border-gray-200 dark:border-gray-800/50 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            className="h-12 w-full rounded-xl border border-slate-200 bg-white px-4 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500"
           />
           <button
             type="submit"
             disabled={mutation.isPending || !input.trim()}
-            className="px-5 py-2.5 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 transition-colors shrink-0"
+            className="inline-flex h-12 items-center justify-center rounded-xl bg-brand-600 px-5 text-sm font-bold text-white shadow-lg shadow-brand-500/20 transition-colors hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {mutation.isPending ? "Thinking..." : "Ask"}
           </button>
@@ -131,7 +133,7 @@ export default function Query() {
               value={windowDays}
               onChange={(e) => setWindowDays(e.target.value)}
               aria-label="Context window"
-              className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-2.5 py-1.5 text-xs text-gray-700 dark:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-500/40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
             >
               {WINDOW_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -147,14 +149,14 @@ export default function Query() {
               value={asOfDate}
               onChange={(e) => setAsOfDate(e.target.value)}
               aria-label="As of date"
-              className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-2.5 py-1.5 text-xs text-gray-700 dark:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-500/40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
             />
           </label>
           {asOfDate && (
             <button
               type="button"
               onClick={() => setAsOfDate("")}
-              className="text-[11px] font-medium text-gray-500 underline underline-offset-2 hover:text-gray-700 dark:text-gray-400"
+              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-bold text-slate-600 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
             >
               Clear historical mode
             </button>
@@ -424,20 +426,31 @@ export default function Query() {
               </button>
             ))}
           </div>
-          <div className="flex flex-wrap justify-center gap-4 text-xs mt-8">
-            <Link to="/app" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
+          <div className="mt-8 flex flex-wrap justify-center gap-2">
+            <ActionLink to="/app">
               Add context
-            </Link>
-            <Link to="/app/review" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
+            </ActionLink>
+            <ActionLink to="/app/review">
               Review trust issues
-            </Link>
-            <Link to="/app/accuracy" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
+            </ActionLink>
+            <ActionLink to="/app/accuracy">
               Benchmark accuracy
-            </Link>
+            </ActionLink>
           </div>
         </div>
       )}
     </div>
+  );
+}
+
+function ActionLink({ to, children }) {
+  return (
+    <Link
+      to={to}
+      className="inline-flex min-h-9 items-center justify-center rounded-lg border border-brand-200 bg-brand-50 px-3.5 py-2 text-xs font-bold text-brand-700 shadow-sm transition-colors hover:border-brand-300 hover:bg-brand-100 dark:border-brand-500/20 dark:bg-brand-500/10 dark:text-brand-200 dark:hover:bg-brand-500/20"
+    >
+      {children}
+    </Link>
   );
 }
 

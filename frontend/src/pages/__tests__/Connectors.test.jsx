@@ -223,17 +223,14 @@ describe("Connectors", () => {
 
     renderConnectors();
 
-    const link = screen.getAllByRole("link", { name: "Connect Slack" })[0];
-    expect(link).toHaveAttribute("href", "/api/connectors/slack/install?workspace_id=ws_1");
+    const link = screen.getAllByRole("button", { name: "Connect to Slack" })[0];
+    expect(link).toBeInTheDocument();
     expect(screen.getByText("Not connected")).toBeInTheDocument();
     expect(screen.getByText("Slack is not connected yet.")).toBeInTheDocument();
-    expect(screen.getAllByRole("link", { name: "Connect Slack" })[1]).toHaveAttribute(
-      "href",
-      "/api/connectors/slack/install?workspace_id=ws_1",
-    );
+    expect(screen.getAllByRole("button", { name: "Connect to Slack" })[1]).toBeInTheDocument();
   });
 
-  it("keeps Connect Slack as the primary action when self-hosted config is missing", () => {
+  it("shows setup guidance when self-hosted config is missing", () => {
     mockConnectorsQuery({
       data: [
         {
@@ -255,16 +252,9 @@ describe("Connectors", () => {
     renderConnectors();
 
     expect(screen.getByText("Slack is not connected yet.")).toBeInTheDocument();
-    expect(screen.getAllByRole("link", { name: "Connect Slack" })[0]).toHaveAttribute(
-      "href",
-      "/api/connectors/slack/managed/install?workspace_id=ws_1",
-    );
-    expect(screen.getAllByRole("link", { name: "Connect Slack" })[1]).toHaveAttribute(
-      "href",
-      "/api/connectors/slack/managed/install?workspace_id=ws_1",
-    );
+    expect(screen.queryByRole("button", { name: "Connect to Slack" })).not.toBeInTheDocument();
+    expect(screen.getByText("Slack OAuth not configured")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Advanced self-hosted setup" })).toBeInTheDocument();
-    expect(screen.queryByText("Slack OAuth is not configured yet.")).not.toBeInTheDocument();
   });
 
   it("uses the managed Slack install path when available", async () => {
@@ -297,11 +287,11 @@ describe("Connectors", () => {
 
     renderConnectors();
 
-    const link = screen.getAllByRole("link", { name: "Connect Slack" })[1];
-    expect(link).toHaveAttribute("href", "/api/connectors/slack/managed/install?workspace_id=ws_1");
+    const link = screen.getAllByRole("button", { name: "Connect to Slack" })[1];
+    expect(link).toBeInTheDocument();
     await user.click(link);
-    expect(screen.getByText("Managed by Context Engine")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Continue to Slack Context Engine App" }));
+    expect(screen.getByText("Managed install")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Continue to Slack/ }));
     expect(window.open).toHaveBeenCalledWith(
       "/api/connectors/slack/managed/install?workspace_id=ws_1",
       "ce-slack-oauth",
@@ -933,9 +923,9 @@ describe("Connectors", () => {
 
     renderConnectors();
 
-    await userEvent.click(screen.getAllByRole("link", { name: "Connect Slack" })[1]);
-    expect(screen.getByText("Connect Slack Context Engine App")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Continue to Slack Context Engine App" }));
+    await userEvent.click(screen.getAllByRole("button", { name: "Connect to Slack" })[1]);
+    expect(screen.getByText("Connect Context Engine to Slack")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Continue to Slack/ }));
 
     expect(window.open).toHaveBeenCalledWith(
       "/api/connectors/slack/install?workspace_id=ws_1",
@@ -992,8 +982,8 @@ describe("Connectors", () => {
 
     renderConnectors();
 
-    await user.click(screen.getAllByRole("link", { name: "Connect Slack" })[1]);
-    await user.click(screen.getByRole("button", { name: "Continue to Slack Context Engine App" }));
+    await user.click(screen.getAllByRole("button", { name: "Connect to Slack" })[1]);
+    await user.click(screen.getByRole("button", { name: /Continue to Slack/ }));
     popup.closed = true;
 
     await act(async () => {

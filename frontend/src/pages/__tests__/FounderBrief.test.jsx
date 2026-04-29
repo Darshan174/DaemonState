@@ -183,7 +183,7 @@ describe("FounderBrief", () => {
   it("renders the founder brief workflow", () => {
     renderFounderBrief();
 
-    expect(screen.getByText("Brief")).toBeInTheDocument();
+    expect(screen.getByText("Workspace Brief")).toBeInTheDocument();
     expect(screen.getByText("Current picture")).toBeInTheDocument();
     expect(screen.getByText("What changed")).toBeInTheDocument();
     expect(screen.getByText("Needs attention")).toBeInTheDocument();

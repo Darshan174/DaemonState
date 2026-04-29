@@ -61,43 +61,43 @@ export default function FounderBrief() {
   const usesMockData = queries.some((query) => query.isMock) || engineeringQuery.isMock;
 
   return (
-    <div className="max-w-6xl mx-auto space-y-6">
+    <div className="max-w-6xl mx-auto space-y-7">
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
-            <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-300">Brief</h2>
+            <h2 className="text-3xl font-bold tracking-tight text-slate-950 dark:text-white">Workspace Brief</h2>
             {usesMockData && <MockBadge />}
           </div>
-          <p className="text-xs text-gray-400 mt-1">
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500 dark:text-slate-400">
             A live roll-up of current decisions, review pressure, connector risk, and accuracy pressure.
           </p>
         </div>
-        <div className="flex items-center gap-3 text-xs">
-          <Link to="/app/changes" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          <ActionButtonLink to="/app/changes">
             Open timeline
-          </Link>
-          <Link to="/app/decisions" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
+          </ActionButtonLink>
+          <ActionButtonLink to="/app/decisions">
             Open decision register
-          </Link>
+          </ActionButtonLink>
         </div>
       </div>
 
-      <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-5">
+      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700/70 dark:bg-slate-800">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-sm font-semibold text-gray-800 dark:text-gray-300">Current picture</p>
-            <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
+            <p className="text-base font-semibold text-slate-900 dark:text-slate-100">Current picture</p>
+            <p className="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-400">
               {brief.headline}
             </p>
           </div>
-          <p className="text-xs text-gray-400">Updated {formatDateTime(brief.generatedAt)}</p>
+          <p className="text-xs text-slate-400 dark:text-slate-500">Updated {formatDateTime(brief.generatedAt)}</p>
         </div>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricCard label="Changed facts" value={brief.changedFactCount} />
+        <MetricCard label="Changed facts" value={brief.changedFactCount} tone="blue" />
         <MetricCard label="New blockers" value={brief.newBlockerCount} tone="amber" />
-        <MetricCard label="Open conflicts" value={brief.openConflictCount} tone="amber" />
+        <MetricCard label="Open conflicts" value={brief.openConflictCount} tone="rose" />
         <MetricCard label="At-risk domains" value={brief.atRiskDomainCount} tone="slate" />
       </div>
 
@@ -307,11 +307,11 @@ function buildEngineeringSignals(items) {
 
 function Panel({ title, subtitle, action, children }) {
   return (
-    <section className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-5">
+    <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700/70 dark:bg-slate-800">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-400">{title}</h3>
-          <p className="mt-1 text-xs text-gray-400">{subtitle}</p>
+          <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">{title}</h3>
+          <p className="mt-1 text-sm leading-5 text-slate-500 dark:text-slate-400">{subtitle}</p>
         </div>
         {action}
       </div>
@@ -360,23 +360,33 @@ function EngineeringBriefRow({ item }) {
 
 function MetricCard({ label, value, tone = "default" }) {
   const tones = {
-    default: "border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 text-gray-800 dark:text-gray-300",
-    amber: "border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300",
-    rose: "border-rose-200 dark:border-rose-800/50 bg-rose-50 dark:bg-rose-900/30 text-rose-800 dark:text-rose-300",
-    slate: "border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 text-gray-800 dark:text-gray-300",
+    default: "border-slate-200 bg-white text-slate-900 dark:border-slate-700/70 dark:bg-slate-800 dark:text-slate-100",
+    blue: "border-sky-200 bg-sky-50 text-sky-900 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-200",
+    amber: "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200",
+    rose: "border-rose-200 bg-rose-50 text-rose-900 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-200",
+    slate: "border-slate-200 bg-slate-50 text-slate-900 dark:border-slate-700/70 dark:bg-slate-900/50 dark:text-slate-200",
   };
 
   return (
-    <div className={`rounded-xl border p-4 ${tones[tone] ?? tones.default}`}>
-      <p className="text-[11px] uppercase tracking-wide opacity-70">{label}</p>
+    <div className={`rounded-xl border p-4 shadow-sm ${tones[tone] ?? tones.default}`}>
+      <p className="text-[11px] font-bold uppercase tracking-wide opacity-75">{label}</p>
       <p className="mt-2 text-3xl font-semibold">{value}</p>
     </div>
   );
 }
 
 function LinkText({ to, children }) {
+  return <ActionButtonLink to={to} compact>{children}</ActionButtonLink>;
+}
+
+function ActionButtonLink({ to, children, compact = false }) {
   return (
-    <Link to={to} className="text-xs font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
+    <Link
+      to={to}
+      className={`inline-flex items-center justify-center rounded-lg border border-brand-200 bg-brand-50 font-bold text-brand-700 shadow-sm transition-colors hover:border-brand-300 hover:bg-brand-100 dark:border-brand-500/20 dark:bg-brand-500/10 dark:text-brand-200 dark:hover:bg-brand-500/20 ${
+        compact ? "px-3 py-1.5 text-xs" : "px-4 py-2 text-sm"
+      }`}
+    >
       {children}
     </Link>
   );
@@ -431,18 +441,18 @@ function ConflictBriefRow({ item }) {
 
 function RiskBriefRow({ item }) {
   return (
-    <div className="rounded-lg border border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30 px-4 py-3">
+    <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-500/20 dark:bg-amber-500/10">
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <p className="text-sm font-medium text-amber-800 dark:text-amber-300">{item.name}</p>
+            <p className="text-sm font-semibold text-amber-900 dark:text-amber-200">{item.name}</p>
             {item.reviewStatus && (
-              <span className="rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-400">
+              <span className="rounded-full bg-white/80 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
                 {item.reviewStatus}
               </span>
             )}
           </div>
-          <p className="mt-1 text-sm text-amber-700 dark:text-amber-400">{item.reason}</p>
+          <p className="mt-1 text-sm text-amber-800 dark:text-amber-200/80">{item.reason}</p>
         </div>
         <LinkText to="/app/review?status=needs_review">Inspect</LinkText>
       </div>

@@ -230,9 +230,9 @@ class TestSlackInstall:
         )
 
         assert resp.status_code == 302
-        assert resp.headers["location"] == (
-            f"https://connect.example/slack/install?workspace_id={workspace.id}"
-        )
+        location = resp.headers["location"]
+        assert location.startswith(f"https://connect.example/slack/install?workspace_id={workspace.id}")
+        assert "callback_url=" in location
 
     async def test_redirect_with_dashboard_saved_oauth_settings(
         self, client, workspace, db_session, monkeypatch

@@ -18,6 +18,7 @@ export default function Onboarding({ onComplete }) {
   const [step, setStep] = useState("choice"); // choice, demo, import, token
   const [importStatus, setImportStatus] = useState(null); // { status: 'idle' | 'uploading' | 'success' | 'error', message: string }
   const [files, setFiles] = useState([]);
+  const [demoStatus, setDemoStatus] = useState(null);
   
   const seedDemo = useSeedDemoData();
   const uploadFile = useUploadSourceFile();
@@ -25,13 +26,32 @@ export default function Onboarding({ onComplete }) {
 
   const handleRunDemo = () => {
     setStep("demo");
+    setDemoStatus(null);
     seedDemo.mutate({ workspaceId: selectedId }, {
       onSuccess: (data) => {
         if (data?.workspaceId) {
           setSelectedId(data.workspaceId);
-          onComplete?.();
+          setDemoStatus({
+            status: "success",
+            message:
+              data.status === "existing"
+                ? `${data.workspaceName || "Demo workspace"} is ready.`
+                : `${data.workspaceName || "Demo workspace"} was seeded with demo context.`,
+          });
+          window.setTimeout(() => onComplete?.(), 700);
+          return;
         }
-      }
+        setDemoStatus({
+          status: "error",
+          message: "The demo seed finished, but the backend did not return a workspace ID.",
+        });
+      },
+      onError: (err) => {
+        setDemoStatus({
+          status: "error",
+          message: err?.message || "Failed to seed the demo workspace.",
+        });
+      },
     });
   };
 
@@ -73,15 +93,54 @@ export default function Onboarding({ onComplete }) {
   };
 
   if (step === "demo") {
+    const isError = demoStatus?.status === "error";
+    const isSuccess = demoStatus?.status === "success";
+
     return (
       <div className="flex flex-col items-center justify-center py-12 text-center">
-        <div className="w-16 h-16 rounded-full bg-brand-50 dark:bg-brand-900/30 flex items-center justify-center mb-6">
-          <Loader2 className="w-8 h-8 text-brand-600 dark:text-brand-400 animate-spin" />
+        <div
+          className={`w-16 h-16 rounded-full flex items-center justify-center mb-6 ${
+            isError
+              ? "bg-red-50 text-red-600 dark:bg-red-950/40 dark:text-red-300"
+              : isSuccess
+                ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-300"
+                : "bg-brand-50 text-brand-600 dark:bg-brand-900/30 dark:text-brand-400"
+          }`}
+        >
+          {isError ? (
+            <AlertCircle className="w-8 h-8" />
+          ) : isSuccess ? (
+            <CheckCircle2 className="w-8 h-8" />
+          ) : (
+            <Loader2 className="w-8 h-8 animate-spin" />
+          )}
         </div>
-        <h2 className="text-xl font-bold text-slate-900 dark:text-slate-200">Seeding Demo Workspace</h2>
-        <p className="mt-2 text-slate-500 max-w-sm">
-          We're setting up a realistic startup environment with Slack threads, Notion docs, and Zoom transcripts.
+        <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100">
+          {isError ? "Demo seed failed" : isSuccess ? "Demo workspace ready" : "Seeding Demo Workspace"}
+        </h2>
+        <p className="mt-2 text-slate-500 dark:text-slate-400 max-w-sm">
+          {demoStatus?.message ||
+            "We're setting up a realistic startup environment with Slack threads, Notion docs, and Zoom transcripts."}
         </p>
+        {isError && (
+          <div className="mt-6 flex flex-wrap justify-center gap-3">
+            <button
+              type="button"
+              onClick={handleRunDemo}
+              className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-brand-500/20 transition-colors hover:bg-brand-500"
+            >
+              Try again
+              <ArrowRight className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setStep("choice")}
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200 dark:hover:bg-slate-800"
+            >
+              Back to options
+            </button>
+          </div>
+        )}
       </div>
     );
   }
@@ -212,10 +271,16 @@ export default function Onboarding({ onComplete }) {
 }
 
 function OnboardingCard({ icon, title, description, action, onClick, to, color }) {
+  const iconBackground = {
+    emerald: "bg-emerald-50 dark:bg-emerald-950/40",
+    brand: "bg-brand-50 dark:bg-brand-900/30",
+    amber: "bg-amber-50 dark:bg-amber-950/40",
+  }[color] ?? "bg-slate-50 dark:bg-slate-900/40";
+
   const CardContent = (
-    <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 p-6 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-800/50 rounded-[24px] hover:border-brand-300 hover:shadow-xl hover:shadow-brand-500/5 transition-all group">
+    <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 p-6 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700/70 rounded-[24px] hover:border-brand-300 dark:hover:border-brand-600 hover:shadow-xl hover:shadow-brand-500/5 transition-all group">
       <div className="flex items-start gap-5">
-        <div className={`w-14 h-14 rounded-2xl bg-${color}-50 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform`}>
+        <div className={`w-14 h-14 rounded-2xl ${iconBackground} flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform`}>
           {icon}
         </div>
         <div>

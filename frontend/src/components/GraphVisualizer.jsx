@@ -412,6 +412,9 @@ export default function GraphVisualizer({
           <pattern id="graph-grid" width="36" height="36" patternUnits="userSpaceOnUse">
             <path d="M 36 0 L 0 0 0 36" fill="none" stroke="#e2e8f0" strokeWidth="0.7" />
           </pattern>
+          <pattern id="graph-grid-dark" width="36" height="36" patternUnits="userSpaceOnUse">
+            <path d="M 36 0 L 0 0 0 36" fill="none" stroke="#334155" strokeOpacity="0.32" strokeWidth="0.55" />
+          </pattern>
           <filter id="node-shadow" x="-35%" y="-35%" width="170%" height="170%">
             <feDropShadow dx="0" dy="10" stdDeviation="8" floodColor="#0f172a" floodOpacity="0.14" />
           </filter>
@@ -423,11 +426,32 @@ export default function GraphVisualizer({
         </defs>
 
         <rect
+          className="dark:hidden"
           x="0"
           y="0"
           width={CANVAS.width}
           height={CANVAS.height}
           fill="url(#graph-grid)"
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            onNodeSelect?.(null);
+            setDraggingCanvas({
+              clientX: event.clientX,
+              clientY: event.clientY,
+              width: event.currentTarget.getBoundingClientRect().width,
+              height: event.currentTarget.getBoundingClientRect().height,
+              originX: pan.x,
+              originY: pan.y,
+            });
+          }}
+        />
+        <rect
+          className="hidden dark:block"
+          x="0"
+          y="0"
+          width={CANVAS.width}
+          height={CANVAS.height}
+          fill="url(#graph-grid-dark)"
           onPointerDown={(event) => {
             if (event.button !== 0) return;
             onNodeSelect?.(null);
