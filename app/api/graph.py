@@ -1,149 +1,123 @@
 from __future__ import annotations
 
+import json
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db_session
-from app.models.knowledge import RelationshipType
-from app.schemas.knowledge import GraphResponse
-from app.schemas.graph import GraphEdgeRead, GraphNeighborhoodResponse, GraphNodeRead
-from app.services.knowledge_service import KnowledgeService, ResourceNotFoundError
-
+from app.models import Component, Model, Relationship
 
 router = APIRouter()
 
 
-def get_knowledge_service(session: AsyncSession = Depends(get_db_session)) -> KnowledgeService:
-    return KnowledgeService(session)
+class ModelRead(BaseModel):
+    id: UUID
+    name: str
+    description: str | None
+    component_count: int = 0
+
+    class Config:
+        from_attributes = True
+
+
+class ComponentRead(BaseModel):
+    id: UUID
+    model_id: UUID
+    model_name: str | None = None
+    name: str
+    value: str
+    fact_type: str
+    confidence: float
+    authority_weight: float
+    status: str
+    source_document_id: UUID | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class RelationshipRead(BaseModel):
+    id: UUID
+    source_component_id: UUID
+    target_component_id: UUID
+    relationship_type: str
+
+    class Config:
+        from_attributes = True
+
+
+class GraphResponse(BaseModel):
+    models: list[ModelRead]
+    components: list[ComponentRead]
+    relationships: list[RelationshipRead]
 
 
 @router.get("/graph", response_model=GraphResponse)
-async def get_workspace_graph(
-    workspace_id: UUID,
-    include_historical: bool = Query(default=False),
-    relationship_types: list[RelationshipType] | None = Query(default=None),
-    service: KnowledgeService = Depends(get_knowledge_service),
+async def get_graph(
+    model_id: UUID | None = None,
+    session: AsyncSession = Depends(get_db_session),
 ) -> GraphResponse:
-    try:
-        return await service.get_workspace_graph(
-            workspace_id,
-            include_historical=include_historical,
-            relationship_types=relationship_types,
-        )
-    except ResourceNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(exc),
-        ) from exc
+    model_stmt = select(Model).order_by(Model.name)
+    if model_id:
+        model_stmt = model_stmt.where(Model.id == model_id)
+    models = list(await session.scalars(model_stmt))
 
-
-@router.get("/graph/models/{model_id}", response_model=GraphResponse)
-async def get_model_graph(
-    model_id: UUID,
-    include_historical: bool = Query(default=False),
-    relationship_types: list[RelationshipType] | None = Query(default=None),
-    service: KnowledgeService = Depends(get_knowledge_service),
-) -> GraphResponse:
-    try:
-        return await service.get_model_graph(
-            model_id,
-            include_historical=include_historical,
-            relationship_types=relationship_types,
-        )
-    except ResourceNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(exc),
-        ) from exc
-
-
-@router.get("/graph/components/{component_id}", response_model=GraphResponse)
-async def get_component_graph(
-    component_id: UUID,
-    depth: int = Query(default=1, ge=1, le=5),
-    include_historical: bool = Query(default=False),
-    relationship_types: list[RelationshipType] | None = Query(default=None),
-    service: KnowledgeService = Depends(get_knowledge_service),
-) -> GraphResponse:
-    try:
-        return await service.get_component_graph(
-            component_id,
-            depth=depth,
-            include_historical=include_historical,
-            relationship_types=relationship_types,
-        )
-    except ResourceNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(exc),
-        ) from exc
-
-
-@router.get(
-    "/graph/neighborhood/{node_id}",
-    response_model=GraphNeighborhoodResponse,
-)
-async def get_neighborhood(
-    node_id: UUID,
-    depth: int = Query(default=1, ge=1, le=5),
-    include_historical: bool = Query(default=False),
-    relationship_types: list[RelationshipType] | None = Query(default=None),
-    service: KnowledgeService = Depends(get_knowledge_service),
-) -> GraphNeighborhoodResponse:
-    """Return the local-neighborhood subgraph around a component node."""
-    try:
-        graph = await service.get_component_graph(
-            node_id,
-            depth=depth,
-            include_historical=include_historical,
-            relationship_types=relationship_types,
-        )
-    except ResourceNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
-
-    return GraphNeighborhoodResponse(
-        root_id=node_id,
-        depth=depth,
-        include_historical=include_historical,
-        nodes=[
-            GraphNodeRead(
-                id=node.id,
-                name=node.name,
-                value=node.value,
-                confidence=node.confidence,
-                authority_weight=node.authority_weight,
-                authority_source=node.authority_source,
-                model_id=node.model_id,
-                model_name=node.model_name,
-                review_status=node.review_status,
-                temporal_state=node.temporal_state,
-                is_stale=node.is_stale,
-                valid_from=node.valid_from,
-                valid_to=node.valid_to,
-                source_count=node.source_count,
-                created_at=node.last_verified_at,
-                updated_at=node.last_verified_at,
-            )
-            for node in graph.nodes
-        ],
-        edges=[
-            GraphEdgeRead(
-                id=edge.id,
-                source_id=edge.source_component_id,
-                target_id=edge.target_component_id,
-                relationship_type=edge.relationship_type,
-                sentiment=edge.sentiment,
-                description=edge.description,
-                confidence=edge.confidence,
-                temporal_state=edge.temporal_state,
-                valid_from=edge.valid_from,
-                valid_to=edge.valid_to,
-                created_at=edge.valid_from,
-            )
-            for edge in graph.edges
-        ],
+    comp_stmt = (
+        select(Component)
+        .options(selectinload(Component.model))
+        .where(Component.status.in_(["active", "needs_review"]))
+        .order_by(Component.created_at.desc())
     )
+    if model_id:
+        comp_stmt = comp_stmt.where(Component.model_id == model_id)
+    components = list(await session.scalars(comp_stmt))
+
+    comp_ids = {c.id for c in components}
+    rel_stmt = select(Relationship).where(
+        Relationship.source_component_id.in_(comp_ids),
+        Relationship.target_component_id.in_(comp_ids),
+    )
+    relationships = list(await session.scalars(rel_stmt))
+
+    model_counts: dict[UUID, int] = {}
+    for c in components:
+        model_counts[c.model_id] = model_counts.get(c.model_id, 0) + 1
+
+    return GraphResponse(
+        models=[ModelRead(
+            id=m.id, name=m.name, description=m.description,
+            component_count=model_counts.get(m.id, 0),
+        ) for m in models],
+        components=[ComponentRead(
+            id=c.id, model_id=c.model_id,
+            model_name=c.model.name if c.model else None,
+            name=c.name, value=c.value, fact_type=c.fact_type,
+            confidence=c.confidence, authority_weight=c.authority_weight,
+            status=c.status, source_document_id=c.source_document_id,
+        ) for c in components],
+        relationships=[RelationshipRead(
+            id=r.id, source_component_id=r.source_component_id,
+            target_component_id=r.target_component_id,
+            relationship_type=r.relationship_type,
+        ) for r in relationships],
+    )
+
+
+@router.patch("/components/{component_id}")
+async def update_component_status(
+    component_id: UUID,
+    status: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    component = await session.get(Component, component_id)
+    if component is None:
+        raise HTTPException(status_code=404, detail="Component not found")
+    component.status = status
+    await session.flush()
+    await session.commit()
+    return {"id": str(component.id), "status": component.status}

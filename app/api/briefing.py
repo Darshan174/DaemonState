@@ -1,68 +1,64 @@
 from __future__ import annotations
 
-from uuid import UUID
+from datetime import datetime, timezone, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db_session
-from app.schemas.briefing import (
-    FounderBriefRead,
-    LaunchGuardRead,
-    LaunchGuardRequest,
-    TimelineRead,
-)
-from app.services.briefing_service import BriefingService, BriefingWorkspaceNotFoundError
-
+from app.models import Component, Model
 
 router = APIRouter()
 
 
-def get_briefing_service(session: AsyncSession = Depends(get_db_session)) -> BriefingService:
-    return BriefingService(session)
+class BriefingComponent(BaseModel):
+    id: str
+    model_name: str
+    name: str
+    value: str
+    confidence: float
+    status: str
+    created_at: datetime | None = None
 
 
-@router.get("/founder-brief", response_model=FounderBriefRead)
-async def get_founder_brief(
-    workspace_id: UUID,
-    lookback_days: int = Query(default=7, ge=1, le=90),
-    service: BriefingService = Depends(get_briefing_service),
-) -> FounderBriefRead:
-    try:
-        return await service.build_founder_brief(
-            workspace_id=workspace_id,
-            lookback_days=lookback_days,
+class BriefingResponse(BaseModel):
+    recent_components: list[BriefingComponent]
+    needs_review: list[BriefingComponent]
+    stale: list[BriefingComponent]
+
+
+@router.get("/briefing", response_model=BriefingResponse)
+async def get_briefing(
+    days: int = 7,
+    session: AsyncSession = Depends(get_db_session),
+) -> BriefingResponse:
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    all_components = list(await session.scalars(
+        select(Component)
+        .options(selectinload(Component.model))
+        .where(Component.status.in_(["active", "needs_review", "stale"]))
+        .order_by(Component.created_at.desc())
+    ))
+
+    recent = [c for c in all_components if c.created_at and c.created_at >= since]
+    needs_review = [c for c in all_components if c.status == "needs_review"]
+    stale = [c for c in all_components if c.status == "stale"]
+
+    def serialize(c: Component) -> BriefingComponent:
+        return BriefingComponent(
+            id=str(c.id),
+            model_name=c.model.name if c.model else "Unknown",
+            name=c.name, value=c.value,
+            confidence=c.confidence, status=c.status,
+            created_at=c.created_at,
         )
-    except BriefingWorkspaceNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
-
-@router.get("/timeline", response_model=TimelineRead)
-async def get_timeline(
-    workspace_id: UUID,
-    limit: int = Query(default=50, ge=1, le=200),
-    cursor: str | None = Query(default=None),
-    service: BriefingService = Depends(get_briefing_service),
-) -> TimelineRead:
-    try:
-        return await service.build_timeline(
-            workspace_id=workspace_id,
-            limit=limit,
-            cursor=cursor,
-        )
-    except BriefingWorkspaceNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-
-
-@router.post("/launch-guard/check", response_model=LaunchGuardRead)
-async def run_launch_guard(
-    payload: LaunchGuardRequest,
-    service: BriefingService = Depends(get_briefing_service),
-) -> LaunchGuardRead:
-    try:
-        return await service.run_launch_guard(
-            workspace_id=payload.workspace_id,
-            draft=payload.draft,
-        )
-    except BriefingWorkspaceNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return BriefingResponse(
+        recent_components=[serialize(c) for c in recent[:20]],
+        needs_review=[serialize(c) for c in needs_review[:20]],
+        stale=[serialize(c) for c in stale[:20]],
+    )

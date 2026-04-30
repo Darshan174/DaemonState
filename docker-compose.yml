@@ -6,4 +6,4 @@ services:
     volumes:
       - ./data:/data
     environment:
-      - DATABASE_URL=sqlite:///data/context.db
+      - DATABASE_URL=sqlite+aiosqlite:///data/context.db

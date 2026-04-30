@@ -1,1 +1,0 @@
-"""Evaluation harnesses and fixtures."""
