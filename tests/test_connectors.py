@@ -77,11 +77,21 @@ class TestConnectorCatalog:
         assert "connectors" in data
         assert "setupStatus" in data
         types = [c["type"] for c in data["connectors"]]
-        assert "slack" in types
-        assert "discord" in types
-        assert "gmail" in types
-        assert "ai_context" in types
-        assert "local" in types
+        for expected in ["slack", "discord", "ai_context", "local", "zoom", "gdrive", "gmail", "wispr_flow"]:
+            assert expected in types, f"Missing {expected} in connector catalog"
+
+    async def test_catalog_matches_frontend_descriptions(self, client):
+        response = await client.get("/api/connectors")
+        assert response.status_code == 200
+        data = response.json()
+        by_type = {c["type"]: c for c in data["connectors"]}
+
+        assert by_type["discord"]["description"] == "Server channels, threads, and community context"
+        assert by_type["ai_context"]["description"] == "Codex, Claude Code, OpenCode, plans, diffs, and review notes"
+        assert by_type["local"]["description"] == "Uploaded Markdown, text, JSON, CSV, and other local documents"
+        assert by_type["zoom"]["name"] == "Zoom"
+        assert by_type["gdrive"]["name"] == "Google Drive"
+        assert by_type["wispr_flow"]["name"] == "Wispr Flow"
 
     async def test_connector_response_has_frontend_shape(self, client):
         response = await client.get("/api/connectors")
@@ -114,17 +124,17 @@ class TestConnectorCatalog:
             assert "status" in connector
             assert "provider" in connector
             assert "is_configured" in connector
+            assert "connector_type" in connector
 
     async def test_coming_soon_connectors_are_honest(self, client):
         response = await client.get("/api/connectors")
         assert response.status_code == 200
         data = response.json()
-        discord = next(c for c in data["connectors"] if c["type"] == "discord")
-        gmail = next(c for c in data["connectors"] if c["type"] == "gmail")
-        assert discord["availability"] == "coming_soon"
-        assert gmail["availability"] == "coming_soon"
-        assert discord["status"] == "disconnected"
-        assert gmail["status"] == "disconnected"
+        for t in ["discord", "zoom", "gdrive", "gmail", "wispr_flow"]:
+            entry = next(c for c in data["connectors"] if c["type"] == t)
+            assert entry["availability"] == "coming_soon"
+            assert entry["status"] == "disconnected"
+            assert entry["is_configured"] is False
 
     async def test_ai_context_shows_as_connected(self, client):
         response = await client.get("/api/connectors")
@@ -169,18 +179,17 @@ class TestConnectorSetupStatus:
         assert response.status_code == 200
         data = response.json()
         types = [s["connector_type"] for s in data]
-        assert "slack" in types
-        assert "discord" in types
-        assert "gmail" in types
-        assert "ai_context" in types
+        for expected in ["slack", "discord", "gmail", "ai_context", "local", "zoom", "gdrive", "wispr_flow"]:
+            assert expected in types, f"Missing {expected} in setup status"
 
     async def test_coming_soon_not_configured(self, client):
         response = await client.get("/api/connectors/setup-status")
         assert response.status_code == 200
         data = response.json()
-        discord = next(s for s in data if s["connector_type"] == "discord")
-        assert discord["configured"] is False
-        assert discord["status"] == "coming_soon"
+        for t in ["discord", "zoom", "gdrive", "gmail", "wispr_flow"]:
+            entry = next(s for s in data if s["connector_type"] == t)
+            assert entry["configured"] is False
+            assert entry["status"] == "coming_soon"
 
     async def test_ai_context_configured(self, client):
         response = await client.get("/api/connectors/setup-status")
@@ -206,6 +215,27 @@ class TestConnectorConnect:
         )
         assert response.status_code == 400
         assert "not" in response.json()["detail"].lower() or "unsupported" in response.json()["detail"].lower()
+
+    async def test_connect_zoom_returns_400_coming_soon(self, client):
+        response = await client.post(
+            "/api/connectors/zoom/connect",
+            json={"config": {}},
+        )
+        assert response.status_code == 400
+
+    async def test_connect_gdrive_returns_400_coming_soon(self, client):
+        response = await client.post(
+            "/api/connectors/gdrive/connect",
+            json={"config": {}},
+        )
+        assert response.status_code == 400
+
+    async def test_connect_wispr_flow_returns_400_coming_soon(self, client):
+        response = await client.post(
+            "/api/connectors/wispr_flow/connect",
+            json={"config": {}},
+        )
+        assert response.status_code == 400
 
     async def test_connect_unknown_type_returns_404(self, client):
         response = await client.post(
@@ -564,11 +594,10 @@ class TestProcessingSummary:
         assert response.status_code == 200
         data = response.json()
         types_present = {item["connector_type"] for item in data["items"]}
-        assert "slack" in types_present
-        assert "discord" in types_present
-        assert "ai_context" in types_present
+        for expected in ["slack", "discord", "ai_context", "local", "zoom", "gdrive", "gmail", "wispr_flow"]:
+            assert expected in types_present, f"Missing {expected} in processing summary"
         for item in data["items"]:
-            if item["connector_type"] in ("discord", "gmail"):
+            if item["connector_type"] in ("discord", "gmail", "zoom", "gdrive", "wispr_flow"):
                 assert item["total_documents"] == 0
 
 

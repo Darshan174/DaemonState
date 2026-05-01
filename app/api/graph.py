@@ -160,6 +160,7 @@ class StatsResponse(BaseModel):
     relationships: int
     sources: int
     pending_review: int
+    proposed: int
     stale: int
 
 
@@ -176,6 +177,9 @@ async def get_stats(
     pending = await session.scalar(
         select(func.count(Component.id)).where(Component.status == "needs_review")
     )
+    proposed = await session.scalar(
+        select(func.count(Component.id)).where(Component.status == "proposed")
+    )
     stale = await session.scalar(
         select(func.count(Component.id)).where(Component.status == "stale")
     )
@@ -185,6 +189,7 @@ async def get_stats(
         relationships=relationships or 0,
         sources=sources or 0,
         pending_review=pending or 0,
+        proposed=proposed or 0,
         stale=stale or 0,
     )
 

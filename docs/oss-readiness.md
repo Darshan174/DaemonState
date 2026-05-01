@@ -37,9 +37,10 @@ Latest verified result:
 
 ### P1
 
-- Connector catalog must stay aligned across backend and frontend. Current frontend now includes the implemented `ai_context`, `local`, and `discord` types, and marks Zoom as coming soon, but this needs ongoing review whenever connector types change.
+- **Connector catalog mismatch.** Backend catalog has 5 types: `slack`, `discord`, `gmail`, `ai_context`, `local`. Frontend catalog has 8 types: `slack`, `discord`, `ai_context`, `local`, `zoom`, `gdrive`, `gmail`, `wispr_flow`. Three frontend types (`zoom`, `gdrive`, `wispr_flow`) have no backend catalog entry and no connect endpoint. The `normalizeConnectors` function falls back to `coming_soon` for missing backend records, so the UI renders them, but they will never work until backend entries exist.
+- **Slack availability is misleading.** Backend sets `"availability": "available"` but `"supported": False` for Slack. The connect endpoint returns 400, but the UI shows Slack as "available" rather than "coming_soon". Discord correctly uses `"availability": "coming_soon"` with `"supported": False`. Slack should use the same pattern to avoid user confusion.
+- **Frontend hooks for nonexistent endpoints.** `hooks.js` defines `useConnectNotion` (POST `/connectors/notion/connect`), `useConnectZoom` (POST `/connectors/zoom/connect`), `useConnectGitHub` (POST `/connectors/github/connect`), and `useSaveSlackOAuthSettings` (POST `/connectors/slack/oauth-settings`). None of these endpoints exist in `app/api/connectors.py`. If these hooks are reachable from the UI, they will always fail with 404/405.
 - Public docs need to mention the connector tables and avoid saying external providers are implemented.
-- Frontend still has hook functions for future providers such as Notion, Zoom, GitHub, and Slack OAuth settings. Those should remain unreachable or disabled until backend support exists.
 
 ### P2
 
@@ -61,18 +62,53 @@ Six SQLAlchemy tables are currently defined:
 
 ## Connector Status
 
-Implemented:
+### Backend Catalog (app/api/connectors.py lines 19-85)
+
+| Type | availability | supported | Notes |
+|------|-------------|-----------|-------|
+| slack | available | False | Misleading: shows "available" but connect returns 400 |
+| discord | coming_soon | False | Honest: shows as coming soon |
+| gmail | coming_soon | False | Honest: shows as coming soon |
+| ai_context | available | True | Working: import endpoint tested |
+| local | available | True | Working: sources upload |
+
+### Frontend Catalog (hooks.js lines 73-154)
+
+| Type | availability | In Backend? |
+|------|-------------|-------------|
+| slack | available | Yes |
+| discord | coming_soon | Yes |
+| ai_context | available | Yes |
+| local | available | Yes |
+| zoom | coming_soon | **No** — no backend catalog entry |
+| gdrive | coming_soon | **No** — no backend catalog entry |
+| gmail | coming_soon | Yes |
+| wispr_flow | coming_soon | **No** — no backend catalog entry |
+
+### Frontend Hooks Without Backend Endpoints
+
+| Hook | Endpoint | Status |
+|------|----------|--------|
+| useConnectNotion | POST /connectors/notion/connect | No backend endpoint |
+| useConnectZoom | POST /connectors/zoom/connect | No backend endpoint |
+| useConnectGitHub | POST /connectors/github/connect | No backend endpoint |
+| useSaveSlackOAuthSettings | POST /connectors/slack/oauth-settings | No backend endpoint |
+
+### Implemented
 
 - Local source upload through Sources.
 - AI Context import through `/api/connectors/ai-context/import`.
 - Connector catalog/status/sync-job contract.
+- Slack connect rejection (returns 400 because `supported: False`).
 
-Not implemented yet:
+### Not Implemented Yet
 
 - Slack OAuth and Slack sync.
 - Discord sync.
 - Gmail OAuth and sync.
 - Zoom, Google Drive, Notion, GitHub, and Wispr provider backends.
+- Notion, Zoom, GitHub connect endpoints (hooks exist in frontend but no backend).
+- Slack OAuth settings endpoint (hook exists in frontend but no backend).
 
 ## Evidence Files
 

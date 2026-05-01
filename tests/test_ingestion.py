@@ -536,7 +536,7 @@ class TestRelationshipEvidence:
 
 
 class TestCrossModelTargetResolution:
-    async def test_finds_target_across_models_by_confidence(self, db_session):
+    async def test_prefers_same_model_target_over_cross_model(self, db_session):
         model_a = Model(id=uuid4(), name="Pricing")
         model_b = Model(id=uuid4(), name="Security")
         db_session.add_all([model_a, model_b])
@@ -549,12 +549,12 @@ class TestCrossModelTargetResolution:
         db_session.add(doc)
         await db_session.flush()
 
-        target_high = Component(
+        target_cross = Component(
             id=uuid4(), model_id=model_b.id, source_document_id=doc.id,
             name="Enterprise readiness", value="Enterprise is ready",
             fact_type="fact", confidence=0.9, status="active",
         )
-        target_low = Component(
+        target_same = Component(
             id=uuid4(), model_id=model_a.id, source_document_id=doc.id,
             name="Enterprise readiness", value="Enterprise is almost ready",
             fact_type="fact", confidence=0.6, status="active",
@@ -564,7 +564,7 @@ class TestCrossModelTargetResolution:
             name="Enterprise pricing $500/mo", value="Enterprise tier",
             fact_type="fact", confidence=0.8, status="active",
         )
-        db_session.add_all([target_high, target_low, source])
+        db_session.add_all([target_cross, target_same, source])
         await db_session.flush()
 
         svc = IngestionService(db_session)
@@ -579,7 +579,47 @@ class TestCrossModelTargetResolution:
             select(Relationship).where(Relationship.source_component_id == source.id)
         )).all()
         assert len(rels) == 1
-        assert rels[0].target_component_id == target_high.id
+        assert rels[0].target_component_id == target_same.id
+
+    async def test_falls_back_to_cross_model_when_no_same_model_match(self, db_session):
+        model_a = Model(id=uuid4(), name="Pricing")
+        model_b = Model(id=uuid4(), name="Security")
+        db_session.add_all([model_a, model_b])
+        await db_session.flush()
+
+        doc = SourceDocument(
+            id=uuid4(), source_type="local", external_id="cross-fallback",
+            content="Pricing depends on SOC2.", metadata_json="{}",
+        )
+        db_session.add(doc)
+        await db_session.flush()
+
+        target_cross = Component(
+            id=uuid4(), model_id=model_b.id, source_document_id=doc.id,
+            name="SOC2 certification", value="SOC2 required",
+            fact_type="fact", confidence=0.85, status="active",
+        )
+        source = Component(
+            id=uuid4(), model_id=model_a.id, source_document_id=doc.id,
+            name="Enterprise pricing", value="Enterprise tier",
+            fact_type="fact", confidence=0.8, status="active",
+        )
+        db_session.add_all([target_cross, source])
+        await db_session.flush()
+
+        svc = IngestionService(db_session)
+        rel = ExtractedRelationship(
+            target_name="SOC2 certification",
+            relationship_type="depends_on",
+            confidence=0.85,
+        )
+        await svc._create_relationship(source, rel)
+
+        rels = (await db_session.scalars(
+            select(Relationship).where(Relationship.source_component_id == source.id)
+        )).all()
+        assert len(rels) == 1
+        assert rels[0].target_component_id == target_cross.id
 
     async def test_creates_same_model_relationship_when_target_in_same_model(self, db_session):
         model = Model(id=uuid4(), name="Features")

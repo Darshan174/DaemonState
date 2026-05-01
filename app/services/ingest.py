@@ -110,6 +110,7 @@ class IngestionService:
 
         target = await self.session.scalar(
             select(Component).where(
+                Component.model_id == source.model_id,
                 Component.name == target_name,
                 Component.id != source.id,
                 Component.status.in_(["active", "needs_review", "proposed"]),
@@ -118,11 +119,10 @@ class IngestionService:
         if target is None:
             target = await self.session.scalar(
                 select(Component).where(
-                    Component.model_id == source.model_id,
                     Component.name == target_name,
                     Component.id != source.id,
                     Component.status.in_(["active", "needs_review", "proposed"]),
-                ).limit(1)
+                ).order_by(Component.confidence.desc()).limit(1)
             )
 
         if target is None:

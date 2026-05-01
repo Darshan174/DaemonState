@@ -260,6 +260,30 @@ class TestStatsEndpoint:
         )
         assert resp.status_code == 200
 
+    async def test_stats_counts_proposed_components(self, client, db_session):
+        model = Model(id=uuid4(), name="Roadmap")
+        doc = SourceDocument(
+            id=uuid4(), source_type="local", external_id="stats-proposed",
+            content="Content.", metadata_json="{}",
+        )
+        active = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="Active", value="Active", fact_type="fact",
+            confidence=0.8, status="active",
+        )
+        proposed = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="Planned", value="Planned", fact_type="fact",
+            confidence=0.7, status="proposed",
+        )
+        db_session.add_all([model, doc, active, proposed])
+        await db_session.flush()
+
+        resp = await client.get("/api/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["proposed"] >= 1
+
 
 class TestTimelineEndpoint:
     async def test_timeline_returns_events(self, client, db_session):
@@ -404,3 +428,74 @@ class TestProposedComponentVisibility:
         assert comp["source_type"] == "slack"
         assert comp["source_url"] == "https://slack.com/archives/C02/plan"
         assert comp["source_document_id"] is not None
+
+
+class TestProposedRelationshipsInGraph:
+    async def test_graph_includes_relationships_with_proposed_components(self, client, db_session):
+        model = Model(id=uuid4(), name="Roadmap")
+        doc = SourceDocument(
+            id=uuid4(), source_type="local", external_id="rel-proposed",
+            content="SSO depends on OAuth2 (planned).", metadata_json="{}",
+        )
+        active = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="SSO support", value="SSO module",
+            fact_type="fact", confidence=0.8, status="active",
+        )
+        proposed = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="OAuth2 (planned)", value="Will ship Q4",
+            fact_type="fact", confidence=0.7, status="proposed",
+        )
+        rel = Relationship(
+            id=uuid4(), source_component_id=active.id,
+            target_component_id=proposed.id,
+            relationship_type="depends_on",
+            confidence=0.85,
+            evidence="SSO depends on OAuth2 (planned)",
+        )
+        db_session.add_all([model, doc, active, proposed, rel])
+        await db_session.flush()
+
+        resp = await client.get("/api/graph")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        rels = data["relationships"]
+        assert len(rels) == 1
+        assert rels[0]["relationship_type"] == "depends_on"
+        assert rels[0]["confidence"] == 0.85
+        assert rels[0]["evidence"] == "SSO depends on OAuth2 (planned)"
+
+    async def test_graph_excludes_relationships_to_stale_components(self, client, db_session):
+        model = Model(id=uuid4(), name="Test")
+        doc = SourceDocument(
+            id=uuid4(), source_type="local", external_id="rel-stale",
+            content="Content.", metadata_json="{}",
+        )
+        active = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="Active", value="Active", fact_type="fact",
+            confidence=0.8, status="active",
+        )
+        stale = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="Stale", value="Old", fact_type="fact",
+            confidence=0.3, status="stale",
+        )
+        rel = Relationship(
+            id=uuid4(), source_component_id=active.id,
+            target_component_id=stale.id,
+            relationship_type="related_to",
+            confidence=0.7,
+        )
+        db_session.add_all([model, doc, active, stale, rel])
+        await db_session.flush()
+
+        resp = await client.get("/api/graph")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert len(data["components"]) == 1
+        assert data["components"][0]["status"] == "active"
+        assert len(data["relationships"]) == 0
