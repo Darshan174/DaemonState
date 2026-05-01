@@ -79,7 +79,7 @@ Context Engine's philosophy: facts should be structured, answers should cite sou
 ctxe serve
 
 # Ingest
-cdxe ingest ./docs/
+ctxe ingest ./docs/
 
 # Query
 ctxe query "What is our pricing?"

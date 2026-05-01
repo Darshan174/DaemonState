@@ -85,16 +85,17 @@ cd frontend && npm run dev
 ## Data Model
 
 ```
-Model ──► Component ──► Relationship
-  ▲          ▲
-  └──────────┘
-SourceDocument
+SourceDocument ──► Component ◄── Model
+                       │
+                       ▼
+                  Relationship
+                  (source → target)
 ```
 
+- **SourceDocument**: Raw ingested content with provenance (source type, author, URL)
 - **Model**: Product domain (Pricing, Features, Roadmap, Decisions)
-- **Component**: Atomic fact with name, value, confidence, status
-- **Relationship**: Typed edge between components
-- **SourceDocument**: Raw ingested content with provenance
+- **Component**: Atomic fact with name, value, confidence, status; linked to one Model and one SourceDocument
+- **Relationship**: Typed edge between two Components (e.g., `depends_on`, `blocked_by`, `enables`)
 
 ## Deployment
 
