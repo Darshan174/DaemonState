@@ -20,7 +20,6 @@ from mcp.types import TextContent, Tool
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
-from app.config import settings
 from app.database import AsyncSessionLocal
 from app.models import Component, Model, Relationship, SourceDocument
 from app.processing.embedder import HashingEmbedder, cosine_similarity

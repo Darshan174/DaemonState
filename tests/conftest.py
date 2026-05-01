@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import json
 from uuid import uuid4
 
 import pytest
@@ -14,7 +13,6 @@ from app.database import get_db_session
 from app.main import app
 from app.models import Base
 from app.processing.embedder import HashingEmbedder
-from app.processing.extractor import Extractor
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",

@@ -48,12 +48,14 @@ Context Engine's philosophy: facts should be structured, answers should cite sou
 
 ## Data Model
 
-4 tables:
+6 tables:
 
 - **SourceDocument** — Raw ingested content with metadata
 - **Model** — Product domain (Pricing, Features, Roadmap, Decisions)
 - **Component** — Atomic structured fact with confidence, status, embedding
 - **Relationship** — Typed edge between components
+- **Connector** — Catalogued or configured ingestion surface
+- **SyncJob** — Connector sync attempt and status record
 
 ## Processing Pipeline
 
@@ -92,7 +94,7 @@ ctxe mcp
 
 - **Graph-first** — Relationships are first-class, not afterthoughts
 - **Self-host first** — Single container, zero external dependencies by default
-- **Minimal but impactful** — 4 tables, 3 views, 1 process
+- **Minimal but impactful** — 6 tables, focused views, 1 process
 - **Source-backed** — Every fact links to its origin document
 - **MCP-native** — Built-in Model Context Protocol server for AI assistants
 
@@ -111,7 +113,7 @@ Stable:
 app/
   api/          FastAPI routes (sources, graph, query)
   cli/          CLI commands (ingest, query, graph, mcp)
-  models.py     4 SQLAlchemy models
+  models.py     SQLAlchemy data model
   processing/   Extraction, embeddings
   services/     Ingest, query
   mcp/          MCP server implementation

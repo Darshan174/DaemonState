@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Integer,
     String,
     Text,
     func,
@@ -117,6 +118,8 @@ class Relationship(Base):
     relationship_type: Mapped[str] = mapped_column(
         String(50), nullable=False, default="related_to"
     )
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.7)
+    evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
@@ -129,3 +132,52 @@ class Relationship(Base):
         back_populates="incoming_relationships",
         foreign_keys=[target_component_id],
     )
+
+
+class Connector(Base):
+    __tablename__ = "connectors"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    connector_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="disconnected"
+    )
+    config_json: Mapped[dict[str, Any]] = mapped_column(
+        "config", Text, nullable=False, default="{}"
+    )
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    items_synced: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    sync_jobs: Mapped[list["SyncJob"]] = orm_relationship(
+        back_populates="connector", cascade="all, delete-orphan"
+    )
+
+
+class SyncJob(Base):
+    __tablename__ = "sync_jobs"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    connector_id: Mapped[UUID] = mapped_column(
+        ForeignKey("connectors.id"), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="pending"
+    )
+    error_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "result_metadata", Text, nullable=False, default="{}"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    connector: Mapped["Connector"] = orm_relationship(back_populates="sync_jobs")

@@ -71,12 +71,19 @@ class IngestionService:
                 Component.model_id == model.id,
                 Component.name == fact.name,
                 Component.value == fact.value,
-                Component.status == "active",
+                Component.status.in_(["active", "needs_review", "proposed"]),
             )
         )
         if existing is not None:
             existing.confidence = max(existing.confidence, fact.confidence)
             return existing
+
+        status = "needs_review" if fact.confidence < 0.6 else "active"
+        temporal = getattr(fact, "temporal_hint", "current")
+        if temporal == "future":
+            status = "proposed"
+        elif temporal == "past":
+            status = "needs_review"
 
         component = Component(
             model_id=model.id,
@@ -85,23 +92,40 @@ class IngestionService:
             value=fact.value,
             fact_type=fact.fact_type,
             confidence=fact.confidence,
-            status="needs_review" if fact.confidence < 0.6 else "active",
+            status=status,
         )
         self.session.add(component)
         await self.session.flush()
         return component
 
     async def _create_relationship(self, source: Component, rel) -> None:
-        from app.processing.extractor import ExtractedRelationship
+
+        confidence = float(getattr(rel, "confidence", 0.7))
+        if confidence < 0.6:
+            return
+
+        target_name = getattr(rel, "target_name", "").strip()
+        if not target_name:
+            return
 
         target = await self.session.scalar(
             select(Component).where(
-                Component.model_id == source.model_id,
-                Component.name == rel.target_name,
-                Component.status == "active",
-            )
+                Component.name == target_name,
+                Component.id != source.id,
+                Component.status.in_(["active", "needs_review", "proposed"]),
+            ).order_by(Component.confidence.desc()).limit(1)
         )
-        if target is None or target.id == source.id:
+        if target is None:
+            target = await self.session.scalar(
+                select(Component).where(
+                    Component.model_id == source.model_id,
+                    Component.name == target_name,
+                    Component.id != source.id,
+                    Component.status.in_(["active", "needs_review", "proposed"]),
+                ).limit(1)
+            )
+
+        if target is None:
             return
 
         exists = await self.session.scalar(
@@ -114,10 +138,16 @@ class IngestionService:
         if exists is not None:
             return
 
+        evidence = getattr(rel, "evidence", None)
+        if not evidence:
+            evidence = f"'{source.name}' {rel.relationship_type} '{target.name}'"
+
         self.session.add(Relationship(
             source_component_id=source.id,
             target_component_id=target.id,
             relationship_type=rel.relationship_type,
+            confidence=confidence,
+            evidence=evidence,
         ))
         await self.session.flush()
 

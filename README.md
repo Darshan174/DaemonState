@@ -46,7 +46,7 @@ ctxe mcp
 
 ## Architecture
 
-- **4 tables**: SourceDocument, Model, Component, Relationship
+- **6 tables**: SourceDocument, Model, Component, Relationship, Connector, SyncJob
 - **Single process**: FastAPI + SQLite (default), optional PostgreSQL
 - **Extraction**: LLM-backed (LiteLLM) or regex fallback
 - **Query**: Semantic search + graph traversal
@@ -63,6 +63,8 @@ ctxe mcp
 | GET | /api/sources | List sources |
 | GET | /api/graph | Knowledge graph |
 | POST | /api/query | Natural language query |
+| GET | /api/connectors | Connector catalog and status |
+| POST | /api/connectors/ai-context/import | Import AI-agent context |
 | PATCH | /api/components/:id | Update component status |
 
 ## Configuration
@@ -90,12 +92,16 @@ SourceDocument ──► Component ◄── Model
                        ▼
                   Relationship
                   (source → target)
+
+Connector ──► SyncJob
 ```
 
 - **SourceDocument**: Raw ingested content with provenance (source type, author, URL)
 - **Model**: Product domain (Pricing, Features, Roadmap, Decisions)
 - **Component**: Atomic fact with name, value, confidence, status; linked to one Model and one SourceDocument
 - **Relationship**: Typed edge between two Components (e.g., `depends_on`, `blocked_by`, `enables`)
+- **Connector**: Catalogued or configured ingestion surface
+- **SyncJob**: Connector sync attempt and status record
 
 ## Deployment
 

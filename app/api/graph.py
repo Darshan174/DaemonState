@@ -36,6 +36,9 @@ class ComponentRead(BaseModel):
     authority_weight: float
     status: str
     source_document_id: UUID | None = None
+    source_type: str | None = None
+    source_url: str | None = None
+    ingested_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -45,6 +48,8 @@ class RelationshipRead(BaseModel):
     source_component_id: UUID
     target_component_id: UUID
     relationship_type: str
+    confidence: float = 0.7
+    evidence: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -58,6 +63,8 @@ class GraphResponse(BaseModel):
 @router.get("/graph", response_model=GraphResponse)
 async def get_graph(
     model_id: UUID | None = None,
+    source_type: str | None = None,
+    workspace_id: str | None = None,
     session: AsyncSession = Depends(get_db_session),
 ) -> GraphResponse:
     model_stmt = select(Model).order_by(Model.name)
@@ -67,13 +74,34 @@ async def get_graph(
 
     comp_stmt = (
         select(Component)
-        .options(selectinload(Component.model))
-        .where(Component.status.in_(["active", "needs_review"]))
+        .options(selectinload(Component.model), selectinload(Component.source_document))
+        .where(Component.status.in_(["active", "needs_review", "proposed"]))
         .order_by(Component.created_at.desc())
     )
     if model_id:
         comp_stmt = comp_stmt.where(Component.model_id == model_id)
     components = list(await session.scalars(comp_stmt))
+
+    if source_type:
+        components = [
+            c for c in components
+            if c.source_document and c.source_document.source_type == source_type
+        ]
+    if workspace_id:
+        comps_to_keep = []
+        for c in components:
+            if c.source_document:
+                md = c.source_document.metadata_json
+                if isinstance(md, dict) and md.get("workspace_id") == workspace_id:
+                    comps_to_keep.append(c)
+                elif isinstance(md, str):
+                    try:
+                        parsed = json.loads(md)
+                        if parsed.get("workspace_id") == workspace_id:
+                            comps_to_keep.append(c)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+        components = comps_to_keep
 
     comp_ids = {c.id for c in components}
     rel_stmt = select(Relationship).where(
@@ -97,11 +125,16 @@ async def get_graph(
             name=c.name, value=c.value, fact_type=c.fact_type,
             confidence=c.confidence, authority_weight=c.authority_weight,
             status=c.status, source_document_id=c.source_document_id,
+            source_type=c.source_document.source_type if c.source_document else None,
+            source_url=c.source_document.source_url if c.source_document else None,
+            ingested_at=c.source_document.ingested_at if c.source_document else None,
         ) for c in components],
         relationships=[RelationshipRead(
             id=r.id, source_component_id=r.source_component_id,
             target_component_id=r.target_component_id,
             relationship_type=r.relationship_type,
+            confidence=r.confidence,
+            evidence=r.evidence,
         ) for r in relationships],
     )
 
@@ -131,7 +164,10 @@ class StatsResponse(BaseModel):
 
 
 @router.get("/stats", response_model=StatsResponse)
-async def get_stats(session: AsyncSession = Depends(get_db_session)) -> StatsResponse:
+async def get_stats(
+    workspace_id: str | None = None,
+    session: AsyncSession = Depends(get_db_session),
+) -> StatsResponse:
     from sqlalchemy import func
     models = await session.scalar(select(func.count(Model.id)))
     components = await session.scalar(select(func.count(Component.id)))
@@ -168,6 +204,7 @@ class TimelineResponse(BaseModel):
 @router.get("/timeline", response_model=TimelineResponse)
 async def get_timeline(
     limit: int = 50,
+    workspace_id: str | None = None,
     session: AsyncSession = Depends(get_db_session),
 ) -> TimelineResponse:
     events: list[TimelineEvent] = []
