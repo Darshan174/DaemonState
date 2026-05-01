@@ -2,30 +2,46 @@
 
 Open-source structured context infrastructure for AI systems. A graph-first knowledge engine that extracts, stores, and retrieves structured facts with provenance.
 
+## What It Is
+
+Context Engine turns scattered product knowledge into a living semantic graph. Ingest documents, extract structured facts, and explore how they connect across product domains like Pricing, Features, Roadmap, and Decisions.
+
 ## Quick Start
 
 ```bash
-# Install
+# Clone
+git clone <repo-url> context-engine
+cd context-engine
+
+# Install backend
 pip install -e .
+
+# Install frontend dependencies
+cd frontend && npm install && cd ..
 
 # Start (SQLite, no external dependencies)
 uvicorn app.main:app --reload
 
+# Or use Docker
+docker compose up --build
+
+# App runs on http://localhost:8000
+```
+
+## CLI
+
+```bash
 # Ingest files
 ctxe ingest ./docs/
 
 # Query
 ctxe query "What is our pricing?"
 
+# Explore graph
+ctxe graph
+
 # Start MCP server (for Claude Desktop / Cursor)
 ctxe mcp
-```
-
-## Docker
-
-```bash
-docker compose up --build
-# App runs on http://localhost:8000
 ```
 
 ## Architecture
@@ -33,7 +49,7 @@ docker compose up --build
 - **4 tables**: SourceDocument, Model, Component, Relationship
 - **Single process**: FastAPI + SQLite (default), optional PostgreSQL
 - **Extraction**: LLM-backed (LiteLLM) or regex fallback
-- **Query**: Semantic search + graph traversal + multi-factor scoring
+- **Query**: Semantic search + graph traversal
 - **MCP**: Built-in Model Context Protocol server
 
 ## API Endpoints
@@ -47,7 +63,6 @@ docker compose up --build
 | GET | /api/sources | List sources |
 | GET | /api/graph | Knowledge graph |
 | POST | /api/query | Natural language query |
-| GET | /api/briefing | Recent changes + review items |
 | PATCH | /api/components/:id | Update component status |
 
 ## Configuration
@@ -64,5 +79,32 @@ docker compose up --build
 3 views: Graph Explorer, Query Interface, Source Manager.
 
 ```bash
-cd frontend && npm install && npm run dev
+cd frontend && npm run dev
 ```
+
+## Data Model
+
+```
+Model ──► Component ──► Relationship
+  ▲          ▲
+  └──────────┘
+SourceDocument
+```
+
+- **Model**: Product domain (Pricing, Features, Roadmap, Decisions)
+- **Component**: Atomic fact with name, value, confidence, status
+- **Relationship**: Typed edge between components
+- **SourceDocument**: Raw ingested content with provenance
+
+## Deployment
+
+```bash
+# Docker (single container, SQLite)
+docker compose up --build
+
+# Or build image
+docker build -t context-engine .
+docker run -p 8000:8000 -v $(pwd)/data:/data context-engine
+```
+
+Resource requirements: 1 vCPU, 512MB RAM minimum.

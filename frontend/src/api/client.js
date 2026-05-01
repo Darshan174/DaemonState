@@ -38,6 +38,8 @@ export async function apiFetch(path, options = {}) {
   return res.json();
 }
 
+// ── Convenience methods ────────────────────────────────────────
+
 export const api = {
   get: (path) => apiFetch(path),
   post: (path, body) => apiFetch(path, { method: "POST", body: JSON.stringify(body) }),

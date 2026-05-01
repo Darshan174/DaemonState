@@ -13,9 +13,24 @@ const MODEL_COLORS = [
   "#eab308", "#22c55e", "#14b8a6", "#06b6d4", "#3b82f6",
 ];
 
+const REPO_TYPE_COLORS = {
+  repo: "#0f172a",
+  area: "#2563eb",
+  folder: "#2563eb",
+  file: "#64748b",
+  technology: "#7c3aed",
+};
+
+function shortLabel(value, maxWords = 5) {
+  const words = String(value || "Untitled").trim().split(/\s+/).filter(Boolean);
+  if (words.length <= maxWords) return words.join(" ");
+  return `${words.slice(0, maxWords).join(" ")}...`;
+}
+
 export default function GraphView() {
   const containerRef = useRef(null);
   const cyRef = useRef(null);
+  const [viewMode, setViewMode] = useState("knowledge");
   const [graphData, setGraphData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -30,7 +45,9 @@ export default function GraphView() {
     async function fetchGraph() {
       try {
         setLoading(true);
-        const res = await fetch("/api/graph");
+        setError(null);
+        setSelectedNode(null);
+        const res = await fetch(viewMode === "repo" ? "/api/repo/graph" : "/api/graph");
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         setGraphData(data);
@@ -41,10 +58,12 @@ export default function GraphView() {
       }
     }
     fetchGraph();
-  }, []);
+  }, [viewMode]);
 
   const filteredData = useCallback(() => {
     if (!graphData) return { models: [], components: [], relationships: [] };
+    if (viewMode === "repo") return graphData;
+
     let components = graphData.components || [];
     let relationships = graphData.relationships || [];
 
@@ -64,12 +83,13 @@ export default function GraphView() {
     );
 
     return { models: graphData.models || [], components, relationships };
-  }, [graphData, filters]);
+  }, [graphData, filters, viewMode]);
 
   useEffect(() => {
     if (!containerRef.current || !graphData) return;
 
-    const { models, components, relationships } = filteredData();
+    const viewData = filteredData();
+    const { models = [], components = [], relationships = [] } = viewData;
 
     const modelColorMap = {};
     models.forEach((m, i) => {
@@ -77,64 +97,100 @@ export default function GraphView() {
     });
 
     const nodes = [];
-
-    models.forEach((m) => {
-      nodes.push({
-        data: {
-          id: `model:${m.id}`,
-          label: m.name,
-          type: "model",
-          modelId: m.id,
-          description: m.description || "",
-        },
-        classes: "model-node",
-      });
-    });
-
-    components.forEach((c) => {
-      const color = STATUS_COLORS[c.status] || "#64748b";
-      nodes.push({
-        data: {
-          id: c.id,
-          label: c.name,
-          type: "component",
-          value: c.value,
-          confidence: c.confidence,
-          status: c.status,
-          fact_type: c.fact_type,
-          modelId: c.model_id,
-          source_type: c.source_type,
-          bgColor: modelColorMap[c.model_id] || "#94a3b8",
-          borderColor: color,
-        },
-      });
-    });
-
     const edges = [];
 
-    components.forEach((c) => {
-      edges.push({
-        data: {
-          id: `contains:${c.model_id}:${c.id}`,
-          source: `model:${c.model_id}`,
-          target: c.id,
-          label: "contains",
-          edgeType: "contains",
-        },
+    if (viewMode === "repo") {
+      (viewData.nodes || []).forEach((node) => {
+        nodes.push({
+          data: {
+            id: node.id,
+            label: shortLabel(node.label),
+            fullLabel: node.label,
+            type: node.type,
+            value: node.detail || node.path || node.technology || "",
+            status: node.technology || node.type,
+            fact_type: node.type,
+            bgColor: REPO_TYPE_COLORS[node.type] || "#64748b",
+            borderColor: node.type === "technology" ? "#a78bfa" : "#cbd5e1",
+          },
+          position:
+            Number.isFinite(node.x) && Number.isFinite(node.y)
+              ? { x: node.x, y: node.y }
+              : undefined,
+          classes: node.type === "repo" ? "repo-node" : "",
+        });
       });
-    });
 
-    relationships.forEach((r) => {
-      edges.push({
-        data: {
-          id: r.id,
-          source: r.source_component_id,
-          target: r.target_component_id,
-          label: (r.relationship_type || "related_to").replaceAll("_", " "),
-          edgeType: "relationship",
-        },
+      (viewData.edges || []).forEach((edge) => {
+        edges.push({
+          data: {
+            id: edge.id,
+            source: edge.source,
+            target: edge.target,
+            label: edge.label,
+            edgeType: edge.label === "contains" ? "contains" : "relationship",
+          },
+        });
       });
-    });
+    } else {
+      models.forEach((m) => {
+        nodes.push({
+          data: {
+            id: `model:${m.id}`,
+            label: shortLabel(m.name),
+            fullLabel: m.name,
+            type: "model",
+            modelId: m.id,
+            description: m.description || "",
+          },
+          classes: "model-node",
+        });
+      });
+
+      components.forEach((c) => {
+        const color = STATUS_COLORS[c.status] || "#64748b";
+        nodes.push({
+          data: {
+            id: c.id,
+            label: shortLabel(c.name),
+            fullLabel: c.name,
+            type: "component",
+            value: c.value,
+            confidence: c.confidence,
+            status: c.status,
+            fact_type: c.fact_type,
+            modelId: c.model_id,
+            source_type: c.source_type,
+            bgColor: modelColorMap[c.model_id] || "#94a3b8",
+            borderColor: color,
+          },
+        });
+      });
+
+      components.forEach((c) => {
+        edges.push({
+          data: {
+            id: `contains:${c.model_id}:${c.id}`,
+            source: `model:${c.model_id}`,
+            target: c.id,
+            label: "contains",
+            edgeType: "contains",
+          },
+        });
+      });
+
+      relationships.forEach((r) => {
+        edges.push({
+          data: {
+            id: r.id,
+            source: r.source_component_id,
+            target: r.target_component_id,
+            label: (r.relationship_type || "related_to").replaceAll("_", " "),
+            edgeType: "relationship",
+          },
+        });
+      });
+    }
 
     const cy = cytoscape({
       container: containerRef.current,
@@ -146,7 +202,7 @@ export default function GraphView() {
             label: "data(label)",
             "text-valign": "bottom",
             "text-halign": "center",
-            "font-size": "10px",
+            "font-size": "7px",
             "font-weight": "600",
             color: "#334155",
             "background-color": "#cbd5e1",
@@ -155,17 +211,20 @@ export default function GraphView() {
             "border-width": 2,
             "border-color": "#94a3b8",
             "text-margin-y": 6,
+            "text-wrap": "wrap",
+            "text-max-width": 64,
+            "text-overflow-wrap": "anywhere",
           },
         },
         {
-          selector: ".model-node",
+          selector: ".model-node, .repo-node",
           style: {
             "background-color": "#1e293b",
             "border-color": "#475569",
             color: "#1e293b",
             width: 44,
             height: 44,
-            "font-size": "11px",
+            "font-size": "8px",
             "font-weight": "800",
             shape: "round-rectangle",
             "text-margin-y": 8,
@@ -181,6 +240,44 @@ export default function GraphView() {
           },
         },
         {
+          selector: "node[type='area'], node[type='folder'], node[type='file'], node[type='technology']",
+          style: {
+            "background-color": "data(bgColor)",
+            "border-color": "data(borderColor)",
+            width: 24,
+            height: 24,
+            shape: "round-rectangle",
+          },
+        },
+        {
+          selector: "node[type='area']",
+          style: {
+            width: 46,
+            height: 34,
+            "font-size": "8px",
+            "font-weight": "800",
+            "text-max-width": 92,
+          },
+        },
+        {
+          selector: "node[type='technology']",
+          style: {
+            width: 34,
+            height: 28,
+            "font-size": "8px",
+            "text-max-width": 86,
+          },
+        },
+        {
+          selector: "node[type='file']",
+          style: {
+            width: 22,
+            height: 22,
+            "font-size": "7px",
+            "text-max-width": 72,
+          },
+        },
+        {
           selector: "edge",
           style: {
             width: 1.5,
@@ -193,7 +290,7 @@ export default function GraphView() {
             "font-size": "8px",
             color: "#94a3b8",
             "text-rotation": "autorotate",
-            "text-margin-y": -8,
+            "text-margin-y": -12,
             opacity: 0.6,
           },
         },
@@ -218,16 +315,18 @@ export default function GraphView() {
         },
       ],
       layout: {
-        name: "cose",
-        idealEdgeLength: 120,
-        nodeOverlap: 20,
+        name: viewMode === "repo" ? "preset" : "cose",
+        idealEdgeLength: viewMode === "repo" ? 95 : 150,
+        nodeOverlap: 30,
         refresh: 20,
         randomize: false,
-        componentSpacing: 80,
-        nodeRepulsion: 8000,
+        componentSpacing: viewMode === "repo" ? 70 : 110,
+        nodeRepulsion: viewMode === "repo" ? 9000 : 12000,
         edgeElasticity: 100,
         nestingFactor: 1.2,
-        gravity: 0.25,
+        gravity: 0.2,
+        fit: true,
+        padding: viewMode === "repo" ? 110 : 60,
         animate: false,
       },
       wheelSensitivity: 0.3,
@@ -235,7 +334,7 @@ export default function GraphView() {
 
     cy.on("tap", "node", (evt) => {
       const data = evt.target.data();
-      if (data.type === "component") {
+      if (data.type !== "model") {
         const connectedEdges = cy.edges(`[source = "${data.id}"], [target = "${data.id}"]`);
         const connected = [];
         connectedEdges.forEach((e) => {
@@ -244,7 +343,7 @@ export default function GraphView() {
           const otherId = src === data.id ? tgt : src;
           const otherNode = cy.getElementById(otherId);
           if (otherNode.length) {
-            connected.push({ id: otherId, label: otherNode.data("label"), edgeLabel: e.data("label") });
+            connected.push({ id: otherId, label: otherNode.data("fullLabel") || otherNode.data("label"), edgeLabel: e.data("label") });
           }
         });
         setSelectedNode({ ...data, connected });
@@ -257,12 +356,24 @@ export default function GraphView() {
       if (evt.target === cy) setSelectedNode(null);
     });
 
+    cy.on("mouseover", "node", (evt) => {
+      const node = evt.target;
+      const fullLabel = node.data("fullLabel");
+      if (fullLabel) node.data("label", fullLabel);
+    });
+
+    cy.on("mouseout", "node", (evt) => {
+      const node = evt.target;
+      const fullLabel = node.data("fullLabel");
+      if (fullLabel) node.data("label", shortLabel(fullLabel));
+    });
+
     cyRef.current = cy;
 
     return () => {
       cy.destroy();
     };
-  }, [graphData, filteredData]);
+  }, [graphData, filteredData, viewMode]);
 
   const models = graphData?.models || [];
   const allComponents = graphData?.components || [];
@@ -296,6 +407,26 @@ export default function GraphView() {
       <div className="flex-1 flex flex-col min-w-0">
         <div className="flex items-center gap-3 mb-4 flex-wrap">
           <h2 className="text-lg font-bold text-slate-900 dark:text-white">Knowledge Graph</h2>
+          <div className="flex rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-1">
+            {[
+              ["knowledge", "Knowledge"],
+              ["repo", "Repository"],
+            ].map(([mode, label]) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => setViewMode(mode)}
+                className={`rounded-md px-3 py-1.5 text-xs font-bold transition-colors ${
+                  viewMode === mode
+                    ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                    : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {viewMode === "knowledge" && (
           <div className="flex gap-2 flex-wrap">
             <select
               value={filters.model}
@@ -328,6 +459,7 @@ export default function GraphView() {
               ))}
             </select>
           </div>
+          )}
         </div>
         <div
           ref={containerRef}

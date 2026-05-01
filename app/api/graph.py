@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db_session
-from app.models import Component, Model, Relationship
+from app.models import Component, Model, Relationship, SourceDocument
 
 router = APIRouter()
 
@@ -21,8 +22,7 @@ class ModelRead(BaseModel):
     description: str | None
     component_count: int = 0
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class ComponentRead(BaseModel):
@@ -37,8 +37,7 @@ class ComponentRead(BaseModel):
     status: str
     source_document_id: UUID | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class RelationshipRead(BaseModel):
@@ -47,8 +46,7 @@ class RelationshipRead(BaseModel):
     target_component_id: UUID
     relationship_type: str
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class GraphResponse(BaseModel):
@@ -121,3 +119,87 @@ async def update_component_status(
     await session.flush()
     await session.commit()
     return {"id": str(component.id), "status": component.status}
+
+
+class StatsResponse(BaseModel):
+    models: int
+    components: int
+    relationships: int
+    sources: int
+    pending_review: int
+    stale: int
+
+
+@router.get("/stats", response_model=StatsResponse)
+async def get_stats(session: AsyncSession = Depends(get_db_session)) -> StatsResponse:
+    from sqlalchemy import func
+    models = await session.scalar(select(func.count(Model.id)))
+    components = await session.scalar(select(func.count(Component.id)))
+    relationships = await session.scalar(select(func.count(Relationship.id)))
+    sources = await session.scalar(select(func.count(SourceDocument.id)))
+    pending = await session.scalar(
+        select(func.count(Component.id)).where(Component.status == "needs_review")
+    )
+    stale = await session.scalar(
+        select(func.count(Component.id)).where(Component.status == "stale")
+    )
+    return StatsResponse(
+        models=models or 0,
+        components=components or 0,
+        relationships=relationships or 0,
+        sources=sources or 0,
+        pending_review=pending or 0,
+        stale=stale or 0,
+    )
+
+
+class TimelineEvent(BaseModel):
+    id: str
+    type: str
+    title: str
+    timestamp: datetime
+    detail: str | None = None
+
+
+class TimelineResponse(BaseModel):
+    events: list[TimelineEvent]
+
+
+@router.get("/timeline", response_model=TimelineResponse)
+async def get_timeline(
+    limit: int = 50,
+    session: AsyncSession = Depends(get_db_session),
+) -> TimelineResponse:
+    events: list[TimelineEvent] = []
+
+    sources_result = await session.scalars(
+        select(SourceDocument)
+        .order_by(SourceDocument.ingested_at.desc())
+        .limit(limit)
+    )
+    for doc in sources_result:
+        events.append(TimelineEvent(
+            id=str(doc.id),
+            type="source_ingest",
+            title=f"Source ingested: {doc.external_id}",
+            timestamp=doc.ingested_at,
+            detail=f"Type: {doc.source_type}",
+        ))
+
+    components_result = await session.scalars(
+        select(Component)
+        .options(selectinload(Component.model))
+        .order_by(Component.created_at.desc())
+        .limit(limit)
+    )
+    for comp in components_result:
+        events.append(TimelineEvent(
+            id=str(comp.id),
+            type="component_created",
+            title=f"Component: {comp.name}",
+            timestamp=comp.created_at,
+            detail=f"Model: {comp.model.name if comp.model else 'unknown'} | Status: {comp.status}",
+        ))
+
+    events.sort(key=lambda e: e.timestamp, reverse=True)
+    return TimelineResponse(events=events[:limit])

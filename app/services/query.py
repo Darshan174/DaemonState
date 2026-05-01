@@ -139,7 +139,7 @@ class QueryService:
 
         best = top[0][1]
         answer = f"{best.name} ({best.model.name if best.model else ''}): {best.value}"
-        avg_conf = sum(c.confidence for c, _ in top) / len(top)
+        avg_conf = sum(c.confidence for _, c in top) / len(top)
 
         return QueryResult(
             question=question,

@@ -39,8 +39,7 @@ class SourceRead(BaseModel):
     ingested_at: datetime
     processed_at: datetime | None
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 async def _run_ingestion(doc_id: UUID, database_url: str) -> None:

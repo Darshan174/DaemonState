@@ -88,6 +88,14 @@ tmp/
 temp/
 
 # ===========================
+# Data & Runtime
+# ===========================
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# ===========================
 # Operational artifacts
 # ===========================
 # scripts/backup.sh default output directory

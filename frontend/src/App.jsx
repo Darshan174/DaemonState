@@ -5,16 +5,23 @@ import ThemeToggle from "./components/ThemeToggle";
 const GraphView = lazy(() => import("./pages/GraphView"));
 const QueryView = lazy(() => import("./pages/QueryView"));
 const SourceManager = lazy(() => import("./pages/SourceManager"));
+const Landing = lazy(() => import("./pages/Landing"));
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const Connectors = lazy(() => import("./pages/Connectors"));
+const Changes = lazy(() => import("./pages/Changes"));
 
 const NAV_ITEMS = [
+  { to: "/app", label: "Dashboard", end: true },
   { to: "/app/graph", label: "Graph" },
   { to: "/app/query", label: "Ask" },
   { to: "/app/sources", label: "Sources" },
+  { to: "/app/connectors", label: "Connectors" },
+  { to: "/app/changes", label: "Changes" },
 ];
 
 function HeaderBrand() {
   return (
-    <Link to="/app/graph" className="flex min-w-0 items-center gap-3 group">
+    <Link to="/" className="flex min-w-0 items-center gap-3 group">
       <span className="w-9 h-9 rounded-xl bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white font-bold text-[13px] shadow-[0_0_12px_rgba(79,70,229,0.4)] group-hover:scale-105 transition-transform">
         CE
       </span>
@@ -38,6 +45,18 @@ function PageLoader() {
 
 export default function App() {
   return (
+    <Suspense fallback={<PageLoader />}>
+      <Routes>
+        <Route path="/" element={<Landing />} />
+        <Route path="/app/*" element={<AdminShell />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </Suspense>
+  );
+}
+
+function AdminShell() {
+  return (
     <div className="flex h-screen flex-col overflow-hidden bg-slate-50/50 dark:bg-slate-900 transition-colors duration-300">
       <header className="shrink-0 border-b border-slate-200/70 bg-white/90 backdrop-blur-xl dark:border-white/10 dark:bg-[#090b0d]/95">
         <div className="flex min-h-16 items-center justify-between px-4 md:px-6">
@@ -48,6 +67,7 @@ export default function App() {
               <NavLink
                 key={to}
                 to={to}
+                end={to === "/app"}
                 className={({ isActive }) =>
                   `inline-flex h-10 items-center rounded-xl px-4 text-sm font-semibold transition-all duration-200 ${
                     isActive
@@ -65,15 +85,18 @@ export default function App() {
         </div>
       </header>
 
-      <main className="flex-1 overflow-hidden p-4 md:p-6 dark:text-slate-100">
+      <main className="flex-1 overflow-y-auto p-4 md:p-6 dark:text-slate-100">
         <Suspense fallback={<PageLoader />}>
           <Routes>
-            <Route path="/" element={<Navigate to="/app/graph" replace />} />
-            <Route path="/app" element={<Navigate to="/app/graph" replace />} />
-            <Route path="/app/graph" element={<GraphView />} />
-            <Route path="/app/query" element={<QueryView />} />
-            <Route path="/app/sources" element={<SourceManager />} />
-            <Route path="*" element={<Navigate to="/app/graph" replace />} />
+            <Route index element={<Dashboard />} />
+            <Route path="dashboard" element={<Navigate to="/app" replace />} />
+            <Route path="graph" element={<GraphView />} />
+            <Route path="query" element={<QueryView />} />
+            <Route path="sources" element={<SourceManager />} />
+            <Route path="connectors" element={<Connectors />} />
+            <Route path="connectors/:connectorType/runs" element={<Connectors />} />
+            <Route path="changes" element={<Changes />} />
+            <Route path="*" element={<Navigate to="/app" replace />} />
           </Routes>
         </Suspense>
       </main>
