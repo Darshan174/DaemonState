@@ -303,7 +303,7 @@ async def slack_install(workspace_id: str, request: Request) -> RedirectResponse
         raise HTTPException(status_code=503, detail="Slack OAuth is not configured on this server.")
     redirect_uri = _get_env("SLACK_REDIRECT_URI") or f"{_public_base_url()}/api/connectors/slack/callback"
     state = f"{workspace_id}:{secrets.token_urlsafe(16)}"
-    scopes = "channels:history,channels:read,groups:history,groups:read,users:read,team:read"
+    scopes = "channels:history,channels:join,channels:read,groups:history,groups:read,users:read,team:read"
     url = (
         f"https://slack.com/oauth/v2/authorize"
         f"?client_id={client_id}"
@@ -738,8 +738,10 @@ def _oauth_close_html(success: bool, message: str) -> Response:
 
 
 async def _run_sync_job(job_id: str, connector_id: str, database_url: str) -> None:
-    """Background task: mark job running → do minimal sync → mark completed."""
+    """Background task: mark job running → sync source documents → extract → mark completed."""
     from app.database import _make_async_url
+    from app.sync.slack import sync_slack
+    from app.extract.basic import extract_from_source_documents
     from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
     engine = create_async_engine(_make_async_url(database_url))
@@ -753,30 +755,44 @@ async def _run_sync_job(job_id: str, connector_id: str, database_url: str) -> No
             return
 
         job.status = "running"
-        job.started_at = datetime.now(timezone.utc)
+        job.started_at = datetime.utcnow()
         await session.commit()
 
         try:
-            docs_fetched = 0
+            sync_result: dict[str, Any] = {}
+            extract_result: dict[str, Any] = {}
+
+            if connector.connector_type == "slack":
+                sync_result = await sync_slack(connector, session)
+                extract_result = await extract_from_source_documents("slack", session)
+            else:
+                # Generic stub for connectors not yet implemented
+                sync_result = {"documents_fetched": 0, "documents_persisted": 0}
+
             result_metadata: dict[str, Any] = {
-                "documents_fetched": docs_fetched,
-                "documents_persisted": 0,
-                "documents_processed": 0,
                 "sync_mode": "polling",
+                **sync_result,
+                **extract_result,
             }
             job.status = "completed"
-            job.completed_at = datetime.now(timezone.utc)
+            job.completed_at = datetime.utcnow()
             job.result_metadata_json = json.dumps(result_metadata)
 
             config = json.loads(connector.config_json or "{}")
-            config["total_processed_count"] = config.get("total_processed_count", 0)
+            config["total_processed_count"] = (
+                config.get("total_processed_count", 0)
+                + extract_result.get("components_created", 0)
+            )
             connector.config_json = json.dumps(config)
-            connector.last_sync_at = datetime.now(timezone.utc)
+            connector.last_sync_at = datetime.utcnow()
             await session.commit()
+
         except Exception as exc:
+            import traceback
             job.status = "failed"
-            job.error_message = str(exc)
-            job.completed_at = datetime.now(timezone.utc)
+            job.error_type = type(exc).__name__
+            job.error_message = f"{exc}\n{traceback.format_exc()}"
+            job.completed_at = datetime.utcnow()
             await session.commit()
 
     await engine.dispose()
