@@ -53,14 +53,6 @@ CONNECTOR_CATALOG: dict[str, dict[str, Any]] = {
         "provider": "official_api",
         "provider_label": "Official API",
     },
-    "wispr_flow": {
-        "name": "Wispr Flow",
-        "description": "Dictation notes, transcripts, and captured thoughts",
-        "color": "#111827",
-        "availability": "available",
-        "provider": "official_api",
-        "provider_label": "Official API",
-    },
 }
 
 GOOGLE_CONNECTORS = {"gdrive", "gmail"}
@@ -82,9 +74,6 @@ def _zoom_configured() -> bool:
 def _google_configured() -> bool:
     return bool(_get_env("GOOGLE_CLIENT_ID") and _get_env("GOOGLE_CLIENT_SECRET"))
 
-
-def _wispr_configured() -> bool:
-    return bool(_get_env("WISPR_API_KEY"))
 
 
 def _connector_setup_status(connector_type: str) -> dict[str, Any]:
@@ -117,16 +106,6 @@ def _connector_setup_status(connector_type: str) -> dict[str, Any]:
             "managed_available": configured,
             "managed_install_url": f"/api/connectors/{connector_type}/install" if configured else None,
             "missing": [] if configured else ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"],
-            "message": None,
-        }
-    if connector_type == "wispr_flow":
-        configured = _wispr_configured()
-        return {
-            "connector_type": "wispr_flow",
-            "configured": configured,
-            "managed_available": False,
-            "managed_install_url": None,
-            "missing": [] if configured else ["WISPR_API_KEY"],
             "message": None,
         }
     return {"connector_type": connector_type, "configured": True, "managed_available": False, "managed_install_url": None, "missing": []}
@@ -584,29 +563,6 @@ async def github_connect(
     connector.credentials_json = json.dumps({"access_token": token})
     config = json.loads(connector.config_json or "{}")
     config.update({"auth_mode": "manual_token", "repositories": repositories})
-    connector.config_json = json.dumps(config)
-    await session.commit()
-    await session.refresh(connector)
-    return _connector_to_dict(connector)
-
-
-# ── Wispr Flow (API key) ───────────────────────────────────────
-
-@router.post("/connectors/wispr_flow/connect")
-async def wispr_connect(
-    payload: dict,
-    session: AsyncSession = Depends(get_db_session),
-) -> dict:
-    workspace_id = payload.get("workspace_id")
-    api_key = payload.get("api_key", "").strip()
-    if not workspace_id or not api_key:
-        raise HTTPException(status_code=422, detail="workspace_id and api_key are required")
-    ws = await _get_workspace(workspace_id, session)
-    connector = await _get_or_create_connector(ws.id, "wispr_flow", session)
-    connector.status = "connected"
-    connector.credentials_json = json.dumps({"api_key": api_key})
-    config = json.loads(connector.config_json or "{}")
-    config.update({"auth_mode": "api_key"})
     connector.config_json = json.dumps(config)
     await session.commit()
     await session.refresh(connector)

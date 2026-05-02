@@ -205,15 +205,6 @@ export const connectors = [
     itemsSynced: 0,
     color: "#EA4335",
   },
-  {
-    id: "wispr_flow",
-    name: "Wispr Flow",
-    description: "Dictation notes & transcripts",
-    status: "disconnected",
-    lastSync: "Never",
-    itemsSynced: 0,
-    color: "#111827",
-  },
 ];
 
 // ── Source documents ───────────────────────────────────────────

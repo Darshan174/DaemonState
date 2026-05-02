@@ -111,16 +111,6 @@ const CONNECTOR_CATALOG = {
     providerLabel: "Official API",
     providerNote: "Gmail ingests selected mailbox threads and attachments with source provenance.",
   },
-  wispr_flow: {
-    type: "wispr_flow",
-    name: "Wispr Flow",
-    description: "Dictation notes, transcripts, and captured thoughts",
-    color: "#111827",
-    availability: "available",
-    provider: "official_api",
-    providerLabel: "Official API",
-    providerNote: "Wispr Flow brings dictated notes and transcripts into the graph as first-class source documents.",
-  },
 };
 
 const BROWSER_IMPORT_EXTENSIONS = new Set([
@@ -1608,22 +1598,6 @@ export function useConnectGitHub() {
         token,
         repositories,
       });
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["connectors"] });
-      qc.invalidateQueries({ queryKey: ["connector-processing-summary"] });
-      qc.invalidateQueries({ queryKey: ["source-documents"] });
-      qc.invalidateQueries({ queryKey: ["dashboard"] });
-    },
-  });
-}
-
-export function useConnectWisprFlow() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ apiKey }) => {
-      const wsId = await getWorkspaceId();
-      return api.post("/connectors/wispr_flow/connect", { workspace_id: wsId, api_key: apiKey });
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["connectors"] });

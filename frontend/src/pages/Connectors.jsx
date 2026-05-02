@@ -4,7 +4,6 @@ import {
   useConnectGitHub,
   useConnectZoom,
   useConnectNotion,
-  useConnectWisprFlow,
   useSaveSlackOAuthSettings,
   useConnectorSyncJobs,
   useConnectorSyncStatus,
@@ -57,7 +56,6 @@ export default function Connectors() {
   const saveSlackOAuthMut = useSaveSlackOAuthSettings();
   const connectZoomMut = useConnectZoom();
   const connectGitHubMut = useConnectGitHub();
-  const connectWisprFlowMut = useConnectWisprFlow();
   const syncMut = useSyncConnector();
   const disconnectMut = useDisconnectConnector();
   const [actionError, setActionError] = useState(null);
@@ -77,8 +75,6 @@ export default function Connectors() {
   const [githubFormOpen, setGitHubFormOpen] = useState(false);
   const [githubToken, setGitHubToken] = useState("");
   const [githubRepositories, setGitHubRepositories] = useState("");
-  const [wisprFlowFormOpen, setWisprFlowFormOpen] = useState(false);
-  const [wisprFlowApiKey, setWisprFlowApiKey] = useState("");
 
   const workspaceId = useMemo(
     () => resolveWorkspaceId(workspaces.data, selectedId),
@@ -360,11 +356,6 @@ export default function Connectors() {
               onChangeGitHubRepositories={setGitHubRepositories}
               onToggleGitHubForm={() => setGitHubFormOpen((current) => !current)}
               connectGitHubMut={connectGitHubMut}
-              wisprFlowFormOpen={connector.type === "wispr_flow" ? wisprFlowFormOpen : false}
-              wisprFlowApiKey={wisprFlowApiKey}
-              onChangeWisprFlowApiKey={setWisprFlowApiKey}
-              onToggleWisprFlowForm={() => setWisprFlowFormOpen((current) => !current)}
-              connectWisprFlowMut={connectWisprFlowMut}
               syncMut={syncMut}
               disconnectMut={disconnectMut}
               onActionError={setActionError}
@@ -424,11 +415,6 @@ function ConnectorCard({
   onChangeGitHubRepositories,
   onToggleGitHubForm,
   connectGitHubMut,
-  wisprFlowFormOpen,
-  wisprFlowApiKey,
-  onChangeWisprFlowApiKey,
-  onToggleWisprFlowForm,
-  connectWisprFlowMut,
   syncMut,
   disconnectMut,
   onActionError,
@@ -475,7 +461,6 @@ function ConnectorCard({
   const isGitHub = type === "github";
   const isGDrive = type === "gdrive";
   const isGmail = type === "gmail";
-  const isWisprFlow = type === "wispr_flow";
   const isGoogleOAuth = isGDrive || isGmail;
   const slackSelfHostedSetupAvailable = isSlack && isConfigured === false;
   const canConnect =
@@ -626,27 +611,6 @@ function ConnectorCard({
             status === "disconnected"
               ? "GitHub token saved. Run a sync to ingest issues, pull requests, and reviews."
               : "GitHub token updated. Run another sync to refresh engineering context.",
-          );
-        },
-      },
-    );
-  };
-
-  const handleWisprFlowConnect = (event) => {
-    event.preventDefault();
-    onActionError(null);
-    onActionNotice(null);
-    connectWisprFlowMut.mutate(
-      { apiKey: wisprFlowApiKey },
-      {
-        onError: (err) => onActionError(formatActionError(err) || "Failed to connect Wispr Flow."),
-        onSuccess: () => {
-          onChangeWisprFlowApiKey("");
-          onToggleWisprFlowForm();
-          onActionNotice(
-            status === "disconnected"
-              ? "Wispr Flow API key saved. Run a sync to start storing dictation transcripts."
-              : "Wispr Flow API key updated. Run another sync to refresh transcripts.",
           );
         },
       },
@@ -891,11 +855,6 @@ function ConnectorCard({
             Connect with your Google account to ingest email threads and extract facts from important conversations.
           </p>
         )}
-        {isWisprFlow && status === "disconnected" && availability === "available" && (
-          <p className="text-[11px] text-gray-500 mt-2">
-            Save a Wispr Flow API key to sync dictation transcripts as source documents for extraction and query.
-          </p>
-        )}
         {isSlack && status === "error" && (
           <p className="text-[11px] text-red-600 dark:text-red-400 mt-2">
             Slack needs attention. Reconnect the workspace or retry sync after checking OAuth and connector health.
@@ -1086,43 +1045,6 @@ function ConnectorCard({
         </form>
       )}
 
-      {isWisprFlow && wisprFlowFormOpen && (
-        <form onSubmit={handleWisprFlowConnect} className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 p-3 space-y-3">
-          <div>
-            <label htmlFor="wispr-flow-api-key" className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-              Wispr Flow API key
-            </label>
-            <input
-              id="wispr-flow-api-key"
-              type="password"
-              value={wisprFlowApiKey}
-              onChange={(event) => onChangeWisprFlowApiKey(event.target.value)}
-              placeholder="wf_xxx"
-              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
-            />
-            <p className="mt-1 text-[11px] text-gray-500">
-              Find your API key in Wispr Flow settings. Dictation transcripts will be synced into source documents.
-            </p>
-          </div>
-          <div className="flex gap-2">
-            <button
-              type="submit"
-              disabled={connectWisprFlowMut.isPending || !wisprFlowApiKey.trim()}
-              className="px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
-            >
-              {connectWisprFlowMut.isPending ? "Saving..." : "Save API key"}
-            </button>
-            <button
-              type="button"
-              onClick={onToggleWisprFlowForm}
-              className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-white dark:bg-slate-800"
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
-      )}
-
       <div className="flex flex-wrap gap-2 mt-auto">
         {status === "coming_soon" ? (
           <button
@@ -1239,24 +1161,6 @@ function ConnectorCard({
             className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 disabled:text-gray-400 disabled:cursor-not-allowed"
           >
             Update GitHub token
-          </button>
-        ) : isWisprFlow && status === "disconnected" ? (
-          <button
-            type="button"
-            disabled={isDemo || !workspaceId}
-            onClick={onToggleWisprFlowForm}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
-          >
-            Connect Wispr Flow
-          </button>
-        ) : isWisprFlow && (status === "connected" || status === "error") ? (
-          <button
-            type="button"
-            disabled={isDemo}
-            onClick={onToggleWisprFlowForm}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 disabled:text-gray-400 disabled:cursor-not-allowed"
-          >
-            Update API key
           </button>
         ) : (
           <button
