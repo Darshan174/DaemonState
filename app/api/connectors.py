@@ -63,6 +63,21 @@ def _get_env(key: str) -> str | None:
     return os.environ.get(key) or None
 
 
+def _get_google_client_id() -> str | None:
+    """Read GOOGLE_CLIENT_ID and strip accidental URL wrappers.
+
+    Users sometimes paste the client ID as a full URL, e.g.:
+      http://204406203409-xxx.apps.googleusercontent.com/
+    Strip any scheme prefix and trailing slashes so Google accepts it.
+    """
+    import re
+    raw = _get_env("GOOGLE_CLIENT_ID")
+    if not raw:
+        return None
+    cleaned = re.sub(r'^https?://', '', raw).rstrip('/')
+    return cleaned or None
+
+
 def _public_base_url() -> str:
     """Return the externally-reachable base URL (no trailing slash).
 
@@ -88,7 +103,7 @@ def _zoom_configured() -> bool:
 
 
 def _google_configured() -> bool:
-    return bool(_get_env("GOOGLE_CLIENT_ID") and _get_env("GOOGLE_CLIENT_SECRET"))
+    return bool(_get_google_client_id() and _get_env("GOOGLE_CLIENT_SECRET"))
 
 
 
@@ -465,7 +480,7 @@ async def google_install(
 ) -> RedirectResponse:
     if connector_type not in GOOGLE_CONNECTORS:
         raise HTTPException(status_code=404, detail="Connector not found")
-    client_id = _get_env("GOOGLE_CLIENT_ID")
+    client_id = _get_google_client_id()
     if not client_id:
         raise HTTPException(status_code=503, detail="Google OAuth is not configured on this server.")
     redirect_uri = _get_env("GOOGLE_REDIRECT_URI") or f"{_public_base_url()}/api/connectors/{connector_type}/callback"
@@ -508,7 +523,7 @@ async def google_callback(
         return _oauth_close_html(success=False, message="Workspace not found.")
 
     import httpx
-    client_id = _get_env("GOOGLE_CLIENT_ID") or ""
+    client_id = _get_google_client_id() or ""
     client_secret = _get_env("GOOGLE_CLIENT_SECRET") or ""
     redirect_uri = _get_env("GOOGLE_REDIRECT_URI") or f"{_public_base_url()}/api/connectors/{connector_type}/callback"
 
