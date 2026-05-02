@@ -320,7 +320,7 @@ async def slack_callback(
     import httpx
     client_id = _get_env("SLACK_CLIENT_ID")
     client_secret = _get_env("SLACK_CLIENT_SECRET")
-    redirect_uri = _get_env("SLACK_REDIRECT_URI")
+    redirect_uri = _get_env("SLACK_REDIRECT_URI") or f"{_public_base_url()}/api/connectors/slack/callback"
 
     try:
         async with httpx.AsyncClient() as http:
@@ -328,9 +328,8 @@ async def slack_callback(
                 "client_id": client_id or "",
                 "client_secret": client_secret or "",
                 "code": code,
+                "redirect_uri": redirect_uri,
             }
-            if redirect_uri:
-                params["redirect_uri"] = redirect_uri
             resp = await http.post("https://slack.com/api/oauth.v2.access", data=params)
             data = resp.json()
     except Exception as exc:
@@ -353,6 +352,7 @@ async def slack_callback(
     })
     connector.config_json = json.dumps(config)
     await session.commit()
+    await session.refresh(connector)
     return _oauth_close_html(success=True, message="Slack connected successfully.")
 
 
@@ -542,6 +542,7 @@ async def google_callback(
     config.update({"auth_mode": "oauth"})
     connector.config_json = json.dumps(config)
     await session.commit()
+    await session.refresh(connector)
     label = "Google Drive" if connector_type == "gdrive" else "Gmail"
     return _oauth_close_html(success=True, message=f"{label} connected successfully.")
 
