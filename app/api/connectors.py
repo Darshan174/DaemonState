@@ -53,9 +53,34 @@ CONNECTOR_CATALOG: dict[str, dict[str, Any]] = {
         "provider": "official_api",
         "provider_label": "Official API",
     },
+    "codex": {
+        "name": "Codex",
+        "description": "OpenAI Codex sessions — decisions, code plans, and AI reasoning",
+        "color": "#10a37f",
+        "availability": "available",
+        "provider": "native",
+        "provider_label": "Session import",
+    },
+    "claude": {
+        "name": "Claude",
+        "description": "Anthropic Claude conversations — architecture choices and research threads",
+        "color": "#D97757",
+        "availability": "available",
+        "provider": "native",
+        "provider_label": "Session import",
+    },
+    "opencode": {
+        "name": "OpenCode",
+        "description": "OpenCode AI coding sessions — terminal context and implementation notes",
+        "color": "#6366F1",
+        "availability": "available",
+        "provider": "native",
+        "provider_label": "Session import",
+    },
 }
 
 GOOGLE_CONNECTORS = {"gdrive", "gmail"}
+AI_SESSION_CONNECTORS = {"codex", "claude", "opencode"}
 
 
 def _get_env(key: str) -> str | None:
@@ -146,6 +171,8 @@ def _connector_setup_status(connector_type: str) -> dict[str, Any]:
             "message": None,
             "redirect_uri": redirect_uri,
         }
+    if connector_type in AI_SESSION_CONNECTORS:
+        return {"connector_type": connector_type, "configured": True, "managed_available": False, "managed_install_url": None, "missing": [], "redirect_uri": None}
     return {"connector_type": connector_type, "configured": True, "managed_available": False, "managed_install_url": None, "missing": [], "redirect_uri": None}
 
 
@@ -608,6 +635,51 @@ async def github_connect(
     return _connector_to_dict(connector)
 
 
+# ── AI session ingest ──────────────────────────────────────────
+
+class AISessionIngestRequest(BaseModel):
+    workspace_id: str
+    connector_type: str
+    session_id: str
+    content: str
+
+
+@router.post("/connectors/ai-session/ingest")
+async def ingest_ai_session(
+    body: AISessionIngestRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    from app.sync.ai_session import ingest_ai_session as _ingest
+    from app.extract.basic import extract_from_source_documents
+
+    if body.connector_type not in AI_SESSION_CONNECTORS:
+        raise HTTPException(status_code=422, detail=f"Unknown AI session connector: {body.connector_type}")
+    if not body.content.strip():
+        raise HTTPException(status_code=422, detail="Session content must not be empty.")
+
+    ws = await _get_workspace(body.workspace_id, session)
+    connector = await _get_or_create_connector(ws.id, body.connector_type, session)
+
+    ingest_result = await _ingest(body.connector_type, session, body.session_id, body.content)
+
+    extract_result = await extract_from_source_documents(body.connector_type, session)
+
+    config = json.loads(connector.config_json or "{}")
+    config["total_processed_count"] = config.get("total_processed_count", 0) + extract_result.get("components_created", 0)
+    config["items_synced"] = config.get("items_synced", 0) + ingest_result.get("documents_persisted", 0)
+    connector.config_json = json.dumps(config)
+    connector.status = "connected"
+    connector.last_sync_at = datetime.utcnow()
+    await session.commit()
+    await session.refresh(connector)
+
+    return {
+        **_connector_to_dict(connector),
+        "ingest": ingest_result,
+        "extract": extract_result,
+    }
+
+
 # ── Sync & disconnect ──────────────────────────────────────────
 
 @router.post("/connectors/{connector_id}/sync")
@@ -765,6 +837,10 @@ async def _run_sync_job(job_id: str, connector_id: str, database_url: str) -> No
             if connector.connector_type == "slack":
                 sync_result = await sync_slack(connector, session)
                 extract_result = await extract_from_source_documents("slack", session)
+            elif connector.connector_type in AI_SESSION_CONNECTORS:
+                # AI session connectors ingest inline; sync just re-runs extraction
+                sync_result = {"documents_fetched": 0, "documents_persisted": 0}
+                extract_result = await extract_from_source_documents(connector.connector_type, session)
             else:
                 # Generic stub for connectors not yet implemented
                 sync_result = {"documents_fetched": 0, "documents_persisted": 0}

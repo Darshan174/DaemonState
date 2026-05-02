@@ -56,3 +56,30 @@ tests/          Backend pytest tests
 3. **Graph Explorer** — Visual knowledge graph with Cytoscape.js
 4. **Ask (Query)** — Natural language query with cited components
 5. **Source Manager** — Upload, browse, inspect source documents
+6. **Connectors** — Manage data source integrations
+
+## Connectors
+
+Full connector catalog (7 types):
+
+| Type | Category | Notes |
+|------|----------|-------|
+| `slack` | Communication | OAuth; syncs channels/DMs/threads |
+| `zoom` | Communication | Official API |
+| `gdrive` | Documents | Google Drive |
+| `gmail` | Email | Gmail |
+| `codex` | AI Session | Paste/import OpenAI Codex session exports |
+| `claude` | AI Session | Paste/import Claude conversation exports |
+| `opencode` | AI Session | Paste/import OpenCode session exports |
+
+AI session connectors accept pasted content (JSON OpenAI export format, `Human:/Assistant:` markdown, or plain text). Endpoint: `POST /api/connectors/ai-session/ingest`.
+
+### Key files
+- `app/api/connectors.py` — router, `CONNECTOR_CATALOG`, `AI_SESSION_CONNECTORS`, ingest endpoint
+- `app/sync/ai_session.py` — session parser + ingestor
+- `app/sync/slack.py` — Slack OAuth sync pipeline
+- `frontend/src/pages/Connectors.jsx` — UI cards, icons, AI session form
+- `frontend/src/api/hooks.js` — `CONNECTOR_CATALOG`, `useConnectors`, `useIngestAISession`
+
+### SourceDocument model (no connector_id)
+Fields: `id`, `source_type`, `external_id`, `content`, `author`, `source_url`, `metadata_json` (Text, use `json.dumps`), `ingested_at`, `processed_at`. Dedup by `external_id` only.

@@ -111,6 +111,33 @@ const CONNECTOR_CATALOG = {
     providerLabel: "Official API",
     providerNote: "Gmail ingests selected mailbox threads and attachments with source provenance.",
   },
+  codex: {
+    type: "codex",
+    name: "Codex",
+    description: "OpenAI Codex sessions — decisions, code plans, and AI reasoning",
+    color: "#10a37f",
+    availability: "available",
+    provider: "native",
+    providerLabel: "Session import",
+  },
+  claude: {
+    type: "claude",
+    name: "Claude",
+    description: "Anthropic Claude conversations — architecture choices and research threads",
+    color: "#D97757",
+    availability: "available",
+    provider: "native",
+    providerLabel: "Session import",
+  },
+  opencode: {
+    type: "opencode",
+    name: "OpenCode",
+    description: "OpenCode AI coding sessions — terminal context and implementation notes",
+    color: "#6366F1",
+    availability: "available",
+    provider: "native",
+    providerLabel: "Session import",
+  },
 };
 
 const BROWSER_IMPORT_EXTENSIONS = new Set([
@@ -1597,6 +1624,27 @@ export function useConnectGitHub() {
         workspace_id: wsId,
         token,
         repositories,
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["connectors"] });
+      qc.invalidateQueries({ queryKey: ["connector-processing-summary"] });
+      qc.invalidateQueries({ queryKey: ["source-documents"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+}
+
+export function useIngestAISession() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ connectorType, sessionId, content }) => {
+      const wsId = await getWorkspaceId();
+      return api.post("/connectors/ai-session/ingest", {
+        workspace_id: wsId,
+        connector_type: connectorType,
+        session_id: sessionId,
+        content,
       });
     },
     onSuccess: () => {

@@ -4,6 +4,7 @@ import {
   useConnectGitHub,
   useConnectZoom,
   useConnectNotion,
+  useIngestAISession,
   useSaveSlackOAuthSettings,
   useConnectorSyncJobs,
   useConnectorSyncStatus,
@@ -76,6 +77,10 @@ export default function Connectors() {
   const [githubFormOpen, setGitHubFormOpen] = useState(false);
   const [githubToken, setGitHubToken] = useState("");
   const [githubRepositories, setGitHubRepositories] = useState("");
+  const [aiSessionFormOpenFor, setAISessionFormOpenFor] = useState(null);
+  const [aiSessionId, setAISessionId] = useState("");
+  const [aiSessionContent, setAISessionContent] = useState("");
+  const ingestAISessionMut = useIngestAISession();
 
   const workspaceId = useMemo(
     () => resolveWorkspaceId(workspaces.data, selectedId),
@@ -343,6 +348,17 @@ export default function Connectors() {
               onChangeGitHubRepositories={setGitHubRepositories}
               onToggleGitHubForm={() => setGitHubFormOpen((current) => !current)}
               connectGitHubMut={connectGitHubMut}
+              aiSessionFormOpen={["codex", "claude", "opencode"].includes(connector.type) ? aiSessionFormOpenFor === connector.type : false}
+              aiSessionId={aiSessionId}
+              aiSessionContent={aiSessionContent}
+              onChangeAISessionId={setAISessionId}
+              onChangeAISessionContent={setAISessionContent}
+              onToggleAISessionForm={() => {
+                setAISessionFormOpenFor((f) => f === connector.type ? null : connector.type);
+                setAISessionId("");
+                setAISessionContent("");
+              }}
+              ingestAISessionMut={ingestAISessionMut}
               syncMut={syncMut}
               disconnectMut={disconnectMut}
               onActionError={setActionError}
@@ -402,6 +418,13 @@ function ConnectorCard({
   onChangeGitHubRepositories,
   onToggleGitHubForm,
   connectGitHubMut,
+  aiSessionFormOpen,
+  aiSessionId,
+  aiSessionContent,
+  onChangeAISessionId,
+  onChangeAISessionContent,
+  onToggleAISessionForm,
+  ingestAISessionMut,
   syncMut,
   disconnectMut,
   onActionError,
@@ -450,6 +473,7 @@ function ConnectorCard({
   const isGDrive = type === "gdrive";
   const isGmail = type === "gmail";
   const isGoogleOAuth = isGDrive || isGmail;
+  const isAISession = type === "codex" || type === "claude" || type === "opencode";
   const slackSelfHostedSetupAvailable = isSlack && isConfigured === false;
   const canConnect =
     !isDemo &&
@@ -610,6 +634,33 @@ function ConnectorCard({
     onStartGenericOAuth(installHref, type);
   };
 
+  const handleAISessionIngest = (event) => {
+    event.preventDefault();
+    onActionError(null);
+    onActionNotice(null);
+    ingestAISessionMut.mutate(
+      { connectorType: type, sessionId: aiSessionId.trim() || `session-${Date.now()}`, content: aiSessionContent },
+      {
+        onError: (err) => onActionError(err?.message || `Failed to ingest ${name} session.`),
+        onSuccess: (data) => {
+          onChangeAISessionContent("");
+          onChangeAISessionId("");
+          onToggleAISessionForm();
+          const docs = data?.ingest?.documents_persisted ?? 0;
+          const updated = data?.ingest?.documents_updated ?? 0;
+          const comps = data?.extract?.components_created ?? 0;
+          onActionNotice(
+            docs > 0
+              ? `${name} session ingested. ${comps > 0 ? `${comps} graph component${comps === 1 ? "" : "s"} extracted.` : "Run a sync to extract graph facts."}`
+              : updated > 0
+                ? `${name} session updated. ${comps > 0 ? `${comps} graph component${comps === 1 ? "" : "s"} extracted.` : ""}`
+                : `${name} session processed.`,
+          );
+        },
+      },
+    );
+  };
+
   useEffect(() => {
     const previous = previousJobRef.current;
     const nextJobId = latestSyncJob?.jobId ?? null;
@@ -632,12 +683,7 @@ function ConnectorCard({
   return (
     <div className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-gray-800/50 p-5 flex flex-col gap-4 hover:shadow-sm transition-shadow">
       <div className="flex items-center gap-3">
-        <span
-          className="w-10 h-10 rounded-lg flex items-center justify-center text-white text-sm font-bold shrink-0"
-          style={{ backgroundColor: color }}
-        >
-          {name[0]}
-        </span>
+        <ConnectorIconBadge type={type} color={color} name={name} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-300">{name}</h3>
@@ -961,6 +1007,59 @@ function ConnectorCard({
         </form>
       )}
 
+      {isAISession && aiSessionFormOpen && (
+        <form onSubmit={handleAISessionIngest} className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 p-3 space-y-3">
+          <div>
+            <p className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">
+              Import a {name} session
+            </p>
+            <label htmlFor={`${type}-session-id`} className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+              Session label <span className="text-gray-400">(optional — used for deduplication)</span>
+            </label>
+            <input
+              id={`${type}-session-id`}
+              type="text"
+              value={aiSessionId}
+              onChange={(e) => onChangeAISessionId(e.target.value)}
+              placeholder={`my-${type}-session-1`}
+              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            />
+          </div>
+          <div>
+            <label htmlFor={`${type}-session-content`} className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+              Session content
+            </label>
+            <textarea
+              id={`${type}-session-content`}
+              value={aiSessionContent}
+              onChange={(e) => onChangeAISessionContent(e.target.value)}
+              placeholder={"Paste your conversation export here. JSON (messages array), markdown (Human:/Assistant: format), or plain text are all supported."}
+              rows={6}
+              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40 font-mono text-xs"
+            />
+            <p className="mt-1 text-[11px] text-gray-400">
+              Supports OpenAI JSON export, Claude markdown, or raw conversation text.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              disabled={ingestAISessionMut.isPending || !aiSessionContent.trim()}
+              className="px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+            >
+              {ingestAISessionMut.isPending ? "Importing..." : "Import session"}
+            </button>
+            <button
+              type="button"
+              onClick={onToggleAISessionForm}
+              className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-white dark:bg-slate-800"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+
       <div className="flex flex-wrap gap-2 mt-auto">
         {status === "coming_soon" ? (
           <button
@@ -1077,6 +1176,18 @@ function ConnectorCard({
             className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 disabled:text-gray-400 disabled:cursor-not-allowed"
           >
             Update GitHub token
+          </button>
+        ) : isAISession ? (
+          <button
+            type="button"
+            disabled={isDemo || !workspaceId}
+            onClick={onToggleAISessionForm}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M8 1a.5.5 0 0 1 .5.5v6h6a.5.5 0 0 1 0 1h-6v6a.5.5 0 0 1-1 0v-6h-6a.5.5 0 0 1 0-1h6v-6A.5.5 0 0 1 8 1z"/>
+            </svg>
+            Import session
           </button>
         ) : (
           <button
@@ -1537,6 +1648,108 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
   }
 
   return null;
+}
+
+function ConnectorIconBadge({ type, color, name }) {
+  const icons = {
+    slack: <SlackLogoIcon className="w-5 h-5" />,
+    zoom: <ZoomIcon className="w-5 h-5" />,
+    gdrive: <GoogleDriveIcon className="w-5 h-5" />,
+    gmail: <GmailIcon className="w-5 h-5" />,
+    github: <GitHubIcon className="w-5 h-5 text-white" />,
+    notion: <NotionIcon className="w-5 h-5" />,
+    codex: <OpenAIIcon className="w-5 h-5 text-white" />,
+    claude: <AnthropicIcon className="w-5 h-5 text-white" />,
+    opencode: <OpenCodeIcon className="w-5 h-5 text-white" />,
+  };
+  const icon = icons[type];
+  return (
+    <span
+      className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 overflow-hidden"
+      style={{ backgroundColor: color }}
+    >
+      {icon ?? <span className="text-white text-sm font-bold">{name[0]}</span>}
+    </span>
+  );
+}
+
+function ZoomIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect width="32" height="32" rx="6" fill="#2D8CFF"/>
+      <path d="M5 11.5C5 10.67 5.67 10 6.5 10H18.5C20.43 10 22 11.57 22 13.5V18.5C22 20.43 20.43 22 18.5 22H6.5C5.67 22 5 21.33 5 20.5V11.5Z" fill="white"/>
+      <path d="M23 14L27 11.5V20.5L23 18V14Z" fill="white"/>
+    </svg>
+  );
+}
+
+function GoogleDriveIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 87.3 78" xmlns="http://www.w3.org/2000/svg">
+      <path d="M6.6 66.85l3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3L28 53H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066DA"/>
+      <path d="M43.65 25L29.35 0c-1.35.8-2.5 1.9-3.3 3.3L1.2 48.5A9 9 0 000 53h28z" fill="#00AC47"/>
+      <path d="M73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75L86.1 57.5A9 9 0 0087.3 53H59.3l5.95 11.45z" fill="#EA4335"/>
+      <path d="M43.65 25L57.95 0H13.35c-1.35.8-2.5 1.9-3.3 3.3L13.35 8.5 28 25z" fill="#00832D"/>
+      <path d="M59.3 53H87.3l-1.2-4.5-25-43.2c-.8-1.4-1.95-2.5-3.3-3.3L43.65 25l15.65 28z" fill="#2684FC"/>
+      <path d="M28 53L13.75 76.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2L59.3 53z" fill="#FFBA00"/>
+    </svg>
+  );
+}
+
+function GmailIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      <path d="M24 5.457v13.909c0 .904-.732 1.636-1.636 1.636h-3.819V11.73L12 16.64l-6.545-4.91v9.273H1.636A1.636 1.636 0 010 19.366V5.457c0-2.023 2.309-3.178 3.927-1.964L5.455 4.64 12 9.548l6.545-4.907 1.528-1.148C21.69 2.28 24 3.434 24 5.457z" fill="#EA4335"/>
+      <path d="M0 5.457v13.909c0 .904.732 1.636 1.636 1.636H5.455V11.73L0 7.73V5.457z" fill="#C5221F"/>
+      <path d="M24 5.457v2.273L18.545 11.73V20.999h3.819A1.636 1.636 0 0024 19.366V5.457z" fill="#C5221F"/>
+      <path d="M0 7.73l5.455 4 6.545 4.91 6.545-4.91 5.455-4V5.457c0-2.023-2.31-3.178-3.927-1.964L12 9.548 5.455 4.64 3.927 3.493C2.31 2.28 0 3.434 0 5.457v2.273z" fill="#EA4335"/>
+    </svg>
+  );
+}
+
+function GitHubIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="currentColor">
+      <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+    </svg>
+  );
+}
+
+function NotionIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+      <path d="M6.07 6.61C8.47 8.55 9.37 8.41 13.97 8.1L87.7 3.7C88.9 3.7 87.96 2.5 87.5 2.36L75.18.46C72.78.16 72.48.01 69.58.16L6.22 4.96C4.87 5.1 4.57 5.86 6.07 6.61Z" fill="#ffffff"/>
+      <path d="M8.47 17.4V90.69c0 3.59 1.79 4.93 5.84 4.64l80.2-4.64c4.04-.3 4.49-2.84 4.49-5.83V13.76c0-2.99-1.2-4.63-3.89-4.33L12.81 13.9C10.11 14.2 8.47 15.7 8.47 17.4Z" fill="#ffffff"/>
+      <path d="M59.22 21.25L29.33 23.2c-2.69.15-3.44 1.64-3.44 3.73v43.36c0 2.09 1.2 3.14 3.44 2.99l29.89-1.8c2.24-.15 2.69-1.34 2.69-3.44V24.24c0-2.09-.45-3.14-2.69-2.99Z" fill="#000000"/>
+      <path d="M56.83 25.64l-22.3 1.35v37.58l22.3-1.35V25.64Z" fill="#ffffff"/>
+      <path d="M42.69 30.07l-5.39.33v5.39l5.39-.33V30.07Z" fill="#000000"/>
+      <path d="M47.78 29.77l-3.89.24v5.39l3.89-.24V29.77Z" fill="#000000"/>
+    </svg>
+  );
+}
+
+function OpenAIIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="currentColor">
+      <path d="M22.282 9.821a5.985 5.985 0 0 0-.516-4.91 6.046 6.046 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a5.985 5.985 0 0 0-3.998 2.9 6.046 6.046 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.051 6.051 0 0 0 6.515 2.9A5.985 5.985 0 0 0 13.26 24a6.056 6.056 0 0 0 5.772-4.206 5.99 5.99 0 0 0 3.997-2.9 6.056 6.056 0 0 0-.747-7.073zM13.26 22.43a4.476 4.476 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.795.795 0 0 0 .392-.681v-6.737l2.02 1.168a.071.071 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494zM3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.771.771 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.032.067L9.8 19.9a4.494 4.494 0 0 1-6.2-1.596zM2.34 7.896a4.485 4.485 0 0 1 2.366-1.973V11.6a.766.766 0 0 0 .388.676l5.815 3.355-2.02 1.168a.076.076 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855l-5.843-3.369 2.02-1.168a.076.076 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.402-.681zm2.01-3.023l-.141-.085-4.774-2.782a.776.776 0 0 0-.785 0L9.409 9.23V6.897a.066.066 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135l-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08-4.778 2.758a.795.795 0 0 0-.392.681zm1.097-2.365l2.602-1.5 2.607 1.5v2.993l-2.607 1.5-2.602-1.5z"/>
+    </svg>
+  );
+}
+
+function AnthropicIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="currentColor">
+      <path d="M13.827 3.52h3.603L24 20h-3.603l-6.57-16.48zm-7.258 0h3.767L16.906 20h-3.674l-1.343-3.461H5.017L3.674 20H0L6.57 3.52zm2.285 5.357l-2.07 5.675h4.14l-2.07-5.675z"/>
+    </svg>
+  );
+}
+
+function OpenCodeIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="currentColor">
+      <path d="M20 3H4a2 2 0 00-2 2v14a2 2 0 002 2h16a2 2 0 002-2V5a2 2 0 00-2-2zm-9.5 13.5l-1.5-1.5 3-3-3-3 1.5-1.5 4.5 4.5-4.5 4.5z"/>
+    </svg>
+  );
 }
 
 function SlackLogoIcon({ className }) {
