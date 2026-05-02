@@ -63,6 +63,22 @@ def _get_env(key: str) -> str | None:
     return os.environ.get(key) or None
 
 
+def _public_base_url() -> str:
+    """Return the externally-reachable base URL (no trailing slash).
+
+    Priority:
+    1. REPLIT_DEV_DOMAIN env var  →  https://<domain>
+    2. PUBLIC_BASE_URL env var    →  used as-is (strip trailing slash)
+    Fallback to empty string (caller must still work but redirect_uri will be wrong).
+    """
+    import os
+    dev_domain = os.environ.get("REPLIT_DEV_DOMAIN", "")
+    if dev_domain:
+        return f"https://{dev_domain}"
+    pub = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+    return pub
+
+
 def _slack_configured() -> bool:
     return bool(_get_env("SLACK_CLIENT_ID") and _get_env("SLACK_CLIENT_SECRET"))
 
@@ -77,9 +93,11 @@ def _google_configured() -> bool:
 
 
 def _connector_setup_status(connector_type: str) -> dict[str, Any]:
+    base = _public_base_url()
     if connector_type == "slack":
         configured = _slack_configured()
         managed = configured
+        redirect_uri = _get_env("SLACK_REDIRECT_URI") or (f"{base}/api/connectors/slack/callback" if base else None)
         return {
             "connector_type": "slack",
             "configured": configured,
@@ -87,9 +105,11 @@ def _connector_setup_status(connector_type: str) -> dict[str, Any]:
             "managed_install_url": "/api/connectors/slack/install" if managed else None,
             "missing": [] if configured else ["SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET"],
             "message": None if configured else "Add SLACK_CLIENT_ID and SLACK_CLIENT_SECRET to enable one-click OAuth.",
+            "redirect_uri": redirect_uri,
         }
     if connector_type == "zoom":
         configured = _zoom_configured()
+        redirect_uri = _get_env("ZOOM_REDIRECT_URI") or (f"{base}/api/connectors/zoom/callback" if base else None)
         return {
             "connector_type": "zoom",
             "configured": configured,
@@ -97,9 +117,11 @@ def _connector_setup_status(connector_type: str) -> dict[str, Any]:
             "managed_install_url": "/api/connectors/zoom/install" if configured else None,
             "missing": [] if configured else ["ZOOM_CLIENT_ID", "ZOOM_CLIENT_SECRET"],
             "message": None,
+            "redirect_uri": redirect_uri,
         }
     if connector_type in GOOGLE_CONNECTORS:
         configured = _google_configured()
+        redirect_uri = _get_env("GOOGLE_REDIRECT_URI") or (f"{base}/api/connectors/{connector_type}/callback" if base else None)
         return {
             "connector_type": connector_type,
             "configured": configured,
@@ -107,8 +129,9 @@ def _connector_setup_status(connector_type: str) -> dict[str, Any]:
             "managed_install_url": f"/api/connectors/{connector_type}/install" if configured else None,
             "missing": [] if configured else ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"],
             "message": None,
+            "redirect_uri": redirect_uri,
         }
-    return {"connector_type": connector_type, "configured": True, "managed_available": False, "managed_install_url": None, "missing": []}
+    return {"connector_type": connector_type, "configured": True, "managed_available": False, "managed_install_url": None, "missing": [], "redirect_uri": None}
 
 
 # ── DB helpers ─────────────────────────────────────────────────
@@ -263,7 +286,7 @@ async def slack_install(workspace_id: str, request: Request) -> RedirectResponse
     client_id = _get_env("SLACK_CLIENT_ID")
     if not client_id:
         raise HTTPException(status_code=503, detail="Slack OAuth is not configured on this server.")
-    redirect_uri = _get_env("SLACK_REDIRECT_URI") or str(request.base_url).rstrip("/") + "/api/connectors/slack/callback"
+    redirect_uri = _get_env("SLACK_REDIRECT_URI") or f"{_public_base_url()}/api/connectors/slack/callback"
     state = f"{workspace_id}:{secrets.token_urlsafe(16)}"
     scopes = "channels:history,channels:read,groups:history,groups:read,users:read,team:read"
     url = (
@@ -340,7 +363,7 @@ async def zoom_install(workspace_id: str, request: Request) -> RedirectResponse:
     client_id = _get_env("ZOOM_CLIENT_ID")
     if not client_id:
         raise HTTPException(status_code=503, detail="Zoom OAuth is not configured on this server.")
-    redirect_uri = _get_env("ZOOM_REDIRECT_URI") or str(request.base_url).rstrip("/") + "/api/connectors/zoom/callback"
+    redirect_uri = _get_env("ZOOM_REDIRECT_URI") or f"{_public_base_url()}/api/connectors/zoom/callback"
     state = f"{workspace_id}:{secrets.token_urlsafe(16)}"
     url = (
         f"https://zoom.us/oauth/authorize"
@@ -375,7 +398,7 @@ async def zoom_callback(
     import httpx
     client_id = _get_env("ZOOM_CLIENT_ID") or ""
     client_secret = _get_env("ZOOM_CLIENT_SECRET") or ""
-    redirect_uri = _get_env("ZOOM_REDIRECT_URI") or str(request.base_url).rstrip("/") + "/api/connectors/zoom/callback"
+    redirect_uri = _get_env("ZOOM_REDIRECT_URI") or f"{_public_base_url()}/api/connectors/zoom/callback"
     credentials = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
 
     try:
@@ -445,7 +468,7 @@ async def google_install(
     client_id = _get_env("GOOGLE_CLIENT_ID")
     if not client_id:
         raise HTTPException(status_code=503, detail="Google OAuth is not configured on this server.")
-    redirect_uri = _get_env("GOOGLE_REDIRECT_URI") or str(request.base_url).rstrip("/") + f"/api/connectors/{connector_type}/callback"
+    redirect_uri = _get_env("GOOGLE_REDIRECT_URI") or f"{_public_base_url()}/api/connectors/{connector_type}/callback"
     state = f"{workspace_id}:{connector_type}:{secrets.token_urlsafe(16)}"
     scope = _GOOGLE_SCOPES[connector_type]
     url = (
@@ -487,7 +510,7 @@ async def google_callback(
     import httpx
     client_id = _get_env("GOOGLE_CLIENT_ID") or ""
     client_secret = _get_env("GOOGLE_CLIENT_SECRET") or ""
-    redirect_uri = _get_env("GOOGLE_REDIRECT_URI") or str(request.base_url).rstrip("/") + f"/api/connectors/{connector_type}/callback"
+    redirect_uri = _get_env("GOOGLE_REDIRECT_URI") or f"{_public_base_url()}/api/connectors/{connector_type}/callback"
 
     try:
         async with httpx.AsyncClient() as http:

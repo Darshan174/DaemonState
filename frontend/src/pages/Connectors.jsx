@@ -246,7 +246,7 @@ export default function Connectors() {
             {isMock && <MockBadge />}
           </div>
           <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-500 dark:text-slate-400">
-            Slack, Zoom, Google Drive, Gmail, and Wispr Flow are the target source surfaces. Each connector should land raw source documents first, then the extractor turns those documents into graph components with provenance.
+            Slack, Zoom, Google Drive, and Gmail are the target source surfaces. Each connector lands raw source documents first, then the extractor turns those documents into graph components with provenance.
           </p>
           {isMock && (
             <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
