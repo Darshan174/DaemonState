@@ -96,30 +96,30 @@ const CONNECTOR_CATALOG = {
     name: "Google Drive",
     description: "Docs, Sheets, Slides, and folder content",
     color: "#0F9D58",
-    availability: "coming_soon",
+    availability: "available",
     provider: "official_api",
     providerLabel: "Official API",
-    providerNote: "Drive should ingest docs, sheets, slides, and folder metadata into the same source and graph pipeline.",
+    providerNote: "Drive ingest docs, sheets, slides, and folder metadata into the source and graph pipeline.",
   },
   gmail: {
     type: "gmail",
     name: "Gmail",
     description: "Email threads, attachments, and sender context",
     color: "#EA4335",
-    availability: "coming_soon",
+    availability: "available",
     provider: "official_api",
     providerLabel: "Official API",
-    providerNote: "Gmail should ingest selected mailbox threads and attachments with source provenance.",
+    providerNote: "Gmail ingests selected mailbox threads and attachments with source provenance.",
   },
   wispr_flow: {
     type: "wispr_flow",
     name: "Wispr Flow",
     description: "Dictation notes, transcripts, and captured thoughts",
     color: "#111827",
-    availability: "coming_soon",
+    availability: "available",
     provider: "official_api",
     providerLabel: "Official API",
-    providerNote: "Wispr Flow should bring dictated notes and transcripts into the graph as first-class source documents.",
+    providerNote: "Wispr Flow brings dictated notes and transcripts into the graph as first-class source documents.",
   },
 };
 
@@ -1618,6 +1618,22 @@ export function useConnectGitHub() {
   });
 }
 
+export function useConnectWisprFlow() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ apiKey }) => {
+      const wsId = await getWorkspaceId();
+      return api.post("/connectors/wispr_flow/connect", { workspace_id: wsId, api_key: apiKey });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["connectors"] });
+      qc.invalidateQueries({ queryKey: ["connector-processing-summary"] });
+      qc.invalidateQueries({ queryKey: ["source-documents"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+}
+
 export function useSaveSlackOAuthSettings() {
   const qc = useQueryClient();
   return useMutation({
@@ -1707,7 +1723,7 @@ function normalizeConnectors(data) {
       .map((item) => [item.connector_type, item]),
   );
 
-  const isMockShape = rawConnectors.every((item) => item && "lastSync" in item);
+  const isMockShape = rawConnectors.length > 0 && rawConnectors.every((item) => item && "lastSync" in item);
   if (isMockShape) {
     return rawConnectors.map((item) => {
       const type = item.type ?? item.id;

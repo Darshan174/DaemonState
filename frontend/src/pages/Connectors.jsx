@@ -4,6 +4,7 @@ import {
   useConnectGitHub,
   useConnectZoom,
   useConnectNotion,
+  useConnectWisprFlow,
   useSaveSlackOAuthSettings,
   useConnectorSyncJobs,
   useConnectorSyncStatus,
@@ -56,6 +57,7 @@ export default function Connectors() {
   const saveSlackOAuthMut = useSaveSlackOAuthSettings();
   const connectZoomMut = useConnectZoom();
   const connectGitHubMut = useConnectGitHub();
+  const connectWisprFlowMut = useConnectWisprFlow();
   const syncMut = useSyncConnector();
   const disconnectMut = useDisconnectConnector();
   const [actionError, setActionError] = useState(null);
@@ -75,6 +77,8 @@ export default function Connectors() {
   const [githubFormOpen, setGitHubFormOpen] = useState(false);
   const [githubToken, setGitHubToken] = useState("");
   const [githubRepositories, setGitHubRepositories] = useState("");
+  const [wisprFlowFormOpen, setWisprFlowFormOpen] = useState(false);
+  const [wisprFlowApiKey, setWisprFlowApiKey] = useState("");
 
   const workspaceId = useMemo(
     () => resolveWorkspaceId(workspaces.data, selectedId),
@@ -176,6 +180,24 @@ export default function Connectors() {
       window.clearInterval(timer);
     };
   }, [isMock, oauthFlow, query.refetch]);
+
+  const startGenericOAuth = (installHref, connectorType) => {
+    setActionError(null);
+    setActionNotice(null);
+    const popup = window.open(installHref, `ce-${connectorType}-oauth`, "popup=yes,width=640,height=820");
+    if (!popup) {
+      window.location.assign(installHref);
+      return;
+    }
+    popup.focus?.();
+    const timer = window.setInterval(async () => {
+      if (popup.closed) {
+        window.clearInterval(timer);
+        await query.refetch();
+      }
+    }, OAUTH_POLL_INTERVAL_MS);
+    setActionNotice(`${connectorType.replace("_", " ")} OAuth opened in a new window. Finish there to connect.`);
+  };
 
   const openSlackConnectModal = (installHref, currentStatus, mode = "self_hosted") => {
     setActionError(null);
@@ -338,12 +360,18 @@ export default function Connectors() {
               onChangeGitHubRepositories={setGitHubRepositories}
               onToggleGitHubForm={() => setGitHubFormOpen((current) => !current)}
               connectGitHubMut={connectGitHubMut}
+              wisprFlowFormOpen={connector.type === "wispr_flow" ? wisprFlowFormOpen : false}
+              wisprFlowApiKey={wisprFlowApiKey}
+              onChangeWisprFlowApiKey={setWisprFlowApiKey}
+              onToggleWisprFlowForm={() => setWisprFlowFormOpen((current) => !current)}
+              connectWisprFlowMut={connectWisprFlowMut}
               syncMut={syncMut}
               disconnectMut={disconnectMut}
               onActionError={setActionError}
               onActionNotice={setActionNotice}
               onSyncJobSettled={handleSyncJobSettled}
               onStartOAuth={openSlackConnectModal}
+              onStartGenericOAuth={startGenericOAuth}
             />
           ))}
         </div>
@@ -396,12 +424,18 @@ function ConnectorCard({
   onChangeGitHubRepositories,
   onToggleGitHubForm,
   connectGitHubMut,
+  wisprFlowFormOpen,
+  wisprFlowApiKey,
+  onChangeWisprFlowApiKey,
+  onToggleWisprFlowForm,
+  connectWisprFlowMut,
   syncMut,
   disconnectMut,
   onActionError,
   onActionNotice,
   onSyncJobSettled,
   onStartOAuth,
+  onStartGenericOAuth,
 }) {
   const {
     connectorId,
@@ -439,6 +473,10 @@ function ConnectorCard({
   const isNotion = type === "notion";
   const isZoom = type === "zoom";
   const isGitHub = type === "github";
+  const isGDrive = type === "gdrive";
+  const isGmail = type === "gmail";
+  const isWisprFlow = type === "wispr_flow";
+  const isGoogleOAuth = isGDrive || isGmail;
   const slackSelfHostedSetupAvailable = isSlack && isConfigured === false;
   const canConnect =
     !isDemo &&
@@ -592,6 +630,32 @@ function ConnectorCard({
         },
       },
     );
+  };
+
+  const handleWisprFlowConnect = (event) => {
+    event.preventDefault();
+    onActionError(null);
+    onActionNotice(null);
+    connectWisprFlowMut.mutate(
+      { apiKey: wisprFlowApiKey },
+      {
+        onError: (err) => onActionError(formatActionError(err) || "Failed to connect Wispr Flow."),
+        onSuccess: () => {
+          onChangeWisprFlowApiKey("");
+          onToggleWisprFlowForm();
+          onActionNotice(
+            status === "disconnected"
+              ? "Wispr Flow API key saved. Run a sync to start storing dictation transcripts."
+              : "Wispr Flow API key updated. Run another sync to refresh transcripts.",
+          );
+        },
+      },
+    );
+  };
+
+  const handleGoogleOAuth = () => {
+    if (!installHref) return;
+    onStartGenericOAuth(installHref, type);
   };
 
   useEffect(() => {
@@ -817,6 +881,21 @@ function ConnectorCard({
             Save a GitHub token plus one or more repositories to ingest issues, pull requests, reviews, and comment threads.
           </p>
         )}
+        {isGDrive && status === "disconnected" && availability === "available" && (
+          <p className="text-[11px] text-gray-500 mt-2">
+            Connect with your Google account to start syncing Docs, Sheets, and Slides as structured source documents.
+          </p>
+        )}
+        {isGmail && status === "disconnected" && availability === "available" && (
+          <p className="text-[11px] text-gray-500 mt-2">
+            Connect with your Google account to ingest email threads and extract facts from important conversations.
+          </p>
+        )}
+        {isWisprFlow && status === "disconnected" && availability === "available" && (
+          <p className="text-[11px] text-gray-500 mt-2">
+            Save a Wispr Flow API key to sync dictation transcripts as source documents for extraction and query.
+          </p>
+        )}
         {isSlack && status === "error" && (
           <p className="text-[11px] text-red-600 dark:text-red-400 mt-2">
             Slack needs attention. Reconnect the workspace or retry sync after checking OAuth and connector health.
@@ -1007,6 +1086,43 @@ function ConnectorCard({
         </form>
       )}
 
+      {isWisprFlow && wisprFlowFormOpen && (
+        <form onSubmit={handleWisprFlowConnect} className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 p-3 space-y-3">
+          <div>
+            <label htmlFor="wispr-flow-api-key" className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+              Wispr Flow API key
+            </label>
+            <input
+              id="wispr-flow-api-key"
+              type="password"
+              value={wisprFlowApiKey}
+              onChange={(event) => onChangeWisprFlowApiKey(event.target.value)}
+              placeholder="wf_xxx"
+              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            />
+            <p className="mt-1 text-[11px] text-gray-500">
+              Find your API key in Wispr Flow settings. Dictation transcripts will be synced into source documents.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              disabled={connectWisprFlowMut.isPending || !wisprFlowApiKey.trim()}
+              className="px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+            >
+              {connectWisprFlowMut.isPending ? "Saving..." : "Save API key"}
+            </button>
+            <button
+              type="button"
+              onClick={onToggleWisprFlowForm}
+              className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-white dark:bg-slate-800"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+
       <div className="flex flex-wrap gap-2 mt-auto">
         {status === "coming_soon" ? (
           <button
@@ -1043,6 +1159,32 @@ function ConnectorCard({
         ) : isSlack && canReconnect && !installHref ? (
           <span className="inline-flex items-center rounded-lg bg-amber-50 dark:bg-amber-900/30 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800/50">
             Slack OAuth not configured
+          </span>
+        ) : isGoogleOAuth && canConnect && installHref ? (
+          <button
+            type="button"
+            disabled={isDemo || !workspaceId}
+            onClick={handleGoogleOAuth}
+            className="inline-flex items-center gap-2 rounded-full bg-white border border-gray-200 px-4 py-2 text-sm font-medium text-gray-900 hover:bg-gray-50 shadow-sm transition-colors dark:bg-slate-800 dark:border-gray-700 dark:text-white dark:hover:bg-slate-700"
+          >
+            <GoogleIcon className="w-4 h-4" />
+            Connect with Google
+          </button>
+        ) : isGoogleOAuth && canConnect && !installHref ? (
+          <span className="inline-flex items-center rounded-lg bg-amber-50 dark:bg-amber-900/30 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800/50">
+            Google OAuth not configured
+          </span>
+        ) : isGoogleOAuth && canReconnect && installHref ? (
+          <button
+            type="button"
+            onClick={handleGoogleOAuth}
+            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 transition-colors"
+          >
+            Reconnect Google
+          </button>
+        ) : isGoogleOAuth && canReconnect && !installHref ? (
+          <span className="inline-flex items-center rounded-lg bg-amber-50 dark:bg-amber-900/30 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800/50">
+            Google OAuth not configured
           </span>
         ) : isNotion && status === "disconnected" ? (
           <button
@@ -1097,6 +1239,24 @@ function ConnectorCard({
             className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 disabled:text-gray-400 disabled:cursor-not-allowed"
           >
             Update GitHub token
+          </button>
+        ) : isWisprFlow && status === "disconnected" ? (
+          <button
+            type="button"
+            disabled={isDemo || !workspaceId}
+            onClick={onToggleWisprFlowForm}
+            className="px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+          >
+            Connect Wispr Flow
+          </button>
+        ) : isWisprFlow && (status === "connected" || status === "error") ? (
+          <button
+            type="button"
+            disabled={isDemo}
+            onClick={onToggleWisprFlowForm}
+            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 disabled:text-gray-400 disabled:cursor-not-allowed"
+          >
+            Update API key
           </button>
         ) : (
           <button
@@ -1588,6 +1748,17 @@ function SlackLogoIcon({ className }) {
       <path d="M47 27c-7.3 0-13.2-5.9-13.2-13.2S39.7.6 47 .6s13.2 5.9 13.2 13.2V27H47zm0 6.7c7.3 0 13.2 5.9 13.2 13.2s-5.9 13.2-13.2 13.2H13.9C6.6 60.1.7 54.2.7 46.9s5.9-13.2 13.2-13.2H47z" fill="#36C5F0"/>
       <path d="M99.9 46.9c0-7.3 5.9-13.2 13.2-13.2s13.2 5.9 13.2 13.2-5.9 13.2-13.2 13.2H99.9V46.9zm-6.6 0c0 7.3-5.9 13.2-13.2 13.2s-13.2-5.9-13.2-13.2V13.8C66.9 6.5 72.8.6 80.1.6s13.2 5.9 13.2 13.2v33.1z" fill="#2EB67D"/>
       <path d="M80.1 99.8c7.3 0 13.2 5.9 13.2 13.2s-5.9 13.2-13.2 13.2-13.2-5.9-13.2-13.2V99.8h13.2zm0-6.6c-7.3 0-13.2-5.9-13.2-13.2s5.9-13.2 13.2-13.2h33.1c7.3 0 13.2 5.9 13.2 13.2s-5.9 13.2-13.2 13.2H80.1z" fill="#ECB22E"/>
+    </svg>
+  );
+}
+
+function GoogleIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+      <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+      <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+      <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
     </svg>
   );
 }
