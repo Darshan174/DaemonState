@@ -61,6 +61,7 @@ export default function Connectors() {
   const [actionError, setActionError] = useState(null);
   const [actionNotice, setActionNotice] = useState(null);
   const [oauthFlow, setOauthFlow] = useState(null);
+  const [genericOAuthPending, setGenericOAuthPending] = useState(() => new Set());
   const [slackConnectIntent, setSlackConnectIntent] = useState(null);
   const [slackSetupOpen, setSlackSetupOpen] = useState(false);
   const [slackClientId, setSlackClientId] = useState("");
@@ -167,6 +168,13 @@ export default function Connectors() {
       }
     };
 
+    const onMsg = (e) => {
+      if (e.data === "oauth-complete") {
+        void tick();
+      }
+    };
+    window.addEventListener("message", onMsg);
+
     const timer = window.setInterval(() => {
       void tick();
     }, OAUTH_POLL_INTERVAL_MS);
@@ -174,6 +182,7 @@ export default function Connectors() {
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      window.removeEventListener("message", onMsg);
     };
   }, [isMock, oauthFlow, query.refetch]);
 
@@ -186,13 +195,31 @@ export default function Connectors() {
       return;
     }
     popup.focus?.();
+    setGenericOAuthPending((prev) => new Set([...prev, connectorType]));
+    const finish = async () => {
+      setGenericOAuthPending((prev) => {
+        const next = new Set(prev);
+        next.delete(connectorType);
+        return next;
+      });
+      await query.refetch();
+    };
     const timer = window.setInterval(async () => {
       if (popup.closed) {
         window.clearInterval(timer);
-        await query.refetch();
+        await finish();
       }
     }, OAUTH_POLL_INTERVAL_MS);
-    setActionNotice(`${connectorType.replace("_", " ")} OAuth opened in a new window. Finish there to connect.`);
+    const onMsg = async (e) => {
+      if (e.data === "oauth-complete") {
+        window.removeEventListener("message", onMsg);
+        window.clearInterval(timer);
+        popup.close?.();
+        await finish();
+      }
+    };
+    window.addEventListener("message", onMsg);
+    setActionNotice(`${connectorType.replace(/_/g, " ")} OAuth opened in a new window. Finish there to connect.`);
   };
 
   const openSlackConnectModal = (installHref, currentStatus, mode = "self_hosted") => {
@@ -272,7 +299,7 @@ export default function Connectors() {
         <div className="mt-4 grid gap-3 md:grid-cols-3">
           <QuickPathStep
             title="1. Connect a source"
-            description="Start with Slack, Zoom, Drive, Gmail, or Wispr Flow so the workspace has real context to ingest."
+            description="Start with Slack, Zoom, Drive, or Gmail so the workspace has real context to ingest."
             to="/app/connectors"
             action="Connectors"
           />
@@ -327,7 +354,7 @@ export default function Connectors() {
               key={connector.type}
               connector={connector}
               isDemo={isMock}
-              oauthPending={!!oauthFlow}
+              oauthPending={connector.type === "slack" ? !!oauthFlow : genericOAuthPending.has(connector.type)}
               workspaceId={workspaceId}
               processing={processingByType.get(connector.type) ?? null}
               slackSetupOpen={connector.type === "slack" ? slackSetupOpen : false}
@@ -1189,7 +1216,7 @@ function ConnectorCard({
           {isDemo
               ? "Demo mode"
               : oauthPending
-                ? "Waiting for Slack..."
+                ? "Connecting..."
                 : workspaceId
                   ? "Already connected"
                   : "Select workspace"}
