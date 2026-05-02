@@ -453,6 +453,7 @@ function ConnectorCard({
     isConfigured = true,
     managedConnectAvailable = false,
     managedInstallUrl = null,
+    redirectUri = null,
   } = connector;
 
   const isSlack = type === "slack";
@@ -854,6 +855,23 @@ function ConnectorCard({
           <p className="text-[11px] text-gray-500 mt-2">
             Connect with your Google account to ingest email threads and extract facts from important conversations.
           </p>
+        )}
+        {redirectUri && status === "disconnected" && (
+          <div className="mt-2 rounded-md bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/50 px-2.5 py-2">
+            <p className="text-[10px] font-medium text-blue-700 dark:text-blue-400 mb-0.5">
+              Register this redirect URI in your {name} app:
+            </p>
+            <div className="flex items-center gap-1.5">
+              <code className="flex-1 text-[10px] text-blue-800 dark:text-blue-300 break-all font-mono">{redirectUri}</code>
+              <button
+                type="button"
+                onClick={() => navigator.clipboard.writeText(redirectUri)}
+                className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-800/40 text-blue-700 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-700/40"
+              >
+                Copy
+              </button>
+            </div>
+          </div>
         )}
         {isSlack && status === "error" && (
           <p className="text-[11px] text-red-600 dark:text-red-400 mt-2">

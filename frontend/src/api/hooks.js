@@ -1751,6 +1751,7 @@ function normalizeConnectors(data) {
         managedConnectAvailable,
         managedInstallUrl: setup?.managed_install_url ?? null,
         missingConfig: Array.isArray(setup?.missing) ? setup.missing : [],
+        redirectUri: setup?.redirect_uri ?? null,
         message:
           catalogItem.type === "slack" && !isConfigured && !managedConnectAvailable
             ? setup?.message ?? "Slack OAuth is not configured yet."
@@ -1794,6 +1795,7 @@ function normalizeConnectors(data) {
       managedConnectAvailable,
       managedInstallUrl: setup?.managed_install_url ?? null,
       missingConfig: Array.isArray(setup?.missing) ? setup.missing : [],
+      redirectUri: setup?.redirect_uri ?? null,
     };
   });
 }
