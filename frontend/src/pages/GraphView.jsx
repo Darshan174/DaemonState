@@ -40,6 +40,9 @@ export default function GraphView() {
     source_type: "",
     status: "",
   });
+  const [building, setBuilding] = useState(false);
+  const [buildResult, setBuildResult] = useState(null);
+  const [agentStatus, setAgentStatus] = useState(null);
 
   useEffect(() => {
     async function fetchGraph() {
@@ -59,6 +62,29 @@ export default function GraphView() {
     }
     fetchGraph();
   }, [viewMode]);
+
+  useEffect(() => {
+    fetch("/api/graph/agent-status")
+      .then((r) => r.json())
+      .then(setAgentStatus)
+      .catch(() => {});
+  }, []);
+
+  async function handleBuildGraph() {
+    setBuilding(true);
+    setBuildResult(null);
+    try {
+      const res = await fetch("/api/graph/build", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ limit: 100 }) });
+      const data = await res.json();
+      setBuildResult(data);
+      const graphRes = await fetch("/api/graph");
+      if (graphRes.ok) setGraphData(await graphRes.json());
+    } catch (e) {
+      setBuildResult({ error: e.message });
+    } finally {
+      setBuilding(false);
+    }
+  }
 
   const filteredData = useCallback(() => {
     if (!graphData) return { models: [], components: [], relationships: [] };
@@ -460,7 +486,64 @@ export default function GraphView() {
             </select>
           </div>
           )}
+          <div className="ml-auto flex items-center gap-2">
+            {agentStatus && (
+              <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full ${agentStatus.llm_enabled ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"}`}>
+                {agentStatus.llm_enabled ? `LLM: ${agentStatus.extraction_model}` : "Regex extraction"}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={handleBuildGraph}
+              disabled={building}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-bold transition-colors"
+            >
+              {building ? (
+                <>
+                  <span className="w-3 h-3 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                  Building…
+                </>
+              ) : (
+                <>
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                    <path d="M2 17l10 5 10-5"/>
+                    <path d="M2 12l10 5 10-5"/>
+                  </svg>
+                  Build Graph
+                </>
+              )}
+            </button>
+          </div>
         </div>
+
+        {buildResult && !buildResult.error && (
+          <div className="mb-3 flex items-start gap-3 px-4 py-3 rounded-xl bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 text-xs">
+            <svg className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 6 9 17 4 12"/>
+            </svg>
+            <div className="flex-1 min-w-0">
+              <p className="font-bold text-emerald-800 dark:text-emerald-300 mb-1">Graph built successfully</p>
+              <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-emerald-700 dark:text-emerald-400">
+                <span>{buildResult.docs_processed} docs processed</span>
+                <span>{buildResult.components_created} components created</span>
+                <span>{buildResult.relationships_inferred} relationships inferred</span>
+                <span className="text-emerald-600 dark:text-emerald-500">{buildResult.llm_extraction ? "LLM extraction" : "Regex extraction"}</span>
+              </div>
+              {buildResult.errors?.length > 0 && (
+                <p className="mt-1 text-amber-600 dark:text-amber-400">{buildResult.errors.length} doc(s) had errors</p>
+              )}
+            </div>
+            <button onClick={() => setBuildResult(null)} className="text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-300 font-bold ml-auto shrink-0">✕</button>
+          </div>
+        )}
+        {buildResult?.error && (
+          <div className="mb-3 px-4 py-3 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-xs text-red-700 dark:text-red-400 flex items-center justify-between">
+            <span>Build failed: {buildResult.error}</span>
+            <button onClick={() => setBuildResult(null)} className="font-bold ml-4">✕</button>
+          </div>
+        )}
+
         <div
           ref={containerRef}
           className="flex-1 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 min-h-0"

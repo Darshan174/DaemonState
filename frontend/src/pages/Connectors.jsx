@@ -1666,7 +1666,7 @@ function ConnectorIconBadge({ type, color, name }) {
   return (
     <span
       className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 overflow-hidden"
-      style={{ backgroundColor: color }}
+      style={{ backgroundColor: color, boxShadow: color === "#ffffff" ? "inset 0 0 0 1px #e5e7eb" : undefined }}
     >
       {icon ?? <span className="text-white text-sm font-bold">{name[0]}</span>}
     </span>
@@ -1698,11 +1698,13 @@ function GoogleDriveIcon({ className }) {
 
 function GmailIcon({ className }) {
   return (
-    <svg className={className} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-      <path d="M24 5.457v13.909c0 .904-.732 1.636-1.636 1.636h-3.819V11.73L12 16.64l-6.545-4.91v9.273H1.636A1.636 1.636 0 010 19.366V5.457c0-2.023 2.309-3.178 3.927-1.964L5.455 4.64 12 9.548l6.545-4.907 1.528-1.148C21.69 2.28 24 3.434 24 5.457z" fill="#EA4335"/>
-      <path d="M0 5.457v13.909c0 .904.732 1.636 1.636 1.636H5.455V11.73L0 7.73V5.457z" fill="#C5221F"/>
-      <path d="M24 5.457v2.273L18.545 11.73V20.999h3.819A1.636 1.636 0 0024 19.366V5.457z" fill="#C5221F"/>
-      <path d="M0 7.73l5.455 4 6.545 4.91 6.545-4.91 5.455-4V5.457c0-2.023-2.31-3.178-3.927-1.964L12 9.548 5.455 4.64 3.927 3.493C2.31 2.28 0 3.434 0 5.457v2.273z" fill="#EA4335"/>
+    <svg className={className} viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+      <path d="M4.5 39.5h7V24L2 17v19a2.5 2.5 0 002.5 2.5z" fill="#4285F4"/>
+      <path d="M36.5 39.5h7A2.5 2.5 0 0046 37V17l-9.5 7v15.5z" fill="#34A853"/>
+      <path d="M36.5 11.5v12.5L46 17v-3a2.5 2.5 0 00-4-2l-5.5 3.5-12 7.5-12-7.5L7 10a2.5 2.5 0 00-5 2v3l9.5 7V11.5L24 19.5l12.5-8z" fill="#EA4335"/>
+      <path d="M11.5 24v15.5h13V25.5L11.5 24z" fill="#FBBC05"/>
+      <path d="M36.5 24L24 25.5v14h12.5V24z" fill="#34A853"/>
+      <path d="M2 17l9.5 7L24 19.5 36.5 24l9.5-7-12-7.5L24 11.5l-9.5 5.5L7 10 2 17z" fill="#EA4335"/>
     </svg>
   );
 }
@@ -1746,8 +1748,12 @@ function AnthropicIcon({ className }) {
 
 function OpenCodeIcon({ className }) {
   return (
-    <svg className={className} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="currentColor">
-      <path d="M20 3H4a2 2 0 00-2 2v14a2 2 0 002 2h16a2 2 0 002-2V5a2 2 0 00-2-2zm-9.5 13.5l-1.5-1.5 3-3-3-3 1.5-1.5 4.5 4.5-4.5 4.5z"/>
+    <svg className={className} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="3" width="20" height="15" rx="2"/>
+      <path d="M7 9l-2 3 2 3"/>
+      <path d="M17 9l2 3-2 3"/>
+      <path d="M12 9l-1.5 6"/>
+      <line x1="2" y1="21" x2="22" y2="21"/>
     </svg>
   );
 }
