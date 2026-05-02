@@ -269,52 +269,12 @@ export default function Connectors() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
-            <h2 className="text-3xl font-bold tracking-tight text-slate-950 dark:text-white">Workspace Connectors</h2>
+            <h2 className="text-3xl font-bold tracking-tight text-slate-950 dark:text-white">Connectors</h2>
             {isMock && <MockBadge />}
           </div>
-          <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-500 dark:text-slate-400">
-            Slack, Zoom, Google Drive, and Gmail are the target source surfaces. Each connector lands raw source documents first, then the extractor turns those documents into graph components with provenance.
+          <p className="mt-1.5 text-sm text-slate-500 dark:text-slate-400">
+            Connect your sources. Each connector fetches raw messages and documents, then extracts structured facts into the knowledge graph.
           </p>
-          {isMock && (
-            <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
-              Connector cards are in demo mode right now. OAuth and sync actions unlock once the backend
-              endpoints are live.
-            </p>
-          )}
-        </div>
-      </div>
-
-      <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-4">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-400">Self-host quick path</h3>
-            <p className="text-xs text-gray-400 mt-1">
-              For a fresh install, the shortest path is connect a source, run the first sync, then inspect Sources before trusting Query answers.
-            </p>
-          </div>
-          <Link to="/app/sources" className="text-xs font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
-            Open sources
-          </Link>
-        </div>
-        <div className="mt-4 grid gap-3 md:grid-cols-3">
-          <QuickPathStep
-            title="1. Connect a source"
-            description="Start with Slack, Zoom, Drive, or Gmail so the workspace has real context to ingest."
-            to="/app/connectors"
-            action="Connectors"
-          />
-          <QuickPathStep
-            title="2. Run the first sync"
-            description="Queue a sync from the connector card and wait for raw documents to land in the source store."
-            to="/app/connectors"
-            action="Run sync"
-          />
-          <QuickPathStep
-            title="3. Validate trust"
-            description="Use Sources, Review, and Accuracy to verify what the system extracted before relying on it."
-            to="/app/review"
-            action="Open review"
-          />
         </div>
       </div>
 
@@ -715,16 +675,6 @@ function ConnectorCard({
             </>
           )}
         </div>
-        {syncMode && (
-          <p className="text-[11px] text-gray-400 mt-2 capitalize">
-            Last sync mode: {syncMode}
-          </p>
-        )}
-        {syncModeNote && (
-          <p className="text-[11px] text-gray-400 mt-2">
-            {syncModeNote}
-          </p>
-        )}
         {syncQueuedAt && (
           <div className="mt-2 inline-flex items-center gap-2 rounded-full bg-blue-50 dark:bg-blue-900/30 px-2.5 py-1 text-[11px] text-blue-700 dark:text-blue-400">
             <span className="inline-block h-1.5 w-1.5 rounded-full bg-blue-500" />
@@ -814,15 +764,7 @@ function ConnectorCard({
             </div>
           </div>
         )}
-        {message && !isSlack && (
-          <p className="text-[11px] text-gray-500 mt-2">{message}</p>
-        )}
-        {providerNote && (
-          <p className="text-[11px] text-gray-400 mt-2">
-            Connector path: {providerNote}
-          </p>
-        )}
-        {isZoom && (
+        {isZoom && status !== "disconnected" && (
           <ZoomCapabilityPanel
             status={status}
             authMode={authMode}
@@ -836,12 +778,7 @@ function ConnectorCard({
             oauthPending={oauthPending}
           />
         )}
-        {isGitHub && <GitHubCapabilityPanel repositories={connector.repositories ?? null} />}
-        {scope && (
-          <p className="text-[11px] text-gray-400 mt-2">
-            Slack scopes: {scope}
-          </p>
-        )}
+        {isGitHub && status !== "disconnected" && <GitHubCapabilityPanel repositories={connector.repositories ?? null} />}
         {isSlack && status === "disconnected" && availability === "available" && (
           <SlackSetupHint isConfigured={isConfigured} managedConnectAvailable={managedConnectAvailable} />
         )}
@@ -858,32 +795,7 @@ function ConnectorCard({
             onCancel={onToggleSlackSetup}
           />
         )}
-        {isNotion && status === "disconnected" && availability === "available" && (
-          <p className="text-[11px] text-gray-500 mt-2">
-            Add a Notion integration token, then sync pages into stored source documents for extraction and query.
-          </p>
-        )}
-        {isZoom && status === "disconnected" && availability === "available" && (
-          <p className="text-[11px] text-gray-500 mt-2">
-            Choose OAuth for webhook-driven transcript sync, or save a manual token if polling-only ingestion is enough for now.
-          </p>
-        )}
-        {isGitHub && status === "disconnected" && availability === "available" && (
-          <p className="text-[11px] text-gray-500 mt-2">
-            Save a GitHub token plus one or more repositories to ingest issues, pull requests, reviews, and comment threads.
-          </p>
-        )}
-        {isGDrive && status === "disconnected" && availability === "available" && (
-          <p className="text-[11px] text-gray-500 mt-2">
-            Connect with your Google account to start syncing Docs, Sheets, and Slides as structured source documents.
-          </p>
-        )}
-        {isGmail && status === "disconnected" && availability === "available" && (
-          <p className="text-[11px] text-gray-500 mt-2">
-            Connect with your Google account to ingest email threads and extract facts from important conversations.
-          </p>
-        )}
-        {redirectUri && status === "disconnected" && (
+        {redirectUri && status === "disconnected" && (zoomFormOpen || githubFormOpen || notionFormOpen) && (
           <div className="mt-2 rounded-md bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/50 px-2.5 py-2">
             <p className="text-[10px] font-medium text-blue-700 dark:text-blue-400 mb-0.5">
               Register this redirect URI in your {name} app:
@@ -900,66 +812,25 @@ function ConnectorCard({
             </div>
           </div>
         )}
-        {isSlack && status === "error" && (
+        {status === "error" && (
           <p className="text-[11px] text-red-600 dark:text-red-400 mt-2">
-            Slack needs attention. Reconnect the workspace or retry sync after checking OAuth and connector health.
-          </p>
-        )}
-        {isNotion && status === "error" && (
-          <p className="text-[11px] text-red-600 dark:text-red-400 mt-2">
-            Notion needs attention. Update the integration token, then run another sync.
-          </p>
-        )}
-        {isZoom && status === "error" && (
-          <p className="text-[11px] text-red-600 dark:text-red-400 mt-2">
-            Zoom needs attention. Reconnect OAuth or update the manual token, then run another sync.
-          </p>
-        )}
-        {isGitHub && status === "error" && (
-          <p className="text-[11px] text-red-600 dark:text-red-400 mt-2">
-            GitHub needs attention. Update the token or repository list, then run another sync.
-          </p>
-        )}
-        {status === "connected" && teamName && (
-          <p className="text-[11px] text-emerald-700 dark:text-emerald-400 mt-2">
-            Connected and ready for ingestion.
+            Reconnect to refresh credentials, then run another sync.
           </p>
         )}
         {status === "connected" && itemsSynced > 0 && (
-          <div className="mt-2">
+          <div className="mt-2 flex items-center gap-2">
             <p className="text-[11px] text-emerald-700 dark:text-emerald-400">
-              {formatDocumentCount(itemsSynced)} available for extraction and query.
+              {Number(itemsSynced).toLocaleString()} document{Number(itemsSynced) === 1 ? "" : "s"} stored
             </p>
-            <Link to="/app/sources" className="inline-flex mt-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-400 underline">
-              Inspect stored documents
+            <span className="text-gray-300 dark:text-gray-600">·</span>
+            <Link to="/app/sources" className="text-[11px] font-medium text-brand-600 dark:text-brand-400 hover:underline">
+              View sources
             </Link>
           </div>
         )}
         {status === "connected" && itemsSynced === 0 && !syncQueuedAt && (
-          <p className="text-[11px] text-gray-500 mt-2">
-            OAuth is complete. Run a sync to start storing Slack history in the database.
-          </p>
-        )}
-        {isNotion && status === "connected" && itemsSynced === 0 && !syncQueuedAt && (
-          <p className="text-[11px] text-gray-500 mt-2">
-            Notion is connected. Run a sync to store workspace pages and surface them in Sources and Query.
-          </p>
-        )}
-        {isZoom && status === "connected" && itemsSynced === 0 && !syncQueuedAt && (
-          <p className="text-[11px] text-gray-500 mt-2">
-            {authMode === "oauth"
-              ? "Zoom OAuth is connected. Webhook-driven sync is ready for supported recording events, or you can run a sync now."
-              : "Zoom is connected in manual polling mode. Run a sync to store meeting transcripts and surface them in Sources and Query."}
-          </p>
-        )}
-        {isGitHub && status === "connected" && itemsSynced === 0 && !syncQueuedAt && (
-          <p className="text-[11px] text-gray-500 mt-2">
-            GitHub is connected. Run a sync to store issues, pull requests, review threads, and linked engineering discussion.
-          </p>
-        )}
-        {status === "coming_soon" && (
-          <p className="text-[11px] text-gray-500 mt-2">
-            Backend support for this connector is intentionally deferred until the Slack path is stable.
+          <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-2">
+            Ready — run a sync to start pulling data.
           </p>
         )}
       </div>
@@ -1408,19 +1279,14 @@ function GitHubCapabilityPanel({ repositories }) {
 }
 
 function SlackSetupHint({ isConfigured, managedConnectAvailable }) {
-  if (isConfigured || managedConnectAvailable) {
+  if (!isConfigured && !managedConnectAvailable) {
     return (
       <p className="text-[11px] text-gray-500 mt-2">
-        Connect Slack to start ingesting messages, threads, and source-backed pricing or roadmap facts.
+        Use advanced setup to provide your own Slack app credentials.
       </p>
     );
   }
-
-  return (
-    <p className="text-[11px] text-gray-500 mt-2">
-      Connect Slack through the managed app flow. Self-hosted Slack app credentials are available under advanced setup.
-    </p>
-  );
+  return null;
 }
 
 function SlackConnectModal({ mode, onCancel, onContinue }) {
@@ -1465,12 +1331,12 @@ function SlackConnectModal({ mode, onCancel, onContinue }) {
 
         <div className="mt-6 rounded-xl border border-gray-200 dark:border-gray-800/60 p-5 text-sm text-gray-700 dark:text-gray-300 space-y-4">
           <div>
-            <p className="font-semibold text-gray-900 dark:text-gray-100">Permissions always respected</p>
-            <p className="mt-1.5 leading-relaxed">
-              Context Engine is strictly limited to the scopes you explicitly approve during install. You can revoke access anytime from your Slack workspace settings.
+            <p className="font-semibold text-gray-900 dark:text-gray-100">Read-only access</p>
+            <p className="mt-1.5 leading-relaxed text-sm">
+              Context Engine only reads channel history. No messages are posted or modified. Revoke access anytime from your Slack workspace settings.
             </p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {["channels:history", "channels:read", "groups:history", "groups:read", "users:read", "team:read"].map((scope) => (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {["channels:history", "channels:join", "channels:read", "groups:history", "groups:read", "users:read", "team:read"].map((scope) => (
                 <span key={scope} className="inline-flex items-center rounded-md bg-gray-100 dark:bg-gray-800 px-2 py-1 text-[11px] font-medium text-gray-600 dark:text-gray-400">
                   {scope}
                 </span>
@@ -1480,15 +1346,8 @@ function SlackConnectModal({ mode, onCancel, onContinue }) {
           <div className="border-t border-gray-200 dark:border-gray-800/60" />
           <div>
             <p className="font-semibold text-gray-900 dark:text-gray-100">You're in control</p>
-            <p className="mt-1.5 leading-relaxed">
-              You can disconnect the workspace from Context Engine at any time. No messages are sent or posted to Slack.
-            </p>
-          </div>
-          <div className="border-t border-gray-200 dark:border-gray-800/60" />
-          <div>
-            <p className="font-semibold text-gray-900 dark:text-gray-100">Connectors may introduce risk</p>
-            <p className="mt-1.5 leading-relaxed">
-              Connect only workspaces whose documents and messages should be available to this Context Engine instance.
+            <p className="mt-1.5 leading-relaxed text-sm">
+              Disconnect the workspace from Context Engine at any time from this page.
             </p>
           </div>
         </div>
@@ -1601,24 +1460,21 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
   const slackConnectMode = managedConnectAvailable ? "managed" : "self_hosted";
 
   if (connector.status === "connected") {
+    const subtext = connector.syncQueuedAt
+      ? `Sync queued`
+      : connector.itemsSynced > 0
+        ? `${Number(connector.itemsSynced).toLocaleString()} document${Number(connector.itemsSynced) === 1 ? "" : "s"} stored`
+        : `Last sync ${connector.lastSync} — run a sync to pull messages`;
     return (
-      <div className="rounded-xl border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/30 p-4 flex items-start justify-between gap-4">
-        <div>
-          <p className="text-sm font-medium text-emerald-800 dark:text-emerald-300">
-            Slack is connected{connector.teamName ? ` to ${connector.teamName}` : ""}.
-          </p>
-          <p className="text-xs text-emerald-700 dark:text-emerald-400 mt-1">
-            {connector.syncQueuedAt
-              ? `A sync is queued for ${connector.syncQueuedAt}.`
-              : connector.itemsSynced > 0
-                ? `${formatDocumentCount(connector.itemsSynced)} available for extraction and query.`
-                : `Last completed sync: ${connector.lastSync}. Run a sync to store Slack history.`}
-          </p>
-          {connector.itemsSynced > 0 && (
-            <Link to="/app/sources" className="inline-flex mt-3 text-xs font-medium text-emerald-800 dark:text-emerald-300 underline">
-              Inspect stored documents
-            </Link>
-          )}
+      <div className="rounded-xl border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/30 px-4 py-3 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
+          <div className="min-w-0">
+            <span className="text-sm font-medium text-emerald-800 dark:text-emerald-300">
+              {connector.teamName ? connector.teamName : "Slack"} connected
+            </span>
+            <span className="ml-2 text-xs text-emerald-600 dark:text-emerald-400">{subtext}</span>
+          </div>
         </div>
         {!isDemo && !oauthPending && reconnectHref && (
           <a
@@ -1627,7 +1483,7 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
               event.preventDefault();
               onStartOAuth(reconnectHref, connector.status, slackConnectMode);
             }}
-            className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg border border-emerald-200 dark:border-emerald-800/50 text-emerald-800 dark:text-emerald-300 hover:bg-white/70 transition-colors"
+            className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:bg-white/70 transition-colors"
           >
             Refresh OAuth
           </a>
@@ -1638,12 +1494,10 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
 
   if (connector.status === "error") {
     return (
-      <div className="rounded-xl border border-red-200 dark:border-red-800/50 bg-red-50 dark:bg-red-900/30 p-4 flex items-start justify-between gap-4">
-        <div>
-          <p className="text-sm font-medium text-red-800 dark:text-red-300">Slack needs attention.</p>
-          <p className="text-xs text-red-700 dark:text-red-400 mt-1">
-            Reconnect the workspace to refresh credentials, then run another sync.
-          </p>
+      <div className="rounded-xl border border-red-200 dark:border-red-800/50 bg-red-50 dark:bg-red-900/30 px-4 py-3 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-red-500" />
+          <span className="text-sm font-medium text-red-800 dark:text-red-300">Slack needs attention — reconnect to refresh credentials</span>
         </div>
         {!isDemo && !oauthPending && reconnectHref && (
           <a
@@ -1662,16 +1516,11 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
   }
 
   if (connector.status === "disconnected") {
-    const isConfiguredBanner = connector.isConfigured ?? true;
     return (
-      <div className="rounded-xl border border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30 p-4 flex items-start justify-between gap-4">
-        <div>
-          <p className="text-sm font-medium text-amber-800 dark:text-amber-300">Slack is not connected yet.</p>
-          <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
-            {isConfiguredBanner
-              ? "Connect Slack to ingest channel history, threads, and source-backed team context."
-              : "A Slack app is required before connecting. Use Advanced self-hosted setup below to add your credentials, or ask your operator to set environment variables."}
-          </p>
+      <div className="rounded-xl border border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30 px-4 py-3 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-amber-400" />
+          <span className="text-sm font-medium text-amber-800 dark:text-amber-300">Slack not connected</span>
         </div>
         {!isDemo && !oauthPending && reconnectHref && (
           <button
@@ -1679,7 +1528,7 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
             onClick={() => onStartOAuth(reconnectHref, connector.status, slackConnectMode)}
             className="shrink-0 inline-flex items-center gap-2 rounded-full bg-white border border-gray-200 px-4 py-2 text-sm font-medium text-gray-900 hover:bg-gray-50 shadow-sm transition-colors dark:bg-slate-800 dark:border-gray-700 dark:text-white dark:hover:bg-slate-700"
           >
-            <SlackLogoIcon className="w-5 h-5" />
+            <SlackLogoIcon className="w-4 h-4" />
             Connect to Slack
           </button>
         )}
