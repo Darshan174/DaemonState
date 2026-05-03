@@ -37,8 +37,38 @@ function shortLabel(value, maxWords = 5) {
 // Strip common model-type prefixes that the containing box already communicates
 function stripModelPrefix(name) {
   return String(name || "")
-    .replace(/^(Action|Actions|Blocker|Blockers|Decision|Decisions|Risk|Risks|Outcome|Outcomes|Discussion|Fact):\s*/i, "")
+    .replace(/^(Action|Actions|Blocker|Blockers|Decision|Decisions|Risk|Risks|Outcome|Outcomes|Discussion|Fact|Task|Tasks|Feature|Features|Metric|Metrics|Meeting|Agent Session|AI step):\s*/i, "")
     .trim();
+}
+
+// ── CEO View presets ──────────────────────────────────────────────
+const CEO_VIEWS = [
+  { id: "all",        label: "All",            desc: "Full graph — every entity and relationship" },
+  { id: "birdsEye",   label: "Bird's Eye",     desc: "Company → Product → Feature → Task → PR → Customer" },
+  { id: "gaps",       label: "Gap Detector",   desc: "Highlights nodes with no connections — missing owners, orphaned tasks, unlinked decisions" },
+  { id: "decisions",  label: "Decision Trail", desc: "Message → Meeting → Decision → PR → Feature" },
+  { id: "aiSessions", label: "AI Sessions",    desc: "Agent sessions → decisions, files changed, bugs found, next steps" },
+];
+
+const CEO_VIEW_MODEL_PATTERNS = {
+  birdsEye:   /^(company|product|feature|task|customer|user|pr|issue|repo|metric)/i,
+  decisions:  /^(decision|meeting|message|email|document|slack|zoom|discussion)/i,
+  aiSessions: /^(agent session|agent|claude|codex|opencode|chatgpt|ai session)/i,
+};
+
+// Derive a Cytoscape CSS class from a model name for entity-type shapes
+function entityClass(modelName) {
+  const k = (modelName || "").toLowerCase().trim();
+  if (k.startsWith("decision"))                                                                   return "entity-decision";
+  if (k.startsWith("risk"))                                                                       return "entity-risk";
+  if (k.startsWith("task"))                                                                       return "entity-task";
+  if (k.startsWith("metric"))                                                                     return "entity-metric";
+  if (k.startsWith("company"))                                                                    return "entity-company";
+  if (k === "agent session" || k === "claude" || k === "codex" || k === "opencode" || k.startsWith("agent")) return "entity-agent";
+  if (k.startsWith("meeting"))                                                                    return "entity-meeting";
+  if (k.startsWith("feature"))                                                                    return "entity-feature";
+  if (k.startsWith("person") || k.startsWith("user") || k.startsWith("customer") || k.startsWith("team")) return "entity-person";
+  return "";
 }
 
 export default function GraphView() {
@@ -70,6 +100,7 @@ export default function GraphView() {
   const [askLoading, setAskLoading] = useState(false);
   const [askError, setAskError] = useState(null);
   const askInputRef = useRef(null);
+  const [ceoView, setCeoView] = useState("all");
 
   useEffect(() => {
     async function fetchGraph() {
@@ -144,8 +175,16 @@ export default function GraphView() {
     if (!graphData) return { models: [], components: [], relationships: [] };
     if (viewMode === "repo") return graphData;
 
+    const allModels = graphData.models || [];
     let components = graphData.components || [];
     let relationships = graphData.relationships || [];
+
+    // CEO view: filter to relevant model types (except "gaps" shows everything)
+    const ceoPattern = CEO_VIEW_MODEL_PATTERNS[ceoView];
+    if (ceoPattern) {
+      const modelNameById = new Map(allModels.map((m) => [m.id, m.name]));
+      components = components.filter((c) => ceoPattern.test(modelNameById.get(c.model_id) || ""));
+    }
 
     if (filters.model) {
       components = components.filter((c) => c.model_id === filters.model);
@@ -165,8 +204,8 @@ export default function GraphView() {
       (r) => componentIds.has(r.source_component_id) && componentIds.has(r.target_component_id)
     );
 
-    return { models: graphData.models || [], components, relationships };
-  }, [graphData, filters, viewMode]);
+    return { models: allModels, components, relationships };
+  }, [graphData, filters, viewMode, ceoView]);
 
   useEffect(() => {
     if (!containerRef.current || !graphData) return;
@@ -237,6 +276,13 @@ export default function GraphView() {
       });
 
       // Components are children of their model compound node
+      const modelNameById = new Map(models.map((m) => [m.id, m.name]));
+      const connectedComponentIds = new Set();
+      relationships.forEach((r) => {
+        connectedComponentIds.add(r.source_component_id);
+        connectedComponentIds.add(r.target_component_id);
+      });
+
       components.forEach((c) => {
         const temporal = c.temporal || "unknown";
         const tc = TEMPORAL_COLORS[temporal] || TEMPORAL_COLORS.unknown;
@@ -245,8 +291,13 @@ export default function GraphView() {
         const isGitHub = c.source_type === "github";
         const isPR = isGitHub && c.fact_type === "pull_request";
         const isIssue = isGitHub && c.fact_type === "issue";
+        const mName = modelNameById.get(c.model_id) || "";
+        const eClass = entityClass(mName);
+        const isGap = ceoView === "gaps" && !connectedComponentIds.has(c.id);
         const classNames = [
           isPR ? "github-pr" : isIssue ? "github-issue" : "",
+          eClass,
+          isGap ? "gap-node" : "",
         ].filter(Boolean).join(" ");
 
         let labelPrefix = "";
@@ -385,6 +436,28 @@ export default function GraphView() {
             width: 36,
             height: 22,
             "border-width": 2.5,
+          },
+        },
+
+        // ── ENTITY TYPE SHAPES ────────────────────────────────────
+        { selector: ".entity-decision", style: { shape: "diamond",        width: 32, height: 32 } },
+        { selector: ".entity-risk",     style: { shape: "triangle",       width: 32, height: 32 } },
+        { selector: ".entity-task",     style: { shape: "tag",            width: 34, height: 22 } },
+        { selector: ".entity-metric",   style: { shape: "barrel",         width: 28, height: 28 } },
+        { selector: ".entity-company",  style: { shape: "hexagon",        width: 36, height: 36 } },
+        { selector: ".entity-agent",    style: { shape: "star",           width: 36, height: 36 } },
+        { selector: ".entity-meeting",  style: { shape: "pentagon",       width: 30, height: 30 } },
+        { selector: ".entity-feature",  style: { shape: "round-rectangle", width: 38, height: 22 } },
+        { selector: ".entity-person",   style: { shape: "ellipse",        width: 30, height: 30 } },
+
+        // ── GAP NODE — isolated in Gap Detector view ──────────────
+        {
+          selector: ".gap-node",
+          style: {
+            opacity: 0.35,
+            "border-style": "dashed",
+            "border-width": 2.5,
+            "border-color": "#ef4444",
           },
         },
 
@@ -613,7 +686,7 @@ export default function GraphView() {
       containerEl.removeEventListener("mouseleave", onMouseLeave);
       cy.destroy();
     };
-  }, [graphData, filteredData, viewMode]);
+  }, [graphData, filteredData, viewMode, ceoView]);
 
   const models = graphData?.models || [];
   const allComponents = graphData?.components || [];
@@ -773,6 +846,37 @@ export default function GraphView() {
           </div>
         </div>
 
+        {/* ── CEO Views ─────────────────────────────────────────── */}
+        {viewMode === "knowledge" && (
+          <div className="flex items-center gap-2.5 mb-3 -mt-1 flex-wrap">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 shrink-0">CEO View</span>
+            <div className="flex gap-1.5 flex-wrap">
+              {CEO_VIEWS.map(({ id, label, desc }) => (
+                <button
+                  key={id}
+                  type="button"
+                  title={desc}
+                  onClick={() => setCeoView(id)}
+                  className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-all ${
+                    ceoView === id
+                      ? id === "gaps"       ? "bg-red-500 text-white shadow-sm"
+                      : id === "decisions"  ? "bg-amber-500 text-white shadow-sm"
+                      : id === "aiSessions" ? "bg-violet-600 text-white shadow-sm"
+                      : id === "birdsEye"   ? "bg-sky-600 text-white shadow-sm"
+                      : "bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-sm"
+                      : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {ceoView !== "all" && (
+              <span className="text-[10px] text-slate-400 italic hidden sm:inline">{CEO_VIEWS.find((v) => v.id === ceoView)?.desc}</span>
+            )}
+          </div>
+        )}
+
         {buildResult && !buildResult.error && (
           <div className="mb-3 flex items-start gap-3 px-4 py-3 rounded-xl bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 text-xs">
             <svg className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -804,7 +908,7 @@ export default function GraphView() {
           <div ref={containerRef} className="absolute inset-0 rounded-2xl" />
 
           {/* Persistent legend — top-right corner of graph canvas */}
-          <div className="pointer-events-none absolute top-3 right-3 z-10 bg-white/90 dark:bg-slate-800/90 backdrop-blur-sm rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-2.5 shadow-sm space-y-2.5">
+          <div className="pointer-events-none absolute top-3 right-3 z-10 bg-white/90 dark:bg-slate-800/90 backdrop-blur-sm rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-2.5 shadow-sm space-y-2.5 max-w-[152px]">
             <div>
               <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Node color — time</p>
               <div className="flex flex-col gap-1">
@@ -819,6 +923,26 @@ export default function GraphView() {
                       className="w-2.5 h-2.5 rounded-full shrink-0 border"
                       style={{ backgroundColor: TEMPORAL_COLORS[key].bg, borderColor: TEMPORAL_COLORS[key].border }}
                     />
+                    <span className="text-[10px] text-slate-600 dark:text-slate-400">{label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div>
+              <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Node shape — type</p>
+              <div className="flex flex-col gap-1">
+                {[
+                  { shape: "◆", label: "Decision" },
+                  { shape: "▲", label: "Risk / Blocker" },
+                  { shape: "⬟", label: "Task" },
+                  { shape: "★", label: "AI Session" },
+                  { shape: "⬡", label: "Company" },
+                  { shape: "⬠", label: "Meeting" },
+                  { shape: "▬", label: "Feature / Issue" },
+                  { shape: "●", label: "Person / User" },
+                ].map(({ shape, label }) => (
+                  <div key={label} className="flex items-center gap-1.5">
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400 w-3 text-center shrink-0">{shape}</span>
                     <span className="text-[10px] text-slate-600 dark:text-slate-400">{label}</span>
                   </div>
                 ))}
