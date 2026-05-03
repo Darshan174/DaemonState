@@ -1252,20 +1252,16 @@ export default function GraphView() {
                     <option value="">— select model —</option>
                     {aiSettings.provider === "anthropic" ? (
                       <>
-                        <option value="claude-opus-4-5">claude-opus-4-5</option>
-                        <option value="claude-3-7-sonnet-20250219">claude-3-7-sonnet-20250219</option>
-                        <option value="claude-3-5-sonnet-20241022">claude-3-5-sonnet-20241022</option>
-                        <option value="claude-3-5-haiku-20241022">claude-3-5-haiku-20241022</option>
+                        <option value="claude-opus-4-7">claude-opus-4-7</option>
+                        <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
+                        <option value="claude-haiku-4-5-20251001">claude-haiku-4-5-20251001</option>
                       </>
                     ) : aiSettings.provider === "openai" ? (
                       <>
-                        <option value="gpt-4.1">gpt-4.1</option>
-                        <option value="gpt-4.1-mini">gpt-4.1-mini</option>
-                        <option value="gpt-4.1-nano">gpt-4.1-nano</option>
-                        <option value="gpt-4o">gpt-4o</option>
-                        <option value="gpt-4o-mini">gpt-4o-mini</option>
-                        <option value="o4-mini">o4-mini</option>
-                        <option value="o3">o3</option>
+                        <option value="gpt-5.5">gpt-5.5</option>
+                        <option value="gpt-5.4">gpt-5.4</option>
+                        <option value="gpt-5.4-mini">gpt-5.4-mini</option>
+                        <option value="gpt-5.4-nano">gpt-5.4-nano</option>
                       </>
                     ) : (
                       <option value="" disabled>Select a provider first</option>
