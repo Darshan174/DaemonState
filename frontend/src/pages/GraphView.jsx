@@ -64,6 +64,12 @@ export default function GraphView() {
     catch { return {}; }
   });
   const [tooltipNode, setTooltipNode] = useState(null);
+  const [showAsk, setShowAsk] = useState(false);
+  const [askQuery, setAskQuery] = useState("");
+  const [askResult, setAskResult] = useState(null);
+  const [askLoading, setAskLoading] = useState(false);
+  const [askError, setAskError] = useState(null);
+  const askInputRef = useRef(null);
 
   useEffect(() => {
     async function fetchGraph() {
@@ -109,6 +115,28 @@ export default function GraphView() {
       setBuildResult({ error: e.message });
     } finally {
       setBuilding(false);
+    }
+  }
+
+  async function handleAsk(e) {
+    e?.preventDefault();
+    const q = askQuery.trim();
+    if (!q) return;
+    setAskLoading(true);
+    setAskError(null);
+    setAskResult(null);
+    try {
+      const res = await fetch("/api/query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: q }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setAskResult(await res.json());
+    } catch (err) {
+      setAskError(err.message);
+    } finally {
+      setAskLoading(false);
     }
   }
 
@@ -703,6 +731,25 @@ export default function GraphView() {
             </button>
             <button
               type="button"
+              onClick={() => {
+                setShowAsk((v) => !v);
+                setAskResult(null);
+                setAskError(null);
+                setTimeout(() => askInputRef.current?.focus(), 80);
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold transition-colors ${
+                showAsk
+                  ? "border-brand-500 bg-brand-50 text-brand-700 dark:border-brand-500 dark:bg-brand-900/20 dark:text-brand-400"
+                  : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700"
+              }`}
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M11 8v6M8 11h6"/>
+              </svg>
+              Ask AI
+            </button>
+            <button
+              type="button"
               onClick={handleBuildGraph}
               disabled={building}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-bold transition-colors"
@@ -792,6 +839,74 @@ export default function GraphView() {
               style={{ left: tooltipNode.x + 14, top: tooltipNode.y - 8, transform: "translateY(-100%)" }}
             >
               {tooltipNode.text}
+            </div>
+          )}
+
+          {/* ── Ask AI slide-up panel ─────────────────────────────── */}
+          {showAsk && (
+            <div className="absolute bottom-0 left-0 right-0 z-20 bg-white/95 dark:bg-slate-800/95 backdrop-blur-sm border-t border-slate-200 dark:border-slate-700 rounded-b-2xl shadow-xl">
+              <form onSubmit={handleAsk} className="flex items-center gap-2 px-4 py-3 border-b border-slate-100 dark:border-slate-700/60">
+                <svg className="w-4 h-4 text-slate-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+                </svg>
+                <input
+                  ref={askInputRef}
+                  type="text"
+                  value={askQuery}
+                  onChange={(e) => setAskQuery(e.target.value)}
+                  placeholder="Ask about this graph… e.g. What are the current blockers?"
+                  className="flex-1 bg-transparent text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={askLoading || !askQuery.trim()}
+                  className="px-3 py-1.5 bg-brand-600 hover:bg-brand-700 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 shrink-0"
+                >
+                  {askLoading ? <span className="w-3 h-3 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : null}
+                  {askLoading ? "Searching…" : "Ask"}
+                </button>
+                <button type="button" onClick={() => { setShowAsk(false); setAskResult(null); setAskError(null); }} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 text-sm font-bold ml-1">✕</button>
+              </form>
+
+              {(askResult || askError) && (
+                <div className="px-4 py-3 max-h-60 overflow-y-auto">
+                  {askError && (
+                    <p className="text-xs text-red-600 dark:text-red-400">{askError}</p>
+                  )}
+                  {askResult && (
+                    <div className="space-y-3">
+                      <div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Answer</span>
+                          {askResult.confidence != null && (
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-brand-100 dark:bg-brand-900/30 text-brand-700 dark:text-brand-300">
+                              {Math.round(askResult.confidence * 100)}%
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-sm text-slate-800 dark:text-slate-200 leading-relaxed">{askResult.answer}</p>
+                      </div>
+                      {askResult.components?.length > 0 && (
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Cited facts ({askResult.components.length})</p>
+                          <div className="flex flex-col gap-1.5">
+                            {askResult.components.slice(0, 5).map((c, i) => (
+                              <div key={c.id || i} className="flex items-start gap-2 p-2 rounded-lg bg-slate-50 dark:bg-slate-900/60">
+                                <span className="w-4 h-4 rounded bg-brand-100 dark:bg-brand-900/40 flex items-center justify-center text-[9px] font-bold text-brand-700 dark:text-brand-300 shrink-0 mt-0.5">{i + 1}</span>
+                                <div className="min-w-0">
+                                  <p className="text-[11px] font-semibold text-slate-700 dark:text-slate-300 truncate">{stripModelPrefix(c.name)}</p>
+                                  <p className="text-[10px] text-slate-500 dark:text-slate-400 line-clamp-1">{c.value}</p>
+                                  <span className="text-[10px] text-slate-400">{c.model_name}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
