@@ -34,10 +34,34 @@ class QueryResult:
     sources: list[dict]
 
 
+ANSWER_PROMPT = """You are a knowledge graph assistant for a startup. Answer the user's question using ONLY the facts provided below. Be direct and specific. If the facts don't contain enough information to answer, say so clearly.
+
+Question: {question}
+
+Relevant facts from the knowledge graph:
+{facts}
+
+Instructions:
+- Answer the question directly in 1-3 sentences
+- Reference specific facts by name when relevant
+- If multiple facts are contradictory, note the conflict
+- Do NOT make up information beyond what the facts contain
+- Do NOT explain what you're doing — just answer
+"""
+
+
 class QueryService:
-    def __init__(self, session: AsyncSession, embedder: BaseEmbedder | None = None) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        embedder: BaseEmbedder | None = None,
+        api_key: str | None = None,
+        model: str | None = None,
+    ) -> None:
         self.session = session
         self._embedder = embedder or build_default_embedder()
+        self._api_key = api_key
+        self._model = model
 
     async def query(self, question: str) -> QueryResult:
         q_embedding = await self._embedder.embed_text(question)
@@ -61,7 +85,7 @@ class QueryService:
             scored.append((score, c))
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        top = scored[:5]
+        top = scored[:8]
 
         if not top:
             return QueryResult(
@@ -89,7 +113,7 @@ class QueryService:
             related = []
 
         result_components = []
-        sources_seen = set()
+        sources_seen: set[UUID] = set()
 
         for score, c in top:
             src_label = None
@@ -137,9 +161,10 @@ class QueryService:
             if doc:
                 sources.append({"id": str(doc.id), "type": doc.source_type, "url": doc.source_url})
 
-        best = top[0][1]
-        answer = f"{best.name} ({best.model.name if best.model else ''}): {best.value}"
         avg_conf = sum(c.confidence for _, c in top) / len(top)
+
+        # Try LLM-based answer synthesis
+        answer = await self._generate_answer(question, top)
 
         return QueryResult(
             question=question,
@@ -148,6 +173,41 @@ class QueryService:
             components=result_components,
             sources=sources,
         )
+
+    async def _generate_answer(self, question: str, top: list[tuple[float, Component]]) -> str:
+        """Generate a coherent answer using LLM if API key available, else summarise top facts."""
+        facts_text = "\n".join(
+            f"- [{c.model.name if c.model else 'Unknown'}] {c.name}: {c.value}"
+            for _, c in top[:6]
+        )
+
+        if self._api_key and self._model:
+            try:
+                from litellm import acompletion
+                prompt = ANSWER_PROMPT.format(question=question, facts=facts_text)
+                response = await acompletion(
+                    model=self._model,
+                    api_key=self._api_key,
+                    messages=[
+                        {"role": "system", "content": "You are a startup knowledge graph assistant. Answer questions using only the provided facts. Be concise and direct."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.1,
+                    max_tokens=300,
+                )
+                return response.choices[0].message.content.strip()
+            except Exception as e:
+                return f"(LLM error: {e})\n\nTop matching facts:\n{facts_text}"
+
+        # No LLM — return a readable summary of the top facts
+        if not top:
+            return "No relevant facts found."
+        lines = [f"Top {min(3, len(top))} matching facts from your knowledge graph:\n"]
+        for i, (score, c) in enumerate(top[:3], 1):
+            model_name = c.model.name if c.model else "Unknown"
+            lines.append(f"{i}. [{model_name}] {c.name}\n   {c.value}")
+        lines.append("\nTip: Configure an AI key (Configure AI button) to get synthesized answers.")
+        return "\n".join(lines)
 
 
 def _parse_embedding(raw: str | None) -> list[float] | None:

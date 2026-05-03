@@ -156,11 +156,15 @@ export default function GraphView() {
     setAskLoading(true);
     setAskError(null);
     setAskResult(null);
+    const saved = (() => { try { return JSON.parse(localStorage.getItem("ce_ai_settings") || "{}"); } catch { return {}; } })();
     try {
+      const body = { question: q };
+      if (saved.api_key) body.api_key = saved.api_key;
+      if (saved.model)   body.model   = saved.model;
       const res = await fetch("/api/query", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setAskResult(await res.json());
