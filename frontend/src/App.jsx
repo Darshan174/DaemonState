@@ -10,10 +10,12 @@ const Landing = lazy(() => import("./pages/Landing"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const Connectors = lazy(() => import("./pages/Connectors"));
 const Changes = lazy(() => import("./pages/Changes"));
+const AgentsView = lazy(() => import("./pages/AgentsView"));
 
 const NAV_ITEMS = [
   { to: "/app", label: "Dashboard", end: true },
   { to: "/app/graph", label: "Graph" },
+  { to: "/app/agents", label: "Agents" },
   { to: "/app/query", label: "Ask" },
   { to: "/app/sources", label: "Sources" },
   { to: "/app/connectors", label: "Connectors" },
@@ -94,6 +96,7 @@ function AdminShell() {
             <Route path="graph" element={<GraphView />} />
             <Route path="query" element={<QueryView />} />
             <Route path="sources" element={<SourceManager />} />
+            <Route path="agents" element={<AgentsView />} />
             <Route path="connectors" element={<Connectors />} />
             <Route path="connectors/:connectorType/runs" element={<Connectors />} />
             <Route path="changes" element={<Changes />} />
