@@ -959,33 +959,65 @@ function ConnectorCard({
 
       {isGitHub && githubFormOpen && (
         <form onSubmit={handleGitHubConnect} className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 p-3 space-y-3">
+          {/* Setup guide */}
+          <div className="rounded-lg border border-sky-200 dark:border-sky-500/20 bg-sky-50 dark:bg-sky-500/10 px-3 py-2.5 space-y-1.5">
+            <p className="text-[11px] font-bold uppercase tracking-wide text-sky-800 dark:text-sky-200">
+              How to get a GitHub token
+            </p>
+            <ol className="text-xs text-sky-900 dark:text-sky-100 space-y-1 list-decimal list-inside leading-relaxed">
+              <li>
+                Go to{" "}
+                <a
+                  href="https://github.com/settings/tokens/new"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-semibold underline decoration-sky-400 hover:text-sky-700 dark:hover:text-sky-300"
+                >
+                  github.com/settings/tokens/new
+                </a>
+              </li>
+              <li>Under <strong>Note</strong>, enter a name like <em>Context Engine</em></li>
+              <li>
+                Select scope{" "}
+                <span className="rounded bg-sky-100 dark:bg-sky-900/50 px-1.5 py-0.5 font-mono font-bold">repo</span>
+                {" "}for private repos, or{" "}
+                <span className="rounded bg-sky-100 dark:bg-sky-900/50 px-1.5 py-0.5 font-mono font-bold">public_repo</span>
+                {" "}for public repos only
+              </li>
+              <li>Click <strong>Generate token</strong> and copy it below</li>
+            </ol>
+            <p className="text-[11px] text-sky-700 dark:text-sky-300 mt-1">
+              Fine-grained tokens work too — grant <strong>Issues</strong> and <strong>Pull requests</strong> read access on the target repos.
+            </p>
+          </div>
+
           <div>
             <label htmlFor="github-token" className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-              GitHub access token
+              Personal Access Token
             </label>
             <input
               id="github-token"
               type="password"
               value={githubToken}
               onChange={(event) => onChangeGitHubToken(event.target.value)}
-              placeholder="ghp_xxx"
-              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+              placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40 font-mono"
             />
           </div>
           <div>
             <label htmlFor="github-repositories" className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-              Repositories
+              Repositories to sync
             </label>
             <textarea
               id="github-repositories"
               value={githubRepositories}
               onChange={(event) => onChangeGitHubRepositories(event.target.value)}
-              placeholder={"acme/context-engine\nacme/platform"}
+              placeholder={"your-org/repo-name\nyour-org/another-repo"}
               rows={3}
-              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40 font-mono"
             />
-            <p className="mt-1 text-[11px] text-gray-500">
-              One `owner/repo` per line or comma separated.
+            <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+              One <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">owner/repo</code> per line. Example: <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">acme/backend</code>
             </p>
           </div>
           <div className="flex gap-2">
@@ -998,7 +1030,7 @@ function ConnectorCard({
               }
               className="px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
             >
-              {connectGitHubMut.isPending ? "Saving..." : "Save GitHub token"}
+              {connectGitHubMut.isPending ? "Saving…" : "Save & connect"}
             </button>
             <button
               type="button"
