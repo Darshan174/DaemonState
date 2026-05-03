@@ -1,5 +1,23 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import cytoscape from "cytoscape";
+import {
+  Zap, Network, AlertTriangle, MessageSquare, Package,
+  Sparkles, Loader2, CheckCircle2, XCircle, Copy, Check,
+  ChevronRight, X as XIcon, Bot,
+} from "lucide-react";
+
+function getAiSettingsSaved() {
+  try { return JSON.parse(localStorage.getItem("ce_ai_settings") || "{}"); }
+  catch { return {}; }
+}
+
+const SEV_DOT = { critical: "bg-red-500", high: "bg-amber-500", medium: "bg-yellow-400", low: "bg-slate-400" };
+const SEV_PILL = {
+  critical: "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400",
+  high:     "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400",
+  medium:   "bg-yellow-100 dark:bg-yellow-900/40 text-yellow-700 dark:text-yellow-400",
+  low:      "bg-slate-100 dark:bg-slate-700 text-slate-500",
+};
 
 const STATUS_COLORS = {
   active: "#22c55e",
@@ -101,6 +119,41 @@ export default function GraphView() {
   const [askError, setAskError] = useState(null);
   const askInputRef = useRef(null);
   const [ceoView, setCeoView] = useState("all");
+
+  // Agents sidebar
+  const [showAgents, setShowAgents] = useState(false);
+  const [gapReport, setGapReport]     = useState(null);
+  const [gapLoading, setGapLoading]   = useState(false);
+  const [gapError, setGapError]       = useState(null);
+  const [packResult, setPackResult]   = useState(null);
+  const [packLoading, setPackLoading] = useState(false);
+  const [packError, setPackError]     = useState(null);
+  const [packCopied, setPackCopied]   = useState(false);
+  const [relReport, setRelReport]     = useState(null);
+  const [relLoading, setRelLoading]   = useState(false);
+  const [relError, setRelError]       = useState(null);
+
+  async function callAgent(endpoint, setLoading, setResult, setError) {
+    setLoading(true); setResult(null); setError(null);
+    const s = getAiSettingsSaved();
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ api_key: s.api_key || null, model: s.model || null }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setResult(await res.json());
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  }
+
+  async function copyPack() {
+    if (!packResult) return;
+    await navigator.clipboard.writeText(packResult.content);
+    setPackCopied(true);
+    setTimeout(() => setPackCopied(false), 2000);
+  }
 
   useEffect(() => {
     async function fetchGraph() {
@@ -805,6 +858,18 @@ export default function GraphView() {
             </button>
             <button
               type="button"
+              onClick={() => { setShowAgents((v) => !v); setSelectedNode(null); }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold transition-colors ${
+                showAgents
+                  ? "border-violet-500 bg-violet-50 text-violet-700 dark:border-violet-500 dark:bg-violet-900/20 dark:text-violet-400"
+                  : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700"
+              }`}
+            >
+              <Bot className="w-3.5 h-3.5" />
+              Agents
+            </button>
+            <button
+              type="button"
               onClick={handleBuildGraph}
               disabled={building}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-bold transition-colors"
@@ -1007,7 +1072,20 @@ export default function GraphView() {
         </div>
       </div>
 
-      {selectedNode && (
+      {showAgents && (
+        <AgentsSidebarPanel
+          onClose={() => setShowAgents(false)}
+          gapReport={gapReport} gapLoading={gapLoading} gapError={gapError}
+          onRunGaps={() => callAgent("/api/agents/gaps", setGapLoading, setGapReport, setGapError)}
+          relReport={relReport} relLoading={relLoading} relError={relError}
+          onRunRel={() => callAgent("/api/agents/relationships", setRelLoading, setRelReport, setRelError)}
+          packResult={packResult} packLoading={packLoading} packError={packError} packCopied={packCopied}
+          onRunPack={() => callAgent("/api/agents/context-pack", setPackLoading, setPackResult, setPackError)}
+          onCopyPack={copyPack}
+        />
+      )}
+
+      {selectedNode && !showAgents && (
         <div className="w-72 shrink-0 bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-5 overflow-y-auto">
           <button
             onClick={() => setSelectedNode(null)}
@@ -1148,6 +1226,7 @@ export default function GraphView() {
 
       {showAiSettings && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center" onClick={() => setShowAiSettings(false)}>
+
           <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-6 w-[22rem] shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-5">
               <div>
@@ -1283,6 +1362,269 @@ export default function GraphView() {
             </div>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Agents Sidebar Panel ─────────────────────────────────────────── */
+
+function AgentsSidebarPanel({
+  onClose,
+  gapReport, gapLoading, gapError, onRunGaps,
+  relReport, relLoading, relError, onRunRel,
+  packResult, packLoading, packError, packCopied, onRunPack, onCopyPack,
+}) {
+  return (
+    <div className="w-80 shrink-0 flex flex-col bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden shadow-sm">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 dark:border-slate-700 shrink-0">
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 rounded-lg bg-violet-500 flex items-center justify-center">
+            <Bot className="w-3.5 h-3.5 text-white" />
+          </div>
+          <span className="text-sm font-bold text-slate-900 dark:text-white">AI Agents</span>
+        </div>
+        <button
+          onClick={onClose}
+          className="w-6 h-6 flex items-center justify-center rounded-md text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+        >
+          <XIcon className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      {/* Scrollable agent list */}
+      <div className="flex-1 overflow-y-auto p-3 space-y-3">
+
+        {/* 01 Ingestion */}
+        <AgentRow
+          icon={<Zap className="w-3.5 h-3.5" />}
+          iconColor="bg-blue-500"
+          num="01"
+          title="Ingestion"
+          desc="Slack · GitHub · Gmail → clean entities"
+          action={
+            <a href="/app/graph" className="text-[10px] font-bold text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 border border-slate-200 dark:border-slate-600 px-2 py-1 rounded-lg transition-colors whitespace-nowrap">
+              Build Graph →
+            </a>
+          }
+        />
+
+        {/* 02 Relationship */}
+        <AgentRow
+          icon={<Network className="w-3.5 h-3.5" />}
+          iconColor="bg-violet-500"
+          num="02"
+          title="Relationships"
+          desc="Finds hidden links across all sources"
+          action={
+            <SidebarRunBtn loading={relLoading} onClick={onRunRel} color="violet">
+              Run
+            </SidebarRunBtn>
+          }
+        >
+          {relError && <SidebarError>{relError}</SidebarError>}
+          {relReport && (
+            <div className="mt-2 space-y-1.5">
+              <p className="text-[10px] text-slate-400">{relReport.message}</p>
+              {relReport.suggested?.slice(0, 3).map((r, i) => (
+                <div key={i} className="flex items-start gap-1.5 p-2 rounded-lg bg-slate-50 dark:bg-slate-900/60 border border-slate-100 dark:border-slate-700/50">
+                  <span className={`text-[9px] font-bold px-1 rounded shrink-0 mt-0.5 ${r.confidence >= 0.7 ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400" : "bg-slate-100 dark:bg-slate-700 text-slate-500"}`}>
+                    {Math.round(r.confidence * 100)}%
+                  </span>
+                  <p className="text-[10px] text-slate-600 dark:text-slate-400 leading-snug">
+                    <span className="font-semibold text-slate-700 dark:text-slate-300">{r.source_name}</span>
+                    <span className="text-slate-400 mx-1">→</span>
+                    {r.target_name}
+                  </p>
+                </div>
+              ))}
+              {relReport.suggested?.length === 0 && relReport.duplicates?.length === 0 && (
+                <p className="text-[10px] text-slate-400 italic text-center py-2">No hidden relationships found.</p>
+              )}
+            </div>
+          )}
+        </AgentRow>
+
+        {/* 03 Gap Detector — hero */}
+        <div className="rounded-xl border-2 border-red-200 dark:border-red-900/60 overflow-hidden">
+          <div className="px-3 py-2.5 bg-gradient-to-br from-red-50 to-orange-50/50 dark:from-red-950/40 dark:to-transparent border-b border-red-100 dark:border-red-900/40">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-5 h-5 rounded-md bg-red-500 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-3 h-3 text-white" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[9px] font-bold text-red-500 dark:text-red-400 uppercase tracking-wide">03 · Killer Feature</span>
+                  </div>
+                  <p className="text-xs font-bold text-slate-900 dark:text-white leading-none mt-0.5">Gap Detector</p>
+                </div>
+              </div>
+              <SidebarRunBtn loading={gapLoading} onClick={onRunGaps} color="red">
+                Run
+              </SidebarRunBtn>
+            </div>
+            <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1.5 leading-relaxed">
+              Scans the full graph — finds missing owners, blocked items, isolated nodes.
+            </p>
+          </div>
+          {(gapError || gapReport) && (
+            <div className="p-3 space-y-2">
+              {gapError && <SidebarError>{gapError}</SidebarError>}
+              {gapReport && <GapSidebarResult report={gapReport} />}
+            </div>
+          )}
+        </div>
+
+        {/* 04 Ask */}
+        <AgentRow
+          icon={<MessageSquare className="w-3.5 h-3.5" />}
+          iconColor="bg-brand-500"
+          num="04"
+          title="Ask AI"
+          desc="Questions over the full graph with citations"
+          action={
+            <a href="/app/query" className="text-[10px] font-bold text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 border border-slate-200 dark:border-slate-600 px-2 py-1 rounded-lg transition-colors whitespace-nowrap">
+              Open →
+            </a>
+          }
+        />
+
+        {/* 05 Context Pack */}
+        <AgentRow
+          icon={<Package className="w-3.5 h-3.5" />}
+          iconColor="bg-emerald-500"
+          num="05"
+          title="Context Pack"
+          desc="Generates a handoff prompt for AI agents"
+          action={
+            <SidebarRunBtn loading={packLoading} onClick={onRunPack} color="emerald">
+              Generate
+            </SidebarRunBtn>
+          }
+        >
+          {packError && <SidebarError>{packError}</SidebarError>}
+          {packResult && (
+            <div className="mt-2">
+              <div className="flex items-center justify-between mb-1.5">
+                <p className="text-[10px] text-slate-400">{packResult.entity_count} entities</p>
+                <button
+                  onClick={onCopyPack}
+                  className={`flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-md transition-all ${packCopied ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400" : "bg-slate-100 dark:bg-slate-700 text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-600"}`}
+                >
+                  {packCopied ? <Check className="w-2.5 h-2.5" /> : <Copy className="w-2.5 h-2.5" />}
+                  {packCopied ? "Copied!" : "Copy"}
+                </button>
+              </div>
+              <pre className="text-[10px] text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700 rounded-lg p-2.5 overflow-x-auto whitespace-pre-wrap leading-relaxed font-mono max-h-40 overflow-y-auto">
+                {packResult.content}
+              </pre>
+            </div>
+          )}
+        </AgentRow>
+
+      </div>
+    </div>
+  );
+}
+
+function AgentRow({ icon, iconColor, num, title, desc, action, children }) {
+  return (
+    <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/50 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className={`w-5 h-5 rounded-md ${iconColor} flex items-center justify-center text-white shrink-0`}>
+            {icon}
+          </div>
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wide">{num}</span>
+              <span className="text-xs font-bold text-slate-800 dark:text-slate-200">{title}</span>
+            </div>
+            <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-none mt-0.5 truncate">{desc}</p>
+          </div>
+        </div>
+        <div className="shrink-0">{action}</div>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function SidebarRunBtn({ loading, onClick, color, children }) {
+  const colors = {
+    red:     "bg-red-500 hover:bg-red-600",
+    violet:  "bg-violet-500 hover:bg-violet-600",
+    emerald: "bg-emerald-500 hover:bg-emerald-600",
+  };
+  return (
+    <button
+      onClick={onClick}
+      disabled={loading}
+      className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold text-white transition-colors disabled:opacity-60 shrink-0 ${colors[color] || "bg-brand-600 hover:bg-brand-500"}`}
+    >
+      {loading ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Sparkles className="w-2.5 h-2.5" />}
+      {loading ? "…" : children}
+    </button>
+  );
+}
+
+function SidebarError({ children }) {
+  return (
+    <div className="mt-2 flex items-start gap-1.5 p-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800/40">
+      <XCircle className="w-3 h-3 text-red-500 shrink-0 mt-0.5" />
+      <p className="text-[10px] text-red-700 dark:text-red-400">{children}</p>
+    </div>
+  );
+}
+
+function GapSidebarResult({ report }) {
+  const critical = report.gaps.filter(g => g.severity === "critical").length;
+  const high     = report.gaps.filter(g => g.severity === "high").length;
+
+  return (
+    <div className="space-y-2">
+      {/* Mini stats */}
+      <div className="grid grid-cols-3 gap-1.5">
+        {[
+          { label: "Entities", value: report.stats.total_entities },
+          { label: "Gaps",     value: report.gaps.length, alert: critical + high > 0 },
+          { label: "Isolated", value: report.stats.isolated, alert: report.stats.isolated > 0 },
+        ].map(s => (
+          <div key={s.label} className="rounded-lg bg-slate-50 dark:bg-slate-900/60 border border-slate-100 dark:border-slate-700/50 p-2 text-center">
+            <p className={`text-base font-bold ${s.alert ? "text-red-600 dark:text-red-400" : "text-slate-900 dark:text-white"}`}>{s.value}</p>
+            <p className="text-[9px] text-slate-400 uppercase tracking-wide">{s.label}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Summary */}
+      {report.summary && (
+        <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-900/10 border border-amber-100 dark:border-amber-800/30">
+          <p className="text-[10px] text-amber-800 dark:text-amber-300 leading-relaxed">{report.summary}</p>
+        </div>
+      )}
+
+      {/* Top gaps */}
+      {report.gaps.slice(0, 4).map((g, i) => (
+        <div key={i} className="flex items-start gap-1.5 p-2 rounded-lg bg-slate-50 dark:bg-slate-900/60 border border-slate-100 dark:border-slate-700/50">
+          <div className={`w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${SEV_DOT[g.severity] || SEV_DOT.low}`} />
+          <div className="min-w-0">
+            <div className="flex items-center gap-1 flex-wrap">
+              <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${SEV_PILL[g.severity] || SEV_PILL.low}`}>{g.severity}</span>
+            </div>
+            <p className="text-[10px] font-semibold text-slate-700 dark:text-slate-300 mt-0.5 leading-snug">{g.title}</p>
+            {g.recommendation && (
+              <p className="text-[10px] text-brand-600 dark:text-brand-400 mt-0.5 flex items-center gap-0.5">
+                <ChevronRight className="w-2.5 h-2.5 shrink-0" />{g.recommendation}
+              </p>
+            )}
+          </div>
+        </div>
+      ))}
+      {report.gaps.length > 4 && (
+        <p className="text-[10px] text-slate-400 text-center">+{report.gaps.length - 4} more gaps</p>
       )}
     </div>
   );

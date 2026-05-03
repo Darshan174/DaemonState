@@ -14,8 +14,7 @@ const AgentsView   = lazy(() => import("./pages/AgentsView"));
 
 const NAV_ITEMS = [
   { to: "/app",             label: "Dashboard", end: true },
-  { to: "/app/graph",       label: "Graph" },
-  { to: "/app/agents",      label: "Agents",  badge: "AI" },
+  { to: "/app/graph",       label: "Graph",    badge: "AI" },
   { to: "/app/query",       label: "Ask" },
   { to: "/app/sources",     label: "Sources" },
   { to: "/app/connectors",  label: "Connectors" },
@@ -99,7 +98,7 @@ function AdminShell() {
             <Route path="graph"                           element={<GraphView />} />
             <Route path="query"                           element={<QueryView />} />
             <Route path="sources"                         element={<SourceManager />} />
-            <Route path="agents"                          element={<AgentsView />} />
+            <Route path="agents"                          element={<Navigate to="/app/graph" replace />} />
             <Route path="connectors"                      element={<Connectors />} />
             <Route path="connectors/:connectorType/runs"  element={<Connectors />} />
             <Route path="changes"                         element={<Changes />} />
