@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import imgGmail from "@assets/gmail-icon.png";
+import imgGDrive from "@assets/gdrive-icon.png";
+import imgOpenAI from "@assets/openai-icon.png";
+import imgOpenCode from "@assets/opencode-icon.png";
 import {
   useConnectGitHub,
   useConnectZoom,
@@ -1654,13 +1658,13 @@ function ConnectorIconBadge({ type, color, name }) {
   const icons = {
     slack: <SlackLogoIcon className="w-5 h-5" />,
     zoom: <ZoomIcon className="w-5 h-5" />,
-    gdrive: <GoogleDriveIcon className="w-5 h-5" />,
-    gmail: <GmailIcon className="w-5 h-5" />,
+    gdrive: <img src={imgGDrive} alt="Google Drive" className="w-6 h-6 object-contain" />,
+    gmail: <img src={imgGmail} alt="Gmail" className="w-6 h-6 object-contain" />,
     github: <GitHubIcon className="w-5 h-5 text-white" />,
     notion: <NotionIcon className="w-5 h-5" />,
-    codex: <OpenAIIcon className="w-5 h-5 text-white" />,
+    codex: <img src={imgOpenAI} alt="OpenAI" className="w-5 h-5 object-contain" />,
     claude: <AnthropicIcon className="w-5 h-5 text-white" />,
-    opencode: <OpenCodeIcon className="w-5 h-5 text-white" />,
+    opencode: <img src={imgOpenCode} alt="OpenCode" className="w-6 h-6 object-contain" />,
   };
   const icon = icons[type];
   return (
