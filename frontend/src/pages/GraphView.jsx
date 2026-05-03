@@ -34,6 +34,13 @@ function shortLabel(value, maxWords = 5) {
   return `${words.slice(0, maxWords).join(" ")}...`;
 }
 
+// Strip common model-type prefixes that the containing box already communicates
+function stripModelPrefix(name) {
+  return String(name || "")
+    .replace(/^(Action|Actions|Blocker|Blockers|Decision|Decisions|Risk|Risks|Outcome|Outcomes|Discussion|Fact):\s*/i, "")
+    .trim();
+}
+
 export default function GraphView() {
   const containerRef = useRef(null);
   const cyRef = useRef(null);
@@ -218,11 +225,14 @@ export default function GraphView() {
         if (isPR) labelPrefix = "PR· ";
         else if (isIssue) labelPrefix = "# ";
 
+        // Strip model-type prefix for display (box already communicates context)
+        const cleanName = isGitHub ? c.name : stripModelPrefix(c.name);
+
         nodes.push({
           data: {
             id: c.id,
             parent: `model:${c.model_id}`,
-            label: labelPrefix + shortLabel(c.name, 4),
+            label: labelPrefix + shortLabel(cleanName, 4),
             fullLabel: (labelPrefix + c.name),
             type: "component",
             value: c.value,
@@ -294,17 +304,21 @@ export default function GraphView() {
             "border-width": 3,
             "border-opacity": 1,
             shape: "round-rectangle",
-            padding: "22px",
+            padding: "38px",
             label: "data(label)",
             "text-valign": "top",
             "text-halign": "center",
-            "text-margin-y": 10,
+            "text-margin-y": -16,
             "text-max-width": 160,
-            "font-size": "11px",
+            "font-size": "12px",
             "font-weight": "800",
             "text-wrap": "wrap",
             color: modelTextColor,
-            "text-background-opacity": 0,
+            "text-background-color": modelBg,
+            "text-background-opacity": 1,
+            "text-background-padding": "4px",
+            "text-background-shape": "round-rectangle",
+            "text-border-opacity": 0,
           },
         },
 
@@ -318,7 +332,8 @@ export default function GraphView() {
             width: 26,
             height: 26,
             shape: "ellipse",
-            "font-size": "7px",
+            "font-size": "7.5px",
+            "text-max-width": "88px",
             color: isDark ? "#e2e8f0" : "#1e293b",
           },
         },
@@ -742,23 +757,32 @@ export default function GraphView() {
           <div ref={containerRef} className="absolute inset-0 rounded-2xl" />
 
           {/* Persistent legend — top-right corner of graph canvas */}
-          <div className="pointer-events-none absolute top-3 right-3 z-10 bg-white/90 dark:bg-slate-800/90 backdrop-blur-sm rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-2.5 shadow-sm">
-            <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Temporal</p>
-            <div className="flex flex-col gap-1">
-              {[
-                { key: "future",  label: "Future"  },
-                { key: "current", label: "Current" },
-                { key: "past",    label: "Past"    },
-                { key: "unknown", label: "Unknown" },
-              ].map(({ key, label }) => (
-                <div key={key} className="flex items-center gap-1.5">
-                  <span
-                    className="w-2.5 h-2.5 rounded-full shrink-0 border"
-                    style={{ backgroundColor: TEMPORAL_COLORS[key].bg, borderColor: TEMPORAL_COLORS[key].border }}
-                  />
-                  <span className="text-[10px] text-slate-600 dark:text-slate-400">{label}</span>
-                </div>
-              ))}
+          <div className="pointer-events-none absolute top-3 right-3 z-10 bg-white/90 dark:bg-slate-800/90 backdrop-blur-sm rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-2.5 shadow-sm space-y-2.5">
+            <div>
+              <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Node color — time</p>
+              <div className="flex flex-col gap-1">
+                {[
+                  { key: "future",  label: "Future"  },
+                  { key: "current", label: "Current" },
+                  { key: "past",    label: "Past"    },
+                  { key: "unknown", label: "Unknown" },
+                ].map(({ key, label }) => (
+                  <div key={key} className="flex items-center gap-1.5">
+                    <span
+                      className="w-2.5 h-2.5 rounded-full shrink-0 border"
+                      style={{ backgroundColor: TEMPORAL_COLORS[key].bg, borderColor: TEMPORAL_COLORS[key].border }}
+                    />
+                    <span className="text-[10px] text-slate-600 dark:text-slate-400">{label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div>
+              <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Box border — domain</p>
+              <div className="flex items-center gap-1.5">
+                <span className="w-5 h-3.5 rounded shrink-0 border-2 border-indigo-500 bg-transparent" />
+                <span className="text-[10px] text-slate-600 dark:text-slate-400">Each color = one domain</span>
+              </div>
             </div>
           </div>
 
