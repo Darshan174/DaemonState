@@ -1,6 +1,7 @@
 import { Suspense, lazy } from "react";
 import { Routes, Route, NavLink, Navigate, Link } from "react-router-dom";
 import ThemeToggle from "./components/ThemeToggle";
+import CeIcon from "./components/CeIcon";
 
 const GraphView = lazy(() => import("./pages/GraphView"));
 const QueryView = lazy(() => import("./pages/QueryView"));
@@ -22,8 +23,8 @@ const NAV_ITEMS = [
 function HeaderBrand() {
   return (
     <Link to="/" className="flex min-w-0 items-center gap-3 group">
-      <span className="w-9 h-9 rounded-xl bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white font-bold text-[13px] shadow-[0_0_12px_rgba(79,70,229,0.4)] group-hover:scale-105 transition-transform">
-        CE
+      <span className="group-hover:scale-105 transition-transform">
+        <CeIcon size={34} />
       </span>
       <span className="font-bold text-slate-900 dark:text-white text-sm tracking-wide">
         Context Engine
