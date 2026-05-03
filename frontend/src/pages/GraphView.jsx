@@ -255,9 +255,9 @@ export default function GraphView() {
     }
 
     const isDark = document.documentElement.classList.contains("dark");
-    const modelBg = isDark ? "rgba(255,255,255,0.04)" : "rgba(15,23,42,0.03)";
+    const modelBg = isDark ? "rgba(255,255,255,0.11)" : "rgba(248,250,252,0.95)";
     const modelTextColor = isDark ? "#e2e8f0" : "#0f172a";
-    const edgeLabelBg = isDark ? "#0f172a" : "#ffffff";
+    const edgeLabelBg = isDark ? "#1e293b" : "#ffffff";
 
     const cy = cytoscape({
       container: containerRef.current,
@@ -291,7 +291,7 @@ export default function GraphView() {
             "background-color": modelBg,
             "background-opacity": 1,
             "border-color": "data(modelColor)",
-            "border-width": 2.5,
+            "border-width": 3,
             "border-opacity": 1,
             shape: "round-rectangle",
             padding: "22px",
