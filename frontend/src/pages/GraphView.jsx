@@ -769,7 +769,7 @@ export default function GraphView() {
           <div className="ml-auto flex items-center gap-2">
             {agentStatus && (
               <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full ${aiSettings.api_key || agentStatus.llm_enabled ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"}`}>
-                {aiSettings.api_key ? `AI: ${aiSettings.model || "gpt-4o"}` : agentStatus.llm_enabled ? `LLM: ${agentStatus.extraction_model}` : "Regex extraction"}
+                {aiSettings.api_key && aiSettings.model ? `AI: ${aiSettings.model}` : agentStatus.llm_enabled ? `LLM: ${agentStatus.extraction_model}` : "Regex extraction"}
               </span>
             )}
             <button
@@ -973,17 +973,15 @@ export default function GraphView() {
                   )}
                   {askResult && (
                     <div className="space-y-3">
-                      <div>
-                        <div className="flex items-center gap-2 mb-1">
+                      {askResult.answer && (
+                        <div>
                           <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Answer</span>
-                          {askResult.confidence != null && (
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-brand-100 dark:bg-brand-900/30 text-brand-700 dark:text-brand-300">
-                              {Math.round(askResult.confidence * 100)}%
-                            </span>
-                          )}
+                          <p className="text-sm text-slate-800 dark:text-slate-200 leading-relaxed mt-1">{askResult.answer}</p>
                         </div>
-                        <p className="text-sm text-slate-800 dark:text-slate-200 leading-relaxed">{askResult.answer}</p>
-                      </div>
+                      )}
+                      {!askResult.answer && (
+                        <p className="text-xs text-slate-400 italic">Configure AI to get synthesized answers — showing matching facts below.</p>
+                      )}
                       {askResult.components?.length > 0 && (
                         <div>
                           <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Cited facts ({askResult.components.length})</p>

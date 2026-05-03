@@ -220,15 +220,8 @@ class QueryService:
                     )
                 return f"AI error: {err}\n\nTop matching facts:\n{facts_text}"
 
-        # No LLM — return a readable summary of the top facts
-        if not top:
-            return "No relevant facts found."
-        lines = [f"Top {min(3, len(top))} matching facts from your knowledge graph:\n"]
-        for i, (score, c) in enumerate(top[:3], 1):
-            model_name = c.model.name if c.model else "Unknown"
-            lines.append(f"{i}. [{model_name}] {c.name}\n   {c.value}")
-        lines.append("\nTip: Configure an AI key (Configure AI button) to get synthesized answers.")
-        return "\n".join(lines)
+        # No LLM configured — return empty so frontend just shows cited facts
+        return ""
 
 
 
