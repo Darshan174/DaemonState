@@ -32,6 +32,7 @@ class ComponentRead(BaseModel):
     name: str
     value: str
     fact_type: str
+    temporal: str = "unknown"
     confidence: float
     authority_weight: float
     status: str
@@ -123,6 +124,7 @@ async def get_graph(
             id=c.id, model_id=c.model_id,
             model_name=c.model.name if c.model else None,
             name=c.name, value=c.value, fact_type=c.fact_type,
+            temporal=c.temporal,
             confidence=c.confidence, authority_weight=c.authority_weight,
             status=c.status, source_document_id=c.source_document_id,
             source_type=c.source_document.source_type if c.source_document else None,
@@ -192,6 +194,44 @@ async def get_stats(
         proposed=proposed or 0,
         stale=stale or 0,
     )
+
+
+class BuildRequest(BaseModel):
+    limit: int = 100
+    api_key: str | None = None
+    model: str | None = None
+
+
+class BuildResult(BaseModel):
+    started_at: str
+    finished_at: str
+    llm_extraction: bool
+    docs_processed: int
+    docs_pending_before: int
+    components_created: int
+    relationships_inferred: int
+    errors: list[dict]
+    stats: dict
+
+
+@router.post("/graph/build", response_model=BuildResult)
+async def build_graph(
+    body: BuildRequest = BuildRequest(),
+    session: AsyncSession = Depends(get_db_session),
+) -> BuildResult:
+    from app.agents.graph_builder import GraphBuilderAgent
+    agent = GraphBuilderAgent(session)
+    result = await agent.run(limit=body.limit, api_key=body.api_key, model=body.model)
+    return BuildResult(**result)
+
+
+@router.get("/graph/agent-status")
+async def agent_status() -> dict:
+    from app.config import settings
+    return {
+        "llm_enabled": bool(settings.litellm_api_key and settings.extraction_model),
+        "extraction_model": settings.extraction_model or None,
+    }
 
 
 class TimelineEvent(BaseModel):

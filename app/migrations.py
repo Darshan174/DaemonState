@@ -5,7 +5,19 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 
 async def run_migrations(conn: AsyncConnection) -> None:
+    await _migrate_components_temporal(conn)
     await _migrate_relationships_confidence_evidence(conn)
+
+
+async def _migrate_components_temporal(conn: AsyncConnection) -> None:
+    """Add temporal column to existing components table if missing."""
+    columns = await _get_table_columns(conn, "components")
+    if not columns or "temporal" in columns:
+        return
+
+    await conn.execute(text(
+        "ALTER TABLE components ADD COLUMN temporal VARCHAR(20) NOT NULL DEFAULT 'unknown'"
+    ))
 
 
 async def _migrate_relationships_confidence_evidence(conn: AsyncConnection) -> None:

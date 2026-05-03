@@ -54,13 +54,13 @@ export default function Dashboard() {
         </div>
         <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
           <Link
-            to="/app/brief"
+            to="/app/query"
             className="group relative inline-flex items-center gap-2 overflow-hidden px-6 py-3.5 bg-brand-600 text-white rounded-2xl font-bold shadow-xl shadow-brand-600/30 hover:bg-brand-500 transition-all"
           >
             <div className="absolute inset-0 flex h-full w-full justify-center [transform:skew(-12deg)_translateX(-100%)] group-hover:duration-1000 group-hover:[transform:skew(-12deg)_translateX(100%)]">
               <div className="relative h-full w-8 bg-white/20" />
             </div>
-            <span className="relative z-10">Founder Brief</span>
+            <span className="relative z-10">Ask Context</span>
             <ArrowRight className="w-5 h-5 relative z-10 transition-transform group-hover:translate-x-1" />
           </Link>
         </motion.div>
@@ -71,21 +71,21 @@ export default function Dashboard() {
         <FounderCard
           icon={<Search className="w-6 h-6 text-brand-600 dark:text-brand-400" />}
           title="Ask Context"
-          description="Query your company's grounded truth with full provenance back to original sources."
+          description="Query your company's grounded truth with full provenance back to the original source documents."
           to="/app/query"
           cta="Ask a question"
         />
         <FounderCard
           icon={<MessageSquare className="w-6 h-6 text-emerald-600 dark:text-emerald-400" />}
-          title="Decision Register"
-          description="Review the history of key architectural and product decisions made across the team."
-          to="/app/decisions"
-          cta="Review decisions"
+          title="Knowledge Graph"
+          description="Explore domain models, atomic facts, and the temporal relationships extracted from your sources."
+          to="/app/graph"
+          cta="Open graph"
         />
         <FounderCard
           icon={<Clock className="w-6 h-6 text-amber-600 dark:text-amber-400" />}
           title="Recent Changes"
-          description="View a single timeline of all workspace context updates, source additions, and decisions."
+          description="View a timeline of all context updates, source ingestions, and knowledge graph changes."
           to="/app/changes"
           cta="View timeline"
         />
@@ -142,8 +142,8 @@ export default function Dashboard() {
               icon={<Database className="w-4 h-4" />}
             />
             <HealthStat
-              label="Processed"
-              value={stats.find(s => s.label === "Processed")?.value ?? "98%"}
+              label="Components"
+              value={stats.find(s => s.label === "Components")?.value ?? 0}
               icon={<CheckCircle2 className="w-4 h-4" />}
             />
           </div>

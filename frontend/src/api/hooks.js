@@ -81,75 +81,72 @@ const CONNECTOR_CATALOG = {
     providerLabel: "Built in",
     providerNote: "Slack stays native because OAuth, thread expansion, and real-time events are product-critical.",
   },
-  discord: {
-    type: "discord",
-    name: "Discord",
-    description: "Server channels, threads, and community context",
-    color: "#5865F2",
-    availability: "coming_soon",
-    provider: "official_api",
-    providerLabel: "Official API",
-    providerNote: "Discord ingestion is planned and currently shown as unavailable until a tested sync path exists.",
-  },
-  ai_context: {
-    type: "ai_context",
-    name: "AI Context",
-    description: "Codex, Claude Code, OpenCode, plans, diffs, and review notes",
-    color: "#6366F1",
+  github: {
+    type: "github",
+    name: "GitHub",
+    description: "Issues, pull requests, and code review discussions",
+    color: "#24292e",
     availability: "available",
     provider: "native",
-    providerLabel: "Built in",
-    providerNote: "AI context imports are supported through the backend import endpoint.",
-  },
-  local: {
-    type: "local",
-    name: "Local Files",
-    description: "Uploaded Markdown, text, JSON, CSV, and other local documents",
-    color: "#6B7280",
-    availability: "available",
-    provider: "native",
-    providerLabel: "Built in",
-    providerNote: "Local uploads are supported through the Sources workflow.",
+    providerLabel: "Personal Access Token",
+    providerNote: "GitHub ingests issues, pull requests, labels, and review discussions. Each item becomes a structured component in the knowledge graph.",
   },
   zoom: {
     type: "zoom",
     name: "Zoom",
     description: "Meeting transcripts and recording metadata",
     color: "#0B5CFF",
-    availability: "coming_soon",
+    availability: "available",
     provider: "official_api",
     providerLabel: "Official API",
-    providerNote: "Zoom is planned but does not have a tested backend connector in this milestone.",
+    providerNote: "Transcript-first Zoom ingestion keeps the connector focused on high-signal meeting context instead of media processing.",
   },
   gdrive: {
     type: "gdrive",
     name: "Google Drive",
     description: "Docs, Sheets, Slides, and folder content",
-    color: "#0F9D58",
-    availability: "coming_soon",
+    color: "#ffffff",
+    availability: "available",
     provider: "official_api",
     providerLabel: "Official API",
-    providerNote: "Drive should ingest docs, sheets, slides, and folder metadata into the same source and graph pipeline.",
+    providerNote: "Drive ingest docs, sheets, slides, and folder metadata into the source and graph pipeline.",
   },
   gmail: {
     type: "gmail",
     name: "Gmail",
     description: "Email threads, attachments, and sender context",
-    color: "#EA4335",
-    availability: "coming_soon",
+    color: "#ffffff",
+    availability: "available",
     provider: "official_api",
     providerLabel: "Official API",
-    providerNote: "Gmail should ingest selected mailbox threads and attachments with source provenance.",
+    providerNote: "Gmail ingests selected mailbox threads and attachments with source provenance.",
   },
-  wispr_flow: {
-    type: "wispr_flow",
-    name: "Wispr Flow",
-    description: "Dictation notes, transcripts, and captured thoughts",
-    color: "#111827",
-    availability: "coming_soon",
-    provider: "official_api",
-    providerLabel: "Official API",
-    providerNote: "Wispr Flow should bring dictated notes and transcripts into the graph as first-class source documents.",
+  codex: {
+    type: "codex",
+    name: "Codex",
+    description: "OpenAI Codex sessions — decisions, code plans, and AI reasoning",
+    color: "#ffffff",
+    availability: "available",
+    provider: "native",
+    providerLabel: "Session import",
+  },
+  claude: {
+    type: "claude",
+    name: "Claude",
+    description: "Anthropic Claude conversations — architecture choices and research threads",
+    color: "#D97757",
+    availability: "available",
+    provider: "native",
+    providerLabel: "Session import",
+  },
+  opencode: {
+    type: "opencode",
+    name: "OpenCode",
+    description: "OpenCode AI coding sessions — terminal context and implementation notes",
+    color: "#000000",
+    availability: "available",
+    provider: "native",
+    providerLabel: "Session import",
   },
 };
 
@@ -1648,6 +1645,27 @@ export function useConnectGitHub() {
   });
 }
 
+export function useIngestAISession() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ connectorType, sessionId, content }) => {
+      const wsId = await getWorkspaceId();
+      return api.post("/connectors/ai-session/ingest", {
+        workspace_id: wsId,
+        connector_type: connectorType,
+        session_id: sessionId,
+        content,
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["connectors"] });
+      qc.invalidateQueries({ queryKey: ["connector-processing-summary"] });
+      qc.invalidateQueries({ queryKey: ["source-documents"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+}
+
 export function useSaveSlackOAuthSettings() {
   const qc = useQueryClient();
   return useMutation({
@@ -1737,7 +1755,7 @@ function normalizeConnectors(data) {
       .map((item) => [item.connector_type, item]),
   );
 
-  const isMockShape = rawConnectors.every((item) => item && "lastSync" in item);
+  const isMockShape = rawConnectors.length > 0 && rawConnectors.every((item) => item && "lastSync" in item);
   if (isMockShape) {
     return rawConnectors.map((item) => {
       const type = item.type ?? item.id;
@@ -1791,6 +1809,7 @@ function normalizeConnectors(data) {
         managedConnectAvailable,
         managedInstallUrl: setup?.managed_install_url ?? null,
         missingConfig: Array.isArray(setup?.missing) ? setup.missing : [],
+        redirectUri: setup?.redirect_uri ?? null,
         message:
           catalogItem.type === "slack" && !isConfigured && !managedConnectAvailable
             ? setup?.message ?? "Slack OAuth is not configured yet."
@@ -1800,42 +1819,41 @@ function normalizeConnectors(data) {
       };
     }
 
-    const connectorId = record.connector_id ?? record.id ?? null;
-    const config = record.config ?? {};
     return {
       ...catalogItem,
-      id: connectorId ?? catalogItem.type,
-      connectorId,
+      id: record.id,
+      connectorId: record.id,
       status: record.status,
       isInstalled: record.status !== "disconnected",
-      lastSync: formatConnectorDate(record.last_sync_at ?? record.last_sync),
-      itemsSynced: Number(record.items_synced ?? extractConnectorCount(config)),
-      message: record.message ?? config.message ?? null,
-      teamName: record.team_name ?? config.team_name ?? null,
-      teamId: record.team_id ?? config.team_id ?? null,
-      scope: record.scope ?? config.scope ?? null,
-      syncQueuedAt: formatConnectorDate(record.sync_queued_at ?? config.sync_queued_at, { fallback: null }),
-      syncMode: record.sync_mode ?? config.sync_mode ?? null,
-      syncModeNote: record.sync_mode_note ?? config.sync_mode_note ?? null,
-      processedCount: Number(record.processed_count ?? config.processed_count ?? 0),
-      totalProcessedCount: Number(record.total_processed_count ?? config.total_processed_count ?? 0),
-      authMode: record.auth_mode ?? config.auth_mode ?? null,
-      accountId: record.account_id ?? config.account_id ?? null,
-      repositories: Array.isArray(config.repositories) ? config.repositories : [],
-      ingestionMode: record.ingestion_mode ?? config.ingestion_mode ?? null,
-      sourceFocus: record.source_focus ?? config.source_focus ?? null,
-      lastWebhookEvent: record.last_webhook_event ?? config.last_zoom_webhook_event ?? null,
-      lastWebhookReceivedAt: formatConnectorDate(record.last_webhook_received_at ?? config.last_zoom_webhook_received_at, {
+      lastSync: formatConnectorDate(record.last_sync_at),
+      itemsSynced: extractConnectorCount(record.config),
+      message: record.config?.message ?? null,
+      teamName: record.config?.team_name ?? null,
+      teamId: record.config?.team_id ?? null,
+      scope: record.config?.scope ?? null,
+      syncQueuedAt: formatConnectorDate(record.config?.sync_queued_at, { fallback: null }),
+      syncMode: record.config?.sync_mode ?? null,
+      syncModeNote: record.config?.sync_mode_note ?? null,
+      processedCount: Number(record.config?.processed_count ?? 0),
+      totalProcessedCount: Number(record.config?.total_processed_count ?? 0),
+      authMode: record.config?.auth_mode ?? null,
+      accountId: record.config?.account_id ?? null,
+      repositories: Array.isArray(record.config?.repositories) ? record.config.repositories : [],
+      ingestionMode: record.config?.ingestion_mode ?? null,
+      sourceFocus: record.config?.source_focus ?? null,
+      lastWebhookEvent: record.config?.last_zoom_webhook_event ?? null,
+      lastWebhookReceivedAt: formatConnectorDate(record.config?.last_zoom_webhook_received_at, {
         fallback: null,
       }),
       provider: record.provider ?? catalogItem.provider,
       providerLabel: record.provider_label ?? catalogItem.providerLabel,
       providerNote: record.provider_note ?? catalogItem.providerNote,
       setupStatus: setup,
-      isConfigured: record.is_configured ?? isConfigured,
-      managedConnectAvailable: record.managed_connect_available ?? managedConnectAvailable,
-      managedInstallUrl: record.managed_install_url ?? setup?.managed_install_url ?? null,
+      isConfigured,
+      managedConnectAvailable,
+      managedInstallUrl: setup?.managed_install_url ?? null,
       missingConfig: Array.isArray(setup?.missing) ? setup.missing : [],
+      redirectUri: setup?.redirect_uri ?? null,
     };
   });
 }

@@ -206,13 +206,13 @@ export const connectors = [
     color: "#EA4335",
   },
   {
-    id: "wispr_flow",
-    name: "Wispr Flow",
-    description: "Dictation notes & transcripts",
-    status: "disconnected",
-    lastSync: "Never",
-    itemsSynced: 0,
-    color: "#111827",
+    id: "github",
+    name: "GitHub",
+    description: "Issues, pull requests & code review discussions",
+    status: "connected",
+    lastSync: "6 hr ago",
+    itemsSynced: 156,
+    color: "#24292e",
   },
 ];
 

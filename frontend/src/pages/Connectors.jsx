@@ -1,9 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import imgGmail from "@assets/gmail-icon.png";
+import imgGDrive from "@assets/gdrive-icon.png";
+import imgOpenAI from "@assets/openai-icon.png";
+import imgOpenCode from "@assets/opencode-icon.png";
 import {
   useConnectGitHub,
   useConnectZoom,
   useConnectNotion,
+  useIngestAISession,
   useSaveSlackOAuthSettings,
   useConnectorSyncJobs,
   useConnectorSyncStatus,
@@ -61,12 +66,13 @@ export default function Connectors() {
   const [actionError, setActionError] = useState(null);
   const [actionNotice, setActionNotice] = useState(null);
   const [oauthFlow, setOauthFlow] = useState(null);
+  const [genericOAuthPending, setGenericOAuthPending] = useState(() => new Set());
   const [slackConnectIntent, setSlackConnectIntent] = useState(null);
   const [slackSetupOpen, setSlackSetupOpen] = useState(false);
   const [slackClientId, setSlackClientId] = useState("");
   const [slackClientSecret, setSlackClientSecret] = useState("");
   const [slackRedirectUri, setSlackRedirectUri] = useState(
-    "http://localhost:8000/api/connectors/slack/callback",
+    () => `${window.location.origin}/api/connectors/slack/callback`,
   );
   const [notionFormOpen, setNotionFormOpen] = useState(false);
   const [notionToken, setNotionToken] = useState("");
@@ -75,6 +81,10 @@ export default function Connectors() {
   const [githubFormOpen, setGitHubFormOpen] = useState(false);
   const [githubToken, setGitHubToken] = useState("");
   const [githubRepositories, setGitHubRepositories] = useState("");
+  const [aiSessionFormOpenFor, setAISessionFormOpenFor] = useState(null);
+  const [aiSessionId, setAISessionId] = useState("");
+  const [aiSessionContent, setAISessionContent] = useState("");
+  const ingestAISessionMut = useIngestAISession();
 
   const workspaceId = useMemo(
     () => resolveWorkspaceId(workspaces.data, selectedId),
@@ -167,6 +177,13 @@ export default function Connectors() {
       }
     };
 
+    const onMsg = (e) => {
+      if (e.data === "oauth-complete") {
+        void tick();
+      }
+    };
+    window.addEventListener("message", onMsg);
+
     const timer = window.setInterval(() => {
       void tick();
     }, OAUTH_POLL_INTERVAL_MS);
@@ -174,8 +191,45 @@ export default function Connectors() {
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      window.removeEventListener("message", onMsg);
     };
   }, [isMock, oauthFlow, query.refetch]);
+
+  const startGenericOAuth = (installHref, connectorType) => {
+    setActionError(null);
+    setActionNotice(null);
+    const popup = window.open(installHref, `ce-${connectorType}-oauth`, "popup=yes,width=640,height=820");
+    if (!popup) {
+      window.location.assign(installHref);
+      return;
+    }
+    popup.focus?.();
+    setGenericOAuthPending((prev) => new Set([...prev, connectorType]));
+    const finish = async () => {
+      setGenericOAuthPending((prev) => {
+        const next = new Set(prev);
+        next.delete(connectorType);
+        return next;
+      });
+      await query.refetch();
+    };
+    const timer = window.setInterval(async () => {
+      if (popup.closed) {
+        window.clearInterval(timer);
+        await finish();
+      }
+    }, OAUTH_POLL_INTERVAL_MS);
+    const onMsg = async (e) => {
+      if (e.data === "oauth-complete") {
+        window.removeEventListener("message", onMsg);
+        window.clearInterval(timer);
+        popup.close?.();
+        await finish();
+      }
+    };
+    window.addEventListener("message", onMsg);
+    setActionNotice(`${connectorType.replace(/_/g, " ")} OAuth opened in a new window. Finish there to connect.`);
+  };
 
   const openSlackConnectModal = (installHref, currentStatus, mode = "self_hosted") => {
     setActionError(null);
@@ -224,52 +278,12 @@ export default function Connectors() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
-            <h2 className="text-3xl font-bold tracking-tight text-slate-950 dark:text-white">Workspace Connectors</h2>
+            <h2 className="text-3xl font-bold tracking-tight text-slate-950 dark:text-white">Connectors</h2>
             {isMock && <MockBadge />}
           </div>
-          <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-500 dark:text-slate-400">
-            Slack, Zoom, Google Drive, Gmail, and Wispr Flow are the target source surfaces. Each connector should land raw source documents first, then the extractor turns those documents into graph components with provenance.
+          <p className="mt-1.5 text-sm text-slate-500 dark:text-slate-400">
+            Connect your sources. Each connector fetches raw messages and documents, then extracts structured facts into the knowledge graph.
           </p>
-          {isMock && (
-            <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
-              Connector cards are in demo mode right now. OAuth and sync actions unlock once the backend
-              endpoints are live.
-            </p>
-          )}
-        </div>
-      </div>
-
-      <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-4">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-400">Self-host quick path</h3>
-            <p className="text-xs text-gray-400 mt-1">
-              For a fresh install, the shortest path is connect a source, run the first sync, then inspect Sources before trusting Query answers.
-            </p>
-          </div>
-          <Link to="/app/sources" className="text-xs font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
-            Open sources
-          </Link>
-        </div>
-        <div className="mt-4 grid gap-3 md:grid-cols-3">
-          <QuickPathStep
-            title="1. Connect a source"
-            description="Start with Slack, Zoom, Drive, Gmail, or Wispr Flow so the workspace has real context to ingest."
-            to="/app/connectors"
-            action="Connectors"
-          />
-          <QuickPathStep
-            title="2. Run the first sync"
-            description="Queue a sync from the connector card and wait for raw documents to land in the source store."
-            to="/app/connectors"
-            action="Run sync"
-          />
-          <QuickPathStep
-            title="3. Validate trust"
-            description="Use Sources, Review, and Accuracy to verify what the system extracted before relying on it."
-            to="/app/review"
-            action="Open review"
-          />
         </div>
       </div>
 
@@ -309,7 +323,7 @@ export default function Connectors() {
               key={connector.type}
               connector={connector}
               isDemo={isMock}
-              oauthPending={!!oauthFlow}
+              oauthPending={connector.type === "slack" ? !!oauthFlow : genericOAuthPending.has(connector.type)}
               workspaceId={workspaceId}
               processing={processingByType.get(connector.type) ?? null}
               slackSetupOpen={connector.type === "slack" ? slackSetupOpen : false}
@@ -338,12 +352,24 @@ export default function Connectors() {
               onChangeGitHubRepositories={setGitHubRepositories}
               onToggleGitHubForm={() => setGitHubFormOpen((current) => !current)}
               connectGitHubMut={connectGitHubMut}
+              aiSessionFormOpen={["codex", "claude", "opencode"].includes(connector.type) ? aiSessionFormOpenFor === connector.type : false}
+              aiSessionId={aiSessionId}
+              aiSessionContent={aiSessionContent}
+              onChangeAISessionId={setAISessionId}
+              onChangeAISessionContent={setAISessionContent}
+              onToggleAISessionForm={() => {
+                setAISessionFormOpenFor((f) => f === connector.type ? null : connector.type);
+                setAISessionId("");
+                setAISessionContent("");
+              }}
+              ingestAISessionMut={ingestAISessionMut}
               syncMut={syncMut}
               disconnectMut={disconnectMut}
               onActionError={setActionError}
               onActionNotice={setActionNotice}
               onSyncJobSettled={handleSyncJobSettled}
               onStartOAuth={openSlackConnectModal}
+              onStartGenericOAuth={startGenericOAuth}
             />
           ))}
         </div>
@@ -396,12 +422,20 @@ function ConnectorCard({
   onChangeGitHubRepositories,
   onToggleGitHubForm,
   connectGitHubMut,
+  aiSessionFormOpen,
+  aiSessionId,
+  aiSessionContent,
+  onChangeAISessionId,
+  onChangeAISessionContent,
+  onToggleAISessionForm,
+  ingestAISessionMut,
   syncMut,
   disconnectMut,
   onActionError,
   onActionNotice,
   onSyncJobSettled,
   onStartOAuth,
+  onStartGenericOAuth,
 }) {
   const {
     connectorId,
@@ -433,12 +467,17 @@ function ConnectorCard({
     isConfigured = true,
     managedConnectAvailable = false,
     managedInstallUrl = null,
+    redirectUri = null,
   } = connector;
 
   const isSlack = type === "slack";
   const isNotion = type === "notion";
   const isZoom = type === "zoom";
   const isGitHub = type === "github";
+  const isGDrive = type === "gdrive";
+  const isGmail = type === "gmail";
+  const isGoogleOAuth = isGDrive || isGmail;
+  const isAISession = type === "codex" || type === "claude" || type === "opencode";
   const slackSelfHostedSetupAvailable = isSlack && isConfigured === false;
   const canConnect =
     !isDemo &&
@@ -594,6 +633,38 @@ function ConnectorCard({
     );
   };
 
+  const handleGoogleOAuth = () => {
+    if (!installHref) return;
+    onStartGenericOAuth(installHref, type);
+  };
+
+  const handleAISessionIngest = (event) => {
+    event.preventDefault();
+    onActionError(null);
+    onActionNotice(null);
+    ingestAISessionMut.mutate(
+      { connectorType: type, sessionId: aiSessionId.trim() || `session-${Date.now()}`, content: aiSessionContent },
+      {
+        onError: (err) => onActionError(err?.message || `Failed to ingest ${name} session.`),
+        onSuccess: (data) => {
+          onChangeAISessionContent("");
+          onChangeAISessionId("");
+          onToggleAISessionForm();
+          const docs = data?.ingest?.documents_persisted ?? 0;
+          const updated = data?.ingest?.documents_updated ?? 0;
+          const comps = data?.extract?.components_created ?? 0;
+          onActionNotice(
+            docs > 0
+              ? `${name} session ingested. ${comps > 0 ? `${comps} graph component${comps === 1 ? "" : "s"} extracted.` : "Run a sync to extract graph facts."}`
+              : updated > 0
+                ? `${name} session updated. ${comps > 0 ? `${comps} graph component${comps === 1 ? "" : "s"} extracted.` : ""}`
+                : `${name} session processed.`,
+          );
+        },
+      },
+    );
+  };
+
   useEffect(() => {
     const previous = previousJobRef.current;
     const nextJobId = latestSyncJob?.jobId ?? null;
@@ -616,12 +687,7 @@ function ConnectorCard({
   return (
     <div className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-gray-800/50 p-5 flex flex-col gap-4 hover:shadow-sm transition-shadow">
       <div className="flex items-center gap-3">
-        <span
-          className="w-10 h-10 rounded-lg flex items-center justify-center text-white text-sm font-bold shrink-0"
-          style={{ backgroundColor: color }}
-        >
-          {name[0]}
-        </span>
+        <ConnectorIconBadge type={type} color={color} name={name} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-300">{name}</h3>
@@ -659,16 +725,6 @@ function ConnectorCard({
             </>
           )}
         </div>
-        {syncMode && (
-          <p className="text-[11px] text-gray-400 mt-2 capitalize">
-            Last sync mode: {syncMode}
-          </p>
-        )}
-        {syncModeNote && (
-          <p className="text-[11px] text-gray-400 mt-2">
-            {syncModeNote}
-          </p>
-        )}
         {syncQueuedAt && (
           <div className="mt-2 inline-flex items-center gap-2 rounded-full bg-blue-50 dark:bg-blue-900/30 px-2.5 py-1 text-[11px] text-blue-700 dark:text-blue-400">
             <span className="inline-block h-1.5 w-1.5 rounded-full bg-blue-500" />
@@ -758,15 +814,7 @@ function ConnectorCard({
             </div>
           </div>
         )}
-        {message && !isSlack && (
-          <p className="text-[11px] text-gray-500 mt-2">{message}</p>
-        )}
-        {providerNote && (
-          <p className="text-[11px] text-gray-400 mt-2">
-            Connector path: {providerNote}
-          </p>
-        )}
-        {isZoom && (
+        {isZoom && status !== "disconnected" && (
           <ZoomCapabilityPanel
             status={status}
             authMode={authMode}
@@ -780,12 +828,7 @@ function ConnectorCard({
             oauthPending={oauthPending}
           />
         )}
-        {isGitHub && <GitHubCapabilityPanel repositories={connector.repositories ?? null} />}
-        {scope && (
-          <p className="text-[11px] text-gray-400 mt-2">
-            Slack scopes: {scope}
-          </p>
-        )}
+        {isGitHub && status !== "disconnected" && <GitHubCapabilityPanel repositories={connector.repositories ?? null} />}
         {isSlack && status === "disconnected" && availability === "available" && (
           <SlackSetupHint isConfigured={isConfigured} managedConnectAvailable={managedConnectAvailable} />
         )}
@@ -802,81 +845,42 @@ function ConnectorCard({
             onCancel={onToggleSlackSetup}
           />
         )}
-        {isNotion && status === "disconnected" && availability === "available" && (
-          <p className="text-[11px] text-gray-500 mt-2">
-            Add a Notion integration token, then sync pages into stored source documents for extraction and query.
-          </p>
+        {redirectUri && status === "disconnected" && (zoomFormOpen || githubFormOpen || notionFormOpen) && (
+          <div className="mt-2 rounded-md bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/50 px-2.5 py-2">
+            <p className="text-[10px] font-medium text-blue-700 dark:text-blue-400 mb-0.5">
+              Register this redirect URI in your {name} app:
+            </p>
+            <div className="flex items-center gap-1.5">
+              <code className="flex-1 text-[10px] text-blue-800 dark:text-blue-300 break-all font-mono">{redirectUri}</code>
+              <button
+                type="button"
+                onClick={() => navigator.clipboard.writeText(redirectUri)}
+                className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-800/40 text-blue-700 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-700/40"
+              >
+                Copy
+              </button>
+            </div>
+          </div>
         )}
-        {isZoom && status === "disconnected" && availability === "available" && (
-          <p className="text-[11px] text-gray-500 mt-2">
-            Choose OAuth for webhook-driven transcript sync, or save a manual token if polling-only ingestion is enough for now.
-          </p>
-        )}
-        {isGitHub && status === "disconnected" && availability === "available" && (
-          <p className="text-[11px] text-gray-500 mt-2">
-            Save a GitHub token plus one or more repositories to ingest issues, pull requests, reviews, and comment threads.
-          </p>
-        )}
-        {isSlack && status === "error" && (
+        {status === "error" && (
           <p className="text-[11px] text-red-600 dark:text-red-400 mt-2">
-            Slack needs attention. Reconnect the workspace or retry sync after checking OAuth and connector health.
-          </p>
-        )}
-        {isNotion && status === "error" && (
-          <p className="text-[11px] text-red-600 dark:text-red-400 mt-2">
-            Notion needs attention. Update the integration token, then run another sync.
-          </p>
-        )}
-        {isZoom && status === "error" && (
-          <p className="text-[11px] text-red-600 dark:text-red-400 mt-2">
-            Zoom needs attention. Reconnect OAuth or update the manual token, then run another sync.
-          </p>
-        )}
-        {isGitHub && status === "error" && (
-          <p className="text-[11px] text-red-600 dark:text-red-400 mt-2">
-            GitHub needs attention. Update the token or repository list, then run another sync.
-          </p>
-        )}
-        {status === "connected" && teamName && (
-          <p className="text-[11px] text-emerald-700 dark:text-emerald-400 mt-2">
-            Connected and ready for ingestion.
+            Reconnect to refresh credentials, then run another sync.
           </p>
         )}
         {status === "connected" && itemsSynced > 0 && (
-          <div className="mt-2">
+          <div className="mt-2 flex items-center gap-2">
             <p className="text-[11px] text-emerald-700 dark:text-emerald-400">
-              {formatDocumentCount(itemsSynced)} available for extraction and query.
+              {Number(itemsSynced).toLocaleString()} document{Number(itemsSynced) === 1 ? "" : "s"} stored
             </p>
-            <Link to="/app/sources" className="inline-flex mt-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-400 underline">
-              Inspect stored documents
+            <span className="text-gray-300 dark:text-gray-600">·</span>
+            <Link to="/app/sources" className="text-[11px] font-medium text-brand-600 dark:text-brand-400 hover:underline">
+              View sources
             </Link>
           </div>
         )}
         {status === "connected" && itemsSynced === 0 && !syncQueuedAt && (
-          <p className="text-[11px] text-gray-500 mt-2">
-            OAuth is complete. Run a sync to start storing Slack history in the database.
-          </p>
-        )}
-        {isNotion && status === "connected" && itemsSynced === 0 && !syncQueuedAt && (
-          <p className="text-[11px] text-gray-500 mt-2">
-            Notion is connected. Run a sync to store workspace pages and surface them in Sources and Query.
-          </p>
-        )}
-        {isZoom && status === "connected" && itemsSynced === 0 && !syncQueuedAt && (
-          <p className="text-[11px] text-gray-500 mt-2">
-            {authMode === "oauth"
-              ? "Zoom OAuth is connected. Webhook-driven sync is ready for supported recording events, or you can run a sync now."
-              : "Zoom is connected in manual polling mode. Run a sync to store meeting transcripts and surface them in Sources and Query."}
-          </p>
-        )}
-        {isGitHub && status === "connected" && itemsSynced === 0 && !syncQueuedAt && (
-          <p className="text-[11px] text-gray-500 mt-2">
-            GitHub is connected. Run a sync to store issues, pull requests, review threads, and linked engineering discussion.
-          </p>
-        )}
-        {status === "coming_soon" && (
-          <p className="text-[11px] text-gray-500 mt-2">
-            Backend support for this connector is intentionally deferred until the Slack path is stable.
+          <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-2">
+            Ready — run a sync to start pulling data.
           </p>
         )}
       </div>
@@ -955,33 +959,65 @@ function ConnectorCard({
 
       {isGitHub && githubFormOpen && (
         <form onSubmit={handleGitHubConnect} className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 p-3 space-y-3">
+          {/* Setup guide */}
+          <div className="rounded-lg border border-sky-200 dark:border-sky-500/20 bg-sky-50 dark:bg-sky-500/10 px-3 py-2.5 space-y-1.5">
+            <p className="text-[11px] font-bold uppercase tracking-wide text-sky-800 dark:text-sky-200">
+              How to get a GitHub token
+            </p>
+            <ol className="text-xs text-sky-900 dark:text-sky-100 space-y-1 list-decimal list-inside leading-relaxed">
+              <li>
+                Go to{" "}
+                <a
+                  href="https://github.com/settings/tokens/new"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-semibold underline decoration-sky-400 hover:text-sky-700 dark:hover:text-sky-300"
+                >
+                  github.com/settings/tokens/new
+                </a>
+              </li>
+              <li>Under <strong>Note</strong>, enter a name like <em>Context Engine</em></li>
+              <li>
+                Select scope{" "}
+                <span className="rounded bg-sky-100 dark:bg-sky-900/50 px-1.5 py-0.5 font-mono font-bold">repo</span>
+                {" "}for private repos, or{" "}
+                <span className="rounded bg-sky-100 dark:bg-sky-900/50 px-1.5 py-0.5 font-mono font-bold">public_repo</span>
+                {" "}for public repos only
+              </li>
+              <li>Click <strong>Generate token</strong> and copy it below</li>
+            </ol>
+            <p className="text-[11px] text-sky-700 dark:text-sky-300 mt-1">
+              Fine-grained tokens work too — grant <strong>Issues</strong> and <strong>Pull requests</strong> read access on the target repos.
+            </p>
+          </div>
+
           <div>
             <label htmlFor="github-token" className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-              GitHub access token
+              Personal Access Token
             </label>
             <input
               id="github-token"
               type="password"
               value={githubToken}
               onChange={(event) => onChangeGitHubToken(event.target.value)}
-              placeholder="ghp_xxx"
-              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+              placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40 font-mono"
             />
           </div>
           <div>
             <label htmlFor="github-repositories" className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-              Repositories
+              Repositories to sync
             </label>
             <textarea
               id="github-repositories"
               value={githubRepositories}
               onChange={(event) => onChangeGitHubRepositories(event.target.value)}
-              placeholder={"acme/context-engine\nacme/platform"}
+              placeholder={"your-org/repo-name\nyour-org/another-repo"}
               rows={3}
-              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40 font-mono"
             />
-            <p className="mt-1 text-[11px] text-gray-500">
-              One `owner/repo` per line or comma separated.
+            <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+              One <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">owner/repo</code> per line. Example: <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">acme/backend</code>
             </p>
           </div>
           <div className="flex gap-2">
@@ -994,11 +1030,64 @@ function ConnectorCard({
               }
               className="px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
             >
-              {connectGitHubMut.isPending ? "Saving..." : "Save GitHub token"}
+              {connectGitHubMut.isPending ? "Saving…" : "Save & connect"}
             </button>
             <button
               type="button"
               onClick={onToggleGitHubForm}
+              className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-white dark:bg-slate-800"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+
+      {isAISession && aiSessionFormOpen && (
+        <form onSubmit={handleAISessionIngest} className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 p-3 space-y-3">
+          <div>
+            <p className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">
+              Import a {name} session
+            </p>
+            <label htmlFor={`${type}-session-id`} className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+              Session label <span className="text-gray-400">(optional — used for deduplication)</span>
+            </label>
+            <input
+              id={`${type}-session-id`}
+              type="text"
+              value={aiSessionId}
+              onChange={(e) => onChangeAISessionId(e.target.value)}
+              placeholder={`my-${type}-session-1`}
+              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            />
+          </div>
+          <div>
+            <label htmlFor={`${type}-session-content`} className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+              Session content
+            </label>
+            <textarea
+              id={`${type}-session-content`}
+              value={aiSessionContent}
+              onChange={(e) => onChangeAISessionContent(e.target.value)}
+              placeholder={"Paste your conversation export here. JSON (messages array), markdown (Human:/Assistant: format), or plain text are all supported."}
+              rows={6}
+              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40 font-mono text-xs"
+            />
+            <p className="mt-1 text-[11px] text-gray-400">
+              Supports OpenAI JSON export, Claude markdown, or raw conversation text.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              disabled={ingestAISessionMut.isPending || !aiSessionContent.trim()}
+              className="px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+            >
+              {ingestAISessionMut.isPending ? "Importing..." : "Import session"}
+            </button>
+            <button
+              type="button"
+              onClick={onToggleAISessionForm}
               className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-white dark:bg-slate-800"
             >
               Cancel
@@ -1043,6 +1132,32 @@ function ConnectorCard({
         ) : isSlack && canReconnect && !installHref ? (
           <span className="inline-flex items-center rounded-lg bg-amber-50 dark:bg-amber-900/30 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800/50">
             Slack OAuth not configured
+          </span>
+        ) : isGoogleOAuth && canConnect && installHref ? (
+          <button
+            type="button"
+            disabled={isDemo || !workspaceId}
+            onClick={handleGoogleOAuth}
+            className="inline-flex items-center gap-2 rounded-full bg-white border border-gray-200 px-4 py-2 text-sm font-medium text-gray-900 hover:bg-gray-50 shadow-sm transition-colors dark:bg-slate-800 dark:border-gray-700 dark:text-white dark:hover:bg-slate-700"
+          >
+            <GoogleIcon className="w-4 h-4" />
+            Connect with Google
+          </button>
+        ) : isGoogleOAuth && canConnect && !installHref ? (
+          <span className="inline-flex items-center rounded-lg bg-amber-50 dark:bg-amber-900/30 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800/50">
+            Google OAuth not configured
+          </span>
+        ) : isGoogleOAuth && canReconnect && installHref ? (
+          <button
+            type="button"
+            onClick={handleGoogleOAuth}
+            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 transition-colors"
+          >
+            Reconnect Google
+          </button>
+        ) : isGoogleOAuth && canReconnect && !installHref ? (
+          <span className="inline-flex items-center rounded-lg bg-amber-50 dark:bg-amber-900/30 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800/50">
+            Google OAuth not configured
           </span>
         ) : isNotion && status === "disconnected" ? (
           <button
@@ -1098,6 +1213,18 @@ function ConnectorCard({
           >
             Update GitHub token
           </button>
+        ) : isAISession ? (
+          <button
+            type="button"
+            disabled={isDemo || !workspaceId}
+            onClick={onToggleAISessionForm}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M8 1a.5.5 0 0 1 .5.5v6h6a.5.5 0 0 1 0 1h-6v6a.5.5 0 0 1-1 0v-6h-6a.5.5 0 0 1 0-1h6v-6A.5.5 0 0 1 8 1z"/>
+            </svg>
+            Import session
+          </button>
         ) : (
           <button
             type="button"
@@ -1107,7 +1234,7 @@ function ConnectorCard({
           {isDemo
               ? "Demo mode"
               : oauthPending
-                ? "Waiting for Slack..."
+                ? "Connecting..."
                 : workspaceId
                   ? "Already connected"
                   : "Select workspace"}
@@ -1299,19 +1426,14 @@ function GitHubCapabilityPanel({ repositories }) {
 }
 
 function SlackSetupHint({ isConfigured, managedConnectAvailable }) {
-  if (isConfigured || managedConnectAvailable) {
+  if (!isConfigured && !managedConnectAvailable) {
     return (
       <p className="text-[11px] text-gray-500 mt-2">
-        Connect Slack to start ingesting messages, threads, and source-backed pricing or roadmap facts.
+        Use advanced setup to provide your own Slack app credentials.
       </p>
     );
   }
-
-  return (
-    <p className="text-[11px] text-gray-500 mt-2">
-      Connect Slack through the managed app flow. Self-hosted Slack app credentials are available under advanced setup.
-    </p>
-  );
+  return null;
 }
 
 function SlackConnectModal({ mode, onCancel, onContinue }) {
@@ -1356,12 +1478,12 @@ function SlackConnectModal({ mode, onCancel, onContinue }) {
 
         <div className="mt-6 rounded-xl border border-gray-200 dark:border-gray-800/60 p-5 text-sm text-gray-700 dark:text-gray-300 space-y-4">
           <div>
-            <p className="font-semibold text-gray-900 dark:text-gray-100">Permissions always respected</p>
-            <p className="mt-1.5 leading-relaxed">
-              Context Engine is strictly limited to the scopes you explicitly approve during install. You can revoke access anytime from your Slack workspace settings.
+            <p className="font-semibold text-gray-900 dark:text-gray-100">Read-only access</p>
+            <p className="mt-1.5 leading-relaxed text-sm">
+              Context Engine only reads channel history. No messages are posted or modified. Revoke access anytime from your Slack workspace settings.
             </p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {["channels:history", "channels:read", "groups:history", "groups:read", "users:read", "team:read"].map((scope) => (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {["channels:history", "channels:join", "channels:read", "groups:history", "groups:read", "users:read", "team:read"].map((scope) => (
                 <span key={scope} className="inline-flex items-center rounded-md bg-gray-100 dark:bg-gray-800 px-2 py-1 text-[11px] font-medium text-gray-600 dark:text-gray-400">
                   {scope}
                 </span>
@@ -1371,15 +1493,8 @@ function SlackConnectModal({ mode, onCancel, onContinue }) {
           <div className="border-t border-gray-200 dark:border-gray-800/60" />
           <div>
             <p className="font-semibold text-gray-900 dark:text-gray-100">You're in control</p>
-            <p className="mt-1.5 leading-relaxed">
-              You can disconnect the workspace from Context Engine at any time. No messages are sent or posted to Slack.
-            </p>
-          </div>
-          <div className="border-t border-gray-200 dark:border-gray-800/60" />
-          <div>
-            <p className="font-semibold text-gray-900 dark:text-gray-100">Connectors may introduce risk</p>
-            <p className="mt-1.5 leading-relaxed">
-              Connect only workspaces whose documents and messages should be available to this Context Engine instance.
+            <p className="mt-1.5 leading-relaxed text-sm">
+              Disconnect the workspace from Context Engine at any time from this page.
             </p>
           </div>
         </div>
@@ -1492,24 +1607,21 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
   const slackConnectMode = managedConnectAvailable ? "managed" : "self_hosted";
 
   if (connector.status === "connected") {
+    const subtext = connector.syncQueuedAt
+      ? `Sync queued`
+      : connector.itemsSynced > 0
+        ? `${Number(connector.itemsSynced).toLocaleString()} document${Number(connector.itemsSynced) === 1 ? "" : "s"} stored`
+        : `Last sync ${connector.lastSync} — run a sync to pull messages`;
     return (
-      <div className="rounded-xl border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/30 p-4 flex items-start justify-between gap-4">
-        <div>
-          <p className="text-sm font-medium text-emerald-800 dark:text-emerald-300">
-            Slack is connected{connector.teamName ? ` to ${connector.teamName}` : ""}.
-          </p>
-          <p className="text-xs text-emerald-700 dark:text-emerald-400 mt-1">
-            {connector.syncQueuedAt
-              ? `A sync is queued for ${connector.syncQueuedAt}.`
-              : connector.itemsSynced > 0
-                ? `${formatDocumentCount(connector.itemsSynced)} available for extraction and query.`
-                : `Last completed sync: ${connector.lastSync}. Run a sync to store Slack history.`}
-          </p>
-          {connector.itemsSynced > 0 && (
-            <Link to="/app/sources" className="inline-flex mt-3 text-xs font-medium text-emerald-800 dark:text-emerald-300 underline">
-              Inspect stored documents
-            </Link>
-          )}
+      <div className="rounded-xl border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/30 px-4 py-3 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
+          <div className="min-w-0">
+            <span className="text-sm font-medium text-emerald-800 dark:text-emerald-300">
+              {connector.teamName ? connector.teamName : "Slack"} connected
+            </span>
+            <span className="ml-2 text-xs text-emerald-600 dark:text-emerald-400">{subtext}</span>
+          </div>
         </div>
         {!isDemo && !oauthPending && reconnectHref && (
           <a
@@ -1518,7 +1630,7 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
               event.preventDefault();
               onStartOAuth(reconnectHref, connector.status, slackConnectMode);
             }}
-            className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg border border-emerald-200 dark:border-emerald-800/50 text-emerald-800 dark:text-emerald-300 hover:bg-white/70 transition-colors"
+            className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:bg-white/70 transition-colors"
           >
             Refresh OAuth
           </a>
@@ -1529,12 +1641,10 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
 
   if (connector.status === "error") {
     return (
-      <div className="rounded-xl border border-red-200 dark:border-red-800/50 bg-red-50 dark:bg-red-900/30 p-4 flex items-start justify-between gap-4">
-        <div>
-          <p className="text-sm font-medium text-red-800 dark:text-red-300">Slack needs attention.</p>
-          <p className="text-xs text-red-700 dark:text-red-400 mt-1">
-            Reconnect the workspace to refresh credentials, then run another sync.
-          </p>
+      <div className="rounded-xl border border-red-200 dark:border-red-800/50 bg-red-50 dark:bg-red-900/30 px-4 py-3 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-red-500" />
+          <span className="text-sm font-medium text-red-800 dark:text-red-300">Slack needs attention — reconnect to refresh credentials</span>
         </div>
         {!isDemo && !oauthPending && reconnectHref && (
           <a
@@ -1553,16 +1663,11 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
   }
 
   if (connector.status === "disconnected") {
-    const isConfiguredBanner = connector.isConfigured ?? true;
     return (
-      <div className="rounded-xl border border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30 p-4 flex items-start justify-between gap-4">
-        <div>
-          <p className="text-sm font-medium text-amber-800 dark:text-amber-300">Slack is not connected yet.</p>
-          <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
-            {isConfiguredBanner
-              ? "Connect Slack to ingest channel history, threads, and source-backed team context."
-              : "A Slack app is required before connecting. Use Advanced self-hosted setup below to add your credentials, or ask your operator to set environment variables."}
-          </p>
+      <div className="rounded-xl border border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/30 px-4 py-3 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-amber-400" />
+          <span className="text-sm font-medium text-amber-800 dark:text-amber-300">Slack not connected</span>
         </div>
         {!isDemo && !oauthPending && reconnectHref && (
           <button
@@ -1570,7 +1675,7 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
             onClick={() => onStartOAuth(reconnectHref, connector.status, slackConnectMode)}
             className="shrink-0 inline-flex items-center gap-2 rounded-full bg-white border border-gray-200 px-4 py-2 text-sm font-medium text-gray-900 hover:bg-gray-50 shadow-sm transition-colors dark:bg-slate-800 dark:border-gray-700 dark:text-white dark:hover:bg-slate-700"
           >
-            <SlackLogoIcon className="w-5 h-5" />
+            <SlackLogoIcon className="w-4 h-4" />
             Connect to Slack
           </button>
         )}
@@ -1581,6 +1686,114 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
   return null;
 }
 
+function ConnectorIconBadge({ type, color, name }) {
+  const icons = {
+    slack: <SlackLogoIcon className="w-5 h-5" />,
+    zoom: <ZoomIcon className="w-5 h-5" />,
+    gdrive: <img src={imgGDrive} alt="Google Drive" className="w-8 h-8 object-contain" />,
+    gmail: <img src={imgGmail} alt="Gmail" className="w-6 h-6 object-contain" />,
+    github: <GitHubIcon className="w-5 h-5 text-white" />,
+    notion: <NotionIcon className="w-5 h-5" />,
+    codex: <img src={imgOpenAI} alt="OpenAI" className="w-7 h-7 object-contain" />,
+    claude: <AnthropicIcon className="w-5 h-5 text-white" />,
+    opencode: <img src={imgOpenCode} alt="OpenCode" className="w-8 h-8 object-contain" />,
+  };
+  const icon = icons[type];
+  return (
+    <span
+      className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 overflow-hidden"
+      style={{ backgroundColor: color, boxShadow: color === "#ffffff" ? "inset 0 0 0 1px #e5e7eb" : undefined }}
+    >
+      {icon ?? <span className="text-white text-sm font-bold">{name[0]}</span>}
+    </span>
+  );
+}
+
+function ZoomIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect width="32" height="32" rx="6" fill="#2D8CFF"/>
+      <path d="M5 11.5C5 10.67 5.67 10 6.5 10H18.5C20.43 10 22 11.57 22 13.5V18.5C22 20.43 20.43 22 18.5 22H6.5C5.67 22 5 21.33 5 20.5V11.5Z" fill="white"/>
+      <path d="M23 14L27 11.5V20.5L23 18V14Z" fill="white"/>
+    </svg>
+  );
+}
+
+function GoogleDriveIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 87.3 78" xmlns="http://www.w3.org/2000/svg">
+      <path d="M6.6 66.85l3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3L28 53H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066DA"/>
+      <path d="M43.65 25L29.35 0c-1.35.8-2.5 1.9-3.3 3.3L1.2 48.5A9 9 0 000 53h28z" fill="#00AC47"/>
+      <path d="M73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75L86.1 57.5A9 9 0 0087.3 53H59.3l5.95 11.45z" fill="#EA4335"/>
+      <path d="M43.65 25L57.95 0H13.35c-1.35.8-2.5 1.9-3.3 3.3L13.35 8.5 28 25z" fill="#00832D"/>
+      <path d="M59.3 53H87.3l-1.2-4.5-25-43.2c-.8-1.4-1.95-2.5-3.3-3.3L43.65 25l15.65 28z" fill="#2684FC"/>
+      <path d="M28 53L13.75 76.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2L59.3 53z" fill="#FFBA00"/>
+    </svg>
+  );
+}
+
+function GmailIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+      <path d="M4.5 39.5h7V24L2 17v19a2.5 2.5 0 002.5 2.5z" fill="#4285F4"/>
+      <path d="M36.5 39.5h7A2.5 2.5 0 0046 37V17l-9.5 7v15.5z" fill="#34A853"/>
+      <path d="M36.5 11.5v12.5L46 17v-3a2.5 2.5 0 00-4-2l-5.5 3.5-12 7.5-12-7.5L7 10a2.5 2.5 0 00-5 2v3l9.5 7V11.5L24 19.5l12.5-8z" fill="#EA4335"/>
+      <path d="M11.5 24v15.5h13V25.5L11.5 24z" fill="#FBBC05"/>
+      <path d="M36.5 24L24 25.5v14h12.5V24z" fill="#34A853"/>
+      <path d="M2 17l9.5 7L24 19.5 36.5 24l9.5-7-12-7.5L24 11.5l-9.5 5.5L7 10 2 17z" fill="#EA4335"/>
+    </svg>
+  );
+}
+
+function GitHubIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="currentColor">
+      <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+    </svg>
+  );
+}
+
+function NotionIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+      <path d="M6.07 6.61C8.47 8.55 9.37 8.41 13.97 8.1L87.7 3.7C88.9 3.7 87.96 2.5 87.5 2.36L75.18.46C72.78.16 72.48.01 69.58.16L6.22 4.96C4.87 5.1 4.57 5.86 6.07 6.61Z" fill="#ffffff"/>
+      <path d="M8.47 17.4V90.69c0 3.59 1.79 4.93 5.84 4.64l80.2-4.64c4.04-.3 4.49-2.84 4.49-5.83V13.76c0-2.99-1.2-4.63-3.89-4.33L12.81 13.9C10.11 14.2 8.47 15.7 8.47 17.4Z" fill="#ffffff"/>
+      <path d="M59.22 21.25L29.33 23.2c-2.69.15-3.44 1.64-3.44 3.73v43.36c0 2.09 1.2 3.14 3.44 2.99l29.89-1.8c2.24-.15 2.69-1.34 2.69-3.44V24.24c0-2.09-.45-3.14-2.69-2.99Z" fill="#000000"/>
+      <path d="M56.83 25.64l-22.3 1.35v37.58l22.3-1.35V25.64Z" fill="#ffffff"/>
+      <path d="M42.69 30.07l-5.39.33v5.39l5.39-.33V30.07Z" fill="#000000"/>
+      <path d="M47.78 29.77l-3.89.24v5.39l3.89-.24V29.77Z" fill="#000000"/>
+    </svg>
+  );
+}
+
+function OpenAIIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="currentColor">
+      <path d="M22.282 9.821a5.985 5.985 0 0 0-.516-4.91 6.046 6.046 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a5.985 5.985 0 0 0-3.998 2.9 6.046 6.046 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.051 6.051 0 0 0 6.515 2.9A5.985 5.985 0 0 0 13.26 24a6.056 6.056 0 0 0 5.772-4.206 5.99 5.99 0 0 0 3.997-2.9 6.056 6.056 0 0 0-.747-7.073zM13.26 22.43a4.476 4.476 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.795.795 0 0 0 .392-.681v-6.737l2.02 1.168a.071.071 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494zM3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.771.771 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.032.067L9.8 19.9a4.494 4.494 0 0 1-6.2-1.596zM2.34 7.896a4.485 4.485 0 0 1 2.366-1.973V11.6a.766.766 0 0 0 .388.676l5.815 3.355-2.02 1.168a.076.076 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855l-5.843-3.369 2.02-1.168a.076.076 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.402-.681zm2.01-3.023l-.141-.085-4.774-2.782a.776.776 0 0 0-.785 0L9.409 9.23V6.897a.066.066 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135l-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08-4.778 2.758a.795.795 0 0 0-.392.681zm1.097-2.365l2.602-1.5 2.607 1.5v2.993l-2.607 1.5-2.602-1.5z"/>
+    </svg>
+  );
+}
+
+function AnthropicIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="currentColor">
+      <path d="M13.827 3.52h3.603L24 20h-3.603l-6.57-16.48zm-7.258 0h3.767L16.906 20h-3.674l-1.343-3.461H5.017L3.674 20H0L6.57 3.52zm2.285 5.357l-2.07 5.675h4.14l-2.07-5.675z"/>
+    </svg>
+  );
+}
+
+function OpenCodeIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="3" width="20" height="15" rx="2"/>
+      <path d="M7 9l-2 3 2 3"/>
+      <path d="M17 9l2 3-2 3"/>
+      <path d="M12 9l-1.5 6"/>
+      <line x1="2" y1="21" x2="22" y2="21"/>
+    </svg>
+  );
+}
+
 function SlackLogoIcon({ className }) {
   return (
     <svg className={className} viewBox="0 0 127 127" xmlns="http://www.w3.org/2000/svg">
@@ -1588,6 +1801,17 @@ function SlackLogoIcon({ className }) {
       <path d="M47 27c-7.3 0-13.2-5.9-13.2-13.2S39.7.6 47 .6s13.2 5.9 13.2 13.2V27H47zm0 6.7c7.3 0 13.2 5.9 13.2 13.2s-5.9 13.2-13.2 13.2H13.9C6.6 60.1.7 54.2.7 46.9s5.9-13.2 13.2-13.2H47z" fill="#36C5F0"/>
       <path d="M99.9 46.9c0-7.3 5.9-13.2 13.2-13.2s13.2 5.9 13.2 13.2-5.9 13.2-13.2 13.2H99.9V46.9zm-6.6 0c0 7.3-5.9 13.2-13.2 13.2s-13.2-5.9-13.2-13.2V13.8C66.9 6.5 72.8.6 80.1.6s13.2 5.9 13.2 13.2v33.1z" fill="#2EB67D"/>
       <path d="M80.1 99.8c7.3 0 13.2 5.9 13.2 13.2s-5.9 13.2-13.2 13.2-13.2-5.9-13.2-13.2V99.8h13.2zm0-6.6c-7.3 0-13.2-5.9-13.2-13.2s5.9-13.2 13.2-13.2h33.1c7.3 0 13.2 5.9 13.2 13.2s-5.9 13.2-13.2 13.2H80.1z" fill="#ECB22E"/>
+    </svg>
+  );
+}
+
+function GoogleIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+      <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+      <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+      <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
     </svg>
   );
 }

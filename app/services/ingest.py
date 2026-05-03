@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -30,7 +30,7 @@ class IngestionService:
 
         facts = await self._extractor.extract(doc.content, _parse_metadata(doc.metadata_json))
         if not facts:
-            doc.processed_at = datetime.now(timezone.utc)
+            doc.processed_at = datetime.utcnow()
             await self.session.flush()
             return 0
 
@@ -53,7 +53,7 @@ class IngestionService:
             for rel in fact.relationships:
                 await self._create_relationship(component, rel)
 
-        doc.processed_at = datetime.now(timezone.utc)
+        doc.processed_at = datetime.utcnow()
         await self.session.flush()
         return len(components)
 
@@ -76,10 +76,12 @@ class IngestionService:
         )
         if existing is not None:
             existing.confidence = max(existing.confidence, fact.confidence)
+            if fact.temporal and fact.temporal != "unknown":
+                existing.temporal = fact.temporal
             return existing
 
         status = "needs_review" if fact.confidence < 0.6 else "active"
-        temporal = getattr(fact, "temporal_hint", "current")
+        temporal = getattr(fact, "temporal_hint", getattr(fact, "temporal", "current"))
         if temporal == "future":
             status = "proposed"
         elif temporal == "past":
@@ -91,6 +93,7 @@ class IngestionService:
             name=fact.name,
             value=fact.value,
             fact_type=fact.fact_type,
+            temporal=getattr(fact, "temporal", "unknown"),
             confidence=fact.confidence,
             status=status,
         )

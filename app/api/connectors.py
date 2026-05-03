@@ -1,740 +1,912 @@
 from __future__ import annotations
 
 import json
+import secrets
 from datetime import datetime, timezone
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from pydantic import BaseModel, Field
-from sqlalchemy import func as sa_func, select
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
+from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db_session
-from app.models import Connector, SourceDocument, SyncJob
-from app.services.ingest import IngestionService
+from app.models import Connector, SyncJob, Workspace
 
 router = APIRouter()
 
-CONNECTOR_CATALOG: list[dict[str, Any]] = [
-    {
-        "type": "slack",
+# ── Catalog ────────────────────────────────────────────────────
+
+CONNECTOR_CATALOG: dict[str, dict[str, Any]] = {
+    "slack": {
         "name": "Slack",
         "description": "Channels, DMs, and thread history",
         "color": "#4A154B",
         "availability": "available",
         "provider": "native",
         "provider_label": "Built in",
-        "provider_note": "Slack stays native because OAuth, thread expansion, and real-time events are product-critical.",
-        "auth_mode": "oauth",
-        "supported": False,
-        "setup_note": "Slack requires OAuth configuration. Run self-hosted setup or use managed connect to enable real-time sync.",
     },
-    {
-        "type": "discord",
-        "name": "Discord",
-        "description": "Server channels, threads, and community context",
-        "color": "#5865F2",
-        "availability": "coming_soon",
-        "provider": "official_api",
-        "provider_label": "Official API",
-        "provider_note": "Discord ingestion is planned and currently shown as unavailable until a tested sync path exists.",
-        "auth_mode": None,
-        "supported": False,
-        "setup_note": "Discord integration is not yet available. Join the waitlist for early access.",
-    },
-    {
-        "type": "ai_context",
-        "name": "AI Context",
-        "description": "Codex, Claude Code, OpenCode, plans, diffs, and review notes",
-        "color": "#6366F1",
+    "github": {
+        "name": "GitHub",
+        "description": "Issues, pull requests, and code review discussions",
+        "color": "#24292e",
         "availability": "available",
         "provider": "native",
-        "provider_label": "Built in",
-        "provider_note": "AI context imports are supported through the backend import endpoint.",
-        "auth_mode": "manual",
-        "supported": True,
-        "setup_note": "AI context import is ready. Use the import endpoint to submit agent sessions, plans, and diffs.",
+        "provider_label": "Personal Access Token",
     },
-    {
-        "type": "local",
-        "name": "Local Files",
-        "description": "Uploaded Markdown, text, JSON, CSV, and other local documents",
-        "color": "#6B7280",
-        "availability": "available",
-        "provider": "native",
-        "provider_label": "Built in",
-        "provider_note": "Local uploads are supported through the Sources workflow.",
-        "auth_mode": None,
-        "supported": True,
-        "setup_note": "Local file upload is always available via the sources endpoint.",
-    },
-    {
-        "type": "zoom",
+    "zoom": {
         "name": "Zoom",
         "description": "Meeting transcripts and recording metadata",
         "color": "#0B5CFF",
-        "availability": "coming_soon",
+        "availability": "available",
         "provider": "official_api",
         "provider_label": "Official API",
-        "provider_note": "Zoom is planned but does not have a tested backend connector in this milestone.",
-        "auth_mode": None,
-        "supported": False,
-        "setup_note": "Zoom integration is not yet available. It will require OAuth for meeting access.",
     },
-    {
-        "type": "gdrive",
+    "gdrive": {
         "name": "Google Drive",
         "description": "Docs, Sheets, Slides, and folder content",
         "color": "#0F9D58",
-        "availability": "coming_soon",
+        "availability": "available",
         "provider": "official_api",
         "provider_label": "Official API",
-        "provider_note": "Drive should ingest docs, sheets, slides, and folder metadata into the same source and graph pipeline.",
-        "auth_mode": None,
-        "supported": False,
-        "setup_note": "Google Drive integration is not yet available. It will use Google OAuth for secure access.",
     },
-    {
-        "type": "gmail",
+    "gmail": {
         "name": "Gmail",
         "description": "Email threads, attachments, and sender context",
         "color": "#EA4335",
-        "availability": "coming_soon",
+        "availability": "available",
         "provider": "official_api",
         "provider_label": "Official API",
-        "provider_note": "Gmail should ingest selected mailbox threads and attachments with source provenance.",
-        "auth_mode": None,
-        "supported": False,
-        "setup_note": "Gmail integration is not yet available. It will use Google OAuth for secure mailbox access.",
     },
-    {
-        "type": "wispr_flow",
-        "name": "Wispr Flow",
-        "description": "Dictation notes, transcripts, and captured thoughts",
-        "color": "#111827",
-        "availability": "coming_soon",
-        "provider": "official_api",
-        "provider_label": "Official API",
-        "provider_note": "Wispr Flow should bring dictated notes and transcripts into the graph as first-class source documents.",
-        "auth_mode": None,
-        "supported": False,
-        "setup_note": "Wispr Flow integration is not yet available.",
+    "codex": {
+        "name": "Codex",
+        "description": "OpenAI Codex sessions — decisions, code plans, and AI reasoning",
+        "color": "#10a37f",
+        "availability": "available",
+        "provider": "native",
+        "provider_label": "Session import",
     },
-]
+    "claude": {
+        "name": "Claude",
+        "description": "Anthropic Claude conversations — architecture choices and research threads",
+        "color": "#D97757",
+        "availability": "available",
+        "provider": "native",
+        "provider_label": "Session import",
+    },
+    "opencode": {
+        "name": "OpenCode",
+        "description": "OpenCode AI coding sessions — terminal context and implementation notes",
+        "color": "#6366F1",
+        "availability": "available",
+        "provider": "native",
+        "provider_label": "Session import",
+    },
+}
+
+GOOGLE_CONNECTORS = {"gdrive", "gmail"}
+AI_SESSION_CONNECTORS = {"codex", "claude", "opencode"}
 
 
-class AIContextDocument(BaseModel):
-    external_id: str = Field(min_length=1, max_length=255)
-    content: str = Field(min_length=1)
-    author: str | None = None
-    tool: str | None = None
-    session_type: str | None = None
-    session_id: str | None = None
-    started_at: str | None = None
-    ended_at: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
+def _get_env(key: str) -> str | None:
+    import os
+    return os.environ.get(key) or None
 
 
-class AIContextImportRequest(BaseModel):
-    documents: list[AIContextDocument] = Field(min_length=1)
+def _get_google_client_id() -> str | None:
+    """Read GOOGLE_CLIENT_ID and strip accidental URL wrappers.
+
+    Users sometimes paste the client ID as a full URL, e.g.:
+      http://204406203409-xxx.apps.googleusercontent.com/
+    Strip any scheme prefix and trailing slashes so Google accepts it.
+    """
+    import re
+    raw = _get_env("GOOGLE_CLIENT_ID")
+    if not raw:
+        return None
+    cleaned = re.sub(r'^https?://', '', raw).rstrip('/')
+    return cleaned or None
 
 
-class ConnectorConnectRequest(BaseModel):
-    config: dict[str, Any] = Field(default_factory=dict)
+def _public_base_url() -> str:
+    """Return the externally-reachable base URL (no trailing slash).
+
+    Priority:
+    1. REPLIT_DEV_DOMAIN env var  →  https://<domain>
+    2. PUBLIC_BASE_URL env var    →  used as-is (strip trailing slash)
+    Fallback to empty string (caller must still work but redirect_uri will be wrong).
+    """
+    import os
+    dev_domain = os.environ.get("REPLIT_DEV_DOMAIN", "")
+    if dev_domain:
+        return f"https://{dev_domain}"
+    pub = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+    return pub
 
 
-class ConnectorRead(BaseModel):
-    connector_id: UUID | None = None
-    type: str
-    name: str
-    description: str
-    color: str
-    availability: str
-    provider: str
-    provider_label: str
-    provider_note: str | None = None
-    status: str
-    last_sync: str | None = None
-    items_synced: int = 0
-    message: str | None = None
-    team_name: str | None = None
-    scope: str | None = None
-    sync_queued_at: str | None = None
-    sync_mode: str | None = None
-    sync_mode_note: str | None = None
-    processed_count: int = 0
-    total_processed_count: int = 0
-    auth_mode: str | None = None
-    account_id: str | None = None
-    ingestion_mode: str | None = None
-    source_focus: str | None = None
-    last_webhook_event: str | None = None
-    last_webhook_received_at: str | None = None
-    is_configured: bool = False
-    managed_connect_available: bool = False
-    managed_install_url: str | None = None
-
-    model_config = {"from_attributes": True}
+def _slack_configured() -> bool:
+    return bool(_get_env("SLACK_CLIENT_ID") and _get_env("SLACK_CLIENT_SECRET"))
 
 
-class SyncJobRead(BaseModel):
-    job_id: UUID
-    connector_id: UUID
-    status: str
-    error_type: str | None = None
-    error_message: str | None = None
-    result_metadata: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime | None = None
-    started_at: datetime | None = None
-    completed_at: datetime | None = None
-
-    model_config = {"from_attributes": True}
+def _zoom_configured() -> bool:
+    return bool(_get_env("ZOOM_CLIENT_ID") and _get_env("ZOOM_CLIENT_SECRET"))
 
 
-class ProcessingSummaryItem(BaseModel):
-    connector_type: str
-    total_documents: int = 0
-    processed_documents: int = 0
-    unprocessed_documents: int = 0
+def _google_configured() -> bool:
+    return bool(_get_google_client_id() and _get_env("GOOGLE_CLIENT_SECRET"))
 
 
-class ProcessingSummaryResponse(BaseModel):
-    items: list[ProcessingSummaryItem]
 
-
-def _catalog_entry(connector_type: str) -> dict[str, Any] | None:
-    for entry in CONNECTOR_CATALOG:
-        if entry["type"] == connector_type:
-            return entry
-    return None
-
-
-def _parse_config_json(config: Any) -> dict[str, Any]:
-    if config is None:
-        return {}
-    if isinstance(config, dict):
-        return config
-    if isinstance(config, str):
-        try:
-            return json.loads(config)
-        except (json.JSONDecodeError, TypeError):
-            return {}
-    return {}
-
-
-def _build_connector_read(
-    catalog_entry: dict[str, Any],
-    db_connector: Connector | None,
-    latest_job: SyncJob | None = None,
-    processed_count: int = 0,
-) -> ConnectorRead:
-    items_synced = db_connector.items_synced if db_connector else 0
-    conn_status = db_connector.status if db_connector else "disconnected"
-    conn_id = db_connector.id if db_connector else None
-    last_sync = db_connector.last_sync_at.isoformat() if db_connector and db_connector.last_sync_at else None
-
-    message = None
-    team_name = None
-    scope = None
-    sync_queued_at = None
-    sync_mode = None
-    sync_mode_note = None
-    account_id = None
-    ingestion_mode = None
-    source_focus = None
-    managed_install_url = None
-    is_configured = False
-    managed_connect_available = False
-
-    if db_connector:
-        config = _parse_config_json(db_connector.config_json)
-        team_name = config.get("team_name")
-        scope = config.get("scope")
-        account_id = config.get("account_id")
-        ingestion_mode = config.get("ingestion_mode")
-        source_focus = config.get("source_focus")
-
-    if catalog_entry["type"] == "ai_context":
-        if db_connector:
-            conn_status = db_connector.status
-            is_configured = db_connector.status in ("connected", "disconnected")
-        else:
-            conn_status = "connected"
-            is_configured = True
-    elif catalog_entry["type"] == "local":
-        if db_connector:
-            conn_status = db_connector.status
-            is_configured = True
-        else:
-            conn_status = "connected"
-            is_configured = True
-    elif catalog_entry.get("supported") is False:
-        is_configured = False
-        conn_status = "disconnected"
-    elif db_connector:
-        is_configured = True
-
-    if catalog_entry.get("supported") is False:
-        message = catalog_entry.get("setup_note")
-
-    if latest_job:
-        if latest_job.status == "pending":
-            sync_queued_at = latest_job.created_at.isoformat() if latest_job.created_at else None
-        elif latest_job.status == "running":
-            sync_mode = "full"
-
-    return ConnectorRead(
-        connector_id=conn_id,
-        type=catalog_entry["type"],
-        name=catalog_entry["name"],
-        description=catalog_entry["description"],
-        color=catalog_entry["color"],
-        availability=catalog_entry["availability"],
-        provider=catalog_entry["provider"],
-        provider_label=catalog_entry["provider_label"],
-        provider_note=catalog_entry.get("provider_note"),
-        status=conn_status,
-        last_sync=last_sync,
-        items_synced=items_synced,
-        message=message,
-        team_name=team_name,
-        scope=scope,
-        sync_queued_at=sync_queued_at,
-        sync_mode=sync_mode,
-        sync_mode_note=sync_mode_note,
-        processed_count=processed_count,
-        total_processed_count=processed_count,
-        auth_mode=catalog_entry.get("auth_mode"),
-        account_id=account_id,
-        ingestion_mode=ingestion_mode,
-        source_focus=source_focus,
-        last_webhook_event=None,
-        last_webhook_received_at=None,
-        is_configured=is_configured,
-        managed_connect_available=managed_connect_available,
-        managed_install_url=managed_install_url,
-    )
-
-
-def _build_sync_job_read(job: SyncJob) -> SyncJobRead:
-    return SyncJobRead(
-        job_id=job.id,
-        connector_id=job.connector_id,
-        status=job.status,
-        error_type=job.error_type,
-        error_message=job.error_message,
-        result_metadata=_parse_config_json(job.result_metadata_json),
-        created_at=job.created_at,
-        started_at=job.started_at,
-        completed_at=job.completed_at,
-    )
-
-
-async def _run_ai_context_ingestion(doc_id: UUID, database_url: str) -> None:
-    from sqlalchemy.ext.asyncio import AsyncSession as AS, async_sessionmaker, create_async_engine
-    engine = create_async_engine(database_url)
-    session_factory = async_sessionmaker(engine, class_=AS, expire_on_commit=False)
-    async with session_factory() as session:
-        svc = IngestionService(session)
-        await svc.process_document(doc_id)
-        await session.commit()
-    await engine.dispose()
-
-
-async def _count_processed(session: AsyncSession, connector_type: str) -> int:
-    type_patterns = _ai_context_subtypes(connector_type)
-    return await session.scalar(
-        select(sa_func.count(SourceDocument.id)).where(
-            SourceDocument.source_type.in_(type_patterns),
-            SourceDocument.processed_at.isnot(None),
-        )
-    ) or 0
-
-
-def _ai_context_subtypes(connector_type: str) -> list[str]:
-    if connector_type == "ai_context":
-        return [
-            "ai_context",
-            "ai_context_codex",
-            "ai_context_claude_code",
-            "ai_context_opencode",
-        ]
-    return [connector_type]
-
-
-async def _get_setup_status_items(session: AsyncSession) -> list[dict[str, Any]]:
-    connectors = (await session.scalars(select(Connector))).all()
-    connector_map: dict[str, Connector] = {c.connector_type: c for c in connectors}
-
-    result: list[dict[str, Any]] = []
-    for entry in CONNECTOR_CATALOG:
-        db_conn = connector_map.get(entry["type"])
-        if entry["type"] == "ai_context":
-            configured = True
-            status_str = "available"
-        elif entry["type"] == "local":
-            configured = True
-            status_str = "available"
-        elif entry.get("supported") is False:
-            configured = False
-            status_str = "coming_soon" if entry.get("availability") == "coming_soon" else "disconnected"
-        elif db_conn:
-            configured = True
-            status_str = db_conn.status
-        else:
-            configured = False
-            status_str = "disconnected"
-
-        result.append({
-            "connector_type": entry["type"],
-            "type": entry["type"],
-            "name": entry["name"],
+def _connector_setup_status(connector_type: str) -> dict[str, Any]:
+    base = _public_base_url()
+    if connector_type == "slack":
+        configured = _slack_configured()
+        managed = configured
+        redirect_uri = _get_env("SLACK_REDIRECT_URI") or (f"{base}/api/connectors/slack/callback" if base else None)
+        return {
+            "connector_type": "slack",
             "configured": configured,
-            "status": status_str,
-            "availability": entry["availability"],
-            "auth_mode": entry.get("auth_mode"),
-        })
+            "managed_available": managed,
+            "managed_install_url": "/api/connectors/slack/install" if managed else None,
+            "missing": [] if configured else ["SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET"],
+            "message": None if configured else "Add SLACK_CLIENT_ID and SLACK_CLIENT_SECRET to enable one-click OAuth.",
+            "redirect_uri": redirect_uri,
+        }
+    if connector_type == "zoom":
+        configured = _zoom_configured()
+        redirect_uri = _get_env("ZOOM_REDIRECT_URI") or (f"{base}/api/connectors/zoom/callback" if base else None)
+        return {
+            "connector_type": "zoom",
+            "configured": configured,
+            "managed_available": configured,
+            "managed_install_url": "/api/connectors/zoom/install" if configured else None,
+            "missing": [] if configured else ["ZOOM_CLIENT_ID", "ZOOM_CLIENT_SECRET"],
+            "message": None,
+            "redirect_uri": redirect_uri,
+        }
+    if connector_type in GOOGLE_CONNECTORS:
+        configured = _google_configured()
+        redirect_uri = _get_env("GOOGLE_REDIRECT_URI") or (f"{base}/api/connectors/{connector_type}/callback" if base else None)
+        return {
+            "connector_type": connector_type,
+            "configured": configured,
+            "managed_available": configured,
+            "managed_install_url": f"/api/connectors/{connector_type}/install" if configured else None,
+            "missing": [] if configured else ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"],
+            "message": None,
+            "redirect_uri": redirect_uri,
+        }
+    if connector_type == "github":
+        return {
+            "connector_type": "github",
+            "configured": True,
+            "managed_available": False,
+            "managed_install_url": None,
+            "missing": [],
+            "redirect_uri": None,
+            "message": "Provide a GitHub Personal Access Token with repo:read scope and a list of owner/repo targets.",
+        }
+    if connector_type in AI_SESSION_CONNECTORS:
+        return {"connector_type": connector_type, "configured": True, "managed_available": False, "managed_install_url": None, "missing": [], "redirect_uri": None}
+    return {"connector_type": connector_type, "configured": True, "managed_available": False, "managed_install_url": None, "missing": [], "redirect_uri": None}
 
-    return result
 
+# ── DB helpers ─────────────────────────────────────────────────
+
+async def _get_workspace(workspace_id: str, session: AsyncSession) -> Workspace:
+    try:
+        ws_uuid = UUID(workspace_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid workspace_id")
+    ws = await session.get(Workspace, ws_uuid)
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return ws
+
+
+async def _get_or_create_connector(
+    workspace_id: UUID,
+    connector_type: str,
+    session: AsyncSession,
+) -> Connector:
+    result = await session.scalars(
+        select(Connector).where(
+            Connector.workspace_id == workspace_id,
+            Connector.connector_type == connector_type,
+        )
+    )
+    connector = result.first()
+    if not connector:
+        connector = Connector(
+            workspace_id=workspace_id,
+            connector_type=connector_type,
+            status="disconnected",
+        )
+        session.add(connector)
+        await session.flush()
+    return connector
+
+
+def _connector_to_dict(connector: Connector) -> dict[str, Any]:
+    config = json.loads(connector.config_json or "{}")
+    updated_at = connector.__dict__.get("updated_at")
+    created_at = connector.__dict__.get("created_at")
+    last_sync_at = connector.__dict__.get("last_sync_at")
+    return {
+        "id": str(connector.id),
+        "workspace_id": str(connector.workspace_id),
+        "connector_type": connector.connector_type,
+        "status": connector.status,
+        "config": config,
+        "last_sync_at": last_sync_at.isoformat() if last_sync_at else None,
+        "created_at": created_at.isoformat() if created_at else None,
+        "updated_at": updated_at.isoformat() if updated_at else None,
+    }
+
+
+# ── Workspace endpoints ────────────────────────────────────────
+
+class WorkspaceCreate(BaseModel):
+    name: str
+    slug: str | None = None
+
+
+@router.get("/workspaces")
+async def list_workspaces(session: AsyncSession = Depends(get_db_session)) -> list[dict]:
+    result = await session.scalars(select(Workspace).order_by(Workspace.created_at))
+    workspaces = list(result)
+    if not workspaces:
+        ws = Workspace(name="Default", slug="default")
+        session.add(ws)
+        await session.commit()
+        await session.refresh(ws)
+        workspaces = [ws]
+    return [{"id": str(ws.id), "name": ws.name, "slug": ws.slug} for ws in workspaces]
+
+
+@router.post("/workspaces", status_code=201)
+async def create_workspace(
+    payload: WorkspaceCreate,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    slug = payload.slug or payload.name.lower().replace(" ", "-")
+    ws = Workspace(name=payload.name, slug=slug)
+    session.add(ws)
+    await session.commit()
+    await session.refresh(ws)
+    return {"id": str(ws.id), "name": ws.name, "slug": ws.slug}
+
+
+# ── Connector list + setup status ──────────────────────────────
 
 @router.get("/connectors")
 async def list_connectors(
-    workspace_id: str | None = None,
+    workspace_id: str,
     session: AsyncSession = Depends(get_db_session),
-) -> dict[str, Any]:
-    connectors = (await session.scalars(select(Connector))).all()
-    connector_map: dict[str, Connector] = {c.connector_type: c for c in connectors}
-
-    result: list[dict[str, Any]] = []
-    for entry in CONNECTOR_CATALOG:
-        db_conn = connector_map.get(entry["type"])
-        processed_count = 0
-        if db_conn:
-            processed_count = await _count_processed(session, entry["type"])
-
-        latest_job = None
-        if db_conn:
-            latest_job = await session.scalar(
-                select(SyncJob)
-                .where(SyncJob.connector_id == db_conn.id)
-                .order_by(SyncJob.created_at.desc())
-                .limit(1)
-            )
-
-        item = _build_connector_read(entry, db_conn, latest_job, processed_count)
-        serialized = item.model_dump(by_alias=False)
-        serialized["connector_type"] = entry["type"]
-        serialized["last_sync_at"] = db_conn.last_sync_at.isoformat() if db_conn and db_conn.last_sync_at else None
-        config_dict: dict[str, Any] = {}
-        if item.team_name:
-            config_dict["team_name"] = item.team_name
-        if item.scope:
-            config_dict["scope"] = item.scope
-        if item.sync_queued_at:
-            config_dict["sync_queued_at"] = item.sync_queued_at
-        if item.sync_mode:
-            config_dict["sync_mode"] = item.sync_mode
-        if item.sync_mode_note:
-            config_dict["sync_mode_note"] = item.sync_mode_note
-        if item.processed_count:
-            config_dict["processed_count"] = item.processed_count
-        if item.total_processed_count:
-            config_dict["total_processed_count"] = item.total_processed_count
-        if item.auth_mode:
-            config_dict["auth_mode"] = item.auth_mode
-        if item.account_id:
-            config_dict["account_id"] = item.account_id
-        if item.ingestion_mode:
-            config_dict["ingestion_mode"] = item.ingestion_mode
-        if item.source_focus:
-            config_dict["source_focus"] = item.source_focus
-        if item.message:
-            config_dict["message"] = item.message
-        serialized["config"] = config_dict
-        result.append(serialized)
-
-    setup_status = await _get_setup_status_items(session)
-
-    return {"connectors": result, "setupStatus": setup_status}
+) -> list[dict]:
+    ws = await _get_workspace(workspace_id, session)
+    result = await session.scalars(
+        select(Connector).where(Connector.workspace_id == ws.id)
+    )
+    connectors = {c.connector_type: c for c in result}
+    return [_connector_to_dict(c) for c in connectors.values()]
 
 
 @router.get("/connectors/setup-status")
-async def get_setup_status(
-    workspace_id: str | None = None,
-    session: AsyncSession = Depends(get_db_session),
-) -> list[dict[str, Any]]:
-    return await _get_setup_status_items(session)
+async def connector_setup_status() -> list[dict]:
+    return [_connector_setup_status(ct) for ct in CONNECTOR_CATALOG]
 
 
-@router.get("/connectors/processing-summary", response_model=ProcessingSummaryResponse)
-async def get_processing_summary(
-    workspace_id: str | None = None,
+@router.get("/connectors/processing-summary")
+async def connector_processing_summary(
+    workspace_id: str,
     session: AsyncSession = Depends(get_db_session),
-) -> ProcessingSummaryResponse:
-    all_types = {
-        "slack": ["slack"],
-        "discord": ["discord"],
-        "ai_context": ["ai_context", "ai_context_codex", "ai_context_claude_code", "ai_context_opencode"],
-        "local": ["local"],
-        "zoom": ["zoom"],
-        "gdrive": ["gdrive"],
-        "gmail": ["gmail"],
-        "wispr_flow": ["wispr_flow"],
-    }
-    flat_types = [t for group in all_types.values() for t in group]
-    rows = await session.execute(
-        select(
-            SourceDocument.source_type,
-            sa_func.count(SourceDocument.id).label("total"),
-            sa_func.count(SourceDocument.processed_at).label("processed"),
-        )
-        .where(SourceDocument.source_type.in_(flat_types))
-        .group_by(SourceDocument.source_type)
+) -> dict:
+    ws = await _get_workspace(workspace_id, session)
+    result = await session.scalars(
+        select(Connector).where(Connector.workspace_id == ws.id)
     )
-    raw_counts: dict[str, tuple[int, int]] = {}
-    for row in rows:
-        raw_counts[row.source_type] = (row.total, row.processed)
-
-    items: list[ProcessingSummaryItem] = []
-    for display_type, subtypes in all_types.items():
-        total = sum(raw_counts.get(st, (0, 0))[0] for st in subtypes)
-        processed = sum(raw_counts.get(st, (0, 0))[1] for st in subtypes)
-        items.append(ProcessingSummaryItem(
-            connector_type=display_type,
-            total_documents=total,
-            processed_documents=processed,
-            unprocessed_documents=total - processed,
-        ))
-
-    return ProcessingSummaryResponse(items=items)
+    items = []
+    for connector in result:
+        config = json.loads(connector.config_json or "{}")
+        items.append({
+            "connectorType": connector.connector_type,
+            "connector_type": connector.connector_type,
+            "processedDocuments": config.get("processed_count", 0),
+            "unprocessedDocuments": 0,
+        })
+    return {"items": items}
 
 
-@router.post("/connectors/ai-context/import", status_code=201)
-async def import_ai_context(
-    payload: AIContextImportRequest,
-    background_tasks: BackgroundTasks,
-    sync: bool = False,
+# ── Slack OAuth ────────────────────────────────────────────────
+
+@router.post("/connectors/slack/oauth-settings")
+async def save_slack_oauth_settings(
+    payload: dict,
     session: AsyncSession = Depends(get_db_session),
-) -> dict[str, Any]:
-    valid_tools = {"codex", "claude_code", "opencode", "cursor", "generic"}
-    created_ids: list[str] = []
+) -> dict:
+    import os
+    client_id = payload.get("client_id", "").strip()
+    client_secret = payload.get("client_secret", "").strip()
+    redirect_uri = payload.get("redirect_uri", "").strip()
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=422, detail="client_id and client_secret are required")
+    os.environ["SLACK_CLIENT_ID"] = client_id
+    os.environ["SLACK_CLIENT_SECRET"] = client_secret
+    if redirect_uri:
+        os.environ["SLACK_REDIRECT_URI"] = redirect_uri
+    return {"ok": True, "message": "Slack OAuth settings saved for this session."}
 
-    for doc in payload.documents:
-        tool = doc.tool
-        if tool and tool not in valid_tools:
-            tool = "generic"
 
-        source_type = "ai_context"
-        if tool == "codex":
-            source_type = "ai_context_codex"
-        elif tool == "claude_code":
-            source_type = "ai_context_claude_code"
-        elif tool == "opencode":
-            source_type = "ai_context_opencode"
+@router.get("/connectors/slack/install")
+async def slack_install(workspace_id: str, request: Request) -> RedirectResponse:
+    client_id = _get_env("SLACK_CLIENT_ID")
+    if not client_id:
+        raise HTTPException(status_code=503, detail="Slack OAuth is not configured on this server.")
+    redirect_uri = _get_env("SLACK_REDIRECT_URI") or f"{_public_base_url()}/api/connectors/slack/callback"
+    state = f"{workspace_id}:{secrets.token_urlsafe(16)}"
+    scopes = "channels:history,channels:join,channels:read,groups:history,groups:read,users:read,team:read"
+    url = (
+        f"https://slack.com/oauth/v2/authorize"
+        f"?client_id={client_id}"
+        f"&scope={scopes}"
+        f"&redirect_uri={redirect_uri}"
+        f"&state={state}"
+    )
+    return RedirectResponse(url)
 
-        metadata = dict(doc.metadata) if doc.metadata else {}
-        if doc.tool:
-            metadata["tool"] = tool or doc.tool
-        if doc.session_type:
-            metadata["session_type"] = doc.session_type
-        if doc.session_id:
-            metadata["session_id"] = doc.session_id
-        if doc.started_at:
-            metadata["started_at"] = doc.started_at
-        if doc.ended_at:
-            metadata["ended_at"] = doc.ended_at
-        metadata["ingested_via"] = "ai_context_import"
 
-        source_doc = SourceDocument(
-            source_type=source_type,
-            external_id=doc.external_id,
-            content=doc.content,
-            author=doc.author,
-            source_url=None,
-            metadata_json=json.dumps(metadata),
-        )
-        session.add(source_doc)
-        await session.flush()
-        created_ids.append(str(source_doc.id))
+@router.get("/connectors/slack/callback")
+async def slack_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    session: AsyncSession = Depends(get_db_session),
+) -> Response:
+    if error:
+        return _oauth_close_html(success=False, message=f"Slack OAuth error: {error}")
+    if not code or not state:
+        return _oauth_close_html(success=False, message="Missing code or state.")
 
+    workspace_id = state.split(":")[0]
+    try:
+        ws = await _get_workspace(workspace_id, session)
+    except HTTPException:
+        return _oauth_close_html(success=False, message="Workspace not found.")
+
+    import httpx
+    client_id = _get_env("SLACK_CLIENT_ID")
+    client_secret = _get_env("SLACK_CLIENT_SECRET")
+    redirect_uri = _get_env("SLACK_REDIRECT_URI") or f"{_public_base_url()}/api/connectors/slack/callback"
+
+    try:
+        async with httpx.AsyncClient() as http:
+            params: dict[str, str] = {
+                "client_id": client_id or "",
+                "client_secret": client_secret or "",
+                "code": code,
+                "redirect_uri": redirect_uri,
+            }
+            resp = await http.post("https://slack.com/api/oauth.v2.access", data=params)
+            data = resp.json()
+    except Exception as exc:
+        return _oauth_close_html(success=False, message=f"OAuth exchange failed: {exc}")
+
+    if not data.get("ok"):
+        return _oauth_close_html(success=False, message=data.get("error", "Slack OAuth failed."))
+
+    access_token = data.get("access_token") or data.get("authed_user", {}).get("access_token", "")
+    team = data.get("team", {})
+    connector = await _get_or_create_connector(ws.id, "slack", session)
+    connector.status = "connected"
+    connector.credentials_json = json.dumps({"access_token": access_token})
+    config = json.loads(connector.config_json or "{}")
+    config.update({
+        "team_name": team.get("name", ""),
+        "team_id": team.get("id", ""),
+        "scope": data.get("scope", ""),
+        "auth_mode": "oauth",
+    })
+    connector.config_json = json.dumps(config)
     await session.commit()
+    await session.refresh(connector)
+    return _oauth_close_html(success=True, message="Slack connected successfully.")
 
-    if sync:
-        from app.config import settings
-        for doc_id_str in created_ids:
-            background_tasks.add_task(_run_ai_context_ingestion, UUID(doc_id_str), settings.database_url)
+
+# ── Zoom OAuth ─────────────────────────────────────────────────
+
+@router.get("/connectors/zoom/install")
+async def zoom_install(workspace_id: str, request: Request) -> RedirectResponse:
+    client_id = _get_env("ZOOM_CLIENT_ID")
+    if not client_id:
+        raise HTTPException(status_code=503, detail="Zoom OAuth is not configured on this server.")
+    redirect_uri = _get_env("ZOOM_REDIRECT_URI") or f"{_public_base_url()}/api/connectors/zoom/callback"
+    state = f"{workspace_id}:{secrets.token_urlsafe(16)}"
+    url = (
+        f"https://zoom.us/oauth/authorize"
+        f"?response_type=code"
+        f"&client_id={client_id}"
+        f"&redirect_uri={redirect_uri}"
+        f"&state={state}"
+    )
+    return RedirectResponse(url)
+
+
+@router.get("/connectors/zoom/callback")
+async def zoom_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    request: Request = None,
+    session: AsyncSession = Depends(get_db_session),
+) -> Response:
+    if error:
+        return _oauth_close_html(success=False, message=f"Zoom OAuth error: {error}")
+    if not code or not state:
+        return _oauth_close_html(success=False, message="Missing code or state.")
+
+    workspace_id = state.split(":")[0]
+    try:
+        ws = await _get_workspace(workspace_id, session)
+    except HTTPException:
+        return _oauth_close_html(success=False, message="Workspace not found.")
+
+    import base64
+    import httpx
+    client_id = _get_env("ZOOM_CLIENT_ID") or ""
+    client_secret = _get_env("ZOOM_CLIENT_SECRET") or ""
+    redirect_uri = _get_env("ZOOM_REDIRECT_URI") or f"{_public_base_url()}/api/connectors/zoom/callback"
+    credentials = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+
+    try:
+        async with httpx.AsyncClient() as http:
+            resp = await http.post(
+                "https://zoom.us/oauth/token",
+                headers={"Authorization": f"Basic {credentials}"},
+                params={"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri},
+            )
+            data = resp.json()
+    except Exception as exc:
+        return _oauth_close_html(success=False, message=f"OAuth exchange failed: {exc}")
+
+    if "access_token" not in data:
+        return _oauth_close_html(success=False, message=data.get("reason", "Zoom OAuth failed."))
+
+    connector = await _get_or_create_connector(ws.id, "zoom", session)
+    connector.status = "connected"
+    connector.credentials_json = json.dumps({
+        "access_token": data["access_token"],
+        "refresh_token": data.get("refresh_token", ""),
+    })
+    config = json.loads(connector.config_json or "{}")
+    config.update({"auth_mode": "oauth", "ingestion_mode": "transcripts_only"})
+    connector.config_json = json.dumps(config)
+    await session.commit()
+    return _oauth_close_html(success=True, message="Zoom connected successfully.")
+
+
+@router.post("/connectors/zoom/connect")
+async def zoom_connect_token(
+    payload: dict,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    workspace_id = payload.get("workspace_id")
+    token = payload.get("token", "").strip()
+    if not workspace_id or not token:
+        raise HTTPException(status_code=422, detail="workspace_id and token are required")
+    ws = await _get_workspace(workspace_id, session)
+    connector = await _get_or_create_connector(ws.id, "zoom", session)
+    connector.status = "connected"
+    connector.credentials_json = json.dumps({"access_token": token})
+    config = json.loads(connector.config_json or "{}")
+    config.update({"auth_mode": "manual_token", "ingestion_mode": "transcripts_only"})
+    connector.config_json = json.dumps(config)
+    await session.commit()
+    await session.refresh(connector)
+    return _connector_to_dict(connector)
+
+
+# ── Google Drive & Gmail OAuth ─────────────────────────────────
+
+_GOOGLE_SCOPES = {
+    "gdrive": "https://www.googleapis.com/auth/drive.readonly",
+    "gmail": "https://www.googleapis.com/auth/gmail.readonly",
+}
+
+
+@router.get("/connectors/{connector_type}/install")
+async def google_install(
+    connector_type: str,
+    workspace_id: str,
+    request: Request,
+) -> RedirectResponse:
+    if connector_type not in GOOGLE_CONNECTORS:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    client_id = _get_google_client_id()
+    if not client_id:
+        raise HTTPException(status_code=503, detail="Google OAuth is not configured on this server.")
+    redirect_uri = _get_env("GOOGLE_REDIRECT_URI") or f"{_public_base_url()}/api/connectors/{connector_type}/callback"
+    state = f"{workspace_id}:{connector_type}:{secrets.token_urlsafe(16)}"
+    scope = _GOOGLE_SCOPES[connector_type]
+    url = (
+        f"https://accounts.google.com/o/oauth2/v2/auth"
+        f"?response_type=code"
+        f"&client_id={client_id}"
+        f"&redirect_uri={redirect_uri}"
+        f"&scope={scope}"
+        f"&access_type=offline"
+        f"&prompt=consent"
+        f"&state={state}"
+    )
+    return RedirectResponse(url)
+
+
+@router.get("/connectors/{connector_type}/callback")
+async def google_callback(
+    connector_type: str,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    request: Request = None,
+    session: AsyncSession = Depends(get_db_session),
+) -> Response:
+    if connector_type not in GOOGLE_CONNECTORS:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    if error:
+        return _oauth_close_html(success=False, message=f"Google OAuth error: {error}")
+    if not code or not state:
+        return _oauth_close_html(success=False, message="Missing code or state.")
+
+    parts = state.split(":")
+    workspace_id = parts[0]
+    try:
+        ws = await _get_workspace(workspace_id, session)
+    except HTTPException:
+        return _oauth_close_html(success=False, message="Workspace not found.")
+
+    import httpx
+    client_id = _get_google_client_id() or ""
+    client_secret = _get_env("GOOGLE_CLIENT_SECRET") or ""
+    redirect_uri = _get_env("GOOGLE_REDIRECT_URI") or f"{_public_base_url()}/api/connectors/{connector_type}/callback"
+
+    try:
+        async with httpx.AsyncClient() as http:
+            resp = await http.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "code": code,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "redirect_uri": redirect_uri,
+                    "grant_type": "authorization_code",
+                },
+            )
+            data = resp.json()
+    except Exception as exc:
+        return _oauth_close_html(success=False, message=f"OAuth exchange failed: {exc}")
+
+    if "access_token" not in data:
+        return _oauth_close_html(success=False, message=data.get("error_description", "Google OAuth failed."))
+
+    connector = await _get_or_create_connector(ws.id, connector_type, session)
+    connector.status = "connected"
+    connector.credentials_json = json.dumps({
+        "access_token": data["access_token"],
+        "refresh_token": data.get("refresh_token", ""),
+        "expires_in": data.get("expires_in"),
+    })
+    config = json.loads(connector.config_json or "{}")
+    config.update({"auth_mode": "oauth"})
+    connector.config_json = json.dumps(config)
+    await session.commit()
+    await session.refresh(connector)
+    label = "Google Drive" if connector_type == "gdrive" else "Gmail"
+    return _oauth_close_html(success=True, message=f"{label} connected successfully.")
+
+
+# ── Notion (token-based) ───────────────────────────────────────
+
+@router.post("/connectors/notion/connect")
+async def notion_connect(
+    payload: dict,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    workspace_id = payload.get("workspace_id")
+    token = payload.get("token", "").strip()
+    if not workspace_id or not token:
+        raise HTTPException(status_code=422, detail="workspace_id and token are required")
+    ws = await _get_workspace(workspace_id, session)
+    connector = await _get_or_create_connector(ws.id, "notion", session)
+    connector.status = "connected"
+    connector.credentials_json = json.dumps({"access_token": token})
+    config = json.loads(connector.config_json or "{}")
+    config.update({"auth_mode": "manual_token"})
+    connector.config_json = json.dumps(config)
+    await session.commit()
+    return _connector_to_dict(connector)
+
+
+# ── GitHub (token-based) ───────────────────────────────────────
+
+@router.post("/connectors/github/connect")
+async def github_connect(
+    payload: dict,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    workspace_id = payload.get("workspace_id")
+    token = payload.get("token", "").strip()
+    repositories = payload.get("repositories", [])
+    if not workspace_id or not token:
+        raise HTTPException(status_code=422, detail="workspace_id and token are required")
+    ws = await _get_workspace(workspace_id, session)
+    connector = await _get_or_create_connector(ws.id, "github", session)
+    connector.status = "connected"
+    connector.credentials_json = json.dumps({"access_token": token})
+    config = json.loads(connector.config_json or "{}")
+    config.update({"auth_mode": "manual_token", "repositories": repositories})
+    connector.config_json = json.dumps(config)
+    await session.commit()
+    await session.refresh(connector)
+    return _connector_to_dict(connector)
+
+
+# ── AI session ingest ──────────────────────────────────────────
+
+class AISessionIngestRequest(BaseModel):
+    workspace_id: str
+    connector_type: str
+    session_id: str
+    content: str
+
+
+@router.post("/connectors/ai-session/ingest")
+async def ingest_ai_session(
+    body: AISessionIngestRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    from app.sync.ai_session import ingest_ai_session as _ingest
+    from app.services.ingest import IngestionService
+    from app.models import SourceDocument
+    from sqlalchemy import select as sa_select
+
+    if body.connector_type not in AI_SESSION_CONNECTORS:
+        raise HTTPException(status_code=422, detail=f"Unknown AI session connector: {body.connector_type}")
+    if not body.content.strip():
+        raise HTTPException(status_code=422, detail="Session content must not be empty.")
+
+    ws = await _get_workspace(body.workspace_id, session)
+    connector = await _get_or_create_connector(ws.id, body.connector_type, session)
+
+    ingest_result = await _ingest(body.connector_type, session, body.session_id, body.content)
+
+    unprocessed_docs = list(await session.scalars(
+        sa_select(SourceDocument)
+        .where(SourceDocument.source_type == body.connector_type)
+        .where(SourceDocument.processed_at.is_(None))
+    ))
+    ingestor = IngestionService(session)
+    components_created = 0
+    for doc in unprocessed_docs:
+        n = await ingestor.process_document(doc.id)
+        components_created += n
+    await session.commit()
+    extract_result = {
+        "documents_processed": len(unprocessed_docs),
+        "components_created": components_created,
+    }
+
+    config = json.loads(connector.config_json or "{}")
+    config["total_processed_count"] = config.get("total_processed_count", 0) + extract_result.get("components_created", 0)
+    config["items_synced"] = config.get("items_synced", 0) + ingest_result.get("documents_persisted", 0)
+    connector.config_json = json.dumps(config)
+    connector.status = "connected"
+    connector.last_sync_at = datetime.utcnow()
+    await session.commit()
+    await session.refresh(connector)
 
     return {
-        "created": len(created_ids),
-        "document_ids": created_ids,
-        "source_type": "ai_context",
+        **_connector_to_dict(connector),
+        "ingest": ingest_result,
+        "extract": extract_result,
     }
 
 
-@router.post("/connectors/{connector_type}/connect", response_model=ConnectorRead)
-async def connect_connector(
-    connector_type: str,
-    payload: ConnectorConnectRequest,
-    session: AsyncSession = Depends(get_db_session),
-) -> ConnectorRead:
-    catalog_entry = _catalog_entry(connector_type)
-    if catalog_entry is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Unknown connector type: {connector_type}",
-        )
+# ── Sync & disconnect ──────────────────────────────────────────
 
-    if catalog_entry["availability"] == "coming_soon":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Connector {catalog_entry['name']} is not available yet. {catalog_entry.get('setup_note', '')}",
-        )
-
-    if not catalog_entry.get("supported", True):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Connector {catalog_entry['name']} does not have a working sync path yet. {catalog_entry.get('setup_note', '')}",
-        )
-
-    existing = await session.scalar(
-        select(Connector).where(Connector.connector_type == connector_type)
-    )
-
-    if existing:
-        existing.config_json = json.dumps(payload.config)
-        existing.status = "connected"
-        existing.updated_at = datetime.now(timezone.utc)
-        await session.flush()
-        await session.commit()
-        processed_count = await session.scalar(
-            select(sa_func.count(SourceDocument.id)).where(
-                SourceDocument.source_type == connector_type,
-                SourceDocument.processed_at.isnot(None),
-            )
-        ) or 0
-        return _build_connector_read(catalog_entry, existing, None, processed_count)
-
-    connector = Connector(
-        id=uuid4(),
-        connector_type=connector_type,
-        status="connected",
-        config_json=json.dumps(payload.config),
-        items_synced=0,
-    )
-    session.add(connector)
-    await session.flush()
-    await session.commit()
-
-    return _build_connector_read(catalog_entry, connector, None, 0)
-
-
-@router.post("/connectors/{connector_id}/sync", response_model=SyncJobRead)
+@router.post("/connectors/{connector_id}/sync")
 async def sync_connector(
-    connector_id: UUID,
+    connector_id: str,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_db_session),
-) -> SyncJobRead:
-    connector = await session.get(Connector, connector_id)
-    if connector is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Connector {connector_id} not found",
-        )
+) -> dict:
+    try:
+        cid = UUID(connector_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid connector_id")
+    connector = await session.get(Connector, cid)
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    if connector.status not in ("connected", "error"):
+        raise HTTPException(status_code=422, detail="Connector is not connected")
 
-    catalog_entry = _catalog_entry(connector.connector_type)
-    if catalog_entry and not catalog_entry.get("supported", True):
-        job = SyncJob(
-            id=uuid4(),
-            connector_id=connector.id,
-            status="failed",
-            error_type="unsupported_connector",
-            error_message=f"Sync is not supported for {catalog_entry['name']}. {catalog_entry.get('setup_note', 'This connector is not yet available.')}",
-            result_metadata_json="{}",
-        )
-        session.add(job)
-        await session.flush()
-        await session.commit()
-        return _build_sync_job_read(job)
-
-    job = SyncJob(
-        id=uuid4(),
-        connector_id=connector.id,
-        status="pending",
-        result_metadata_json="{}",
-    )
+    job = SyncJob(connector_id=cid, status="pending")
     session.add(job)
-    await session.flush()
     await session.commit()
+    await session.refresh(job)
 
-    return _build_sync_job_read(job)
+    background_tasks.add_task(_run_sync_job, str(job.id), str(cid), settings.database_url)
+    return {
+        "job_id": str(job.id),
+        "connector_id": str(cid),
+        "status": "pending",
+        "message": f"Sync queued for {connector.connector_type}.",
+    }
 
 
-@router.get("/connectors/{connector_id}/sync-status", response_model=SyncJobRead | None)
+@router.get("/connectors/{connector_id}/sync-status")
 async def get_sync_status(
-    connector_id: UUID,
+    connector_id: str,
     session: AsyncSession = Depends(get_db_session),
-) -> SyncJobRead | None:
-    connector = await session.get(Connector, connector_id)
-    if connector is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Connector {connector_id} not found",
-        )
-
-    job = await session.scalar(
+) -> dict | None:
+    try:
+        cid = UUID(connector_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid connector_id")
+    result = await session.scalars(
         select(SyncJob)
-        .where(SyncJob.connector_id == connector_id)
+        .where(SyncJob.connector_id == cid)
         .order_by(SyncJob.created_at.desc())
         .limit(1)
     )
-    if job is None:
+    job = result.first()
+    if not job:
         return None
+    return _job_to_dict(job)
 
-    return _build_sync_job_read(job)
 
-
-@router.get("/connectors/{connector_id}/sync-jobs", response_model=list[SyncJobRead])
-async def get_sync_jobs(
-    connector_id: UUID,
-    limit: int = 20,
-    offset: int = 0,
+@router.get("/connectors/{connector_id}/sync-jobs")
+async def list_sync_jobs(
+    connector_id: str,
     session: AsyncSession = Depends(get_db_session),
-) -> list[SyncJobRead]:
-    connector = await session.get(Connector, connector_id)
-    if connector is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Connector {connector_id} not found",
-        )
-
-    jobs = await session.scalars(
+) -> list[dict]:
+    try:
+        cid = UUID(connector_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid connector_id")
+    result = await session.scalars(
         select(SyncJob)
-        .where(SyncJob.connector_id == connector_id)
+        .where(SyncJob.connector_id == cid)
         .order_by(SyncJob.created_at.desc())
-        .limit(limit)
-        .offset(offset)
+        .limit(20)
     )
-    return [_build_sync_job_read(job) for job in jobs]
+    return [_job_to_dict(j) for j in result]
 
 
 @router.delete("/connectors/{connector_id}")
 async def disconnect_connector(
-    connector_id: UUID,
+    connector_id: str,
     session: AsyncSession = Depends(get_db_session),
-) -> dict[str, str]:
-    connector = await session.get(Connector, connector_id)
-    if connector is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Connector {connector_id} not found",
-        )
-
+) -> dict:
+    try:
+        cid = UUID(connector_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid connector_id")
+    connector = await session.get(Connector, cid)
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector not found")
     connector.status = "disconnected"
-    connector.config_json = "{}"
-    connector.updated_at = datetime.now(timezone.utc)
-    await session.flush()
+    connector.credentials_json = "{}"
+    config = json.loads(connector.config_json or "{}")
+    config.pop("team_name", None)
+    config.pop("team_id", None)
+    config.pop("auth_mode", None)
+    connector.config_json = json.dumps(config)
     await session.commit()
+    return {"ok": True}
 
-    return {"status": "disconnected", "connector_id": str(connector_id)}
+
+# ── Helpers ────────────────────────────────────────────────────
+
+def _job_to_dict(job: SyncJob) -> dict:
+    d = job.__dict__
+    created_at = d.get("created_at")
+    started_at = d.get("started_at")
+    completed_at = d.get("completed_at")
+    return {
+        "id": str(job.id),
+        "job_id": str(job.id),
+        "connector_id": str(job.connector_id),
+        "status": job.status,
+        "error_type": d.get("error_type"),
+        "error_message": d.get("error_message"),
+        "result_metadata": json.loads(d.get("result_metadata_json") or "{}"),
+        "started_at": started_at.isoformat() if started_at else None,
+        "completed_at": completed_at.isoformat() if completed_at else None,
+        "created_at": created_at.isoformat() if created_at else None,
+    }
+
+
+def _oauth_close_html(success: bool, message: str) -> Response:
+    color = "#16a34a" if success else "#dc2626"
+    icon = "✓" if success else "✗"
+    script = "window.opener && window.opener.postMessage('oauth-complete', '*'); window.close();"
+    html = f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>OAuth</title>
+<style>body{{font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f8fafc}}
+.card{{background:#fff;border-radius:12px;padding:2rem 2.5rem;box-shadow:0 4px 24px #0001;text-align:center;max-width:380px}}
+.icon{{font-size:2.5rem;color:{color}}}p{{color:#374151;margin:.75rem 0 0}}</style></head>
+<body><div class="card"><div class="icon">{icon}</div><p>{message}</p></div>
+<script>{script}</script></body></html>"""
+    return Response(content=html, media_type="text/html")
+
+
+async def _run_sync_job(job_id: str, connector_id: str, database_url: str) -> None:
+    """Background task: mark job running → sync source documents → extract → mark completed."""
+    from app.database import _make_async_url
+    from app.sync.slack import sync_slack
+    from app.extract.basic import extract_from_source_documents
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+
+    engine = create_async_engine(_make_async_url(database_url))
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with session_factory() as session:
+        job = await session.get(SyncJob, UUID(job_id))
+        connector = await session.get(Connector, UUID(connector_id))
+        if not job or not connector:
+            await engine.dispose()
+            return
+
+        job.status = "running"
+        job.started_at = datetime.utcnow()
+        await session.commit()
+
+        try:
+            sync_result: dict[str, Any] = {}
+            extract_result: dict[str, Any] = {}
+
+            if connector.connector_type == "slack":
+                sync_result = await sync_slack(connector, session)
+                extract_result = await extract_from_source_documents("slack", session)
+            elif connector.connector_type == "github":
+                from app.sync.github import sync_github
+                sync_result = await sync_github(connector, session)
+                extract_result = await extract_from_source_documents("github", session)
+            elif connector.connector_type in AI_SESSION_CONNECTORS:
+                # AI session connectors ingest inline; sync just re-runs extraction
+                sync_result = {"documents_fetched": 0, "documents_persisted": 0}
+                extract_result = await extract_from_source_documents(connector.connector_type, session)
+            else:
+                # Generic stub for connectors not yet implemented
+                sync_result = {"documents_fetched": 0, "documents_persisted": 0}
+
+            result_metadata: dict[str, Any] = {
+                "sync_mode": "polling",
+                **sync_result,
+                **extract_result,
+            }
+            job.status = "completed"
+            job.completed_at = datetime.utcnow()
+            job.result_metadata_json = json.dumps(result_metadata)
+
+            config = json.loads(connector.config_json or "{}")
+            config["total_processed_count"] = (
+                config.get("total_processed_count", 0)
+                + extract_result.get("components_created", 0)
+            )
+            connector.config_json = json.dumps(config)
+            connector.last_sync_at = datetime.utcnow()
+            await session.commit()
+
+        except Exception as exc:
+            import traceback
+            job.status = "failed"
+            job.error_type = type(exc).__name__
+            job.error_message = f"{exc}\n{traceback.format_exc()}"
+            job.completed_at = datetime.utcnow()
+            await session.commit()
+
+    await engine.dispose()

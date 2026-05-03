@@ -12,6 +12,8 @@ router = APIRouter()
 
 class QueryRequest(BaseModel):
     question: str = Field(min_length=1)
+    api_key: str | None = None
+    model: str | None = None
 
 
 class QueryComponentRead(BaseModel):
@@ -39,7 +41,7 @@ async def query_context(
     payload: QueryRequest,
     session: AsyncSession = Depends(get_db_session),
 ) -> QueryResultRead:
-    svc = QueryService(session)
+    svc = QueryService(session, api_key=payload.api_key, model=payload.model)
     result = await svc.query(payload.question)
     return QueryResultRead(
         question=result.question,

@@ -3,9 +3,10 @@ import { Link, useSearchParams } from "react-router-dom";
 import MockBadge from "../components/MockBadge";
 import StatusView from "../components/StatusView";
 import { useTimeline } from "../api/hooks";
+import { GitBranch, Plug, FileText, CheckSquare, Clock } from "lucide-react";
 
 const FILTERS = [
-  { key: "all", label: "All activity" },
+  { key: "all", label: "All" },
   { key: "decision", label: "Decisions" },
   { key: "review", label: "Review" },
   { key: "source", label: "Sources" },
@@ -19,130 +20,96 @@ export default function Changes() {
   const timelineQuery = useTimeline();
   const changes = timelineQuery.data?.items ?? [];
 
-  const sourceFilteredChanges = useMemo(
+  const sourceFiltered = useMemo(
     () => sourceId ? changes.filter(i => i.sourceDocumentId === sourceId) : changes,
     [changes, sourceId]
   );
 
-  const filteredChanges = useMemo(
-    () => sourceFilteredChanges.filter((item) => type === "all" || item.type === type),
-    [sourceFilteredChanges, type],
+  const filtered = useMemo(
+    () => sourceFiltered.filter((item) => type === "all" || item.type === type),
+    [sourceFiltered, type]
   );
 
-  const summaryCounts = useMemo(
-    () => {
-      return sourceFilteredChanges.reduce(
-        (acc, item) => {
-          acc.all += 1;
-          if (item.type in acc) acc[item.type] += 1;
-          return acc;
-        },
-        { all: 0, decision: 0, review: 0, source: 0, connector: 0 },
-      );
-    },
-    [sourceFilteredChanges],
-  );
+  const counts = useMemo(() =>
+    sourceFiltered.reduce(
+      (acc, item) => { acc.all += 1; if (item.type in acc) acc[item.type] += 1; return acc; },
+      { all: 0, decision: 0, review: 0, source: 0, connector: 0 }
+    ), [sourceFiltered]);
 
   if (timelineQuery.isLoading || timelineQuery.isError) {
-    return (
-      <div className="max-w-6xl mx-auto">
-        <StatusView query={timelineQuery} empty="No changes available yet." />
-      </div>
-    );
+    return <div className="max-w-3xl mx-auto"><StatusView query={timelineQuery} empty="No changes available yet." /></div>;
   }
-
   if (!changes.length) {
-    return (
-      <div className="max-w-6xl mx-auto">
-        <ChangesEmptyState />
-      </div>
-    );
+    return <div className="max-w-3xl mx-auto"><ChangesEmptyState /></div>;
   }
 
   const usesMockData = timelineQuery.isMock;
   const generatedAt = timelineQuery.data?.generatedAt ?? null;
-  const totalEvents = sourceId ? sourceFilteredChanges.length : (timelineQuery.data?.totalEvents ?? changes.length);
-  const showLoadMore = !timelineQuery.isMock && timelineQuery.hasMore;
+  const totalEvents = sourceId ? sourceFiltered.length : (timelineQuery.data?.totalEvents ?? changes.length);
 
   return (
-    <div className="max-w-6xl mx-auto space-y-6">
+    <div className="max-w-3xl mx-auto space-y-6">
+      {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <div className="flex items-center gap-3">
-            <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-300">Changes</h2>
+          <div className="flex items-center gap-2.5">
+            <h1 className="text-xl font-bold text-slate-900 dark:text-white">Changes</h1>
             {usesMockData && <MockBadge />}
           </div>
-          <p className="text-xs text-gray-400 mt-1">
-            A single timeline for decision changes, review transitions, source ingests, and connector pressure.
+          <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
+            {totalEvents} event{totalEvents !== 1 ? "s" : ""}
+            {generatedAt ? ` · Updated ${formatDate(generatedAt)}` : ""}
           </p>
-          <p className="mt-2 text-[11px] uppercase tracking-wide text-gray-400">
-            {totalEvents} recent events
-            {generatedAt ? ` · Updated ${formatDateTime(generatedAt)}` : ""}
-          </p>
-        </div>
-        <div className="flex items-center gap-3 text-xs">
-          <Link to="/app/brief" className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
-            Open founder brief
-          </Link>
-          <Link to={sourceId ? `/app/decisions?source_id=${sourceId}` : "/app/decisions"} className="font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
-            Open decision register
-          </Link>
         </div>
       </div>
 
-      <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-4">
-        <div className="flex flex-wrap items-center gap-2">
-          {FILTERS.map((item) => {
-            const active = type === item.key;
-            return (
-              <button
-                key={item.key}
-                type="button"
-                onClick={() => {
-                  const next = new URLSearchParams(searchParams);
-                  if (item.key === "all") next.delete("type");
-                  else next.set("type", item.key);
-                  setSearchParams(next);
-                }}
-                className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
-                  active
-                    ? "bg-brand-600 text-white"
-                    : "bg-gray-100 dark:bg-gray-900/40 text-gray-600 dark:text-gray-400 hover:bg-gray-200"
-                }`}
-              >
-                {item.label}
-                <span className={`ml-1 ${active ? "text-brand-100" : "text-gray-400"}`}>
-                  {summaryCounts[item.key] ?? 0}
-                </span>
-              </button>
-            );
-          })}
-        </div>
+      {/* Filter bar */}
+      <div className="flex items-center gap-1.5 p-1.5 bg-slate-100 dark:bg-slate-800 rounded-xl w-fit">
+        {FILTERS.map((f) => {
+          const active = type === f.key;
+          return (
+            <button
+              key={f.key}
+              onClick={() => {
+                const next = new URLSearchParams(searchParams);
+                if (f.key === "all") next.delete("type"); else next.set("type", f.key);
+                setSearchParams(next);
+              }}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                active
+                  ? "bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm"
+                  : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300"
+              }`}
+            >
+              {f.label}
+              <span className={`text-[10px] font-bold tabular-nums ${active ? "text-brand-500" : "text-slate-400"}`}>
+                {counts[f.key] ?? 0}
+              </span>
+            </button>
+          );
+        })}
       </div>
 
-      {filteredChanges.length === 0 ? (
-        <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-6 text-center">
-          <p className="text-sm font-semibold text-gray-800 dark:text-gray-300">No changes match this filter.</p>
-          <p className="mt-2 text-xs text-gray-500">
-            Widen the filter to view more recent changes across the workspace.
-          </p>
+      {/* Timeline */}
+      {filtered.length === 0 ? (
+        <div className="rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-8 text-center">
+          <p className="text-sm font-semibold text-slate-600 dark:text-slate-300">No changes match this filter.</p>
         </div>
       ) : (
-        <div className="space-y-4">
-          {filteredChanges.map((item) => (
-            <ChangeCard key={item.id} item={item} />
-          ))}
-          {showLoadMore && (
-            <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-4">
-              <button
-                type="button"
-                onClick={() => timelineQuery.fetchNextPage()}
-                disabled={timelineQuery.isFetchingNextPage}
-                className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-400 hover:bg-gray-100 dark:bg-gray-900/40 disabled:opacity-60"
-              >
-                {timelineQuery.isFetchingNextPage ? "Loading more..." : "Load more changes"}
-              </button>
-            </div>
+        <div className="relative">
+          {/* Vertical line */}
+          <div className="absolute left-[19px] top-3 bottom-3 w-px bg-slate-200 dark:bg-slate-700" />
+          <div className="space-y-3">
+            {filtered.map((item) => <ChangeCard key={item.id} item={item} />)}
+          </div>
+          {!timelineQuery.isMock && timelineQuery.hasMore && (
+            <button
+              onClick={() => timelineQuery.fetchNextPage()}
+              disabled={timelineQuery.isFetchingNextPage}
+              className="mt-4 w-full py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors disabled:opacity-50"
+            >
+              {timelineQuery.isFetchingNextPage ? "Loading…" : "Load more"}
+            </button>
           )}
         </div>
       )}
@@ -151,179 +118,143 @@ export default function Changes() {
 }
 
 function ChangeCard({ item }) {
-  const tone = normalizeChangeTone(item);
-  const destination = getChangeDestination(item);
-  const graphDestination = getChangeGraphDestination(item);
-  const metadata = buildChangeMetadata(item);
+  const tone = normalizeTone(item);
+  const destination = getDestination(item);
+  const graphDest = getGraphDestination(item);
+  const meta = buildMeta(item);
+  const Icon = getIcon(item.type);
+
+  const dotColors = {
+    emerald: "bg-emerald-500 ring-emerald-100 dark:ring-emerald-900/40",
+    amber:   "bg-amber-500 ring-amber-100 dark:ring-amber-900/40",
+    rose:    "bg-rose-500 ring-rose-100 dark:ring-rose-900/40",
+    slate:   "bg-slate-400 ring-slate-100 dark:ring-slate-800",
+  };
 
   return (
-    <article className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-5">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex items-start gap-3">
-          <TimelineDot tone={tone} />
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-300">{item.title}</h3>
-              <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${badgeClass(tone)}`}>
-                {formatLabel(item.type)}
+    <div className="flex items-start gap-4 relative">
+      {/* Dot */}
+      <div className={`mt-3.5 w-5 h-5 rounded-full shrink-0 z-10 ring-4 flex items-center justify-center ${dotColors[tone] || dotColors.slate}`}>
+        <Icon className="w-2.5 h-2.5 text-white" />
+      </div>
+      {/* Card */}
+      <div className="flex-1 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-4 shadow-sm min-w-0">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            <div className="flex flex-wrap items-center gap-2 mb-1.5">
+              <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">{item.title}</h3>
+              <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${badgeClass(tone)}`}>
+                {fmtLabel(item.type)}
               </span>
               {item.status && (
-                <span className="rounded-full bg-gray-100 dark:bg-gray-900/40 px-2 py-0.5 text-[10px] font-medium text-gray-600 dark:text-gray-400">
-                  {formatLabel(item.status)}
+                <span className="rounded-full bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-[10px] font-medium text-slate-500 dark:text-slate-400">
+                  {fmtLabel(item.status)}
                 </span>
               )}
             </div>
-            <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">{item.summary}</p>
-            {metadata.length > 0 && (
-              <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-gray-500">
-                {metadata.map((entry) => (
-                  <span key={`${item.id}-${entry.label}`} className="rounded-full bg-gray-100 dark:bg-gray-900/40 px-2 py-1">
-                    <span className="font-medium text-gray-700 dark:text-gray-400">{entry.label}:</span> {entry.value}
+            {item.summary && <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">{item.summary}</p>}
+            {meta.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {meta.map((e) => (
+                  <span key={`${item.id}-${e.label}`} className="rounded-lg bg-slate-50 dark:bg-slate-900/60 border border-slate-100 dark:border-slate-700/50 px-2 py-0.5 text-[10px] text-slate-500 dark:text-slate-400">
+                    <span className="font-semibold text-slate-600 dark:text-slate-300">{e.label}:</span> {e.value}
                   </span>
                 ))}
               </div>
             )}
           </div>
-        </div>
-        <div className="flex flex-col items-end gap-3 text-xs text-gray-400">
-          <p>{formatDateTime(item.occurredAt)}</p>
-          {destination ? (
-            <div className="flex flex-col items-end gap-2 text-right">
-              <Link to={destination.href} className="block font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
-                {destination.label}
+          <div className="flex flex-col items-end gap-2 shrink-0">
+            <p className="text-[11px] text-slate-400 whitespace-nowrap">{formatDate(item.occurredAt)}</p>
+            {destination && (
+              <Link to={destination.href} className="text-[11px] font-semibold text-brand-600 dark:text-brand-400 hover:text-brand-500 whitespace-nowrap">
+                {destination.label} →
               </Link>
-              {graphDestination ? (
-                <Link to={graphDestination.href} className="inline-flex rounded-lg bg-slate-900 px-3 py-1.5 font-medium text-white shadow-sm transition-colors hover:bg-slate-800">
-                  {graphDestination.label}
-                </Link>
-              ) : null}
-            </div>
-          ) : graphDestination ? (
-            <Link to={graphDestination.href} className="inline-flex rounded-lg bg-slate-900 px-3 py-1.5 font-medium text-white shadow-sm transition-colors hover:bg-slate-800">
-              {graphDestination.label}
-            </Link>
-          ) : null}
+            )}
+            {graphDest && (
+              <Link to={graphDest.href} className="text-[10px] font-bold px-2.5 py-1 rounded-lg bg-slate-900 dark:bg-slate-700 text-white hover:bg-slate-800 transition-colors whitespace-nowrap">
+                {graphDest.label}
+              </Link>
+            )}
+          </div>
         </div>
       </div>
-    </article>
+    </div>
   );
 }
 
-function TimelineDot({ tone }) {
-  const styles = {
-    emerald: "bg-emerald-500",
-    amber: "bg-amber-500",
-    rose: "bg-rose-500",
-    slate: "bg-gray-400",
-  };
-
-  return <span className={`mt-1 h-2.5 w-2.5 rounded-full ${styles[tone] ?? styles.slate}`} />;
+function getIcon(type) {
+  return { decision: CheckSquare, source: FileText, connector: Plug, review: GitBranch }[type] || Clock;
 }
 
-function badgeClass(tone) {
-  const styles = {
-    emerald: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400",
-    amber: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400",
-    rose: "bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-400",
-    slate: "bg-gray-100 dark:bg-gray-900/40 text-gray-600 dark:text-gray-400",
-  };
-  return styles[tone] ?? styles.slate;
-}
-
-function normalizeChangeTone(item) {
+function normalizeTone(item) {
   if (item.type === "connector") {
-    const status = String(item.status ?? "").toLowerCase();
-    if (status === "failed" || status === "error") return "rose";
-    if (status === "warning" || status === "pending") return "amber";
+    const s = String(item.status ?? "").toLowerCase();
+    if (s === "failed" || s === "error") return "rose";
+    if (s === "warning" || s === "pending") return "amber";
     return "slate";
   }
-  if (item.type === "source") {
-    const status = String(item.status ?? "").toLowerCase();
-    return status === "processed" ? "slate" : "amber";
-  }
-  return normalizeStatusTone(item.status);
-}
-
-function normalizeStatusTone(status) {
-  const value = String(status ?? "").toLowerCase();
-  if (value === "approved" || value === "current") return "emerald";
-  if (value === "rejected" || value === "failed") return "rose";
-  if (value === "needs_review" || value === "pending") return "amber";
+  if (item.type === "source") return String(item.status ?? "").toLowerCase() === "processed" ? "slate" : "amber";
+  const v = String(item.status ?? "").toLowerCase();
+  if (v === "approved" || v === "current") return "emerald";
+  if (v === "rejected" || v === "failed") return "rose";
+  if (v === "needs_review" || v === "pending") return "amber";
   return "slate";
 }
 
-function getChangeDestination(item) {
-  if (item.type === "review" && item.reviewItemId) {
-    return { href: `/app/review/${item.reviewItemId}`, label: "Open review thread" };
-  }
-  if (item.type === "decision") {
-    if (item.sourceDocumentId) {
-      return { href: `/app/sources/${item.sourceDocumentId}`, label: "View source" };
-    }
-    return { href: "/app/decisions", label: "Open decision register" };
-  }
-  if (item.type === "source" && item.sourceDocumentId) {
-    return { href: `/app/sources/${item.sourceDocumentId}`, label: "Inspect source" };
-  }
-  if (item.type === "connector") {
-    return {
-      href: item.connectorType ? `/app/connectors/${item.connectorType}/runs` : "/app/connectors",
-      label: "Inspect runs",
-    };
-  }
+function badgeClass(tone) {
+  return {
+    emerald: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400",
+    amber:   "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400",
+    rose:    "bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-400",
+    slate:   "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400",
+  }[tone] || "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400";
+}
+
+function getDestination(item) {
+  if (item.type === "review" && item.reviewItemId) return { href: `/app/review/${item.reviewItemId}`, label: "Open review" };
+  if (item.type === "decision") return item.sourceDocumentId ? { href: `/app/sources/${item.sourceDocumentId}`, label: "View source" } : { href: "/app/decisions", label: "Decision register" };
+  if (item.type === "source" && item.sourceDocumentId) return { href: `/app/sources/${item.sourceDocumentId}`, label: "Inspect source" };
+  if (item.type === "connector") return { href: item.connectorType ? `/app/connectors/${item.connectorType}/runs` : "/app/connectors", label: "Inspect runs" };
   return null;
 }
 
-function getChangeGraphDestination(item) {
+function getGraphDestination(item) {
   const focus = item.modelName || item.sourceLabel || item.title;
   if (!focus) return null;
-  const params = new URLSearchParams();
-  params.set("view", "local");
-  params.set("focus", focus);
-  params.set("q", focus);
-  return { href: `/app/graph?${params.toString()}`, label: "Explore graph" };
+  const p = new URLSearchParams({ view: "local", focus, q: focus });
+  return { href: `/app/graph?${p.toString()}`, label: "Explore graph" };
 }
 
-function buildChangeMetadata(item) {
-  const entries = [];
-  if (item.modelName) entries.push({ label: "Model", value: item.modelName });
-  if (item.sourceLabel) entries.push({ label: "Source", value: item.sourceLabel });
-  if (item.connectorType) entries.push({ label: "Connector", value: formatLabel(item.connectorType) });
-  return entries;
+function buildMeta(item) {
+  const e = [];
+  if (item.modelName) e.push({ label: "Model", value: item.modelName });
+  if (item.sourceLabel) e.push({ label: "Source", value: item.sourceLabel });
+  if (item.connectorType) e.push({ label: "Connector", value: fmtLabel(item.connectorType) });
+  return e;
 }
 
-function formatLabel(value) {
-  if (!value) return "Unknown";
-  return String(value).replace(/_/g, " ");
-}
-
-function formatDateTime(value) {
-  if (!value) return "Unknown time";
-  try {
-    return new Date(value).toLocaleString();
-  } catch {
-    return value;
-  }
+function fmtLabel(v) { return v ? String(v).replace(/_/g, " ") : "Unknown"; }
+function formatDate(v) {
+  if (!v) return "Unknown";
+  try { return new Date(v).toLocaleString(); } catch { return v; }
 }
 
 function ChangesEmptyState() {
   return (
-    <div className="rounded-[32px] border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 p-12 text-center shadow-sm">
-      <div className="mx-auto w-16 h-16 bg-brand-50 dark:bg-brand-900/30 text-brand-600 dark:text-brand-400 rounded-full flex items-center justify-center mb-6">
-        <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-        </svg>
+    <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-12 text-center shadow-sm">
+      <div className="w-14 h-14 rounded-2xl bg-brand-50 dark:bg-brand-900/30 flex items-center justify-center mx-auto mb-5">
+        <Clock className="w-7 h-7 text-brand-500" />
       </div>
-      <h2 className="text-xl font-bold text-gray-900 dark:text-gray-200">No changes are visible yet.</h2>
-      <p className="mt-3 text-sm text-gray-500 max-w-lg mx-auto leading-relaxed">
-        This timeline starts filling in once source documents, review transitions, and decisions begin flowing through the workspace.
+      <h2 className="text-lg font-bold text-slate-900 dark:text-white">No changes yet</h2>
+      <p className="mt-2 text-sm text-slate-500 max-w-sm mx-auto leading-relaxed">
+        This timeline fills in once source documents, review transitions, and decisions start flowing through your workspace.
       </p>
-      <div className="mt-8 flex flex-wrap items-center justify-center gap-4">
-        <Link to="/app" className="px-6 py-2.5 bg-brand-600 text-white text-sm font-bold rounded-xl hover:bg-brand-500 transition-colors shadow-lg shadow-brand-500/20">
+      <div className="mt-8 flex items-center justify-center gap-3">
+        <Link to="/app" className="px-5 py-2.5 bg-brand-600 text-white text-sm font-bold rounded-xl hover:bg-brand-500 transition-colors shadow-sm shadow-brand-600/20">
           Add context
         </Link>
-        <Link to="/app/review" className="px-6 py-2.5 bg-gray-100 dark:bg-gray-900/40 text-gray-700 dark:text-gray-400 text-sm font-bold rounded-xl hover:bg-gray-200 transition-colors">
-          Open review
+        <Link to="/app/sources" className="px-5 py-2.5 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-sm font-bold rounded-xl hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors">
+          Upload sources
         </Link>
       </div>
     </div>

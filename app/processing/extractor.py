@@ -13,7 +13,6 @@ class ExtractedRelationship:
     target_name: str
     relationship_type: str
     confidence: float = 0.7
-    evidence: str | None = None
 
 
 @dataclass
@@ -22,31 +21,85 @@ class ExtractedFact:
     name: str
     value: str
     fact_type: str
+    temporal: str
     confidence: float
-    temporal_hint: str = "current"
     relationships: list[ExtractedRelationship] = field(default_factory=list)
 
 
-EXTRACTION_PROMPT = """You extract structured product knowledge from documents.
+EXTRACTION_PROMPT = """You are a context extraction engine for startup knowledge graphs.
 
-For each fact, output JSON with this schema:
-{"facts": [{"model_name": "", "name": "", "value": "", "fact_type": "", "confidence": 0.0, "temporal_hint": "", "relationships": [{"target_name": "", "relationship_type": "", "confidence": 0.0, "evidence": ""}]}]}
+Extract structured facts and organize them into CANONICAL ENTITY TYPES:
 
-Rules:
-- model_name: The product domain (e.g., "Pricing", "Features", "Roadmap", "Decisions", "Blockers")
-- name: Short, specific name (e.g., "$20 Basic Tier", "OAuth2 Support")
-- value: Full description or exact quote from text
-- fact_type: One of: decision, action_item, blocker, discussion, fact
-- confidence: 0.0-1.0 reflecting extraction certainty
-- temporal_hint: One of: current, past, future. Use "past" for deprecated/old info, "future" for planned/goals
-- relationships: CONSERVATIVE. Only create relationships when the text explicitly states a connection.
-  Use "related_to" if uncertain about the specific edge type.
-  For each relationship, evidence MUST be a short verbatim quote from the text proving the connection.
-  Skip relationships where you cannot cite direct evidence.
-  relationship_type: depends_on, blocked_by, enables, contradicts, supersedes, confirms, related_to
-- If you see a change (old price $20, new price $80), create BOTH components.
-- Be atomic. One idea per component.
-- Return at most 12 facts. Decisions first, then blockers, then action items, then discussion.
+  CORE:     Company, Product, Feature, Customer, User, Team, Person
+  WORK:     Repo, PR, Issue, Task, Document, Message, Email, Meeting
+  STRATEGY: Decision, Risk, Metric, Context Pack
+  AI WORK:  Agent Session
+
+RULES for model_name — use ONLY the canonical types above:
+  - "Decision"      → any choice made, option selected, direction set
+  - "Task"          → any action item, todo, follow-up, thing to build
+  - "Risk"          → blockers, concerns, unknowns, dependencies at risk
+  - "Metric"        → numbers, KPIs, success criteria, targets, SLAs
+  - "Feature"       → product capabilities, user-facing functionality
+  - "Meeting"       → standups, syncs, reviews, retrospectives, 1:1s
+  - "Agent Session" → AI coding/conversation sessions (Claude, Codex, ChatGPT, OpenCode)
+  - "PR"            → pull requests, code reviews, merges
+  - "Issue"         → bug reports, feature requests, tickets
+  - "Document"      → specs, RFCs, design docs, runbooks, wikis
+  - "Message"       → Slack messages, chat threads, DMs
+  - "Email"         → email threads, newsletters, announcements
+  - "Context Pack"  → curated context bundles for AI sessions
+
+Return JSON with this exact schema:
+{
+  "facts": [
+    {
+      "model_name": "one of the canonical entity types above",
+      "name": "short unique identifier (max 8 words) — be specific, e.g. 'Rate limit auth decision Q1-2025'",
+      "value": "full description or exact quote from the source",
+      "fact_type": "decision | task | blocker | risk | metric | feature | meeting_note | ai_step | fact",
+      "temporal": "current | past | future | unknown",
+      "confidence": 0.0,
+      "relationships": [
+        {"target_name": "exact name of another extracted fact", "relationship_type": "...", "confidence": 0.0}
+      ]
+    }
+  ]
+}
+
+TEMPORAL RULES — assign one of:
+  - "current"  → present state, exists/is true right now, ongoing
+  - "past"     → completed, historical, was done, shipped, decided
+  - "future"   → planned, roadmap, will do, next steps, proposed
+  - "unknown"  → cannot be determined from context
+
+RELATIONSHIP TYPES — use the strongest applicable link:
+  - created_from       → this fact originates from a source (PR created from Issue)
+  - mentions           → this fact references another entity
+  - decides            → this Decision is about another entity
+  - blocks             → this fact is preventing another entity from progressing
+  - solves             → this fact resolves or closes another entity
+  - depends_on         → this fact requires another entity to proceed
+  - assigned_to        → this fact is owned by a Person/Team
+  - owned_by           → this entity belongs to a Team or Person
+  - implemented_in     → this Decision/Feature is built in a PR/Repo
+  - discussed_in       → this Decision happened in a Meeting/Message
+  - caused_by          → this Risk/Issue was triggered by another fact
+  - supersedes         → this fact replaces or deprecates another
+  - generated_by_agent → this fact was produced by an Agent Session
+  - verified_by_human  → this fact was confirmed by a Person
+  - contradicts        → this fact conflicts with another
+  - part_of            → this is a sub-item of another entity
+
+QUALITY RULES:
+  - Use ONLY canonical model_name types — never invent new types
+  - name is unique and specific (bad: "Auth decision", good: "OAuth2 rate limit auth decision")
+  - One idea per component — atomic facts only, no compound items
+  - Cross-entity relationships are especially valuable — always add them when visible
+  - Max 20 facts. Priority: Decisions > Tasks > Risks > Features > Metrics > rest
+  - Always link Decisions to their source Meeting/Message when visible
+  - Always link Tasks to the Risk/Decision they address when visible
+  - Always link Agent Sessions to the Decisions and Tasks they generated
 
 Document:
 {content}
@@ -54,11 +107,13 @@ Document:
 
 
 class Extractor:
-    def __init__(self) -> None:
-        self._model = settings.extraction_model
+    def __init__(self, api_key: str | None = None, model: str | None = None) -> None:
+        self._model = model or settings.extraction_model
+        self._api_key = api_key or settings.litellm_api_key
 
     async def extract(self, content: str, metadata: dict[str, Any] | None = None) -> list[ExtractedFact]:
-        if self._model and settings.litellm_api_key:
+        is_ollama = (self._model or "").startswith("ollama/")
+        if self._model and (self._api_key or is_ollama):
             try:
                 return await self._llm_extract(content)
             except Exception:
@@ -73,9 +128,9 @@ class Extractor:
 
         response = await acompletion(
             model=self._model,
-            api_key=settings.litellm_api_key,
+            api_key=self._api_key,
             messages=[
-                {"role": "system", "content": "Extract only structured facts. Return strict JSON."},
+                {"role": "system", "content": "Extract structured startup knowledge. Return strict JSON only. Use only canonical entity types."},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.0,
@@ -90,105 +145,115 @@ class Extractor:
                 ExtractedRelationship(
                     target_name=r["target_name"],
                     relationship_type=r.get("relationship_type", "related_to"),
-                    confidence=min(max(float(r.get("confidence", 0.7)), 0.0), 1.0),
-                    evidence=r.get("evidence"),
+                    confidence=r.get("confidence", 0.7),
                 )
                 for r in item.get("relationships", [])
                 if r.get("target_name")
             ]
+            temporal = item.get("temporal", "unknown")
+            if temporal not in ("current", "past", "future", "unknown"):
+                temporal = "unknown"
             facts.append(ExtractedFact(
-                model_name=item.get("model_name", "General"),
+                model_name=item.get("model_name", "Document"),
                 name=item["name"],
                 value=item["value"],
                 fact_type=item.get("fact_type", "fact"),
+                temporal=temporal,
                 confidence=min(max(float(item.get("confidence", 0.7)), 0.0), 1.0),
-                temporal_hint=item.get("temporal_hint", "current"),
                 relationships=rels,
             ))
-        return facts[:12]
+        return facts[:20]
 
     def _regex_extract(self, content: str) -> list[ExtractedFact]:
         facts: list[ExtractedFact] = []
-        temporal = self._detect_temporal_hint(content)
 
-        for m in re.finditer(r"(?:decision|decided)\s*:\s*(.+?)(?:\n|$)", content, re.IGNORECASE):
+        def detect_temporal(text: str) -> str:
+            t = text.lower()
+            past_words = re.compile(r"\b(was|were|decided|implemented|shipped|launched|completed|done|fixed|resolved|had|used to|merged|closed|deprecated)\b")
+            future_words = re.compile(r"\b(will|plan|should|roadmap|upcoming|next|todo|need to|going to|intend|propose|want to|Q[1-4]|H[12]\s*20)\b")
+            if past_words.search(t):
+                return "past"
+            if future_words.search(t):
+                return "future"
+            return "current"
+
+        # Decisions
+        for m in re.finditer(r"(?:decision|decided|we chose|we will use)\s*:\s*(.+?)(?:\n|$)", content, re.IGNORECASE):
             text = m.group(1).strip()
             if text:
                 facts.append(ExtractedFact(
-                    model_name="Decisions", name=f"Decision: {text[:60]}",
-                    value=text, fact_type="decision", confidence=0.75,
-                    temporal_hint=temporal,
+                    model_name="Decision", name=f"Decision: {text[:120]}",
+                    value=text, fact_type="decision",
+                    temporal=detect_temporal(text), confidence=0.80,
                 ))
 
-        for m in re.finditer(r"(?:action item|todo|AI|task)\s*:\s*(.+?)(?:\n|$)", content, re.IGNORECASE):
+        # Tasks / Action items
+        for m in re.finditer(r"(?:action item|todo|task|action|follow.?up)\s*:\s*(.+?)(?:\n|$)", content, re.IGNORECASE):
             text = m.group(1).strip()
             if text:
                 facts.append(ExtractedFact(
-                    model_name="Actions", name=f"Action: {text[:60]}",
-                    value=text, fact_type="action_item", confidence=0.70,
-                    temporal_hint=temporal,
+                    model_name="Task", name=f"Task: {text[:120]}",
+                    value=text, fact_type="task",
+                    temporal=detect_temporal(text), confidence=0.75,
                 ))
 
-        for m in re.finditer(r"(?:blocker|blocked by)\s*:\s*(.+?)(?:\n|$)", content, re.IGNORECASE):
+        # Risks / Blockers
+        for m in re.finditer(r"(?:blocker|blocked by|risk|concern|dependency risk)\s*:\s*(.+?)(?:\n|$)", content, re.IGNORECASE):
             text = m.group(1).strip()
             if text:
                 facts.append(ExtractedFact(
-                    model_name="Blockers", name=f"Blocker: {text[:60]}",
-                    value=text, fact_type="blocker", confidence=0.80,
-                    temporal_hint=temporal,
+                    model_name="Risk", name=f"Risk: {text[:120]}",
+                    value=text, fact_type="blocker",
+                    temporal="current", confidence=0.82,
                 ))
 
-        for m in re.finditer(r"(?:meeting outcome|outcome)\s*:\s*(.+?)(?:\n|$)", content, re.IGNORECASE):
+        # Features
+        for m in re.finditer(r"(?:feature|capability|we (?:built|added|shipped|launched))\s*:\s*(.+?)(?:\n|$)", content, re.IGNORECASE):
             text = m.group(1).strip()
             if text:
                 facts.append(ExtractedFact(
-                    model_name="Decisions", name=f"Outcome: {text[:60]}",
-                    value=text, fact_type="decision", confidence=0.77,
-                    temporal_hint=temporal,
+                    model_name="Feature", name=f"Feature: {text[:120]}",
+                    value=text, fact_type="feature",
+                    temporal=detect_temporal(text), confidence=0.72,
                 ))
 
-        for m in re.finditer(r"^(?:## |### |# )(.*)", content, re.MULTILINE):
-            heading = m.group(1).strip()
-            if heading and len(heading) > 2:
+        # Metrics
+        for m in re.finditer(r"(?:metric|kpi|target|goal|measure|success criteria)\s*:\s*(.+?)(?:\n|$)", content, re.IGNORECASE):
+            text = m.group(1).strip()
+            if text:
                 facts.append(ExtractedFact(
-                    model_name=heading, name=f"Section: {heading[:60]}",
-                    value=f"Document section: {heading}", fact_type="fact",
-                    confidence=0.65, temporal_hint=temporal,
+                    model_name="Metric", name=f"Metric: {text[:120]}",
+                    value=text, fact_type="metric",
+                    temporal=detect_temporal(text), confidence=0.73,
                 ))
 
-        for m in re.finditer(r"^(?:- |\* |\d+\.\s)(.+)$", content, re.MULTILINE):
-            bullet = m.group(1).strip()
-            if bullet and len(bullet) > 10:
+        # Meeting outcomes
+        for m in re.finditer(r"(?:outcome|meeting outcome|conclusion|agreed)\s*:\s*(.+?)(?:\n|$)", content, re.IGNORECASE):
+            text = m.group(1).strip()
+            if text:
                 facts.append(ExtractedFact(
-                    model_name="Points", name=bullet[:60],
-                    value=bullet, fact_type="fact", confidence=0.55,
-                    temporal_hint=temporal,
+                    model_name="Meeting", name=f"Meeting outcome: {text[:120]}",
+                    value=text, fact_type="meeting_note",
+                    temporal="past", confidence=0.77,
+                ))
+
+        # Agent session steps
+        for m in re.finditer(r"(?:agent|ai session|claude|codex|next step|failed attempt)\s*:\s*(.+?)(?:\n|$)", content, re.IGNORECASE):
+            text = m.group(1).strip()
+            if text:
+                facts.append(ExtractedFact(
+                    model_name="Agent Session", name=f"AI step: {text[:120]}",
+                    value=text, fact_type="ai_step",
+                    temporal=detect_temporal(text), confidence=0.70,
                 ))
 
         if not facts:
             first_lines = content[:500].strip()
             if first_lines:
                 facts.append(ExtractedFact(
-                    model_name="General", name="Document content",
-                    value=first_lines, fact_type="fact", confidence=0.50,
-                    temporal_hint="current",
+                    model_name="Document", name="Document content",
+                    value=first_lines, fact_type="fact",
+                    temporal="unknown", confidence=0.50,
                 ))
 
-        return facts[:12]
-
-    @staticmethod
-    def _detect_temporal_hint(content: str) -> str:
-        future_hints = ["will ", "plan to", "going to", "in the future", "next quarter",
-                        "roadmap", "upcoming", "planned", "target"]
-        past_hints = ["was ", "were ", "used to", "previously", "earlier", "deprecated",
-                      "removed", "replaced", "old "]
-
-        content_lower = content.lower()
-        future_count = sum(1 for h in future_hints if h in content_lower)
-        past_count = sum(1 for h in past_hints if h in content_lower)
-
-        if future_count > past_count and future_count > 0:
-            return "future"
-        elif past_count > future_count and past_count > 0:
-            return "past"
-        return "current"
+        return facts
