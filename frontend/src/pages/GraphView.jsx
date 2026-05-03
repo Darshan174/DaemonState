@@ -234,7 +234,7 @@ export default function GraphView() {
         nodes.push({
           data: {
             id: node.id,
-            label: shortLabel(node.label),
+            label: node.label,
             fullLabel: node.label,
             type: node.type,
             value: node.detail || node.path || node.technology || "",
@@ -315,7 +315,7 @@ export default function GraphView() {
           data: {
             id: c.id,
             parent: `model:${c.model_id}`,
-            label: labelPrefix + shortLabel(cleanName, 4),
+            label: labelPrefix + cleanName,
             fullLabel: (labelPrefix + c.name),
             type: "component",
             value: c.value,
@@ -373,7 +373,7 @@ export default function GraphView() {
             "border-color": "#94a3b8",
             "text-margin-y": 5,
             "text-wrap": "wrap",
-            "text-max-width": 72,
+            "text-max-width": 160,
           },
         },
 
@@ -648,38 +648,16 @@ export default function GraphView() {
         });
         if (found) {
           const id = found.id();
-          if (id !== lastHoveredId) {
-            if (lastHoveredId) {
-              const prev = cy.getElementById(lastHoveredId);
-              const pf = prev.data("fullLabel");
-              if (pf) prev.data("label", shortLabel(pf));
-            }
-            const fl = found.data("fullLabel");
-            if (fl) found.data("label", fl);
-            lastHoveredId = id;
-          }
-          setTooltipNode({ x: rx, y: ry, text: found.data("fullLabel") || found.data("label") });
+          lastHoveredId = id;
         } else {
-          if (lastHoveredId) {
-            const prev = cy.getElementById(lastHoveredId);
-            const pf = prev.data("fullLabel");
-            if (pf) prev.data("label", shortLabel(pf));
-            lastHoveredId = null;
-          }
-          setTooltipNode(null);
+          lastHoveredId = null;
         }
       });
     }
 
     function onMouseLeave() {
       if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-      if (lastHoveredId) {
-        const prev = cy.getElementById(lastHoveredId);
-        const pf = prev.data("fullLabel");
-        if (pf) prev.data("label", shortLabel(pf));
-        lastHoveredId = null;
-      }
-      setTooltipNode(null);
+      lastHoveredId = null;
     }
 
     containerEl.addEventListener("mousemove", onMouseMove);
@@ -961,14 +939,6 @@ export default function GraphView() {
             </div>
           </div>
 
-          {tooltipNode && (
-            <div
-              className="pointer-events-none absolute z-10 bg-slate-900 text-white text-xs px-2.5 py-1.5 rounded-lg shadow-lg max-w-[220px] leading-snug break-words"
-              style={{ left: tooltipNode.x + 14, top: tooltipNode.y - 8, transform: "translateY(-100%)" }}
-            >
-              {tooltipNode.text}
-            </div>
-          )}
 
           {/* ── Ask AI slide-up panel ─────────────────────────────── */}
           {showAsk && (
