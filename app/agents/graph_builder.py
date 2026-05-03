@@ -31,8 +31,15 @@ class GraphBuilderAgent:
         self.session = session
         self._ingestor = IngestionService(session)
 
-    async def run(self, limit: int = 100) -> dict:
+    async def run(self, limit: int = 100, api_key: str | None = None, model: str | None = None) -> dict:
         started_at = datetime.utcnow()
+
+        if api_key or model:
+            from app.processing.extractor import Extractor
+            extractor = Extractor(api_key=api_key, model=model)
+            ingestor = IngestionService(self.session, extractor=extractor)
+        else:
+            ingestor = self._ingestor
 
         pending = list(await self.session.scalars(
             select(SourceDocument)
@@ -47,7 +54,7 @@ class GraphBuilderAgent:
 
         for doc in pending:
             try:
-                n = await self._ingestor.process_document(doc.id)
+                n = await ingestor.process_document(doc.id)
                 components_created += n
                 docs_processed += 1
             except Exception as exc:
@@ -66,7 +73,9 @@ class GraphBuilderAgent:
         ) or 0
 
         from app.config import settings
-        llm_active = bool(settings.litellm_api_key and settings.extraction_model)
+        llm_active = bool(
+            (api_key or settings.litellm_api_key) and (model or settings.extraction_model)
+        )
 
         return {
             "started_at": started_at.isoformat(),

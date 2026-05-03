@@ -51,6 +51,12 @@ export default function GraphView() {
   const [building, setBuilding] = useState(false);
   const [buildResult, setBuildResult] = useState(null);
   const [agentStatus, setAgentStatus] = useState(null);
+  const [showAiSettings, setShowAiSettings] = useState(false);
+  const [aiSettings, setAiSettings] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("ce_ai_settings") || "{}"); }
+    catch { return {}; }
+  });
+  const [tooltipNode, setTooltipNode] = useState(null);
 
   useEffect(() => {
     async function fetchGraph() {
@@ -81,12 +87,17 @@ export default function GraphView() {
   async function handleBuildGraph() {
     setBuilding(true);
     setBuildResult(null);
+    const saved = (() => { try { return JSON.parse(localStorage.getItem("ce_ai_settings") || "{}"); } catch { return {}; } })();
     try {
-      const res = await fetch("/api/graph/build", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ limit: 100 }) });
+      const body = { limit: 100 };
+      if (saved.api_key) body.api_key = saved.api_key;
+      if (saved.model) body.model = saved.model;
+      const res = await fetch("/api/graph/build", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const data = await res.json();
       setBuildResult(data);
       const graphRes = await fetch("/api/graph");
       if (graphRes.ok) setGraphData(await graphRes.json());
+      fetch("/api/graph/agent-status").then((r) => r.json()).then(setAgentStatus).catch(() => {});
     } catch (e) {
       setBuildResult({ error: e.message });
     } finally {
@@ -200,6 +211,7 @@ export default function GraphView() {
             temporal,
             modelId: c.model_id,
             source_type: c.source_type,
+            source_url: c.source_url,
             bgColor: tc.bg,
             borderColor: modelColorMap[c.model_id] || "#94a3b8",
           },
@@ -252,7 +264,7 @@ export default function GraphView() {
             "text-margin-y": 6,
             "text-wrap": "wrap",
             "text-max-width": 64,
-            "text-overflow-wrap": "anywhere",
+            "text-overflow-wrap": "whitespace",
           },
         },
         {
@@ -395,21 +407,68 @@ export default function GraphView() {
       if (evt.target === cy) setSelectedNode(null);
     });
 
-    cy.on("mouseover", "node", (evt) => {
-      const node = evt.target;
-      const fullLabel = node.data("fullLabel");
-      if (fullLabel) node.data("label", fullLabel);
-    });
-
-    cy.on("mouseout", "node", (evt) => {
-      const node = evt.target;
-      const fullLabel = node.data("fullLabel");
-      if (fullLabel) node.data("label", shortLabel(fullLabel));
-    });
-
     cyRef.current = cy;
 
+    const containerEl = containerRef.current;
+    let lastHoveredId = null;
+    let rafId = null;
+
+    function onMouseMove(e) {
+      if (rafId) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        const rect = containerEl.getBoundingClientRect();
+        const rx = e.clientX - rect.left;
+        const ry = e.clientY - rect.top;
+        let found = null;
+        cy.nodes().forEach((node) => {
+          try {
+            const bb = node.renderedBoundingBox({ includeLabels: true, includeEdges: false, includeNodes: true });
+            if (rx >= bb.x1 && rx <= bb.x2 && ry >= bb.y1 && ry <= bb.y2) found = node;
+          } catch (_) {}
+        });
+        if (found) {
+          const id = found.id();
+          if (id !== lastHoveredId) {
+            if (lastHoveredId) {
+              const prev = cy.getElementById(lastHoveredId);
+              const pf = prev.data("fullLabel");
+              if (pf) prev.data("label", shortLabel(pf));
+            }
+            const fl = found.data("fullLabel");
+            if (fl) found.data("label", fl);
+            lastHoveredId = id;
+          }
+          setTooltipNode({ x: rx, y: ry, text: found.data("fullLabel") || found.data("label") });
+        } else {
+          if (lastHoveredId) {
+            const prev = cy.getElementById(lastHoveredId);
+            const pf = prev.data("fullLabel");
+            if (pf) prev.data("label", shortLabel(pf));
+            lastHoveredId = null;
+          }
+          setTooltipNode(null);
+        }
+      });
+    }
+
+    function onMouseLeave() {
+      if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+      if (lastHoveredId) {
+        const prev = cy.getElementById(lastHoveredId);
+        const pf = prev.data("fullLabel");
+        if (pf) prev.data("label", shortLabel(pf));
+        lastHoveredId = null;
+      }
+      setTooltipNode(null);
+    }
+
+    containerEl.addEventListener("mousemove", onMouseMove);
+    containerEl.addEventListener("mouseleave", onMouseLeave);
+
     return () => {
+      containerEl.removeEventListener("mousemove", onMouseMove);
+      containerEl.removeEventListener("mouseleave", onMouseLeave);
       cy.destroy();
     };
   }, [graphData, filteredData, viewMode]);
@@ -512,10 +571,22 @@ export default function GraphView() {
           )}
           <div className="ml-auto flex items-center gap-2">
             {agentStatus && (
-              <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full ${agentStatus.llm_enabled ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"}`}>
-                {agentStatus.llm_enabled ? `LLM: ${agentStatus.extraction_model}` : "Regex extraction"}
+              <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full ${aiSettings.api_key || agentStatus.llm_enabled ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"}`}>
+                {aiSettings.api_key ? `AI: ${aiSettings.model || "gpt-4o"}` : agentStatus.llm_enabled ? `LLM: ${agentStatus.extraction_model}` : "Regex extraction"}
               </span>
             )}
+            <button
+              type="button"
+              onClick={() => setShowAiSettings(true)}
+              title="Configure AI extraction"
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition-colors ${aiSettings.api_key ? "border-brand-400 bg-brand-50 text-brand-700 dark:border-brand-600 dark:bg-brand-900/20 dark:text-brand-400" : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700"}`}
+            >
+              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+              {aiSettings.api_key ? "AI ready" : "Configure AI"}
+            </button>
             <button
               type="button"
               onClick={handleBuildGraph}
@@ -568,10 +639,17 @@ export default function GraphView() {
           </div>
         )}
 
-        <div
-          ref={containerRef}
-          className="flex-1 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 min-h-0"
-        />
+        <div className="flex-1 relative rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 min-h-0">
+          <div ref={containerRef} className="absolute inset-0 rounded-2xl" />
+          {tooltipNode && (
+            <div
+              className="pointer-events-none absolute z-10 bg-slate-900 text-white text-xs px-2.5 py-1.5 rounded-lg shadow-lg max-w-[220px] leading-snug break-words"
+              style={{ left: tooltipNode.x + 14, top: tooltipNode.y - 8, transform: "translateY(-100%)" }}
+            >
+              {tooltipNode.text}
+            </div>
+          )}
+        </div>
       </div>
 
       {selectedNode && (
@@ -621,6 +699,26 @@ export default function GraphView() {
                 <span className="font-bold text-slate-700 dark:text-slate-300 capitalize">{selectedNode.temporal}</span>
               </div>
             )}
+            {selectedNode.source_type && (
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-500">Source</span>
+                <span className="font-bold text-slate-700 dark:text-slate-300 capitalize">{selectedNode.source_type.replace(/_/g, " ")}</span>
+              </div>
+            )}
+            {selectedNode.source_url && (
+              <div className="flex justify-between items-start text-xs gap-2">
+                <span className="text-slate-500 shrink-0">URL</span>
+                <a
+                  href={selectedNode.source_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-medium text-brand-600 dark:text-brand-400 truncate hover:underline text-right"
+                  title={selectedNode.source_url}
+                >
+                  {selectedNode.source_url.replace(/^https?:\/\//, "").slice(0, 36)}{selectedNode.source_url.length > 46 ? "…" : ""}
+                </a>
+              </div>
+            )}
           </div>
           {selectedNode.connected?.length > 0 && (
             <div>
@@ -650,6 +748,98 @@ export default function GraphView() {
                   <span className="text-slate-600 dark:text-slate-400">{tc.label}</span>
                 </div>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAiSettings && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center" onClick={() => setShowAiSettings(false)}>
+          <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-6 w-[22rem] shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white">AI Extraction Settings</h3>
+                <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">Bring your own API key to power intelligent graph building</p>
+              </div>
+              <button onClick={() => setShowAiSettings(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 text-sm font-bold ml-3">✕</button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1.5">Provider</label>
+                <select
+                  value={aiSettings.provider || "openai"}
+                  onChange={(e) => {
+                    const p = e.target.value;
+                    const defaults = { openai: "gpt-4o", anthropic: "claude-3-5-sonnet-20241022", custom: "" };
+                    const newS = { ...aiSettings, provider: p, model: defaults[p] ?? aiSettings.model };
+                    setAiSettings(newS);
+                    localStorage.setItem("ce_ai_settings", JSON.stringify(newS));
+                  }}
+                  className="w-full text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300"
+                >
+                  <option value="openai">OpenAI (ChatGPT / GPT-4)</option>
+                  <option value="anthropic">Anthropic (Claude)</option>
+                  <option value="custom">OpenAI-compatible API</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1.5">API Key</label>
+                <input
+                  type="password"
+                  value={aiSettings.api_key || ""}
+                  onChange={(e) => {
+                    const newS = { ...aiSettings, api_key: e.target.value };
+                    setAiSettings(newS);
+                    localStorage.setItem("ce_ai_settings", JSON.stringify(newS));
+                  }}
+                  placeholder={(aiSettings.provider || "openai") === "anthropic" ? "sk-ant-..." : "sk-..."}
+                  className="w-full text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1.5">Model</label>
+                <input
+                  type="text"
+                  value={aiSettings.model || ""}
+                  onChange={(e) => {
+                    const newS = { ...aiSettings, model: e.target.value };
+                    setAiSettings(newS);
+                    localStorage.setItem("ce_ai_settings", JSON.stringify(newS));
+                  }}
+                  placeholder={(aiSettings.provider || "openai") === "anthropic" ? "claude-3-5-sonnet-20241022" : "gpt-4o"}
+                  className="w-full text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 font-mono"
+                />
+              </div>
+
+              <div className="rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 px-3 py-2.5">
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                  Your key stays in this browser only and is sent with each Build Graph request. It is never stored on the server. The AI will intelligently extract domain models, atomic facts, and meaningful relationships from your synced documents — instead of the built-in regex fallback.
+                </p>
+              </div>
+
+              <div className="flex gap-2 pt-1">
+                <button
+                  onClick={() => setShowAiSettings(false)}
+                  className="flex-1 px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-700 text-white text-xs font-bold transition-colors"
+                >
+                  {aiSettings.api_key ? "Save & Close" : "Close"}
+                </button>
+                {aiSettings.api_key && (
+                  <button
+                    onClick={() => {
+                      const newS = {};
+                      setAiSettings(newS);
+                      localStorage.removeItem("ce_ai_settings");
+                    }}
+                    className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 text-slate-500 dark:text-slate-400 text-xs font-bold hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>

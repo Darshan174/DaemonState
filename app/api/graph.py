@@ -37,6 +37,8 @@ class ComponentRead(BaseModel):
     authority_weight: float
     status: str
     source_document_id: UUID | None = None
+    source_type: str | None = None
+    source_url: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -68,7 +70,7 @@ async def get_graph(
 
     comp_stmt = (
         select(Component)
-        .options(selectinload(Component.model))
+        .options(selectinload(Component.model), selectinload(Component.source_document))
         .where(Component.status.in_(["active", "needs_review"]))
         .order_by(Component.created_at.desc())
     )
@@ -99,6 +101,8 @@ async def get_graph(
             temporal=c.temporal,
             confidence=c.confidence, authority_weight=c.authority_weight,
             status=c.status, source_document_id=c.source_document_id,
+            source_type=c.source_document.source_type if c.source_document else None,
+            source_url=c.source_document.source_url if c.source_document else None,
         ) for c in components],
         relationships=[RelationshipRead(
             id=r.id, source_component_id=r.source_component_id,
@@ -157,6 +161,8 @@ async def get_stats(session: AsyncSession = Depends(get_db_session)) -> StatsRes
 
 class BuildRequest(BaseModel):
     limit: int = 100
+    api_key: str | None = None
+    model: str | None = None
 
 
 class BuildResult(BaseModel):
@@ -178,7 +184,7 @@ async def build_graph(
 ) -> BuildResult:
     from app.agents.graph_builder import GraphBuilderAgent
     agent = GraphBuilderAgent(session)
-    result = await agent.run(limit=body.limit)
+    result = await agent.run(limit=body.limit, api_key=body.api_key, model=body.model)
     return BuildResult(**result)
 
 

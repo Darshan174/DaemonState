@@ -79,11 +79,13 @@ Document:
 
 
 class Extractor:
-    def __init__(self) -> None:
-        self._model = settings.extraction_model
+    def __init__(self, api_key: str | None = None, model: str | None = None) -> None:
+        self._model = model or settings.extraction_model
+        self._api_key = api_key or settings.litellm_api_key
 
     async def extract(self, content: str, metadata: dict[str, Any] | None = None) -> list[ExtractedFact]:
-        if self._model and settings.litellm_api_key:
+        is_ollama = (self._model or "").startswith("ollama/")
+        if self._model and (self._api_key or is_ollama):
             try:
                 return await self._llm_extract(content)
             except Exception:
@@ -98,7 +100,7 @@ class Extractor:
 
         response = await acompletion(
             model=self._model,
-            api_key=settings.litellm_api_key,
+            api_key=self._api_key,
             messages=[
                 {"role": "system", "content": "Extract structured business knowledge. Return strict JSON only."},
                 {"role": "user", "content": prompt},
