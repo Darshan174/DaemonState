@@ -199,11 +199,23 @@ class QueryService:
                 return response.choices[0].message.content.strip()
             except Exception as e:
                 err = str(e)
-                if "NotFoundError" in err or "does not exist" in err or "model" in err.lower():
+                if "RateLimitError" in err or "quota" in err.lower() or "exceeded" in err.lower() or "billing" in err.lower():
                     return (
-                        f"Model \"{model}\" is not accessible on your API key. "
-                        f"Open Configure AI and switch to gpt-4o or gpt-4o-mini (OpenAI) "
-                        f"or claude-3-5-haiku-20241022 (Anthropic).\n\n"
+                        f"Your OpenAI account has exceeded its quota or has no billing set up. "
+                        f"Either add credits at platform.openai.com/account/billing, "
+                        f"or open Configure AI and switch to Anthropic (claude-3-5-haiku-20241022 is fast and cheap).\n\n"
+                        f"Top matching facts:\n{facts_text}"
+                    )
+                if "NotFoundError" in err or "does not exist" in err or "invalid_model" in err.lower():
+                    return (
+                        f"Model \"{model}\" is not available on your API key. "
+                        f"Open Configure AI and pick a different model — "
+                        f"try gpt-4o-mini (OpenAI) or claude-3-5-haiku-20241022 (Anthropic).\n\n"
+                        f"Top matching facts:\n{facts_text}"
+                    )
+                if "AuthenticationError" in err or "Unauthorized" in err or "invalid_api_key" in err.lower():
+                    return (
+                        f"Your API key was rejected. Open Configure AI and check the key is correct.\n\n"
                         f"Top matching facts:\n{facts_text}"
                     )
                 return f"AI error: {err}\n\nTop matching facts:\n{facts_text}"
