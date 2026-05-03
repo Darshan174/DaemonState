@@ -1658,13 +1658,13 @@ function ConnectorIconBadge({ type, color, name }) {
   const icons = {
     slack: <SlackLogoIcon className="w-5 h-5" />,
     zoom: <ZoomIcon className="w-5 h-5" />,
-    gdrive: <img src={imgGDrive} alt="Google Drive" className="w-6 h-6 object-contain" />,
+    gdrive: <img src={imgGDrive} alt="Google Drive" className="w-8 h-8 object-contain" />,
     gmail: <img src={imgGmail} alt="Gmail" className="w-6 h-6 object-contain" />,
     github: <GitHubIcon className="w-5 h-5 text-white" />,
     notion: <NotionIcon className="w-5 h-5" />,
-    codex: <img src={imgOpenAI} alt="OpenAI" className="w-5 h-5 object-contain" />,
+    codex: <img src={imgOpenAI} alt="OpenAI" className="w-7 h-7 object-contain" />,
     claude: <AnthropicIcon className="w-5 h-5 text-white" />,
-    opencode: <img src={imgOpenCode} alt="OpenCode" className="w-6 h-6 object-contain" />,
+    opencode: <img src={imgOpenCode} alt="OpenCode" className="w-8 h-8 object-contain" />,
   };
   const icon = icons[type];
   return (

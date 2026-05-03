@@ -133,7 +133,7 @@ const CONNECTOR_CATALOG = {
     type: "opencode",
     name: "OpenCode",
     description: "OpenCode AI coding sessions — terminal context and implementation notes",
-    color: "#ffffff",
+    color: "#000000",
     availability: "available",
     provider: "native",
     providerLabel: "Session import",
