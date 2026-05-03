@@ -1,9 +1,66 @@
 services:
+
+  # ── SQLite mode (default — no external dependencies) ─────────────────────────
   app:
     build: .
     ports:
-      - "8000:8000"
+      - "${PORT:-8000}:8000"
     volumes:
-      - ./data:/data
+      - ce_data:/data
     environment:
-      - DATABASE_URL=sqlite+aiosqlite:///data/context.db
+      DATABASE_URL: sqlite+aiosqlite:////data/context.db
+      DATA_DIR: /data
+      LITELLM_API_KEY: ${LITELLM_API_KEY:-}
+      EXTRACTION_MODEL: ${EXTRACTION_MODEL:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  ce_data:
+
+# ──────────────────────────────────────────────────────────────────────────────
+# POSTGRES VARIANT
+# To run with PostgreSQL instead of SQLite, comment out the `app` service
+# above and uncomment the two services below:
+#
+# services:
+#   db:
+#     image: postgres:16-alpine
+#     environment:
+#       POSTGRES_DB: context_engine
+#       POSTGRES_USER: ce
+#       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+#     volumes:
+#       - pg_data:/var/lib/postgresql/data
+#     restart: unless-stopped
+#     healthcheck:
+#       test: ["CMD-SHELL", "pg_isready -U ce -d context_engine"]
+#       interval: 10s
+#       retries: 5
+#
+#   app:
+#     build: .
+#     ports:
+#       - "${PORT:-8000}:8000"
+#     depends_on:
+#       db:
+#         condition: service_healthy
+#     environment:
+#       DATABASE_URL: postgresql://ce:${POSTGRES_PASSWORD:-changeme}@db:5432/context_engine
+#       DATA_DIR: /data
+#       LITELLM_API_KEY: ${LITELLM_API_KEY:-}
+#       EXTRACTION_MODEL: ${EXTRACTION_MODEL:-}
+#       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+#     volumes:
+#       - ce_uploads:/data
+#     restart: unless-stopped
+#
+# volumes:
+#   pg_data:
+#   ce_uploads:

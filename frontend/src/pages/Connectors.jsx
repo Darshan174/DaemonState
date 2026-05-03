@@ -72,7 +72,7 @@ export default function Connectors() {
   const [slackClientId, setSlackClientId] = useState("");
   const [slackClientSecret, setSlackClientSecret] = useState("");
   const [slackRedirectUri, setSlackRedirectUri] = useState(
-    "http://localhost:8000/api/connectors/slack/callback",
+    () => `${window.location.origin}/api/connectors/slack/callback`,
   );
   const [notionFormOpen, setNotionFormOpen] = useState(false);
   const [notionToken, setNotionToken] = useState("");

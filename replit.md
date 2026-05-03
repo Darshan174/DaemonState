@@ -47,6 +47,21 @@ tests/          Backend pytest tests
 - **Build**: `cd frontend && npm install && npm run build`
 - **Run**: `uvicorn app.main:app --host 0.0.0.0 --port 5000` (serves pre-built frontend as static files)
 
+## Self-Hosting
+
+The project ships with everything needed to self-host:
+
+- `Dockerfile` — Multi-stage build: Node 20 builds the frontend, Python 3.12 slim serves backend + static files. Single container, no nginx needed.
+- `docker-compose.yml` — SQLite by default (zero external deps). Uncomment the Postgres variant at the bottom for production.
+- `.env.example` — Full variable reference with comments. Copy to `.env` before starting.
+- `.dockerignore` — Keeps image lean (~200 MB).
+- `scripts/setup.sh` — One-command bare-metal setup (installs Python deps + builds frontend).
+- `scripts/start.sh` — Production start (`uvicorn` with configurable PORT + WORKERS env vars).
+- `scripts/dev.sh` — Dev mode: starts both backend (port 8000, --reload) and frontend (port 5000) concurrently.
+
+### Self-hosted Slack redirect URI
+`Connectors.jsx` uses `window.location.origin` to build the default Slack redirect URI so it works on any hostname/port automatically.
+
 ## Database Notes
 
 - The `DATABASE_URL` Replit secret is a sync PostgreSQL URL; `app/database.py` automatically converts it to `postgresql+asyncpg://` for async SQLAlchemy

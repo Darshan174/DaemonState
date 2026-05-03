@@ -1,0 +1,57 @@
+# Git
+.git
+.github
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*.so
+.venv
+venv
+env
+*.egg-info
+dist
+build
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# Node / Frontend build artifacts
+frontend/node_modules
+frontend/dist
+frontend/.cache
+
+# Data & runtime
+data
+*.db
+*.sqlite
+*.sqlite3
+backups
+diagnostics
+
+# Secrets
+.env
+.env.*
+secrets
+credentials
+*.pem
+*.key
+*.crt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+*.log
+logs
+tmp
+temp
+attached_assets
+.local
+.agent-runs
+.agents
+.cache
