@@ -15,10 +15,23 @@
     letter-spacing: -0.02em;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    @apply bg-slate-50 dark:bg-[#0a0c0f] text-slate-900 dark:text-slate-100;
+    @apply text-slate-900 dark:text-slate-100;
+    background:
+      radial-gradient(ellipse 65% 45% at 68% -8%, rgba(99,102,241,0.11) 0%, transparent 55%),
+      radial-gradient(ellipse 45% 35% at 4% 92%, rgba(167,139,250,0.08) 0%, transparent 52%),
+      #f8fafc;
+    background-attachment: fixed;
     transition-property: background-color, border-color, color;
     transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
     transition-duration: 250ms;
+  }
+
+  .dark body {
+    background:
+      radial-gradient(ellipse 65% 45% at 68% -8%, rgba(99,102,241,0.20) 0%, transparent 55%),
+      radial-gradient(ellipse 45% 35% at 4% 92%, rgba(167,139,250,0.13) 0%, transparent 52%),
+      #07080d;
+    background-attachment: fixed;
   }
 
   *:focus-visible {
