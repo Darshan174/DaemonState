@@ -182,7 +182,7 @@ class QueryService:
         )
 
         if self._api_key and self._model:
-            model = _normalize_model(self._model)
+            model = self._model
             try:
                 from litellm import acompletion
                 prompt = ANSWER_PROMPT.format(question=question, facts=facts_text)
@@ -230,18 +230,6 @@ class QueryService:
         lines.append("\nTip: Configure an AI key (Configure AI button) to get synthesized answers.")
         return "\n".join(lines)
 
-
-def _normalize_model(model: str) -> str:
-    """Map legacy/inaccessible model names to modern equivalents."""
-    mapping = {
-        "gpt-4":          "gpt-4o",
-        "gpt-4-0314":     "gpt-4o",
-        "gpt-4-0613":     "gpt-4o",
-        "gpt-3.5-turbo":  "gpt-4o-mini",
-        "claude-2":       "claude-3-5-haiku-20241022",
-        "claude-instant":  "claude-3-5-haiku-20241022",
-    }
-    return mapping.get(model, model)
 
 
 def _parse_embedding(raw: str | None) -> list[float] | None:

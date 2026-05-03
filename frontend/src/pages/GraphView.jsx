@@ -1194,17 +1194,17 @@ export default function GraphView() {
               <div>
                 <label className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1.5">Provider</label>
                 <select
-                  value={aiSettings.provider || "anthropic"}
+                  value={aiSettings.provider || ""}
                   onChange={(e) => {
                     const p = e.target.value;
-                    const defaults = { openai: "gpt-4o-mini", anthropic: "claude-3-5-haiku-20241022", custom: "" };
-                    const newS = { ...aiSettings, provider: p, model: defaults[p] ?? aiSettings.model };
+                    const newS = { ...aiSettings, provider: p, model: "" };
                     setAiSettings(newS);
                     localStorage.setItem("ce_ai_settings", JSON.stringify(newS));
                   }}
                   className="w-full text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300"
                 >
-                  <option value="anthropic">Anthropic (Claude) — recommended</option>
+                  <option value="">— select provider —</option>
+                  <option value="anthropic">Anthropic (Claude)</option>
                   <option value="openai">OpenAI (GPT)</option>
                   <option value="custom">OpenAI-compatible API</option>
                 </select>
@@ -1227,7 +1227,7 @@ export default function GraphView() {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1.5">Model</label>
-                {(aiSettings.provider || "openai") === "custom" ? (
+                {aiSettings.provider === "custom" ? (
                   <input
                     type="text"
                     value={aiSettings.model || ""}
@@ -1241,7 +1241,7 @@ export default function GraphView() {
                   />
                 ) : (
                   <select
-                    value={aiSettings.model || ((aiSettings.provider || "anthropic") === "openai" ? "gpt-4o-mini" : "claude-3-5-haiku-20241022")}
+                    value={aiSettings.model || ""}
                     onChange={(e) => {
                       const newS = { ...aiSettings, model: e.target.value };
                       setAiSettings(newS);
@@ -1249,20 +1249,26 @@ export default function GraphView() {
                     }}
                     className="w-full text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 font-mono"
                   >
-                    {(aiSettings.provider || "openai") === "anthropic" ? (
+                    <option value="">— select model —</option>
+                    {aiSettings.provider === "anthropic" ? (
                       <>
-                        <option value="claude-opus-4-5">claude-opus-4-5 (most capable)</option>
-                        <option value="claude-3-5-sonnet-20241022">claude-3-5-sonnet-20241022 (recommended)</option>
-                        <option value="claude-3-5-haiku-20241022">claude-3-5-haiku-20241022 (fastest)</option>
-                        <option value="claude-3-opus-20240229">claude-3-opus-20240229</option>
+                        <option value="claude-opus-4-5">claude-opus-4-5</option>
+                        <option value="claude-3-7-sonnet-20250219">claude-3-7-sonnet-20250219</option>
+                        <option value="claude-3-5-sonnet-20241022">claude-3-5-sonnet-20241022</option>
+                        <option value="claude-3-5-haiku-20241022">claude-3-5-haiku-20241022</option>
+                      </>
+                    ) : aiSettings.provider === "openai" ? (
+                      <>
+                        <option value="gpt-4.1">gpt-4.1</option>
+                        <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+                        <option value="gpt-4.1-nano">gpt-4.1-nano</option>
+                        <option value="gpt-4o">gpt-4o</option>
+                        <option value="gpt-4o-mini">gpt-4o-mini</option>
+                        <option value="o4-mini">o4-mini</option>
+                        <option value="o3">o3</option>
                       </>
                     ) : (
-                      <>
-                        <option value="gpt-4o">gpt-4o (recommended)</option>
-                        <option value="gpt-4o-mini">gpt-4o-mini (faster, cheaper)</option>
-                        <option value="gpt-4-turbo">gpt-4-turbo</option>
-                        <option value="gpt-3.5-turbo">gpt-3.5-turbo (cheapest)</option>
-                      </>
+                      <option value="" disabled>Select a provider first</option>
                     )}
                   </select>
                 )}
