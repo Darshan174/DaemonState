@@ -9,10 +9,10 @@ const STATUS_COLORS = {
 };
 
 const TEMPORAL_COLORS = {
-  current: { bg: "#0ea5e9", border: "#0284c7", label: "Current" },
-  past:    { bg: "#94a3b8", border: "#64748b", label: "Past" },
-  future:  { bg: "#a78bfa", border: "#7c3aed", label: "Future" },
-  unknown: { bg: "#64748b", border: "#475569", label: "Unknown" },
+  current: { bg: "#f59e0b", border: "#d97706", label: "Current" },
+  past:    { bg: "#ef4444", border: "#dc2626", label: "Past" },
+  future:  { bg: "#22c55e", border: "#16a34a", label: "Future" },
+  unknown: { bg: "#94a3b8", border: "#64748b", label: "Unknown" },
 };
 
 const MODEL_COLORS = [
@@ -147,6 +147,10 @@ export default function GraphView() {
     const nodes = [];
     const edges = [];
 
+    // Pre-compute visible models (those with at least one component) for use in layout
+    const activeModelIds = new Set(components.map((c) => c.model_id));
+    const visibleModels = models.filter((m) => activeModelIds.has(m.id));
+
     if (viewMode === "repo") {
       (viewData.nodes || []).forEach((node) => {
         nodes.push({
@@ -181,28 +185,45 @@ export default function GraphView() {
         });
       });
     } else {
-      models.forEach((m) => {
+      // Models become compound parent containers (empty models are already excluded via visibleModels)
+      visibleModels.forEach((m) => {
         nodes.push({
           data: {
             id: `model:${m.id}`,
-            label: shortLabel(m.name),
+            label: m.name,
             fullLabel: m.name,
             type: "model",
             modelId: m.id,
             description: m.description || "",
+            modelColor: modelColorMap[m.id] || "#6366f1",
           },
           classes: "model-node",
         });
       });
 
+      // Components are children of their model compound node
       components.forEach((c) => {
         const temporal = c.temporal || "unknown";
         const tc = TEMPORAL_COLORS[temporal] || TEMPORAL_COLORS.unknown;
+
+        // GitHub-specific shape classes and label prefix
+        const isGitHub = c.source_type === "github";
+        const isPR = isGitHub && c.fact_type === "pull_request";
+        const isIssue = isGitHub && c.fact_type === "issue";
+        const classNames = [
+          isPR ? "github-pr" : isIssue ? "github-issue" : "",
+        ].filter(Boolean).join(" ");
+
+        let labelPrefix = "";
+        if (isPR) labelPrefix = "PR· ";
+        else if (isIssue) labelPrefix = "# ";
+
         nodes.push({
           data: {
             id: c.id,
-            label: shortLabel(c.name),
-            fullLabel: c.name,
+            parent: `model:${c.model_id}`,
+            label: labelPrefix + shortLabel(c.name, 4),
+            fullLabel: (labelPrefix + c.name),
             type: "component",
             value: c.value,
             confidence: c.confidence,
@@ -213,23 +234,13 @@ export default function GraphView() {
             source_type: c.source_type,
             source_url: c.source_url,
             bgColor: tc.bg,
-            borderColor: modelColorMap[c.model_id] || "#94a3b8",
+            borderColor: tc.border,
           },
+          classes: classNames || undefined,
         });
       });
 
-      components.forEach((c) => {
-        edges.push({
-          data: {
-            id: `contains:${c.model_id}:${c.id}`,
-            source: `model:${c.model_id}`,
-            target: c.id,
-            label: "contains",
-            edgeType: "contains",
-          },
-        });
-      });
-
+      // Relationship edges only — compound parent handles "contains" visually
       relationships.forEach((r) => {
         edges.push({
           data: {
@@ -243,10 +254,16 @@ export default function GraphView() {
       });
     }
 
+    const isDark = document.documentElement.classList.contains("dark");
+    const modelBg = isDark ? "rgba(255,255,255,0.04)" : "rgba(15,23,42,0.03)";
+    const modelTextColor = isDark ? "#e2e8f0" : "#0f172a";
+    const edgeLabelBg = isDark ? "#0f172a" : "#ffffff";
+
     const cy = cytoscape({
       container: containerRef.current,
       elements: { nodes, edges },
       style: [
+        // ── Base node defaults ───────────────────────────────────
         {
           selector: "node",
           style: {
@@ -255,41 +272,80 @@ export default function GraphView() {
             "text-halign": "center",
             "font-size": "7px",
             "font-weight": "600",
-            color: "#334155",
+            color: "#475569",
             "background-color": "#cbd5e1",
-            width: 28,
-            height: 28,
+            width: 26,
+            height: 26,
             "border-width": 2,
             "border-color": "#94a3b8",
-            "text-margin-y": 6,
+            "text-margin-y": 5,
             "text-wrap": "wrap",
-            "text-max-width": 64,
-            "text-overflow-wrap": "whitespace",
+            "text-max-width": 72,
           },
         },
+
+        // ── MODEL — compound container node ──────────────────────
         {
-          selector: ".model-node, .repo-node",
+          selector: ".model-node",
           style: {
-            "background-color": "#1e293b",
-            "border-color": "#475569",
-            color: "#1e293b",
-            width: 44,
-            height: 44,
-            "font-size": "8px",
-            "font-weight": "800",
+            "background-color": modelBg,
+            "background-opacity": 1,
+            "border-color": "data(modelColor)",
+            "border-width": 2.5,
+            "border-opacity": 1,
             shape: "round-rectangle",
-            "text-margin-y": 8,
+            padding: "22px",
+            label: "data(label)",
+            "text-valign": "top",
+            "text-halign": "center",
+            "text-margin-y": 10,
+            "text-max-width": 160,
+            "font-size": "11px",
+            "font-weight": "800",
+            "text-wrap": "wrap",
+            color: modelTextColor,
+            "text-background-opacity": 0,
           },
         },
+
+        // ── COMPONENT — temporal-colored circles ─────────────────
         {
           selector: "node[type='component']",
           style: {
             "background-color": "data(bgColor)",
             "border-color": "data(borderColor)",
-            width: 24,
-            height: 24,
+            "border-width": 2.5,
+            width: 26,
+            height: 26,
+            shape: "ellipse",
+            "font-size": "7px",
+            color: isDark ? "#e2e8f0" : "#1e293b",
           },
         },
+
+        // ── GITHUB PR — diamond shape ─────────────────────────────
+        {
+          selector: ".github-pr",
+          style: {
+            shape: "diamond",
+            width: 32,
+            height: 32,
+            "border-width": 3,
+          },
+        },
+
+        // ── GITHUB ISSUE — rounded rectangle ─────────────────────
+        {
+          selector: ".github-issue",
+          style: {
+            shape: "round-rectangle",
+            width: 36,
+            height: 22,
+            "border-width": 2.5,
+          },
+        },
+
+        // ── Repo-view node types ──────────────────────────────────
         {
           selector: "node[type='area'], node[type='folder'], node[type='file'], node[type='technology']",
           style: {
@@ -302,84 +358,127 @@ export default function GraphView() {
         },
         {
           selector: "node[type='area']",
-          style: {
-            width: 46,
-            height: 34,
-            "font-size": "8px",
-            "font-weight": "800",
-            "text-max-width": 92,
-          },
+          style: { width: 46, height: 34, "font-size": "8px", "font-weight": "800", "text-max-width": 92 },
         },
         {
           selector: "node[type='technology']",
-          style: {
-            width: 34,
-            height: 28,
-            "font-size": "8px",
-            "text-max-width": 86,
-          },
+          style: { width: 34, height: 28, "font-size": "8px", "text-max-width": 86 },
         },
         {
           selector: "node[type='file']",
+          style: { width: 22, height: 22, "font-size": "7px", "text-max-width": 72 },
+        },
+        {
+          selector: ".repo-node",
           style: {
-            width: 22,
-            height: 22,
-            "font-size": "7px",
-            "text-max-width": 72,
+            "background-color": "#1e293b",
+            "border-color": "#475569",
+            color: "#e2e8f0",
+            width: 44,
+            height: 44,
+            shape: "round-rectangle",
+            "font-size": "8px",
+            "font-weight": "800",
           },
         },
+
+        // ── RELATIONSHIP EDGES — visible, labeled arrows ──────────
+        {
+          selector: "edge[edgeType='relationship']",
+          style: {
+            width: 2,
+            "line-color": "#818cf8",
+            "target-arrow-color": "#818cf8",
+            "target-arrow-shape": "triangle",
+            "arrow-scale": 1,
+            "curve-style": "bezier",
+            label: "data(label)",
+            "font-size": "8px",
+            "font-weight": "600",
+            color: "#6366f1",
+            "text-rotation": "autorotate",
+            "text-background-opacity": 1,
+            "text-background-color": edgeLabelBg,
+            "text-background-padding": "2px",
+            "text-border-opacity": 0,
+            "text-margin-y": -10,
+            opacity: 0.9,
+          },
+        },
+
+        // ── Repo-view edge defaults ───────────────────────────────
         {
           selector: "edge",
           style: {
             width: 1.5,
-            "line-color": "#cbd5e1",
-            "target-arrow-color": "#cbd5e1",
+            "line-color": "#94a3b8",
+            "target-arrow-color": "#94a3b8",
             "target-arrow-shape": "triangle",
             "arrow-scale": 0.8,
             "curve-style": "bezier",
             label: "data(label)",
             "font-size": "8px",
-            color: "#94a3b8",
+            color: "#64748b",
             "text-rotation": "autorotate",
-            "text-margin-y": -12,
+            "text-margin-y": -10,
             opacity: 0.6,
           },
         },
+
+        // ── Selection highlight ───────────────────────────────────
         {
-          selector: "edge[edgeType='contains']",
+          selector: "node[type='component']:selected, .github-pr:selected, .github-issue:selected",
           style: {
-            "line-style": "dashed",
-            "line-color": "#94a3b8",
-            "target-arrow-color": "#94a3b8",
-            opacity: 0.3,
-            label: "",
+            "border-width": 3.5,
+            "border-color": "#4f46e5",
+            "background-color": "#4f46e5",
+            color: "#ffffff",
           },
         },
         {
-          selector: ":selected",
+          selector: ".model-node:selected",
           style: {
-            "border-width": 3,
+            "border-width": 4,
             "border-color": "#4f46e5",
-            "background-color": "#4f46e5",
-            color: "#fff",
           },
         },
       ],
-      layout: {
-        name: viewMode === "repo" ? "preset" : "cose",
-        idealEdgeLength: viewMode === "repo" ? 95 : 150,
-        nodeOverlap: 30,
-        refresh: 20,
-        randomize: false,
-        componentSpacing: viewMode === "repo" ? 70 : 110,
-        nodeRepulsion: viewMode === "repo" ? 9000 : 12000,
-        edgeElasticity: 100,
-        nestingFactor: 1.2,
-        gravity: 0.2,
-        fit: true,
-        padding: viewMode === "repo" ? 110 : 60,
-        animate: false,
-      },
+      layout: viewMode === "repo"
+        ? { name: "preset", fit: true, padding: 110 }
+        : (() => {
+          // Preset layout: models in a grid, components in a circle inside each model
+          const presetPositions = {};
+          const cols = Math.max(2, Math.ceil(Math.sqrt(visibleModels.length)));
+          const modelSpacing = 320;
+
+          visibleModels.forEach((m, mi) => {
+            const col = mi % cols;
+            const row = Math.floor(mi / cols);
+            const basex = (col - (cols - 1) / 2) * modelSpacing;
+            const basey = row * modelSpacing;
+
+            const mComps = components.filter((c) => c.model_id === m.id);
+            const radius = mComps.length <= 1 ? 55 : Math.max(65, mComps.length * 20);
+            mComps.forEach((c, ci) => {
+              const angle = (ci / Math.max(1, mComps.length)) * 2 * Math.PI - Math.PI / 2;
+              presetPositions[c.id] = {
+                x: basex + radius * Math.cos(angle),
+                y: basey + radius * Math.sin(angle),
+              };
+            });
+            // If model is empty, give the compound node a fallback position
+            if (mComps.length === 0) {
+              presetPositions[`model:${m.id}`] = { x: basex, y: basey };
+            }
+          });
+
+          return {
+            name: "preset",
+            positions: (node) => presetPositions[node.id()],
+            fit: true,
+            padding: 80,
+          };
+        })(),
       wheelSensitivity: 0.3,
     });
 
@@ -739,15 +838,53 @@ export default function GraphView() {
               </div>
             </div>
           )}
-          <div className="mt-4 pt-4 border-t border-slate-100 dark:border-slate-700">
-            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">Timeline legend</p>
-            <div className="flex flex-col gap-1">
-              {Object.entries(TEMPORAL_COLORS).filter(([k]) => k !== "unknown").map(([key, tc]) => (
-                <div key={key} className="flex items-center gap-2 text-xs">
-                  <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: tc.bg }} />
-                  <span className="text-slate-600 dark:text-slate-400">{tc.label}</span>
+          <div className="mt-4 pt-4 border-t border-slate-100 dark:border-slate-700 space-y-3">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">Temporal</p>
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="w-3 h-3 rounded-full shrink-0 border-2" style={{ backgroundColor: TEMPORAL_COLORS.future.bg, borderColor: TEMPORAL_COLORS.future.border }} />
+                  <span className="text-slate-600 dark:text-slate-400">Future — planned / not yet built</span>
                 </div>
-              ))}
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="w-3 h-3 rounded-full shrink-0 border-2" style={{ backgroundColor: TEMPORAL_COLORS.current.bg, borderColor: TEMPORAL_COLORS.current.border }} />
+                  <span className="text-slate-600 dark:text-slate-400">Current — active / in use</span>
+                </div>
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="w-3 h-3 rounded-full shrink-0 border-2" style={{ backgroundColor: TEMPORAL_COLORS.past.bg, borderColor: TEMPORAL_COLORS.past.border }} />
+                  <span className="text-slate-600 dark:text-slate-400">Past — completed / outdated</span>
+                </div>
+              </div>
+            </div>
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">Node types</p>
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="w-8 h-4 rounded shrink-0 border-2 border-indigo-500 bg-indigo-50/30 dark:bg-indigo-900/20" />
+                  <span className="text-slate-600 dark:text-slate-400">Model (domain container)</span>
+                </div>
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="w-3 h-3 rounded-full shrink-0 bg-slate-400" />
+                  <span className="text-slate-600 dark:text-slate-400">Component (atomic fact)</span>
+                </div>
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="w-4 h-4 shrink-0 rotate-45 bg-slate-400" style={{ borderRadius: "2px" }} />
+                  <span className="text-slate-600 dark:text-slate-400">GitHub PR (diamond)</span>
+                </div>
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="w-4 h-2.5 rounded shrink-0 bg-slate-400" />
+                  <span className="text-slate-600 dark:text-slate-400">GitHub Issue (pill)</span>
+                </div>
+              </div>
+            </div>
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">Edges</p>
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="w-6 shrink-0 border-t-2 border-indigo-400" />
+                  <span className="text-slate-600 dark:text-slate-400">Relationship (labeled)</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
