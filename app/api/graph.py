@@ -32,6 +32,7 @@ class ComponentRead(BaseModel):
     name: str
     value: str
     fact_type: str
+    temporal: str = "unknown"
     confidence: float
     authority_weight: float
     status: str
@@ -95,6 +96,7 @@ async def get_graph(
             id=c.id, model_id=c.model_id,
             model_name=c.model.name if c.model else None,
             name=c.name, value=c.value, fact_type=c.fact_type,
+            temporal=c.temporal,
             confidence=c.confidence, authority_weight=c.authority_weight,
             status=c.status, source_document_id=c.source_document_id,
         ) for c in components],

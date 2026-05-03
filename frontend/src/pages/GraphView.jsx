@@ -8,6 +8,13 @@ const STATUS_COLORS = {
   superseded: "#6366f1",
 };
 
+const TEMPORAL_COLORS = {
+  current: { bg: "#0ea5e9", border: "#0284c7", label: "Current" },
+  past:    { bg: "#94a3b8", border: "#64748b", label: "Past" },
+  future:  { bg: "#a78bfa", border: "#7c3aed", label: "Future" },
+  unknown: { bg: "#64748b", border: "#475569", label: "Unknown" },
+};
+
 const MODEL_COLORS = [
   "#6366f1", "#8b5cf6", "#ec4899", "#f43f5e", "#f97316",
   "#eab308", "#22c55e", "#14b8a6", "#06b6d4", "#3b82f6",
@@ -39,6 +46,7 @@ export default function GraphView() {
     model: "",
     source_type: "",
     status: "",
+    temporal: "",
   });
   const [building, setBuilding] = useState(false);
   const [buildResult, setBuildResult] = useState(null);
@@ -101,6 +109,9 @@ export default function GraphView() {
     }
     if (filters.status) {
       components = components.filter((c) => c.status === filters.status);
+    }
+    if (filters.temporal) {
+      components = components.filter((c) => (c.temporal || "unknown") === filters.temporal);
     }
 
     const componentIds = new Set(components.map((c) => c.id));
@@ -174,7 +185,8 @@ export default function GraphView() {
       });
 
       components.forEach((c) => {
-        const color = STATUS_COLORS[c.status] || "#64748b";
+        const temporal = c.temporal || "unknown";
+        const tc = TEMPORAL_COLORS[temporal] || TEMPORAL_COLORS.unknown;
         nodes.push({
           data: {
             id: c.id,
@@ -185,10 +197,11 @@ export default function GraphView() {
             confidence: c.confidence,
             status: c.status,
             fact_type: c.fact_type,
+            temporal,
             modelId: c.model_id,
             source_type: c.source_type,
-            bgColor: modelColorMap[c.model_id] || "#94a3b8",
-            borderColor: color,
+            bgColor: tc.bg,
+            borderColor: modelColorMap[c.model_id] || "#94a3b8",
           },
         });
       });
@@ -484,6 +497,17 @@ export default function GraphView() {
                 <option key={s} value={s}>{s}</option>
               ))}
             </select>
+            <select
+              value={filters.temporal}
+              onChange={(e) => setFilters((f) => ({ ...f, temporal: e.target.value }))}
+              className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300"
+            >
+              <option value="">All time</option>
+              <option value="current">Current (needs now)</option>
+              <option value="future">Future (will do)</option>
+              <option value="past">Past (was done)</option>
+              <option value="unknown">Unknown</option>
+            </select>
           </div>
           )}
           <div className="ml-auto flex items-center gap-2">
@@ -558,12 +582,25 @@ export default function GraphView() {
           >
             close
           </button>
-          <h3 className="text-sm font-bold text-slate-900 dark:text-white mb-1 pr-6">
-            {selectedNode.label}
+          <h3 className="text-sm font-bold text-slate-900 dark:text-white mb-2 pr-6">
+            {selectedNode.fullLabel || selectedNode.label}
           </h3>
-          <span className="inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-brand-100 dark:bg-brand-900/30 text-brand-700 dark:text-brand-300 mb-3">
-            {selectedNode.fact_type || "fact"}
-          </span>
+          <div className="flex flex-wrap gap-1.5 mb-3">
+            <span className="inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-brand-100 dark:bg-brand-900/30 text-brand-700 dark:text-brand-300">
+              {selectedNode.fact_type || "fact"}
+            </span>
+            {selectedNode.temporal && selectedNode.temporal !== "unknown" && (() => {
+              const tc = TEMPORAL_COLORS[selectedNode.temporal];
+              return (
+                <span
+                  className="inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full text-white"
+                  style={{ backgroundColor: tc?.bg }}
+                >
+                  {tc?.label || selectedNode.temporal}
+                </span>
+              );
+            })()}
+          </div>
           <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed mb-4">
             {selectedNode.value}
           </p>
@@ -578,6 +615,12 @@ export default function GraphView() {
               <span className="text-slate-500">Status</span>
               <span className="font-bold text-slate-700 dark:text-slate-300">{selectedNode.status}</span>
             </div>
+            {selectedNode.temporal && (
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-500">Timeline</span>
+                <span className="font-bold text-slate-700 dark:text-slate-300 capitalize">{selectedNode.temporal}</span>
+              </div>
+            )}
           </div>
           {selectedNode.connected?.length > 0 && (
             <div>
@@ -598,6 +641,17 @@ export default function GraphView() {
               </div>
             </div>
           )}
+          <div className="mt-4 pt-4 border-t border-slate-100 dark:border-slate-700">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">Timeline legend</p>
+            <div className="flex flex-col gap-1">
+              {Object.entries(TEMPORAL_COLORS).filter(([k]) => k !== "unknown").map(([key, tc]) => (
+                <div key={key} className="flex items-center gap-2 text-xs">
+                  <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: tc.bg }} />
+                  <span className="text-slate-600 dark:text-slate-400">{tc.label}</span>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
     </div>

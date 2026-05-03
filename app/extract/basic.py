@@ -13,7 +13,6 @@ from app.models import Component, Model, Relationship, SourceDocument
 
 logger = logging.getLogger(__name__)
 
-# Patterns: (compiled_regex, fact_type, display_label)
 FACT_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r'\bdecision\s*:\s*(.{10,})', re.IGNORECASE), "decision"),
     (re.compile(r'\bwe decided\s+(?:to\s+)?(.{10,})', re.IGNORECASE), "decision"),
@@ -41,6 +40,38 @@ FACT_CONFIDENCE: dict[str, float] = {
     "goal": 0.70,
     "risk": 0.70,
 }
+
+_PAST_RE = re.compile(
+    r'\b(was|were|had|has been|launched|shipped|completed|deployed|released|removed|deprecated|'
+    r'last (?:week|month|quarter|year)|previously|already|used to)\b',
+    re.IGNORECASE,
+)
+_FUTURE_RE = re.compile(
+    r'\b(will|going to|plan(?:ned|ning)?|upcoming|next (?:week|month|quarter|year)|'
+    r'Q[1-4]\s*20\d{2}|H[12]\s*20\d{2}|coming soon|roadmap|schedule[d]?|intended)\b',
+    re.IGNORECASE,
+)
+_CURRENT_RE = re.compile(
+    r'\b(is|are|currently|active|now|today|this (?:week|month|sprint)|ongoing|in progress|'
+    r'present|at the moment)\b',
+    re.IGNORECASE,
+)
+
+_FACT_TYPE_TEMPORAL: dict[str, str] = {
+    "blocker": "current",
+    "action_item": "current",
+    "deadline": "future",
+}
+
+
+def _infer_temporal(value: str, fact_type: str) -> str:
+    if _PAST_RE.search(value):
+        return "past"
+    if _FUTURE_RE.search(value):
+        return "future"
+    if _CURRENT_RE.search(value):
+        return "current"
+    return _FACT_TYPE_TEMPORAL.get(fact_type, "unknown")
 
 
 async def _get_or_create_model(name: str, description: str, session: AsyncSession) -> Model:
@@ -82,35 +113,36 @@ async def extract_from_source_documents(
         else:
             meta = meta_raw or {}
 
-        channel_name = meta.get("channel_name", "unknown")
+        channel_name = meta.get("channel_name") or meta.get("session_id") or source_type
         content = doc.content
         doc_components: list[Component] = []
 
         for pattern, fact_type in FACT_PATTERNS:
             for match in pattern.finditer(content):
                 value = match.group(1).strip().rstrip(".,;")
-                # Deduplicate near-identical values within this run
                 key = f"{fact_type}:{value[:60].lower()}"
                 if key in seen_values or len(value) < 10:
                     continue
                 seen_values.add(key)
 
+                temporal = _infer_temporal(value, fact_type)
+                short_name = value[:55] + ("…" if len(value) > 55 else "")
                 comp = Component(
                     id=uuid4(),
                     model_id=model.id,
                     source_document_id=doc.id,
-                    name=f"{fact_type.replace('_', ' ').title()} · #{channel_name}",
+                    name=short_name,
                     value=value,
                     fact_type=fact_type,
                     confidence=FACT_CONFIDENCE.get(fact_type, 0.7),
                     authority_weight=0.6,
                     status="active",
+                    temporal=temporal,
                 )
                 session.add(comp)
                 doc_components.append(comp)
                 components_created += 1
 
-        # Link components from the same document to each other
         await session.flush()
         if len(doc_components) >= 2:
             for i, src in enumerate(doc_components[:-1]):

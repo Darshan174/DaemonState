@@ -15,15 +15,18 @@ Context Engine is an open-source structured context infrastructure for AI system
 
 ```
 app/
-  api/          FastAPI routes (sources, graph, query, repo)
+  api/          FastAPI routes (sources, graph, query, repo, connectors)
+  agents/       GraphBuilderAgent (2-phase: ingest + cross-doc relationship inference)
   cli/          CLI commands (ingest, query, graph, mcp, serve)
+  extract/      basic.py — regex extractor with temporal detection (used for Slack sync)
   models.py     4 SQLAlchemy models (SourceDocument, Model, Component, Relationship)
-  processing/   Extraction, embeddings
-  services/     Ingest, query services
+  processing/   extractor.py (LLM/regex unified), embedder
+  services/     IngestionService (extract + embed + upsert), QueryService
+  sync/         ai_session.py, slack.py
   mcp/          MCP server implementation
   config.py     Settings via pydantic-settings (.env + env vars)
   database.py   SQLAlchemy async engine setup
-frontend/       React 3-view app (Graph Explorer, Ask, Source Manager)
+frontend/       React app (Graph Explorer, Ask, Source Manager, Connectors)
 tests/          Backend pytest tests
 ```
 
@@ -48,12 +51,44 @@ tests/          Backend pytest tests
 
 - The `DATABASE_URL` Replit secret is a sync PostgreSQL URL; `app/database.py` automatically converts it to `postgresql+asyncpg://` for async SQLAlchemy
 - Tables are auto-created on startup via `Base.metadata.create_all`
+- `temporal` column added to `components` via `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` in `main.py` lifespan (safe to run on existing DBs)
+- All datetime writes use `datetime.utcnow()` (naive) — DB columns are `TIMESTAMP WITHOUT TIME ZONE`
+
+## Component Model — Temporal Dimension
+
+Each `Component` has a `temporal` field (`VARCHAR(20) DEFAULT 'unknown'`):
+
+| Value | Meaning | Node color |
+|-------|---------|------------|
+| `current` | Present state — what is true/active right now | `#0ea5e9` (sky blue) |
+| `past` | Completed work, historical decisions | `#94a3b8` (slate) |
+| `future` | Planned/roadmap items | `#a78bfa` (violet) |
+| `unknown` | Cannot be determined from context | `#64748b` (dark slate) |
+
+In **GraphView** node styling: `bgColor = temporal color`, `borderColor = model color`. The toolbar has a temporal filter dropdown ("All time / Current / Future / Past / Unknown"). Side panel shows a coloured temporal pill, a Timeline row, and a legend.
+
+## Extraction Pipeline
+
+### AI Session Ingest (`POST /api/connectors/ai-session/ingest`)
+1. `app/sync/ai_session.py` — parses and persists 1 `SourceDocument`
+2. `app/services/ingest.py` `IngestionService.process_document()` — calls `Extractor`, upserts `Component`s with `temporal`, embeds
+3. LLM extraction uses `LITELLM_API_KEY` + `EXTRACTION_MODEL`; falls back to regex in `extractor.py._regex_extract`
+
+### Slack Sync
+- `app/sync/slack.py` syncs messages → `SourceDocument`s
+- `app/extract/basic.py` `extract_from_source_documents()` runs regex patterns with `_infer_temporal` to classify components
+
+### Graph Build Agent (`POST /api/graph/build`)
+- `app/agents/graph_builder.py` `GraphBuilderAgent`:
+  - **Phase 1**: batch `IngestionService.process_document` on all unprocessed docs
+  - **Phase 2**: cross-doc relationship inference via LLM (if enabled)
+- Status polling: `GET /api/graph/agent-status`
 
 ## Frontend Views
 
 1. **Landing** — Marketing page at `/`
 2. **Dashboard** — Main app workspace
-3. **Graph Explorer** — Visual knowledge graph with Cytoscape.js
+3. **Graph Explorer** — Cytoscape.js graph with temporal colors, 4 filter dropdowns (model / source / status / time), "Build Graph" button, side panel with temporal badge + legend
 4. **Ask (Query)** — Natural language query with cited components
 5. **Source Manager** — Upload, browse, inspect source documents
 6. **Connectors** — Manage data source integrations
@@ -75,7 +110,7 @@ Full connector catalog (7 types):
 AI session connectors accept pasted content (JSON OpenAI export format, `Human:/Assistant:` markdown, or plain text). Endpoint: `POST /api/connectors/ai-session/ingest`.
 
 ### Key files
-- `app/api/connectors.py` — router, `CONNECTOR_CATALOG`, `AI_SESSION_CONNECTORS`, ingest endpoint
+- `app/api/connectors.py` — router, `CONNECTOR_CATALOG`, `AI_SESSION_CONNECTORS`, ingest endpoint (uses `IngestionService`)
 - `app/sync/ai_session.py` — session parser + ingestor
 - `app/sync/slack.py` — Slack OAuth sync pipeline
 - `frontend/src/pages/Connectors.jsx` — UI cards, icons, AI session form
@@ -83,3 +118,9 @@ AI session connectors accept pasted content (JSON OpenAI export format, `Human:/
 
 ### SourceDocument model (no connector_id)
 Fields: `id`, `source_type`, `external_id`, `content`, `author`, `source_url`, `metadata_json` (Text, use `json.dumps`), `ingested_at`, `processed_at`. Dedup by `external_id` only.
+
+## Connector Icons
+- Gmail: multicolor M on white badge (`color="#ffffff"`, `boxShadow: "inset 0 0 0 1px #e5e7eb"`)
+- Google Drive: white badge, color triangle SVG
+- OpenCode: terminal window SVG
+- `ConnectorIconBadge` uses `inset` box-shadow border when `color === "#ffffff"`

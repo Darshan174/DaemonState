@@ -650,7 +650,9 @@ async def ingest_ai_session(
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     from app.sync.ai_session import ingest_ai_session as _ingest
-    from app.extract.basic import extract_from_source_documents
+    from app.services.ingest import IngestionService
+    from app.models import SourceDocument
+    from sqlalchemy import select as sa_select
 
     if body.connector_type not in AI_SESSION_CONNECTORS:
         raise HTTPException(status_code=422, detail=f"Unknown AI session connector: {body.connector_type}")
@@ -662,7 +664,21 @@ async def ingest_ai_session(
 
     ingest_result = await _ingest(body.connector_type, session, body.session_id, body.content)
 
-    extract_result = await extract_from_source_documents(body.connector_type, session)
+    unprocessed_docs = list(await session.scalars(
+        sa_select(SourceDocument)
+        .where(SourceDocument.source_type == body.connector_type)
+        .where(SourceDocument.processed_at.is_(None))
+    ))
+    ingestor = IngestionService(session)
+    components_created = 0
+    for doc in unprocessed_docs:
+        n = await ingestor.process_document(doc.id)
+        components_created += n
+    await session.commit()
+    extract_result = {
+        "documents_processed": len(unprocessed_docs),
+        "components_created": components_created,
+    }
 
     config = json.loads(connector.config_json or "{}")
     config["total_processed_count"] = config.get("total_processed_count", 0) + extract_result.get("components_created", 0)

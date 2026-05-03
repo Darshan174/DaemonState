@@ -126,6 +126,9 @@ class Component(Base):
     fact_type: Mapped[str] = mapped_column(
         String(50), nullable=False, default="fact"
     )
+    temporal: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="unknown"
+    )
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
     authority_weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
     embedding: Mapped[str | None] = mapped_column(Text, nullable=True)

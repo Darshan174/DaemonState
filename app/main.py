@@ -18,6 +18,13 @@ FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        from sqlalchemy import text
+        try:
+            await conn.execute(text(
+                "ALTER TABLE components ADD COLUMN IF NOT EXISTS temporal VARCHAR(20) NOT NULL DEFAULT 'unknown'"
+            ))
+        except Exception:
+            pass
     yield
 
 
