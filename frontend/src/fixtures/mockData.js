@@ -205,6 +205,15 @@ export const connectors = [
     itemsSynced: 0,
     color: "#EA4335",
   },
+  {
+    id: "github",
+    name: "GitHub",
+    description: "Issues, pull requests & code review discussions",
+    status: "connected",
+    lastSync: "6 hr ago",
+    itemsSynced: 156,
+    color: "#24292e",
+  },
 ];
 
 // ── Source documents ───────────────────────────────────────────

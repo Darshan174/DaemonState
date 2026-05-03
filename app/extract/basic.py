@@ -83,11 +83,149 @@ async def _get_or_create_model(name: str, description: str, session: AsyncSessio
     return model
 
 
+async def extract_github_documents(
+    session: AsyncSession,
+    batch_size: int = 200,
+) -> dict:
+    """Extract structured components from GitHub Issue and Pull Request source documents."""
+    github_model = await _get_or_create_model(
+        name="GitHub",
+        description="Pull requests, issues, and code review discussions from GitHub repositories",
+        session=session,
+    )
+
+    docs = list(await session.scalars(
+        select(SourceDocument)
+        .where(SourceDocument.source_type == "github")
+        .where(SourceDocument.processed_at.is_(None))
+        .limit(batch_size)
+    ))
+
+    components_created = 0
+    docs_processed = 0
+
+    for doc in docs:
+        meta_raw = doc.metadata_json
+        meta: dict = json.loads(meta_raw) if isinstance(meta_raw, str) else (meta_raw or {})
+
+        item_type = meta.get("item_type", "issue")
+        number = meta.get("number", "?")
+        title = meta.get("title", "")
+        state = meta.get("state", "open")
+        merged = meta.get("merged", False)
+        labels: list[str] = meta.get("labels", [])
+
+        if merged:
+            temporal = "past"
+        elif state == "closed":
+            temporal = "past"
+        else:
+            temporal = "current" if item_type == "issue" else "future"
+
+        display_type = "PR" if item_type == "pull_request" else "Issue"
+        raw_name = f"{display_type} #{number}: {title}"
+        component_name = raw_name[:55] + ("…" if len(raw_name) > 55 else "")
+        status_val = ("merged" if merged else state)
+
+        primary_comp = Component(
+            id=uuid4(),
+            model_id=github_model.id,
+            source_document_id=doc.id,
+            name=component_name,
+            value=status_val,
+            fact_type=item_type,
+            confidence=0.95,
+            authority_weight=0.85,
+            status="active",
+            temporal=temporal,
+        )
+        session.add(primary_comp)
+        components_created += 1
+
+        # Label components create tagged sub-facts linking PRs/issues to domain topics
+        label_comps: list[Component] = []
+        for label in labels[:5]:
+            label_comp = Component(
+                id=uuid4(),
+                model_id=github_model.id,
+                source_document_id=doc.id,
+                name=f"{display_type} #{number} [{label}]",
+                value=label,
+                fact_type="label",
+                confidence=0.90,
+                authority_weight=0.70,
+                status="active",
+                temporal=temporal,
+            )
+            session.add(label_comp)
+            label_comps.append(label_comp)
+            components_created += 1
+
+        # Run generic FACT_PATTERNS on the body text for additional signal
+        body_sep = doc.content.find("\n\n")
+        body_text = doc.content[body_sep:] if body_sep != -1 else doc.content
+        seen_values: set[str] = set()
+        pattern_comps: list[Component] = []
+
+        for pattern, fact_type in FACT_PATTERNS:
+            for match in pattern.finditer(body_text):
+                value = match.group(1).strip().rstrip(".,;")
+                key = f"{fact_type}:{value[:60].lower()}"
+                if key in seen_values or len(value) < 10:
+                    continue
+                seen_values.add(key)
+
+                fact_temporal = _infer_temporal(value, fact_type)
+                short_name = value[:55] + ("…" if len(value) > 55 else "")
+                extra = Component(
+                    id=uuid4(),
+                    model_id=github_model.id,
+                    source_document_id=doc.id,
+                    name=short_name,
+                    value=value,
+                    fact_type=fact_type,
+                    confidence=FACT_CONFIDENCE.get(fact_type, 0.7),
+                    authority_weight=0.60,
+                    status="active",
+                    temporal=fact_temporal,
+                )
+                session.add(extra)
+                pattern_comps.append(extra)
+                components_created += 1
+
+        await session.flush()
+
+        # Create edges: primary PR/Issue → each derived fact
+        all_derived = (label_comps + pattern_comps)[:8]
+        for derived in all_derived:
+            rel = Relationship(
+                id=uuid4(),
+                source_component_id=primary_comp.id,
+                target_component_id=derived.id,
+                relationship_type="contains",
+            )
+            session.add(rel)
+
+        doc.processed_at = datetime.utcnow()
+        docs_processed += 1
+
+    await session.commit()
+    logger.info(
+        "GitHub extraction complete: %d docs processed, %d components created",
+        docs_processed,
+        components_created,
+    )
+    return {"documents_processed": docs_processed, "components_created": components_created}
+
+
 async def extract_from_source_documents(
     source_type: str,
     session: AsyncSession,
     batch_size: int = 500,
 ) -> dict:
+    if source_type == "github":
+        return await extract_github_documents(session, batch_size=batch_size)
+
     model_name = source_type.replace("_", " ").title()
     model = await _get_or_create_model(
         name=model_name,

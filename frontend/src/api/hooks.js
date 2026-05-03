@@ -81,6 +81,16 @@ const CONNECTOR_CATALOG = {
     providerLabel: "Built in",
     providerNote: "Slack stays native because OAuth, thread expansion, and real-time events are product-critical.",
   },
+  github: {
+    type: "github",
+    name: "GitHub",
+    description: "Issues, pull requests, and code review discussions",
+    color: "#24292e",
+    availability: "available",
+    provider: "native",
+    providerLabel: "Personal Access Token",
+    providerNote: "GitHub ingests issues, pull requests, labels, and review discussions. Each item becomes a structured component in the knowledge graph.",
+  },
   zoom: {
     type: "zoom",
     name: "Zoom",

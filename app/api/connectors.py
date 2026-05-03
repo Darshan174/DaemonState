@@ -29,6 +29,14 @@ CONNECTOR_CATALOG: dict[str, dict[str, Any]] = {
         "provider": "native",
         "provider_label": "Built in",
     },
+    "github": {
+        "name": "GitHub",
+        "description": "Issues, pull requests, and code review discussions",
+        "color": "#24292e",
+        "availability": "available",
+        "provider": "native",
+        "provider_label": "Personal Access Token",
+    },
     "zoom": {
         "name": "Zoom",
         "description": "Meeting transcripts and recording metadata",
@@ -170,6 +178,16 @@ def _connector_setup_status(connector_type: str) -> dict[str, Any]:
             "missing": [] if configured else ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"],
             "message": None,
             "redirect_uri": redirect_uri,
+        }
+    if connector_type == "github":
+        return {
+            "connector_type": "github",
+            "configured": True,
+            "managed_available": False,
+            "managed_install_url": None,
+            "missing": [],
+            "redirect_uri": None,
+            "message": "Provide a GitHub Personal Access Token with repo:read scope and a list of owner/repo targets.",
         }
     if connector_type in AI_SESSION_CONNECTORS:
         return {"connector_type": connector_type, "configured": True, "managed_available": False, "managed_install_url": None, "missing": [], "redirect_uri": None}
@@ -853,6 +871,10 @@ async def _run_sync_job(job_id: str, connector_id: str, database_url: str) -> No
             if connector.connector_type == "slack":
                 sync_result = await sync_slack(connector, session)
                 extract_result = await extract_from_source_documents("slack", session)
+            elif connector.connector_type == "github":
+                from app.sync.github import sync_github
+                sync_result = await sync_github(connector, session)
+                extract_result = await extract_from_source_documents("github", session)
             elif connector.connector_type in AI_SESSION_CONNECTORS:
                 # AI session connectors ingest inline; sync just re-runs extraction
                 sync_result = {"documents_fetched": 0, "documents_persisted": 0}
