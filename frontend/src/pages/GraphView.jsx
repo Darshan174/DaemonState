@@ -740,6 +740,28 @@ export default function GraphView() {
 
         <div className="flex-1 relative rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 min-h-0">
           <div ref={containerRef} className="absolute inset-0 rounded-2xl" />
+
+          {/* Persistent legend — top-right corner of graph canvas */}
+          <div className="pointer-events-none absolute top-3 right-3 z-10 bg-white/90 dark:bg-slate-800/90 backdrop-blur-sm rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-2.5 shadow-sm">
+            <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Temporal</p>
+            <div className="flex flex-col gap-1">
+              {[
+                { key: "future",  label: "Future"  },
+                { key: "current", label: "Current" },
+                { key: "past",    label: "Past"    },
+                { key: "unknown", label: "Unknown" },
+              ].map(({ key, label }) => (
+                <div key={key} className="flex items-center gap-1.5">
+                  <span
+                    className="w-2.5 h-2.5 rounded-full shrink-0 border"
+                    style={{ backgroundColor: TEMPORAL_COLORS[key].bg, borderColor: TEMPORAL_COLORS[key].border }}
+                  />
+                  <span className="text-[10px] text-slate-600 dark:text-slate-400">{label}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
           {tooltipNode && (
             <div
               className="pointer-events-none absolute z-10 bg-slate-900 text-white text-xs px-2.5 py-1.5 rounded-lg shadow-lg max-w-[220px] leading-snug break-words"
@@ -938,22 +960,60 @@ export default function GraphView() {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1.5">Model</label>
-                <input
-                  type="text"
-                  value={aiSettings.model || ""}
-                  onChange={(e) => {
-                    const newS = { ...aiSettings, model: e.target.value };
-                    setAiSettings(newS);
-                    localStorage.setItem("ce_ai_settings", JSON.stringify(newS));
-                  }}
-                  placeholder={(aiSettings.provider || "openai") === "anthropic" ? "claude-3-5-sonnet-20241022" : "gpt-4o"}
-                  className="w-full text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 font-mono"
-                />
+                {(aiSettings.provider || "openai") === "custom" ? (
+                  <input
+                    type="text"
+                    value={aiSettings.model || ""}
+                    onChange={(e) => {
+                      const newS = { ...aiSettings, model: e.target.value };
+                      setAiSettings(newS);
+                      localStorage.setItem("ce_ai_settings", JSON.stringify(newS));
+                    }}
+                    placeholder="e.g. mistral-large, llama-3-70b"
+                    className="w-full text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 font-mono"
+                  />
+                ) : (
+                  <select
+                    value={aiSettings.model || ((aiSettings.provider || "openai") === "anthropic" ? "claude-3-5-sonnet-20241022" : "gpt-4o")}
+                    onChange={(e) => {
+                      const newS = { ...aiSettings, model: e.target.value };
+                      setAiSettings(newS);
+                      localStorage.setItem("ce_ai_settings", JSON.stringify(newS));
+                    }}
+                    className="w-full text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 font-mono"
+                  >
+                    {(aiSettings.provider || "openai") === "anthropic" ? (
+                      <>
+                        <option value="claude-opus-4-5">claude-opus-4-5 (most capable)</option>
+                        <option value="claude-3-5-sonnet-20241022">claude-3-5-sonnet-20241022 (recommended)</option>
+                        <option value="claude-3-5-haiku-20241022">claude-3-5-haiku-20241022 (fastest)</option>
+                        <option value="claude-3-opus-20240229">claude-3-opus-20240229</option>
+                      </>
+                    ) : (
+                      <>
+                        <option value="gpt-4o">gpt-4o (recommended)</option>
+                        <option value="gpt-4o-mini">gpt-4o-mini (faster, cheaper)</option>
+                        <option value="gpt-4-turbo">gpt-4-turbo</option>
+                        <option value="gpt-4">gpt-4</option>
+                        <option value="gpt-3.5-turbo">gpt-3.5-turbo (cheapest)</option>
+                      </>
+                    )}
+                  </select>
+                )}
               </div>
 
-              <div className="rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 px-3 py-2.5">
+              <div className="rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 px-3 py-2.5 space-y-1.5">
+                <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">How it works</p>
                 <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
-                  Your key stays in this browser only and is sent with each Build Graph request. It is never stored on the server. The AI will intelligently extract domain models, atomic facts, and meaningful relationships from your synced documents — instead of the built-in regex fallback.
+                  When you click <strong className="text-slate-600 dark:text-slate-300">Build Graph</strong>, your synced source documents are sent to the AI. It reads each document and extracts:
+                </p>
+                <ul className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed list-disc pl-3 space-y-0.5">
+                  <li><strong className="text-slate-600 dark:text-slate-300">Domain models</strong> — business areas like Pricing, Features, Decisions</li>
+                  <li><strong className="text-slate-600 dark:text-slate-300">Atomic facts</strong> — each tagged as current, past, or future</li>
+                  <li><strong className="text-slate-600 dark:text-slate-300">Relationships</strong> — logical links between facts across models</li>
+                </ul>
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed mt-1">
+                  Without a key, the built-in regex fallback is used instead. Your key never leaves this browser.
                 </p>
               </div>
 
