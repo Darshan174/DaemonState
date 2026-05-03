@@ -1204,6 +1204,7 @@ export default function GraphView() {
                   className="w-full text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300"
                 >
                   <option value="">— select provider —</option>
+                  <option value="google">Google (Gemini)</option>
                   <option value="anthropic">Anthropic (Claude)</option>
                   <option value="openai">OpenAI (GPT)</option>
                   <option value="custom">OpenAI-compatible API</option>
@@ -1220,7 +1221,11 @@ export default function GraphView() {
                     setAiSettings(newS);
                     localStorage.setItem("ce_ai_settings", JSON.stringify(newS));
                   }}
-                  placeholder={(aiSettings.provider || "openai") === "anthropic" ? "sk-ant-..." : "sk-..."}
+                  placeholder={
+                    aiSettings.provider === "anthropic" ? "sk-ant-..." :
+                    aiSettings.provider === "google" ? "AIza..." :
+                    "sk-..."
+                  }
                   className="w-full text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 font-mono"
                 />
               </div>
@@ -1250,18 +1255,21 @@ export default function GraphView() {
                     className="w-full text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 font-mono"
                   >
                     <option value="">— select model —</option>
-                    {aiSettings.provider === "anthropic" ? (
+                    {aiSettings.provider === "google" ? (
                       <>
-                        <option value="claude-opus-4-7">claude-opus-4-7</option>
-                        <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
-                        <option value="claude-haiku-4-5-20251001">claude-haiku-4-5-20251001</option>
+                        <option value="gemini/gemini-2.5-flash">gemini-2.5-flash (recommended)</option>
+                        <option value="gemini/gemini-2.5-flash-lite">gemini-2.5-flash-lite (fastest)</option>
+                      </>
+                    ) : aiSettings.provider === "anthropic" ? (
+                      <>
+                        <option value="claude-3-5-sonnet-20241022">claude-3-5-sonnet-20241022</option>
+                        <option value="claude-3-5-haiku-20241022">claude-3-5-haiku-20241022</option>
+                        <option value="claude-3-opus-20240229">claude-3-opus-20240229</option>
                       </>
                     ) : aiSettings.provider === "openai" ? (
                       <>
-                        <option value="gpt-5.5">gpt-5.5</option>
-                        <option value="gpt-5.4">gpt-5.4</option>
-                        <option value="gpt-5.4-mini">gpt-5.4-mini</option>
-                        <option value="gpt-5.4-nano">gpt-5.4-nano</option>
+                        <option value="gpt-4o">gpt-4o</option>
+                        <option value="gpt-4o-mini">gpt-4o-mini</option>
                       </>
                     ) : (
                       <option value="" disabled>Select a provider first</option>
