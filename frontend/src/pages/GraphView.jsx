@@ -112,7 +112,7 @@ export default function GraphView() {
     catch { return {}; }
   });
   const [tooltipNode, setTooltipNode] = useState(null);
-  const [showAsk, setShowAsk] = useState(false);
+  const [showAsk, setShowAsk] = useState(true);
   const [askQuery, setAskQuery] = useState("");
   const [askResult, setAskResult] = useState(null);
   const [askLoading, setAskLoading] = useState(false);
@@ -121,7 +121,7 @@ export default function GraphView() {
   const [ceoView, setCeoView] = useState("all");
 
   // Agents sidebar
-  const [showAgents, setShowAgents] = useState(false);
+  const [showAgents, setShowAgents] = useState(true);
   const [gapReport, setGapReport]     = useState(null);
   const [gapLoading, setGapLoading]   = useState(false);
   const [gapError, setGapError]       = useState(null);
