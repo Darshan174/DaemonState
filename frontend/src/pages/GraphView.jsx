@@ -19,18 +19,44 @@ const SEV_PILL = {
   low:      "bg-slate-100 dark:bg-slate-700 text-slate-500",
 };
 
-const STATUS_COLORS = {
-  active: "#22c55e",
-  stale: "#f59e0b",
-  deprecated: "#ef4444",
-  superseded: "#6366f1",
+// Status → card border + background tint
+const CARD_STATUS = {
+  active:       { bg: "rgba(34,197,94,0.10)",  border: "#22c55e" },
+  healthy:      { bg: "rgba(34,197,94,0.10)",  border: "#22c55e" },
+  completed:    { bg: "rgba(34,197,94,0.10)",  border: "#22c55e" },
+  stale:        { bg: "rgba(245,158,11,0.10)", border: "#f59e0b" },
+  needs_review: { bg: "rgba(245,158,11,0.10)", border: "#f59e0b" },
+  draft:        { bg: "rgba(245,158,11,0.10)", border: "#f59e0b" },
+  superseded:   { bg: "rgba(245,158,11,0.10)", border: "#f59e0b" },
+  blocked:      { bg: "rgba(239,68,68,0.10)",  border: "#ef4444" },
+  deprecated:   { bg: "rgba(239,68,68,0.10)",  border: "#ef4444" },
+  rejected:     { bg: "rgba(239,68,68,0.10)",  border: "#ef4444" },
+};
+const CARD_STATUS_DEFAULT = { bg: "rgba(148,163,184,0.08)", border: "#94a3b8" };
+
+// Status label + pill color for detail panel
+const STATUS_META = {
+  active:       { label: "Active",       pill: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400" },
+  healthy:      { label: "Healthy",      pill: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400" },
+  completed:    { label: "Completed",    pill: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400" },
+  stale:        { label: "Stale",        pill: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400" },
+  needs_review: { label: "Needs Review", pill: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400" },
+  draft:        { label: "Draft",        pill: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400" },
+  superseded:   { label: "Superseded",   pill: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400" },
+  blocked:      { label: "Blocked",      pill: "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400" },
+  deprecated:   { label: "Deprecated",   pill: "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400" },
+  rejected:     { label: "Rejected",     pill: "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400" },
 };
 
-const TEMPORAL_COLORS = {
-  current: { bg: "#f59e0b", border: "#d97706", label: "Current" },
-  past:    { bg: "#ef4444", border: "#dc2626", label: "Past" },
-  future:  { bg: "#22c55e", border: "#16a34a", label: "Future" },
-  unknown: { bg: "#94a3b8", border: "#64748b", label: "Unknown" },
+// Time → short badge text
+const TEMPORAL_BADGE = { current: "Now", future: "Next", past: "Past", unknown: "" };
+
+// Temporal detail for side panel
+const TEMPORAL_META = {
+  current: { label: "Now",  pill: "bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-400" },
+  future:  { label: "Next", pill: "bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-400" },
+  past:    { label: "Past", pill: "bg-slate-100 dark:bg-slate-700 text-slate-500" },
+  unknown: { label: "Unknown", pill: "bg-slate-100 dark:bg-slate-700 text-slate-400" },
 };
 
 const MODEL_COLORS = [
@@ -74,19 +100,23 @@ const CEO_VIEW_MODEL_PATTERNS = {
   aiSessions: /^(agent session|agent|claude|codex|opencode|chatgpt|ai session)/i,
 };
 
-// Derive a Cytoscape CSS class from a model name for entity-type shapes
-function entityClass(modelName) {
+// Map model name to a short domain label for the type chip
+function domainLabel(modelName) {
   const k = (modelName || "").toLowerCase().trim();
-  if (k.startsWith("decision"))                                                                   return "entity-decision";
-  if (k.startsWith("risk"))                                                                       return "entity-risk";
-  if (k.startsWith("task"))                                                                       return "entity-task";
-  if (k.startsWith("metric"))                                                                     return "entity-metric";
-  if (k.startsWith("company"))                                                                    return "entity-company";
-  if (k === "agent session" || k === "claude" || k === "codex" || k === "opencode" || k.startsWith("agent")) return "entity-agent";
-  if (k.startsWith("meeting"))                                                                    return "entity-meeting";
-  if (k.startsWith("feature"))                                                                    return "entity-feature";
-  if (k.startsWith("person") || k.startsWith("user") || k.startsWith("customer") || k.startsWith("team")) return "entity-person";
-  return "";
+  if (k.startsWith("decision"))  return "Decision";
+  if (k.startsWith("risk"))      return "Risk";
+  if (k.startsWith("task"))      return "Task";
+  if (k.startsWith("feature"))   return "Feature";
+  if (k.startsWith("metric"))    return "Metric";
+  if (k.startsWith("company"))   return "Company";
+  if (k.startsWith("product"))   return "Product";
+  if (k.startsWith("customer") || k.startsWith("user")) return "Customer";
+  if (k === "agent session" || k === "claude" || k === "codex" || k.startsWith("agent")) return "AI";
+  if (k.startsWith("meeting"))   return "Meeting";
+  if (k.startsWith("person") || k.startsWith("team")) return "Person";
+  if (k.startsWith("engineering") || k.startsWith("repo")) return "Eng";
+  if (k.startsWith("ops"))       return "Ops";
+  return modelName ? modelName.split(" ")[0] : "Fact";
 }
 
 export default function GraphView() {
@@ -342,34 +372,24 @@ export default function GraphView() {
 
       components.forEach((c) => {
         const temporal = c.temporal || "unknown";
-        const tc = TEMPORAL_COLORS[temporal] || TEMPORAL_COLORS.unknown;
-
-        // GitHub-specific shape classes and label prefix
-        const isGitHub = c.source_type === "github";
-        const isPR = isGitHub && c.fact_type === "pull_request";
-        const isIssue = isGitHub && c.fact_type === "issue";
-        const mName = modelNameById.get(c.model_id) || "";
-        const eClass = entityClass(mName);
+        const statusCard = CARD_STATUS[c.status] || CARD_STATUS_DEFAULT;
         const isGap = ceoView === "gaps" && !connectedComponentIds.has(c.id);
-        const classNames = [
-          isPR ? "github-pr" : isIssue ? "github-issue" : "",
-          eClass,
-          isGap ? "gap-node" : "",
-        ].filter(Boolean).join(" ");
 
-        let labelPrefix = "";
-        if (isPR) labelPrefix = "PR· ";
-        else if (isIssue) labelPrefix = "# ";
+        const mName = modelNameById.get(c.model_id) || "";
+        const cleanName = stripModelPrefix(c.name);
 
-        // Strip model-type prefix for display (box already communicates context)
-        const cleanName = isGitHub ? c.name : stripModelPrefix(c.name);
+        // Two-line card label: name on top, domain·time chip below
+        const domain = (c.fact_type || domainLabel(mName) || "Fact").replace(/_/g, " ");
+        const timeBadge = TEMPORAL_BADGE[temporal] || "";
+        const chipLine = timeBadge ? `${domain}  ·  ${timeBadge}` : domain;
+        const displayName = shortLabel(cleanName, 4);
 
         nodes.push({
           data: {
             id: c.id,
             parent: `model:${c.model_id}`,
-            label: labelPrefix + cleanName,
-            fullLabel: (labelPrefix + c.name),
+            label: `${displayName}\n${chipLine}`,
+            fullLabel: c.name,
             type: "component",
             value: c.value,
             confidence: c.confidence,
@@ -379,10 +399,10 @@ export default function GraphView() {
             modelId: c.model_id,
             source_type: c.source_type,
             source_url: c.source_url,
-            bgColor: tc.bg,
-            borderColor: tc.border,
+            bgColor: isGap ? "rgba(239,68,68,0.08)" : statusCard.bg,
+            borderColor: isGap ? "#ef4444" : statusCard.border,
           },
-          classes: classNames || undefined,
+          classes: isGap ? "gap-node" : undefined,
         });
       });
 
@@ -414,106 +434,84 @@ export default function GraphView() {
           selector: "node",
           style: {
             label: "data(label)",
-            "text-valign": "bottom",
+            "text-valign": "center",
             "text-halign": "center",
-            "font-size": "7px",
+            "font-size": "8px",
             "font-weight": "600",
-            color: "#475569",
-            "background-color": "#cbd5e1",
-            width: 26,
-            height: 26,
-            "border-width": 2,
-            "border-color": "#94a3b8",
-            "text-margin-y": 5,
+            color: isDark ? "#94a3b8" : "#64748b",
+            "background-color": CARD_STATUS_DEFAULT.bg,
+            width: 155,
+            height: 58,
+            shape: "round-rectangle",
+            "corner-radius": "8px",
+            "border-width": 1.5,
+            "border-color": CARD_STATUS_DEFAULT.border,
             "text-wrap": "wrap",
-            "text-max-width": 160,
+            "text-max-width": "138px",
           },
         },
 
-        // ── MODEL — compound container node ──────────────────────
+        // ── MODEL — compound domain lane ─────────────────────────
         {
           selector: ".model-node",
           style: {
             "background-color": modelBg,
             "background-opacity": 1,
             "border-color": "data(modelColor)",
-            "border-width": 3,
-            "border-opacity": 1,
+            "border-width": 2,
+            "border-opacity": 0.7,
             shape: "round-rectangle",
-            padding: "38px",
+            "corner-radius": "12px",
+            padding: "42px",
             label: "data(label)",
             "text-valign": "top",
-            "text-halign": "center",
-            "text-margin-y": -16,
-            "text-max-width": 160,
-            "font-size": "12px",
+            "text-halign": "left",
+            "text-margin-y": -18,
+            "text-margin-x": 10,
+            "text-max-width": 220,
+            "font-size": "11px",
             "font-weight": "800",
             "text-wrap": "wrap",
             color: modelTextColor,
             "text-background-color": modelBg,
-            "text-background-opacity": 1,
+            "text-background-opacity": 0.9,
             "text-background-padding": "4px",
             "text-background-shape": "round-rectangle",
             "text-border-opacity": 0,
+            width: 10,
+            height: 10,
           },
         },
 
-        // ── COMPONENT — temporal-colored circles ─────────────────
+        // ── COMPONENT — uniform card nodes ───────────────────────
         {
           selector: "node[type='component']",
           style: {
             "background-color": "data(bgColor)",
             "border-color": "data(borderColor)",
-            "border-width": 2.5,
-            width: 26,
-            height: 26,
-            shape: "ellipse",
-            "font-size": "7.5px",
-            "text-max-width": "88px",
+            "border-width": 1.5,
+            width: 155,
+            height: 58,
+            shape: "round-rectangle",
+            "corner-radius": "8px",
+            label: "data(label)",
+            "text-valign": "center",
+            "text-halign": "center",
+            "font-size": "8px",
+            "font-weight": "600",
+            "text-wrap": "wrap",
+            "text-max-width": "138px",
             color: isDark ? "#e2e8f0" : "#1e293b",
           },
         },
-
-        // ── GITHUB PR — diamond shape ─────────────────────────────
-        {
-          selector: ".github-pr",
-          style: {
-            shape: "diamond",
-            width: 32,
-            height: 32,
-            "border-width": 3,
-          },
-        },
-
-        // ── GITHUB ISSUE — rounded rectangle ─────────────────────
-        {
-          selector: ".github-issue",
-          style: {
-            shape: "round-rectangle",
-            width: 36,
-            height: 22,
-            "border-width": 2.5,
-          },
-        },
-
-        // ── ENTITY TYPE SHAPES ────────────────────────────────────
-        { selector: ".entity-decision", style: { shape: "diamond",        width: 32, height: 32 } },
-        { selector: ".entity-risk",     style: { shape: "triangle",       width: 32, height: 32 } },
-        { selector: ".entity-task",     style: { shape: "tag",            width: 34, height: 22 } },
-        { selector: ".entity-metric",   style: { shape: "barrel",         width: 28, height: 28 } },
-        { selector: ".entity-company",  style: { shape: "hexagon",        width: 36, height: 36 } },
-        { selector: ".entity-agent",    style: { shape: "star",           width: 36, height: 36 } },
-        { selector: ".entity-meeting",  style: { shape: "pentagon",       width: 30, height: 30 } },
-        { selector: ".entity-feature",  style: { shape: "round-rectangle", width: 38, height: 22 } },
-        { selector: ".entity-person",   style: { shape: "ellipse",        width: 30, height: 30 } },
 
         // ── GAP NODE — isolated in Gap Detector view ──────────────
         {
           selector: ".gap-node",
           style: {
-            opacity: 0.35,
+            opacity: 0.4,
             "border-style": "dashed",
-            "border-width": 2.5,
+            "border-width": 2,
             "border-color": "#ef4444",
           },
         },
@@ -555,74 +553,89 @@ export default function GraphView() {
           },
         },
 
-        // ── RELATIONSHIP EDGES — visible, labeled arrows ──────────
-        {
-          selector: "edge[edgeType='relationship']",
-          style: {
-            width: 2,
-            "line-color": "#818cf8",
-            "target-arrow-color": "#818cf8",
-            "target-arrow-shape": "triangle",
-            "arrow-scale": 1,
-            "curve-style": "bezier",
-            label: "data(label)",
-            "font-size": "8px",
-            "font-weight": "600",
-            color: "#6366f1",
-            "text-rotation": "autorotate",
-            "text-background-opacity": 1,
-            "text-background-color": edgeLabelBg,
-            "text-background-padding": "2px",
-            "text-border-opacity": 0,
-            "text-margin-y": -10,
-            opacity: 0.9,
-          },
-        },
-
-        // ── Repo-view edge defaults ───────────────────────────────
+        // ── EDGES — subtle by default, labels hidden ─────────────
         {
           selector: "edge",
           style: {
             width: 1.5,
-            "line-color": "#94a3b8",
-            "target-arrow-color": "#94a3b8",
+            "line-color": isDark ? "#334155" : "#cbd5e1",
+            "target-arrow-color": isDark ? "#334155" : "#cbd5e1",
             "target-arrow-shape": "triangle",
             "arrow-scale": 0.8,
             "curve-style": "bezier",
-            label: "data(label)",
+            label: "",
+            opacity: 0.5,
+          },
+        },
+
+        // ── RELATIONSHIP EDGES — indigo tint ──────────────────────
+        {
+          selector: "edge[edgeType='relationship']",
+          style: {
+            width: 1.5,
+            "line-color": isDark ? "#4338ca" : "#a5b4fc",
+            "target-arrow-color": isDark ? "#4338ca" : "#a5b4fc",
+            "target-arrow-shape": "triangle",
+            "arrow-scale": 0.9,
+            "curve-style": "bezier",
+            label: "",
+            opacity: 0.45,
             "font-size": "8px",
-            color: "#64748b",
+            "font-weight": "600",
+            color: isDark ? "#818cf8" : "#4f46e5",
             "text-rotation": "autorotate",
-            "text-margin-y": -10,
-            opacity: 0.6,
+            "text-background-opacity": 1,
+            "text-background-color": edgeLabelBg,
+            "text-background-padding": "3px",
+            "text-border-opacity": 0,
+            "text-margin-y": -8,
+          },
+        },
+
+        // ── Repo-view edge label style ────────────────────────────
+        {
+          selector: "edge[edgeType='contains']",
+          style: {
+            "line-color": isDark ? "#1e293b" : "#e2e8f0",
+            "target-arrow-color": isDark ? "#1e293b" : "#e2e8f0",
+            opacity: 0.3,
           },
         },
 
         // ── Selection highlight ───────────────────────────────────
         {
-          selector: "node[type='component']:selected, .github-pr:selected, .github-issue:selected",
+          selector: "node[type='component']:selected",
           style: {
-            "border-width": 3.5,
+            "border-width": 2.5,
             "border-color": "#4f46e5",
-            "background-color": "#4f46e5",
-            color: "#ffffff",
+            "background-color": isDark ? "rgba(79,70,229,0.18)" : "rgba(99,102,241,0.12)",
+            color: isDark ? "#c7d2fe" : "#3730a3",
           },
         },
         {
           selector: ".model-node:selected",
           style: {
-            "border-width": 4,
+            "border-width": 2.5,
             "border-color": "#4f46e5",
+          },
+        },
+        {
+          selector: "edge:selected",
+          style: {
+            opacity: 1,
+            width: 2.5,
+            "line-color": isDark ? "#818cf8" : "#6366f1",
+            "target-arrow-color": isDark ? "#818cf8" : "#6366f1",
           },
         },
       ],
       layout: viewMode === "repo"
         ? { name: "preset", fit: true, padding: 110 }
         : (() => {
-          // Preset layout: models in a grid, components in a circle inside each model
+          // Preset layout: models in a grid, cards in a circle inside each domain
           const presetPositions = {};
           const cols = Math.max(2, Math.ceil(Math.sqrt(visibleModels.length)));
-          const modelSpacing = 320;
+          const modelSpacing = 460;
 
           visibleModels.forEach((m, mi) => {
             const col = mi % cols;
@@ -631,7 +644,8 @@ export default function GraphView() {
             const basey = row * modelSpacing;
 
             const mComps = components.filter((c) => c.model_id === m.id);
-            const radius = mComps.length <= 1 ? 55 : Math.max(65, mComps.length * 20);
+            // Cards are 155px wide — need adequate radius to avoid overlap
+            const radius = mComps.length <= 1 ? 90 : Math.max(120, mComps.length * 38);
             mComps.forEach((c, ci) => {
               const angle = (ci / Math.max(1, mComps.length)) * 2 * Math.PI - Math.PI / 2;
               presetPositions[c.id] = {
@@ -639,7 +653,6 @@ export default function GraphView() {
                 y: basey + radius * Math.sin(angle),
               };
             });
-            // If model is empty, give the compound node a fallback position
             if (mComps.length === 0) {
               presetPositions[`model:${m.id}`] = { x: basex, y: basey };
             }
@@ -677,6 +690,32 @@ export default function GraphView() {
 
     cy.on("tap", (evt) => {
       if (evt.target === cy) setSelectedNode(null);
+    });
+
+    // Edge labels — reveal on hover, hide when mouse leaves
+    cy.on("mouseover", "edge[edgeType='relationship']", (evt) => {
+      evt.target.style({ label: evt.target.data("label"), opacity: 1 });
+    });
+    cy.on("mouseout", "edge[edgeType='relationship']", (evt) => {
+      if (!evt.target.selected()) {
+        evt.target.style({ label: "", opacity: 0.45 });
+      }
+    });
+    cy.on("select", "edge[edgeType='relationship']", (evt) => {
+      evt.target.style({ label: evt.target.data("label"), opacity: 1 });
+    });
+    cy.on("unselect", "edge[edgeType='relationship']", (evt) => {
+      evt.target.style({ label: "", opacity: 0.45 });
+    });
+
+    // Hover effect on card nodes — subtle lift
+    cy.on("mouseover", "node[type='component']", (evt) => {
+      evt.target.style({ "border-width": 2.5, opacity: 1 });
+    });
+    cy.on("mouseout", "node[type='component']", (evt) => {
+      if (!evt.target.selected()) {
+        evt.target.style({ "border-width": 1.5, opacity: 1 });
+      }
     });
 
     cyRef.current = cy;
@@ -955,20 +994,20 @@ export default function GraphView() {
           <div ref={containerRef} className="absolute inset-0 rounded-2xl" />
 
           {/* Persistent legend — top-right corner of graph canvas */}
-          <div className="pointer-events-none absolute top-3 right-3 z-10 bg-white/90 dark:bg-slate-800/90 backdrop-blur-sm rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-2.5 shadow-sm space-y-2.5 max-w-[152px]">
+          <div className="pointer-events-none absolute top-3 right-3 z-10 bg-white/92 dark:bg-slate-800/92 backdrop-blur-sm rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-2.5 shadow-sm space-y-2.5 max-w-[162px]">
             <div>
-              <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Node color — time</p>
+              <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Border — status</p>
               <div className="flex flex-col gap-1">
                 {[
-                  { key: "future",  label: "Future"  },
-                  { key: "current", label: "Current" },
-                  { key: "past",    label: "Past"    },
-                  { key: "unknown", label: "Unknown" },
-                ].map(({ key, label }) => (
-                  <div key={key} className="flex items-center gap-1.5">
+                  { color: "#22c55e", label: "Healthy / Active" },
+                  { color: "#f59e0b", label: "Needs Review" },
+                  { color: "#ef4444", label: "Blocked / Stale" },
+                  { color: "#94a3b8", label: "Unknown" },
+                ].map(({ color, label }) => (
+                  <div key={label} className="flex items-center gap-1.5">
                     <span
-                      className="w-2.5 h-2.5 rounded-full shrink-0 border"
-                      style={{ backgroundColor: TEMPORAL_COLORS[key].bg, borderColor: TEMPORAL_COLORS[key].border }}
+                      className="w-8 h-3.5 rounded shrink-0 border"
+                      style={{ borderColor: color, backgroundColor: `${color}18` }}
                     />
                     <span className="text-[10px] text-slate-600 dark:text-slate-400">{label}</span>
                   </div>
@@ -976,31 +1015,29 @@ export default function GraphView() {
               </div>
             </div>
             <div>
-              <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Node shape — type</p>
+              <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Chip — time horizon</p>
               <div className="flex flex-col gap-1">
                 {[
-                  { shape: "◆", label: "Decision" },
-                  { shape: "▲", label: "Risk / Blocker" },
-                  { shape: "⬟", label: "Task" },
-                  { shape: "★", label: "AI Session" },
-                  { shape: "⬡", label: "Company" },
-                  { shape: "⬠", label: "Meeting" },
-                  { shape: "▬", label: "Feature / Issue" },
-                  { shape: "●", label: "Person / User" },
-                ].map(({ shape, label }) => (
-                  <div key={label} className="flex items-center gap-1.5">
-                    <span className="text-[11px] text-slate-500 dark:text-slate-400 w-3 text-center shrink-0">{shape}</span>
-                    <span className="text-[10px] text-slate-600 dark:text-slate-400">{label}</span>
+                  { badge: "Now",  desc: "Current / Active" },
+                  { badge: "Next", desc: "Planned / Future" },
+                  { badge: "Past", desc: "Completed / Old" },
+                ].map(({ badge, desc }) => (
+                  <div key={badge} className="flex items-center gap-1.5">
+                    <span className="text-[9px] font-bold bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 px-1.5 py-0.5 rounded shrink-0">{badge}</span>
+                    <span className="text-[10px] text-slate-600 dark:text-slate-400">{desc}</span>
                   </div>
                 ))}
               </div>
             </div>
             <div>
-              <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Box border — domain</p>
+              <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Box — domain</p>
               <div className="flex items-center gap-1.5">
-                <span className="w-5 h-3.5 rounded shrink-0 border-2 border-indigo-500 bg-transparent" />
-                <span className="text-[10px] text-slate-600 dark:text-slate-400">Each color = one domain</span>
+                <span className="w-8 h-4 rounded-md shrink-0 border-2 border-indigo-400 bg-transparent" />
+                <span className="text-[10px] text-slate-600 dark:text-slate-400">Each = one domain</span>
               </div>
+            </div>
+            <div className="border-t border-slate-100 dark:border-slate-700 pt-2">
+              <p className="text-[9px] text-slate-400 italic">Hover edges to see relationship labels</p>
             </div>
           </div>
 
@@ -1093,43 +1130,64 @@ export default function GraphView() {
           >
             close
           </button>
-          <h3 className="text-sm font-bold text-slate-900 dark:text-white mb-2 pr-6">
-            {selectedNode.fullLabel || selectedNode.label}
+
+          {/* Status indicator bar */}
+          {(() => {
+            const sc = CARD_STATUS[selectedNode.status];
+            return sc ? (
+              <div
+                className="w-full h-1 rounded-full mb-3"
+                style={{ backgroundColor: sc.border }}
+              />
+            ) : <div className="w-full h-1 rounded-full mb-3 bg-slate-200 dark:bg-slate-700" />;
+          })()}
+
+          <h3 className="text-sm font-bold text-slate-900 dark:text-white mb-2.5 pr-6 leading-snug">
+            {selectedNode.fullLabel || selectedNode.label.split("\n")[0]}
           </h3>
+
+          {/* Chips row */}
           <div className="flex flex-wrap gap-1.5 mb-3">
-            <span className="inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-brand-100 dark:bg-brand-900/30 text-brand-700 dark:text-brand-300">
-              {selectedNode.fact_type || "fact"}
-            </span>
-            {selectedNode.temporal && selectedNode.temporal !== "unknown" && (() => {
-              const tc = TEMPORAL_COLORS[selectedNode.temporal];
-              return (
-                <span
-                  className="inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full text-white"
-                  style={{ backgroundColor: tc?.bg }}
-                >
-                  {tc?.label || selectedNode.temporal}
+            {selectedNode.fact_type && (
+              <span className="inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-brand-100 dark:bg-brand-900/30 text-brand-700 dark:text-brand-300">
+                {selectedNode.fact_type.replace(/_/g, " ")}
+              </span>
+            )}
+            {selectedNode.status && (() => {
+              const sm = STATUS_META[selectedNode.status];
+              return sm ? (
+                <span className={`inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${sm.pill}`}>
+                  {sm.label}
+                </span>
+              ) : (
+                <span className="inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-500">
+                  {selectedNode.status}
                 </span>
               );
             })()}
+            {selectedNode.temporal && selectedNode.temporal !== "unknown" && (() => {
+              const tm = TEMPORAL_META[selectedNode.temporal];
+              return tm ? (
+                <span className={`inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${tm.pill}`}>
+                  {tm.label}
+                </span>
+              ) : null;
+            })()}
           </div>
-          <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed mb-4">
-            {selectedNode.value}
-          </p>
+
+          {selectedNode.value && (
+            <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed mb-4">
+              {selectedNode.value}
+            </p>
+          )}
+
           <div className="space-y-2 mb-4">
-            <div className="flex justify-between text-xs">
-              <span className="text-slate-500">Confidence</span>
-              <span className="font-bold text-slate-700 dark:text-slate-300">
-                {selectedNode.confidence != null ? `${Math.round(selectedNode.confidence * 100)}%` : "—"}
-              </span>
-            </div>
-            <div className="flex justify-between text-xs">
-              <span className="text-slate-500">Status</span>
-              <span className="font-bold text-slate-700 dark:text-slate-300">{selectedNode.status}</span>
-            </div>
-            {selectedNode.temporal && (
+            {selectedNode.confidence != null && (
               <div className="flex justify-between text-xs">
-                <span className="text-slate-500">Timeline</span>
-                <span className="font-bold text-slate-700 dark:text-slate-300 capitalize">{selectedNode.temporal}</span>
+                <span className="text-slate-500">Confidence</span>
+                <span className="font-bold text-slate-700 dark:text-slate-300">
+                  {Math.round(selectedNode.confidence * 100)}%
+                </span>
               </div>
             )}
             {selectedNode.source_type && (
@@ -1153,74 +1211,26 @@ export default function GraphView() {
               </div>
             )}
           </div>
+
           {selectedNode.connected?.length > 0 && (
             <div>
               <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">
-                Connected ({selectedNode.connected.length})
+                Connections ({selectedNode.connected.length})
               </p>
               <div className="space-y-1.5">
                 {selectedNode.connected.map((c) => (
                   <div
                     key={c.id}
-                    className="flex items-center gap-2 text-xs p-2 rounded-lg bg-slate-50 dark:bg-slate-900/50"
+                    className="flex items-center gap-2 text-xs p-2 rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700/50"
                   >
-                    <span className="w-1.5 h-1.5 rounded-full bg-brand-500 shrink-0" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 shrink-0" />
                     <span className="text-slate-700 dark:text-slate-300 truncate">{c.label}</span>
-                    <span className="text-slate-400 text-[10px] ml-auto shrink-0">{c.edgeLabel}</span>
+                    <span className="text-[9px] font-semibold text-indigo-400 dark:text-indigo-500 ml-auto shrink-0 italic">{c.edgeLabel}</span>
                   </div>
                 ))}
               </div>
             </div>
           )}
-          <div className="mt-4 pt-4 border-t border-slate-100 dark:border-slate-700 space-y-3">
-            <div>
-              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">Temporal</p>
-              <div className="flex flex-col gap-1.5">
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="w-3 h-3 rounded-full shrink-0 border-2" style={{ backgroundColor: TEMPORAL_COLORS.future.bg, borderColor: TEMPORAL_COLORS.future.border }} />
-                  <span className="text-slate-600 dark:text-slate-400">Future — planned / not yet built</span>
-                </div>
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="w-3 h-3 rounded-full shrink-0 border-2" style={{ backgroundColor: TEMPORAL_COLORS.current.bg, borderColor: TEMPORAL_COLORS.current.border }} />
-                  <span className="text-slate-600 dark:text-slate-400">Current — active / in use</span>
-                </div>
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="w-3 h-3 rounded-full shrink-0 border-2" style={{ backgroundColor: TEMPORAL_COLORS.past.bg, borderColor: TEMPORAL_COLORS.past.border }} />
-                  <span className="text-slate-600 dark:text-slate-400">Past — completed / outdated</span>
-                </div>
-              </div>
-            </div>
-            <div>
-              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">Node types</p>
-              <div className="flex flex-col gap-1.5">
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="w-8 h-4 rounded shrink-0 border-2 border-indigo-500 bg-indigo-50/30 dark:bg-indigo-900/20" />
-                  <span className="text-slate-600 dark:text-slate-400">Model (domain container)</span>
-                </div>
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="w-3 h-3 rounded-full shrink-0 bg-slate-400" />
-                  <span className="text-slate-600 dark:text-slate-400">Component (atomic fact)</span>
-                </div>
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="w-4 h-4 shrink-0 rotate-45 bg-slate-400" style={{ borderRadius: "2px" }} />
-                  <span className="text-slate-600 dark:text-slate-400">GitHub PR (diamond)</span>
-                </div>
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="w-4 h-2.5 rounded shrink-0 bg-slate-400" />
-                  <span className="text-slate-600 dark:text-slate-400">GitHub Issue (pill)</span>
-                </div>
-              </div>
-            </div>
-            <div>
-              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">Edges</p>
-              <div className="flex flex-col gap-1.5">
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="w-6 shrink-0 border-t-2 border-indigo-400" />
-                  <span className="text-slate-600 dark:text-slate-400">Relationship (labeled)</span>
-                </div>
-              </div>
-            </div>
-          </div>
         </div>
       )}
 
