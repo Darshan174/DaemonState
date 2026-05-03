@@ -990,8 +990,7 @@ export default function GraphView() {
                               <div key={c.id || i} className="flex items-start gap-2 p-2 rounded-lg bg-slate-50 dark:bg-slate-900/60">
                                 <span className="w-4 h-4 rounded bg-brand-100 dark:bg-brand-900/40 flex items-center justify-center text-[9px] font-bold text-brand-700 dark:text-brand-300 shrink-0 mt-0.5">{i + 1}</span>
                                 <div className="min-w-0">
-                                  <p className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">{stripModelPrefix(c.name)}</p>
-                                  <p className="text-[10px] text-slate-500 dark:text-slate-400">{c.value}</p>
+                                  <p className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">{c.value || stripModelPrefix(c.name)}</p>
                                   <span className="text-[10px] text-slate-400">{c.model_name}</span>
                                 </div>
                               </div>

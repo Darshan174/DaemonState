@@ -182,7 +182,7 @@ class Extractor:
             text = m.group(1).strip()
             if text:
                 facts.append(ExtractedFact(
-                    model_name="Decision", name=f"Decision: {text[:60]}",
+                    model_name="Decision", name=f"Decision: {text[:120]}",
                     value=text, fact_type="decision",
                     temporal=detect_temporal(text), confidence=0.80,
                 ))
@@ -192,7 +192,7 @@ class Extractor:
             text = m.group(1).strip()
             if text:
                 facts.append(ExtractedFact(
-                    model_name="Task", name=f"Task: {text[:60]}",
+                    model_name="Task", name=f"Task: {text[:120]}",
                     value=text, fact_type="task",
                     temporal=detect_temporal(text), confidence=0.75,
                 ))
@@ -202,7 +202,7 @@ class Extractor:
             text = m.group(1).strip()
             if text:
                 facts.append(ExtractedFact(
-                    model_name="Risk", name=f"Risk: {text[:60]}",
+                    model_name="Risk", name=f"Risk: {text[:120]}",
                     value=text, fact_type="blocker",
                     temporal="current", confidence=0.82,
                 ))
@@ -212,7 +212,7 @@ class Extractor:
             text = m.group(1).strip()
             if text:
                 facts.append(ExtractedFact(
-                    model_name="Feature", name=f"Feature: {text[:60]}",
+                    model_name="Feature", name=f"Feature: {text[:120]}",
                     value=text, fact_type="feature",
                     temporal=detect_temporal(text), confidence=0.72,
                 ))
@@ -222,7 +222,7 @@ class Extractor:
             text = m.group(1).strip()
             if text:
                 facts.append(ExtractedFact(
-                    model_name="Metric", name=f"Metric: {text[:60]}",
+                    model_name="Metric", name=f"Metric: {text[:120]}",
                     value=text, fact_type="metric",
                     temporal=detect_temporal(text), confidence=0.73,
                 ))
@@ -232,7 +232,7 @@ class Extractor:
             text = m.group(1).strip()
             if text:
                 facts.append(ExtractedFact(
-                    model_name="Meeting", name=f"Meeting outcome: {text[:60]}",
+                    model_name="Meeting", name=f"Meeting outcome: {text[:120]}",
                     value=text, fact_type="meeting_note",
                     temporal="past", confidence=0.77,
                 ))
@@ -242,7 +242,7 @@ class Extractor:
             text = m.group(1).strip()
             if text:
                 facts.append(ExtractedFact(
-                    model_name="Agent Session", name=f"AI step: {text[:60]}",
+                    model_name="Agent Session", name=f"AI step: {text[:120]}",
                     value=text, fact_type="ai_step",
                     temporal=detect_temporal(text), confidence=0.70,
                 ))
