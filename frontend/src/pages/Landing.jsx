@@ -159,7 +159,7 @@ export default function Landing() {
             </div>
 
             <div className="space-y-5">
-              <h1 className="max-w-3xl text-5xl font-bold tracking-tight text-slate-950 dark:text-white md:text-[3.6rem] md:leading-[1.07]">
+              <h1 className="max-w-3xl text-5xl font-black tracking-tight text-slate-950 dark:text-white md:text-[3.6rem] md:leading-[1.07]">
                 The memory layer between your team and your{" "}
                 <span className="inline-block text-transparent bg-clip-text bg-[linear-gradient(110deg,#4f46e5,40%,#a78bfa,55%,#4f46e5)] bg-[length:200%_100%] animate-shimmer">AI</span>.
               </h1>
