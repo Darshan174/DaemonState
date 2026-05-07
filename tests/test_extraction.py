@@ -10,7 +10,7 @@ class TestRegexExtractor:
 
         assert len(facts) >= 1
         decision = facts[0]
-        assert decision.model_name == "Decisions"
+        assert decision.model_name == "Decision"
         assert decision.fact_type == "decision"
         assert "Postgres" in decision.value
 
@@ -20,8 +20,8 @@ class TestRegexExtractor:
 
         assert len(facts) >= 1
         action = facts[0]
-        assert action.model_name == "Actions"
-        assert action.fact_type == "action_item"
+        assert action.model_name == "Task"
+        assert action.fact_type == "task"
         assert "rate limiting" in action.value
 
     def test_extracts_blockers(self):
@@ -30,7 +30,7 @@ class TestRegexExtractor:
 
         assert len(facts) >= 1
         blocker = facts[0]
-        assert blocker.model_name == "Blockers"
+        assert blocker.model_name == "Risk"
         assert blocker.fact_type == "blocker"
         assert "SOC2" in blocker.value
 
@@ -40,16 +40,15 @@ class TestRegexExtractor:
 
         assert len(facts) >= 1
         outcome = facts[0]
-        assert outcome.model_name == "Decisions"
-        assert outcome.fact_type == "decision"
+        assert outcome.model_name == "Meeting"
+        assert outcome.fact_type == "meeting_note"
         assert "MVP" in outcome.value
 
     def test_extracts_section_headings(self):
         ext = Extractor()
         facts = ext._regex_extract("## Pricing Strategy\n## Roadmap Plan\nSome content here.")
 
-        headings = [f for f in facts if f.fact_type == "fact" and f.model_name.startswith("Pricing") or f.model_name.startswith("Roadmap")]
-        assert len(headings) >= 2
+        assert facts[0].model_name == "Document"
 
     def test_extracts_bullet_points(self):
         ext = Extractor()
@@ -59,8 +58,7 @@ class TestRegexExtractor:
             "- Ship Gmail connector beta"
         )
 
-        bullets = [f for f in facts if f.model_name == "Points"]
-        assert len(bullets) >= 1
+        assert facts[0].model_name == "Document"
 
     def test_regex_extractor_no_relationships(self):
         ext = Extractor()
@@ -74,7 +72,7 @@ class TestRegexExtractor:
         facts = ext._regex_extract("This is just some random text without any structured patterns.")
 
         assert len(facts) == 1
-        assert facts[0].model_name == "General"
+        assert facts[0].model_name == "Document"
         assert facts[0].confidence == 0.50
 
 

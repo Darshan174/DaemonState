@@ -253,6 +253,9 @@ async def _expand_graph(node_id: str) -> list[TextContent]:
                     "source": str(r.source_component_id),
                     "target": str(r.target_component_id),
                     "type": r.relationship_type,
+                    "confidence": r.confidence,
+                    "evidence": r.evidence,
+                    "origin": r.origin,
                     "direction": "outgoing",
                 })
             for r in incoming_rels:
@@ -260,6 +263,9 @@ async def _expand_graph(node_id: str) -> list[TextContent]:
                     "source": str(r.source_component_id),
                     "target": str(r.target_component_id),
                     "type": r.relationship_type,
+                    "confidence": r.confidence,
+                    "evidence": r.evidence,
+                    "origin": r.origin,
                     "direction": "incoming",
                 })
 

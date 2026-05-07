@@ -1,10 +1,11 @@
 # OSS Readiness Review
 
 Last updated: 2026-05-01
+Reviewed: 2026-05-01 by Xiaomi MiMo V2.5 Pro
 
 ## Score
 
-Current OSS readiness: 7/10
+Current OSS readiness: 8/10
 
 ## What Is Working
 
@@ -25,7 +26,7 @@ cd frontend && npm run build
 
 Latest verified result:
 
-- `pytest -q`: 99 passed
+- `pytest -q`: 107 passed
 - `npm run build`: passed
 
 ## Remaining Launch Blockers
@@ -33,14 +34,11 @@ Latest verified result:
 ### P0
 
 - No `LICENSE` file. Without a license, this is not safely reusable as OSS.
-- No CI workflow that runs backend tests and frontend build on pull requests.
 
 ### P1
 
-- **Connector catalog mismatch.** Backend catalog has 5 types: `slack`, `discord`, `gmail`, `ai_context`, `local`. Frontend catalog has 8 types: `slack`, `discord`, `ai_context`, `local`, `zoom`, `gdrive`, `gmail`, `wispr_flow`. Three frontend types (`zoom`, `gdrive`, `wispr_flow`) have no backend catalog entry and no connect endpoint. The `normalizeConnectors` function falls back to `coming_soon` for missing backend records, so the UI renders them, but they will never work until backend entries exist.
 - **Slack availability is misleading.** Backend sets `"availability": "available"` but `"supported": False` for Slack. The connect endpoint returns 400, but the UI shows Slack as "available" rather than "coming_soon". Discord correctly uses `"availability": "coming_soon"` with `"supported": False`. Slack should use the same pattern to avoid user confusion.
-- **Frontend hooks for nonexistent endpoints.** `hooks.js` defines `useConnectNotion` (POST `/connectors/notion/connect`), `useConnectZoom` (POST `/connectors/zoom/connect`), `useConnectGitHub` (POST `/connectors/github/connect`), and `useSaveSlackOAuthSettings` (POST `/connectors/slack/oauth-settings`). None of these endpoints exist in `app/api/connectors.py`. If these hooks are reachable from the UI, they will always fail with 404/405.
-- Public docs need to mention the connector tables and avoid saying external providers are implemented.
+- **Frontend hooks for unavailable provider setup paths.** `hooks.js` defines `useConnectNotion` (POST `/connectors/notion/connect`), `useConnectZoom` (POST `/connectors/zoom/connect`), `useConnectGitHub` (POST `/connectors/github/connect`), and `useSaveSlackOAuthSettings` (POST `/connectors/slack/oauth-settings`). Zoom is a catalogued coming-soon connector and returns 400 through the generic connect route. Notion and GitHub are not catalogued backend connector types, and Slack OAuth settings has no backend route. If these hooks are reachable from the UI, they will fail until provider setup paths are implemented or hidden.
 
 ### P2
 
@@ -62,15 +60,18 @@ Six SQLAlchemy tables are currently defined:
 
 ## Connector Status
 
-### Backend Catalog (app/api/connectors.py lines 19-85)
+### Backend Catalog (app/api/connectors.py lines 19-124)
 
 | Type | availability | supported | Notes |
 |------|-------------|-----------|-------|
 | slack | available | False | Misleading: shows "available" but connect returns 400 |
 | discord | coming_soon | False | Honest: shows as coming soon |
-| gmail | coming_soon | False | Honest: shows as coming soon |
 | ai_context | available | True | Working: import endpoint tested |
 | local | available | True | Working: sources upload |
+| zoom | coming_soon | False | Honest: shows as coming soon |
+| gdrive | coming_soon | False | Honest: shows as coming soon |
+| gmail | coming_soon | False | Honest: shows as coming soon |
+| wispr_flow | coming_soon | False | Honest: shows as coming soon |
 
 ### Frontend Catalog (hooks.js lines 73-154)
 
@@ -80,19 +81,19 @@ Six SQLAlchemy tables are currently defined:
 | discord | coming_soon | Yes |
 | ai_context | available | Yes |
 | local | available | Yes |
-| zoom | coming_soon | **No** — no backend catalog entry |
-| gdrive | coming_soon | **No** — no backend catalog entry |
+| zoom | coming_soon | Yes |
+| gdrive | coming_soon | Yes |
 | gmail | coming_soon | Yes |
-| wispr_flow | coming_soon | **No** — no backend catalog entry |
+| wispr_flow | coming_soon | Yes |
 
-### Frontend Hooks Without Backend Endpoints
+### Frontend Hooks Without Working Backend Paths
 
 | Hook | Endpoint | Status |
 |------|----------|--------|
-| useConnectNotion | POST /connectors/notion/connect | No backend endpoint |
-| useConnectZoom | POST /connectors/zoom/connect | No backend endpoint |
-| useConnectGitHub | POST /connectors/github/connect | No backend endpoint |
-| useSaveSlackOAuthSettings | POST /connectors/slack/oauth-settings | No backend endpoint |
+| useConnectNotion | POST /connectors/notion/connect | Generic connect route returns 404 unknown connector type |
+| useConnectZoom | POST /connectors/zoom/connect | Catalogued coming-soon connector; generic connect route returns 400 |
+| useConnectGitHub | POST /connectors/github/connect | Generic connect route returns 404 unknown connector type |
+| useSaveSlackOAuthSettings | POST /connectors/slack/oauth-settings | No backend route |
 
 ### Implemented
 
@@ -106,8 +107,9 @@ Six SQLAlchemy tables are currently defined:
 - Slack OAuth and Slack sync.
 - Discord sync.
 - Gmail OAuth and sync.
-- Zoom, Google Drive, Notion, GitHub, and Wispr provider backends.
-- Notion, Zoom, GitHub connect endpoints (hooks exist in frontend but no backend).
+- Zoom, Google Drive, Gmail, and Wispr provider backends (catalog entries exist, no sync logic).
+- Notion and GitHub catalog entries/provider backends (hooks exist in frontend, backend returns unknown connector type).
+- Zoom sync/provider backend (catalogued as coming soon; connect route exists only as an unsupported stub).
 - Slack OAuth settings endpoint (hook exists in frontend but no backend).
 
 ## Evidence Files
@@ -121,4 +123,3 @@ Six SQLAlchemy tables are currently defined:
 - `tests/test_graph_api.py`
 - `tests/test_migrations.py`
 - `docs/connectors-graph-contract.md`
-

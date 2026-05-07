@@ -491,8 +491,10 @@ function ConnectorCard({
     availability === "available" &&
     !!workspaceId &&
     (status === "connected" || status === "error");
-  const canSync = !isDemo && !oauthPending && !!connectorId && (status === "connected" || status === "error");
-  const canDisconnect = !isDemo && !oauthPending && !!connectorId && (status === "connected" || status === "error");
+  const hasOperationalConnection = status === "connected" || status === "error";
+  const hasPersistedConnectionRecord = !!connectorId && status !== "coming_soon";
+  const canSync = !isDemo && !oauthPending && !!connectorId && hasOperationalConnection;
+  const canDisconnect = !isDemo && !oauthPending && hasPersistedConnectionRecord;
   const installHref = workspaceId
     ? isSlack
       ? managedConnectAvailable && managedInstallUrl
@@ -507,10 +509,10 @@ function ConnectorCard({
   const processedDocuments = processing?.processedDocuments ?? totalProcessedCount;
   const pendingDocuments = processing?.unprocessedDocuments ?? Math.max(Number(itemsSynced || 0) - processedDocuments, 0);
   const syncStatusQuery = useConnectorSyncStatus(connectorId, {
-    enabled: !isDemo && !!connectorId,
+    enabled: !isDemo && !!connectorId && hasOperationalConnection,
   });
   const syncJobsQuery = useConnectorSyncJobs(connectorId, {
-    enabled: !isDemo && !!connectorId,
+    enabled: !isDemo && !!connectorId && hasOperationalConnection,
   });
   const latestSyncJob = syncStatusQuery.data;
   const recentSyncJobs = syncJobsQuery.data ?? [];
@@ -636,6 +638,14 @@ function ConnectorCard({
   const handleGoogleOAuth = () => {
     if (!installHref) return;
     onStartGenericOAuth(installHref, type);
+  };
+
+  const handleSlackConnectAction = () => {
+    if (installHref) {
+      onStartOAuth(installHref, status, slackConnectMode);
+      return;
+    }
+    onActionNotice("Managed Slack OAuth is not configured for this server. Use advanced setup only for a self-hosted Slack app.");
   };
 
   const handleAISessionIngest = (event) => {
@@ -1105,19 +1115,15 @@ function ConnectorCard({
           >
             Coming soon
           </button>
-        ) : isSlack && canConnect && installHref ? (
+        ) : isSlack && canConnect ? (
           <button
             type="button"
-            onClick={() => onStartOAuth(installHref, status, slackConnectMode)}
+            onClick={handleSlackConnectAction}
             className="inline-flex items-center gap-2 rounded-full bg-white border border-gray-200 px-4 py-2 text-sm font-medium text-gray-900 hover:bg-gray-50 shadow-sm transition-colors dark:bg-slate-800 dark:border-gray-700 dark:text-white dark:hover:bg-slate-700"
           >
             <SlackLogoIcon className="w-5 h-5" />
             Connect to Slack
           </button>
-        ) : isSlack && canConnect && !installHref ? (
-          <span className="inline-flex items-center rounded-lg bg-amber-50 dark:bg-amber-900/30 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800/50">
-            Slack OAuth not configured
-          </span>
         ) : isSlack && canReconnect && installHref ? (
           <a
             href={installHref}
@@ -1129,10 +1135,14 @@ function ConnectorCard({
           >
             Reconnect Slack
           </a>
-        ) : isSlack && canReconnect && !installHref ? (
-          <span className="inline-flex items-center rounded-lg bg-amber-50 dark:bg-amber-900/30 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800/50">
-            Slack OAuth not configured
-          </span>
+        ) : isSlack && canReconnect ? (
+          <button
+            type="button"
+            onClick={handleSlackConnectAction}
+            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 transition-colors"
+          >
+            Reconnect Slack
+          </button>
         ) : isGoogleOAuth && canConnect && installHref ? (
           <button
             type="button"
@@ -1251,31 +1261,35 @@ function ConnectorCard({
           </button>
         )}
 
-        <button
-          type="button"
-          disabled={!canSync || syncMut.isPending || !!activeSyncStatus}
-          onClick={handleSync}
-          className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 disabled:text-gray-400 disabled:cursor-not-allowed transition-colors"
-        >
-          {activeSyncStatus === "running"
-            ? "Running..."
-            : activeSyncStatus === "pending"
-              ? "Queued..."
-              : syncMut.isPending && syncMut.variables === connectorId
-                ? "Starting..."
-                : "Sync now"}
-        </button>
+        {hasOperationalConnection && (
+          <button
+            type="button"
+            disabled={!canSync || syncMut.isPending || !!activeSyncStatus}
+            onClick={handleSync}
+            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 disabled:text-gray-400 disabled:cursor-not-allowed transition-colors"
+          >
+            {activeSyncStatus === "running"
+              ? "Running..."
+              : activeSyncStatus === "pending"
+                ? "Queued..."
+                : syncMut.isPending && syncMut.variables === connectorId
+                  ? "Starting..."
+                  : "Sync now"}
+          </button>
+        )}
 
-        <button
-          type="button"
-          disabled={!canDisconnect || disconnectMut.isPending}
-          onClick={handleDisconnect}
-          className="px-3 py-1.5 text-xs font-medium rounded-lg border border-red-200 dark:border-red-800/50 text-red-600 dark:text-red-400 hover:bg-red-50 dark:bg-red-900/30 disabled:text-gray-400 disabled:border-gray-200 dark:border-gray-800/50 disabled:cursor-not-allowed transition-colors"
-        >
-          {disconnectMut.isPending && disconnectMut.variables === connectorId
-            ? "Disconnecting..."
-            : "Disconnect"}
-        </button>
+        {hasPersistedConnectionRecord && (
+          <button
+            type="button"
+            disabled={!canDisconnect || disconnectMut.isPending}
+            onClick={handleDisconnect}
+            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-red-200 dark:border-red-800/50 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 disabled:text-gray-400 disabled:border-gray-200 dark:disabled:border-gray-800/50 disabled:cursor-not-allowed transition-colors"
+          >
+            {disconnectMut.isPending && disconnectMut.variables === connectorId
+              ? "Disconnecting..."
+              : "Disconnect"}
+          </button>
+        )}
       </div>
     </div>
   );

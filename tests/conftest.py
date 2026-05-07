@@ -11,6 +11,7 @@ from sqlalchemy.pool import NullPool
 
 from app.database import get_db_session
 from app.main import app
+from app.migrations import run_migrations
 from app.models import Base
 from app.processing.embedder import HashingEmbedder
 
@@ -38,6 +39,7 @@ async def engine():
     eng = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await run_migrations(conn)
     yield eng
     await eng.dispose()
 

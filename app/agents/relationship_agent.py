@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models import Component, Relationship
+from app.taxonomy import canonical_model_name, canonical_relationship_type
 
 
 RELATIONSHIP_PROMPT = """You are analyzing a startup knowledge graph to find HIDDEN relationships that haven't been explicitly captured.
@@ -96,17 +97,34 @@ class RelationshipAgent:
         if not result:
             return RelationshipReport(suggested=[], duplicates=[], message="Analysis failed — check your AI key.")
 
+        suggestions = [
+            SuggestedRelationship(
+                source_name=r.get("source_name", ""),
+                target_name=r.get("target_name", ""),
+                relationship_type=canonical_relationship_type(r.get("relationship_type")),
+                confidence=min(max(float(r.get("confidence", 0.0)), 0.0), 1.0),
+                reasoning=r.get("reasoning", ""),
+            )
+            for r in result.get("suggested_relationships", [])
+            if r.get("source_name") and r.get("target_name")
+        ]
+        persisted = await self._persist_suggestions(suggestions, components)
+
         return RelationshipReport(
-            suggested=[SuggestedRelationship(**r) for r in result.get("suggested_relationships", [])],
+            suggested=suggestions,
             duplicates=result.get("duplicates", []),
-            message=f"Found {len(result.get('suggested_relationships', []))} suggested relationships and {len(result.get('duplicates', []))} potential duplicates.",
+            message=(
+                f"Found {len(suggestions)} suggested relationships and "
+                f"{len(result.get('duplicates', []))} potential duplicates. "
+                f"Persisted {persisted} as proposed graph relationships."
+            ),
         )
 
     async def _ai_discover(self, components, relationships) -> dict | None:
         by_type: dict[str, list[str]] = {}
         for c in components:
-            t = c.model.name if c.model else "Unknown"
-            by_type.setdefault(t, []).append(f'"{c.name}"')
+            t = canonical_model_name(c.model.name if c.model else "Unknown")
+            by_type.setdefault(t, []).append(f'"{c.name}" — {c.value[:100]}')
 
         entities_text = "\n".join(
             f"{t}: {', '.join(names[:6])}"
@@ -136,3 +154,47 @@ class RelationshipAgent:
             return json.loads(raw)
         except Exception:
             return None
+
+    async def _persist_suggestions(
+        self,
+        suggestions: list[SuggestedRelationship],
+        components: list[Component],
+    ) -> int:
+        by_name = {c.name.strip().lower(): c for c in components}
+        persisted = 0
+
+        for suggestion in suggestions:
+            if suggestion.confidence < 0.6:
+                continue
+
+            source = by_name.get(suggestion.source_name.strip().lower())
+            target = by_name.get(suggestion.target_name.strip().lower())
+            if not source or not target or source.id == target.id:
+                continue
+
+            rel_type = canonical_relationship_type(suggestion.relationship_type)
+            exists = await self.session.scalar(
+                select(Relationship).where(
+                    Relationship.source_component_id == source.id,
+                    Relationship.target_component_id == target.id,
+                    Relationship.relationship_type == rel_type,
+                )
+            )
+            if exists:
+                continue
+
+            self.session.add(Relationship(
+                source_component_id=source.id,
+                target_component_id=target.id,
+                relationship_type=rel_type,
+                confidence=suggestion.confidence,
+                evidence=suggestion.reasoning or "Suggested by Relationship Agent",
+                status="proposed",
+                origin="ai_proposed",
+            ))
+            persisted += 1
+
+        if persisted:
+            await self.session.flush()
+            await self.session.commit()
+        return persisted

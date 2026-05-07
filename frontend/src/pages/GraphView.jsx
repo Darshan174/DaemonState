@@ -3,8 +3,9 @@ import cytoscape from "cytoscape";
 import {
   Zap, Network, AlertTriangle, MessageSquare, Package,
   Sparkles, Loader2, CheckCircle2, XCircle, Copy, Check,
-  ChevronRight, X as XIcon, Bot,
+  ChevronRight, X as XIcon, Bot, Link2,
 } from "lucide-react";
+import { useTheme } from "../context/ThemeContext";
 
 function getAiSettingsSaved() {
   try { return JSON.parse(localStorage.getItem("ce_ai_settings") || "{}"); }
@@ -59,6 +60,28 @@ const TEMPORAL_META = {
   unknown: { label: "Unknown", pill: "bg-slate-100 dark:bg-slate-700 text-slate-400" },
 };
 
+// Edge origin → visual style
+const EDGE_ORIGIN_STYLE = {
+  deterministic: { lineStyle: "solid", width: 2, opacity: 0.7, label: "Deterministic" },
+  extracted:     { lineStyle: "solid", width: 1.5, opacity: 0.5, label: "Extracted" },
+  proposed:      { lineStyle: "dashed", width: 1.5, opacity: 0.35, label: "Proposed" },
+  ai_proposed:   { lineStyle: "dashed", width: 1.5, opacity: 0.35, label: "AI Proposed" },
+  human_verified:{ lineStyle: "solid", width: 2.5, opacity: 0.85, label: "Human Verified" },
+};
+
+// Source type icon mapping
+const SOURCE_TYPE_ICONS = {
+  github_issue: "GH Issue",
+  github_pr: "GH PR",
+  github: "GitHub",
+  ai_session: "AI Session",
+  local: "Local",
+  slack: "Slack",
+  zoom: "Zoom",
+  gmail: "Gmail",
+  gdrive: "Drive",
+};
+
 const MODEL_COLORS = [
   "#6366f1", "#8b5cf6", "#ec4899", "#f43f5e", "#f97316",
   "#eab308", "#22c55e", "#14b8a6", "#06b6d4", "#3b82f6",
@@ -92,12 +115,23 @@ const CEO_VIEWS = [
   { id: "gaps",       label: "Gap Detector",   desc: "Highlights nodes with no connections — missing owners, orphaned tasks, unlinked decisions" },
   { id: "decisions",  label: "Decision Trail", desc: "Message → Meeting → Decision → PR → Feature" },
   { id: "aiSessions", label: "AI Sessions",    desc: "Agent sessions → decisions, files changed, bugs found, next steps" },
+  { id: "workLens",   label: "Work Lens",      desc: "Blockers, open decisions, active tasks, unresolved questions" },
+  { id: "github",     label: "GitHub Delivery", desc: "Issue → PR → files → decisions/tasks" },
+  { id: "repo",       label: "Repository",      desc: "Repos, files, changed modules" },
 ];
 
 const CEO_VIEW_MODEL_PATTERNS = {
   birdsEye:   /^(company|product|feature|task|customer|user|pr|issue|repo|metric)/i,
   decisions:  /^(decision|meeting|message|email|document|slack|zoom|discussion)/i,
   aiSessions: /^(agent session|agent|claude|codex|opencode|chatgpt|ai session)/i,
+  workLens:   /^(risk|task|decision|agent session|issue|pr|repo)/i,
+  github:     /^(issue|pr|repo|github)/i,
+  repo:       /^(repo|github)/i,
+};
+
+const CEO_VIEW_FACT_TYPE_PATTERNS = {
+  workLens:   /^(blocker|task|decision|risk|open_question|issue|pr|pr_review_finding|github_issue|github_pr|changed_file|session_root|ai_task|ai_decision|ai_blocker)$/,
+  github:     /^(github_issue|github_pr|pr_review_finding|issue|pr|changed_file|commit_reference)$/,
 };
 
 // Map model name to a short domain label for the type chip
@@ -122,16 +156,20 @@ function domainLabel(modelName) {
 export default function GraphView() {
   const containerRef = useRef(null);
   const cyRef = useRef(null);
+  const { theme } = useTheme();
   const [viewMode, setViewMode] = useState("knowledge");
   const [graphData, setGraphData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedNode, setSelectedNode] = useState(null);
+  const [selectedEdge, setSelectedEdge] = useState(null);
   const [filters, setFilters] = useState({
     model: "",
     source_type: "",
     status: "",
     temporal: "",
+    confidence_threshold: 0,
+    relationship_origin: "",
   });
   const [building, setBuilding] = useState(false);
   const [buildResult, setBuildResult] = useState(null);
@@ -291,6 +329,10 @@ export default function GraphView() {
       (r) => componentIds.has(r.source_component_id) && componentIds.has(r.target_component_id)
     );
 
+    if (filters.relationship_origin) {
+      relationships = relationships.filter((r) => (r.origin || "proposed") === filters.relationship_origin);
+    }
+
     return { models: allModels, components, relationships };
   }, [graphData, filters, viewMode, ceoView]);
 
@@ -341,7 +383,7 @@ export default function GraphView() {
             source: edge.source,
             target: edge.target,
             label: edge.label,
-            edgeType: edge.label === "contains" ? "contains" : "relationship",
+            edgeType: edge.label === "contains" ? "repoContains" : edge.label === "uses" ? "repoUses" : "repoFile",
           },
         });
       });
@@ -399,6 +441,10 @@ export default function GraphView() {
             modelId: c.model_id,
             source_type: c.source_type,
             source_url: c.source_url,
+            source_external_id: c.source_external_id,
+            source_metadata_summary: c.source_metadata_summary,
+            provenance: c.provenance,
+            excerpt: c.excerpt,
             bgColor: isGap ? "rgba(239,68,68,0.08)" : statusCard.bg,
             borderColor: isGap ? "#ef4444" : statusCard.border,
           },
@@ -408,22 +454,43 @@ export default function GraphView() {
 
       // Relationship edges only — compound parent handles "contains" visually
       relationships.forEach((r) => {
+        const origin = r.origin || "extracted";
+        const style = EDGE_ORIGIN_STYLE[origin] || EDGE_ORIGIN_STYLE.extracted;
+        const hideLowConfidence = filters.confidence_threshold > 0 && r.confidence < filters.confidence_threshold;
+        if (hideLowConfidence) return;
+
         edges.push({
           data: {
             id: r.id,
             source: r.source_component_id,
             target: r.target_component_id,
             label: (r.relationship_type || "related_to").replaceAll("_", " "),
+            displayLabel: r.display_label || (r.relationship_type || "related_to").replaceAll("_", " "),
             edgeType: "relationship",
+            origin,
+            confidence: r.confidence,
+            evidence: r.evidence,
+            status: r.status,
+            lineStyle: style.lineStyle,
+            edgeWidth: style.width,
+            edgeOpacity: style.opacity,
           },
         });
       });
     }
 
-    const isDark = document.documentElement.classList.contains("dark");
-    const modelBg = isDark ? "rgba(255,255,255,0.11)" : "rgba(248,250,252,0.95)";
-    const modelTextColor = isDark ? "#e2e8f0" : "#0f172a";
+    const isDark = theme === "dark" || document.documentElement.classList.contains("dark");
+    const modelBg = isDark ? "#101827" : "#f8fafc";
+    const modelBgOpacity = isDark ? 1 : 0.95;
+    const modelLabelBg = isDark ? "#0f172a" : "#ffffff";
+    const modelTextColor = isDark ? "#f8fafc" : "#0f172a";
+    const componentTextColor = isDark ? "#f8fafc" : "#1e293b";
+    const labelOutlineColor = isDark ? "#0f172a" : "#ffffff";
     const edgeLabelBg = isDark ? "#1e293b" : "#ffffff";
+    const repoFileBg = isDark ? "#263244" : "#f1f5f9";
+    const repoFileBorder = isDark ? "#64748b" : "#cbd5e1";
+    const repoTextColor = isDark ? "#e5edf8" : "#1e293b";
+    const repoLabelOutline = isDark ? "#0f172a" : "#ffffff";
 
     const cy = cytoscape({
       container: containerRef.current,
@@ -438,7 +505,7 @@ export default function GraphView() {
             "text-halign": "center",
             "font-size": "8px",
             "font-weight": "600",
-            color: isDark ? "#94a3b8" : "#64748b",
+            color: componentTextColor,
             "background-color": CARD_STATUS_DEFAULT.bg,
             width: 155,
             height: 58,
@@ -448,15 +515,27 @@ export default function GraphView() {
             "border-color": CARD_STATUS_DEFAULT.border,
             "text-wrap": "wrap",
             "text-max-width": "138px",
+            "text-outline-color": labelOutlineColor,
+            "text-outline-width": 1.5,
           },
         },
 
         // ── MODEL — compound domain lane ─────────────────────────
         {
+          selector: ":parent",
+          style: {
+            "background-color": modelBg,
+            "background-opacity": modelBgOpacity,
+            "border-color": isDark ? "#334155" : "#cbd5e1",
+            "border-width": 1.5,
+            "border-opacity": isDark ? 0.8 : 0.7,
+          },
+        },
+        {
           selector: ".model-node",
           style: {
             "background-color": modelBg,
-            "background-opacity": 1,
+            "background-opacity": modelBgOpacity,
             "border-color": "data(modelColor)",
             "border-width": 2,
             "border-opacity": 0.7,
@@ -473,9 +552,11 @@ export default function GraphView() {
             "font-weight": "800",
             "text-wrap": "wrap",
             color: modelTextColor,
-            "text-background-color": modelBg,
-            "text-background-opacity": 0.9,
-            "text-background-padding": "4px",
+            "text-outline-color": labelOutlineColor,
+            "text-outline-width": 0,
+            "text-background-color": modelLabelBg,
+            "text-background-opacity": 1,
+            "text-background-padding": "5px",
             "text-background-shape": "round-rectangle",
             "text-border-opacity": 0,
             width: 10,
@@ -501,7 +582,9 @@ export default function GraphView() {
             "font-weight": "600",
             "text-wrap": "wrap",
             "text-max-width": "138px",
-            color: isDark ? "#e2e8f0" : "#1e293b",
+            color: componentTextColor,
+            "text-outline-color": labelOutlineColor,
+            "text-outline-width": 2,
           },
         },
 
@@ -522,6 +605,9 @@ export default function GraphView() {
           style: {
             "background-color": "data(bgColor)",
             "border-color": "data(borderColor)",
+            color: repoTextColor,
+            "text-outline-color": repoLabelOutline,
+            "text-outline-width": 1.8,
             width: 24,
             height: 24,
             shape: "round-rectangle",
@@ -529,27 +615,55 @@ export default function GraphView() {
         },
         {
           selector: "node[type='area']",
-          style: { width: 46, height: 34, "font-size": "8px", "font-weight": "800", "text-max-width": 92 },
+          style: {
+            width: 84,
+            height: 36,
+            "font-size": "9px",
+            "font-weight": "800",
+            "text-max-width": 94,
+            "background-color": isDark ? "#2563eb" : "#3b82f6",
+            "border-color": isDark ? "#93c5fd" : "#1d4ed8",
+            "border-width": 1.5,
+          },
         },
         {
           selector: "node[type='technology']",
-          style: { width: 34, height: 28, "font-size": "8px", "text-max-width": 86 },
+          style: {
+            width: 64,
+            height: 30,
+            "font-size": "8px",
+            "font-weight": "800",
+            "text-max-width": 70,
+            "background-color": isDark ? "#6d28d9" : "#8b5cf6",
+            "border-color": isDark ? "#c4b5fd" : "#6d28d9",
+            "border-width": 1.2,
+          },
         },
         {
           selector: "node[type='file']",
-          style: { width: 22, height: 22, "font-size": "7px", "text-max-width": 72 },
+          style: {
+            width: 76,
+            height: 24,
+            "font-size": "7px",
+            "font-weight": "700",
+            "text-max-width": 80,
+            "background-color": repoFileBg,
+            "border-color": repoFileBorder,
+            "border-width": 1,
+          },
         },
         {
           selector: ".repo-node",
           style: {
-            "background-color": "#1e293b",
-            "border-color": "#475569",
-            color: "#e2e8f0",
-            width: 44,
-            height: 44,
+            "background-color": isDark ? "#1e293b" : "#334155",
+            "border-color": isDark ? "#64748b" : "#0f172a",
+            color: "#f8fafc",
+            width: 78,
+            height: 36,
             shape: "round-rectangle",
-            "font-size": "8px",
+            "font-size": "8.5px",
             "font-weight": "800",
+            "text-max-width": 82,
           },
         },
 
@@ -572,14 +686,14 @@ export default function GraphView() {
         {
           selector: "edge[edgeType='relationship']",
           style: {
-            width: 1.5,
+            width: "data(edgeWidth)",
             "line-color": isDark ? "#4338ca" : "#a5b4fc",
             "target-arrow-color": isDark ? "#4338ca" : "#a5b4fc",
             "target-arrow-shape": "triangle",
             "arrow-scale": 0.9,
             "curve-style": "bezier",
             label: "",
-            opacity: 0.45,
+            opacity: "data(edgeOpacity)",
             "font-size": "8px",
             "font-weight": "600",
             color: isDark ? "#818cf8" : "#4f46e5",
@@ -592,13 +706,57 @@ export default function GraphView() {
           },
         },
 
-        // ── Repo-view edge label style ────────────────────────────
+        // ── AI PROPOSED EDGES — dashed ────────────────────────────
         {
-          selector: "edge[edgeType='contains']",
+          selector: "edge[edgeType='relationship'][lineStyle='dashed']",
           style: {
-            "line-color": isDark ? "#1e293b" : "#e2e8f0",
-            "target-arrow-color": isDark ? "#1e293b" : "#e2e8f0",
-            opacity: 0.3,
+            "line-style": "dashed",
+            "line-dash-pattern": [6, 4],
+          },
+        },
+
+        // ── HUMAN VERIFIED EDGES — green tint ─────────────────────
+        {
+          selector: "edge[edgeType='relationship'][origin='human_verified']",
+          style: {
+            "line-color": isDark ? "#059669" : "#34d399",
+            "target-arrow-color": isDark ? "#059669" : "#34d399",
+          },
+        },
+
+        // ── Repo-view edges — calm structural map ─────────────────
+        {
+          selector: "edge[edgeType='repoContains']",
+          style: {
+            width: 1,
+            "line-color": isDark ? "#1e293b" : "#cbd5e1",
+            "target-arrow-shape": "none",
+            "curve-style": "straight",
+            opacity: 0.35,
+          },
+        },
+        {
+          selector: "edge[edgeType='repoFile']",
+          style: {
+            width: 1.1,
+            "line-color": isDark ? "#334155" : "#94a3b8",
+            "target-arrow-color": isDark ? "#334155" : "#94a3b8",
+            "target-arrow-shape": "triangle",
+            "arrow-scale": 0.45,
+            "curve-style": "straight",
+            opacity: 0.55,
+          },
+        },
+        {
+          selector: "edge[edgeType='repoUses']",
+          style: {
+            width: 1.2,
+            "line-color": isDark ? "#7c3aed" : "#8b5cf6",
+            "target-arrow-color": isDark ? "#7c3aed" : "#8b5cf6",
+            "target-arrow-shape": "triangle",
+            "arrow-scale": 0.48,
+            "curve-style": "straight",
+            opacity: 0.48,
           },
         },
 
@@ -668,6 +826,12 @@ export default function GraphView() {
       wheelSensitivity: 0.3,
     });
 
+    if (viewMode === "repo") {
+      cy.minZoom(0.35);
+      cy.maxZoom(2);
+      cy.fit(undefined, 72);
+    }
+
     cy.on("tap", "node", (evt) => {
       const data = evt.target.data();
       if (data.type !== "model") {
@@ -683,13 +847,33 @@ export default function GraphView() {
           }
         });
         setSelectedNode({ ...data, connected });
+        setSelectedEdge(null);
       } else {
         setSelectedNode(null);
       }
     });
 
+    cy.on("tap", "edge[edgeType='relationship']", (evt) => {
+      const data = evt.target.data();
+      setSelectedEdge({
+        id: data.id,
+        label: data.label,
+        displayLabel: data.displayLabel,
+        origin: data.origin,
+        confidence: data.confidence,
+        evidence: data.evidence,
+        status: data.status,
+        source: data.source,
+        target: data.target,
+      });
+      setSelectedNode(null);
+    });
+
     cy.on("tap", (evt) => {
-      if (evt.target === cy) setSelectedNode(null);
+      if (evt.target === cy) {
+        setSelectedNode(null);
+        setSelectedEdge(null);
+      }
     });
 
     // Edge labels — reveal on hover, hide when mouse leaves
@@ -760,7 +944,7 @@ export default function GraphView() {
       containerEl.removeEventListener("mouseleave", onMouseLeave);
       cy.destroy();
     };
-  }, [graphData, filteredData, viewMode, ceoView]);
+  }, [graphData, filteredData, viewMode, ceoView, theme]);
 
   const models = graphData?.models || [];
   const allComponents = graphData?.components || [];
@@ -855,6 +1039,25 @@ export default function GraphView() {
               <option value="future">Future (will do)</option>
               <option value="past">Past (was done)</option>
               <option value="unknown">Unknown</option>
+            </select>
+            <select
+              value={filters.confidence_threshold}
+              onChange={(e) => setFilters((f) => ({ ...f, confidence_threshold: Number(e.target.value) }))}
+              className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300"
+            >
+              <option value={0}>All confidence</option>
+              <option value={0.5}>≥ 50%</option>
+              <option value={0.7}>≥ 70%</option>
+              <option value={0.85}>≥ 85%</option>
+            </select>
+            <select
+              value={filters.relationship_origin}
+              onChange={(e) => setFilters((f) => ({ ...f, relationship_origin: e.target.value }))}
+              className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300"
+            >
+              <option value="">All edges</option>
+              <option value="deterministic">Deterministic only</option>
+              <option value="proposed">Proposed only</option>
             </select>
           </div>
           )}
@@ -1037,7 +1240,30 @@ export default function GraphView() {
               </div>
             </div>
             <div className="border-t border-slate-100 dark:border-slate-700 pt-2">
-              <p className="text-[9px] text-slate-400 italic">Hover edges to see relationship labels</p>
+              <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Edge — origin</p>
+              <div className="flex flex-col gap-1">
+                {[
+                  { style: "solid", color: "#6366f1", label: "Extracted" },
+                  { style: "solid", color: "#3b82f6", label: "Deterministic" },
+                  { style: "dashed", color: "#f59e0b", label: "AI Proposed" },
+                  { style: "solid", color: "#059669", label: "Human Verified" },
+                ].map(({ style, color, label }) => (
+                  <div key={label} className="flex items-center gap-1.5">
+                    <span
+                      className="w-8 h-0.5 rounded shrink-0"
+                      style={
+                        style === "dashed"
+                          ? { borderTop: `2px dashed ${color}`, height: 0, backgroundColor: "transparent" }
+                          : { backgroundColor: color, height: 2 }
+                      }
+                    />
+                    <span className="text-[10px] text-slate-600 dark:text-slate-400">{label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="border-t border-slate-100 dark:border-slate-700 pt-2">
+              <p className="text-[9px] text-slate-400 italic">Click edges to see evidence</p>
             </div>
           </div>
 
@@ -1173,6 +1399,11 @@ export default function GraphView() {
                 </span>
               ) : null;
             })()}
+            {selectedNode.source_type && (
+              <span className="inline-block text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300">
+                {SOURCE_TYPE_ICONS[selectedNode.source_type] || selectedNode.source_type.replace(/_/g, " ")}
+              </span>
+            )}
           </div>
 
           {selectedNode.value && (
@@ -1196,6 +1427,25 @@ export default function GraphView() {
                 <span className="font-bold text-slate-700 dark:text-slate-300 capitalize">{selectedNode.source_type.replace(/_/g, " ")}</span>
               </div>
             )}
+            {selectedNode.source_external_id && (
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-500">Source ID</span>
+                <span className="font-mono text-slate-600 dark:text-slate-400 text-[10px] truncate max-w-[180px]" title={selectedNode.source_external_id}>{selectedNode.source_external_id}</span>
+              </div>
+            )}
+            {selectedNode.source_metadata_summary && Object.keys(selectedNode.source_metadata_summary).length > 0 && (
+              <div className="text-xs mt-1 border-t border-slate-100 dark:border-slate-700 pt-2">
+                <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Source context</span>
+                <div className="mt-1 space-y-0.5">
+                  {Object.entries(selectedNode.source_metadata_summary).slice(0, 5).map(([k, v]) => (
+                    <div key={k} className="flex justify-between">
+                      <span className="text-slate-500">{k}</span>
+                      <span className="text-slate-600 dark:text-slate-400 font-mono text-[10px]">{String(v)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {selectedNode.source_url && (
               <div className="flex justify-between items-start text-xs gap-2">
                 <span className="text-slate-500 shrink-0">URL</span>
@@ -1208,6 +1458,18 @@ export default function GraphView() {
                 >
                   {selectedNode.source_url.replace(/^https?:\/\//, "").slice(0, 36)}{selectedNode.source_url.length > 46 ? "…" : ""}
                 </a>
+              </div>
+            )}
+            {selectedNode.excerpt && (
+              <div className="text-xs mt-1">
+                <span className="text-slate-500">Excerpt</span>
+                <p className="text-slate-600 dark:text-slate-400 italic mt-0.5 line-clamp-3">{selectedNode.excerpt}</p>
+              </div>
+            )}
+            {selectedNode.provenance && (
+              <div className="text-xs">
+                <span className="text-slate-500">Provenance</span>
+                <p className="text-slate-500 dark:text-slate-500 mt-0.5 font-mono text-[10px] break-all line-clamp-2">{selectedNode.provenance}</p>
               </div>
             )}
           </div>
@@ -1231,6 +1493,80 @@ export default function GraphView() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {selectedEdge && !showAgents && (
+        <div className="w-72 shrink-0 bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-5 overflow-y-auto">
+          <button
+            onClick={() => setSelectedEdge(null)}
+            className="float-right text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 text-xs font-bold"
+          >
+            close
+          </button>
+
+          <div className="w-full h-1 rounded-full mb-3" style={{ backgroundColor: selectedEdge.origin === "human_verified" ? "#059669" : selectedEdge.origin === "ai_proposed" ? "#f59e0b" : "#6366f1" }} />
+
+          <div className="flex items-center gap-2 mb-3">
+            <Link2 className="w-4 h-4 text-indigo-500" />
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+              {selectedEdge.displayLabel || selectedEdge.label}
+            </h3>
+          </div>
+
+          <div className="flex flex-wrap gap-1.5 mb-3">
+            {(() => {
+              const originLabel = EDGE_ORIGIN_STYLE[selectedEdge.origin]?.label || selectedEdge.origin;
+              const isDashed = selectedEdge.origin === "ai_proposed";
+              return (
+                <span className={`inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${
+                  selectedEdge.origin === "human_verified" ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300" :
+                  selectedEdge.origin === "deterministic" ? "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300" :
+                  selectedEdge.origin === "ai_proposed" ? "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300" :
+                  "bg-slate-100 dark:bg-slate-700 text-slate-500"
+                }`}>
+                  {isDashed && "◌ "}{originLabel}
+                </span>
+              );
+            })()}
+            {selectedEdge.status && (
+              <span className="inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-500">
+                {selectedEdge.status}
+              </span>
+            )}
+          </div>
+
+          <div className="space-y-2 mb-4">
+            <div className="flex justify-between text-xs">
+              <span className="text-slate-500">Confidence</span>
+              <span className="font-bold text-slate-700 dark:text-slate-300">
+                {selectedEdge.confidence != null ? `${Math.round(selectedEdge.confidence * 100)}%` : "—"}
+              </span>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className="text-slate-500">Style</span>
+              <span className="font-bold text-slate-700 dark:text-slate-300">
+                {selectedEdge.origin === "ai_proposed" ? "Dashed (proposed)" : "Solid"}
+              </span>
+            </div>
+          </div>
+
+          {selectedEdge.evidence && (
+            <div className="mb-4">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Evidence</p>
+              <div className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed p-2.5 rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700/50">
+                {selectedEdge.evidence}
+              </div>
+            </div>
+          )}
+
+          {!selectedEdge.evidence && (
+            <p className="text-xs text-slate-400 italic mb-4">No evidence recorded for this relationship.</p>
+          )}
+
+          <div className="text-[10px] text-slate-400 border-t border-slate-100 dark:border-slate-700 pt-2">
+            <p>Edge ID: <span className="font-mono text-slate-500 dark:text-slate-400">{selectedEdge.id.slice(0, 8)}…</span></p>
+          </div>
         </div>
       )}
 

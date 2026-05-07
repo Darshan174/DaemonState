@@ -34,6 +34,7 @@ class GraphBuilderAgent:
     async def run(self, limit: int = 100, api_key: str | None = None, model: str | None = None) -> dict:
         started_at = datetime.utcnow()
 
+        extractor = None
         if api_key or model:
             from app.processing.extractor import Extractor
             extractor = Extractor(api_key=api_key, model=model)
@@ -57,6 +58,13 @@ class GraphBuilderAgent:
                 n = await ingestor.process_document(doc.id)
                 components_created += n
                 docs_processed += 1
+                extraction_error = getattr(ingestor._extractor, "last_error", None)
+                if extraction_error:
+                    errors.append({
+                        "doc_id": str(doc.id),
+                        "warning": "llm_extraction_failed_regex_fallback",
+                        "error": extraction_error,
+                    })
             except Exception as exc:
                 errors.append({"doc_id": str(doc.id), "error": str(exc)})
                 logger.warning("graph_builder: error processing doc %s: %s", doc.id, exc)
@@ -130,6 +138,9 @@ class GraphBuilderAgent:
                         source_component_id=comp.id,
                         target_component_id=other.id,
                         relationship_type="related_to",
+                        confidence=0.5,
+                        evidence=f"Name mention: '{other_name}' found in '{comp.name}' — cross-document candidate, verify before trusting",
+                        origin="ai_proposed",
                     ))
                     existing_pairs.add((comp.id, other.id))
                     inferred += 1

@@ -10,6 +10,18 @@ class Settings(BaseSettings):
     litellm_api_key: str | None = None
     enable_local_embedder: bool = False
     data_dir: str = "./data"
+    google_client_id: str | None = None
+    google_client_secret: str | None = None
+    google_redirect_uri: str | None = None
+    slack_client_id: str | None = None
+    slack_client_secret: str | None = None
+    slack_redirect_uri: str | None = None
+    slack_managed_install_url: str | None = None
+    encryption_key: str | None = None
+    zoom_client_id: str | None = None
+    zoom_client_secret: str | None = None
+    zoom_redirect_uri: str | None = None
+    public_base_url: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

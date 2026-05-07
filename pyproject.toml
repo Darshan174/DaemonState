@@ -19,6 +19,7 @@ dependencies = [
   "uvicorn[standard]>=0.34.0,<1.0.0",
   "aiosqlite>=0.20.0,<1.0.0",
   "asyncpg>=0.29.0,<1.0.0",
+  "cryptography>=42.0.0,<46.0.0",
 ]
 
 [project.scripts]

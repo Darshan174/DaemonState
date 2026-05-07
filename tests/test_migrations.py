@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import os
 import tempfile
+from uuid import UUID
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.migrations import run_migrations
+from app.models import Connector
 
 
 class TestRelationshipConfidenceEvidenceMigration:
@@ -82,16 +85,18 @@ class TestRelationshipConfidenceEvidenceMigration:
             columns = {row[1] for row in result.fetchall()}
             assert "confidence" in columns
             assert "evidence" in columns
+            assert "status" in columns
 
         async with engine.connect() as conn:
             result = await conn.execute(text(
-                "SELECT confidence, evidence FROM relationships "
+                "SELECT confidence, evidence, status FROM relationships "
                 "WHERE id = '00000000-0000-0000-0000-000000000005'"
             ))
             row = result.fetchone()
             assert row is not None
             assert float(row[0]) == 0.7
             assert row[1] == "backfill: schema migration"
+            assert row[2] == "active"
 
     async def test_migration_is_idempotent(self, legacy_engine):
         engine, _ = legacy_engine
@@ -228,6 +233,82 @@ class TestRelationshipConfidenceEvidenceMigration:
             async with engine.connect() as conn:
                 result = await conn.execute(text("PRAGMA table_info(relationships)"))
                 assert result.fetchall() == []
+        finally:
+            await engine.dispose()
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+class TestConnectorWorkspaceMigration:
+    """Prove old connector columns do not break new workspace-aware inserts."""
+
+    async def test_migration_removes_legacy_connector_constraints(self):
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text("""
+                    CREATE TABLE workspaces (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        slug TEXT NOT NULL UNIQUE,
+                        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    )
+                """))
+                await conn.execute(text("""
+                    CREATE TABLE connectors (
+                        id TEXT PRIMARY KEY,
+                        connector_type TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'disconnected',
+                        config TEXT NOT NULL,
+                        credentials TEXT NOT NULL,
+                        items_synced INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    )
+                """))
+                await conn.execute(text("""
+                    INSERT INTO connectors (
+                        id, connector_type, status, config, credentials, items_synced
+                    ) VALUES (
+                        'legacy-github', 'github', 'connected',
+                        '{"repositories":["owner/repo"]}', '{"access_token":"old"}', 7
+                    )
+                """))
+
+            async with engine.begin() as conn:
+                await run_migrations(conn)
+
+            async with engine.connect() as conn:
+                result = await conn.execute(text("PRAGMA table_info(connectors)"))
+                columns = {row[1] for row in result.fetchall()}
+                assert "workspace_id" in columns
+                assert "config_json" in columns
+                assert "credentials_json" in columns
+                assert "config" not in columns
+                assert "credentials" not in columns
+                assert "items_synced" not in columns
+
+                row = (await conn.execute(text("""
+                    SELECT workspace_id, config_json, credentials_json
+                    FROM connectors WHERE id = 'legacy-github'
+                """))).fetchone()
+                assert row is not None
+                assert row[0]
+                assert "owner/repo" in row[1]
+                assert "old" in row[2]
+
+            async with AsyncSession(engine, expire_on_commit=False) as session:
+                session.add(Connector(
+                    workspace_id=UUID("00000000-0000-0000-0000-000000000000"),
+                    connector_type="zoom",
+                    status="connected",
+                ))
+                await session.commit()
         finally:
             await engine.dispose()
             try:

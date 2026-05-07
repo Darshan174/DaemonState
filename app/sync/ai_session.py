@@ -98,7 +98,7 @@ async def ingest_ai_session(
 
     doc = SourceDocument(
         id=uuid4(),
-        source_type=connector_type,
+        source_type="agent_session",
         external_id=external_id,
         content=full_text,
         metadata_json=meta,
