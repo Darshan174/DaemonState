@@ -1846,9 +1846,12 @@ function normalizeConnectors(data) {
   return Object.values(CONNECTOR_CATALOG).map((catalogItem) => {
     const record = recordsByType.get(catalogItem.type);
     const setup = setupByType.get(catalogItem.type) ?? record?.setup_status ?? null;
-    const isConfigured = setup?.configured ?? true;
+    const isConfigured = setup?.configured ?? record?.is_configured ?? true;
     const managedConnectAvailable = Boolean(setup?.managed_available);
     const availability = record?.availability ?? catalogItem.availability;
+    const normalizedStatus = availability === "coming_soon"
+      ? "coming_soon"
+      : record?.status ?? setup?.status ?? "disconnected";
     if (!record) {
       return {
         ...catalogItem,
@@ -1878,9 +1881,9 @@ function normalizeConnectors(data) {
     return {
       ...catalogItem,
       id: record.id ?? record.connector_id ?? catalogItem.type,
-      connectorId: record.connector_id ?? record.id ?? null,
-      status: record.status,
-      isInstalled: record.status !== "disconnected",
+      connectorId: record.connector_id ?? null,
+      status: normalizedStatus,
+      isInstalled: normalizedStatus === "connected" || normalizedStatus === "warning" || normalizedStatus === "error",
       availability,
       lastSync: formatConnectorDate(record.last_sync_at),
       itemsSynced: extractConnectorCount(record.config),
