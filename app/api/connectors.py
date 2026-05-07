@@ -15,9 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_db_session
-from app.models import Connector, SyncJob, Workspace
+from app.models import Connector, SourceDocument, SyncJob, Workspace
 
 router = APIRouter()
+DEFAULT_WORKSPACE_ID = UUID("00000000-0000-0000-0000-000000000000")
 
 # ── Catalog ────────────────────────────────────────────────────
 
@@ -38,11 +39,35 @@ CONNECTOR_CATALOG: dict[str, dict[str, Any]] = {
         "provider": "native",
         "provider_label": "Personal Access Token",
     },
+    "discord": {
+        "name": "Discord",
+        "description": "Server channels, threads, and community context",
+        "color": "#5865F2",
+        "availability": "coming_soon",
+        "provider": "official_api",
+        "provider_label": "Coming soon",
+    },
+    "ai_context": {
+        "name": "AI Context",
+        "description": "Codex, Claude Code, OpenCode, plans, diffs, and review notes",
+        "color": "#10a37f",
+        "availability": "available",
+        "provider": "native",
+        "provider_label": "Session import",
+    },
+    "local": {
+        "name": "Local Files",
+        "description": "Uploaded Markdown, text, JSON, CSV, and other local documents",
+        "color": "#64748B",
+        "availability": "available",
+        "provider": "native",
+        "provider_label": "Upload",
+    },
     "zoom": {
         "name": "Zoom",
         "description": "Meeting transcripts and recording metadata",
         "color": "#0B5CFF",
-        "availability": "available",
+        "availability": "coming_soon",
         "provider": "official_api",
         "provider_label": "Official API",
     },
@@ -50,7 +75,7 @@ CONNECTOR_CATALOG: dict[str, dict[str, Any]] = {
         "name": "Google Drive",
         "description": "Docs, Sheets, Slides, and folder content",
         "color": "#0F9D58",
-        "availability": "available",
+        "availability": "coming_soon",
         "provider": "official_api",
         "provider_label": "Official API",
     },
@@ -58,7 +83,7 @@ CONNECTOR_CATALOG: dict[str, dict[str, Any]] = {
         "name": "Gmail",
         "description": "Email threads, attachments, and sender context",
         "color": "#EA4335",
-        "availability": "available",
+        "availability": "coming_soon",
         "provider": "official_api",
         "provider_label": "Official API",
     },
@@ -85,6 +110,14 @@ CONNECTOR_CATALOG: dict[str, dict[str, Any]] = {
         "availability": "available",
         "provider": "native",
         "provider_label": "Session import",
+    },
+    "wispr_flow": {
+        "name": "Wispr Flow",
+        "description": "Voice notes, transcripts, and dictated project context",
+        "color": "#111827",
+        "availability": "coming_soon",
+        "provider": "official_api",
+        "provider_label": "Coming soon",
     },
 }
 
@@ -196,7 +229,7 @@ def _connector_setup_status(connector_type: str) -> dict[str, Any]:
     if connector_type == "slack":
         configured = _slack_configured()
         managed_url = _slack_managed_install_url()
-        managed = bool(managed_url)
+        managed = bool(managed_url and configured)
         redirect_uri = _get_env("SLACK_REDIRECT_URI") or (f"{base}/api/connectors/slack/callback" if base else None)
         return {
             "connector_type": "slack",
@@ -204,6 +237,7 @@ def _connector_setup_status(connector_type: str) -> dict[str, Any]:
             "managed_available": managed,
             "managed_install_url": "/api/connectors/slack/managed/install" if managed else None,
             "missing": [] if configured else ["SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET"],
+            "status": "disconnected",
             "message": (
                 "Managed Slack OAuth is available."
                 if managed
@@ -213,7 +247,7 @@ def _connector_setup_status(connector_type: str) -> dict[str, Any]:
             "redirect_uri": redirect_uri,
         }
     if connector_type == "zoom":
-        configured = _zoom_configured()
+        configured = False
         redirect_uri = _get_env("ZOOM_REDIRECT_URI") or (f"{base}/api/connectors/zoom/callback" if base else None)
         return {
             "connector_type": "zoom",
@@ -221,11 +255,12 @@ def _connector_setup_status(connector_type: str) -> dict[str, Any]:
             "managed_available": configured,
             "managed_install_url": "/api/connectors/zoom/install" if configured else None,
             "missing": [] if configured else ["ZOOM_CLIENT_ID", "ZOOM_CLIENT_SECRET"],
+            "status": "coming_soon",
             "message": None,
             "redirect_uri": redirect_uri,
         }
     if connector_type in GOOGLE_CONNECTORS:
-        configured = _google_configured()
+        configured = False
         redirect_uri = _get_env("GOOGLE_REDIRECT_URI") or (f"{base}/api/connectors/{connector_type}/callback" if base else None)
         return {
             "connector_type": connector_type,
@@ -233,6 +268,7 @@ def _connector_setup_status(connector_type: str) -> dict[str, Any]:
             "managed_available": configured,
             "managed_install_url": f"/api/connectors/{connector_type}/install" if configured else None,
             "missing": [] if configured else ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"],
+            "status": "coming_soon",
             "message": None,
             "redirect_uri": redirect_uri,
         }
@@ -244,11 +280,15 @@ def _connector_setup_status(connector_type: str) -> dict[str, Any]:
             "managed_install_url": None,
             "missing": [],
             "redirect_uri": None,
+            "status": "disconnected",
             "message": "Provide a GitHub Personal Access Token with repo:read scope and a list of owner/repo targets.",
         }
     if connector_type in AI_SESSION_CONNECTORS:
-        return {"connector_type": connector_type, "configured": True, "managed_available": False, "managed_install_url": None, "missing": [], "redirect_uri": None}
-    return {"connector_type": connector_type, "configured": True, "managed_available": False, "managed_install_url": None, "missing": [], "redirect_uri": None}
+        return {"connector_type": connector_type, "configured": True, "managed_available": False, "managed_install_url": None, "missing": [], "redirect_uri": None, "status": "connected"}
+    if connector_type in {"ai_context", "local"}:
+        return {"connector_type": connector_type, "configured": True, "managed_available": False, "managed_install_url": None, "missing": [], "redirect_uri": None, "status": "connected"}
+    status = "coming_soon" if CONNECTOR_CATALOG.get(connector_type, {}).get("availability") == "coming_soon" else "disconnected"
+    return {"connector_type": connector_type, "configured": False, "managed_available": False, "managed_install_url": None, "missing": [], "redirect_uri": None, "status": status}
 
 
 # ── DB helpers ─────────────────────────────────────────────────
@@ -261,6 +301,15 @@ async def _get_workspace(workspace_id: str, session: AsyncSession) -> Workspace:
     ws = await session.get(Workspace, ws_uuid)
     if not ws:
         raise HTTPException(status_code=404, detail="Workspace not found")
+    return ws
+
+
+async def _get_or_create_default_workspace(session: AsyncSession) -> Workspace:
+    ws = await session.get(Workspace, DEFAULT_WORKSPACE_ID)
+    if ws is None:
+        ws = Workspace(id=DEFAULT_WORKSPACE_ID, name="Default", slug="default")
+        session.add(ws)
+        await session.flush()
     return ws
 
 
@@ -301,6 +350,45 @@ def _connector_to_dict(connector: Connector) -> dict[str, Any]:
         "last_sync_at": last_sync_at.isoformat() if last_sync_at else None,
         "created_at": created_at.isoformat() if created_at else None,
         "updated_at": updated_at.isoformat() if updated_at else None,
+    }
+
+
+def _decorate_setup_status(status: dict[str, Any]) -> dict[str, Any]:
+    connector_type = status["connector_type"]
+    status.setdefault("type", connector_type)
+    status.setdefault("status", "connected" if status.get("configured") else "disconnected")
+    return status
+
+
+def _catalog_connector_entry(connector_type: str, connector: Connector | None = None) -> dict[str, Any]:
+    catalog = CONNECTOR_CATALOG[connector_type]
+    setup = _connector_setup_status(connector_type)
+    default_status = "connected" if connector_type in {"ai_context", "local"} else "disconnected"
+    if catalog["availability"] == "coming_soon":
+        default_status = "disconnected"
+    status = connector.status if connector else default_status
+    configured = bool(setup.get("configured")) and catalog["availability"] == "available"
+    if connector and connector.status == "connected":
+        configured = True
+    message = setup.get("message")
+    if catalog["availability"] == "coming_soon":
+        configured = False
+        message = message or f"{catalog['name']} ingestion is not available yet."
+    return {
+        "connector_id": str(connector.id) if connector else connector_type,
+        "id": str(connector.id) if connector else connector_type,
+        "type": connector_type,
+        "connector_type": connector_type,
+        "name": catalog["name"],
+        "description": catalog["description"],
+        "color": catalog["color"],
+        "availability": catalog["availability"],
+        "status": status,
+        "provider": catalog["provider"],
+        "provider_label": catalog.get("provider_label"),
+        "is_configured": configured,
+        "config": _loads_json_dict(connector.config_json) if connector else {},
+        "message": message,
     }
 
 
@@ -369,40 +457,48 @@ async def create_workspace(
 
 @router.get("/connectors")
 async def list_connectors(
-    workspace_id: str,
+    workspace_id: str | None = None,
     session: AsyncSession = Depends(get_db_session),
-) -> list[dict]:
-    ws = await _get_workspace(workspace_id, session)
-    result = await session.scalars(
-        select(Connector).where(Connector.workspace_id == ws.id)
-    )
+) -> dict:
+    if workspace_id:
+        ws = await _get_workspace(workspace_id, session)
+        result = await session.scalars(select(Connector).where(Connector.workspace_id == ws.id))
+    else:
+        result = await session.scalars(select(Connector))
     connectors = {c.connector_type: c for c in result}
-    return [_connector_to_dict(c) for c in connectors.values()]
+    setup_status = [_decorate_setup_status(_connector_setup_status(ct)) for ct in CONNECTOR_CATALOG]
+    return {
+        "connectors": [_catalog_connector_entry(ct, connectors.get(ct)) for ct in CONNECTOR_CATALOG],
+        "setupStatus": setup_status,
+    }
 
 
 @router.get("/connectors/setup-status")
 async def connector_setup_status() -> list[dict]:
-    return [_connector_setup_status(ct) for ct in CONNECTOR_CATALOG]
+    return [_decorate_setup_status(_connector_setup_status(ct)) for ct in CONNECTOR_CATALOG]
 
 
 @router.get("/connectors/processing-summary")
 async def connector_processing_summary(
-    workspace_id: str,
+    workspace_id: str | None = None,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    ws = await _get_workspace(workspace_id, session)
-    result = await session.scalars(
-        select(Connector).where(Connector.workspace_id == ws.id)
-    )
-    items = []
-    for connector in result:
-        config = json.loads(connector.config_json or "{}")
-        items.append({
-            "connectorType": connector.connector_type,
-            "connector_type": connector.connector_type,
-            "processedDocuments": config.get("processed_count", 0),
-            "unprocessedDocuments": 0,
-        })
+    docs = list(await session.scalars(select(SourceDocument)))
+    counts: dict[str, int] = {ct: 0 for ct in CONNECTOR_CATALOG}
+    for doc in docs:
+        source_type = doc.source_type
+        if source_type.startswith("ai_context"):
+            key = "ai_context"
+        else:
+            key = source_type
+        counts[key] = counts.get(key, 0) + 1
+    items = [{
+        "connectorType": ct,
+        "connector_type": ct,
+        "processedDocuments": counts.get(ct, 0),
+        "unprocessedDocuments": 0,
+        "total_documents": counts.get(ct, 0),
+    } for ct in CONNECTOR_CATALOG]
     return {"items": items}
 
 
@@ -633,7 +729,7 @@ async def zoom_connect_token(
     workspace_id = payload.get("workspace_id")
     token = payload.get("token", "").strip()
     if not workspace_id or not token:
-        raise HTTPException(status_code=422, detail="workspace_id and token are required")
+        raise HTTPException(status_code=400, detail="Zoom connector is not available yet.")
     ws = await _get_workspace(workspace_id, session)
     connector = await _get_or_create_connector(ws.id, "zoom", session)
     connector.status = "connected"
@@ -790,7 +886,83 @@ async def github_connect(
     return _connector_to_dict(connector)
 
 
+@router.post("/connectors/{connector_type}/connect")
+async def connect_catalog_connector(
+    connector_type: str,
+    payload: dict | None = None,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    if connector_type not in CONNECTOR_CATALOG:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    if connector_type in {"ai_context", "local"}:
+        await _get_or_create_default_workspace(session)
+        connector = await _get_or_create_connector(DEFAULT_WORKSPACE_ID, connector_type, session)
+        connector.status = "connected"
+        connector.config_json = json.dumps((payload or {}).get("config", {}))
+        await session.commit()
+        await session.refresh(connector)
+        entry = _catalog_connector_entry(connector_type, connector)
+        entry["connector_id"] = str(connector.id)
+        return entry
+    raise HTTPException(
+        status_code=400,
+        detail=f"{CONNECTOR_CATALOG[connector_type]['name']} connector is not currently supported for direct connect.",
+    )
+
+
 # ── AI session ingest ──────────────────────────────────────────
+
+def _ai_context_source_type(tool: str | None) -> tuple[str, str]:
+    raw = (tool or "").strip().lower().replace("-", "_")
+    if raw in {"codex"}:
+        return "ai_context_codex", "codex"
+    if raw in {"claude", "claude_code"}:
+        return "ai_context_claude_code", "claude_code"
+    if raw in {"opencode", "open_code"}:
+        return "ai_context_opencode", "opencode"
+    if raw:
+        return "ai_context", "generic"
+    return "ai_context", "generic"
+
+
+@router.post("/connectors/ai-context/import", status_code=201)
+async def import_ai_context_documents(
+    payload: dict,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    documents = payload.get("documents") if isinstance(payload, dict) else None
+    if not documents:
+        raise HTTPException(status_code=422, detail="documents must not be empty")
+
+    created_ids: list[str] = []
+    for item in documents:
+        content = str(item.get("content", "")).strip()
+        if not content:
+            continue
+        source_type, tool = _ai_context_source_type(item.get("tool"))
+        metadata = dict(item.get("metadata") or {})
+        for key in ("session_type", "session_id", "started_at", "ended_at"):
+            if item.get(key) is not None:
+                metadata[key] = item[key]
+        metadata["tool"] = tool
+        metadata["ingested_via"] = "ai_context_import"
+        doc = SourceDocument(
+            source_type=source_type,
+            external_id=item.get("external_id") or f"ai-context:{secrets.token_urlsafe(12)}",
+            content=content,
+            author=item.get("author"),
+            source_url=item.get("source_url"),
+            metadata_json=json.dumps(metadata),
+        )
+        session.add(doc)
+        await session.flush()
+        created_ids.append(str(doc.id))
+
+    if not created_ids:
+        raise HTTPException(status_code=422, detail="documents must contain content")
+    await session.commit()
+    return {"created": len(created_ids), "document_ids": created_ids, "source_type": "ai_context"}
+
 
 class AISessionIngestRequest(BaseModel):
     workspace_id: str
@@ -870,15 +1042,23 @@ async def sync_connector(
         raise HTTPException(status_code=422, detail="Connector is not connected")
 
     job = SyncJob(connector_id=cid, status="pending")
+    if connector.connector_type in {"slack", "discord", "zoom", "gdrive", "gmail", "wispr_flow"}:
+        job.status = "failed"
+        job.error_type = "unsupported_connector"
+        job.error_message = f"{CONNECTOR_CATALOG.get(connector.connector_type, {}).get('name', connector.connector_type)} is not supported yet."
+        job.completed_at = datetime.utcnow()
     session.add(job)
     await session.commit()
     await session.refresh(job)
 
-    background_tasks.add_task(_run_sync_job, str(job.id), str(cid), settings.database_url)
+    if job.status == "pending" and connector.connector_type not in {"local", "ai_context"}:
+        background_tasks.add_task(_run_sync_job, str(job.id), str(cid), settings.database_url)
     return {
         "job_id": str(job.id),
         "connector_id": str(cid),
-        "status": "pending",
+        "status": job.status,
+        "error_type": job.error_type,
+        "error_message": job.error_message,
         "message": f"Sync queued for {connector.connector_type}.",
     }
 
@@ -900,6 +1080,9 @@ async def get_sync_status(
     )
     job = result.first()
     if not job:
+        connector = await session.get(Connector, cid)
+        if connector is None:
+            raise HTTPException(status_code=404, detail="Connector not found")
         return None
     return _job_to_dict(job)
 

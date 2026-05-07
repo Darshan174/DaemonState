@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -36,6 +37,10 @@ def _force_local_providers(monkeypatch):
 
 @pytest.fixture(scope="session")
 async def engine():
+    if TEST_DATABASE_URL.startswith("sqlite+aiosqlite:///"):
+        db_path = TEST_DATABASE_URL.removeprefix("sqlite+aiosqlite:///")
+        if db_path and db_path != ":memory:":
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     eng = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

@@ -11,10 +11,11 @@ from sqlalchemy.pool import NullPool
 
 from app.database import get_db_session
 from app.main import app
+from app.migrations import run_migrations
 from app.models import Base, Connector, SourceDocument
 from app.processing.embedder import HashingEmbedder
 
-TEST_DATABASE_URL = "sqlite+aiosqlite:///data/test_connectors.db"
+TEST_DATABASE_URL = f"sqlite+aiosqlite:////private/tmp/test_connectors_{uuid4().hex}.db"
 
 
 @pytest.fixture(autouse=True)
@@ -28,6 +29,23 @@ def _force_local_providers(monkeypatch):
     monkeypatch.setattr("app.processing.extractor.settings.extraction_model", None)
     monkeypatch.setattr("app.services.ingest.build_default_embedder", lambda: HashingEmbedder())
     monkeypatch.setattr("app.services.query.build_default_embedder", lambda: HashingEmbedder())
+    for key in (
+        "SLACK_CLIENT_ID",
+        "SLACK_CLIENT_SECRET",
+        "SLACK_MANAGED_INSTALL_URL",
+        "ZOOM_CLIENT_ID",
+        "ZOOM_CLIENT_SECRET",
+        "GOOGLE_CLIENT_ID",
+        "GOOGLE_CLIENT_SECRET",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr("app.config.settings.slack_client_id", None, raising=False)
+    monkeypatch.setattr("app.config.settings.slack_client_secret", None, raising=False)
+    monkeypatch.setattr("app.config.settings.slack_managed_install_url", None, raising=False)
+    monkeypatch.setattr("app.config.settings.zoom_client_id", None, raising=False)
+    monkeypatch.setattr("app.config.settings.zoom_client_secret", None, raising=False)
+    monkeypatch.setattr("app.config.settings.google_client_id", None, raising=False)
+    monkeypatch.setattr("app.config.settings.google_client_secret", None, raising=False)
 
 
 @pytest.fixture(scope="session")
@@ -35,6 +53,7 @@ async def engine():
     eng = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await run_migrations(conn)
     yield eng
     await eng.dispose()
 
