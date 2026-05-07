@@ -155,22 +155,24 @@ class TestConnectorCatalog:
             assert entry["status"] == "disconnected"
             assert entry["is_configured"] is False
 
-    async def test_ai_context_shows_as_connected(self, client):
+    async def test_ai_context_shows_as_available_but_not_connected_until_import(self, client):
         response = await client.get("/api/connectors")
         assert response.status_code == 200
         data = response.json()
         ai_ctx = next(c for c in data["connectors"] if c["type"] == "ai_context")
-        assert ai_ctx["status"] == "connected"
+        assert ai_ctx["status"] == "disconnected"
         assert ai_ctx["availability"] == "available"
         assert ai_ctx["is_configured"] is True
+        assert ai_ctx["connector_id"] is None
 
-    async def test_local_shows_as_connected(self, client):
+    async def test_local_shows_as_available_but_not_connected_until_upload(self, client):
         response = await client.get("/api/connectors")
         assert response.status_code == 200
         data = response.json()
         local = next(c for c in data["connectors"] if c["type"] == "local")
-        assert local["status"] == "connected"
+        assert local["status"] == "disconnected"
         assert local["availability"] == "available"
+        assert local["connector_id"] is None
 
     async def test_slack_initially_disconnected_and_unsupported(self, client):
         response = await client.get("/api/connectors")

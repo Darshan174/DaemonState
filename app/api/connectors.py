@@ -224,8 +224,8 @@ def _google_configured() -> bool:
 
 
 
-def _connector_setup_status(connector_type: str) -> dict[str, Any]:
-    base = _public_base_url()
+def _connector_setup_status(connector_type: str, request: Request | None = None) -> dict[str, Any]:
+    base = _public_base_url() or _request_base_url(request)
     if connector_type == "slack":
         configured = _slack_configured()
         managed_url = _slack_managed_install_url()
@@ -284,9 +284,9 @@ def _connector_setup_status(connector_type: str) -> dict[str, Any]:
             "message": "Provide a GitHub Personal Access Token with repo:read scope and a list of owner/repo targets.",
         }
     if connector_type in AI_SESSION_CONNECTORS:
-        return {"connector_type": connector_type, "configured": True, "managed_available": False, "managed_install_url": None, "missing": [], "redirect_uri": None, "status": "connected"}
+        return {"connector_type": connector_type, "configured": True, "managed_available": False, "managed_install_url": None, "missing": [], "redirect_uri": None, "status": "disconnected"}
     if connector_type in {"ai_context", "local"}:
-        return {"connector_type": connector_type, "configured": True, "managed_available": False, "managed_install_url": None, "missing": [], "redirect_uri": None, "status": "connected"}
+        return {"connector_type": connector_type, "configured": True, "managed_available": False, "managed_install_url": None, "missing": [], "redirect_uri": None, "status": "disconnected"}
     status = "coming_soon" if CONNECTOR_CATALOG.get(connector_type, {}).get("availability") == "coming_soon" else "disconnected"
     return {"connector_type": connector_type, "configured": False, "managed_available": False, "managed_install_url": None, "missing": [], "redirect_uri": None, "status": status}
 
@@ -360,12 +360,14 @@ def _decorate_setup_status(status: dict[str, Any]) -> dict[str, Any]:
     return status
 
 
-def _catalog_connector_entry(connector_type: str, connector: Connector | None = None) -> dict[str, Any]:
+def _catalog_connector_entry(
+    connector_type: str,
+    connector: Connector | None = None,
+    request: Request | None = None,
+) -> dict[str, Any]:
     catalog = CONNECTOR_CATALOG[connector_type]
-    setup = _connector_setup_status(connector_type)
-    default_status = "connected" if connector_type in {"ai_context", "local"} else "disconnected"
-    if catalog["availability"] == "coming_soon":
-        default_status = "disconnected"
+    setup = _connector_setup_status(connector_type, request)
+    default_status = "disconnected"
     status = connector.status if connector else default_status
     configured = bool(setup.get("configured")) and catalog["availability"] == "available"
     if connector and connector.status == "connected":
@@ -375,7 +377,7 @@ def _catalog_connector_entry(connector_type: str, connector: Connector | None = 
         configured = False
         message = message or f"{catalog['name']} ingestion is not available yet."
     return {
-        "connector_id": str(connector.id) if connector else connector_type,
+        "connector_id": str(connector.id) if connector else None,
         "id": str(connector.id) if connector else connector_type,
         "type": connector_type,
         "connector_type": connector_type,
@@ -457,6 +459,7 @@ async def create_workspace(
 
 @router.get("/connectors")
 async def list_connectors(
+    request: Request,
     workspace_id: str | None = None,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
@@ -466,16 +469,16 @@ async def list_connectors(
     else:
         result = await session.scalars(select(Connector))
     connectors = {c.connector_type: c for c in result}
-    setup_status = [_decorate_setup_status(_connector_setup_status(ct)) for ct in CONNECTOR_CATALOG]
+    setup_status = [_decorate_setup_status(_connector_setup_status(ct, request)) for ct in CONNECTOR_CATALOG]
     return {
-        "connectors": [_catalog_connector_entry(ct, connectors.get(ct)) for ct in CONNECTOR_CATALOG],
+        "connectors": [_catalog_connector_entry(ct, connectors.get(ct), request) for ct in CONNECTOR_CATALOG],
         "setupStatus": setup_status,
     }
 
 
 @router.get("/connectors/setup-status")
-async def connector_setup_status() -> list[dict]:
-    return [_decorate_setup_status(_connector_setup_status(ct)) for ct in CONNECTOR_CATALOG]
+async def connector_setup_status(request: Request) -> list[dict]:
+    return [_decorate_setup_status(_connector_setup_status(ct, request)) for ct in CONNECTOR_CATALOG]
 
 
 @router.get("/connectors/processing-summary")
@@ -1220,6 +1223,10 @@ async def _run_sync_job(job_id: str, connector_id: str, database_url: str) -> No
             job.result_metadata_json = json.dumps(result_metadata)
 
             config = json.loads(connector.config_json or "{}")
+            config["items_synced"] = (
+                config.get("items_synced", 0)
+                + sync_result.get("documents_persisted", 0)
+            )
             config["total_processed_count"] = (
                 config.get("total_processed_count", 0)
                 + extract_result.get("components_created", 0)

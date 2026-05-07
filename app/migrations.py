@@ -119,17 +119,80 @@ async def _rebuild_connectors_table(
 async def _migrate_sync_jobs_result_metadata(conn: AsyncConnection) -> None:
     """Rename legacy result_metadata payloads by copying into the new column."""
     columns = await _get_table_columns(conn, "sync_jobs")
-    if not columns or "result_metadata_json" in columns:
+    if not columns:
         return
 
-    await conn.execute(text(
-        "ALTER TABLE sync_jobs ADD COLUMN result_metadata_json TEXT NOT NULL DEFAULT '{}'"
-    ))
-    if "result_metadata" in columns:
+    if "result_metadata_json" not in columns:
         await conn.execute(text(
-            "UPDATE sync_jobs SET result_metadata_json = result_metadata "
-            "WHERE result_metadata IS NOT NULL AND result_metadata != ''"
+            "ALTER TABLE sync_jobs ADD COLUMN result_metadata_json TEXT NOT NULL DEFAULT '{}'"
         ))
+        if "result_metadata" in columns:
+            await conn.execute(text(
+                "UPDATE sync_jobs SET result_metadata_json = result_metadata "
+                "WHERE result_metadata IS NOT NULL AND result_metadata != ''"
+            ))
+        columns = await _get_table_columns(conn, "sync_jobs")
+
+    if "result_metadata" in columns:
+        await _rebuild_sync_jobs_table(conn, columns)
+
+
+async def _rebuild_sync_jobs_table(conn: AsyncConnection, columns: set[str]) -> None:
+    """Drop obsolete result_metadata whose NOT NULL constraint breaks inserts."""
+    exprs = {
+        "id": "id" if "id" in columns else "lower(hex(randomblob(16)))",
+        "connector_id": "connector_id" if "connector_id" in columns else "''",
+        "status": "status" if "status" in columns else "'pending'",
+        "error_type": "error_type" if "error_type" in columns else "NULL",
+        "error_message": "error_message" if "error_message" in columns else "NULL",
+        "result_metadata_json": (
+            "CASE WHEN result_metadata_json IS NOT NULL AND result_metadata_json NOT IN ('', '{}') THEN result_metadata_json "
+            "WHEN result_metadata IS NOT NULL AND result_metadata != '' THEN result_metadata ELSE '{}' END"
+            if "result_metadata" in columns
+            else "COALESCE(NULLIF(result_metadata_json, ''), '{}')"
+        ),
+        "created_at": "created_at" if "created_at" in columns else "CURRENT_TIMESTAMP",
+        "started_at": "started_at" if "started_at" in columns else "NULL",
+        "completed_at": "completed_at" if "completed_at" in columns else "NULL",
+    }
+
+    await conn.execute(text("""
+        CREATE TABLE sync_jobs_new (
+            id CHAR(32) NOT NULL,
+            connector_id CHAR(32) NOT NULL,
+            status VARCHAR(50) NOT NULL DEFAULT 'pending',
+            error_type VARCHAR(100),
+            error_message TEXT,
+            result_metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            started_at DATETIME,
+            completed_at DATETIME,
+            PRIMARY KEY (id),
+            FOREIGN KEY(connector_id) REFERENCES connectors (id)
+        )
+    """))
+    await conn.execute(text(f"""
+        INSERT INTO sync_jobs_new (
+            id, connector_id, status, error_type, error_message,
+            result_metadata_json, created_at, started_at, completed_at
+        )
+        SELECT
+            {exprs["id"]},
+            {exprs["connector_id"]},
+            {exprs["status"]},
+            {exprs["error_type"]},
+            {exprs["error_message"]},
+            {exprs["result_metadata_json"]},
+            {exprs["created_at"]},
+            {exprs["started_at"]},
+            {exprs["completed_at"]}
+        FROM sync_jobs
+    """))
+    await conn.execute(text("DROP TABLE sync_jobs"))
+    await conn.execute(text("ALTER TABLE sync_jobs_new RENAME TO sync_jobs"))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_sync_jobs_connector_id ON sync_jobs (connector_id)"
+    ))
 
 
 async def _migrate_components_temporal(conn: AsyncConnection) -> None:

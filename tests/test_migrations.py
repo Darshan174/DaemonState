@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.migrations import run_migrations
-from app.models import Connector
+from app.models import Connector, SyncJob
 
 
 class TestRelationshipConfidenceEvidenceMigration:
@@ -307,6 +307,99 @@ class TestConnectorWorkspaceMigration:
                     workspace_id=UUID("00000000-0000-0000-0000-000000000000"),
                     connector_type="zoom",
                     status="connected",
+                ))
+                await session.commit()
+        finally:
+            await engine.dispose()
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+class TestSyncJobMigration:
+    """Prove legacy sync_jobs.result_metadata constraints do not break new inserts."""
+
+    async def test_migration_removes_legacy_result_metadata_column(self):
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text("""
+                    CREATE TABLE workspaces (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        slug TEXT NOT NULL UNIQUE,
+                        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    )
+                """))
+                await conn.execute(text("""
+                    CREATE TABLE connectors (
+                        id TEXT PRIMARY KEY,
+                        workspace_id TEXT NOT NULL,
+                        connector_type TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'disconnected',
+                        config_json TEXT NOT NULL DEFAULT '{}',
+                        credentials_json TEXT NOT NULL DEFAULT '{}',
+                        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    )
+                """))
+                await conn.execute(text("""
+                    CREATE TABLE sync_jobs (
+                        id TEXT PRIMARY KEY,
+                        connector_id TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        error_type TEXT,
+                        error_message TEXT,
+                        result_metadata TEXT NOT NULL,
+                        result_metadata_json TEXT NOT NULL DEFAULT '{}',
+                        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        started_at TEXT,
+                        completed_at TEXT
+                    )
+                """))
+                await conn.execute(text("""
+                    INSERT INTO connectors (
+                        id, workspace_id, connector_type, status, config_json, credentials_json
+                    ) VALUES (
+                        '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000000',
+                        'github', 'connected', '{}', '{}'
+                    )
+                """))
+                await conn.execute(text("""
+                    INSERT INTO sync_jobs (
+                        id, connector_id, status, result_metadata
+                    ) VALUES (
+                        '00000000-0000-0000-0000-000000000002',
+                        '00000000-0000-0000-0000-000000000001',
+                        'completed',
+                        :metadata
+                    )
+                """), {"metadata": '{"documents_fetched":1}'})
+
+            async with engine.begin() as conn:
+                await run_migrations(conn)
+
+            async with engine.connect() as conn:
+                result = await conn.execute(text("PRAGMA table_info(sync_jobs)"))
+                columns = {row[1] for row in result.fetchall()}
+                assert "result_metadata_json" in columns
+                assert "result_metadata" not in columns
+
+                row = (await conn.execute(text("""
+                    SELECT result_metadata_json FROM sync_jobs
+                    WHERE id = '00000000-0000-0000-0000-000000000002'
+                """))).fetchone()
+                assert row is not None
+                assert "documents_fetched" in row[0]
+
+            async with AsyncSession(engine, expire_on_commit=False) as session:
+                session.add(SyncJob(
+                    connector_id=UUID("00000000-0000-0000-0000-000000000001"),
+                    status="pending",
                 ))
                 await session.commit()
         finally:

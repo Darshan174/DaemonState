@@ -93,6 +93,12 @@ export default function Connectors() {
 
   const list = data ?? [];
   const slackConnector = list.find((item) => item.type === "slack") ?? null;
+  useEffect(() => {
+    if (slackConnector?.redirectUri) {
+      setSlackRedirectUri(slackConnector.redirectUri);
+    }
+  }, [slackConnector?.redirectUri]);
+
   const processingByType = useMemo(
     () =>
       new Map(
@@ -309,6 +315,7 @@ export default function Connectors() {
       {slackConnectIntent && (
         <SlackConnectModal
           mode={slackConnectIntent.mode}
+          redirectUri={slackConnector?.redirectUri ?? slackRedirectUri}
           onCancel={() => setSlackConnectIntent(null)}
           onContinue={() => startSlackOAuth(slackConnectIntent.installHref, slackConnectIntent.currentStatus)}
         />
@@ -824,7 +831,7 @@ function ConnectorCard({
             </div>
           </div>
         )}
-        {isZoom && status !== "disconnected" && (
+        {isZoom && availability !== "coming_soon" && status !== "disconnected" && (
           <ZoomCapabilityPanel
             status={status}
             authMode={authMode}
@@ -888,7 +895,7 @@ function ConnectorCard({
             </Link>
           </div>
         )}
-        {status === "connected" && itemsSynced === 0 && !syncQueuedAt && (
+        {status === "connected" && itemsSynced === 0 && processedDocuments === 0 && !syncQueuedAt && (
           <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-2">
             Ready — run a sync to start pulling data.
           </p>
@@ -1107,7 +1114,7 @@ function ConnectorCard({
       )}
 
       <div className="flex flex-wrap gap-2 mt-auto">
-        {status === "coming_soon" ? (
+        {availability === "coming_soon" || status === "coming_soon" ? (
           <button
             type="button"
             disabled
@@ -1115,6 +1122,17 @@ function ConnectorCard({
           >
             Coming soon
           </button>
+        ) : type === "local" && status === "disconnected" ? (
+          <Link
+            to="/app/sources"
+            className="px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 transition-colors"
+          >
+            Upload files
+          </Link>
+        ) : type === "ai_context" && status === "disconnected" ? (
+          <span className="inline-flex items-center rounded-lg bg-slate-100 dark:bg-slate-900/40 px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-800/50">
+            Use Codex, Claude, or OpenCode import
+          </span>
         ) : isSlack && canConnect ? (
           <button
             type="button"
@@ -1450,7 +1468,7 @@ function SlackSetupHint({ isConfigured, managedConnectAvailable }) {
   return null;
 }
 
-function SlackConnectModal({ mode, onCancel, onContinue }) {
+function SlackConnectModal({ mode, redirectUri, onCancel, onContinue }) {
   const isManaged = mode === "managed";
 
   return (
@@ -1505,6 +1523,20 @@ function SlackConnectModal({ mode, onCancel, onContinue }) {
             </div>
           </div>
           <div className="border-t border-gray-200 dark:border-gray-800/60" />
+          {!isManaged && redirectUri && (
+            <>
+              <div>
+                <p className="font-semibold text-gray-900 dark:text-gray-100">Slack redirect URL must match exactly</p>
+                <p className="mt-1.5 leading-relaxed text-sm">
+                  In Slack app settings, open OAuth & Permissions and add this Redirect URL before continuing:
+                </p>
+                <code className="mt-2 block rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-[11px] font-mono text-gray-800 break-all dark:border-gray-800 dark:bg-slate-950 dark:text-gray-200">
+                  {redirectUri}
+                </code>
+              </div>
+              <div className="border-t border-gray-200 dark:border-gray-800/60" />
+            </>
+          )}
           <div>
             <p className="font-semibold text-gray-900 dark:text-gray-100">You're in control</p>
             <p className="mt-1.5 leading-relaxed text-sm">
