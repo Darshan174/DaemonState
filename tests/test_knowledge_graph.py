@@ -1289,3 +1289,164 @@ class TestPastCurrentFutureProposed:
         comp = await svc._upsert_component(model, doc, fact)
         assert comp.status == "active"
         assert comp.temporal == "unknown"
+
+
+class TestResolveGithubItemType:
+    def test_github_issue_source_type(self):
+        from app.taxonomy import resolve_github_item_type
+        assert resolve_github_item_type("github_issue") == "github_issue"
+
+    def test_github_pr_source_type(self):
+        from app.taxonomy import resolve_github_item_type
+        assert resolve_github_item_type("github_pr") == "github_pr"
+
+    def test_github_with_pr_metadata(self):
+        from app.taxonomy import resolve_github_item_type
+        assert resolve_github_item_type("github", {"item_type": "pull_request"}) == "github_pr"
+        assert resolve_github_item_type("github", {"pr_number": 42}) == "github_pr"
+        assert resolve_github_item_type("github", {"source_url": "https://github.com/org/repo/pull/5"}) == "github_pr"
+
+    def test_github_with_issue_metadata(self):
+        from app.taxonomy import resolve_github_item_type
+        assert resolve_github_item_type("github", {"item_type": "issue"}) == "github_issue"
+        assert resolve_github_item_type("github", {"issue_number": 7}) == "github_issue"
+
+    def test_github_without_metadata_defaults_to_issue(self):
+        from app.taxonomy import resolve_github_item_type
+        assert resolve_github_item_type("github", None) == "github_issue"
+        assert resolve_github_item_type("github", {}) == "github_issue"
+
+
+class TestResolveAgentSessionType:
+    def test_agent_session_types(self):
+        from app.taxonomy import resolve_agent_session_type
+        for st in ("agent_session", "codex", "claude", "opencode"):
+            assert resolve_agent_session_type(st) == "agent_session"
+
+    def test_ai_context_aliases(self):
+        from app.taxonomy import resolve_agent_session_type
+        for st in ("ai_context", "ai_context_codex", "ai_context_claude_code", "ai_context_opencode"):
+            assert resolve_agent_session_type(st) == "agent_session"
+
+    def test_non_agent_types_pass_through(self):
+        from app.taxonomy import resolve_agent_session_type
+        assert resolve_agent_session_type("local") == "local"
+        assert resolve_agent_session_type("github_issue") == "github_issue"
+
+
+class TestCanonicalOriginAliases:
+    def test_auto_maps_to_deterministic(self):
+        assert canonical_origin("auto") == "deterministic"
+        assert canonical_origin("rule") == "deterministic"
+
+    def test_ai_maps_to_ai_proposed(self):
+        assert canonical_origin("ai") == "ai_proposed"
+        assert canonical_origin("llm") == "ai_proposed"
+        assert canonical_origin("inferred") == "ai_proposed"
+
+    def test_human_maps_to_human_verified(self):
+        assert canonical_origin("human") == "human_verified"
+        assert canonical_origin("verified") == "human_verified"
+        assert canonical_origin("manual") == "human_verified"
+
+    def test_source_maps_to_extracted(self):
+        assert canonical_origin("source") == "extracted"
+        assert canonical_origin("text") == "extracted"
+
+    def test_all_valid_origins_pass_through(self):
+        for o in VALID_RELATIONSHIP_ORIGINS:
+            assert canonical_origin(o) == o
+
+
+class TestIsFixReference:
+    def test_fixes_keyword(self):
+        from app.processing.source_extractors import _is_fix_reference
+        assert _is_fix_reference("Fixes #123", 123) is True
+
+    def test_closes_keyword(self):
+        from app.processing.source_extractors import _is_fix_reference
+        assert _is_fix_reference("Closes #456", 456) is True
+
+    def test_resolves_keyword(self):
+        from app.processing.source_extractors import _is_fix_reference
+        assert _is_fix_reference("Resolves #789", 789) is True
+
+    def test_wrong_issue_number(self):
+        from app.processing.source_extractors import _is_fix_reference
+        assert _is_fix_reference("Fixes #100", 200) is False
+
+    def test_no_keyword(self):
+        from app.processing.source_extractors import _is_fix_reference
+        assert _is_fix_reference("Related to #123", 123) is False
+
+    def test_empty_body(self):
+        from app.processing.source_extractors import _is_fix_reference
+        assert _is_fix_reference("", 123) is False
+        assert _is_fix_reference(None, 123) is False
+
+
+class TestIsExplicitBlock:
+    def test_blocks_keyword(self):
+        from app.processing.source_extractors import _is_explicit_block
+        assert _is_explicit_block("This blocks the release") is True
+
+    def test_changes_requested(self):
+        from app.processing.source_extractors import _is_explicit_block
+        assert _is_explicit_block("Changes requested on this PR") is True
+
+    def test_do_not_merge(self):
+        from app.processing.source_extractors import _is_explicit_block
+        assert _is_explicit_block("Do not merge until tests pass") is True
+
+    def test_mild_comment_is_not_block(self):
+        from app.processing.source_extractors import _is_explicit_block
+        assert _is_explicit_block("Minor suggestion: add a comment here") is False
+
+    def test_nit_comment_is_not_block(self):
+        from app.processing.source_extractors import _is_explicit_block
+        assert _is_explicit_block("nit: extra space") is False
+
+
+class TestDetermineOriginContract:
+    def test_github_source_non_deterministic_is_extracted(self):
+        class FakeRel:
+            relationship_type = "related_to"
+        assert _determine_origin("github_issue", FakeRel()) == "extracted"
+        assert _determine_origin("github_pr", FakeRel()) == "extracted"
+
+    def test_agent_session_non_deterministic_is_extracted(self):
+        class FakeRel:
+            relationship_type = "related_to"
+        assert _determine_origin("agent_session", FakeRel()) == "extracted"
+        assert _determine_origin("codex", FakeRel()) == "extracted"
+
+    def test_ai_context_aliases_are_extracted(self):
+        class FakeRel:
+            relationship_type = "related_to"
+        assert _determine_origin("ai_context", FakeRel()) == "extracted"
+        assert _determine_origin("ai_context_codex", FakeRel()) == "extracted"
+
+    def test_local_source_non_deterministic_is_proposed(self):
+        class FakeRel:
+            relationship_type = "related_to"
+        assert _determine_origin("local", FakeRel()) == "proposed"
+
+    def test_deterministic_type_overrides_source(self):
+        class FakeRel:
+            relationship_type = "fixes"
+        assert _determine_origin("local", FakeRel()) == "deterministic"
+
+    def test_fixes_is_deterministic(self):
+        class FakeRel:
+            relationship_type = "fixes"
+        assert _determine_origin("github_pr", FakeRel()) == "deterministic"
+
+    def test_touches_file_is_deterministic(self):
+        class FakeRel:
+            relationship_type = "touches_file"
+        assert _determine_origin("github_pr", FakeRel()) == "deterministic"
+
+    def test_resolved_by_is_deterministic(self):
+        class FakeRel:
+            relationship_type = "resolved_by"
+        assert _determine_origin("github_pr", FakeRel()) == "deterministic"

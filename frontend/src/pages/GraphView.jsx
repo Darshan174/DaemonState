@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import cytoscape from "cytoscape";
 import {
   Zap, Network, AlertTriangle, MessageSquare, Package,
-  Sparkles, Loader2, XCircle, Copy, Check,
+  Sparkles, Loader2, XCircle, Copy, Check, Search,
   ChevronRight, X as XIcon, Bot, Link2, Plus, Minus, Maximize2,
   GitPullRequest, MessageCircle, FileText, Layers3, ShieldCheck,
 } from "lucide-react";
@@ -64,7 +64,7 @@ const TEMPORAL_META = {
 // Edge origin → visual style
 const EDGE_ORIGIN_STYLE = {
   deterministic: { lineStyle: "solid", width: 2, opacity: 0.76, label: "Deterministic", color: "#3b82f6" },
-  extracted:     { lineStyle: "solid", width: 1.6, opacity: 0.56, label: "Extracted", color: "#6366f1" },
+  extracted:     { lineStyle: "solid", width: 1.6, opacity: 0.56, label: "Extracted", color: "#8b5cf6" },
   proposed:      { lineStyle: "dotted", width: 1.4, opacity: 0.40, label: "Proposed", color: "#94a3b8" },
   ai_proposed:   { lineStyle: "dashed", width: 1.5, opacity: 0.44, label: "AI Proposed", color: "#f59e0b" },
   human_verified:{ lineStyle: "solid", width: 2.4, opacity: 0.88, label: "Human Verified", color: "#059669" },
@@ -242,6 +242,7 @@ export default function GraphView() {
     temporal: "",
     confidence_threshold: 0,
     relationship_origin: "",
+    search: "",
   });
   const [building, setBuilding] = useState(false);
   const [buildResult, setBuildResult] = useState(null);
@@ -272,6 +273,12 @@ export default function GraphView() {
   const [relReport, setRelReport]     = useState(null);
   const [relLoading, setRelLoading]   = useState(false);
   const [relError, setRelError]       = useState(null);
+
+  // Side panels
+  const [showSidePanel, setShowSidePanel] = useState(false);
+  const [sidePanelTab, setSidePanelTab] = useState("coverage");
+  const [workLens, setWorkLens] = useState(null);
+  const [workLensLoading, setWorkLensLoading] = useState(false);
 
   async function callAgent(endpoint, setLoading, setResult, setError) {
     setLoading(true); setResult(null); setError(null);
@@ -335,6 +342,24 @@ export default function GraphView() {
       .then((r) => r.json())
       .then(setAgentStatus)
       .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    async function fetchWorkLens() {
+      setWorkLensLoading(true);
+      try {
+        const res = await fetch("/api/work-lens");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        setWorkLens(await res.json());
+      } catch (e) {
+        setWorkLens(null);
+      } finally {
+        setWorkLensLoading(false);
+      }
+    }
+    fetchWorkLens();
+    const interval = setInterval(fetchWorkLens, 30000);
+    return () => clearInterval(interval);
   }, []);
 
   async function handleBuildGraph() {
@@ -411,6 +436,9 @@ export default function GraphView() {
     if (filters.temporal) {
       components = components.filter((c) => (c.temporal || "unknown") === filters.temporal);
     }
+    if (filters.confidence_threshold > 0) {
+      components = components.filter((c) => (c.confidence ?? 0) >= filters.confidence_threshold);
+    }
 
     const componentIds = new Set(components.map((c) => c.id));
     relationships = relationships.filter(
@@ -419,6 +447,26 @@ export default function GraphView() {
 
     if (filters.relationship_origin) {
       relationships = relationships.filter((r) => (r.origin || "proposed") === filters.relationship_origin);
+    }
+
+    if (filters.search && filters.search.trim()) {
+      const q = filters.search.trim().toLowerCase();
+      components = components.filter((c) => {
+        const haystack = [
+          c.name,
+          c.value,
+          c.fact_type,
+          c.source_type,
+          c.provenance,
+          c.excerpt,
+          JSON.stringify(c.source_metadata_summary),
+        ].filter(Boolean).join(" ").toLowerCase();
+        return haystack.includes(q);
+      });
+      const searchedComponentIds = new Set(components.map((c) => c.id));
+      relationships = relationships.filter(
+        (r) => searchedComponentIds.has(r.source_component_id) && searchedComponentIds.has(r.target_component_id)
+      );
     }
 
     return { models: allModels, components, relationships };
@@ -546,9 +594,9 @@ export default function GraphView() {
 
       // Relationship edges only — compound parent handles "contains" visually
       relationships.forEach((r) => {
-        const origin = r.origin || "extracted";
+        const origin = r.origin || "proposed";
         const style = EDGE_ORIGIN_STYLE[origin] || EDGE_ORIGIN_STYLE.extracted;
-        const hideLowConfidence = filters.confidence_threshold > 0 && r.confidence < filters.confidence_threshold;
+        const hideLowConfidence = filters.confidence_threshold > 0 && (r.confidence ?? 0) < filters.confidence_threshold;
         if (hideLowConfidence) return;
 
         edges.push({
@@ -567,6 +615,8 @@ export default function GraphView() {
             edgeWidth: style.width,
             edgeOpacity: style.opacity,
             edgeColor: style.color,
+            sourceName: r.source_component_name,
+            targetName: r.target_component_name,
           },
         });
       });
@@ -950,7 +1000,15 @@ export default function GraphView() {
           const otherId = src === data.id ? tgt : src;
           const otherNode = cy.getElementById(otherId);
           if (otherNode.length) {
-            connected.push({ id: otherId, label: otherNode.data("fullLabel") || otherNode.data("label"), edgeLabel: e.data("label") });
+            connected.push({
+              id: otherId,
+              label: otherNode.data("fullLabel") || otherNode.data("label"),
+              edgeLabel: e.data("label"),
+              relationshipType: e.data("label"),
+              origin: e.data("origin"),
+              confidence: e.data("confidence"),
+              direction: src === data.id ? "out" : "in",
+            });
           }
         });
         setSelectedNode({ ...data, connected });
@@ -972,6 +1030,8 @@ export default function GraphView() {
         status: data.status,
         source: data.source,
         target: data.target,
+        sourceName: data.sourceName,
+        targetName: data.targetName,
       });
       setSelectedNode(null);
     });
@@ -1167,9 +1227,32 @@ export default function GraphView() {
               className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 max-w-[9.5rem]"
             >
               <option value="">All edges</option>
-              <option value="deterministic">Deterministic only</option>
-              <option value="proposed">Proposed only</option>
+              <option value="deterministic">Deterministic</option>
+              <option value="extracted">Extracted</option>
+              <option value="ai_proposed">AI Proposed</option>
+              <option value="human_verified">Human Verified</option>
+              <option value="proposed">Proposed</option>
             </select>
+            <div className="relative">
+              <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+              </svg>
+              <input
+                type="text"
+                value={filters.search}
+                onChange={(e) => setFilters((f) => ({ ...f, search: e.target.value }))}
+                placeholder="Search graph…"
+                className="text-xs pl-8 pr-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 w-40 focus:outline-none focus:ring-1 focus:ring-brand-400"
+              />
+              {filters.search && (
+                <button
+                  onClick={() => setFilters((f) => ({ ...f, search: "" }))}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                >
+                  <XIcon className="w-3 h-3" />
+                </button>
+              )}
+            </div>
           </div>
           )}
           <div className="ml-auto flex items-center gap-2">
@@ -1332,6 +1415,23 @@ export default function GraphView() {
             </button>
           </div>
 
+          {/* Side-panel toggle — top right of canvas */}
+          <div className="absolute right-3 top-3 z-20 flex items-center gap-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white/92 dark:bg-slate-800/92 p-1 shadow-sm backdrop-blur-sm">
+            <button
+              type="button"
+              title="Source coverage & work lens"
+              onClick={() => setShowSidePanel((v) => !v)}
+              className={`flex h-7 items-center gap-1 px-2 rounded-lg text-[11px] font-bold transition-colors ${
+                showSidePanel
+                  ? "bg-brand-100 text-brand-700 dark:bg-brand-900/30 dark:text-brand-400"
+                  : "text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white"
+              }`}
+            >
+              <Layers3 className="h-3.5 w-3.5" />
+              Panels
+            </button>
+          </div>
+
           {/* Persistent legend — top-right corner of graph canvas */}
           <div className="pointer-events-none absolute top-3 right-3 z-10 hidden max-w-[150px] space-y-2 rounded-xl border border-slate-200 bg-white/92 px-2.5 py-2 shadow-sm backdrop-blur-sm dark:border-slate-700 dark:bg-slate-800/92 2xl:block">
             <div>
@@ -1379,10 +1479,11 @@ export default function GraphView() {
               <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Edge — origin</p>
               <div className="flex flex-col gap-1">
                 {[
-                  { style: "solid", color: "#6366f1", label: "Extracted" },
                   { style: "solid", color: "#3b82f6", label: "Deterministic" },
+                  { style: "solid", color: "#8b5cf6", label: "Extracted" },
                   { style: "dashed", color: "#f59e0b", label: "AI Proposed" },
                   { style: "solid", color: "#059669", label: "Human Verified" },
+                  { style: "dotted", color: "#94a3b8", label: "Proposed" },
                 ].map(({ style, color, label }) => (
                   <div key={label} className="flex items-center gap-1.5">
                     <span
@@ -1390,6 +1491,8 @@ export default function GraphView() {
                       style={
                         style === "dashed"
                           ? { borderTop: `2px dashed ${color}`, height: 0, backgroundColor: "transparent" }
+                          : style === "dotted"
+                          ? { borderTop: `2px dotted ${color}`, height: 0, backgroundColor: "transparent" }
                           : { backgroundColor: color, height: 2 }
                       }
                     />
@@ -1403,6 +1506,27 @@ export default function GraphView() {
             </div>
           </div>
 
+
+          {/* ── Empty state when filters hide everything ─────────── */}
+          {currentViewData.components.length === 0 && !loading && (
+            <div className="absolute inset-0 z-10 flex items-center justify-center">
+              <div className="text-center p-6 bg-white/95 dark:bg-slate-800/95 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-lg backdrop-blur-sm max-w-xs">
+                <Search className="w-8 h-8 text-slate-300 dark:text-slate-600 mx-auto mb-2" />
+                <p className="text-sm font-bold text-slate-800 dark:text-slate-200 mb-1">No visible items</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+                  {filters.search
+                    ? `No results for "${filters.search}"`
+                    : "Current filters hide every node."}
+                </p>
+                <button
+                  onClick={() => setFilters({ model: "", source_type: "", status: "", temporal: "", confidence_threshold: 0, relationship_origin: "", search: "" })}
+                  className="px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700 text-white text-xs font-bold transition-colors"
+                >
+                  Clear all filters
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* ── Ask AI slide-up panel ─────────────────────────────── */}
           {showAsk && (
@@ -1471,6 +1595,37 @@ export default function GraphView() {
         </div>
       </div>
 
+      {showSidePanel && (
+        <div className="w-64 shrink-0 bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 flex flex-col overflow-hidden">
+          <div className="flex items-center border-b border-slate-100 dark:border-slate-700">
+            {[
+              { id: "coverage", label: "Coverage" },
+              { id: "work", label: "Work Lens" },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setSidePanelTab(tab.id)}
+                className={`flex-1 px-3 py-2 text-[11px] font-bold transition-colors ${
+                  sidePanelTab === tab.id
+                    ? "bg-slate-50 dark:bg-slate-700 text-slate-900 dark:text-white"
+                    : "text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+          <div className="flex-1 overflow-y-auto p-3">
+            {sidePanelTab === "coverage" && (
+              <SourceCoveragePanel components={allComponents} />
+            )}
+            {sidePanelTab === "work" && (
+              <WorkLensPanel data={workLens} loading={workLensLoading} />
+            )}
+          </div>
+        </div>
+      )}
+
       {showAgents && (
         <AgentsSidebarPanel
           onClose={() => setShowAgents(false)}
@@ -1507,6 +1662,33 @@ export default function GraphView() {
           <h3 className="text-sm font-bold text-slate-900 dark:text-white mb-2.5 pr-6 leading-snug">
             {selectedNode.fullLabel || selectedNode.label.split("\n")[0]}
           </h3>
+
+          {/* Warnings */}
+          {(() => {
+            const warnings = [];
+            if (selectedNode.status === "stale") warnings.push({ text: "Stale — may need review", color: "amber" });
+            if (selectedNode.status === "proposed") warnings.push({ text: "Proposed — not yet accepted", color: "amber" });
+            if (selectedNode.status === "blocked") warnings.push({ text: "Blocked — needs attention", color: "red" });
+            if (selectedNode.status === "deprecated") warnings.push({ text: "Deprecated — do not rely on", color: "red" });
+            if (selectedNode.confidence != null && selectedNode.confidence < 0.5) warnings.push({ text: `Low confidence (${Math.round(selectedNode.confidence * 100)}%)`, color: "red" });
+            if (!selectedNode.excerpt && !selectedNode.provenance) warnings.push({ text: "Missing evidence / provenance", color: "amber" });
+            if (!selectedNode.connected || selectedNode.connected.length === 0) warnings.push({ text: "Isolated — no relationships", color: "amber" });
+            if (warnings.length === 0) return null;
+            return (
+              <div className="mb-3 space-y-1">
+                {warnings.map((w, i) => (
+                  <div key={i} className={`flex items-center gap-1.5 text-[10px] font-bold px-2 py-1 rounded-lg ${
+                    w.color === "red"
+                      ? "bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400"
+                      : "bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400"
+                  }`}>
+                    <AlertTriangle className="w-3 h-3 shrink-0" />
+                    {w.text}
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
 
           {/* Chips row */}
           <div className="flex flex-wrap gap-1.5 mb-3">
@@ -1557,8 +1739,16 @@ export default function GraphView() {
             {selectedNode.confidence != null && (
               <div className="flex justify-between text-xs">
                 <span className="text-slate-500">Confidence</span>
-                <span className="font-bold text-slate-700 dark:text-slate-300">
+                <span className={`font-bold ${selectedNode.confidence < 0.5 ? "text-red-600 dark:text-red-400" : "text-slate-700 dark:text-slate-300"}`}>
                   {Math.round(selectedNode.confidence * 100)}%
+                </span>
+              </div>
+            )}
+            {selectedNode.authority_weight != null && (
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-500">Authority</span>
+                <span className="font-bold text-slate-700 dark:text-slate-300">
+                  {Math.round(selectedNode.authority_weight * 100)}%
                 </span>
               </div>
             )}
@@ -1626,18 +1816,38 @@ export default function GraphView() {
               <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">
                 Connections ({selectedNode.connected.length})
               </p>
-              <div className="space-y-1.5">
-                {selectedNode.connected.map((c) => (
-                  <div
-                    key={c.id}
-                    className="flex items-center gap-2 text-xs p-2 rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700/50"
-                  >
-                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 shrink-0" />
-                    <span className="text-slate-700 dark:text-slate-300 truncate">{c.label}</span>
-                    <span className="text-[9px] font-semibold text-indigo-400 dark:text-indigo-500 ml-auto shrink-0 italic">{c.edgeLabel}</span>
+              {(() => {
+                const grouped = {};
+                selectedNode.connected.forEach((c) => {
+                  const type = c.relationshipType || "related";
+                  if (!grouped[type]) grouped[type] = [];
+                  grouped[type].push(c);
+                });
+                return Object.entries(grouped).map(([type, items]) => (
+                  <div key={type} className="mb-2">
+                    <p className="text-[9px] font-bold uppercase tracking-wider text-slate-500 mb-1">{type}</p>
+                    <div className="space-y-1">
+                      {items.map((c) => (
+                        <div
+                          key={c.id}
+                          className="flex items-center gap-2 text-xs p-2 rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700/50"
+                        >
+                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                            c.origin === "human_verified" ? "bg-emerald-400" :
+                            c.origin === "deterministic" ? "bg-blue-400" :
+                            c.origin === "ai_proposed" ? "bg-amber-400" :
+                            "bg-indigo-400"
+                          }`} />
+                          <span className="text-slate-700 dark:text-slate-300 truncate flex-1">{c.label}</span>
+                          <span className="text-[9px] font-semibold text-slate-400 ml-auto shrink-0">
+                            {c.direction === "out" ? "→" : "←"}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                ))}
-              </div>
+                ));
+              })()}
             </div>
           )}
         </div>
@@ -1652,7 +1862,7 @@ export default function GraphView() {
             close
           </button>
 
-          <div className="w-full h-1 rounded-full mb-3" style={{ backgroundColor: selectedEdge.origin === "human_verified" ? "#059669" : selectedEdge.origin === "ai_proposed" ? "#f59e0b" : "#6366f1" }} />
+          <div className="w-full h-1 rounded-full mb-3" style={{ backgroundColor: EDGE_ORIGIN_STYLE[selectedEdge.origin]?.color || "#94a3b8" }} />
 
           <div className="flex items-center gap-2 mb-3">
             <Link2 className="w-4 h-4 text-indigo-500" />
@@ -1664,15 +1874,16 @@ export default function GraphView() {
           <div className="flex flex-wrap gap-1.5 mb-3">
             {(() => {
               const originLabel = EDGE_ORIGIN_STYLE[selectedEdge.origin]?.label || selectedEdge.origin;
-              const isDashed = selectedEdge.origin === "ai_proposed";
+              const isUncertain = selectedEdge.origin === "ai_proposed" || selectedEdge.origin === "proposed";
               return (
                 <span className={`inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${
                   selectedEdge.origin === "human_verified" ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300" :
                   selectedEdge.origin === "deterministic" ? "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300" :
                   selectedEdge.origin === "ai_proposed" ? "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300" :
+                  selectedEdge.origin === "extracted" ? "bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300" :
                   "bg-slate-100 dark:bg-slate-700 text-slate-500"
                 }`}>
-                  {isDashed && "◌ "}{originLabel}
+                  {isUncertain && "◌ "}{originLabel}
                 </span>
               );
             })()}
@@ -1693,22 +1904,53 @@ export default function GraphView() {
             <div className="flex justify-between text-xs">
               <span className="text-slate-500">Style</span>
               <span className="font-bold text-slate-700 dark:text-slate-300">
-                {selectedEdge.origin === "ai_proposed" ? "Dashed (proposed)" : "Solid"}
+                {selectedEdge.origin === "ai_proposed" ? "Dashed (AI proposed)" : selectedEdge.origin === "proposed" ? "Dotted (proposed)" : selectedEdge.origin === "deterministic" ? "Solid (deterministic)" : selectedEdge.origin === "extracted" ? "Solid (extracted)" : selectedEdge.origin === "human_verified" ? "Solid (verified)" : "Solid"}
               </span>
             </div>
           </div>
 
           {selectedEdge.evidence && (
             <div className="mb-4">
-              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Evidence</p>
-              <div className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed p-2.5 rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700/50">
+              <div className="flex items-center gap-2 mb-1.5">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Evidence</p>
+                {selectedEdge.evidence.endsWith("(template evidence)") && (
+                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400">
+                    Template — weak
+                  </span>
+                )}
+              </div>
+              <div className={`text-xs text-slate-600 dark:text-slate-400 leading-relaxed p-2.5 rounded-lg border ${
+                selectedEdge.evidence.endsWith("(template evidence)")
+                  ? "bg-amber-50 dark:bg-amber-900/10 border-amber-100 dark:border-amber-800/30"
+                  : "bg-slate-50 dark:bg-slate-900/50 border-slate-100 dark:border-slate-700/50"
+              }`}>
                 {selectedEdge.evidence}
               </div>
             </div>
           )}
 
           {!selectedEdge.evidence && (
-            <p className="text-xs text-slate-400 italic mb-4">No evidence recorded for this relationship.</p>
+            <div className="mb-4">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Evidence</p>
+              <div className="flex items-center gap-1.5 text-xs text-red-600 dark:text-red-400 p-2.5 rounded-lg bg-red-50 dark:bg-red-900/10 border border-red-100 dark:border-red-800/30">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                No evidence recorded for this relationship.
+              </div>
+            </div>
+          )}
+
+          {/* Source / target names if available */}
+          {selectedEdge.sourceName && selectedEdge.targetName && (
+            <div className="space-y-1.5 mb-4 text-xs border-t border-slate-100 dark:border-slate-700 pt-2">
+              <div className="flex justify-between">
+                <span className="text-slate-500">From</span>
+                <span className="font-bold text-slate-700 dark:text-slate-300 truncate max-w-[140px]" title={selectedEdge.sourceName}>{selectedEdge.sourceName}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">To</span>
+                <span className="font-bold text-slate-700 dark:text-slate-300 truncate max-w-[140px]" title={selectedEdge.targetName}>{selectedEdge.targetName}</span>
+              </div>
+            </div>
           )}
 
           <div className="text-[10px] text-slate-400 border-t border-slate-100 dark:border-slate-700 pt-2">
@@ -2137,6 +2379,143 @@ function GapSidebarResult({ report }) {
       {report.gaps.length > 4 && (
         <p className="text-[10px] text-slate-400 text-center">+{report.gaps.length - 4} more gaps</p>
       )}
+    </div>
+  );
+}
+
+/* ── Source Coverage Panel ────────────────────────────────────────── */
+
+function SourceCoveragePanel({ components }) {
+  const byFamily = {};
+  components.forEach((c) => {
+    const family = sourceFamily(c);
+    if (!byFamily[family]) byFamily[family] = { count: 0, types: new Set() };
+    byFamily[family].count++;
+    byFamily[family].types.add(c.source_type || "unknown");
+  });
+
+  const families = [
+    { key: "github", label: "GitHub", icon: GitPullRequest, color: "text-slate-700 dark:text-slate-300", bg: "bg-slate-100 dark:bg-slate-700" },
+    { key: "agent", label: "AI Sessions", icon: Bot, color: "text-violet-700 dark:text-violet-300", bg: "bg-violet-100 dark:bg-violet-900/30" },
+    { key: "communication", label: "Comms", icon: MessageCircle, color: "text-sky-700 dark:text-sky-300", bg: "bg-sky-100 dark:bg-sky-900/30" },
+    { key: "local", label: "Local", icon: FileText, color: "text-slate-600 dark:text-slate-300", bg: "bg-slate-100 dark:bg-slate-700" },
+    { key: "other", label: "Other", icon: Layers3, color: "text-teal-700 dark:text-teal-300", bg: "bg-teal-100 dark:bg-teal-900/30" },
+  ];
+
+  return (
+    <div className="space-y-3">
+      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">By source family</p>
+      <div className="space-y-1.5">
+        {families.map(({ key, label, icon: Icon, color, bg }) => {
+          const data = byFamily[key];
+          return (
+            <div key={key} className="flex items-center justify-between gap-2 p-2 rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700/50">
+              <div className="flex items-center gap-2">
+                <div className={`w-6 h-6 rounded-md ${bg} flex items-center justify-center`}>
+                  <Icon className={`w-3.5 h-3.5 ${color}`} />
+                </div>
+                <span className="text-xs font-bold text-slate-700 dark:text-slate-300">{label}</span>
+              </div>
+              <span className="text-xs font-bold text-slate-500">{data ? data.count : 0}</span>
+            </div>
+          );
+        })}
+      </div>
+      {components.length > 0 && (
+        <>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mt-3">By source type</p>
+          <div className="space-y-1">
+            {Object.entries(
+              components.reduce((acc, c) => {
+                const st = c.source_type || "unknown";
+                acc[st] = (acc[st] || 0) + 1;
+                return acc;
+              }, {})
+            )
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 8)
+              .map(([type, count]) => (
+                <div key={type} className="flex items-center justify-between text-xs">
+                  <span className="text-slate-600 dark:text-slate-400 capitalize">{type.replace(/_/g, " ")}</span>
+                  <span className="font-bold text-slate-700 dark:text-slate-300">{count}</span>
+                </div>
+              ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ── Work Lens Panel ──────────────────────────────────────────────── */
+
+function WorkLensPanel({ data, loading }) {
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <Loader2 className="w-4 h-4 animate-spin text-slate-400" />
+      </div>
+    );
+  }
+  if (!data) {
+    return <p className="text-xs text-slate-400 text-center py-4">Work lens unavailable.</p>;
+  }
+
+  const sections = [
+    { key: "blockers", label: "Blockers", color: "red", icon: AlertTriangle },
+    { key: "open_decisions", label: "Open Decisions", color: "amber", icon: ShieldCheck },
+    { key: "active_tasks", label: "Active Tasks", color: "blue", icon: Zap },
+    { key: "unresolved_questions", label: "Unresolved Questions", color: "sky", icon: MessageSquare },
+    { key: "proposed_items", label: "Proposed", color: "violet", icon: Sparkles },
+    { key: "stale_items", label: "Stale", color: "slate", icon: XCircle },
+  ];
+
+  return (
+    <div className="space-y-3">
+      {sections.map(({ key, label, color, icon: Icon }) => {
+        const items = data[key] || [];
+        const colorMap = {
+          red: "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400",
+          amber: "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400",
+          blue: "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400",
+          sky: "bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-400",
+          violet: "bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-400",
+          slate: "bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300",
+        };
+        return (
+          <div key={key}>
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center gap-1.5">
+                <Icon className="w-3 h-3 text-slate-400" />
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{label}</span>
+              </div>
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${colorMap[color]}`}>{items.length}</span>
+            </div>
+            {items.length > 0 ? (
+              <div className="space-y-1">
+                {items.slice(0, 4).map((item) => (
+                  <div key={item.id} className="p-2 rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700/50">
+                    <p className="text-[11px] font-semibold text-slate-700 dark:text-slate-300 truncate">{item.name || item.display_title}</p>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      {item.model_name && <span className="text-[9px] text-slate-400">{item.model_name}</span>}
+                      {item.confidence != null && (
+                        <span className={`text-[9px] font-bold ${item.confidence < 0.5 ? "text-red-500" : "text-slate-400"}`}>
+                          {Math.round(item.confidence * 100)}%
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                {items.length > 4 && (
+                  <p className="text-[10px] text-slate-400 text-center">+{items.length - 4} more</p>
+                )}
+              </div>
+            ) : (
+              <p className="text-[10px] text-slate-400 italic">None</p>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
