@@ -91,12 +91,42 @@ const CONNECTOR_CATALOG = {
     providerLabel: "Personal Access Token",
     providerNote: "GitHub ingests issues, pull requests, labels, and review discussions. Each item becomes a structured component in the knowledge graph.",
   },
+  discord: {
+    type: "discord",
+    name: "Discord",
+    description: "Server channels, threads, and community context",
+    color: "#5865F2",
+    availability: "coming_soon",
+    provider: "official_api",
+    providerLabel: "Coming soon",
+    providerNote: "Discord is shown in the catalog but is not available for direct ingest yet.",
+  },
+  ai_context: {
+    type: "ai_context",
+    name: "AI Context",
+    description: "Codex, Claude Code, OpenCode, plans, diffs, and review notes",
+    color: "#10a37f",
+    availability: "available",
+    provider: "native",
+    providerLabel: "Session import",
+    providerNote: "Import agent sessions and review notes as source documents with provenance.",
+  },
+  local: {
+    type: "local",
+    name: "Local Files",
+    description: "Uploaded Markdown, text, JSON, CSV, and other local documents",
+    color: "#64748B",
+    availability: "available",
+    provider: "native",
+    providerLabel: "Upload",
+    providerNote: "Local uploads are first-class source documents for the graph.",
+  },
   zoom: {
     type: "zoom",
     name: "Zoom",
     description: "Meeting transcripts and recording metadata",
     color: "#0B5CFF",
-    availability: "available",
+    availability: "coming_soon",
     provider: "official_api",
     providerLabel: "Official API",
     providerNote: "Transcript-first Zoom ingestion keeps the connector focused on high-signal meeting context instead of media processing.",
@@ -106,7 +136,7 @@ const CONNECTOR_CATALOG = {
     name: "Google Drive",
     description: "Docs, Sheets, Slides, and folder content",
     color: "#ffffff",
-    availability: "available",
+    availability: "coming_soon",
     provider: "official_api",
     providerLabel: "Official API",
     providerNote: "Drive ingest docs, sheets, slides, and folder metadata into the source and graph pipeline.",
@@ -116,7 +146,7 @@ const CONNECTOR_CATALOG = {
     name: "Gmail",
     description: "Email threads, attachments, and sender context",
     color: "#ffffff",
-    availability: "available",
+    availability: "coming_soon",
     provider: "official_api",
     providerLabel: "Official API",
     providerNote: "Gmail ingests selected mailbox threads and attachments with source provenance.",
@@ -147,6 +177,16 @@ const CONNECTOR_CATALOG = {
     availability: "available",
     provider: "native",
     providerLabel: "Session import",
+  },
+  wispr_flow: {
+    type: "wispr_flow",
+    name: "Wispr Flow",
+    description: "Voice notes, transcripts, and dictated project context",
+    color: "#111827",
+    availability: "coming_soon",
+    provider: "official_api",
+    providerLabel: "Coming soon",
+    providerNote: "Wispr Flow is planned but not available for direct ingest yet.",
   },
 };
 
@@ -431,11 +471,20 @@ export function useConnectors() {
       async () => {
         const wsId = await getWorkspaceId();
         if (!wsId) return mockConnectors;
-        const [connectors, setupStatus] = await Promise.all([
-          api.get(`/connectors?workspace_id=${wsId}`),
-          api.get("/connectors/setup-status").catch(() => []),
-        ]);
-        return { connectors, setupStatus };
+        const connectorPayload = await api.get(`/connectors?workspace_id=${wsId}`);
+        if (Array.isArray(connectorPayload)) {
+          const setupStatus = await api.get("/connectors/setup-status").catch(() => []);
+          return { connectors: connectorPayload, setupStatus };
+        }
+        if (Array.isArray(connectorPayload?.connectors)) {
+          return {
+            connectors: connectorPayload.connectors,
+            setupStatus: Array.isArray(connectorPayload.setupStatus)
+              ? connectorPayload.setupStatus
+              : await api.get("/connectors/setup-status").catch(() => []),
+          };
+        }
+        return connectorPayload;
       },
       mockConnectors,
       { fallbackStatuses: [404, 501] },
@@ -1799,13 +1848,15 @@ function normalizeConnectors(data) {
     const setup = setupByType.get(catalogItem.type) ?? record?.setup_status ?? null;
     const isConfigured = setup?.configured ?? true;
     const managedConnectAvailable = Boolean(setup?.managed_available);
+    const availability = record?.availability ?? catalogItem.availability;
     if (!record) {
       return {
         ...catalogItem,
         id: catalogItem.type,
         connectorId: null,
         status:
-          catalogItem.availability === "available" ? "disconnected" : "coming_soon",
+          availability === "available" ? "disconnected" : "coming_soon",
+        availability,
         isInstalled: false,
         lastSync: "Never",
         itemsSynced: 0,
@@ -1818,7 +1869,7 @@ function normalizeConnectors(data) {
         message:
           catalogItem.type === "slack" && !isConfigured && !managedConnectAvailable
             ? setup?.message ?? "Slack OAuth is not configured yet."
-            : catalogItem.availability === "available"
+            : availability === "available"
             ? "Not connected yet."
             : "Planned after the Slack reference connector ships.",
       };
@@ -1826,13 +1877,14 @@ function normalizeConnectors(data) {
 
     return {
       ...catalogItem,
-      id: record.id,
-      connectorId: record.id,
+      id: record.id ?? record.connector_id ?? catalogItem.type,
+      connectorId: record.connector_id ?? record.id ?? null,
       status: record.status,
       isInstalled: record.status !== "disconnected",
+      availability,
       lastSync: formatConnectorDate(record.last_sync_at),
       itemsSynced: extractConnectorCount(record.config),
-      message: record.config?.message ?? null,
+      message: record.message ?? record.config?.message ?? null,
       teamName: record.config?.team_name ?? null,
       teamId: record.config?.team_id ?? null,
       scope: record.config?.scope ?? null,
@@ -1851,7 +1903,7 @@ function normalizeConnectors(data) {
         fallback: null,
       }),
       provider: record.provider ?? catalogItem.provider,
-      providerLabel: record.provider_label ?? catalogItem.providerLabel,
+      providerLabel: record.provider_label ?? record.providerLabel ?? catalogItem.providerLabel,
       providerNote: record.provider_note ?? catalogItem.providerNote,
       setupStatus: setup,
       isConfigured,
