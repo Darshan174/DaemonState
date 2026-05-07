@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models import Component, Model, Relationship
+from app.taxonomy import canonical_model_name, model_bucket
 
 
 @dataclass
@@ -117,7 +118,7 @@ class GapDetectorAgent:
     def _compute_stats(self, components, relationships) -> dict:
         by_type: dict[str, int] = {}
         for c in components:
-            t = c.model.name if c.model else "Unknown"
+            t = canonical_model_name(c.model.name if c.model else "Unknown")
             by_type[t] = by_type.get(t, 0) + 1
 
         connected_ids = set()
@@ -149,7 +150,7 @@ class GapDetectorAgent:
 
         type_map: dict[str, list[Component]] = {}
         for c in components:
-            t = (c.model.name if c.model else "Unknown").lower()
+            t = model_bucket(c.model.name if c.model else "Unknown")
             type_map.setdefault(t, []).append(c)
 
         person_ids = {str(c.id) for c in type_map.get("person", [])}
@@ -163,7 +164,7 @@ class GapDetectorAgent:
                     category="missing_owner",
                     severity="high",
                     title=f"No owner: {c.name[:80]}",
-                    detail=f"{c.model.name if c.model else 'Entity'} has no Person linked.",
+                    detail=f"{canonical_model_name(c.model.name if c.model else 'Entity')} has no Person linked.",
                     entity_name=c.name,
                     recommendation="Assign an owner by linking a Person entity.",
                 ))
@@ -212,10 +213,10 @@ class GapDetectorAgent:
             rel_map.setdefault(str(r.source_component_id), []).append(str(r.target_component_id))
             rel_map.setdefault(str(r.target_component_id), []).append(str(r.source_component_id))
 
-        risk_ids = {str(c.id) for c in components if c.model and c.model.name.lower() == "risk"}
+        risk_ids = {str(c.id) for c in components if c.model and model_bucket(c.model.name) == "risk"}
         ready = []
         for c in components:
-            if c.model and c.model.name.lower() in ("feature", "task"):
+            if c.model and model_bucket(c.model.name) in ("feature", "task"):
                 neighbors = set(rel_map.get(str(c.id), []))
                 if not (neighbors & risk_ids) and c.temporal in ("current", "future"):
                     ready.append(c.name)
@@ -227,10 +228,10 @@ class GapDetectorAgent:
             rel_map.setdefault(str(r.source_component_id), []).append(str(r.target_component_id))
             rel_map.setdefault(str(r.target_component_id), []).append(str(r.source_component_id))
 
-        risk_ids = {str(c.id) for c in components if c.model and c.model.name.lower() == "risk"}
+        risk_ids = {str(c.id) for c in components if c.model and model_bucket(c.model.name) == "risk"}
         blocked = []
         for c in components:
-            if c.model and c.model.name.lower() in ("feature", "task", "decision"):
+            if c.model and model_bucket(c.model.name) in ("feature", "task", "decision"):
                 if set(rel_map.get(str(c.id), [])) & risk_ids:
                     blocked.append(c.name)
         return blocked[:5]
@@ -247,7 +248,7 @@ class GapDetectorAgent:
     async def _ai_analysis(self, components, relationships) -> dict | None:
         by_type: dict[str, list[str]] = {}
         for c in components:
-            t = c.model.name if c.model else "Unknown"
+            t = canonical_model_name(c.model.name if c.model else "Unknown")
             by_type.setdefault(t, []).append(f"- {c.name}: {c.value[:120]}")
 
         entities_text = ""

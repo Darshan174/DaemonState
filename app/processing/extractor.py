@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from app.config import settings
+from app.taxonomy import canonical_model_name, canonical_relationship_type
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -13,6 +17,7 @@ class ExtractedRelationship:
     target_name: str
     relationship_type: str
     confidence: float = 0.7
+    evidence: str | None = None
 
 
 @dataclass
@@ -21,9 +26,12 @@ class ExtractedFact:
     name: str
     value: str
     fact_type: str
-    temporal: str
     confidence: float
+    temporal: str = "unknown"
+    temporal_hint: str = "current"
     relationships: list[ExtractedRelationship] = field(default_factory=list)
+    provenance: str | None = None
+    excerpt: str | None = None
 
 
 EXTRACTION_PROMPT = """You are a context extraction engine for startup knowledge graphs.
@@ -110,14 +118,17 @@ class Extractor:
     def __init__(self, api_key: str | None = None, model: str | None = None) -> None:
         self._model = model or settings.extraction_model
         self._api_key = api_key or settings.litellm_api_key
+        self.last_error: str | None = None
 
     async def extract(self, content: str, metadata: dict[str, Any] | None = None) -> list[ExtractedFact]:
+        self.last_error = None
         is_ollama = (self._model or "").startswith("ollama/")
         if self._model and (self._api_key or is_ollama):
             try:
                 return await self._llm_extract(content)
-            except Exception:
-                pass
+            except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                logger.warning("llm extraction failed; falling back to regex: %s", self.last_error)
         return self._regex_extract(content)
 
     async def _llm_extract(self, content: str) -> list[ExtractedFact]:
@@ -144,8 +155,9 @@ class Extractor:
             rels = [
                 ExtractedRelationship(
                     target_name=r["target_name"],
-                    relationship_type=r.get("relationship_type", "related_to"),
-                    confidence=r.get("confidence", 0.7),
+                    relationship_type=canonical_relationship_type(r.get("relationship_type", "related_to")),
+                    confidence=min(max(float(r.get("confidence", 0.7)), 0.0), 1.0),
+                    evidence=r.get("evidence"),
                 )
                 for r in item.get("relationships", [])
                 if r.get("target_name")
@@ -154,12 +166,13 @@ class Extractor:
             if temporal not in ("current", "past", "future", "unknown"):
                 temporal = "unknown"
             facts.append(ExtractedFact(
-                model_name=item.get("model_name", "Document"),
+                model_name=canonical_model_name(item.get("model_name", "Document")),
                 name=item["name"],
                 value=item["value"],
                 fact_type=item.get("fact_type", "fact"),
-                temporal=temporal,
                 confidence=min(max(float(item.get("confidence", 0.7)), 0.0), 1.0),
+                temporal=temporal,
+                temporal_hint=temporal if temporal != "unknown" else "current",
                 relationships=rels,
             ))
         return facts[:20]
@@ -184,7 +197,8 @@ class Extractor:
                 facts.append(ExtractedFact(
                     model_name="Decision", name=f"Decision: {text[:120]}",
                     value=text, fact_type="decision",
-                    temporal=detect_temporal(text), confidence=0.80,
+                    confidence=0.80, temporal=detect_temporal(text),
+                    temporal_hint=detect_temporal(text),
                 ))
 
         # Tasks / Action items
@@ -194,7 +208,8 @@ class Extractor:
                 facts.append(ExtractedFact(
                     model_name="Task", name=f"Task: {text[:120]}",
                     value=text, fact_type="task",
-                    temporal=detect_temporal(text), confidence=0.75,
+                    confidence=0.75, temporal=detect_temporal(text),
+                    temporal_hint=detect_temporal(text),
                 ))
 
         # Risks / Blockers
@@ -204,7 +219,7 @@ class Extractor:
                 facts.append(ExtractedFact(
                     model_name="Risk", name=f"Risk: {text[:120]}",
                     value=text, fact_type="blocker",
-                    temporal="current", confidence=0.82,
+                    confidence=0.82, temporal="current", temporal_hint="current",
                 ))
 
         # Features
@@ -214,7 +229,8 @@ class Extractor:
                 facts.append(ExtractedFact(
                     model_name="Feature", name=f"Feature: {text[:120]}",
                     value=text, fact_type="feature",
-                    temporal=detect_temporal(text), confidence=0.72,
+                    confidence=0.72, temporal=detect_temporal(text),
+                    temporal_hint=detect_temporal(text),
                 ))
 
         # Metrics
@@ -224,7 +240,8 @@ class Extractor:
                 facts.append(ExtractedFact(
                     model_name="Metric", name=f"Metric: {text[:120]}",
                     value=text, fact_type="metric",
-                    temporal=detect_temporal(text), confidence=0.73,
+                    confidence=0.73, temporal=detect_temporal(text),
+                    temporal_hint=detect_temporal(text),
                 ))
 
         # Meeting outcomes
@@ -234,7 +251,7 @@ class Extractor:
                 facts.append(ExtractedFact(
                     model_name="Meeting", name=f"Meeting outcome: {text[:120]}",
                     value=text, fact_type="meeting_note",
-                    temporal="past", confidence=0.77,
+                    confidence=0.77, temporal="past", temporal_hint="past",
                 ))
 
         # Agent session steps
@@ -244,7 +261,8 @@ class Extractor:
                 facts.append(ExtractedFact(
                     model_name="Agent Session", name=f"AI step: {text[:120]}",
                     value=text, fact_type="ai_step",
-                    temporal=detect_temporal(text), confidence=0.70,
+                    confidence=0.70, temporal=detect_temporal(text),
+                    temporal_hint=detect_temporal(text),
                 ))
 
         if not facts:
@@ -253,7 +271,20 @@ class Extractor:
                 facts.append(ExtractedFact(
                     model_name="Document", name="Document content",
                     value=first_lines, fact_type="fact",
-                    temporal="unknown", confidence=0.50,
+                    confidence=0.50, temporal="unknown", temporal_hint="current",
                 ))
 
         return facts
+
+    @staticmethod
+    def _detect_temporal_hint(content: str) -> str:
+        t = content.lower()
+        past = re.compile(r"\b(was|were|previously|earlier|deprecated|removed|replaced|used to|old|shipped|completed)\b")
+        future = re.compile(r"\b(will|plan to|going to|future|next quarter|roadmap|upcoming|planned|target)\b")
+        past_count = len(past.findall(t))
+        future_count = len(future.findall(t))
+        if future_count > past_count and future_count > 0:
+            return "future"
+        if past_count > future_count and past_count > 0:
+            return "past"
+        return "current"

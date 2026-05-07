@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.router import api_router
 from app.database import engine
+from app.migrations import run_migrations
 from app.models import Base
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
@@ -18,13 +19,7 @@ FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        from sqlalchemy import text
-        try:
-            await conn.execute(text(
-                "ALTER TABLE components ADD COLUMN IF NOT EXISTS temporal VARCHAR(20) NOT NULL DEFAULT 'unknown'"
-            ))
-        except Exception:
-            pass
+        await run_migrations(conn)
     yield
 
 

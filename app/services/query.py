@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import Component, Model, Relationship, SourceDocument
+from app.models import Component, Relationship, SourceDocument
 from app.processing.embedder import BaseEmbedder, build_default_embedder, cosine_similarity
 
 

@@ -20,7 +20,6 @@ from mcp.types import TextContent, Tool
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
-from app.config import settings
 from app.database import AsyncSessionLocal
 from app.models import Component, Model, Relationship, SourceDocument
 from app.processing.embedder import HashingEmbedder, cosine_similarity
@@ -254,6 +253,9 @@ async def _expand_graph(node_id: str) -> list[TextContent]:
                     "source": str(r.source_component_id),
                     "target": str(r.target_component_id),
                     "type": r.relationship_type,
+                    "confidence": r.confidence,
+                    "evidence": r.evidence,
+                    "origin": r.origin,
                     "direction": "outgoing",
                 })
             for r in incoming_rels:
@@ -261,6 +263,9 @@ async def _expand_graph(node_id: str) -> list[TextContent]:
                     "source": str(r.source_component_id),
                     "target": str(r.target_component_id),
                     "type": r.relationship_type,
+                    "confidence": r.confidence,
+                    "evidence": r.evidence,
+                    "origin": r.origin,
                     "direction": "incoming",
                 })
 

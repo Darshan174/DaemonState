@@ -57,6 +57,11 @@ class RelationshipItem(BaseModel):
     source_component_id: UUID
     target_component_id: UUID
     relationship_type: str
+    display_label: str | None = None
+    confidence: float = 0.7
+    evidence: str | None = None
+    status: str = "active"
+    origin: str = "extracted"
 
     model_config = {"from_attributes": True}
 
@@ -149,7 +154,7 @@ async def get_model(
 async def get_model_relationships(
     model_id: UUID,
     session: AsyncSession = Depends(get_db_session),
-) -> list[Relationship]:
+) -> list[dict]:
     model = await session.get(Model, model_id)
     if model is None:
         raise HTTPException(status_code=404, detail="Model not found")
@@ -165,7 +170,30 @@ async def get_model_relationships(
             Relationship.target_component_id.in_(comp_ids),
         )
     ))
-    return rels
+
+    def _resolve_origin(rel: Relationship) -> str:
+        if rel.status == "human_verified":
+            return "human_verified"
+        if rel.confidence >= 0.85:
+            return "deterministic"
+        if rel.confidence >= 0.6:
+            return "extracted"
+        return "ai_proposed"
+
+    return [
+        {
+            "id": r.id,
+            "source_component_id": r.source_component_id,
+            "target_component_id": r.target_component_id,
+            "relationship_type": r.relationship_type,
+            "display_label": r.relationship_type.replace("_", " ").title(),
+            "confidence": r.confidence,
+            "evidence": r.evidence,
+            "status": r.status,
+            "origin": _resolve_origin(r),
+        }
+        for r in rels
+    ]
 
 
 # ── Source Documents ───────────────────────────────────────────────────────────

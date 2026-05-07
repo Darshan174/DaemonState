@@ -52,7 +52,7 @@ docker compose up --build
 
 Open **http://localhost:8000** — the UI and API are served from the same port.
 
-To stop: `docker compose down`  
+To stop: `docker compose down`
 To wipe data: `docker compose down -v`
 
 ---
@@ -103,6 +103,9 @@ cp .env.example .env
 | `GOOGLE_CLIENT_SECRET` | _(empty)_ | Google OAuth |
 | `SLACK_CLIENT_ID` | _(empty)_ | Slack OAuth — for Slack connector |
 | `SLACK_CLIENT_SECRET` | _(empty)_ | Slack OAuth |
+| `SLACK_MANAGED_INSTALL_URL` | _(empty)_ | Managed one-click Slack install URL. When set, the primary Slack button uses this hosted app path instead of self-hosted credentials |
+| `ENCRYPTION_KEY` | _(empty)_ | Fernet key used to decrypt managed Slack broker callbacks |
+| `PUBLIC_BASE_URL` | _(empty)_ | External app URL used for OAuth callbacks in deployed environments |
 | `PORT` | `8000` | Port the server listens on |
 
 ---
@@ -245,7 +248,8 @@ server {
 
 For OAuth connectors (Slack, Google), set the client ID/secret in `.env` and configure the redirect URI to point to your deployment:
 - Slack: `https://your-domain.com/api/connectors/slack/callback`
-- Google: `https://your-domain.com/api/connectors/google/callback`
+- Google Drive: `https://your-domain.com/api/connectors/gdrive/callback`
+- Gmail: `https://your-domain.com/api/connectors/gmail/callback`
 
 ---
 

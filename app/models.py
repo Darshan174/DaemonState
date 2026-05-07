@@ -142,6 +142,8 @@ class Component(Base):
     superseded_by_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("components.id"), nullable=True, index=True
     )
+    provenance: Mapped[str | None] = mapped_column(Text, nullable=True)
+    excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
@@ -176,6 +178,10 @@ class Relationship(Base):
     relationship_type: Mapped[str] = mapped_column(
         String(50), nullable=False, default="related_to"
     )
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.7)
+    evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="active")
+    origin: Mapped[str] = mapped_column(String(20), nullable=False, default="proposed")
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

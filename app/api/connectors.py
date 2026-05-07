@@ -4,6 +4,7 @@ import json
 import secrets
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlencode
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
@@ -89,11 +90,27 @@ CONNECTOR_CATALOG: dict[str, dict[str, Any]] = {
 
 GOOGLE_CONNECTORS = {"gdrive", "gmail"}
 AI_SESSION_CONNECTORS = {"codex", "claude", "opencode"}
+DISCONNECT_CONFIG_KEYS = {
+    "account_id",
+    "auth_mode",
+    "ingestion_mode",
+    "last_webhook_event",
+    "last_webhook_received_at",
+    "message",
+    "repositories",
+    "scope",
+    "source_focus",
+    "sync_mode",
+    "sync_mode_note",
+    "sync_queued_at",
+    "team_id",
+    "team_name",
+}
 
 
 def _get_env(key: str) -> str | None:
     import os
-    return os.environ.get(key) or None
+    return os.environ.get(key) or getattr(settings, key.lower(), None) or None
 
 
 def _get_google_client_id() -> str | None:
@@ -123,12 +140,46 @@ def _public_base_url() -> str:
     dev_domain = os.environ.get("REPLIT_DEV_DOMAIN", "")
     if dev_domain:
         return f"https://{dev_domain}"
-    pub = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+    pub = (_get_env("PUBLIC_BASE_URL") or "").rstrip("/")
     return pub
+
+
+def _request_base_url(request: Request | None) -> str:
+    return str(request.base_url).rstrip("/") if request else ""
+
+
+def _callback_url(path: str, request: Request | None = None) -> str:
+    base = _public_base_url() or _request_base_url(request)
+    return f"{base}{path}" if base else path
 
 
 def _slack_configured() -> bool:
     return bool(_get_env("SLACK_CLIENT_ID") and _get_env("SLACK_CLIENT_SECRET"))
+
+
+def _slack_managed_install_url() -> str | None:
+    url = _get_env("SLACK_MANAGED_INSTALL_URL")
+    return url.rstrip("?&") if url else None
+
+
+def _decrypt_managed_token(encrypted_token: str) -> str:
+    key = _get_env("ENCRYPTION_KEY")
+    if not key:
+        raise HTTPException(
+            status_code=503,
+            detail="ENCRYPTION_KEY is required for managed Slack OAuth callbacks.",
+        )
+    try:
+        from cryptography.fernet import Fernet, InvalidToken
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="cryptography is required for managed Slack OAuth callbacks.",
+        ) from exc
+    try:
+        return Fernet(key.encode()).decrypt(encrypted_token.encode()).decode()
+    except (InvalidToken, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid managed Slack OAuth token.") from exc
 
 
 def _zoom_configured() -> bool:
@@ -144,15 +195,21 @@ def _connector_setup_status(connector_type: str) -> dict[str, Any]:
     base = _public_base_url()
     if connector_type == "slack":
         configured = _slack_configured()
-        managed = configured
+        managed_url = _slack_managed_install_url()
+        managed = bool(managed_url)
         redirect_uri = _get_env("SLACK_REDIRECT_URI") or (f"{base}/api/connectors/slack/callback" if base else None)
         return {
             "connector_type": "slack",
             "configured": configured,
             "managed_available": managed,
-            "managed_install_url": "/api/connectors/slack/install" if managed else None,
+            "managed_install_url": "/api/connectors/slack/managed/install" if managed else None,
             "missing": [] if configured else ["SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET"],
-            "message": None if configured else "Add SLACK_CLIENT_ID and SLACK_CLIENT_SECRET to enable one-click OAuth.",
+            "message": (
+                "Managed Slack OAuth is available."
+                if managed
+                else None if configured
+                else "Add SLACK_CLIENT_ID and SLACK_CLIENT_SECRET for self-hosted OAuth, or configure SLACK_MANAGED_INSTALL_URL for one-click OAuth."
+            ),
             "redirect_uri": redirect_uri,
         }
     if connector_type == "zoom":
@@ -245,6 +302,34 @@ def _connector_to_dict(connector: Connector) -> dict[str, Any]:
         "created_at": created_at.isoformat() if created_at else None,
         "updated_at": updated_at.isoformat() if updated_at else None,
     }
+
+
+def _loads_json_dict(value: str | None) -> dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+async def _revoke_slack_token(access_token: str) -> dict[str, Any] | None:
+    if not access_token:
+        return None
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            response = await http.post(
+                "https://slack.com/api/auth.revoke",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            data = response.json()
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    if not data.get("ok"):
+        return {"ok": False, "error": data.get("error", "slack_revoke_failed")}
+    return {"ok": True}
 
 
 # ── Workspace endpoints ────────────────────────────────────────
@@ -346,30 +431,55 @@ async def slack_install(workspace_id: str, request: Request) -> RedirectResponse
     client_id = _get_env("SLACK_CLIENT_ID")
     if not client_id:
         raise HTTPException(status_code=503, detail="Slack OAuth is not configured on this server.")
-    redirect_uri = _get_env("SLACK_REDIRECT_URI") or f"{_public_base_url()}/api/connectors/slack/callback"
+    redirect_uri = _get_env("SLACK_REDIRECT_URI") or _callback_url("/api/connectors/slack/callback", request)
     state = f"{workspace_id}:{secrets.token_urlsafe(16)}"
     scopes = "channels:history,channels:join,channels:read,groups:history,groups:read,users:read,team:read"
-    url = (
-        f"https://slack.com/oauth/v2/authorize"
-        f"?client_id={client_id}"
-        f"&scope={scopes}"
-        f"&redirect_uri={redirect_uri}"
-        f"&state={state}"
-    )
+    params = urlencode({
+        "client_id": client_id,
+        "scope": scopes,
+        "redirect_uri": redirect_uri,
+        "state": state,
+    })
+    url = f"https://slack.com/oauth/v2/authorize?{params}"
     return RedirectResponse(url)
+
+
+@router.get("/connectors/slack/managed/install")
+async def slack_managed_install(
+    workspace_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+) -> RedirectResponse:
+    await _get_workspace(workspace_id, session)
+    managed_url = _slack_managed_install_url()
+    if not managed_url:
+        raise HTTPException(
+            status_code=503,
+            detail="Managed Slack OAuth is not configured on this server.",
+        )
+    callback_url = _callback_url("/api/connectors/slack/callback", request)
+    separator = "&" if "?" in managed_url else "?"
+    params = urlencode({"workspace_id": workspace_id, "callback_url": callback_url})
+    return RedirectResponse(f"{managed_url}{separator}{params}")
 
 
 @router.get("/connectors/slack/callback")
 async def slack_callback(
+    request: Request,
     code: str | None = None,
     state: str | None = None,
     error: str | None = None,
+    encrypted_token: str | None = None,
+    team_id: str | None = None,
+    team_name: str | None = None,
+    scope: str | None = None,
+    authed_user_id: str | None = None,
     session: AsyncSession = Depends(get_db_session),
 ) -> Response:
     if error:
         return _oauth_close_html(success=False, message=f"Slack OAuth error: {error}")
-    if not code or not state:
-        return _oauth_close_html(success=False, message="Missing code or state.")
+    if not state:
+        return _oauth_close_html(success=False, message="Missing state.")
 
     workspace_id = state.split(":")[0]
     try:
@@ -377,16 +487,43 @@ async def slack_callback(
     except HTTPException:
         return _oauth_close_html(success=False, message="Workspace not found.")
 
+    if encrypted_token:
+        try:
+            access_token = _decrypt_managed_token(encrypted_token)
+        except HTTPException as exc:
+            return _oauth_close_html(success=False, message=str(exc.detail))
+
+        connector = await _get_or_create_connector(ws.id, "slack", session)
+        connector.status = "connected"
+        connector.credentials_json = json.dumps({"access_token": access_token})
+        config = json.loads(connector.config_json or "{}")
+        config.update({
+            "team_name": team_name or "",
+            "team_id": team_id or "",
+            "scope": scope or "",
+            "authed_user_id": authed_user_id or "",
+            "auth_mode": "managed_oauth",
+        })
+        connector.config_json = json.dumps(config)
+        await session.commit()
+        await session.refresh(connector)
+        return _oauth_close_html(success=True, message="Slack connected successfully.")
+
+    if not code:
+        return _oauth_close_html(success=False, message="Missing code.")
+
     import httpx
     client_id = _get_env("SLACK_CLIENT_ID")
     client_secret = _get_env("SLACK_CLIENT_SECRET")
-    redirect_uri = _get_env("SLACK_REDIRECT_URI") or f"{_public_base_url()}/api/connectors/slack/callback"
+    if not client_id or not client_secret:
+        return _oauth_close_html(success=False, message="Slack OAuth is not configured on this server.")
+    redirect_uri = _get_env("SLACK_REDIRECT_URI") or _callback_url("/api/connectors/slack/callback", request)
 
     try:
         async with httpx.AsyncClient() as http:
             params: dict[str, str] = {
-                "client_id": client_id or "",
-                "client_secret": client_secret or "",
+                "client_id": client_id,
+                "client_secret": client_secret,
                 "code": code,
                 "redirect_uri": redirect_uri,
             }
@@ -528,29 +665,29 @@ async def google_install(
     client_id = _get_google_client_id()
     if not client_id:
         raise HTTPException(status_code=503, detail="Google OAuth is not configured on this server.")
-    redirect_uri = _get_env("GOOGLE_REDIRECT_URI") or f"{_public_base_url()}/api/connectors/{connector_type}/callback"
+    redirect_uri = _get_env("GOOGLE_REDIRECT_URI") or _callback_url(f"/api/connectors/{connector_type}/callback", request)
     state = f"{workspace_id}:{connector_type}:{secrets.token_urlsafe(16)}"
     scope = _GOOGLE_SCOPES[connector_type]
-    url = (
-        f"https://accounts.google.com/o/oauth2/v2/auth"
-        f"?response_type=code"
-        f"&client_id={client_id}"
-        f"&redirect_uri={redirect_uri}"
-        f"&scope={scope}"
-        f"&access_type=offline"
-        f"&prompt=consent"
-        f"&state={state}"
-    )
+    params = urlencode({
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "scope": scope,
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+    })
+    url = f"https://accounts.google.com/o/oauth2/v2/auth?{params}"
     return RedirectResponse(url)
 
 
 @router.get("/connectors/{connector_type}/callback")
 async def google_callback(
     connector_type: str,
+    request: Request,
     code: str | None = None,
     state: str | None = None,
     error: str | None = None,
-    request: Request = None,
     session: AsyncSession = Depends(get_db_session),
 ) -> Response:
     if connector_type not in GOOGLE_CONNECTORS:
@@ -570,7 +707,7 @@ async def google_callback(
     import httpx
     client_id = _get_google_client_id() or ""
     client_secret = _get_env("GOOGLE_CLIENT_SECRET") or ""
-    redirect_uri = _get_env("GOOGLE_REDIRECT_URI") or f"{_public_base_url()}/api/connectors/{connector_type}/callback"
+    redirect_uri = _get_env("GOOGLE_REDIRECT_URI") or _callback_url(f"/api/connectors/{connector_type}/callback", request)
 
     try:
         async with httpx.AsyncClient() as http:
@@ -797,15 +934,22 @@ async def disconnect_connector(
     connector = await session.get(Connector, cid)
     if not connector:
         raise HTTPException(status_code=404, detail="Connector not found")
+    credentials = _loads_json_dict(connector.credentials_json)
+    revoke_result = None
+    if connector.connector_type == "slack":
+        revoke_result = await _revoke_slack_token(str(credentials.get("access_token") or ""))
     connector.status = "disconnected"
     connector.credentials_json = "{}"
-    config = json.loads(connector.config_json or "{}")
-    config.pop("team_name", None)
-    config.pop("team_id", None)
-    config.pop("auth_mode", None)
+    config = _loads_json_dict(connector.config_json)
+    for key in DISCONNECT_CONFIG_KEYS:
+        config.pop(key, None)
     connector.config_json = json.dumps(config)
     await session.commit()
-    return {"ok": True}
+    await session.refresh(connector)
+    response = {"ok": True, **_connector_to_dict(connector)}
+    if revoke_result is not None:
+        response["revoke"] = revoke_result
+    return response
 
 
 # ── Helpers ────────────────────────────────────────────────────

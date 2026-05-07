@@ -1460,7 +1460,12 @@ export function useDisconnectConnector() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (connectorId) => api.delete(`/connectors/${connectorId}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["connectors"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["connectors"] });
+      qc.invalidateQueries({ queryKey: ["connector-processing-summary"] });
+      qc.invalidateQueries({ queryKey: ["connector-sync-status"] });
+      qc.invalidateQueries({ queryKey: ["connector-sync-jobs"] });
+    },
   });
 }
 
@@ -3044,4 +3049,68 @@ function extractConnectorCount(config) {
     config.item_count ??
     0
   );
+}
+
+// ── Graph Slice ──────────────────────────────────────────────────────────────
+
+export function useGraphSlice(filters = {}) {
+  return useQuery({
+    queryKey: ["graph-slice", filters],
+    queryFn: async () => {
+      const body = {};
+      if (filters.modelIds?.length) body.model_ids = filters.modelIds;
+      if (filters.sourceTypes?.length) body.source_types = filters.sourceTypes;
+      if (filters.statuses?.length) body.statuses = filters.statuses;
+      if (filters.factTypes?.length) body.fact_types = filters.factTypes;
+      if (filters.confidenceMin != null) body.confidence_min = filters.confidenceMin;
+      if (filters.temporal) body.temporal = filters.temporal;
+      if (filters.includeStale) body.include_stale = true;
+      if (filters.includeProposedEdges !== undefined) body.include_proposed_edges = filters.includeProposedEdges;
+      if (filters.maxHops != null) body.max_hops = filters.maxHops;
+      return api.post("/graph/slice", body);
+    },
+    enabled: Object.keys(filters).length > 0,
+  });
+}
+
+// ── Component Detail ─────────────────────────────────────────────────────────
+
+export function useComponentDetail(componentId) {
+  return useQuery({
+    queryKey: ["component-detail", componentId],
+    queryFn: () => api.get(`/components/${componentId}`),
+    enabled: !!componentId,
+  });
+}
+
+// ── Relationship Detail ──────────────────────────────────────────────────────
+
+export function useRelationshipDetail(relationshipId) {
+  return useQuery({
+    queryKey: ["relationship-detail", relationshipId],
+    queryFn: () => api.get(`/relationships/${relationshipId}`),
+    enabled: !!relationshipId,
+  });
+}
+
+// ── Source Diff ──────────────────────────────────────────────────────────────
+
+export function useSourceDiff(sourceId) {
+  return useQuery({
+    queryKey: ["source-diff", sourceId],
+    queryFn: () => api.get(`/source-documents/${sourceId}/diff`),
+    enabled: !!sourceId,
+  });
+}
+
+// ── Work Lens ────────────────────────────────────────────────────────────────
+
+export function useWorkLens(workspaceId = null) {
+  return useQuery({
+    queryKey: ["work-lens", workspaceId],
+    queryFn: async () => {
+      const params = workspaceId ? `?workspace_id=${workspaceId}` : "";
+      return api.get(`/work-lens${params}`);
+    },
+  });
 }

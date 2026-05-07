@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api import sources, graph, query, repo, connectors, models_api, agents_api
+from app.api import agents_api, connectors, graph, models_api, query, repo, sources
 
 api_router = APIRouter()
 api_router.include_router(sources.router, prefix="", tags=["sources"])

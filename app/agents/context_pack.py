@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models import Component, Relationship
+from app.taxonomy import canonical_model_name, model_bucket
 
 
 CONTEXT_PACK_PROMPT = """You are generating a perfect AI coding agent handoff document.
@@ -76,7 +77,7 @@ class ContextPackAgent:
     def _rule_pack(self, components, relationships, now: str) -> str:
         by_type: dict[str, list[Component]] = {}
         for c in components:
-            t = (c.model.name if c.model else "Unknown").lower()
+            t = model_bucket(c.model.name if c.model else "Unknown")
             by_type.setdefault(t, []).append(c)
 
         def fmt(items, limit=5):
@@ -119,7 +120,7 @@ class ContextPackAgent:
     async def _ai_pack(self, components, relationships) -> str | None:
         by_type: dict[str, list[str]] = {}
         for c in components:
-            t = c.model.name if c.model else "Unknown"
+            t = canonical_model_name(c.model.name if c.model else "Unknown")
             by_type.setdefault(t, []).append(f"- {c.name}: {c.value[:120]}")
 
         entities_text = ""
