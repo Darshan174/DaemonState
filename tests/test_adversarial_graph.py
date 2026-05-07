@@ -60,8 +60,8 @@ class TestNoFalseRelationships:
             assert rel.evidence is not None, (
                 f"Cross-doc relationship {comp_a.name}→{comp_b.name} has NULL evidence"
             )
-            assert rel.origin == "proposed", (
-                f"Cross-doc inferred relationship origin should be 'proposed', got '{rel.origin}'"
+            assert rel.origin == "ai_proposed", (
+                f"Cross-doc inferred relationship origin should be 'ai_proposed', got '{rel.origin}'"
             )
             # Low-confidence cross-doc relationships (≤0.5) should not appear as 'active'
             if rel.confidence <= 0.5:
@@ -939,8 +939,8 @@ class TestCrossDocInferenceWeakness:
             )
             assert len(rel.evidence) > 0, "Evidence must be non-empty"
 
-    async def test_cross_doc_relationships_origin_is_proposed(self, db_session):
-        """Cross-document name-coincidence relationships must have origin='proposed'."""
+    async def test_cross_doc_relationships_origin_is_ai_proposed(self, db_session):
+        """Cross-document name-coincidence relationships must have origin='ai_proposed'."""
         model = Model(id=uuid4(), name="Feature")
         doc1 = SourceDocument(id=uuid4(), source_type="local", external_id="xdoc1",
                               content="Dark mode toggle is needed.", metadata_json="{}")
@@ -963,8 +963,8 @@ class TestCrossDocInferenceWeakness:
 
         rels = (await db_session.scalars(select(Relationship))).all()
         for rel in rels:
-            assert rel.origin == "proposed", (
-                f"Cross-doc inferred relationship origin must be 'proposed', got '{rel.origin}'"
+            assert rel.origin == "ai_proposed", (
+                f"Cross-doc inferred relationship origin must be 'ai_proposed', got '{rel.origin}'"
             )
 
     async def test_word_overlap_fallback_uses_very_low_confidence(self, db_session):
@@ -1033,8 +1033,8 @@ class TestGraphBuilderBypassesIngestGuards:
             # The ingest service skips relationships with confidence < 0.6
             # Graph builder creates them with confidence=0.5 or 0.3
             # This inconsistency needs to be documented
-            assert rel.origin == "proposed", (
-                f"Bypassed relationships must be origin='proposed', got '{rel.origin}'"
+            assert rel.origin == "ai_proposed", (
+                f"Bypassed relationships must be origin='ai_proposed', got '{rel.origin}'"
             )
 
 

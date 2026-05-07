@@ -46,6 +46,7 @@ export default function App() {
 
 function AdminShell() {
   const location = useLocation();
+  const isGraphPage = location.pathname === "/app/graph";
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-slate-50 dark:bg-[#0a0c0f] transition-colors duration-300">
@@ -90,7 +91,7 @@ function AdminShell() {
         </div>
       </header>
 
-      <main className="flex-1 overflow-y-auto px-4 py-6 md:px-6 dark:text-slate-100">
+      <main className={`flex-1 min-h-0 dark:text-slate-100 ${isGraphPage ? "overflow-hidden px-3 py-3 md:px-4" : "overflow-y-auto px-4 py-6 md:px-6"}`}>
         <Suspense fallback={<PageLoader />}>
           <Routes>
             <Route index                                  element={<Dashboard />} />
