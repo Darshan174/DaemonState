@@ -75,7 +75,7 @@ CONNECTOR_CATALOG: dict[str, dict[str, Any]] = {
         "name": "Google Drive",
         "description": "Docs, Sheets, Slides, and folder content",
         "color": "#0F9D58",
-        "availability": "coming_soon",
+        "availability": "available",
         "provider": "official_api",
         "provider_label": "Official API",
     },
@@ -83,7 +83,7 @@ CONNECTOR_CATALOG: dict[str, dict[str, Any]] = {
         "name": "Gmail",
         "description": "Email threads, attachments, and sender context",
         "color": "#EA4335",
-        "availability": "coming_soon",
+        "availability": "available",
         "provider": "official_api",
         "provider_label": "Official API",
     },
@@ -126,6 +126,7 @@ AI_SESSION_CONNECTORS = {"codex", "claude", "opencode"}
 DISCONNECT_CONFIG_KEYS = {
     "account_id",
     "auth_mode",
+    "email_address",
     "ingestion_mode",
     "last_webhook_event",
     "last_webhook_received_at",
@@ -138,6 +139,7 @@ DISCONNECT_CONFIG_KEYS = {
     "sync_queued_at",
     "team_id",
     "team_name",
+    "user_email",
 }
 
 
@@ -260,16 +262,17 @@ def _connector_setup_status(connector_type: str, request: Request | None = None)
             "redirect_uri": redirect_uri,
         }
     if connector_type in GOOGLE_CONNECTORS:
-        configured = False
+        configured = _google_configured()
         redirect_uri = _get_env("GOOGLE_REDIRECT_URI") or (f"{base}/api/connectors/{connector_type}/callback" if base else None)
+        label = CONNECTOR_CATALOG[connector_type]["name"]
         return {
             "connector_type": connector_type,
             "configured": configured,
             "managed_available": configured,
             "managed_install_url": f"/api/connectors/{connector_type}/install" if configured else None,
             "missing": [] if configured else ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"],
-            "status": "coming_soon",
-            "message": None,
+            "status": "disconnected",
+            "message": None if configured else f"Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to enable {label} OAuth.",
             "redirect_uri": redirect_uri,
         }
     if connector_type == "github":
@@ -1045,7 +1048,7 @@ async def sync_connector(
         raise HTTPException(status_code=422, detail="Connector is not connected")
 
     job = SyncJob(connector_id=cid, status="pending")
-    if connector.connector_type in {"slack", "discord", "zoom", "gdrive", "gmail", "wispr_flow"}:
+    if connector.connector_type in {"discord", "zoom", "wispr_flow"}:
         job.status = "failed"
         job.error_type = "unsupported_connector"
         job.error_message = f"{CONNECTOR_CATALOG.get(connector.connector_type, {}).get('name', connector.connector_type)} is not supported yet."
@@ -1205,6 +1208,14 @@ async def _run_sync_job(job_id: str, connector_id: str, database_url: str) -> No
                 from app.sync.github import sync_github
                 sync_result = await sync_github(connector, session)
                 extract_result = await extract_from_source_documents("github", session)
+            elif connector.connector_type == "gmail":
+                from app.sync.google import sync_gmail
+                sync_result = await sync_gmail(connector, session)
+                extract_result = await extract_from_source_documents("gmail", session)
+            elif connector.connector_type == "gdrive":
+                from app.sync.google import sync_gdrive
+                sync_result = await sync_gdrive(connector, session)
+                extract_result = await extract_from_source_documents("gdrive", session)
             elif connector.connector_type in AI_SESSION_CONNECTORS:
                 # AI session connectors ingest inline; sync just re-runs extraction
                 sync_result = {"documents_fetched": 0, "documents_persisted": 0}
