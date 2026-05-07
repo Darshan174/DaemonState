@@ -81,18 +81,13 @@ class IngestionService:
         return len(components)
 
     def _extract_source_facts(self, doc: SourceDocument, metadata: dict) -> list[ExtractedFact]:
-        source_type = canonical_source_type(doc.source_type)
-
-        if source_type == "github":
-            item_type = resolve_github_item_type(doc.source_type, metadata)
-            if item_type == "github_pr":
-                return extract_github_pr(doc.content, metadata)
-            return extract_github_issue(doc.content, metadata)
-
-        if source_type == "github_issue":
-            return extract_github_issue(doc.content, metadata)
-        if source_type == "github_pr":
+        github_item_type = resolve_github_item_type(doc.source_type, metadata)
+        if github_item_type == "github_pr":
             return extract_github_pr(doc.content, metadata)
+        if github_item_type == "github_issue":
+            return extract_github_issue(doc.content, metadata)
+
+        source_type = canonical_source_type(doc.source_type)
 
         resolved = resolve_agent_session_type(doc.source_type)
         if resolved == "agent_session":
@@ -232,7 +227,7 @@ def _determine_origin(source_type: str, rel) -> str:
         return "deterministic"
     if source_type in GITHUB_SOURCE_TYPES | AGENT_SESSION_SOURCE_TYPES | AI_CONTEXT_COMPAT_TYPES:
         return "extracted"
-    return "ai_proposed"
+    return "proposed"
 
 
 def _parse_metadata(raw: str) -> dict:

@@ -115,9 +115,10 @@ async def get_graph(
     components = list(await session.scalars(comp_stmt))
 
     if source_type:
+        requested_source_type = canonical_source_type(source_type)
         components = [
             c for c in components
-            if c.source_document and c.source_document.source_type == source_type
+            if c.source_document and canonical_source_type(c.source_document.source_type) == requested_source_type
         ]
     if workspace_id:
         comps_to_keep = []
@@ -150,13 +151,14 @@ async def get_graph(
     model_counts: dict[UUID, int] = {}
     for c in components:
         model_counts[c.model_id] = model_counts.get(c.model_id, 0) + 1
+    relationship_counts = _relationship_counts(relationships)
 
     return GraphResponse(
         models=[ModelRead(
             id=m.id, name=m.name, description=m.description,
             component_count=model_counts.get(m.id, 0),
         ) for m in models],
-        components=[_component_read(c) for c in components],
+        components=[_component_read(c, relationship_counts.get(c.id, 0)) for c in components],
         relationships=[_relationship_read(r) for r in relationships],
     )
 
@@ -201,7 +203,7 @@ async def get_source_knowledge_diff(
             "processed_at": doc.processed_at.isoformat() if doc.processed_at else None,
             "metadata": md,
         },
-        components=[_component_read(c) for c in components],
+        components=[_component_read(c, _relationship_counts(relationships).get(c.id, 0)) for c in components],
         relationships=[_relationship_read(r) for r in relationships],
     )
 
@@ -471,7 +473,7 @@ async def get_graph_slice(
             temporal=c.temporal,
             confidence=c.confidence, authority_weight=c.authority_weight,
             status=c.status, source_document_id=c.source_document_id,
-            source_type=canonical_source_type(c.source_document.source_type) if c.source_document else None,
+            source_type=c.source_document.source_type if c.source_document else None,
             source_url=c.source_document.source_url if c.source_document else None,
             source_external_id=c.source_document.external_id if c.source_document else None,
             source_metadata_summary=_metadata_summary(c),
@@ -979,7 +981,15 @@ async def get_work_lens(
     )
 
 
-def _component_read(c: Component) -> ComponentRead:
+def _relationship_counts(relationships: list[Relationship]) -> dict[UUID, int]:
+    counts: dict[UUID, int] = {}
+    for rel in relationships:
+        counts[rel.source_component_id] = counts.get(rel.source_component_id, 0) + 1
+        counts[rel.target_component_id] = counts.get(rel.target_component_id, 0) + 1
+    return counts
+
+
+def _component_read(c: Component, relationship_count: int = 0) -> ComponentRead:
     source_meta = None
     if c.source_document and c.source_document.metadata_json:
         md = c.source_document.metadata_json
@@ -991,7 +1001,6 @@ def _component_read(c: Component) -> ComponentRead:
         if isinstance(md, dict):
             summary_keys = ["session_id", "tool", "model", "branch", "commit", "author", "number", "state", "title", "item_type", "repo_full_name", "merged"]
             source_meta = {k: v for k, v in md.items() if k in summary_keys and v}
-    rel_count = len(list(c.outgoing_relationships)) + len(list(c.incoming_relationships)) if hasattr(c, 'outgoing_relationships') else 0
     return ComponentRead(
         id=c.id, model_id=c.model_id,
         model_name=c.model.name if c.model else None,
@@ -1001,14 +1010,14 @@ def _component_read(c: Component) -> ComponentRead:
         temporal=c.temporal,
         confidence=c.confidence, authority_weight=c.authority_weight,
         status=c.status, source_document_id=c.source_document_id,
-        source_type=canonical_source_type(c.source_document.source_type) if c.source_document else None,
+        source_type=c.source_document.source_type if c.source_document else None,
         source_url=c.source_document.source_url if c.source_document else None,
         source_external_id=c.source_document.external_id if c.source_document else None,
         source_metadata_summary=source_meta,
         ingested_at=c.source_document.ingested_at if c.source_document else None,
         provenance=getattr(c, "provenance", None),
         excerpt=getattr(c, "excerpt", None),
-        relationship_count=rel_count,
+        relationship_count=relationship_count,
     )
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -42,7 +43,8 @@ class Connector(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     workspace_id: Mapped[UUID] = mapped_column(
-        ForeignKey("workspaces.id"), nullable=False, index=True
+        ForeignKey("workspaces.id"), nullable=False, index=True,
+        default=UUID("00000000-0000-0000-0000-000000000000"),
     )
     connector_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="disconnected")
@@ -58,6 +60,23 @@ class Connector(Base):
 
     workspace: Mapped["Workspace"] = orm_relationship(back_populates="connectors")
     sync_jobs: Mapped[list["SyncJob"]] = orm_relationship(back_populates="connector")
+
+    @property
+    def items_synced(self) -> int:
+        try:
+            config = json.loads(self.config_json or "{}")
+        except json.JSONDecodeError:
+            return 0
+        return int(config.get("items_synced", 0) or 0)
+
+    @items_synced.setter
+    def items_synced(self, value: int) -> None:
+        try:
+            config = json.loads(self.config_json or "{}")
+        except json.JSONDecodeError:
+            config = {}
+        config["items_synced"] = int(value or 0)
+        self.config_json = json.dumps(config)
 
 
 class SyncJob(Base):

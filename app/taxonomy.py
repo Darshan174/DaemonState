@@ -31,17 +31,9 @@ VALID_SOURCE_TYPES = {
     "local_folder",
     "browser_upload",
     "paste",
-    "github",
     "github_issue",
     "github_pr",
     "agent_session",
-    "codex",
-    "claude",
-    "opencode",
-    "ai_context",
-    "ai_context_codex",
-    "ai_context_claude_code",
-    "ai_context_opencode",
     "slack",
     "discord",
     "gmail",
@@ -204,33 +196,41 @@ def canonical_relationship_type(value: str | None) -> str:
 
 def canonical_source_type(value: str | None) -> str:
     raw = (value or "").strip().lower()
-    if raw in VALID_SOURCE_TYPES:
-        return raw
+    if not raw:
+        return "local"
     if raw.startswith("ai_context"):
         return "agent_session"
-    if raw in ("agent", "ai", "ai_session", "cursor"):
+    if raw in ("agent", "ai", "ai_session", "cursor", "codex", "claude", "opencode"):
         return "agent_session"
     if raw == "github":
-        return "github"
-    return raw if raw else "local"
+        return "github_issue"
+    if raw in VALID_SOURCE_TYPES:
+        return raw
+    return raw
 
 
 def resolve_github_item_type(source_type: str | None, metadata: dict | None = None) -> str:
-    source_type = canonical_source_type(source_type)
-    if source_type == "github_issue":
+    raw_source_type = (source_type or "").strip().lower()
+    if raw_source_type == "github_issue":
         return "github_issue"
-    if source_type == "github_pr":
+    if raw_source_type == "github_pr":
         return "github_pr"
-    if source_type == "github" and metadata:
-        item_type = metadata.get("item_type", "")
-        meta_source_type = metadata.get("source_type", "")
-        if item_type == "pull_request" or "pull_request" in meta_source_type:
+    if raw_source_type == "github" and metadata:
+        item_type = str(metadata.get("item_type", "")).lower()
+        meta_source_type = str(metadata.get("source_type", "")).lower()
+        source_url = str(metadata.get("source_url", "") or metadata.get("url", "")).lower()
+        if (
+            item_type == "pull_request"
+            or "pull_request" in meta_source_type
+            or metadata.get("pr_number") is not None
+            or "/pull/" in source_url
+        ):
             return "github_pr"
-        if item_type == "issue" or "issue" in meta_source_type:
+        if item_type == "issue" or "issue" in meta_source_type or metadata.get("issue_number") is not None:
             return "github_issue"
-    if source_type == "github":
+    if raw_source_type == "github":
         return "github_issue"
-    return source_type
+    return canonical_source_type(source_type)
 
 
 def resolve_agent_session_type(source_type: str | None) -> str:

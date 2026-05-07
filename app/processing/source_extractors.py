@@ -321,6 +321,12 @@ def _build_github_pr_facts(pr: GitHubPRData, doc_metadata: dict[str, Any] | None
                 confidence=0.95,
                 evidence=_build_fixes_evidence(pr.number, issue_num, pr.body),
             ))
+            pr_fact.relationships.append(ExtractedRelationship(
+                target_name=f"Issue #{issue_num}",
+                relationship_type="solves",
+                confidence=0.95,
+                evidence=_build_fixes_evidence(pr.number, issue_num, pr.body),
+            ))
         else:
             pr_fact.relationships.append(ExtractedRelationship(
                 target_name=f"Issue #{issue_num}",
@@ -359,7 +365,7 @@ def _build_github_pr_facts(pr: GitHubPRData, doc_metadata: dict[str, Any] | None
                 model_name="Risk",
                 name=f"Review finding: {comment_text[:80]}",
                 value=comment_text[:500],
-                fact_type="pr_review_finding",
+                fact_type="review_finding",
                 confidence=0.85,
                 temporal="current",
                 temporal_hint="current",
@@ -377,7 +383,7 @@ def _build_github_pr_facts(pr: GitHubPRData, doc_metadata: dict[str, Any] | None
                 model_name="Risk",
                 name=f"Review finding: {comment_text[:80]}",
                 value=comment_text[:500],
-                fact_type="pr_review_finding",
+                fact_type="review_finding",
                 confidence=0.75,
                 temporal="current",
                 temporal_hint="current",

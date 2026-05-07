@@ -140,7 +140,7 @@ class GraphBuilderAgent:
                         relationship_type="related_to",
                         confidence=0.5,
                         evidence=f"Name mention: '{other_name}' found in '{comp.name}' — cross-document candidate, verify before trusting",
-                        origin="ai_proposed",
+                        origin="proposed",
                     ))
                     existing_pairs.add((comp.id, other.id))
                     inferred += 1
