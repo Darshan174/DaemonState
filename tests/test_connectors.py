@@ -1,18 +1,20 @@
 from __future__ import annotations
 
+import base64
 import json
 from uuid import uuid4
 
+import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import event
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.database import get_db_session
 from app.main import app
 from app.migrations import run_migrations
-from app.models import Base, Connector, SourceDocument
+from app.models import Base, Component, Connector, Model, SourceDocument
 from app.processing.embedder import HashingEmbedder
 
 TEST_DATABASE_URL = f"sqlite+aiosqlite:////private/tmp/test_connectors_{uuid4().hex}.db"
@@ -143,17 +145,37 @@ class TestConnectorCatalog:
             assert "status" in connector
             assert "provider" in connector
             assert "is_configured" in connector
-            assert "connector_type" in connector
+
+    async def test_connector_logo_background_colors_match_brand_surfaces(self, client):
+        response = await client.get("/api/connectors")
+        assert response.status_code == 200
+        data = response.json()
+        by_type = {c["type"]: c for c in data["connectors"]}
+
+        assert by_type["gdrive"]["color"] == "#ffffff"
+        assert by_type["gmail"]["color"] == "#ffffff"
+        assert by_type["opencode"]["color"] == "#000000"
 
     async def test_coming_soon_connectors_are_honest(self, client):
         response = await client.get("/api/connectors")
         assert response.status_code == 200
         data = response.json()
-        for t in ["discord", "zoom", "gdrive", "gmail", "wispr_flow"]:
+        for t in ["discord", "zoom", "wispr_flow"]:
             entry = next(c for c in data["connectors"] if c["type"] == t)
             assert entry["availability"] == "coming_soon"
             assert entry["status"] == "disconnected"
             assert entry["is_configured"] is False
+
+    async def test_google_connectors_show_missing_oauth_config_not_coming_soon(self, client):
+        response = await client.get("/api/connectors")
+        assert response.status_code == 200
+        data = response.json()
+        for t in ["gdrive", "gmail"]:
+            entry = next(c for c in data["connectors"] if c["type"] == t)
+            assert entry["availability"] == "available"
+            assert entry["status"] == "disconnected"
+            assert entry["is_configured"] is False
+            assert "GOOGLE_CLIENT_ID" in entry["message"]
 
     async def test_ai_context_shows_as_available_but_not_connected_until_import(self, client):
         response = await client.get("/api/connectors")
@@ -207,10 +229,74 @@ class TestConnectorSetupStatus:
         response = await client.get("/api/connectors/setup-status")
         assert response.status_code == 200
         data = response.json()
-        for t in ["discord", "zoom", "gdrive", "gmail", "wispr_flow"]:
+        for t in ["discord", "zoom", "wispr_flow"]:
             entry = next(s for s in data if s["connector_type"] == t)
             assert entry["configured"] is False
             assert entry["status"] == "coming_soon"
+
+    async def test_google_setup_status_reflects_oauth_env(self, client, monkeypatch):
+        monkeypatch.setenv("GOOGLE_CLIENT_ID", "client-id.apps.googleusercontent.com")
+        monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "client-secret")
+
+        response = await client.get("/api/connectors/setup-status")
+        assert response.status_code == 200
+        data = response.json()
+        for t in ["gdrive", "gmail"]:
+            entry = next(s for s in data if s["connector_type"] == t)
+            assert entry["configured"] is True
+            assert entry["status"] == "disconnected"
+            assert entry["managed_install_url"] == f"/api/connectors/{t}/install"
+            assert entry["missing"] == []
+
+    async def test_google_catalog_available_when_oauth_env_present(self, client, monkeypatch):
+        monkeypatch.setenv("GOOGLE_CLIENT_ID", "client-id.apps.googleusercontent.com")
+        monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "client-secret")
+
+        response = await client.get("/api/connectors")
+        assert response.status_code == 200
+        data = response.json()
+        for t in ["gdrive", "gmail"]:
+            entry = next(c for c in data["connectors"] if c["type"] == t)
+            assert entry["availability"] == "available"
+            assert entry["status"] == "disconnected"
+            assert entry["is_configured"] is True
+            assert entry["message"] is None
+
+    async def test_google_setup_status_exposes_redirect_uri(self, client, monkeypatch):
+        monkeypatch.setenv("GOOGLE_CLIENT_ID", "client-id.apps.googleusercontent.com")
+        monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "client-secret")
+
+        response = await client.get("/api/connectors/setup-status")
+        assert response.status_code == 200
+        data = response.json()
+        for t in ["gdrive", "gmail"]:
+            entry = next(s for s in data if s["connector_type"] == t)
+            assert entry["redirect_uri"] is not None
+            assert entry["redirect_uri"].endswith(f"/api/connectors/{t}/callback")
+
+    async def test_google_redirect_uri_override_from_env(self, client, monkeypatch):
+        monkeypatch.setenv("GOOGLE_CLIENT_ID", "client-id.apps.googleusercontent.com")
+        monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "client-secret")
+        monkeypatch.setenv("GOOGLE_REDIRECT_URI", "https://app.example.com/oauth/callback")
+
+        response = await client.get("/api/connectors/setup-status")
+        assert response.status_code == 200
+        data = response.json()
+        for t in ["gdrive", "gmail"]:
+            entry = next(s for s in data if s["connector_type"] == t)
+            assert entry["redirect_uri"] == "https://app.example.com/oauth/callback"
+
+    async def test_google_catalog_includes_redirect_uri(self, client, monkeypatch):
+        monkeypatch.setenv("GOOGLE_CLIENT_ID", "client-id.apps.googleusercontent.com")
+        monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "client-secret")
+
+        response = await client.get("/api/connectors")
+        assert response.status_code == 200
+        data = response.json()
+        for t in ["gdrive", "gmail"]:
+            entry = next(s for s in data["setupStatus"] if s["connector_type"] == t)
+            assert entry["redirect_uri"] is not None
+            assert entry["redirect_uri"].endswith(f"/api/connectors/{t}/callback")
 
     async def test_ai_context_configured(self, client):
         response = await client.get("/api/connectors/setup-status")
@@ -329,6 +415,29 @@ class TestConnectorSyncAndDisconnect:
         assert data["status"] == "failed"
         assert data["error_type"] == "unsupported_connector"
         assert "not supported" in data["error_message"].lower() or "not yet" in data["error_message"].lower()
+
+    async def test_sync_gdrive_queues_when_connected(self, client, db_session, monkeypatch):
+        async def _noop_run_sync_job(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr("app.api.connectors._run_sync_job", _noop_run_sync_job)
+        connector = Connector(
+            id=uuid4(),
+            connector_type="gdrive",
+            status="connected",
+            config_json="{}",
+            credentials_json=json.dumps({"access_token": "google-token"}),
+            items_synced=0,
+        )
+        db_session.add(connector)
+        await db_session.flush()
+        await db_session.commit()
+
+        sync_resp = await client.post(f"/api/connectors/{connector.id}/sync")
+        assert sync_resp.status_code == 200
+        data = sync_resp.json()
+        assert data["status"] == "pending"
+        assert data["error_type"] is None
 
     async def test_sync_status_for_nonexistent_connector_returns_404(self, client):
         fake_id = str(uuid4())
@@ -610,6 +719,64 @@ class TestProcessingSummary:
         ai_ctx = next(item for item in data["items"] if item["connector_type"] == "ai_context")
         assert ai_ctx["total_documents"] >= 4
 
+    async def test_processing_summary_separates_processed_and_pending_documents(self, client, db_session):
+        from datetime import datetime
+
+        processed_doc = SourceDocument(
+            id=uuid4(),
+            source_type="slack",
+            external_id="processed-slack-doc",
+            content="Processed Slack content",
+            processed_at=datetime.utcnow(),
+            metadata_json="{}",
+        )
+        pending_doc = SourceDocument(
+            id=uuid4(),
+            source_type="slack",
+            external_id="pending-slack-doc",
+            content="Pending Slack content",
+            metadata_json="{}",
+        )
+        db_session.add_all([processed_doc, pending_doc])
+        await db_session.flush()
+        await db_session.commit()
+
+        response = await client.get("/api/connectors/processing-summary")
+        assert response.status_code == 200
+        data = response.json()
+        slack = next(item for item in data["items"] if item["connector_type"] == "slack")
+
+        assert slack["processedDocuments"] >= 1
+        assert slack["unprocessedDocuments"] >= 1
+        assert slack["total_documents"] >= 2
+
+    async def test_connector_extraction_repairs_processed_docs_without_components(self, db_session):
+        from app.extract.basic import extract_from_source_documents
+        from datetime import datetime
+
+        doc = SourceDocument(
+            id=uuid4(),
+            source_type="slack",
+            external_id="slack:C123:1",
+            content="Plain status update without explicit graph keywords.",
+            processed_at=datetime.utcnow(),
+            metadata_json=json.dumps({"channel_name": "general"}),
+        )
+        db_session.add(doc)
+        await db_session.flush()
+
+        result = await extract_from_source_documents("slack", db_session)
+
+        assert result["documents_processed"] == 1
+        assert result["components_created"] >= 1
+        rows = (await db_session.execute(
+            select(Component, Model.name)
+            .join(Model, Component.model_id == Model.id)
+            .where(Component.source_document_id == doc.id)
+        )).all()
+        assert rows
+        assert rows[0][1] == "Message"
+
     async def test_processing_summary_default_zeros(self, client):
         response = await client.get("/api/connectors/processing-summary")
         assert response.status_code == 200
@@ -657,7 +824,7 @@ class TestSyncJobFlow:
         response = await client.post(f"/api/connectors/{fake_id}/sync")
         assert response.status_code == 404
 
-    async def test_slack_sync_returns_unsupported_error(self, client, db_session):
+    async def test_slack_sync_queues_job(self, client, db_session):
         connector = Connector(
             id=uuid4(),
             connector_type="slack",
@@ -672,9 +839,9 @@ class TestSyncJobFlow:
         sync_resp = await client.post(f"/api/connectors/{connector.id}/sync")
         assert sync_resp.status_code == 200
         data = sync_resp.json()
-        assert data["status"] == "failed"
-        assert data["error_type"] == "unsupported_connector"
-        assert "Slack" in data["error_message"]
+        assert data["status"] == "pending"
+        assert data["job_id"] is not None
+        assert data["connector_id"] == str(connector.id)
 
     async def test_slack_connect_returns_400_unsupported(self, client):
         response = await client.post(
@@ -684,3 +851,142 @@ class TestSyncJobFlow:
         assert response.status_code == 400
         detail = response.json()["detail"].lower()
         assert "not" in detail or "unsupported" in detail
+
+
+class TestGoogleSync:
+    async def test_sync_gmail_persists_messages(self, db_session, monkeypatch):
+        from app.sync import google
+        from sqlalchemy import select
+
+        body = base64.urlsafe_b64encode(b"Decision: ship Gmail sync this week.").decode().rstrip("=")
+
+        class FakeGoogleClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+            async def get(self, url, headers=None, params=None):
+                if url.endswith("/users/me/messages"):
+                    return httpx.Response(200, json={"messages": [{"id": "msg-1"}]})
+                if url.endswith("/users/me/messages/msg-1"):
+                    return httpx.Response(
+                        200,
+                        json={
+                            "id": "msg-1",
+                            "threadId": "thread-1",
+                            "snippet": "Decision snippet",
+                            "labelIds": ["INBOX"],
+                            "payload": {
+                                "mimeType": "text/plain",
+                                "headers": [
+                                    {"name": "Subject", "value": "Launch plan"},
+                                    {"name": "From", "value": "pm@example.com"},
+                                    {"name": "To", "value": "team@example.com"},
+                                    {"name": "Date", "value": "Thu, 7 May 2026 10:00:00 +0000"},
+                                ],
+                                "body": {"data": body},
+                            },
+                        },
+                    )
+                raise AssertionError(f"unexpected URL {url}")
+
+        monkeypatch.setattr(google.httpx, "AsyncClient", FakeGoogleClient)
+        connector = Connector(
+            id=uuid4(),
+            connector_type="gmail",
+            status="connected",
+            credentials_json=json.dumps({"access_token": "google-token"}),
+            config_json="{}",
+        )
+        db_session.add(connector)
+        await db_session.flush()
+
+        result = await google.sync_gmail(connector, db_session)
+
+        assert result["documents_fetched"] == 1
+        assert result["documents_persisted"] == 1
+        doc = await db_session.scalar(select(SourceDocument).where(SourceDocument.external_id == "gmail:msg-1"))
+        assert doc is not None
+        assert doc.source_type == "gmail"
+        assert "Decision: ship Gmail sync this week." in doc.content
+        metadata = json.loads(doc.metadata_json)
+        assert metadata["subject"] == "Launch plan"
+        assert metadata["workspace_id"] == str(connector.workspace_id)
+
+    async def test_sync_gdrive_persists_exported_files(self, db_session, monkeypatch):
+        from app.sync import google
+        from sqlalchemy import select
+
+        class FakeGoogleClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+            async def get(self, url, headers=None, params=None):
+                if url.endswith("/drive/v3/files"):
+                    return httpx.Response(
+                        200,
+                        json={
+                            "files": [
+                                {
+                                    "id": "file-1",
+                                    "name": "Roadmap",
+                                    "mimeType": "application/vnd.google-apps.document",
+                                    "webViewLink": "https://docs.google.com/document/d/file-1",
+                                    "modifiedTime": "2026-05-07T10:00:00Z",
+                                    "owners": [{"displayName": "PM", "emailAddress": "pm@example.com"}],
+                                }
+                            ]
+                        },
+                    )
+                if url.endswith("/drive/v3/files/file-1/export"):
+                    return httpx.Response(200, text="Action item: launch Drive sync.")
+                raise AssertionError(f"unexpected URL {url}")
+
+        monkeypatch.setattr(google.httpx, "AsyncClient", FakeGoogleClient)
+        connector = Connector(
+            id=uuid4(),
+            connector_type="gdrive",
+            status="connected",
+            credentials_json=json.dumps({"access_token": "google-token"}),
+            config_json="{}",
+        )
+        db_session.add(connector)
+        await db_session.flush()
+
+        result = await google.sync_gdrive(connector, db_session)
+
+        assert result["documents_fetched"] == 1
+        assert result["documents_persisted"] == 1
+        doc = await db_session.scalar(select(SourceDocument).where(SourceDocument.external_id == "gdrive:file-1"))
+        assert doc is not None
+        assert doc.source_type == "gdrive"
+        assert "Action item: launch Drive sync." in doc.content
+        metadata = json.loads(doc.metadata_json)
+        assert metadata["name"] == "Roadmap"
+
+    async def test_sync_gmail_without_credentials_errors(self, db_session):
+        from app.sync.google import sync_gmail
+
+        connector = Connector(
+            id=uuid4(),
+            connector_type="gmail",
+            status="connected",
+            credentials_json="{}",
+            config_json="{}",
+        )
+        db_session.add(connector)
+        await db_session.flush()
+
+        with pytest.raises(ValueError, match="No Google access token"):
+            await sync_gmail(connector, db_session)

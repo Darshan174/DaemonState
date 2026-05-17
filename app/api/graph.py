@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db_session
-from app.models import Component, Model, Relationship, SourceDocument
+from app.models import Component, Connector, Model, Relationship, SourceDocument
 from app.taxonomy import (
     relationship_display_label,
     source_type_display,
@@ -19,6 +19,52 @@ from app.taxonomy import (
 )
 
 router = APIRouter()
+
+
+LEGACY_UNSCOPED_SOURCE_TYPES = {"local", "local_folder", "browser_upload", "paste"}
+
+
+def _metadata_dict(doc: SourceDocument) -> dict:
+    md = doc.metadata_json
+    if isinstance(md, dict):
+        return md
+    if isinstance(md, str):
+        try:
+            parsed = json.loads(md)
+            return parsed if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return {}
+
+
+def _source_matches_workspace(
+    doc: SourceDocument,
+    workspace_id: str,
+    connector_types: set[str],
+) -> bool:
+    metadata = _metadata_dict(doc)
+    metadata_workspace_id = metadata.get("workspace_id")
+    if metadata_workspace_id:
+        return str(metadata_workspace_id) == workspace_id
+
+    source_type = doc.source_type
+    if source_type in connector_types:
+        return True
+    if source_type in {"github_issue", "github_pr"} and "github" in connector_types:
+        return True
+    if source_type.startswith("ai_context") and "ai_context" in connector_types:
+        return True
+    if source_type == "agent_session" and connector_types.intersection({
+        "ai_context", "codex", "claude", "opencode",
+        "ai_context_codex", "ai_context_claude_code", "ai_context_opencode",
+    }):
+        return True
+
+    # Legacy uploads and pre-workspace connector rows were stored without a
+    # document-level workspace id. Until SourceDocument has a real FK, keep
+    # these visible in the active workspace instead of hiding processed graph
+    # data from the UI.
+    return source_type in LEGACY_UNSCOPED_SOURCE_TYPES
 
 
 class ModelRead(BaseModel):
@@ -121,19 +167,17 @@ async def get_graph(
             if c.source_document and canonical_source_type(c.source_document.source_type) == requested_source_type
         ]
     if workspace_id:
+        try:
+            ws_uuid = UUID(workspace_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid workspace_id")
+        connector_types = set(await session.scalars(
+            select(Connector.connector_type).where(Connector.workspace_id == ws_uuid)
+        ))
         comps_to_keep = []
         for c in components:
-            if c.source_document:
-                md = c.source_document.metadata_json
-                if isinstance(md, dict) and md.get("workspace_id") == workspace_id:
-                    comps_to_keep.append(c)
-                elif isinstance(md, str):
-                    try:
-                        parsed = json.loads(md)
-                        if parsed.get("workspace_id") == workspace_id:
-                            comps_to_keep.append(c)
-                    except (json.JSONDecodeError, TypeError):
-                        pass
+            if c.source_document and _source_matches_workspace(c.source_document, workspace_id, connector_types):
+                comps_to_keep.append(c)
         components = comps_to_keep
     if confidence_min is not None:
         components = [c for c in components if c.confidence >= confidence_min]

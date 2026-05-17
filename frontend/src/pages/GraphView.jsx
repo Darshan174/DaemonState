@@ -258,7 +258,7 @@ export default function GraphView() {
   const [askLoading, setAskLoading] = useState(false);
   const [askError, setAskError] = useState(null);
   const askInputRef = useRef(null);
-  const [ceoView, setCeoView] = useState("birdsEye");
+  const [ceoView, setCeoView] = useState("all");
   const [graphZoom, setGraphZoom] = useState(100);
 
   // Agents sidebar

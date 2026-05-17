@@ -4,7 +4,7 @@ import json
 from uuid import uuid4
 
 
-from app.models import Component, Model, Relationship, SourceDocument
+from app.models import Component, Connector, Model, Relationship, SourceDocument, Workspace
 
 
 class TestGraphProvenance:
@@ -29,6 +29,27 @@ class TestGraphProvenance:
         comp = data["components"][0]
         assert comp["source_type"] == "slack"
         assert comp["source_document_id"] is not None
+
+    async def test_legacy_source_detail_returns_components(self, client, db_session):
+        model = Model(id=uuid4(), name="Email")
+        doc = SourceDocument(
+            id=uuid4(), source_type="gmail", external_id="gmail:detail",
+            content="Email body.", metadata_json="{}",
+        )
+        component = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="Email detail component", value="Extracted email fact",
+            fact_type="fact", confidence=0.8, status="active",
+        )
+        db_session.add_all([model, doc, component])
+        await db_session.flush()
+
+        resp = await client.get(f"/api/sources/{doc.id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] == str(doc.id)
+        assert len(data["components"]) == 1
+        assert data["components"][0]["name"] == "Email detail component"
 
     async def test_component_read_includes_source_url(self, client, db_session):
         model = Model(id=uuid4(), name="Decisions")
@@ -68,6 +89,34 @@ class TestGraphProvenance:
         data = resp.json()
         comp = next(c for c in data["components"] if c["id"] == str(component.id))
         assert comp["ingested_at"] is not None
+
+    async def test_workspace_graph_includes_legacy_connector_documents(self, client, db_session):
+        workspace_id = uuid4()
+        workspace = Workspace(id=workspace_id, name="Research Radar", slug=f"research-{workspace_id.hex[:8]}")
+        connector = Connector(
+            id=uuid4(),
+            workspace_id=workspace_id,
+            connector_type="gmail",
+            status="connected",
+            config_json="{}",
+        )
+        model = Model(id=uuid4(), name="Email")
+        doc = SourceDocument(
+            id=uuid4(), source_type="gmail", external_id="gmail:legacy",
+            content="Legacy Gmail source.", metadata_json="{}",
+        )
+        component = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="Legacy email component", value="Legacy value",
+            fact_type="fact", confidence=0.8, status="active",
+        )
+        db_session.add_all([workspace, connector, model, doc, component])
+        await db_session.flush()
+
+        resp = await client.get("/api/graph", params={"workspace_id": str(workspace_id)})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert any(c["id"] == str(component.id) for c in data["components"])
 
     async def test_relationship_read_includes_confidence(self, client, db_session):
         model = Model(id=uuid4(), name="Test")

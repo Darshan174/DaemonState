@@ -74,7 +74,7 @@ CONNECTOR_CATALOG: dict[str, dict[str, Any]] = {
     "gdrive": {
         "name": "Google Drive",
         "description": "Docs, Sheets, Slides, and folder content",
-        "color": "#0F9D58",
+        "color": "#ffffff",
         "availability": "available",
         "provider": "official_api",
         "provider_label": "Official API",
@@ -82,7 +82,7 @@ CONNECTOR_CATALOG: dict[str, dict[str, Any]] = {
     "gmail": {
         "name": "Gmail",
         "description": "Email threads, attachments, and sender context",
-        "color": "#EA4335",
+        "color": "#ffffff",
         "availability": "available",
         "provider": "official_api",
         "provider_label": "Official API",
@@ -106,7 +106,7 @@ CONNECTOR_CATALOG: dict[str, dict[str, Any]] = {
     "opencode": {
         "name": "OpenCode",
         "description": "OpenCode AI coding sessions — terminal context and implementation notes",
-        "color": "#6366F1",
+        "color": "#000000",
         "availability": "available",
         "provider": "native",
         "provider_label": "Session import",
@@ -490,20 +490,26 @@ async def connector_processing_summary(
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     docs = list(await session.scalars(select(SourceDocument)))
-    counts: dict[str, int] = {ct: 0 for ct in CONNECTOR_CATALOG}
+    totals: dict[str, int] = {ct: 0 for ct in CONNECTOR_CATALOG}
+    processed: dict[str, int] = {ct: 0 for ct in CONNECTOR_CATALOG}
+    unprocessed: dict[str, int] = {ct: 0 for ct in CONNECTOR_CATALOG}
     for doc in docs:
         source_type = doc.source_type
         if source_type.startswith("ai_context"):
             key = "ai_context"
         else:
             key = source_type
-        counts[key] = counts.get(key, 0) + 1
+        totals[key] = totals.get(key, 0) + 1
+        if doc.processed_at is None:
+            unprocessed[key] = unprocessed.get(key, 0) + 1
+        else:
+            processed[key] = processed.get(key, 0) + 1
     items = [{
         "connectorType": ct,
         "connector_type": ct,
-        "processedDocuments": counts.get(ct, 0),
-        "unprocessedDocuments": 0,
-        "total_documents": counts.get(ct, 0),
+        "processedDocuments": processed.get(ct, 0),
+        "unprocessedDocuments": unprocessed.get(ct, 0),
+        "total_documents": totals.get(ct, 0),
     } for ct in CONNECTOR_CATALOG]
     return {"items": items}
 
@@ -995,7 +1001,13 @@ async def ingest_ai_session(
     ws = await _get_workspace(body.workspace_id, session)
     connector = await _get_or_create_connector(ws.id, body.connector_type, session)
 
-    ingest_result = await _ingest(body.connector_type, session, body.session_id, body.content)
+    ingest_result = await _ingest(
+        body.connector_type,
+        session,
+        body.session_id,
+        body.content,
+        workspace_id=str(ws.id),
+    )
 
     unprocessed_docs = list(await session.scalars(
         sa_select(SourceDocument)
@@ -1014,7 +1026,10 @@ async def ingest_ai_session(
     }
 
     config = json.loads(connector.config_json or "{}")
-    config["total_processed_count"] = config.get("total_processed_count", 0) + extract_result.get("components_created", 0)
+    config["total_processed_count"] = (
+        config.get("total_processed_count", 0)
+        + extract_result.get("documents_processed", 0)
+    )
     config["items_synced"] = config.get("items_synced", 0) + ingest_result.get("documents_persisted", 0)
     connector.config_json = json.dumps(config)
     connector.status = "connected"
@@ -1240,7 +1255,7 @@ async def _run_sync_job(job_id: str, connector_id: str, database_url: str) -> No
             )
             config["total_processed_count"] = (
                 config.get("total_processed_count", 0)
-                + extract_result.get("components_created", 0)
+                + extract_result.get("documents_processed", 0)
             )
             connector.config_json = json.dumps(config)
             connector.last_sync_at = datetime.utcnow()
