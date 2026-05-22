@@ -5,8 +5,34 @@ import {
   Sparkles, Loader2, XCircle, Copy, Check, Search,
   ChevronRight, X as XIcon, Bot, Link2, Plus, Minus, Maximize2,
   GitPullRequest, MessageCircle, FileText, Layers3, ShieldCheck,
+  SlidersHorizontal,
 } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
+import imgGmail from "@assets/gmail-icon.png";
+
+function svgDataUri(svg) {
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
+
+const SLACK_LOGO_URI = svgDataUri(`
+<svg viewBox="0 0 127 127" xmlns="http://www.w3.org/2000/svg">
+  <path d="M27.2 80c0 7.3-5.9 13.2-13.2 13.2S.8 87.3.8 80s5.9-13.2 13.2-13.2h13.2V80zm6.6 0c0-7.3 5.9-13.2 13.2-13.2s13.2 5.9 13.2 13.2v33c0 7.3-5.9 13.2-13.2 13.2s-13.2-5.9-13.2-13.2V80z" fill="#E01E5A"/>
+  <path d="M47 27c-7.3 0-13.2-5.9-13.2-13.2S39.7.6 47 .6s13.2 5.9 13.2 13.2V27H47zm0 6.7c7.3 0 13.2 5.9 13.2 13.2s-5.9 13.2-13.2 13.2H13.9C6.6 60.1.7 54.2.7 46.9s5.9-13.2 13.2-13.2H47z" fill="#36C5F0"/>
+  <path d="M99.9 46.9c0-7.3 5.9-13.2 13.2-13.2s13.2 5.9 13.2 13.2-5.9 13.2-13.2 13.2H99.9V46.9zm-6.6 0c0 7.3-5.9 13.2-13.2 13.2s-13.2-5.9-13.2-13.2V13.8C66.9 6.5 72.8.6 80.1.6s13.2 5.9 13.2 13.2v33.1z" fill="#2EB67D"/>
+  <path d="M80.1 99.8c7.3 0 13.2 5.9 13.2 13.2s-5.9 13.2-13.2 13.2-13.2-5.9-13.2-13.2V99.8h13.2zm0-6.6c-7.3 0-13.2-5.9-13.2-13.2s5.9-13.2 13.2-13.2h33.1c7.3 0 13.2 5.9 13.2 13.2s-5.9 13.2-13.2 13.2H80.1z" fill="#ECB22E"/>
+</svg>`);
+
+const GITHUB_LOGO_URI = svgDataUri(`
+<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="#181717">
+  <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+</svg>`);
+
+const AI_LOGO_URI = svgDataUri(`
+<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+  <rect width="48" height="48" rx="12" fill="#7c3aed"/>
+  <path d="M14 29.5V18.5L24 12.75L34 18.5V29.5L24 35.25L14 29.5Z" fill="none" stroke="white" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M24 13V35M14 19L34 30M34 19L14 30" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+</svg>`);
 
 function getAiSettingsSaved() {
   try { return JSON.parse(localStorage.getItem("ce_ai_settings") || "{}"); }
@@ -70,6 +96,11 @@ const EDGE_ORIGIN_STYLE = {
   human_verified:{ lineStyle: "solid", width: 2.4, opacity: 0.88, label: "Human Verified", color: "#059669" },
 };
 
+const LOD_MACRO_ZOOM = 0.5;
+const LOD_CARD_ZOOM = 0.85;
+const LOD_NODE_CLASSES = "lod-macro lod-compact lod-card";
+const LOD_EDGE_CLASSES = "lod-macro-edge lod-detail-edge";
+
 // Source type icon mapping
 const SOURCE_TYPE_ICONS = {
   github_issue: "GH Issue",
@@ -91,11 +122,23 @@ const SOURCE_FAMILY_META = {
   other: { label: "Source", icon: Layers3, color: "#14b8a6", bg: "bg-teal-100 dark:bg-teal-900/30", text: "text-teal-700 dark:text-teal-300" },
 };
 
+const SOURCE_VISUALS = {
+  github: { icon: "GH", label: "GitHub", bg: "rgba(100,116,139,0.18)", border: "#64748b", color: "#e2e8f0", logo: GITHUB_LOGO_URI },
+  gmail: { icon: "GM", label: "Gmail", bg: "rgba(14,165,233,0.18)", border: "#38bdf8", color: "#e0f2fe", logo: imgGmail },
+  slack: { icon: "SL", label: "Slack", bg: "rgba(20,184,166,0.18)", border: "#2dd4bf", color: "#ccfbf1", logo: SLACK_LOGO_URI },
+  agent: { icon: "AI", label: "AI Session", bg: "rgba(124,58,237,0.18)", border: "#8b5cf6", color: "#ede9fe", logo: AI_LOGO_URI },
+  local: { icon: "DOC", label: "Document", bg: "rgba(148,163,184,0.16)", border: "#94a3b8", color: "#e2e8f0", logo: "" },
+  other: { icon: "SRC", label: "Source", bg: "rgba(20,184,166,0.14)", border: "#14b8a6", color: "#ccfbf1", logo: "" },
+};
+
 const GRAPH_GROUP_META = {
   decisions: { label: "Decisions", color: "#f59e0b" },
   work: { label: "Active Work", color: "#2563eb" },
   risks: { label: "Risks & Blockers", color: "#ef4444" },
   github: { label: "GitHub Delivery", color: "#334155" },
+  gmail: { label: "Gmail Inbox", color: "#38bdf8" },
+  slack: { label: "Slack Messages", color: "#2dd4bf" },
+  localDocs: { label: "Documents", color: "#94a3b8" },
   agents: { label: "AI Sessions", color: "#7c3aed" },
   sources: { label: "Sources", color: "#14b8a6" },
   product: { label: "Product", color: "#22c55e" },
@@ -140,8 +183,27 @@ function sourceFamily(component = {}) {
   return "other";
 }
 
+function sourceKind(component = {}) {
+  const rawSource = String(component.source_type || "").toLowerCase();
+  const itemType = String(component.source_metadata_summary?.item_type || "").toLowerCase();
+  const model = String(component.model_name || "").toLowerCase();
+  const fact = String(component.fact_type || "").toLowerCase();
+
+  if (rawSource.includes("gmail") || model.includes("email") || model.includes("gmail")) return "gmail";
+  if (rawSource.includes("slack") || model.includes("message")) return "slack";
+  if (rawSource.includes("github") || itemType.includes("pull") || itemType.includes("issue") || /pull_request|issue|pr/.test(fact)) return "github";
+  if (rawSource.includes("agent") || rawSource.includes("ai_context") || /agent|ai_/.test(fact)) return "agent";
+  if (rawSource.includes("local") || rawSource.includes("gdrive") || rawSource.includes("document")) return "local";
+  return sourceFamily(component) === "agent" ? "agent" : sourceFamily(component) === "github" ? "github" : "other";
+}
+
+function sourceVisual(component = {}) {
+  return SOURCE_VISUALS[sourceKind(component)] || SOURCE_VISUALS.other;
+}
+
 function graphGroup(component = {}, modelName = "") {
   const family = sourceFamily(component);
+  const kind = sourceKind(component);
   const fact = String(component.fact_type || "").toLowerCase();
   const model = String(modelName || component.model_name || "").toLowerCase();
   const status = String(component.status || "").toLowerCase();
@@ -153,12 +215,65 @@ function graphGroup(component = {}, modelName = "") {
   if (/(task|action_item|open_question|issue)/.test(fact) || /(task|issue)/.test(model)) return "work";
   if (/(feature|product|metric|customer|user)/.test(fact) || /(feature|product|metric|customer|user)/.test(model)) return "product";
   if (/(repo|file|changed_file|commit)/.test(fact) || /(repo|engineering)/.test(model)) return "repo";
+  if (kind === "gmail") return "gmail";
+  if (kind === "slack") return "slack";
+  if (kind === "local") return "localDocs";
   if (family === "local" || family === "communication") return "sources";
   return "other";
 }
 
 function sourceFamilyLabel(component = {}) {
   return SOURCE_FAMILY_META[sourceFamily(component)]?.label || "Source";
+}
+
+function componentVisuals(component = {}, isGap = false) {
+  if (isGap) {
+    return {
+      bg: "rgba(239,68,68,0.10)",
+      border: "#ef4444",
+      stripe: "#ef4444",
+    };
+  }
+
+  const family = sourceFamily(component);
+  const status = String(component.status || "").toLowerCase();
+  const palette = {
+    github: { bg: "rgba(100,116,139,0.14)", border: "#64748b", stripe: "#94a3b8" },
+    agent: { bg: "rgba(124,58,237,0.14)", border: "#8b5cf6", stripe: "#a78bfa" },
+    communication: { bg: "rgba(14,165,233,0.14)", border: "#38bdf8", stripe: "#38bdf8" },
+    local: { bg: "rgba(20,184,166,0.13)", border: "#2dd4bf", stripe: "#2dd4bf" },
+    other: { bg: "rgba(148,163,184,0.12)", border: "#94a3b8", stripe: "#94a3b8" },
+  }[family] || { bg: "rgba(148,163,184,0.12)", border: "#94a3b8", stripe: "#94a3b8" };
+
+  if (status === "needs_review" || status === "proposed" || status === "draft") {
+    return { ...palette, border: "#f59e0b" };
+  }
+  if (status === "blocked" || status === "stale" || status === "deprecated") {
+    return { ...palette, border: "#ef4444" };
+  }
+  return palette;
+}
+
+function readableViewport(cy, viewMode) {
+  const padding = viewMode === "repo" ? 72 : 36;
+  cy.fit(undefined, padding);
+}
+
+function graphLod(zoom) {
+  if (zoom <= LOD_MACRO_ZOOM) return "lod-macro";
+  if (zoom < LOD_CARD_ZOOM) return "lod-compact";
+  return "lod-card";
+}
+
+function applyGraphLod(cy) {
+  const lod = graphLod(cy.zoom());
+  cy.batch(() => {
+    cy.nodes("[type='component'], .source-hub, .model-node").removeClass(LOD_NODE_CLASSES).addClass(lod);
+    cy.edges("[edgeType='relationship']")
+      .removeClass(LOD_EDGE_CLASSES)
+      .addClass(lod === "lod-macro" ? "lod-macro-edge" : "lod-detail-edge");
+  });
+  return lod;
 }
 
 function buildGraphStats(data) {
@@ -227,6 +342,7 @@ function domainLabel(modelName) {
 
 export default function GraphView() {
   const containerRef = useRef(null);
+  const logoLayerRef = useRef(null);
   const cyRef = useRef(null);
   const { theme } = useTheme();
   const [viewMode, setViewMode] = useState("knowledge");
@@ -235,6 +351,8 @@ export default function GraphView() {
   const [error, setError] = useState(null);
   const [selectedNode, setSelectedNode] = useState(null);
   const [selectedEdge, setSelectedEdge] = useState(null);
+  const [edgeReviewLoading, setEdgeReviewLoading] = useState(false);
+  const [edgeReviewError, setEdgeReviewError] = useState(null);
   const [filters, setFilters] = useState({
     model: "",
     source_type: "",
@@ -252,17 +370,18 @@ export default function GraphView() {
     try { return JSON.parse(localStorage.getItem("ce_ai_settings") || "{}"); }
     catch { return {}; }
   });
-  const [showAsk, setShowAsk] = useState(true);
+  const [showAsk, setShowAsk] = useState(false);
   const [askQuery, setAskQuery] = useState("");
   const [askResult, setAskResult] = useState(null);
   const [askLoading, setAskLoading] = useState(false);
   const [askError, setAskError] = useState(null);
   const askInputRef = useRef(null);
-  const [ceoView, setCeoView] = useState("birdsEye");
+  const [ceoView, setCeoView] = useState("workLens");
   const [graphZoom, setGraphZoom] = useState(100);
+  const [showFilters, setShowFilters] = useState(false);
 
   // Agents sidebar
-  const [showAgents, setShowAgents] = useState(true);
+  const [showAgents, setShowAgents] = useState(false);
   const [gapReport, setGapReport]     = useState(null);
   const [gapLoading, setGapLoading]   = useState(false);
   const [gapError, setGapError]       = useState(null);
@@ -306,7 +425,7 @@ export default function GraphView() {
     const cy = cyRef.current;
     if (!cy) return;
     cy.resize();
-    cy.fit(undefined, 56);
+    cy.fit(undefined, 36);
     setGraphZoom(Math.round(cy.zoom() * 100));
   }, []);
 
@@ -409,6 +528,40 @@ export default function GraphView() {
     }
   }
 
+  async function reviewSelectedEdge(action) {
+    if (!selectedEdge?.id) return;
+    setEdgeReviewLoading(true);
+    setEdgeReviewError(null);
+    try {
+      const res = await fetch(`/api/relationships/${selectedEdge.id}/review`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const updated = await res.json();
+      if (action === "reject") {
+        setGraphData((current) => current ? {
+          ...current,
+          relationships: (current.relationships || []).filter((r) => r.id !== selectedEdge.id),
+        } : current);
+        setSelectedEdge(null);
+      } else {
+        setGraphData((current) => current ? {
+          ...current,
+          relationships: (current.relationships || []).map((r) => (
+            r.id === updated.id ? { ...r, ...updated } : r
+          )),
+        } : current);
+        setSelectedEdge((edge) => edge ? { ...edge, ...updated } : edge);
+      }
+    } catch (err) {
+      setEdgeReviewError(err.message);
+    } finally {
+      setEdgeReviewLoading(false);
+    }
+  }
+
   const filteredData = useCallback(() => {
     if (!graphData) return { models: [], components: [], relationships: [] };
     if (viewMode === "repo") return graphData;
@@ -422,6 +575,10 @@ export default function GraphView() {
     if (ceoPattern) {
       const modelNameById = new Map(allModels.map((m) => [m.id, m.name]));
       components = components.filter((c) => ceoPattern.test(modelNameById.get(c.model_id) || ""));
+    }
+    const factPattern = CEO_VIEW_FACT_TYPE_PATTERNS[ceoView];
+    if (factPattern) {
+      components = components.filter((c) => factPattern.test(String(c.fact_type || "").toLowerCase()));
     }
 
     if (filters.model) {
@@ -483,11 +640,19 @@ export default function GraphView() {
 
     const modelNameById = new Map(models.map((m) => [m.id, m.name]));
     const visibleGroups = new Map();
+    const groupSourceSummaries = new Map();
     components.forEach((component) => {
       const groupKey = graphGroup(component, modelNameById.get(component.model_id));
       if (!visibleGroups.has(groupKey)) {
         visibleGroups.set(groupKey, GRAPH_GROUP_META[groupKey] || GRAPH_GROUP_META.other);
       }
+      const kind = sourceKind(component);
+      const visual = sourceVisual(component);
+      if (!groupSourceSummaries.has(groupKey)) groupSourceSummaries.set(groupKey, new Map());
+      const summary = groupSourceSummaries.get(groupKey);
+      const current = summary.get(kind) || { ...visual, kind, count: 0 };
+      current.count += 1;
+      summary.set(kind, current);
     });
 
     if (viewMode === "repo") {
@@ -541,6 +706,29 @@ export default function GraphView() {
         });
       });
 
+      groupSourceSummaries.forEach((summary, groupKey) => {
+        Array.from(summary.values()).forEach((item) => {
+          nodes.push({
+            data: {
+              id: `source:${groupKey}:${item.kind}`,
+              parent: `group:${groupKey}`,
+            label: `${item.label}\n${item.count} components`,
+            compactLabel: `${item.label} (${item.count})`,
+            cardLabel: `${item.label}\n${item.count} components`,
+            fullLabel: `${item.label} source summary`,
+            type: "sourceHub",
+              sourceKind: item.kind,
+              bgColor: item.bg,
+              borderColor: item.border,
+              textColor: item.color,
+              logo: item.logo,
+              count: item.count,
+            },
+            classes: "source-hub",
+          });
+        });
+      });
+
       // Components are children of their strategy group compound node
       const connectedComponentIds = new Set();
       relationships.forEach((r) => {
@@ -550,25 +738,31 @@ export default function GraphView() {
 
       components.forEach((c) => {
         const temporal = c.temporal || "unknown";
-        const statusCard = CARD_STATUS[c.status] || CARD_STATUS_DEFAULT;
         const isGap = ceoView === "gaps" && !connectedComponentIds.has(c.id);
+        const visuals = componentVisuals(c, isGap);
+        const source = sourceVisual(c);
 
         const mName = modelNameById.get(c.model_id) || "";
         const groupKey = graphGroup(c, mName);
         const cleanName = stripModelPrefix(c.name);
 
-        // Two-line card label: name on top, domain/source/time chip below
+        // Three-line card label: source badge, entity, then model/link metadata.
         const domain = (c.fact_type || domainLabel(mName) || "Fact").replace(/_/g, " ");
-        const sourceBadge = sourceFamilyLabel(c);
         const timeBadge = TEMPORAL_BADGE[temporal] || "";
-        const chipLine = [domain, sourceBadge, timeBadge].filter(Boolean).join("  ·  ");
-        const displayName = shortLabel(cleanName, 4);
+        const confidenceBadge = c.confidence != null ? `${Math.round(c.confidence * 100)}%` : "";
+        const relationshipCount = c.relationship_count ?? 0;
+        const linkBadge = relationshipCount > 0 ? `${relationshipCount} linked` : "isolated";
+        const chipLine = [source.label, domain].filter(Boolean).join("  /  ");
+        const evidenceLine = [linkBadge, timeBadge, confidenceBadge].filter(Boolean).join("  /  ");
+        const displayName = shortLabel(cleanName, 7);
 
         nodes.push({
           data: {
             id: c.id,
             parent: `group:${groupKey}`,
-            label: `${displayName}\n${chipLine}`,
+            label: `${source.icon}  ${displayName}\n${chipLine}\n${evidenceLine}`,
+            compactLabel: displayName,
+            cardLabel: `${source.icon}  ${displayName}\n${chipLine}\n${evidenceLine}`,
             fullLabel: c.name,
             type: "component",
             value: c.value,
@@ -582,13 +776,17 @@ export default function GraphView() {
             source_external_id: c.source_external_id,
             source_metadata_summary: c.source_metadata_summary,
             source_family: sourceFamily(c),
+            source_kind: sourceKind(c),
             relationship_count: c.relationship_count,
             provenance: c.provenance,
             excerpt: c.excerpt,
-            bgColor: isGap ? "rgba(239,68,68,0.08)" : statusCard.bg,
-            borderColor: isGap ? "#ef4444" : statusCard.border,
+            bgColor: visuals.bg,
+            borderColor: visuals.border,
+            stripeColor: visuals.stripe,
+            badgeColor: source.border,
+            logo: source.logo,
           },
-          classes: isGap ? "gap-node" : undefined,
+          classes: [isGap ? "gap-node" : "", relationshipCount === 0 ? "isolated-node" : "linked-node"].filter(Boolean).join(" "),
         });
       });
 
@@ -606,6 +804,7 @@ export default function GraphView() {
             target: r.target_component_id,
             label: (r.relationship_type || "related_to").replaceAll("_", " "),
             displayLabel: r.display_label || (r.relationship_type || "related_to").replaceAll("_", " "),
+            shortLabel: (r.relationship_type || "related_to").replaceAll("_", " "),
             edgeType: "relationship",
             origin,
             confidence: r.confidence,
@@ -634,6 +833,8 @@ export default function GraphView() {
     const repoFileBorder = isDark ? "#64748b" : "#cbd5e1";
     const repoTextColor = isDark ? "#e5edf8" : "#1e293b";
     const repoLabelOutline = isDark ? "#0f172a" : "#ffffff";
+    const cardWidth = 270;
+    const cardHeight = 106;
 
     const cy = cytoscape({
       container: containerRef.current,
@@ -646,20 +847,20 @@ export default function GraphView() {
             label: "data(label)",
             "text-valign": "center",
             "text-halign": "center",
-            "font-size": "8px",
-            "font-weight": "600",
+            "font-size": "11px",
+            "font-weight": "bold",
             color: componentTextColor,
             "background-color": CARD_STATUS_DEFAULT.bg,
-            width: 155,
-            height: 58,
+            width: cardWidth,
+            height: cardHeight,
             shape: "round-rectangle",
-            "corner-radius": "8px",
-            "border-width": 1.5,
+            "corner-radius": "10px",
+            "border-width": 2,
             "border-color": CARD_STATUS_DEFAULT.border,
             "text-wrap": "wrap",
-            "text-max-width": "138px",
+            "text-max-width": "238px",
             "text-outline-color": labelOutlineColor,
-            "text-outline-width": 1.5,
+            "text-outline-width": 1,
           },
         },
 
@@ -677,22 +878,22 @@ export default function GraphView() {
         {
           selector: ".model-node",
           style: {
-            "background-color": modelBg,
+            "background-color": isDark ? "#0c1526" : "#f8fafc",
             "background-opacity": modelBgOpacity,
             "border-color": "data(modelColor)",
             "border-width": 2,
             "border-opacity": 0.7,
             shape: "round-rectangle",
-            "corner-radius": "12px",
-            padding: "42px",
+            "corner-radius": "16px",
+            padding: "58px",
             label: "data(label)",
             "text-valign": "top",
             "text-halign": "left",
-            "text-margin-y": -18,
-            "text-margin-x": 10,
-            "text-max-width": 220,
-            "font-size": "11px",
-            "font-weight": "800",
+            "text-margin-y": -28,
+            "text-margin-x": 12,
+            "text-max-width": 320,
+            "font-size": "13px",
+            "font-weight": "bold",
             "text-wrap": "wrap",
             color: modelTextColor,
             "text-outline-color": labelOutlineColor,
@@ -706,28 +907,173 @@ export default function GraphView() {
             height: 10,
           },
         },
+        {
+          selector: ".model-node.lod-macro",
+          style: {
+            "background-opacity": isDark ? 0.16 : 0.08,
+            "border-opacity": isDark ? 0.5 : 0.35,
+            "border-width": 1,
+            "font-size": "34px",
+            "text-outline-width": 3,
+            "text-background-opacity": 0,
+            "text-margin-y": -42,
+            padding: "36px",
+          },
+        },
+        {
+          selector: ".model-node.lod-compact",
+          style: {
+            "background-opacity": isDark ? 0.6 : 0.35,
+            "border-opacity": 0.55,
+            "font-size": "22px",
+            "text-outline-width": 2,
+            "text-margin-y": -34,
+            padding: "44px",
+          },
+        },
 
         // ── COMPONENT — uniform card nodes ───────────────────────
         {
           selector: "node[type='component']",
           style: {
             "background-color": "data(bgColor)",
+            "background-opacity": 0.95,
             "border-color": "data(borderColor)",
-            "border-width": 1.5,
-            width: 155,
-            height: 58,
+            "border-width": 2,
+            width: cardWidth,
+            height: cardHeight,
             shape: "round-rectangle",
-            "corner-radius": "8px",
+            "corner-radius": "10px",
             label: "data(label)",
             "text-valign": "center",
             "text-halign": "center",
-            "font-size": "8px",
-            "font-weight": "600",
+            "text-margin-x": 12,
+            "font-size": "10.5px",
+            "font-weight": "bold",
             "text-wrap": "wrap",
-            "text-max-width": "138px",
+            "text-max-width": "238px",
             color: componentTextColor,
             "text-outline-color": labelOutlineColor,
-            "text-outline-width": 2,
+            "text-outline-width": 1,
+            "transition-property": "width height background-color border-width opacity font-size",
+            "transition-duration": "180ms",
+          },
+        },
+        {
+          selector: "node[type='component'].lod-macro",
+          style: {
+            width: 18,
+            height: 18,
+            shape: "ellipse",
+            label: "",
+            "background-color": "data(stripeColor)",
+            "background-opacity": 1,
+            "border-width": 2,
+            "border-color": "data(borderColor)",
+          },
+        },
+        {
+          selector: "node[type='component'].lod-compact",
+          style: {
+            width: 150,
+            height: 42,
+            shape: "round-rectangle",
+            "corner-radius": "9px",
+            label: "data(compactLabel)",
+            "font-size": "9px",
+            "font-weight": "bold",
+            "text-max-width": "132px",
+            "text-wrap": "wrap",
+            "background-color": "data(bgColor)",
+            "background-opacity": 0.98,
+            "border-width": 2,
+          },
+        },
+        {
+          selector: "node[type='component'].lod-card",
+          style: {
+            width: cardWidth,
+            height: cardHeight,
+            shape: "round-rectangle",
+            "corner-radius": "10px",
+            label: "data(cardLabel)",
+            "font-size": "10.5px",
+            "text-max-width": "238px",
+          },
+        },
+        {
+          selector: ".source-hub",
+          style: {
+            "background-color": "data(bgColor)",
+            "background-opacity": 1,
+            "border-color": "data(borderColor)",
+            "border-width": 2,
+            width: 144,
+            height: 104,
+            shape: "round-rectangle",
+            "corner-radius": "12px",
+            label: "data(label)",
+            "text-valign": "bottom",
+            "text-halign": "center",
+            "text-margin-y": -10,
+            "font-size": "10px",
+            "font-weight": "bold",
+            "text-wrap": "wrap",
+            "text-max-width": "104px",
+            color: componentTextColor,
+            "text-outline-color": labelOutlineColor,
+            "text-outline-width": 1,
+            "transition-property": "width height background-color border-width opacity font-size",
+            "transition-duration": "180ms",
+          },
+        },
+        {
+          selector: ".source-hub.lod-macro",
+          style: {
+            width: 22,
+            height: 22,
+            shape: "ellipse",
+            label: "",
+            "background-color": "data(borderColor)",
+            "background-opacity": 1,
+            "border-width": 1,
+          },
+        },
+        {
+          selector: ".source-hub.lod-compact",
+          style: {
+            width: 112,
+            height: 34,
+            label: "data(compactLabel)",
+            "font-size": "8.5px",
+            "text-max-width": "96px",
+            "text-valign": "center",
+            "text-margin-y": 0,
+          },
+        },
+        {
+          selector: ".source-hub.lod-card",
+          style: {
+            width: 144,
+            height: 104,
+            label: "data(cardLabel)",
+            "font-size": "10px",
+            "text-max-width": "104px",
+            "text-valign": "bottom",
+            "text-margin-y": -10,
+          },
+        },
+        {
+          selector: ".linked-node",
+          style: {
+            "border-style": "solid",
+          },
+        },
+        {
+          selector: ".isolated-node",
+          style: {
+            "border-style": "dashed",
+            "border-opacity": 0.8,
           },
         },
 
@@ -762,7 +1108,7 @@ export default function GraphView() {
             width: 84,
             height: 36,
             "font-size": "9px",
-            "font-weight": "800",
+            "font-weight": "bold",
             "text-max-width": 94,
             "background-color": isDark ? "#2563eb" : "#3b82f6",
             "border-color": isDark ? "#93c5fd" : "#1d4ed8",
@@ -775,7 +1121,7 @@ export default function GraphView() {
             width: 64,
             height: 30,
             "font-size": "8px",
-            "font-weight": "800",
+            "font-weight": "bold",
             "text-max-width": 70,
             "background-color": isDark ? "#6d28d9" : "#8b5cf6",
             "border-color": isDark ? "#c4b5fd" : "#6d28d9",
@@ -788,7 +1134,7 @@ export default function GraphView() {
             width: 76,
             height: 24,
             "font-size": "7px",
-            "font-weight": "700",
+            "font-weight": "bold",
             "text-max-width": 80,
             "background-color": repoFileBg,
             "border-color": repoFileBorder,
@@ -805,7 +1151,7 @@ export default function GraphView() {
             height: 36,
             shape: "round-rectangle",
             "font-size": "8.5px",
-            "font-weight": "800",
+            "font-weight": "bold",
             "text-max-width": 82,
           },
         },
@@ -833,19 +1179,38 @@ export default function GraphView() {
             "line-color": "data(edgeColor)",
             "target-arrow-color": "data(edgeColor)",
             "target-arrow-shape": "triangle",
-            "arrow-scale": 0.9,
+            "arrow-scale": 1.1,
             "curve-style": "bezier",
-            label: "",
+            label: "data(shortLabel)",
             opacity: "data(edgeOpacity)",
-            "font-size": "8px",
-            "font-weight": "600",
-            color: isDark ? "#818cf8" : "#4f46e5",
+            "font-size": "9px",
+            "font-weight": "bold",
+            color: isDark ? "#c7d2fe" : "#3730a3",
             "text-rotation": "autorotate",
             "text-background-opacity": 1,
             "text-background-color": edgeLabelBg,
-            "text-background-padding": "3px",
+            "text-background-padding": "4px",
             "text-border-opacity": 0,
             "text-margin-y": -8,
+            "transition-property": "width opacity line-color target-arrow-color",
+            "transition-duration": "180ms",
+          },
+        },
+        {
+          selector: "edge[edgeType='relationship'].lod-macro-edge",
+          style: {
+            label: "",
+            width: 1,
+            opacity: 0.34,
+            "arrow-scale": 0.72,
+          },
+        },
+        {
+          selector: "edge[edgeType='relationship'].lod-detail-edge",
+          style: {
+            label: "data(shortLabel)",
+            width: "data(edgeWidth)",
+            opacity: "data(edgeOpacity)",
           },
         },
 
@@ -939,59 +1304,158 @@ export default function GraphView() {
       layout: viewMode === "repo"
         ? { name: "preset", fit: true, padding: 110 }
         : (() => {
-          // Preset layout: models in a grid, cards in a circle inside each domain
           const presetPositions = {};
-          const groups = Array.from(visibleGroups.entries());
-          const cols = Math.max(2, Math.ceil(Math.sqrt(Math.max(1, groups.length))));
-          const modelSpacing = 430;
+          const groups = Array.from(visibleGroups.entries())
+            .map(([groupKey, meta]) => ({
+              groupKey,
+              meta,
+              items: components.filter((c) => graphGroup(c, modelNameById.get(c.model_id)) === groupKey),
+              hubs: Array.from(groupSourceSummaries.get(groupKey)?.values() || []),
+            }))
+            .sort((a, b) => b.items.length - a.items.length);
 
-          groups.forEach(([groupKey], mi) => {
-            const col = mi % cols;
-            const row = Math.floor(mi / cols);
-            const basex = (col - (cols - 1) / 2) * modelSpacing;
-            const basey = row * modelSpacing;
+          const colCount = Math.min(3, Math.max(1, groups.length));
+          const colWidth = 1220;
+          const cardW = 306;
+          const cardH = 128;
+          const gapX = 36;
+          const gapY = 34;
+          const groupPadX = 132;
+          const sourceHubW = 152;
+          const sourceHubGap = 22;
+          const groupPadTop = 190;
+          const groupGapY = 120;
+          const colHeights = Array.from({ length: colCount }, () => 0);
 
-            const mComps = components.filter((c) => graphGroup(c, modelNameById.get(c.model_id)) === groupKey);
-            // Cards are 155px wide — need adequate radius to avoid overlap
-            const radius = mComps.length <= 1 ? 90 : Math.max(120, mComps.length * 38);
-            mComps.forEach((c, ci) => {
-              const angle = (ci / Math.max(1, mComps.length)) * 2 * Math.PI - Math.PI / 2;
-              presetPositions[c.id] = {
-                x: basex + radius * Math.cos(angle),
-                y: basey + radius * Math.sin(angle),
+          groups.forEach(({ groupKey, items, hubs }) => {
+            const col = colHeights.indexOf(Math.min(...colHeights));
+            const itemCount = Math.max(1, items.length);
+            const gridCols = itemCount >= 40 ? 4 : itemCount >= 20 ? 3 : itemCount >= 8 ? 2 : 1;
+            const rows = Math.ceil(itemCount / gridCols);
+            const groupWidth = groupPadX * 2 + gridCols * cardW + (gridCols - 1) * gapX;
+            const groupHeight = groupPadTop + rows * cardH + Math.max(0, rows - 1) * gapY + 80;
+            const baseX = col * colWidth - ((colCount - 1) * colWidth) / 2;
+            const baseY = colHeights[col];
+            const startX = baseX - groupWidth / 2 + groupPadX + cardW / 2;
+            const startY = baseY + groupPadTop;
+            const hubTotalWidth = hubs.length * sourceHubW + Math.max(0, hubs.length - 1) * sourceHubGap;
+            const hubStartX = baseX - hubTotalWidth / 2 + sourceHubW / 2;
+
+            hubs.forEach((hub, index) => {
+              presetPositions[`source:${groupKey}:${hub.kind}`] = {
+                x: hubStartX + index * (sourceHubW + sourceHubGap),
+                y: baseY + 88,
               };
             });
-            if (mComps.length === 0) {
-              presetPositions[`group:${groupKey}`] = { x: basex, y: basey };
+
+            items.forEach((c, index) => {
+              const row = Math.floor(index / gridCols);
+              const itemCol = index % gridCols;
+              presetPositions[c.id] = {
+                x: startX + itemCol * (cardW + gapX),
+                y: startY + row * (cardH + gapY),
+              };
+            });
+            if (items.length === 0) {
+              presetPositions[`group:${groupKey}`] = { x: baseX, y: baseY + groupHeight / 2 };
             }
+            colHeights[col] += groupHeight + groupGapY;
           });
 
           return {
             name: "preset",
             positions: (node) => presetPositions[node.id()],
             fit: true,
-            padding: 80,
+            padding: 36,
           };
         })(),
       wheelSensitivity: 0.18,
     });
 
-    cy.minZoom(viewMode === "repo" ? 0.35 : 0.22);
-    cy.maxZoom(2.4);
-    cy.fit(undefined, viewMode === "repo" ? 72 : 56);
+    cy.minZoom(viewMode === "repo" ? 0.35 : 0.28);
+    cy.maxZoom(2.8);
+    readableViewport(cy, viewMode);
+    applyGraphLod(cy);
     setGraphZoom(Math.round(cy.zoom() * 100));
-    cy.on("zoom", () => setGraphZoom(Math.round(cy.zoom() * 100)));
+    cy.on("zoom", () => {
+      applyGraphLod(cy);
+      setGraphZoom(Math.round(cy.zoom() * 100));
+    });
 
     const resizeObserver = new ResizeObserver(() => {
       cy.resize();
-      cy.fit(undefined, viewMode === "repo" ? 72 : 56);
+      readableViewport(cy, viewMode);
       setGraphZoom(Math.round(cy.zoom() * 100));
     });
     resizeObserver.observe(containerRef.current);
 
+    let logoRafId = null;
+    const logoTimeoutIds = [];
+    const graphIsDestroyed = () => typeof cy.destroyed === "function" && cy.destroyed();
+    const updateLogoOverlays = () => {
+      const layer = logoLayerRef.current;
+      if (!layer || !containerRef.current || graphIsDestroyed()) {
+        return;
+      }
+      if (viewMode !== "repo" && cy.zoom() < LOD_CARD_ZOOM) {
+        layer.replaceChildren();
+        return;
+      }
+      const fragment = document.createDocumentFragment();
+      cy.nodes().forEach((node) => {
+        try {
+          const logo = node.data("logo");
+          const type = node.data("type");
+          if (!logo || !["component", "sourceHub"].includes(type)) return;
+
+          const bounds = node.renderedBoundingBox({
+            includeEdges: false,
+            includeLabels: false,
+            includeNodes: true,
+          });
+          const isSourceHub = type === "sourceHub";
+          const size = isSourceHub ? 34 : 24;
+          const left = isSourceHub
+            ? bounds.x1 + bounds.w / 2
+            : bounds.x1 + bounds.w * (26 / cardWidth);
+          const top = isSourceHub
+            ? bounds.y1 + bounds.h * ((104 / 2 - 18) / 104)
+            : bounds.y1 + bounds.h * (24 / cardHeight);
+          const img = document.createElement("img");
+          img.src = logo;
+          img.alt = "";
+          img.title = node.data("fullLabel") || node.data("label") || "";
+          img.dataset.graphLogo = node.id();
+          img.className = isSourceHub
+            ? "absolute rounded-md bg-white/95 p-1 object-contain shadow-sm dark:bg-slate-950/90"
+            : "absolute rounded bg-white/95 p-0.5 object-contain shadow-sm dark:bg-slate-950/90";
+          Object.assign(img.style, {
+            width: `${size}px`,
+            height: `${size}px`,
+            left: `${left}px`,
+            top: `${top}px`,
+            transform: "translate(-50%, -50%)",
+          });
+          fragment.appendChild(img);
+        } catch (_) {}
+      });
+      layer.replaceChildren(fragment);
+    };
+    const scheduleLogoOverlayUpdate = () => {
+      if (logoRafId) return;
+      logoRafId = requestAnimationFrame(() => {
+        logoRafId = null;
+        updateLogoOverlays();
+      });
+    };
+    updateLogoOverlays();
+    logoTimeoutIds.push(setTimeout(updateLogoOverlays, 50));
+    logoTimeoutIds.push(setTimeout(updateLogoOverlays, 250));
+    cy.on("render zoom pan position", scheduleLogoOverlayUpdate);
+
     cy.on("tap", "node", (evt) => {
       const data = evt.target.data();
-      if (data.type !== "model") {
+      if (data.type === "component") {
         const connectedEdges = cy.edges(`[source = "${data.id}"], [target = "${data.id}"]`);
         const connected = [];
         connectedEdges.forEach((e) => {
@@ -1013,6 +1477,7 @@ export default function GraphView() {
         });
         setSelectedNode({ ...data, connected });
         setSelectedEdge(null);
+        setEdgeReviewError(null);
       } else {
         setSelectedNode(null);
       }
@@ -1034,6 +1499,7 @@ export default function GraphView() {
         targetName: data.targetName,
       });
       setSelectedNode(null);
+      setEdgeReviewError(null);
     });
 
     cy.on("tap", (evt) => {
@@ -1049,14 +1515,14 @@ export default function GraphView() {
     });
     cy.on("mouseout", "edge[edgeType='relationship']", (evt) => {
       if (!evt.target.selected()) {
-        evt.target.style({ label: "", opacity: 0.45 });
+        evt.target.style({ label: evt.target.data("shortLabel"), opacity: evt.target.data("edgeOpacity") ?? 0.6 });
       }
     });
     cy.on("select", "edge[edgeType='relationship']", (evt) => {
       evt.target.style({ label: evt.target.data("label"), opacity: 1 });
     });
     cy.on("unselect", "edge[edgeType='relationship']", (evt) => {
-      evt.target.style({ label: "", opacity: 0.45 });
+      evt.target.style({ label: evt.target.data("shortLabel"), opacity: evt.target.data("edgeOpacity") ?? 0.6 });
     });
 
     // Hover effect on card nodes — subtle lift
@@ -1065,7 +1531,7 @@ export default function GraphView() {
     });
     cy.on("mouseout", "node[type='component']", (evt) => {
       if (!evt.target.selected()) {
-        evt.target.style({ "border-width": 1.5, opacity: 1 });
+        evt.target.style({ "border-width": 2, opacity: 1 });
       }
     });
 
@@ -1109,6 +1575,10 @@ export default function GraphView() {
     return () => {
       containerEl.removeEventListener("mousemove", onMouseMove);
       containerEl.removeEventListener("mouseleave", onMouseLeave);
+      cy.off("render zoom pan position", scheduleLogoOverlayUpdate);
+      logoTimeoutIds.forEach((timeoutId) => clearTimeout(timeoutId));
+      if (logoRafId) cancelAnimationFrame(logoRafId);
+      logoLayerRef.current?.replaceChildren();
       resizeObserver.disconnect();
       cy.destroy();
     };
@@ -1147,7 +1617,7 @@ export default function GraphView() {
   return (
     <div className="flex h-full min-h-0 gap-3 overflow-hidden">
       <div className="flex-1 flex flex-col min-w-0">
-        <div className="flex items-start gap-2 mb-3 flex-wrap">
+        <div className="flex items-center gap-2 mb-2 flex-wrap">
           <h2 className="text-lg font-bold text-slate-900 dark:text-white">Knowledge Graph</h2>
           <div className="flex rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-1">
             {[
@@ -1169,6 +1639,23 @@ export default function GraphView() {
             ))}
           </div>
           {viewMode === "knowledge" && (
+            <div className="hidden md:flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2.5 py-1.5 text-[11px] font-bold text-slate-500 dark:text-slate-400">
+              <Network className="h-3.5 w-3.5 text-brand-500" />
+              <span className="text-slate-900 dark:text-white">{graphStats.components}</span>
+              <span>nodes</span>
+              <span className="h-3 w-px bg-slate-200 dark:bg-slate-700" />
+              <span className="text-slate-900 dark:text-white">{graphStats.relationships}</span>
+              <span>edges</span>
+              {graphStats.isolated > 0 && (
+                <>
+                  <span className="h-3 w-px bg-slate-200 dark:bg-slate-700" />
+                  <span className="text-red-500">{graphStats.isolated}</span>
+                  <span>isolated</span>
+                </>
+              )}
+            </div>
+          )}
+          {viewMode === "knowledge" && showFilters && (
           <div className="flex gap-1.5 flex-wrap min-w-0">
             <select
               value={filters.model}
@@ -1256,6 +1743,20 @@ export default function GraphView() {
           </div>
           )}
           <div className="ml-auto flex items-center gap-2">
+            {viewMode === "knowledge" && (
+              <button
+                type="button"
+                onClick={() => setShowFilters((v) => !v)}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition-colors ${
+                  showFilters
+                    ? "border-sky-400 bg-sky-50 text-sky-700 dark:border-sky-600 dark:bg-sky-900/20 dark:text-sky-300"
+                    : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700"
+                }`}
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5" />
+                Filters
+              </button>
+            )}
             {agentStatus && (
               <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full ${aiSettings.api_key || agentStatus.llm_enabled ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"}`}>
                 {aiSettings.api_key && aiSettings.model ? `AI: ${aiSettings.model}` : agentStatus.llm_enabled ? `LLM: ${agentStatus.extraction_model}` : "Regex extraction"}
@@ -1360,7 +1861,7 @@ export default function GraphView() {
           </div>
         )}
 
-        {viewMode === "knowledge" && (
+        {viewMode === "knowledge" && showFilters && (
           <div className="grid grid-cols-3 gap-1.5 mb-2 sm:grid-cols-4 xl:grid-cols-7">
             <GraphStat label="Nodes" value={graphStats.components} />
             <GraphStat label="Edges" value={graphStats.relationships} />
@@ -1401,6 +1902,7 @@ export default function GraphView() {
 
         <div className="flex-1 relative rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 min-h-0 overflow-hidden">
           <div ref={containerRef} className="absolute inset-0 rounded-2xl" />
+          <div ref={logoLayerRef} className="pointer-events-none absolute inset-0 z-10" />
 
           <div className="absolute left-3 top-3 z-20 flex items-center gap-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white/92 dark:bg-slate-800/92 p-1 shadow-sm backdrop-blur-sm">
             <button type="button" title="Zoom out" onClick={() => changeGraphZoom(-0.12)} className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white">
@@ -1433,7 +1935,7 @@ export default function GraphView() {
           </div>
 
           {/* Persistent legend — top-right corner of graph canvas */}
-          <div className="pointer-events-none absolute top-3 right-3 z-10 hidden max-w-[150px] space-y-2 rounded-xl border border-slate-200 bg-white/92 px-2.5 py-2 shadow-sm backdrop-blur-sm dark:border-slate-700 dark:bg-slate-800/92 2xl:block">
+          <div className="pointer-events-none absolute bottom-3 right-3 z-10 hidden max-w-[150px] space-y-2 rounded-xl border border-slate-200 bg-white/92 px-2.5 py-2 shadow-sm backdrop-blur-sm dark:border-slate-700 dark:bg-slate-800/92 2xl:block">
             <div>
               <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Border — status</p>
               <div className="flex flex-col gap-1">
@@ -1950,6 +2452,35 @@ export default function GraphView() {
                 <span className="text-slate-500">To</span>
                 <span className="font-bold text-slate-700 dark:text-slate-300 truncate max-w-[140px]" title={selectedEdge.targetName}>{selectedEdge.targetName}</span>
               </div>
+            </div>
+          )}
+
+          {(selectedEdge.origin === "ai_proposed" || selectedEdge.origin === "proposed" || selectedEdge.status === "proposed") && (
+            <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-2.5 dark:border-amber-900/40 dark:bg-amber-950/20">
+              <p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-amber-700 dark:text-amber-300">Review proposed edge</p>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  disabled={edgeReviewLoading}
+                  onClick={() => reviewSelectedEdge("accept")}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  {edgeReviewLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                  Accept
+                </button>
+                <button
+                  type="button"
+                  disabled={edgeReviewLoading}
+                  onClick={() => reviewSelectedEdge("reject")}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-[11px] font-bold text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-900/50 dark:bg-slate-900 dark:text-red-300 dark:hover:bg-red-950/30"
+                >
+                  {edgeReviewLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <XCircle className="h-3.5 w-3.5" />}
+                  Reject
+                </button>
+              </div>
+              {edgeReviewError && (
+                <p className="mt-2 text-[10px] font-semibold text-red-600 dark:text-red-400">{edgeReviewError}</p>
+              )}
             </div>
           )}
 
