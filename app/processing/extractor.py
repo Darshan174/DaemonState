@@ -129,7 +129,7 @@ class Extractor:
             except Exception as exc:
                 self.last_error = f"{type(exc).__name__}: {exc}"
                 logger.warning("llm extraction failed; falling back to regex: %s", self.last_error)
-        return self._regex_extract(content, metadata)
+        return self._regex_extract(content)
 
     async def _llm_extract(self, content: str) -> list[ExtractedFact]:
         from litellm import acompletion
@@ -177,7 +177,7 @@ class Extractor:
             ))
         return facts[:20]
 
-    def _regex_extract(self, content: str, metadata: dict[str, Any] | None = None) -> list[ExtractedFact]:
+    def _regex_extract(self, content: str) -> list[ExtractedFact]:
         facts: list[ExtractedFact] = []
 
         def detect_temporal(text: str) -> str:
@@ -268,23 +268,8 @@ class Extractor:
         if not facts:
             first_lines = content[:500].strip()
             if first_lines:
-                source_type = str((metadata or {}).get("source_type") or "").lower()
-                external_id = str((metadata or {}).get("external_id") or "").strip()
-                if source_type == "gmail":
-                    model_name = "Email"
-                    name_prefix = "Email"
-                elif source_type == "slack":
-                    model_name = "Message"
-                    name_prefix = "Slack message"
-                elif source_type == "gdrive":
-                    model_name = "Document"
-                    name_prefix = "Drive document"
-                else:
-                    model_name = "Document"
-                    name_prefix = "Document"
-                title = external_id or first_lines.splitlines()[0][:80].strip() or "content"
                 facts.append(ExtractedFact(
-                    model_name=model_name, name=f"{name_prefix}: {title}"[:120],
+                    model_name="Document", name="Document content",
                     value=first_lines, fact_type="fact",
                     confidence=0.50, temporal="unknown", temporal_hint="current",
                 ))
