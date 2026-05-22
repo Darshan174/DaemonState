@@ -106,6 +106,7 @@ async def sync_github(connector: Connector, session: AsyncSession) -> dict:
                         author=author,
                         source_url=url,
                         metadata_json=json.dumps({
+                            "workspace_id": str(connector.workspace_id),
                             "item_type": item_type,
                             "repo_full_name": repo,
                             "number": number,

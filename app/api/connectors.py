@@ -74,16 +74,16 @@ CONNECTOR_CATALOG: dict[str, dict[str, Any]] = {
     "gdrive": {
         "name": "Google Drive",
         "description": "Docs, Sheets, Slides, and folder content",
-        "color": "#0F9D58",
-        "availability": "coming_soon",
+        "color": "#ffffff",
+        "availability": "available",
         "provider": "official_api",
         "provider_label": "Official API",
     },
     "gmail": {
         "name": "Gmail",
         "description": "Email threads, attachments, and sender context",
-        "color": "#EA4335",
-        "availability": "coming_soon",
+        "color": "#ffffff",
+        "availability": "available",
         "provider": "official_api",
         "provider_label": "Official API",
     },
@@ -106,7 +106,7 @@ CONNECTOR_CATALOG: dict[str, dict[str, Any]] = {
     "opencode": {
         "name": "OpenCode",
         "description": "OpenCode AI coding sessions — terminal context and implementation notes",
-        "color": "#6366F1",
+        "color": "#000000",
         "availability": "available",
         "provider": "native",
         "provider_label": "Session import",
@@ -126,6 +126,7 @@ AI_SESSION_CONNECTORS = {"codex", "claude", "opencode"}
 DISCONNECT_CONFIG_KEYS = {
     "account_id",
     "auth_mode",
+    "email_address",
     "ingestion_mode",
     "last_webhook_event",
     "last_webhook_received_at",
@@ -138,6 +139,7 @@ DISCONNECT_CONFIG_KEYS = {
     "sync_queued_at",
     "team_id",
     "team_name",
+    "user_email",
 }
 
 
@@ -260,16 +262,17 @@ def _connector_setup_status(connector_type: str, request: Request | None = None)
             "redirect_uri": redirect_uri,
         }
     if connector_type in GOOGLE_CONNECTORS:
-        configured = False
+        configured = _google_configured()
         redirect_uri = _get_env("GOOGLE_REDIRECT_URI") or (f"{base}/api/connectors/{connector_type}/callback" if base else None)
+        label = CONNECTOR_CATALOG[connector_type]["name"]
         return {
             "connector_type": connector_type,
             "configured": configured,
             "managed_available": configured,
             "managed_install_url": f"/api/connectors/{connector_type}/install" if configured else None,
             "missing": [] if configured else ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"],
-            "status": "coming_soon",
-            "message": None,
+            "status": "disconnected",
+            "message": None if configured else f"Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to enable {label} OAuth.",
             "redirect_uri": redirect_uri,
         }
     if connector_type == "github":
@@ -487,20 +490,26 @@ async def connector_processing_summary(
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     docs = list(await session.scalars(select(SourceDocument)))
-    counts: dict[str, int] = {ct: 0 for ct in CONNECTOR_CATALOG}
+    totals: dict[str, int] = {ct: 0 for ct in CONNECTOR_CATALOG}
+    processed: dict[str, int] = {ct: 0 for ct in CONNECTOR_CATALOG}
+    unprocessed: dict[str, int] = {ct: 0 for ct in CONNECTOR_CATALOG}
     for doc in docs:
         source_type = doc.source_type
         if source_type.startswith("ai_context"):
             key = "ai_context"
         else:
             key = source_type
-        counts[key] = counts.get(key, 0) + 1
+        totals[key] = totals.get(key, 0) + 1
+        if doc.processed_at is None:
+            unprocessed[key] = unprocessed.get(key, 0) + 1
+        else:
+            processed[key] = processed.get(key, 0) + 1
     items = [{
         "connectorType": ct,
         "connector_type": ct,
-        "processedDocuments": counts.get(ct, 0),
-        "unprocessedDocuments": 0,
-        "total_documents": counts.get(ct, 0),
+        "processedDocuments": processed.get(ct, 0),
+        "unprocessedDocuments": unprocessed.get(ct, 0),
+        "total_documents": totals.get(ct, 0),
     } for ct in CONNECTOR_CATALOG]
     return {"items": items}
 
@@ -992,7 +1001,13 @@ async def ingest_ai_session(
     ws = await _get_workspace(body.workspace_id, session)
     connector = await _get_or_create_connector(ws.id, body.connector_type, session)
 
-    ingest_result = await _ingest(body.connector_type, session, body.session_id, body.content)
+    ingest_result = await _ingest(
+        body.connector_type,
+        session,
+        body.session_id,
+        body.content,
+        workspace_id=str(ws.id),
+    )
 
     unprocessed_docs = list(await session.scalars(
         sa_select(SourceDocument)
@@ -1011,7 +1026,10 @@ async def ingest_ai_session(
     }
 
     config = json.loads(connector.config_json or "{}")
-    config["total_processed_count"] = config.get("total_processed_count", 0) + extract_result.get("components_created", 0)
+    config["total_processed_count"] = (
+        config.get("total_processed_count", 0)
+        + extract_result.get("documents_processed", 0)
+    )
     config["items_synced"] = config.get("items_synced", 0) + ingest_result.get("documents_persisted", 0)
     connector.config_json = json.dumps(config)
     connector.status = "connected"
@@ -1045,7 +1063,7 @@ async def sync_connector(
         raise HTTPException(status_code=422, detail="Connector is not connected")
 
     job = SyncJob(connector_id=cid, status="pending")
-    if connector.connector_type in {"slack", "discord", "zoom", "gdrive", "gmail", "wispr_flow"}:
+    if connector.connector_type in {"discord", "zoom", "wispr_flow"}:
         job.status = "failed"
         job.error_type = "unsupported_connector"
         job.error_message = f"{CONNECTOR_CATALOG.get(connector.connector_type, {}).get('name', connector.connector_type)} is not supported yet."
@@ -1205,6 +1223,14 @@ async def _run_sync_job(job_id: str, connector_id: str, database_url: str) -> No
                 from app.sync.github import sync_github
                 sync_result = await sync_github(connector, session)
                 extract_result = await extract_from_source_documents("github", session)
+            elif connector.connector_type == "gmail":
+                from app.sync.google import sync_gmail
+                sync_result = await sync_gmail(connector, session)
+                extract_result = await extract_from_source_documents("gmail", session)
+            elif connector.connector_type == "gdrive":
+                from app.sync.google import sync_gdrive
+                sync_result = await sync_gdrive(connector, session)
+                extract_result = await extract_from_source_documents("gdrive", session)
             elif connector.connector_type in AI_SESSION_CONNECTORS:
                 # AI session connectors ingest inline; sync just re-runs extraction
                 sync_result = {"documents_fetched": 0, "documents_persisted": 0}
@@ -1229,7 +1255,7 @@ async def _run_sync_job(job_id: str, connector_id: str, database_url: str) -> No
             )
             config["total_processed_count"] = (
                 config.get("total_processed_count", 0)
-                + extract_result.get("components_created", 0)
+                + extract_result.get("documents_processed", 0)
             )
             connector.config_json = json.dumps(config)
             connector.last_sync_at = datetime.utcnow()
