@@ -9,7 +9,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import Component, Model, Relationship, SourceDocument
+from app.models import Component, Relationship, SourceDocument
 from app.agents.semantic_linker import SemanticRelationshipLinker
 from app.services.ingest import IngestionService
 
