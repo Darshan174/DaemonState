@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -251,7 +251,7 @@ async def extract_from_source_documents(
         else:
             meta = meta_raw or {}
 
-        channel_name = meta.get("channel_name") or meta.get("session_id") or source_type
+        meta.get("channel_name") or meta.get("session_id") or source_type
         content = doc.content
         doc_components: list[Component] = []
 

@@ -87,7 +87,7 @@ class IngestionService:
         if github_item_type == "github_issue":
             return extract_github_issue(doc.content, metadata)
 
-        source_type = canonical_source_type(doc.source_type)
+        canonical_source_type(doc.source_type)
 
         resolved = resolve_agent_session_type(doc.source_type)
         if resolved == "agent_session":

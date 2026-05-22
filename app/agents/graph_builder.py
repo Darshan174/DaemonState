@@ -6,7 +6,7 @@ from datetime import datetime
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Component, Model, Relationship, SourceDocument
+from app.models import Component, Relationship, SourceDocument
 from app.services.ingest import IngestionService
 
 logger = logging.getLogger(__name__)
