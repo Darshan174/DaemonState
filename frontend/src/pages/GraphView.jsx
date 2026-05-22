@@ -712,6 +712,8 @@ export default function GraphView() {
             modelId: groupKey,
             description: "",
             modelColor: meta.color || "#6366f1",
+            minWidth: 360,
+            minHeight: 260,
           },
           classes: "model-node",
         });
@@ -835,7 +837,6 @@ export default function GraphView() {
     const isDark = theme === "dark" || document.documentElement.classList.contains("dark");
     const modelBg = isDark ? "#101827" : "#f8fafc";
     const modelBgOpacity = isDark ? 1 : 0.95;
-    const modelLabelBg = isDark ? "#0f172a" : "#ffffff";
     const modelTextColor = isDark ? "#f8fafc" : "#0f172a";
     const componentTextColor = isDark ? "#f8fafc" : "#1e293b";
     const labelOutlineColor = isDark ? "#0f172a" : "#ffffff";
@@ -884,6 +885,7 @@ export default function GraphView() {
             "border-color": isDark ? "#334155" : "#cbd5e1",
             "border-width": 1.5,
             "border-opacity": isDark ? 0.8 : 0.7,
+            "compound-sizing-wrt-labels": "include",
           },
         },
         {
@@ -909,11 +911,12 @@ export default function GraphView() {
             color: modelTextColor,
             "text-outline-color": labelOutlineColor,
             "text-outline-width": 0,
-            "text-background-color": modelLabelBg,
-            "text-background-opacity": 1,
-            "text-background-padding": "5px",
-            "text-background-shape": "round-rectangle",
+            "text-background-opacity": 0,
+            "text-background-padding": "0px",
             "text-border-opacity": 0,
+            "min-width": "data(minWidth)",
+            "min-height": "data(minHeight)",
+            "bounds-expansion": 16,
             width: 10,
             height: 10,
           },
@@ -928,6 +931,7 @@ export default function GraphView() {
             "text-outline-width": 3,
             "text-background-opacity": 0,
             "text-margin-y": -42,
+            "bounds-expansion": 8,
             padding: "36px",
           },
         },
@@ -939,6 +943,7 @@ export default function GraphView() {
             "font-size": "22px",
             "text-outline-width": 2,
             "text-margin-y": -34,
+            "bounds-expansion": 12,
             padding: "44px",
           },
         },
@@ -1336,6 +1341,7 @@ export default function GraphView() {
           const sourceHubGap = 22;
           const groupPadTop = 240;
           const groupGapY = 120;
+          const groupPadBottom = 92;
           const colHeights = Array.from({ length: colCount }, () => 0);
 
           groups.forEach(({ groupKey, items, hubs }) => {
@@ -1344,18 +1350,24 @@ export default function GraphView() {
             const gridCols = itemCount >= 40 ? 4 : itemCount >= 20 ? 3 : itemCount >= 8 ? 2 : 1;
             const rows = Math.ceil(itemCount / gridCols);
             const groupWidth = groupPadX * 2 + gridCols * cardW + (gridCols - 1) * gapX;
-            const groupHeight = groupPadTop + rows * cardH + Math.max(0, rows - 1) * gapY + 80;
+            const hubRows = Math.max(1, Math.ceil(hubs.length / Math.max(1, Math.floor((groupWidth - groupPadX * 2) / (sourceHubW + sourceHubGap)))));
+            const hubHeight = hubRows * 116 + Math.max(0, hubRows - 1) * sourceHubGap;
             const baseX = col * colWidth - ((colCount - 1) * colWidth) / 2;
             const baseY = colHeights[col];
             const startX = baseX - groupWidth / 2 + groupPadX + cardW / 2;
-            const startY = baseY + groupPadTop;
-            const hubTotalWidth = hubs.length * sourceHubW + Math.max(0, hubs.length - 1) * sourceHubGap;
-            const hubStartX = baseX - hubTotalWidth / 2 + sourceHubW / 2;
+            const startY = baseY + Math.max(groupPadTop, 92 + hubHeight + 72);
+            const groupHeight = (startY - baseY) + rows * cardH + Math.max(0, rows - 1) * gapY + groupPadBottom;
+            const hubCols = Math.max(1, Math.min(hubs.length || 1, Math.floor((groupWidth - groupPadX * 2) / (sourceHubW + sourceHubGap)) || 1));
 
             hubs.forEach((hub, index) => {
+              const hubRow = Math.floor(index / hubCols);
+              const hubCol = index % hubCols;
+              const hubsInRow = Math.min(hubCols, hubs.length - hubRow * hubCols);
+              const hubTotalWidth = hubsInRow * sourceHubW + Math.max(0, hubsInRow - 1) * sourceHubGap;
+              const hubStartX = baseX - hubTotalWidth / 2 + sourceHubW / 2;
               presetPositions[`source:${groupKey}:${hub.kind}`] = {
-                x: hubStartX + index * (sourceHubW + sourceHubGap),
-                y: baseY + 88,
+                x: hubStartX + hubCol * (sourceHubW + sourceHubGap),
+                y: baseY + 92 + hubRow * (116 + sourceHubGap),
               };
             });
 
@@ -1369,6 +1381,11 @@ export default function GraphView() {
             });
             if (items.length === 0) {
               presetPositions[`group:${groupKey}`] = { x: baseX, y: baseY + groupHeight / 2 };
+            }
+            const groupNode = nodes.find((node) => node.data.id === `group:${groupKey}`);
+            if (groupNode) {
+              groupNode.data.minWidth = Math.max(groupWidth + 44, 360);
+              groupNode.data.minHeight = Math.max(groupHeight, 260);
             }
             colHeights[col] += groupHeight + groupGapY;
           });
