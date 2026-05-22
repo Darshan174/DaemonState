@@ -124,7 +124,11 @@ def _build_github_issue_facts(issue: GitHubIssueData, doc_metadata: dict[str, An
     ))
 
     if issue.labels:
-        label_names = issue.labels if isinstance(issue.labels[0], str) else [label.get("name", "") for label in issue.labels if isinstance(label, dict)]
+        label_names = (
+            issue.labels
+            if isinstance(issue.labels[0], str)
+            else [label.get("name", "") for label in issue.labels if isinstance(label, dict)]
+        )
         for label in label_names[:5]:
             lower_label = label.lower()
             if any(w in lower_label for w in ("bug", "error", "crash", "fail")):
