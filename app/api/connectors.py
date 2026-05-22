@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID
@@ -1193,12 +1193,14 @@ def _oauth_close_html(success: bool, message: str) -> Response:
 
 async def _run_sync_job(job_id: str, connector_id: str, database_url: str) -> None:
     """Background task: mark job running → sync source documents → extract → mark completed."""
-    from app.database import _make_async_url
+    from app.database import _ensure_sqlite_parent_dir, _make_async_url
     from app.sync.slack import sync_slack
     from app.extract.basic import extract_from_source_documents
     from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
-    engine = create_async_engine(_make_async_url(database_url))
+    database_url = _make_async_url(database_url)
+    _ensure_sqlite_parent_dir(database_url)
+    engine = create_async_engine(database_url)
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     async with session_factory() as session:
