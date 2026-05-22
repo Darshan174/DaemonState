@@ -1408,9 +1408,19 @@ export default function GraphView() {
           const type = node.data("type");
           if (!logo || !["component", "sourceHub"].includes(type)) return;
 
-          const position = node.renderedPosition();
+          const bounds = node.renderedBoundingBox({
+            includeEdges: false,
+            includeLabels: false,
+            includeNodes: true,
+          });
           const isSourceHub = type === "sourceHub";
           const size = isSourceHub ? 34 : 24;
+          const left = isSourceHub
+            ? bounds.x1 + bounds.w / 2
+            : bounds.x1 + bounds.w * (26 / cardWidth);
+          const top = isSourceHub
+            ? bounds.y1 + bounds.h * ((104 / 2 - 18) / 104)
+            : bounds.y1 + bounds.h * (24 / cardHeight);
           const img = document.createElement("img");
           img.src = logo;
           img.alt = "";
@@ -1422,8 +1432,8 @@ export default function GraphView() {
           Object.assign(img.style, {
             width: `${size}px`,
             height: `${size}px`,
-            left: `${position.x + (isSourceHub ? 0 : -cardWidth / 2 + 26)}px`,
-            top: `${position.y + (isSourceHub ? -18 : -cardHeight / 2 + 24)}px`,
+            left: `${left}px`,
+            top: `${top}px`,
             transform: "translate(-50%, -50%)",
           });
           fragment.appendChild(img);
