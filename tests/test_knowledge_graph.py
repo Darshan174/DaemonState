@@ -11,9 +11,6 @@ from app.processing.source_extractors import (
     extract_agent_session,
     extract_github_issue,
     extract_github_pr,
-    GitHubIssueData,
-    GitHubPRData,
-    AgentSessionData,
 )
 from app.services.ingest import IngestionService, _determine_origin
 from app.taxonomy import (
@@ -26,8 +23,6 @@ from app.taxonomy import (
     VALID_SOURCE_TYPES,
     VALID_FACT_TYPES,
     VALID_RELATIONSHIP_ORIGINS,
-    GITHUB_SOURCE_TYPES,
-    AGENT_SESSION_SOURCE_TYPES,
 )
 
 
@@ -586,14 +581,6 @@ class TestRelationshipSafety:
         await db_session.flush()
 
         svc = IngestionService(db_session)
-        fact_a = ExtractedFact(
-            model_name="Test", name="Pricing tier", value="Pricing at $20/month",
-            fact_type="fact", confidence=0.8,
-        )
-        fact_b = ExtractedFact(
-            model_name="Test", name="Roadmap plan", value="Roadmap for Q4 2026",
-            fact_type="fact", confidence=0.8,
-        )
         rel = ExtractedRelationship(
             target_name="Roadmap plan", relationship_type="related_to", confidence=0.55,
             evidence="Both mention time planning",
