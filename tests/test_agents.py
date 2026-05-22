@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
 from uuid import uuid4
+
+from sqlalchemy import select
 
 from app.agents.gap_detector import GapDetectorAgent
 from app.agents.relationship_agent import RelationshipAgent
+from app.agents.semantic_linker import SemanticRelationshipLinker
 from app.models import Component, Model, Relationship, SourceDocument
 
 
@@ -109,3 +113,111 @@ async def test_relationship_agent_persists_high_confidence_suggestions(db_sessio
     assert rels[0]["relationship_type"] == "implemented_in"
     assert rels[0]["confidence"] == 0.82
     assert rels[0]["status"] == "proposed"
+
+
+async def test_semantic_linker_creates_proposed_cross_source_edges(db_session):
+    model = Model(id=uuid4(), name="Issue")
+    slack_doc = SourceDocument(
+        id=uuid4(),
+        source_type="slack",
+        external_id="semantic-slack",
+        content="Stripe webhook failures are blocking checkout.",
+        metadata_json="{}",
+    )
+    github_doc = SourceDocument(
+        id=uuid4(),
+        source_type="github",
+        external_id="semantic-github",
+        content="Issue: Stripe webhook checkout failures.",
+        metadata_json="{}",
+    )
+    source = Component(
+        id=uuid4(),
+        model_id=model.id,
+        source_document_id=slack_doc.id,
+        name="Slack Stripe webhook complaint",
+        value="Customer reports Stripe webhook failures blocking checkout",
+        fact_type="risk",
+        confidence=0.9,
+        status="active",
+        embedding=json.dumps([1.0, 0.0, 0.0]),
+    )
+    target = Component(
+        id=uuid4(),
+        model_id=model.id,
+        source_document_id=github_doc.id,
+        name="GitHub Stripe webhook issue",
+        value="Fix Stripe webhook failures in checkout",
+        fact_type="issue",
+        confidence=0.9,
+        status="active",
+        embedding=json.dumps([0.97, 0.03, 0.0]),
+    )
+    db_session.add_all([model, slack_doc, github_doc, source, target])
+    await db_session.flush()
+
+    created = await SemanticRelationshipLinker(db_session, threshold=0.9).create_relationships()
+
+    rels = list(await db_session.scalars(select(Relationship)))
+    assert created == 1
+    assert len(rels) == 1
+    assert rels[0].relationship_type == "related_to"
+    assert rels[0].status == "proposed"
+    assert rels[0].origin == "ai_proposed"
+    assert "Semantic similarity" in rels[0].evidence
+
+
+async def test_relationship_agent_candidate_pairs_are_not_limited_to_six_per_type(db_session):
+    model = Model(id=uuid4(), name="Task")
+    db_session.add(model)
+    await db_session.flush()
+
+    for idx in range(8):
+        slack_doc = SourceDocument(
+            id=uuid4(),
+            source_type="slack",
+            external_id=f"slack-{idx}",
+            content=f"Task topic {idx}",
+            metadata_json="{}",
+        )
+        github_doc = SourceDocument(
+            id=uuid4(),
+            source_type="github",
+            external_id=f"github-{idx}",
+            content=f"Task topic {idx}",
+            metadata_json="{}",
+        )
+        vector = [0.0] * 10
+        vector[idx] = 1.0
+        db_session.add_all([
+            slack_doc,
+            github_doc,
+            Component(
+                id=uuid4(),
+                model_id=model.id,
+                source_document_id=slack_doc.id,
+                name=f"Slack task {idx}",
+                value=f"Slack task {idx}",
+                fact_type="task",
+                confidence=0.9,
+                status="active",
+                embedding=json.dumps(vector),
+            ),
+            Component(
+                id=uuid4(),
+                model_id=model.id,
+                source_document_id=github_doc.id,
+                name=f"GitHub task {idx}",
+                value=f"GitHub task {idx}",
+                fact_type="task",
+                confidence=0.9,
+                status="active",
+                embedding=json.dumps(vector),
+            ),
+        ])
+    await db_session.flush()
+
+    candidates = await RelationshipAgent(db_session, api_key="test", model="test-model")._candidate_pairs()
+    names = {(candidate.source.name, candidate.target.name) for candidate in candidates}
+
+    assert ("Slack task 7", "GitHub task 7") in names
