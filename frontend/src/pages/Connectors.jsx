@@ -67,6 +67,8 @@ export default function Connectors() {
   const [actionNotice, setActionNotice] = useState(null);
   const [oauthFlow, setOauthFlow] = useState(null);
   const [genericOAuthPending, setGenericOAuthPending] = useState(() => new Set());
+  const refetchRef = useRef(query.refetch);
+  useEffect(() => { refetchRef.current = query.refetch; }, [query.refetch]);
   const [slackConnectIntent, setSlackConnectIntent] = useState(null);
   const [slackSetupOpen, setSlackSetupOpen] = useState(false);
   const [slackClientId, setSlackClientId] = useState("");
@@ -156,7 +158,7 @@ export default function Connectors() {
     };
 
     const tick = async () => {
-      const result = await query.refetch();
+      const result = await refetchRef.current();
       if (cancelled) return;
 
       if (result.isError) {
@@ -172,7 +174,9 @@ export default function Connectors() {
       const nextSlack = nextList.find((item) => item.type === "slack") ?? null;
       const popupClosed = oauthFlow.popup?.closed ?? true;
 
-      if (!popupClosed && nextSlack?.status === "connected" && oauthFlow.startedStatus === "disconnected") {
+      // Close popup and finish as soon as backend reports connected,
+      // regardless of whether this was an initial connect or reconnect.
+      if (!popupClosed && nextSlack?.status === "connected") {
         oauthFlow.popup.close?.();
         finishOAuthFlow(nextSlack, oauthFlow.startedStatus);
         return;
@@ -194,12 +198,21 @@ export default function Connectors() {
       void tick();
     }, OAUTH_POLL_INTERVAL_MS);
 
+    // Safety net: auto-clear oauthFlow after 5 minutes
+    const safetyTimeout = window.setTimeout(() => {
+      if (!cancelled) {
+        setOauthFlow(null);
+        setActionError("Slack OAuth timed out. If the popup is still open, close it and try again.");
+      }
+    }, 300000);
+
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      window.clearTimeout(safetyTimeout);
       window.removeEventListener("message", onMsg);
     };
-  }, [isMock, oauthFlow, query.refetch]);
+  }, [isMock, oauthFlow]);
 
   const startGenericOAuth = (installHref, connectorType) => {
     setActionError(null);
@@ -509,7 +522,9 @@ function ConnectorCard({
         : isConfigured
           ? `/api/connectors/slack/install?workspace_id=${workspaceId}`
           : null
-      : `/api/connectors/${type}/install?workspace_id=${workspaceId}`
+      : isGoogleOAuth && !isConfigured
+        ? null
+        : `/api/connectors/${type}/install?workspace_id=${workspaceId}`
     : null;
   const slackConnectMode = managedConnectAvailable ? "managed" : "self_hosted";
   const zoomOauthHref = isZoom ? installHref : null;
@@ -862,10 +877,10 @@ function ConnectorCard({
             onCancel={onToggleSlackSetup}
           />
         )}
-        {redirectUri && status === "disconnected" && (zoomFormOpen || githubFormOpen || notionFormOpen) && (
+        {redirectUri && status === "disconnected" && (isGoogleOAuth || zoomFormOpen || githubFormOpen || notionFormOpen) && (
           <div className="mt-2 rounded-md bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/50 px-2.5 py-2">
             <p className="text-[10px] font-medium text-blue-700 dark:text-blue-400 mb-0.5">
-              Register this redirect URI in your {name} app:
+              Register this redirect URI in {isGoogleOAuth ? "Google Cloud Console" : `your ${name} app`}:
             </p>
             <div className="flex items-center gap-1.5">
               <code className="flex-1 text-[10px] text-blue-800 dark:text-blue-300 break-all font-mono">{redirectUri}</code>

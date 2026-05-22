@@ -9,9 +9,10 @@ from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db_session
-from app.models import SourceDocument
+from app.models import Component, SourceDocument
 from app.services.ingest import IngestionService
 
 router = APIRouter()
@@ -40,6 +41,26 @@ class SourceRead(BaseModel):
     processed_at: datetime | None
 
     model_config = {"from_attributes": True}
+
+
+class SourceComponentRead(BaseModel):
+    id: UUID
+    name: str
+    value: str
+    fact_type: str
+    confidence: float
+    authority_weight: float
+    status: str
+    temporal: str
+    model_id: UUID
+    model_name: str | None = None
+    created_at: datetime | None = None
+
+
+class SourceDetailRead(SourceRead):
+    content: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    components: list[SourceComponentRead] = Field(default_factory=list)
 
 
 async def _run_ingestion(doc_id: UUID, database_url: str) -> None:
@@ -149,3 +170,54 @@ async def list_sources(
         select(SourceDocument).order_by(SourceDocument.ingested_at.desc()).limit(100)
     )
     return list(result)
+
+
+@router.get("/sources/{source_id}", response_model=SourceDetailRead)
+async def get_source(
+    source_id: UUID,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    doc = await session.get(SourceDocument, source_id)
+    if doc is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Source not found")
+
+    try:
+        metadata = json.loads(doc.metadata_json or "{}") if isinstance(doc.metadata_json, str) else (doc.metadata_json or {})
+    except (json.JSONDecodeError, TypeError):
+        metadata = {}
+
+    components = list(await session.scalars(
+        select(Component)
+        .options(selectinload(Component.model))
+        .where(Component.source_document_id == source_id)
+        .order_by(Component.created_at.desc())
+    ))
+
+    return {
+        "id": doc.id,
+        "source_type": doc.source_type,
+        "external_id": doc.external_id,
+        "author": doc.author,
+        "source_url": doc.source_url,
+        "ingested_at": doc.ingested_at,
+        "processed_at": doc.processed_at,
+        "content": doc.content,
+        "metadata": metadata,
+        "components": [
+            {
+                "id": c.id,
+                "name": c.name,
+                "value": c.value,
+                "fact_type": c.fact_type,
+                "confidence": c.confidence,
+                "authority_weight": c.authority_weight,
+                "status": c.status,
+                "temporal": c.temporal,
+                "model_id": c.model_id,
+                "model_name": c.model.name if c.model else None,
+                "created_at": c.created_at,
+            }
+            for c in components
+        ],
+    }

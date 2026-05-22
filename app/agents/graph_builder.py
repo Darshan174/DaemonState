@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import logging
+import json
+import re
 from datetime import datetime
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.models import Component, Relationship, SourceDocument
+from app.models import Component, Model, Relationship, SourceDocument
+from app.agents.semantic_linker import SemanticRelationshipLinker
 from app.services.ingest import IngestionService
 
 logger = logging.getLogger(__name__)
@@ -71,7 +75,14 @@ class GraphBuilderAgent:
 
         await self.session.commit()
 
-        relationships_inferred = await self._infer_cross_doc_relationships()
+        relationships_inferred = await self._infer_deterministic_relationships()
+        relationships_inferred += await SemanticRelationshipLinker(
+            self.session,
+            threshold=0.84,
+            max_candidates=250,
+            require_cross_source_type=True,
+        ).create_relationships(limit=100)
+        relationships_inferred += await self._infer_cross_doc_relationships()
         await self.session.commit()
 
         total_components = await self.session.scalar(select(func.count(Component.id))) or 0
@@ -149,3 +160,116 @@ class GraphBuilderAgent:
                         return inferred
 
         return inferred
+
+    async def _infer_deterministic_relationships(self) -> int:
+        components = list(await self.session.scalars(
+            select(Component)
+            .options(selectinload(Component.source_document))
+            .where(Component.status.in_(["active", "needs_review", "proposed"]))
+        ))
+        if not components:
+            return 0
+
+        existing = {
+            (r.source_component_id, r.target_component_id, r.relationship_type)
+            for r in await self.session.scalars(select(Relationship))
+        }
+
+        issues: dict[tuple[str, int], Component] = {}
+        pull_requests: list[tuple[tuple[str, int], Component]] = []
+
+        for component in components:
+            identity = _github_component_identity(component)
+            if identity is None:
+                continue
+            kind, repo, number = identity
+            key = (repo, number)
+            if kind == "issue":
+                issues[key] = component
+            elif kind == "pull_request":
+                pull_requests.append((key, component))
+
+        inferred = 0
+        for key, pr_component in pull_requests:
+            issue_component = issues.get(key)
+            if issue_component is None or issue_component.id == pr_component.id:
+                continue
+            rel_key = (pr_component.id, issue_component.id, "part_of")
+            if rel_key in existing:
+                continue
+
+            repo, number = key
+            self.session.add(Relationship(
+                source_component_id=pr_component.id,
+                target_component_id=issue_component.id,
+                relationship_type="part_of",
+                confidence=1.0,
+                evidence=f"GitHub metadata: PR #{number} and issue thread #{number} are the same item in {repo}.",
+                origin="deterministic",
+            ))
+            existing.add(rel_key)
+            inferred += 1
+
+        return inferred
+
+
+def _github_component_identity(component: Component) -> tuple[str, str, int] | None:
+    doc = component.source_document
+    if doc is None:
+        return None
+
+    metadata = _parse_metadata(doc.metadata_json)
+    raw = " ".join([
+        doc.source_type or "",
+        str(metadata.get("source_type") or ""),
+        str(metadata.get("item_type") or ""),
+        component.fact_type or "",
+        component.name or "",
+    ]).lower()
+
+    if "github" not in raw and doc.source_type not in {"github", "github_issue", "github_pr"}:
+        return None
+
+    kind = None
+    if "pull_request" in raw or "github_pr" in raw or re.search(r"\bpr\s*#", component.name or "", re.I):
+        kind = "pull_request"
+    elif "issue" in raw or "github_issue" in raw:
+        kind = "issue"
+    if kind is None:
+        return None
+
+    repo = (
+        metadata.get("repo_full_name")
+        or metadata.get("repository")
+        or metadata.get("repo")
+        or ""
+    )
+    if not repo:
+        return None
+
+    raw_number = (
+        metadata.get("number")
+        or metadata.get("pr_number")
+        or metadata.get("issue_number")
+    )
+    if raw_number is None:
+        match = re.search(r"#(\d+)", component.name or "")
+        raw_number = match.group(1) if match else None
+    try:
+        number = int(raw_number)
+    except (TypeError, ValueError):
+        return None
+
+    return kind, str(repo), number
+
+
+def _parse_metadata(raw: str | dict | None) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    if not raw or raw == "{}":
+        return {}
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}

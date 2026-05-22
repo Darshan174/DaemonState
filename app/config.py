@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///data/context.db"
     extraction_model: str | None = None
     embedding_model: str | None = None
+    embedding_dimension: int | None = None
     litellm_api_key: str | None = None
     enable_local_embedder: bool = False
     data_dir: str = "./data"

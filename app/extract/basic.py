@@ -6,7 +6,7 @@ import re
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Component, Model, Relationship, SourceDocument
@@ -223,77 +223,29 @@ async def extract_from_source_documents(
     session: AsyncSession,
     batch_size: int = 500,
 ) -> dict:
-    if source_type == "github":
-        return await extract_github_documents(session, batch_size=batch_size)
+    from app.services.ingest import IngestionService
 
-    model_name = source_type.replace("_", " ").title()
-    model = await _get_or_create_model(
-        name=model_name,
-        description=f"Facts extracted from {model_name} messages",
-        session=session,
-    )
-
+    # Connector jobs used to mark documents processed even when the lightweight
+    # regex extractor produced zero components. Include those legacy rows so a
+    # later sync can repair the graph without requiring manual DB edits.
+    has_components = exists().where(Component.source_document_id == SourceDocument.id)
     docs = list(await session.scalars(
         select(SourceDocument)
         .where(SourceDocument.source_type == source_type)
-        .where(SourceDocument.processed_at.is_(None))
+        .where((SourceDocument.processed_at.is_(None)) | (~has_components))
+        .order_by(SourceDocument.ingested_at.desc())
         .limit(batch_size)
     ))
 
+    ingestor = IngestionService(session)
     components_created = 0
     docs_processed = 0
-    seen_values: set[str] = set()
 
     for doc in docs:
-        meta_raw = doc.metadata_json
-        if isinstance(meta_raw, str):
-            meta = json.loads(meta_raw) if meta_raw else {}
-        else:
-            meta = meta_raw or {}
-
-        meta.get("channel_name") or meta.get("session_id") or source_type
-        content = doc.content
-        doc_components: list[Component] = []
-
-        for pattern, fact_type in FACT_PATTERNS:
-            for match in pattern.finditer(content):
-                value = match.group(1).strip().rstrip(".,;")
-                key = f"{fact_type}:{value[:60].lower()}"
-                if key in seen_values or len(value) < 10:
-                    continue
-                seen_values.add(key)
-
-                temporal = _infer_temporal(value, fact_type)
-                short_name = value[:55] + ("…" if len(value) > 55 else "")
-                comp = Component(
-                    id=uuid4(),
-                    model_id=model.id,
-                    source_document_id=doc.id,
-                    name=short_name,
-                    value=value,
-                    fact_type=fact_type,
-                    confidence=FACT_CONFIDENCE.get(fact_type, 0.7),
-                    authority_weight=0.6,
-                    status="active",
-                    temporal=temporal,
-                )
-                session.add(comp)
-                doc_components.append(comp)
-                components_created += 1
-
-        await session.flush()
-        if len(doc_components) >= 2:
-            for i, src in enumerate(doc_components[:-1]):
-                tgt = doc_components[i + 1]
-                rel = Relationship(
-                    id=uuid4(),
-                    source_component_id=src.id,
-                    target_component_id=tgt.id,
-                    relationship_type="co_occurs",
-                )
-                session.add(rel)
-
-        doc.processed_at = datetime.utcnow()
+        if doc.processed_at is not None:
+            doc.processed_at = None
+            await session.flush()
+        components_created += await ingestor.process_document(doc.id)
         docs_processed += 1
 
     await session.commit()
