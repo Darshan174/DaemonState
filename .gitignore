@@ -103,3 +103,9 @@ backups/
 *.dump
 # scripts/diagnose.sh default output directory
 diagnostics/
+
+replit.md
+TASK_PLAN.md
+project.md
+AGENTS.ms
+.agent-runs
