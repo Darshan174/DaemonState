@@ -5,9 +5,9 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db_session
-from app.agents.gap_detector import GapDetectorAgent, GapReport, GapItem
-from app.agents.context_pack import ContextPackAgent, ContextPack
-from app.agents.relationship_agent import RelationshipAgent, RelationshipReport, SuggestedRelationship
+from app.agents.gap_detector import GapDetectorAgent
+from app.agents.context_pack import ContextPackAgent
+from app.agents.relationship_agent import RelationshipAgent
 
 router = APIRouter()
 

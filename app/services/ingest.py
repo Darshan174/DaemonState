@@ -14,7 +14,6 @@ from app.taxonomy import (
     canonical_model_name,
     canonical_origin,
     canonical_relationship_type,
-    canonical_source_type,
     AGENT_SESSION_SOURCE_TYPES,
     AI_CONTEXT_COMPAT_TYPES,
     GITHUB_SOURCE_TYPES,
@@ -88,8 +87,6 @@ class IngestionService:
             return extract_github_pr(doc.content, metadata)
         if github_item_type == "github_issue":
             return extract_github_issue(doc.content, metadata)
-
-        source_type = canonical_source_type(doc.source_type)
 
         resolved = resolve_agent_session_type(doc.source_type)
         if resolved == "agent_session":

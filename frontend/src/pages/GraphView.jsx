@@ -1478,6 +1478,9 @@ export default function GraphView() {
         setSelectedNode({ ...data, connected });
         setSelectedEdge(null);
         setEdgeReviewError(null);
+        setShowFilters(false);
+        setShowSidePanel(false);
+        setShowAgents(false);
       } else {
         setSelectedNode(null);
       }
@@ -1500,12 +1503,16 @@ export default function GraphView() {
       });
       setSelectedNode(null);
       setEdgeReviewError(null);
+      setShowFilters(false);
+      setShowSidePanel(false);
+      setShowAgents(false);
     });
 
     cy.on("tap", (evt) => {
       if (evt.target === cy) {
         setSelectedNode(null);
         setSelectedEdge(null);
+        setShowFilters(false);
       }
     });
 
@@ -1591,6 +1598,29 @@ export default function GraphView() {
   const currentViewData = filteredData();
   const graphStats = buildGraphStats(currentViewData);
   const activeCeoView = CEO_VIEWS.find((v) => v.id === ceoView);
+  const clearGraphFilters = () => setFilters({
+    model: "",
+    source_type: "",
+    status: "",
+    temporal: "",
+    confidence_threshold: 0,
+    relationship_origin: "",
+    search: "",
+  });
+  const activeFilterCount = [
+    filters.model,
+    filters.source_type,
+    filters.status,
+    filters.temporal,
+    filters.relationship_origin,
+    filters.search,
+    filters.confidence_threshold > 0 ? "confidence" : "",
+  ].filter(Boolean).length;
+  const extractionLabel = aiSettings.api_key && aiSettings.model
+    ? `AI: ${aiSettings.model}`
+    : agentStatus?.llm_enabled
+      ? `LLM: ${agentStatus.extraction_model}`
+      : "Regex extraction";
 
   if (loading) {
     return (
@@ -1615,9 +1645,239 @@ export default function GraphView() {
   }
 
   return (
-    <div className="flex h-full min-h-0 gap-3 overflow-hidden">
-      <div className="flex-1 flex flex-col min-w-0">
-        <div className="flex items-center gap-2 mb-2 flex-wrap">
+    <div className="relative flex h-full min-h-0 overflow-hidden">
+      <div className="relative flex min-w-0 flex-1 flex-col">
+        <div className="pointer-events-none absolute left-3 right-3 top-3 z-30 flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
+          <div className="pointer-events-auto max-w-full rounded-xl border border-slate-200 bg-white/92 p-2 shadow-sm backdrop-blur-sm dark:border-slate-700 dark:bg-slate-800/92 lg:max-w-[34rem]">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-black text-slate-900 dark:text-white">Knowledge Graph</h2>
+              <div className="flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 dark:border-slate-700 dark:bg-slate-900/70">
+                {[
+                  ["knowledge", "Knowledge"],
+                  ["repo", "Repository"],
+                ].map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setViewMode(mode)}
+                    className={`rounded-md px-2.5 py-1 text-[11px] font-bold transition-colors ${
+                      viewMode === mode
+                        ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                        : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {viewMode === "knowledge" && (
+                <div className="flex items-center gap-1.5 rounded-lg bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-500 dark:bg-slate-900/70 dark:text-slate-400">
+                  <Network className="h-3.5 w-3.5 text-brand-500" />
+                  <span className="text-slate-900 dark:text-white">{graphStats.components}</span>
+                  <span>nodes</span>
+                  <span className="text-slate-300 dark:text-slate-600">/</span>
+                  <span className="text-slate-900 dark:text-white">{graphStats.relationships}</span>
+                  <span>edges</span>
+                  {graphStats.isolated > 0 && (
+                    <>
+                      <span className="text-slate-300 dark:text-slate-600">/</span>
+                      <span className="text-red-500">{graphStats.isolated}</span>
+                      <span>isolated</span>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+            {viewMode === "knowledge" && (
+              <div className="mt-2 flex min-w-0 items-center gap-2">
+                <span className="shrink-0 text-[10px] font-bold uppercase text-slate-400">View</span>
+                <select
+                  value={ceoView}
+                  onChange={(e) => setCeoView(e.target.value)}
+                  className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 outline-none transition focus:border-brand-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                >
+                  {CEO_VIEWS.map(({ id, label }) => (
+                    <option key={id} value={id}>{label}</option>
+                  ))}
+                </select>
+                {activeCeoView && ceoView !== "all" && (
+                  <span className="hidden truncate text-[10px] text-slate-400 xl:block">{activeCeoView.desc}</span>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="pointer-events-auto flex flex-wrap items-center justify-end gap-2">
+            {viewMode === "knowledge" && (
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={filters.search}
+                  onChange={(e) => setFilters((f) => ({ ...f, search: e.target.value }))}
+                  placeholder="Search graph..."
+                  className="h-9 w-40 rounded-xl border border-slate-200 bg-white/92 pl-8 pr-7 text-xs font-semibold text-slate-700 shadow-sm outline-none backdrop-blur-sm transition placeholder:text-slate-400 focus:border-brand-400 dark:border-slate-700 dark:bg-slate-800/92 dark:text-slate-200 sm:w-52 xl:w-60"
+                />
+                {filters.search && (
+                  <button
+                    type="button"
+                    onClick={() => setFilters((f) => ({ ...f, search: "" }))}
+                    className="absolute right-2 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-300"
+                  >
+                    <XIcon className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+            )}
+            {viewMode === "knowledge" && (
+              <button
+                type="button"
+                onClick={() => {
+                  setShowFilters((v) => !v);
+                  setShowSidePanel(false);
+                  setShowAgents(false);
+                  setSelectedNode(null);
+                  setSelectedEdge(null);
+                }}
+                className={`flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-bold shadow-sm backdrop-blur-sm transition-colors ${
+                  showFilters
+                    ? "border-sky-400 bg-sky-50/95 text-sky-700 dark:border-sky-600 dark:bg-sky-900/60 dark:text-sky-300"
+                    : "border-slate-200 bg-white/92 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800/92 dark:text-slate-300 dark:hover:bg-slate-700"
+                }`}
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Filters</span>
+                {activeFilterCount > 0 && (
+                  <span className="rounded-full bg-sky-600 px-1.5 py-0.5 text-[9px] leading-none text-white">{activeFilterCount}</span>
+                )}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setShowAiSettings(true)}
+              title="Configure AI extraction"
+              className={`flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-bold shadow-sm backdrop-blur-sm transition-colors ${aiSettings.api_key ? "border-brand-400 bg-brand-50/95 text-brand-700 dark:border-brand-600 dark:bg-brand-900/60 dark:text-brand-300" : "border-slate-200 bg-white/92 text-slate-500 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800/92 dark:text-slate-300 dark:hover:bg-slate-700"}`}
+            >
+              <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+              <span className="hidden xl:inline">{aiSettings.api_key ? "AI ready" : "AI"}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowAsk((v) => !v);
+                setShowFilters(false);
+                setShowSidePanel(false);
+                setShowAgents(false);
+                setAskResult(null);
+                setAskError(null);
+                setTimeout(() => askInputRef.current?.focus(), 80);
+              }}
+              className={`flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-bold shadow-sm backdrop-blur-sm transition-colors ${
+                showAsk
+                  ? "border-brand-500 bg-brand-50/95 text-brand-700 dark:border-brand-500 dark:bg-brand-900/60 dark:text-brand-300"
+                  : "border-slate-200 bg-white/92 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800/92 dark:text-slate-300 dark:hover:bg-slate-700"
+              }`}
+            >
+              <Search className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Ask AI</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowAgents((v) => !v);
+                setShowFilters(false);
+                setShowSidePanel(false);
+                setSelectedNode(null);
+                setSelectedEdge(null);
+              }}
+              className={`flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-bold shadow-sm backdrop-blur-sm transition-colors ${
+                showAgents
+                  ? "border-violet-500 bg-violet-50/95 text-violet-700 dark:border-violet-500 dark:bg-violet-900/60 dark:text-violet-300"
+                  : "border-slate-200 bg-white/92 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800/92 dark:text-slate-300 dark:hover:bg-slate-700"
+              }`}
+            >
+              <Bot className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Agents</span>
+            </button>
+            <button
+              type="button"
+              title="Source coverage and work lens"
+              onClick={() => {
+                setShowSidePanel((v) => !v);
+                setShowFilters(false);
+                setShowAgents(false);
+                setSelectedNode(null);
+                setSelectedEdge(null);
+              }}
+              className={`flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-bold shadow-sm backdrop-blur-sm transition-colors ${
+                showSidePanel
+                  ? "border-brand-500 bg-brand-50/95 text-brand-700 dark:border-brand-500 dark:bg-brand-900/60 dark:text-brand-300"
+                  : "border-slate-200 bg-white/92 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800/92 dark:text-slate-300 dark:hover:bg-slate-700"
+              }`}
+            >
+              <Layers3 className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Panels</span>
+            </button>
+          </div>
+        </div>
+
+        {viewMode === "knowledge" && showFilters && (
+          <div className="absolute right-3 top-28 z-40 w-[min(25rem,calc(100%-1.5rem))] rounded-xl border border-slate-200 bg-white/95 p-3 shadow-xl backdrop-blur-sm dark:border-slate-700 dark:bg-slate-800/95 lg:top-16">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs font-black text-slate-900 dark:text-white">Filters</p>
+                <p className="text-[10px] font-semibold text-slate-400">{graphStats.components} nodes, {graphStats.relationships} edges, {graphStats.isolated} isolated</p>
+              </div>
+              <button
+                type="button"
+                onClick={clearGraphFilters}
+                className="rounded-lg border border-slate-200 px-2.5 py-1 text-[11px] font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-700 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-700"
+              >
+                Clear
+              </button>
+            </div>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <select value={filters.model} onChange={(e) => setFilters((f) => ({ ...f, model: e.target.value }))} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+                <option value="">All models</option>
+                {models.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+              </select>
+              <select value={filters.source_type} onChange={(e) => setFilters((f) => ({ ...f, source_type: e.target.value }))} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+                <option value="">All sources</option>
+                {sourceTypes.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+              <select value={filters.status} onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+                <option value="">All statuses</option>
+                {statuses.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+              <select value={filters.temporal} onChange={(e) => setFilters((f) => ({ ...f, temporal: e.target.value }))} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+                <option value="">All time</option>
+                <option value="current">Current</option>
+                <option value="future">Future</option>
+                <option value="past">Past</option>
+                <option value="unknown">Unknown</option>
+              </select>
+              <select value={filters.confidence_threshold} onChange={(e) => setFilters((f) => ({ ...f, confidence_threshold: Number(e.target.value) }))} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+                <option value={0}>All confidence</option>
+                <option value={0.5}>50% and up</option>
+                <option value={0.7}>70% and up</option>
+                <option value={0.85}>85% and up</option>
+              </select>
+              <select value={filters.relationship_origin} onChange={(e) => setFilters((f) => ({ ...f, relationship_origin: e.target.value }))} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+                <option value="">All edges</option>
+                <option value="deterministic">Deterministic</option>
+                <option value="extracted">Extracted</option>
+                <option value="ai_proposed">AI proposed</option>
+                <option value="human_verified">Human verified</option>
+                <option value="proposed">Proposed</option>
+              </select>
+            </div>
+          </div>
+        )}
+
+        <div className="hidden">
           <h2 className="text-lg font-bold text-slate-900 dark:text-white">Knowledge Graph</h2>
           <div className="flex rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-1">
             {[
@@ -1832,7 +2092,7 @@ export default function GraphView() {
 
         {/* ── CEO Views ─────────────────────────────────────────── */}
         {viewMode === "knowledge" && (
-          <div className="flex items-center gap-2 mb-2 -mt-1 flex-wrap">
+          <div className="hidden">
             <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 shrink-0">CEO View</span>
             <div className="flex gap-1.5 flex-wrap">
               {CEO_VIEWS.map(({ id, label, desc }) => (
@@ -1862,7 +2122,7 @@ export default function GraphView() {
         )}
 
         {viewMode === "knowledge" && showFilters && (
-          <div className="grid grid-cols-3 gap-1.5 mb-2 sm:grid-cols-4 xl:grid-cols-7">
+          <div className="hidden">
             <GraphStat label="Nodes" value={graphStats.components} />
             <GraphStat label="Edges" value={graphStats.relationships} />
             <GraphStat label="Risks" value={graphStats.blockers} tone={graphStats.blockers ? "red" : "slate"} />
@@ -1874,7 +2134,7 @@ export default function GraphView() {
         )}
 
         {buildResult && !buildResult.error && (
-          <div className="mb-3 flex items-start gap-3 px-4 py-3 rounded-xl bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 text-xs">
+          <div className="absolute left-1/2 top-24 z-40 flex w-[min(42rem,calc(100%-1.5rem))] -translate-x-1/2 items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50/95 px-4 py-3 text-xs shadow-xl backdrop-blur-sm dark:border-emerald-800 dark:bg-emerald-900/80">
             <svg className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="20 6 9 17 4 12"/>
             </svg>
@@ -1894,7 +2154,7 @@ export default function GraphView() {
           </div>
         )}
         {buildResult?.error && (
-          <div className="mb-3 px-4 py-3 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-xs text-red-700 dark:text-red-400 flex items-center justify-between">
+          <div className="absolute left-1/2 top-24 z-40 flex w-[min(42rem,calc(100%-1.5rem))] -translate-x-1/2 items-center justify-between rounded-xl border border-red-200 bg-red-50/95 px-4 py-3 text-xs text-red-700 shadow-xl backdrop-blur-sm dark:border-red-800 dark:bg-red-900/80 dark:text-red-400">
             <span>Build failed: {buildResult.error}</span>
             <button onClick={() => setBuildResult(null)} className="font-bold ml-4">✕</button>
           </div>
@@ -1904,7 +2164,7 @@ export default function GraphView() {
           <div ref={containerRef} className="absolute inset-0 rounded-2xl" />
           <div ref={logoLayerRef} className="pointer-events-none absolute inset-0 z-10" />
 
-          <div className="absolute left-3 top-3 z-20 flex items-center gap-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white/92 dark:bg-slate-800/92 p-1 shadow-sm backdrop-blur-sm">
+          <div className="absolute bottom-3 left-3 z-20 flex items-center gap-1 rounded-xl border border-slate-200 bg-white/92 p-1 shadow-sm backdrop-blur-sm dark:border-slate-700 dark:bg-slate-800/92">
             <button type="button" title="Zoom out" onClick={() => changeGraphZoom(-0.12)} className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white">
               <Minus className="h-3.5 w-3.5" />
             </button>
@@ -1917,8 +2177,34 @@ export default function GraphView() {
             </button>
           </div>
 
+          <div className="absolute bottom-3 right-3 z-20 flex items-center gap-2">
+            {agentStatus && (
+              <span className={`hidden rounded-xl border px-2.5 py-1.5 text-[10px] font-bold uppercase shadow-sm backdrop-blur-sm sm:inline-flex ${aiSettings.api_key || agentStatus.llm_enabled ? "border-emerald-200 bg-emerald-50/95 text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/70 dark:text-emerald-300" : "border-slate-200 bg-white/92 text-slate-500 dark:border-slate-700 dark:bg-slate-800/92 dark:text-slate-400"}`}>
+                {extractionLabel}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={handleBuildGraph}
+              disabled={building}
+              className="flex h-10 items-center gap-1.5 rounded-xl bg-brand-600 px-3.5 text-xs font-bold text-white shadow-lg shadow-brand-600/20 transition-colors hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {building ? (
+                <>
+                  <span className="h-3.5 w-3.5 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                  Building...
+                </>
+              ) : (
+                <>
+                  <Layers3 className="h-4 w-4" />
+                  Build Graph
+                </>
+              )}
+            </button>
+          </div>
+
           {/* Side-panel toggle — top right of canvas */}
-          <div className="absolute right-3 top-3 z-20 flex items-center gap-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white/92 dark:bg-slate-800/92 p-1 shadow-sm backdrop-blur-sm">
+          <div className="hidden">
             <button
               type="button"
               title="Source coverage & work lens"
@@ -1935,7 +2221,7 @@ export default function GraphView() {
           </div>
 
           {/* Persistent legend — top-right corner of graph canvas */}
-          <div className="pointer-events-none absolute bottom-3 right-3 z-10 hidden max-w-[150px] space-y-2 rounded-xl border border-slate-200 bg-white/92 px-2.5 py-2 shadow-sm backdrop-blur-sm dark:border-slate-700 dark:bg-slate-800/92 2xl:block">
+          <div className="hidden">
             <div>
               <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Border — status</p>
               <div className="flex flex-col gap-1">
@@ -2010,7 +2296,7 @@ export default function GraphView() {
 
 
           {/* ── Empty state when filters hide everything ─────────── */}
-          {currentViewData.components.length === 0 && !loading && (
+          {((currentViewData.components || currentViewData.nodes || []).length === 0) && !loading && (
             <div className="absolute inset-0 z-10 flex items-center justify-center">
               <div className="text-center p-6 bg-white/95 dark:bg-slate-800/95 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-lg backdrop-blur-sm max-w-xs">
                 <Search className="w-8 h-8 text-slate-300 dark:text-slate-600 mx-auto mb-2" />
@@ -2021,7 +2307,7 @@ export default function GraphView() {
                     : "Current filters hide every node."}
                 </p>
                 <button
-                  onClick={() => setFilters({ model: "", source_type: "", status: "", temporal: "", confidence_threshold: 0, relationship_origin: "", search: "" })}
+                  onClick={clearGraphFilters}
                   className="px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700 text-white text-xs font-bold transition-colors"
                 >
                   Clear all filters
@@ -2098,7 +2384,7 @@ export default function GraphView() {
       </div>
 
       {showSidePanel && (
-        <div className="w-64 shrink-0 bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 flex flex-col overflow-hidden">
+        <div className="absolute bottom-3 right-3 top-20 z-40 flex w-[min(20rem,calc(100%-1.5rem))] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-800">
           <div className="flex items-center border-b border-slate-100 dark:border-slate-700">
             {[
               { id: "coverage", label: "Coverage" },
@@ -2142,7 +2428,7 @@ export default function GraphView() {
       )}
 
       {selectedNode && !showAgents && (
-        <div className="w-72 shrink-0 bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-5 overflow-y-auto">
+        <div className="absolute bottom-3 right-3 top-20 z-40 w-[min(22rem,calc(100%-1.5rem))] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-xl dark:border-slate-700 dark:bg-slate-800">
           <button
             onClick={() => setSelectedNode(null)}
             className="float-right text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 text-xs font-bold"
@@ -2356,7 +2642,7 @@ export default function GraphView() {
       )}
 
       {selectedEdge && !showAgents && (
-        <div className="w-72 shrink-0 bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-5 overflow-y-auto">
+        <div className="absolute bottom-3 right-3 top-20 z-40 w-[min(22rem,calc(100%-1.5rem))] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-xl dark:border-slate-700 dark:bg-slate-800">
           <button
             onClick={() => setSelectedEdge(null)}
             className="float-right text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 text-xs font-bold"
@@ -2660,7 +2946,7 @@ function AgentsSidebarPanel({
   packResult, packLoading, packError, packCopied, onRunPack, onCopyPack,
 }) {
   return (
-    <div className="hidden w-[18.5rem] shrink-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800 xl:flex">
+    <div className="absolute bottom-3 right-3 top-20 z-40 flex w-[min(22rem,calc(100%-1.5rem))] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-800">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 dark:border-slate-700 shrink-0">
         <div className="flex items-center gap-2">
