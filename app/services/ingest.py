@@ -45,8 +45,6 @@ class IngestionService:
             return 0
 
         metadata = _parse_metadata(doc.metadata_json)
-        metadata.setdefault("source_type", doc.source_type)
-        metadata.setdefault("external_id", doc.external_id)
         facts = self._extract_source_facts(doc, metadata)
         if not facts:
             facts_list = await self._extractor.extract(doc.content, metadata)
