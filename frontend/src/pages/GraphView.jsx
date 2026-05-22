@@ -1323,7 +1323,7 @@ export default function GraphView() {
           const groupPadX = 132;
           const sourceHubW = 152;
           const sourceHubGap = 22;
-          const groupPadTop = 190;
+          const groupPadTop = 240;
           const groupGapY = 120;
           const colHeights = Array.from({ length: colCount }, () => 0);
 

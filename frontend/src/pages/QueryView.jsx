@@ -66,24 +66,24 @@ export default function QueryView() {
 
       {/* Search form */}
       <form onSubmit={handleSubmit}>
-        <div className={`relative flex items-center bg-white dark:bg-slate-800 border rounded-2xl transition-all shadow-sm ${
+        <div className={`relative flex items-center bg-white dark:bg-slate-800 border rounded-xl transition-all shadow-sm ${
           hasResult
             ? "border-slate-200 dark:border-slate-700"
             : "border-slate-200 dark:border-slate-700 shadow-[0_4px_24px_rgba(0,0,0,0.06)] dark:shadow-[0_4px_24px_rgba(0,0,0,0.3)]"
         }`}>
-          <Search className="absolute left-4 w-4 h-4 text-slate-400 shrink-0" />
+          <Search className="absolute left-3.5 w-4 h-4 text-slate-400 shrink-0" />
           <input
             ref={inputRef}
             type="text"
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
             placeholder="Ask about your startup knowledge…"
-            className="flex-1 pl-11 pr-4 py-3.5 bg-transparent text-sm font-medium text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none rounded-2xl"
+            className="flex-1 pl-10 pr-3 py-2.5 bg-transparent text-sm font-medium text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none rounded-xl"
           />
           <button
             type="submit"
             disabled={loading || !question.trim()}
-            className="mr-2 shrink-0 flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm font-bold rounded-xl transition-all"
+            className="mr-1.5 shrink-0 flex items-center gap-2 px-3.5 py-1.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm font-bold rounded-lg transition-all"
           >
             {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
             Ask
