@@ -424,8 +424,13 @@ export default function GraphView() {
   const fitGraph = useCallback(() => {
     const cy = cyRef.current;
     if (!cy) return;
+    const currentZoom = cy.zoom();
     cy.resize();
     cy.fit(undefined, 36);
+    if (cy.zoom() > currentZoom) {
+      cy.zoom({ level: currentZoom, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+      cy.center();
+    }
     setGraphZoom(Math.round(cy.zoom() * 100));
   }, []);
 
@@ -501,6 +506,12 @@ export default function GraphView() {
       setBuilding(false);
     }
   }
+
+  useEffect(() => {
+    if (!buildResult || buildResult.error) return undefined;
+    const timeoutId = setTimeout(() => setBuildResult(null), 5000);
+    return () => clearTimeout(timeoutId);
+  }, [buildResult]);
 
   async function handleAsk(e) {
     e?.preventDefault();
@@ -701,6 +712,8 @@ export default function GraphView() {
             modelId: groupKey,
             description: "",
             modelColor: meta.color || "#6366f1",
+            minWidth: 360,
+            minHeight: 260,
           },
           classes: "model-node",
         });
@@ -824,7 +837,6 @@ export default function GraphView() {
     const isDark = theme === "dark" || document.documentElement.classList.contains("dark");
     const modelBg = isDark ? "#101827" : "#f8fafc";
     const modelBgOpacity = isDark ? 1 : 0.95;
-    const modelLabelBg = isDark ? "#0f172a" : "#ffffff";
     const modelTextColor = isDark ? "#f8fafc" : "#0f172a";
     const componentTextColor = isDark ? "#f8fafc" : "#1e293b";
     const labelOutlineColor = isDark ? "#0f172a" : "#ffffff";
@@ -873,6 +885,7 @@ export default function GraphView() {
             "border-color": isDark ? "#334155" : "#cbd5e1",
             "border-width": 1.5,
             "border-opacity": isDark ? 0.8 : 0.7,
+            "compound-sizing-wrt-labels": "include",
           },
         },
         {
@@ -898,11 +911,12 @@ export default function GraphView() {
             color: modelTextColor,
             "text-outline-color": labelOutlineColor,
             "text-outline-width": 0,
-            "text-background-color": modelLabelBg,
-            "text-background-opacity": 1,
-            "text-background-padding": "5px",
-            "text-background-shape": "round-rectangle",
+            "text-background-opacity": 0,
+            "text-background-padding": "0px",
             "text-border-opacity": 0,
+            "min-width": "data(minWidth)",
+            "min-height": "data(minHeight)",
+            "bounds-expansion": 16,
             width: 10,
             height: 10,
           },
@@ -917,6 +931,7 @@ export default function GraphView() {
             "text-outline-width": 3,
             "text-background-opacity": 0,
             "text-margin-y": -42,
+            "bounds-expansion": 8,
             padding: "36px",
           },
         },
@@ -928,6 +943,7 @@ export default function GraphView() {
             "font-size": "22px",
             "text-outline-width": 2,
             "text-margin-y": -34,
+            "bounds-expansion": 12,
             padding: "44px",
           },
         },
@@ -1325,6 +1341,7 @@ export default function GraphView() {
           const sourceHubGap = 22;
           const groupPadTop = 240;
           const groupGapY = 120;
+          const groupPadBottom = 92;
           const colHeights = Array.from({ length: colCount }, () => 0);
 
           groups.forEach(({ groupKey, items, hubs }) => {
@@ -1333,18 +1350,24 @@ export default function GraphView() {
             const gridCols = itemCount >= 40 ? 4 : itemCount >= 20 ? 3 : itemCount >= 8 ? 2 : 1;
             const rows = Math.ceil(itemCount / gridCols);
             const groupWidth = groupPadX * 2 + gridCols * cardW + (gridCols - 1) * gapX;
-            const groupHeight = groupPadTop + rows * cardH + Math.max(0, rows - 1) * gapY + 80;
+            const hubRows = Math.max(1, Math.ceil(hubs.length / Math.max(1, Math.floor((groupWidth - groupPadX * 2) / (sourceHubW + sourceHubGap)))));
+            const hubHeight = hubRows * 116 + Math.max(0, hubRows - 1) * sourceHubGap;
             const baseX = col * colWidth - ((colCount - 1) * colWidth) / 2;
             const baseY = colHeights[col];
             const startX = baseX - groupWidth / 2 + groupPadX + cardW / 2;
-            const startY = baseY + groupPadTop;
-            const hubTotalWidth = hubs.length * sourceHubW + Math.max(0, hubs.length - 1) * sourceHubGap;
-            const hubStartX = baseX - hubTotalWidth / 2 + sourceHubW / 2;
+            const startY = baseY + Math.max(groupPadTop, 92 + hubHeight + 72);
+            const groupHeight = (startY - baseY) + rows * cardH + Math.max(0, rows - 1) * gapY + groupPadBottom;
+            const hubCols = Math.max(1, Math.min(hubs.length || 1, Math.floor((groupWidth - groupPadX * 2) / (sourceHubW + sourceHubGap)) || 1));
 
             hubs.forEach((hub, index) => {
+              const hubRow = Math.floor(index / hubCols);
+              const hubCol = index % hubCols;
+              const hubsInRow = Math.min(hubCols, hubs.length - hubRow * hubCols);
+              const hubTotalWidth = hubsInRow * sourceHubW + Math.max(0, hubsInRow - 1) * sourceHubGap;
+              const hubStartX = baseX - hubTotalWidth / 2 + sourceHubW / 2;
               presetPositions[`source:${groupKey}:${hub.kind}`] = {
-                x: hubStartX + index * (sourceHubW + sourceHubGap),
-                y: baseY + 88,
+                x: hubStartX + hubCol * (sourceHubW + sourceHubGap),
+                y: baseY + 92 + hubRow * (116 + sourceHubGap),
               };
             });
 
@@ -1358,6 +1381,11 @@ export default function GraphView() {
             });
             if (items.length === 0) {
               presetPositions[`group:${groupKey}`] = { x: baseX, y: baseY + groupHeight / 2 };
+            }
+            const groupNode = nodes.find((node) => node.data.id === `group:${groupKey}`);
+            if (groupNode) {
+              groupNode.data.minWidth = Math.max(groupWidth + 44, 360);
+              groupNode.data.minHeight = Math.max(groupHeight, 260);
             }
             colHeights[col] += groupHeight + groupGapY;
           });
@@ -1616,12 +1644,6 @@ export default function GraphView() {
     filters.search,
     filters.confidence_threshold > 0 ? "confidence" : "",
   ].filter(Boolean).length;
-  const extractionLabel = aiSettings.api_key && aiSettings.model
-    ? `AI: ${aiSettings.model}`
-    : agentStatus?.llm_enabled
-      ? `LLM: ${agentStatus.extraction_model}`
-      : "Regex extraction";
-
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -1700,9 +1722,6 @@ export default function GraphView() {
                     <option key={id} value={id}>{label}</option>
                   ))}
                 </select>
-                {activeCeoView && ceoView !== "all" && (
-                  <span className="hidden truncate text-[10px] text-slate-400 xl:block">{activeCeoView.desc}</span>
-                )}
               </div>
             )}
           </div>
@@ -1716,7 +1735,7 @@ export default function GraphView() {
                   value={filters.search}
                   onChange={(e) => setFilters((f) => ({ ...f, search: e.target.value }))}
                   placeholder="Search graph..."
-                  className="h-9 w-40 rounded-xl border border-slate-200 bg-white/92 pl-8 pr-7 text-xs font-semibold text-slate-700 shadow-sm outline-none backdrop-blur-sm transition placeholder:text-slate-400 focus:border-brand-400 dark:border-slate-700 dark:bg-slate-800/92 dark:text-slate-200 sm:w-52 xl:w-60"
+                  className="h-9 w-40 rounded-xl border border-slate-200 bg-white/92 pl-8 pr-7 text-xs font-semibold text-slate-700 shadow-sm outline-none backdrop-blur-sm transition placeholder:text-slate-400 focus:border-brand-400 dark:border-slate-700 dark:bg-black/80 dark:text-slate-200 sm:w-52 xl:w-60"
                 />
                 {filters.search && (
                   <button
@@ -2144,7 +2163,6 @@ export default function GraphView() {
                 <span>{buildResult.docs_processed} docs processed</span>
                 <span>{buildResult.components_created} components created</span>
                 <span>{buildResult.relationships_inferred} relationships inferred</span>
-                <span className="text-emerald-600 dark:text-emerald-500">{buildResult.llm_extraction ? "LLM extraction" : "Regex extraction"}</span>
               </div>
               {buildResult.errors?.length > 0 && (
                 <p className="mt-1 text-amber-600 dark:text-amber-400">{buildResult.errors.length} doc(s) had errors</p>
@@ -2160,7 +2178,14 @@ export default function GraphView() {
           </div>
         )}
 
-        <div className="flex-1 relative rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 min-h-0 overflow-hidden">
+        <div
+          className="flex-1 relative rounded-2xl border border-slate-200 bg-white min-h-0 overflow-hidden dark:border-slate-700"
+          style={theme === "dark" ? {
+            backgroundColor: "#000",
+            backgroundImage: "radial-gradient(circle at 1px 1px, rgba(255,255,255,0.075) 1px, transparent 0)",
+            backgroundSize: "22px 22px",
+          } : undefined}
+        >
           <div ref={containerRef} className="absolute inset-0 rounded-2xl" />
           <div ref={logoLayerRef} className="pointer-events-none absolute inset-0 z-10" />
 
@@ -2172,17 +2197,12 @@ export default function GraphView() {
             <button type="button" title="Zoom in" onClick={() => changeGraphZoom(0.12)} className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white">
               <Plus className="h-3.5 w-3.5" />
             </button>
-            <button type="button" title="Fit graph" onClick={fitGraph} className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white">
+            <button type="button" title="Fit whole graph" onClick={fitGraph} className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white">
               <Maximize2 className="h-3.5 w-3.5" />
             </button>
           </div>
 
           <div className="absolute bottom-3 right-3 z-20 flex items-center gap-2">
-            {agentStatus && (
-              <span className={`hidden rounded-xl border px-2.5 py-1.5 text-[10px] font-bold uppercase shadow-sm backdrop-blur-sm sm:inline-flex ${aiSettings.api_key || agentStatus.llm_enabled ? "border-emerald-200 bg-emerald-50/95 text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/70 dark:text-emerald-300" : "border-slate-200 bg-white/92 text-slate-500 dark:border-slate-700 dark:bg-slate-800/92 dark:text-slate-400"}`}>
-                {extractionLabel}
-              </span>
-            )}
             <button
               type="button"
               onClick={handleBuildGraph}

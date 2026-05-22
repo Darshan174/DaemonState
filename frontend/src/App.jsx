@@ -50,15 +50,16 @@ function AdminShell() {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-slate-50 dark:bg-[#0a0c0f] transition-colors duration-300">
-      <header className="shrink-0 border-b border-slate-200/80 dark:border-white/[0.07] bg-white/95 dark:bg-[#0d1117]/95 backdrop-blur-xl">
-        <div className="flex h-14 items-center justify-between px-4 md:px-6 gap-4">
+      <header className="shrink-0 border-b border-slate-200/50 bg-white/70 backdrop-blur-md transition-colors dark:border-slate-800/50 dark:bg-slate-950/70">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-3.5">
           {/* Brand */}
-          <Link to="/" className="flex items-center gap-2.5 group shrink-0">
+          <Link to="/" className="flex shrink-0 items-center gap-3 group">
             <span className="group-hover:scale-105 transition-transform duration-200">
-              <CeIcon size={30} />
+              <CeIcon size={38} />
             </span>
-            <span className="font-bold text-slate-900 dark:text-white text-sm tracking-tight hidden sm:block">
-              Context Engine
+            <span className="hidden sm:block">
+              <span className="block text-sm font-bold leading-tight text-slate-900 dark:text-white">Context Engine</span>
+              <span className="block text-[11px] leading-tight text-slate-500 dark:text-slate-400">Structured context for AI teams</span>
             </span>
           </Link>
 
