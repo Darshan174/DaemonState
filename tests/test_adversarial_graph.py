@@ -10,11 +10,10 @@ from __future__ import annotations
 import json
 from uuid import uuid4
 
-import pytest
-from sqlalchemy import select, func, text
+from sqlalchemy import select, func
 
 from app.models import Component, Model, Relationship, SourceDocument
-from app.processing.extractor import ExtractedFact, ExtractedRelationship, Extractor
+from app.processing.extractor import ExtractedFact, ExtractedRelationship
 from app.services.ingest import IngestionService
 from app.agents.graph_builder import GraphBuilderAgent
 from app.taxonomy import canonical_relationship_type, canonical_model_name
@@ -45,7 +44,7 @@ class TestNoFalseRelationships:
         await db_session.flush()
 
         agent = GraphBuilderAgent(db_session)
-        inferred = await agent._infer_cross_doc_relationships()
+        await agent._infer_cross_doc_relationships()
 
         # 'database' appears in both values but no explicit link between these facts
         rels = (await db_session.scalars(
@@ -267,7 +266,6 @@ class TestConfidenceClamping:
                  "confidence": -0.3, "relationships": []},
             ]
         }
-        ext = Extractor()
         # Simulate what _llm_extract does with the data dict (without calling the LLM)
         facts = []
         for item in raw_data["facts"]:
@@ -331,7 +329,7 @@ class TestAISuggestedRelationshipsAreProposed:
         db_session.add_all([model, doc, comp_src, comp_tgt])
         await db_session.flush()
 
-        from app.agents.relationship_agent import RelationshipAgent, SuggestedRelationship
+        from app.agents.relationship_agent import RelationshipAgent
 
         async def fake_discover(self, components, relationships):
             return {
@@ -555,7 +553,7 @@ Made with love and coffee."""
         await db_session.flush()
 
         svc = IngestionService(db_session)
-        count = await svc.process_document(doc.id)
+        await svc.process_document(doc.id)
         # Regex extractor may still generate a fallback "Document" component,
         # which is acceptable but the confidence should be low
         comps = (await db_session.scalars(
@@ -929,13 +927,13 @@ class TestCrossDocInferenceWeakness:
         await db_session.flush()
 
         agent = GraphBuilderAgent(db_session)
-        inferred = await agent._infer_cross_doc_relationships()
+        await agent._infer_cross_doc_relationships()
 
         rels = (await db_session.scalars(select(Relationship))).all()
         for rel in rels:
             assert rel.evidence is not None, (
-                f"Cross-doc relationship MUST have evidence. "
-                f"graph_builder.py line 138-145 must set evidence."
+                "Cross-doc relationship MUST have evidence. "
+                "graph_builder.py line 138-145 must set evidence."
             )
             assert len(rel.evidence) > 0, "Evidence must be non-empty"
 
@@ -959,7 +957,7 @@ class TestCrossDocInferenceWeakness:
         await db_session.flush()
 
         agent = GraphBuilderAgent(db_session)
-        inferred = await agent._infer_cross_doc_relationships()
+        await agent._infer_cross_doc_relationships()
 
         rels = (await db_session.scalars(select(Relationship))).all()
         for rel in rels:
@@ -990,7 +988,7 @@ class TestCrossDocInferenceWeakness:
         await db_session.flush()
 
         agent = GraphBuilderAgent(db_session)
-        inferred = await agent._infer_cross_doc_relationships()
+        await agent._infer_cross_doc_relationships()
 
         rels = (await db_session.scalars(select(Relationship))).all()
         for rel in rels:
@@ -1026,7 +1024,7 @@ class TestGraphBuilderBypassesIngestGuards:
         await db_session.flush()
 
         agent = GraphBuilderAgent(db_session)
-        inferred = await agent._infer_cross_doc_relationships()
+        await agent._infer_cross_doc_relationships()
 
         rels = (await db_session.scalars(select(Relationship))).all()
         for rel in rels:

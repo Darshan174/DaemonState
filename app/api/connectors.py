@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID

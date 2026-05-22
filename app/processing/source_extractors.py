@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.processing.extractor import ExtractedFact, ExtractedRelationship
-from app.taxonomy import canonical_fact_type, canonical_model_name, canonical_relationship_type
 
 
 @dataclass
@@ -104,7 +103,6 @@ def _extract_github_issue_text(content: str, doc_metadata: dict[str, Any] | None
 
 def _build_github_issue_facts(issue: GitHubIssueData, doc_metadata: dict[str, Any] | None = None) -> list[ExtractedFact]:
     facts: list[ExtractedFact] = []
-    meta = doc_metadata or {}
 
     state_temporal = "past" if issue.state == "closed" else "current"
     issue_name = f"Issue #{issue.number}: {issue.title}" if issue.number else f"Issue: {issue.title}"
@@ -125,10 +123,8 @@ def _build_github_issue_facts(issue: GitHubIssueData, doc_metadata: dict[str, An
         excerpt=issue.body[:300] if issue.body else issue.title,
     ))
 
-    issue_fact = facts[0]
-
     if issue.labels:
-        label_names = issue.labels if isinstance(issue.labels[0], str) else [l.get("name", "") for l in issue.labels if isinstance(l, dict)]
+        label_names = issue.labels if isinstance(issue.labels[0], str) else [label.get("name", "") for label in issue.labels if isinstance(label, dict)]
         for label in label_names[:5]:
             lower_label = label.lower()
             if any(w in lower_label for w in ("bug", "error", "crash", "fail")):
@@ -283,7 +279,6 @@ def _extract_github_pr_text(content: str, doc_metadata: dict[str, Any] | None = 
 
 def _build_github_pr_facts(pr: GitHubPRData, doc_metadata: dict[str, Any] | None = None) -> list[ExtractedFact]:
     facts: list[ExtractedFact] = []
-    meta = doc_metadata or {}
 
     state_temporal = "past" if pr.merged or pr.state == "closed" else "current"
     pr_name = f"PR #{pr.number}: {pr.title}" if pr.number else f"PR: {pr.title}"
@@ -336,7 +331,6 @@ def _build_github_pr_facts(pr: GitHubPRData, doc_metadata: dict[str, Any] | None
             ))
 
     for filename in pr.changed_files[:10]:
-        module_name = filename.replace("/", " > ").split(">")[-1] if "/" in filename else filename
         facts.append(ExtractedFact(
             model_name="Repo",
             name=f"File: {filename}",
@@ -490,15 +484,13 @@ def extract_agent_session(content: str, doc_metadata: dict[str, Any] | None = No
         excerpt=content[:300] if content else session.title,
     ))
 
-    session_fact = facts[0]
-
     task_items = _extract_session_tasks(content, session_provenance)
     for task in task_items:
         task.relationships.append(ExtractedRelationship(
             target_name=session_name,
             relationship_type="generated_by_agent",
             confidence=0.90,
-            evidence=f"Task extracted from agent session",
+            evidence="Task extracted from agent session",
         ))
     facts.extend(task_items)
 
@@ -508,7 +500,7 @@ def extract_agent_session(content: str, doc_metadata: dict[str, Any] | None = No
             target_name=session_name,
             relationship_type="generated_by_agent",
             confidence=0.88,
-            evidence=f"Decision extracted from agent session",
+            evidence="Decision extracted from agent session",
         ))
     facts.extend(decision_items)
 
@@ -518,7 +510,7 @@ def extract_agent_session(content: str, doc_metadata: dict[str, Any] | None = No
             target_name=session_name,
             relationship_type="generated_by_agent",
             confidence=0.85,
-            evidence=f"Risk/blocker extracted from agent session",
+            evidence="Risk/blocker extracted from agent session",
         ))
     facts.extend(risk_items)
 
@@ -528,7 +520,7 @@ def extract_agent_session(content: str, doc_metadata: dict[str, Any] | None = No
             target_name=session_name,
             relationship_type="part_of",
             confidence=0.80,
-            evidence=f"File reference in agent session",
+            evidence="File reference in agent session",
         ))
     facts.extend(file_refs)
 
@@ -589,7 +581,6 @@ def _extract_session_decisions(content: str, provenance: str) -> list[ExtractedF
                 ))
 
     for m in re.finditer(r"^#+\s*(?:final|decision|summary|conclusion)\b(.*)$", content, re.MULTILINE | re.IGNORECASE):
-        heading = m.group(0).strip()
         start = m.end()
         end = content.find("\n#", start)
         section = content[start:end].strip() if end != -1 else content[start:].strip()
