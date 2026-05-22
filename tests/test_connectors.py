@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+from pathlib import Path
+from tempfile import gettempdir
 from uuid import uuid4
 
 import httpx
@@ -11,13 +14,16 @@ from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from app.database import get_db_session
+from app.database import _ensure_sqlite_parent_dir, get_db_session
 from app.main import app
 from app.migrations import run_migrations
 from app.models import Base, Component, Connector, Model, SourceDocument
 from app.processing.embedder import HashingEmbedder
 
-TEST_DATABASE_URL = f"sqlite+aiosqlite:////private/tmp/test_connectors_{uuid4().hex}.db"
+TEST_DATABASE_URL = os.environ.get(
+    "TEST_DATABASE_URL",
+    f"sqlite+aiosqlite:///{Path(gettempdir()) / f'test_connectors_{uuid4().hex}.db'}",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -48,10 +54,12 @@ def _force_local_providers(monkeypatch):
     monkeypatch.setattr("app.config.settings.zoom_client_secret", None, raising=False)
     monkeypatch.setattr("app.config.settings.google_client_id", None, raising=False)
     monkeypatch.setattr("app.config.settings.google_client_secret", None, raising=False)
+    monkeypatch.setattr("app.config.settings.database_url", TEST_DATABASE_URL, raising=False)
 
 
 @pytest.fixture(scope="session")
 async def engine():
+    _ensure_sqlite_parent_dir(TEST_DATABASE_URL)
     eng = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
