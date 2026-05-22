@@ -8,6 +8,7 @@ const TYPE_META = {
   csv:      { label: "CSV", color: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400", icon: FileCode },
   html:     { label: "HTML", color: "bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-400", icon: FileCode },
   pdf:      { label: "PDF", color: "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400", icon: FileText },
+  gmail:    { label: "Gmail", color: "bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-400", icon: FileText },
 };
 
 function typeMeta(t) {
@@ -192,7 +193,7 @@ export default function SourceManager() {
                         )}
                       </div>
                     </div>
-                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-lg shrink-0 ${meta.color}`}>{meta.label}</span>
+                    <span className={`min-w-[3.5rem] text-center whitespace-nowrap text-[10px] font-bold px-2 py-0.5 rounded-lg shrink-0 ${meta.color}`}>{meta.label}</span>
                   </div>
                 </button>
               );

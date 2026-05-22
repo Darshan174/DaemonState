@@ -779,11 +779,7 @@ function ConnectorCard({
                 {latestSyncJob.status}
               </span>
             </div>
-            <p className="mt-2 text-[11px] text-gray-500">
-              Created {formatDateTime(latestSyncJob.createdAt)}
-              {latestSyncJob.startedAt ? ` · Started ${formatDateTime(latestSyncJob.startedAt)}` : ""}
-              {latestSyncJob.completedAt ? ` · Finished ${formatDateTime(latestSyncJob.completedAt)}` : ""}
-            </p>
+            <p className="mt-2 text-[11px] text-gray-500">{formatLatestSyncJobTime(latestSyncJob)}</p>
             {latestSyncJob.status === "completed" && (
               <p className="mt-2 text-[11px] text-emerald-700 dark:text-emerald-400">
                 {formatCompletedSyncNotice(name, latestSyncJob.resultMetadata)}
@@ -1358,6 +1354,15 @@ function formatDateTime(value) {
   } catch {
     return value;
   }
+}
+
+function formatLatestSyncJobTime(job) {
+  if (!job) return "No sync job yet.";
+  if (job.status === "completed" && job.completedAt) return `Completed ${formatDateTime(job.completedAt)}`;
+  if (job.status === "failed" && job.completedAt) return `Failed ${formatDateTime(job.completedAt)}`;
+  if (job.startedAt) return `Started ${formatDateTime(job.startedAt)}`;
+  if (job.createdAt) return `Queued ${formatDateTime(job.createdAt)}`;
+  return "Sync job pending.";
 }
 
 function formatActionError(error) {
