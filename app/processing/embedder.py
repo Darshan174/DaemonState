@@ -11,6 +11,7 @@ import hashlib
 import math
 import re
 from abc import ABC, abstractmethod
+from typing import Any
 
 from app.config import settings
 
@@ -94,20 +95,68 @@ class LocalEmbedder(BaseEmbedder):
         return vector[: self.dimension]
 
 
+class LiteLLMEmbedder(BaseEmbedder):
+    """Semantic embedder backed by any LiteLLM-supported embedding provider."""
+
+    def __init__(
+        self,
+        model: str,
+        *,
+        api_key: str | None = None,
+        dimension: int | None = None,
+    ) -> None:
+        self.model = model
+        self.api_key = api_key
+        self.dimension = dimension or 0
+
+    async def embed_text(self, text: str) -> list[float]:
+        return (await self.embed_texts([text]))[0]
+
+    async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        try:
+            from litellm import aembedding
+        except ImportError as exc:
+            raise EmbeddingError("litellm is required for configured embedding models") from exc
+
+        kwargs: dict[str, Any] = {"model": self.model, "input": texts}
+        if self.api_key:
+            kwargs["api_key"] = self.api_key
+        try:
+            response = await aembedding(**kwargs)
+        except Exception as exc:  # pragma: no cover - provider-specific errors
+            raise EmbeddingError(f"Embedding provider failed: {exc}") from exc
+
+        data = response.get("data") if isinstance(response, dict) else getattr(response, "data", None)
+        if not data:
+            raise EmbeddingError("Embedding provider returned no vectors")
+
+        vectors = []
+        for item in data:
+            raw = item.get("embedding") if isinstance(item, dict) else getattr(item, "embedding", None)
+            if raw is None:
+                raise EmbeddingError("Embedding provider returned an item without an embedding")
+            vectors.append(_normalize(_adjust_dimension([float(v) for v in raw], self.dimension)))
+        return vectors
+
+
 def build_default_embedder() -> BaseEmbedder:
     """Return the best available embedder for the current environment.
 
     Resolution order:
-    1. ``EMBEDDING_MODEL`` set → LocalEmbedder (with intent to use external API)
+    1. ``EMBEDDING_MODEL`` set → LiteLLMEmbedder
     2. ``ENABLE_LOCAL_EMBEDDER=true`` → LocalEmbedder (offline semantic)
     3. Fallback → HashingEmbedder (test-only, non-semantic)
     """
     if settings.embedding_model:
-        pass
+        return LiteLLMEmbedder(
+            settings.embedding_model,
+            api_key=settings.litellm_api_key,
+            dimension=settings.embedding_dimension,
+        )
 
     if settings.enable_local_embedder:
         try:
-            return LocalEmbedder(dimension=1024)
+            return LocalEmbedder(dimension=settings.embedding_dimension or 1024)
         except ImportError:
             pass
 
@@ -120,3 +169,18 @@ def cosine_similarity(lhs: list[float] | None, rhs: list[float] | None) -> float
     if len(lhs) == 0 or len(rhs) == 0:
         return 0.0
     return float(sum(a * b for a, b in zip(lhs, rhs)))
+
+
+def _adjust_dimension(vector: list[float], dimension: int | None) -> list[float]:
+    if not dimension or len(vector) == dimension:
+        return vector
+    if len(vector) < dimension:
+        return vector + [0.0] * (dimension - len(vector))
+    return vector[:dimension]
+
+
+def _normalize(vector: list[float]) -> list[float]:
+    norm = math.sqrt(sum(v * v for v in vector))
+    if norm == 0:
+        return vector
+    return [v / norm for v in vector]

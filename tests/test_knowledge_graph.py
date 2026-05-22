@@ -6,6 +6,7 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from app.models import Component, Model, Relationship, SourceDocument
+from app.agents.graph_builder import GraphBuilderAgent
 from app.processing.extractor import ExtractedFact, ExtractedRelationship
 from app.processing.source_extractors import (
     extract_agent_session,
@@ -659,6 +660,57 @@ class TestRelationshipSafety:
 
 
 class TestGithubPRToIssueDeterministic:
+    async def test_graph_builder_links_github_pr_to_issue_thread(self, db_session):
+        model = Model(id=uuid4(), name="GitHub")
+        issue_doc = SourceDocument(
+            id=uuid4(),
+            source_type="github",
+            external_id="issue-12",
+            content="Issue #12",
+            metadata_json=json.dumps({
+                "item_type": "issue",
+                "repo_full_name": "org/repo",
+                "number": 12,
+            }),
+        )
+        pr_doc = SourceDocument(
+            id=uuid4(),
+            source_type="github",
+            external_id="pr-12",
+            content="PR #12",
+            metadata_json=json.dumps({
+                "item_type": "pull_request",
+                "repo_full_name": "org/repo",
+                "number": 12,
+            }),
+        )
+        issue_comp = Component(
+            id=uuid4(), model_id=model.id, source_document_id=issue_doc.id,
+            name="Issue #12: Fix graph", value="closed",
+            fact_type="issue", confidence=0.95, status="active",
+        )
+        pr_comp = Component(
+            id=uuid4(), model_id=model.id, source_document_id=pr_doc.id,
+            name="PR #12: Fix graph", value="merged",
+            fact_type="pull_request", confidence=0.95, status="active",
+        )
+        db_session.add_all([model, issue_doc, pr_doc, issue_comp, pr_comp])
+        await db_session.flush()
+
+        agent = GraphBuilderAgent(db_session)
+        inferred = await agent._infer_deterministic_relationships()
+        await db_session.flush()
+
+        rels = (await db_session.scalars(
+            select(Relationship).where(Relationship.source_component_id == pr_comp.id)
+        )).all()
+        assert inferred == 1
+        assert len(rels) == 1
+        assert rels[0].target_component_id == issue_comp.id
+        assert rels[0].relationship_type == "part_of"
+        assert rels[0].origin == "deterministic"
+        assert rels[0].confidence == 1.0
+
     async def test_pr_solves_issue_deterministic(self, db_session):
         model = Model(id=uuid4(), name="GitHub")
         db_session.add(model)
@@ -1215,6 +1267,56 @@ class TestGraphAPIDisplayMetadata:
         prop_ids = [r["id"] for r in data_prop["relationships"]]
         assert str(prop_rel.id) in prop_ids
         assert str(det_rel.id) not in prop_ids
+
+    async def test_relationship_review_accepts_or_rejects_proposed_edges(self, client, db_session):
+        model = Model(id=uuid4(), name="Review")
+        doc = SourceDocument(
+            id=uuid4(), source_type="slack", external_id="review-edge",
+            content=".", metadata_json="{}",
+        )
+        a = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="Slack bug", value="Stripe webhook bug", fact_type="issue",
+            confidence=0.8, status="active",
+        )
+        b = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="GitHub issue", value="Stripe webhook failure", fact_type="issue",
+            confidence=0.8, status="active",
+        )
+        accepted = Relationship(
+            id=uuid4(), source_component_id=a.id, target_component_id=b.id,
+            relationship_type="related_to", confidence=0.91,
+            evidence="Semantic similarity", origin="ai_proposed", status="proposed",
+        )
+        rejected = Relationship(
+            id=uuid4(), source_component_id=b.id, target_component_id=a.id,
+            relationship_type="related_to", confidence=0.88,
+            evidence="Weak semantic similarity", origin="ai_proposed", status="proposed",
+        )
+        db_session.add_all([model, doc, a, b, accepted, rejected])
+        await db_session.flush()
+
+        accept_resp = await client.patch(
+            f"/api/relationships/{accepted.id}/review",
+            json={"action": "accept"},
+        )
+        assert accept_resp.status_code == 200
+        accepted_data = accept_resp.json()
+        assert accepted_data["status"] == "active"
+        assert accepted_data["origin"] == "human_verified"
+
+        reject_resp = await client.patch(
+            f"/api/relationships/{rejected.id}/review",
+            json={"action": "reject"},
+        )
+        assert reject_resp.status_code == 200
+        assert reject_resp.json()["status"] == "rejected"
+
+        graph_resp = await client.get("/api/graph")
+        relationship_ids = {r["id"] for r in graph_resp.json()["relationships"]}
+        assert str(accepted.id) in relationship_ids
+        assert str(rejected.id) not in relationship_ids
 
 
 class TestPastCurrentFutureProposed:
