@@ -13,7 +13,7 @@ from uuid import uuid4
 from sqlalchemy import select, func
 
 from app.models import Component, Model, Relationship, SourceDocument
-from app.processing.extractor import ExtractedFact, ExtractedRelationship, Extractor
+from app.processing.extractor import ExtractedFact, ExtractedRelationship
 from app.services.ingest import IngestionService
 from app.agents.graph_builder import GraphBuilderAgent
 from app.taxonomy import canonical_relationship_type, canonical_model_name
@@ -266,7 +266,6 @@ class TestConfidenceClamping:
                  "confidence": -0.3, "relationships": []},
             ]
         }
-        Extractor()
         # Simulate what _llm_extract does with the data dict (without calling the LLM)
         facts = []
         for item in raw_data["facts"]:
@@ -705,7 +704,20 @@ class TestGraphAPIProvenance:
 
 
 class TestMCPProvenance:
-    async def test_search_nodes_includes_source_type(self, db_session):
+    def _patch_mcp_session(self, monkeypatch, db_session):
+        from app.mcp import server as mcp_server
+
+        class TestSessionContext:
+            async def __aenter__(self):
+                return db_session
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        monkeypatch.setattr(mcp_server, "AsyncSessionLocal", lambda: TestSessionContext())
+        return mcp_server
+
+    async def test_search_nodes_includes_source_type(self, db_session, monkeypatch):
         """MCP search_nodes returns source_type when source_document is present."""
         model = Model(id=uuid4(), name="Feature")
         doc = SourceDocument(id=uuid4(), source_type="slack", external_id="mcp-src",
@@ -718,8 +730,8 @@ class TestMCPProvenance:
         db_session.add_all([model, doc, comp])
         await db_session.flush()
 
-        from app.mcp.server import _search_nodes
-        result = await _search_nodes("dark mode", limit=5)
+        mcp_server = self._patch_mcp_session(monkeypatch, db_session)
+        result = await mcp_server._search_nodes("dark mode", limit=5)
         assert len(result) > 0
         text_content = result[0].text
         data = json.loads(text_content)
@@ -756,7 +768,7 @@ class TestMCPProvenance:
         )).all()
         assert len(rels_from_a) >= 1
 
-    async def test_get_status_matches_persisted_counts(self, db_session):
+    async def test_get_status_matches_persisted_counts(self, db_session, monkeypatch):
         """MCP get_status counts match DB rows."""
         model = Model(id=uuid4(), name="MCPStatusModel")
         doc = SourceDocument(id=uuid4(), source_type="local", external_id="mcp-status",
@@ -767,8 +779,8 @@ class TestMCPProvenance:
         db_session.add_all([model, doc, comp])
         await db_session.flush()
 
-        from app.mcp.server import _get_status
-        result = await _get_status()
+        mcp_server = self._patch_mcp_session(monkeypatch, db_session)
+        result = await mcp_server._get_status()
         text_content = result[0].text
         data = json.loads(text_content)
         assert data["components"] >= 1

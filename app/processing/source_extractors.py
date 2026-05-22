@@ -123,8 +123,6 @@ def _build_github_issue_facts(issue: GitHubIssueData, doc_metadata: dict[str, An
         excerpt=issue.body[:300] if issue.body else issue.title,
     ))
 
-    facts[0]
-
     if issue.labels:
         label_names = (
             issue.labels
@@ -337,7 +335,6 @@ def _build_github_pr_facts(pr: GitHubPRData, doc_metadata: dict[str, Any] | None
             ))
 
     for filename in pr.changed_files[:10]:
-        filename.replace("/", " > ").split(">")[-1] if "/" in filename else filename
         facts.append(ExtractedFact(
             model_name="Repo",
             name=f"File: {filename}",
@@ -491,8 +488,6 @@ def extract_agent_session(content: str, doc_metadata: dict[str, Any] | None = No
         excerpt=content[:300] if content else session.title,
     ))
 
-    facts[0]
-
     task_items = _extract_session_tasks(content, session_provenance)
     for task in task_items:
         task.relationships.append(ExtractedRelationship(
@@ -590,7 +585,6 @@ def _extract_session_decisions(content: str, provenance: str) -> list[ExtractedF
                 ))
 
     for m in re.finditer(r"^#+\s*(?:final|decision|summary|conclusion)\b(.*)$", content, re.MULTILINE | re.IGNORECASE):
-        m.group(0).strip()
         start = m.end()
         end = content.find("\n#", start)
         section = content[start:end].strip() if end != -1 else content[start:].strip()
