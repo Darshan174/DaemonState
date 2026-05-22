@@ -1478,6 +1478,7 @@ export default function GraphView() {
         setSelectedNode({ ...data, connected });
         setSelectedEdge(null);
         setEdgeReviewError(null);
+        setShowFilters(false);
         setShowSidePanel(false);
         setShowAgents(false);
       } else {
@@ -1502,6 +1503,7 @@ export default function GraphView() {
       });
       setSelectedNode(null);
       setEdgeReviewError(null);
+      setShowFilters(false);
       setShowSidePanel(false);
       setShowAgents(false);
     });
@@ -1510,6 +1512,7 @@ export default function GraphView() {
       if (evt.target === cy) {
         setSelectedNode(null);
         setSelectedEdge(null);
+        setShowFilters(false);
       }
     });
 
@@ -1729,7 +1732,13 @@ export default function GraphView() {
             {viewMode === "knowledge" && (
               <button
                 type="button"
-                onClick={() => setShowFilters((v) => !v)}
+                onClick={() => {
+                  setShowFilters((v) => !v);
+                  setShowSidePanel(false);
+                  setShowAgents(false);
+                  setSelectedNode(null);
+                  setSelectedEdge(null);
+                }}
                 className={`flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-bold shadow-sm backdrop-blur-sm transition-colors ${
                   showFilters
                     ? "border-sky-400 bg-sky-50/95 text-sky-700 dark:border-sky-600 dark:bg-sky-900/60 dark:text-sky-300"
@@ -1759,6 +1768,9 @@ export default function GraphView() {
               type="button"
               onClick={() => {
                 setShowAsk((v) => !v);
+                setShowFilters(false);
+                setShowSidePanel(false);
+                setShowAgents(false);
                 setAskResult(null);
                 setAskError(null);
                 setTimeout(() => askInputRef.current?.focus(), 80);
@@ -1776,6 +1788,7 @@ export default function GraphView() {
               type="button"
               onClick={() => {
                 setShowAgents((v) => !v);
+                setShowFilters(false);
                 setShowSidePanel(false);
                 setSelectedNode(null);
                 setSelectedEdge(null);
@@ -1794,6 +1807,7 @@ export default function GraphView() {
               title="Source coverage and work lens"
               onClick={() => {
                 setShowSidePanel((v) => !v);
+                setShowFilters(false);
                 setShowAgents(false);
                 setSelectedNode(null);
                 setSelectedEdge(null);
