@@ -424,8 +424,13 @@ export default function GraphView() {
   const fitGraph = useCallback(() => {
     const cy = cyRef.current;
     if (!cy) return;
+    const currentZoom = cy.zoom();
     cy.resize();
     cy.fit(undefined, 36);
+    if (cy.zoom() > currentZoom) {
+      cy.zoom({ level: currentZoom, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+      cy.center();
+    }
     setGraphZoom(Math.round(cy.zoom() * 100));
   }, []);
 
@@ -501,6 +506,12 @@ export default function GraphView() {
       setBuilding(false);
     }
   }
+
+  useEffect(() => {
+    if (!buildResult || buildResult.error) return undefined;
+    const timeoutId = setTimeout(() => setBuildResult(null), 5000);
+    return () => clearTimeout(timeoutId);
+  }, [buildResult]);
 
   async function handleAsk(e) {
     e?.preventDefault();
@@ -1616,12 +1627,6 @@ export default function GraphView() {
     filters.search,
     filters.confidence_threshold > 0 ? "confidence" : "",
   ].filter(Boolean).length;
-  const extractionLabel = aiSettings.api_key && aiSettings.model
-    ? `AI: ${aiSettings.model}`
-    : agentStatus?.llm_enabled
-      ? `LLM: ${agentStatus.extraction_model}`
-      : "Regex extraction";
-
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -1700,9 +1705,6 @@ export default function GraphView() {
                     <option key={id} value={id}>{label}</option>
                   ))}
                 </select>
-                {activeCeoView && ceoView !== "all" && (
-                  <span className="hidden truncate text-[10px] text-slate-400 xl:block">{activeCeoView.desc}</span>
-                )}
               </div>
             )}
           </div>
@@ -1716,7 +1718,7 @@ export default function GraphView() {
                   value={filters.search}
                   onChange={(e) => setFilters((f) => ({ ...f, search: e.target.value }))}
                   placeholder="Search graph..."
-                  className="h-9 w-40 rounded-xl border border-slate-200 bg-white/92 pl-8 pr-7 text-xs font-semibold text-slate-700 shadow-sm outline-none backdrop-blur-sm transition placeholder:text-slate-400 focus:border-brand-400 dark:border-slate-700 dark:bg-slate-800/92 dark:text-slate-200 sm:w-52 xl:w-60"
+                  className="h-9 w-40 rounded-xl border border-slate-200 bg-white/92 pl-8 pr-7 text-xs font-semibold text-slate-700 shadow-sm outline-none backdrop-blur-sm transition placeholder:text-slate-400 focus:border-brand-400 dark:border-slate-700 dark:bg-black/80 dark:text-slate-200 sm:w-52 xl:w-60"
                 />
                 {filters.search && (
                   <button
@@ -2144,7 +2146,6 @@ export default function GraphView() {
                 <span>{buildResult.docs_processed} docs processed</span>
                 <span>{buildResult.components_created} components created</span>
                 <span>{buildResult.relationships_inferred} relationships inferred</span>
-                <span className="text-emerald-600 dark:text-emerald-500">{buildResult.llm_extraction ? "LLM extraction" : "Regex extraction"}</span>
               </div>
               {buildResult.errors?.length > 0 && (
                 <p className="mt-1 text-amber-600 dark:text-amber-400">{buildResult.errors.length} doc(s) had errors</p>
@@ -2160,7 +2161,14 @@ export default function GraphView() {
           </div>
         )}
 
-        <div className="flex-1 relative rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 min-h-0 overflow-hidden">
+        <div
+          className="flex-1 relative rounded-2xl border border-slate-200 bg-white min-h-0 overflow-hidden dark:border-slate-700"
+          style={theme === "dark" ? {
+            backgroundColor: "#000",
+            backgroundImage: "radial-gradient(circle at 1px 1px, rgba(255,255,255,0.075) 1px, transparent 0)",
+            backgroundSize: "22px 22px",
+          } : undefined}
+        >
           <div ref={containerRef} className="absolute inset-0 rounded-2xl" />
           <div ref={logoLayerRef} className="pointer-events-none absolute inset-0 z-10" />
 
@@ -2172,17 +2180,12 @@ export default function GraphView() {
             <button type="button" title="Zoom in" onClick={() => changeGraphZoom(0.12)} className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white">
               <Plus className="h-3.5 w-3.5" />
             </button>
-            <button type="button" title="Fit graph" onClick={fitGraph} className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white">
+            <button type="button" title="Fit whole graph" onClick={fitGraph} className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white">
               <Maximize2 className="h-3.5 w-3.5" />
             </button>
           </div>
 
           <div className="absolute bottom-3 right-3 z-20 flex items-center gap-2">
-            {agentStatus && (
-              <span className={`hidden rounded-xl border px-2.5 py-1.5 text-[10px] font-bold uppercase shadow-sm backdrop-blur-sm sm:inline-flex ${aiSettings.api_key || agentStatus.llm_enabled ? "border-emerald-200 bg-emerald-50/95 text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/70 dark:text-emerald-300" : "border-slate-200 bg-white/92 text-slate-500 dark:border-slate-700 dark:bg-slate-800/92 dark:text-slate-400"}`}>
-                {extractionLabel}
-              </span>
-            )}
             <button
               type="button"
               onClick={handleBuildGraph}

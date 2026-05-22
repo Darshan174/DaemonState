@@ -51,7 +51,7 @@ function AdminShell() {
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-slate-50 dark:bg-[#0a0c0f] transition-colors duration-300">
       <header className="shrink-0 border-b border-slate-200/80 dark:border-white/[0.07] bg-white/95 dark:bg-[#0d1117]/95 backdrop-blur-xl">
-        <div className="flex h-14 items-center justify-between px-4 md:px-6 gap-4">
+        <div className="flex h-14 items-center justify-between gap-4 px-6 md:px-10">
           {/* Brand */}
           <Link to="/" className="flex items-center gap-2.5 group shrink-0">
             <span className="group-hover:scale-105 transition-transform duration-200">
