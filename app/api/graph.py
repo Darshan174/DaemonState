@@ -183,9 +183,17 @@ async def get_graph(
         components = [c for c in components if c.confidence >= confidence_min]
 
     comp_ids = {c.id for c in components}
-    rel_stmt = select(Relationship).where(
-        Relationship.source_component_id.in_(comp_ids),
-        Relationship.target_component_id.in_(comp_ids),
+    rel_stmt = (
+        select(Relationship)
+        .options(
+            selectinload(Relationship.source_component),
+            selectinload(Relationship.target_component),
+        )
+        .where(
+            Relationship.source_component_id.in_(comp_ids),
+            Relationship.target_component_id.in_(comp_ids),
+        )
+        .where(Relationship.status != "rejected")
     )
     if relationship_origin:
         rel_stmt = rel_stmt.where(Relationship.origin == relationship_origin)
@@ -695,6 +703,10 @@ class RelationshipDetail(BaseModel):
     created_at: datetime | None = None
 
 
+class RelationshipReviewRequest(BaseModel):
+    action: str
+
+
 @router.get("/relationships/{relationship_id}", response_model=RelationshipDetail)
 async def get_relationship_detail(
     relationship_id: UUID,
@@ -742,6 +754,36 @@ async def get_relationship_detail(
         origin=_resolve_origin(rel),
         created_at=rel.created_at,
     )
+
+
+@router.patch("/relationships/{relationship_id}/review", response_model=RelationshipRead)
+async def review_relationship(
+    relationship_id: UUID,
+    body: RelationshipReviewRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> RelationshipRead:
+    rel = await session.scalar(
+        select(Relationship)
+        .options(
+            selectinload(Relationship.source_component),
+            selectinload(Relationship.target_component),
+        )
+        .where(Relationship.id == relationship_id)
+    )
+    if rel is None:
+        raise HTTPException(status_code=404, detail="Relationship not found")
+
+    action = body.action.strip().lower()
+    if action in {"accept", "verify", "approve"}:
+        rel.status = "active"
+        rel.origin = "human_verified"
+    elif action in {"reject", "dismiss"}:
+        rel.status = "rejected"
+    else:
+        raise HTTPException(status_code=422, detail="action must be accept or reject")
+
+    await session.commit()
+    return _relationship_read(rel)
 
 
 # ── Source-to-Knowledge Diff ───────────────────────────────────────────────────
@@ -1067,6 +1109,8 @@ def _component_read(c: Component, relationship_count: int = 0) -> ComponentRead:
 
 def _relationship_read(r: Relationship) -> RelationshipRead:
     origin = getattr(r, "origin", "proposed") or "proposed"
+    source_component = r.__dict__.get("source_component")
+    target_component = r.__dict__.get("target_component")
     return RelationshipRead(
         id=r.id, source_component_id=r.source_component_id,
         target_component_id=r.target_component_id,
@@ -1076,6 +1120,8 @@ def _relationship_read(r: Relationship) -> RelationshipRead:
         status=r.status,
         origin=origin,
         display_label=relationship_display_label(r.relationship_type, origin),
+        source_component_name=source_component.name if source_component else None,
+        target_component_name=target_component.name if target_component else None,
         created_at=r.created_at,
     )
 

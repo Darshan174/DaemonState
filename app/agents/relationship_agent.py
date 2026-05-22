@@ -6,19 +6,20 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.agents.semantic_linker import SemanticCandidate, SemanticRelationshipLinker
 from app.models import Component, Relationship
 from app.taxonomy import canonical_model_name, canonical_relationship_type
 
 
-RELATIONSHIP_PROMPT = """You are analyzing a startup knowledge graph to find HIDDEN relationships that haven't been explicitly captured.
+RELATIONSHIP_PROMPT = """You are analyzing candidate pairs from a startup knowledge graph.
 
-Current entities:
-{entities}
+Candidate pairs:
+{candidate_pairs}
 
 Already-known relationships:
 {known_relationships}
 
-Find relationships that SHOULD exist but are missing. Look for:
+Validate only the candidate pairs above. Find relationships that SHOULD exist but are missing. Look for:
 1. A Slack/Email complaint that maps to a GitHub Issue
 2. A Decision that caused a specific PR or Feature
 3. An Agent Session that solved a specific Bug or Task
@@ -46,7 +47,8 @@ Return JSON:
   ]
 }}
 
-Only suggest relationships between entities that actually exist in the list above.
+Only suggest relationships between source_name and target_name values that actually appear in the candidate pairs above.
+Do not suggest a relationship just because vector similarity is high; require semantic evidence in the names, values, source metadata, or relationship context.
 """
 
 
@@ -121,24 +123,23 @@ class RelationshipAgent:
         )
 
     async def _ai_discover(self, components, relationships) -> dict | None:
-        by_type: dict[str, list[str]] = {}
-        for c in components:
-            t = canonical_model_name(c.model.name if c.model else "Unknown")
-            by_type.setdefault(t, []).append(f'"{c.name}" — {c.value[:100]}')
+        candidates = await self._candidate_pairs()
+        if not candidates:
+            return {"suggested_relationships": [], "duplicates": []}
 
-        entities_text = "\n".join(
-            f"{t}: {', '.join(names[:6])}"
-            for t, names in list(by_type.items())[:12]
+        candidate_pairs = "\n".join(
+            _candidate_line(candidate)
+            for candidate in candidates[:80]
         )
 
         known = "\n".join(
             f"- {r.source_component.name if r.source_component else '?'} --[{r.relationship_type}]--> {r.target_component.name if r.target_component else '?'}"
-            for r in relationships[:30]
+            for r in relationships[:50]
         )
 
         try:
             from litellm import acompletion
-            prompt = RELATIONSHIP_PROMPT.format(entities=entities_text, known_relationships=known)
+            prompt = RELATIONSHIP_PROMPT.format(candidate_pairs=candidate_pairs, known_relationships=known)
             response = await acompletion(
                 model=self.model,
                 api_key=self.api_key,
@@ -154,6 +155,14 @@ class RelationshipAgent:
             return json.loads(raw)
         except Exception:
             return None
+
+    async def _candidate_pairs(self) -> list[SemanticCandidate]:
+        return await SemanticRelationshipLinker(
+            self.session,
+            threshold=0.68,
+            max_candidates=120,
+            require_cross_source_type=False,
+        ).candidates()
 
     async def _persist_suggestions(
         self,
@@ -198,3 +207,17 @@ class RelationshipAgent:
             await self.session.flush()
             await self.session.commit()
         return persisted
+
+
+def _candidate_line(candidate: SemanticCandidate) -> str:
+    source_model = canonical_model_name(candidate.source.model.name if candidate.source.model else "Unknown")
+    target_model = canonical_model_name(candidate.target.model.name if candidate.target.model else "Unknown")
+    source_type = candidate.source.source_document.source_type if candidate.source.source_document else "unknown"
+    target_type = candidate.target.source_document.source_type if candidate.target.source_document else "unknown"
+    return (
+        f"- source_name: \"{candidate.source.name}\" | source_type: {source_type} | "
+        f"source_model: {source_model} | source_value: {candidate.source.value[:180]}\n"
+        f"  target_name: \"{candidate.target.name}\" | target_type: {target_type} | "
+        f"target_model: {target_model} | target_value: {candidate.target.value[:180]}\n"
+        f"  vector_similarity: {candidate.score:.2f}"
+    )
