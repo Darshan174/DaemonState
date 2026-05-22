@@ -114,6 +114,7 @@ async def sync_slack(connector: Connector, session: AsyncSession) -> dict:
                     author=msg.get("user", ""),
                     source_url=None,
                     metadata_json=json.dumps({
+                        "workspace_id": str(connector.workspace_id),
                         "channel_id": channel_id,
                         "channel_name": channel_name,
                         "ts": msg["ts"],

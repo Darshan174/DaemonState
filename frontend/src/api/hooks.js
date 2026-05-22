@@ -6,6 +6,7 @@
  * usable during frontend-only development.
  */
 
+import { useCallback } from "react";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "./client";
 import {
@@ -136,7 +137,7 @@ const CONNECTOR_CATALOG = {
     name: "Google Drive",
     description: "Docs, Sheets, Slides, and folder content",
     color: "#ffffff",
-    availability: "coming_soon",
+    availability: "available",
     provider: "official_api",
     providerLabel: "Official API",
     providerNote: "Drive ingest docs, sheets, slides, and folder metadata into the source and graph pipeline.",
@@ -146,7 +147,7 @@ const CONNECTOR_CATALOG = {
     name: "Gmail",
     description: "Email threads, attachments, and sender context",
     color: "#ffffff",
-    availability: "coming_soon",
+    availability: "available",
     provider: "official_api",
     providerLabel: "Official API",
     providerNote: "Gmail ingests selected mailbox threads and attachments with source provenance.",
@@ -155,7 +156,7 @@ const CONNECTOR_CATALOG = {
     type: "codex",
     name: "Codex",
     description: "OpenAI Codex sessions — decisions, code plans, and AI reasoning",
-    color: "#ffffff",
+    color: "#10a37f",
     availability: "available",
     provider: "native",
     providerLabel: "Session import",
@@ -490,14 +491,14 @@ export function useConnectors() {
       { fallbackStatuses: [404, 501] },
     ),
   });
-  const refetch = async () => {
+  const refetch = useCallback(async () => {
     const result = await query.refetch();
     return {
       ...result,
       data: normalizeConnectors(result.data),
       isMock: result.data === mockConnectors,
     };
-  };
+  }, [query.refetch]);
   return {
     ...query,
     data: normalizeConnectors(query.data),
@@ -2027,15 +2028,15 @@ function filterMockSourceDocuments(data, filters) {
 }
 
 function normalizeProcessingSummary(data) {
-  if (!Array.isArray(data)) return [];
-  return data.map((item) => ({
-    connectorId: item.connector_id,
-    connectorType: item.connector_type,
+  const items = Array.isArray(data) ? data : Array.isArray(data?.items) ? data.items : [];
+  return items.map((item) => ({
+    connectorId: item.connectorId ?? item.connector_id ?? null,
+    connectorType: item.connectorType ?? item.connector_type,
     status: item.status,
-    totalDocuments: Number(item.total_documents ?? 0),
-    processedDocuments: Number(item.processed_documents ?? 0),
-    unprocessedDocuments: Number(item.unprocessed_documents ?? 0),
-    lastSyncAt: formatConnectorDate(item.last_sync_at),
+    totalDocuments: Number(item.totalDocuments ?? item.total_documents ?? 0),
+    processedDocuments: Number(item.processedDocuments ?? item.processed_documents ?? 0),
+    unprocessedDocuments: Number(item.unprocessedDocuments ?? item.unprocessed_documents ?? 0),
+    lastSyncAt: formatConnectorDate(item.lastSyncAt ?? item.last_sync_at),
   }));
 }
 
