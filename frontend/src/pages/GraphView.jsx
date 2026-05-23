@@ -100,6 +100,12 @@ const LOD_MACRO_ZOOM = 0.5;
 const LOD_CARD_ZOOM = 0.85;
 const LOD_NODE_CLASSES = "lod-macro lod-compact lod-card";
 const LOD_EDGE_CLASSES = "lod-macro-edge lod-detail-edge";
+const COMPONENT_CARD_WIDTH = 286;
+const COMPONENT_CARD_HEIGHT = 118;
+const COMPONENT_CARD_TEXT_MAX_WIDTH = COMPONENT_CARD_WIDTH - 44;
+const SOURCE_HUB_CARD_WIDTH = 164;
+const SOURCE_HUB_CARD_HEIGHT = 116;
+const SOURCE_HUB_TEXT_MAX_WIDTH = SOURCE_HUB_CARD_WIDTH - 34;
 
 // Source type icon mapping
 const SOURCE_TYPE_ICONS = {
@@ -845,8 +851,12 @@ export default function GraphView() {
     const repoFileBorder = isDark ? "#64748b" : "#cbd5e1";
     const repoTextColor = isDark ? "#e5edf8" : "#1e293b";
     const repoLabelOutline = isDark ? "#0f172a" : "#ffffff";
-    const cardWidth = 270;
-    const cardHeight = 106;
+    const cardWidth = COMPONENT_CARD_WIDTH;
+    const cardHeight = COMPONENT_CARD_HEIGHT;
+    const cardTextMaxWidth = COMPONENT_CARD_TEXT_MAX_WIDTH;
+    const sourceHubWidth = SOURCE_HUB_CARD_WIDTH;
+    const sourceHubHeight = SOURCE_HUB_CARD_HEIGHT;
+    const sourceHubTextMaxWidth = SOURCE_HUB_TEXT_MAX_WIDTH;
 
     const cy = cytoscape({
       container: containerRef.current,
@@ -870,7 +880,7 @@ export default function GraphView() {
             "border-width": 2,
             "border-color": CARD_STATUS_DEFAULT.border,
             "text-wrap": "wrap",
-            "text-max-width": "238px",
+            "text-max-width": `${cardTextMaxWidth}px`,
             "text-outline-color": labelOutlineColor,
             "text-outline-width": 1,
           },
@@ -930,9 +940,12 @@ export default function GraphView() {
             "font-size": "34px",
             "text-outline-width": 3,
             "text-background-opacity": 0,
-            "text-margin-y": -42,
-            "bounds-expansion": 8,
-            padding: "36px",
+            "text-margin-y": -34,
+            "compound-sizing-wrt-labels": "exclude",
+            "min-width": 0,
+            "min-height": 0,
+            "bounds-expansion": 4,
+            padding: "26px",
           },
         },
         {
@@ -943,8 +956,11 @@ export default function GraphView() {
             "font-size": "22px",
             "text-outline-width": 2,
             "text-margin-y": -34,
-            "bounds-expansion": 12,
-            padding: "44px",
+            "compound-sizing-wrt-labels": "exclude",
+            "min-width": 0,
+            "min-height": 0,
+            "bounds-expansion": 6,
+            padding: "34px",
           },
         },
 
@@ -963,11 +979,13 @@ export default function GraphView() {
             label: "data(label)",
             "text-valign": "center",
             "text-halign": "center",
-            "text-margin-x": 12,
+            "text-margin-x": 0,
+            "text-margin-y": 0,
             "font-size": "10.5px",
             "font-weight": "bold",
             "text-wrap": "wrap",
-            "text-max-width": "238px",
+            "text-max-width": `${cardTextMaxWidth}px`,
+            "text-justification": "left",
             color: componentTextColor,
             "text-outline-color": labelOutlineColor,
             "text-outline-width": 1,
@@ -998,8 +1016,9 @@ export default function GraphView() {
             label: "data(compactLabel)",
             "font-size": "9px",
             "font-weight": "bold",
-            "text-max-width": "132px",
+            "text-max-width": "126px",
             "text-wrap": "wrap",
+            "text-justification": "left",
             "background-color": "data(bgColor)",
             "background-opacity": 0.98,
             "border-width": 2,
@@ -1014,7 +1033,8 @@ export default function GraphView() {
             "corner-radius": "10px",
             label: "data(cardLabel)",
             "font-size": "10.5px",
-            "text-max-width": "238px",
+            "text-max-width": `${cardTextMaxWidth}px`,
+            "text-justification": "left",
           },
         },
         {
@@ -1024,18 +1044,19 @@ export default function GraphView() {
             "background-opacity": 1,
             "border-color": "data(borderColor)",
             "border-width": 2,
-            width: 144,
-            height: 104,
+            width: sourceHubWidth,
+            height: sourceHubHeight,
             shape: "round-rectangle",
             "corner-radius": "12px",
             label: "data(label)",
-            "text-valign": "bottom",
+            "text-valign": "center",
             "text-halign": "center",
-            "text-margin-y": -10,
+            "text-margin-y": 24,
             "font-size": "10px",
             "font-weight": "bold",
             "text-wrap": "wrap",
-            "text-max-width": "104px",
+            "text-max-width": `${sourceHubTextMaxWidth}px`,
+            "text-justification": "center",
             color: componentTextColor,
             "text-outline-color": labelOutlineColor,
             "text-outline-width": 1,
@@ -1070,13 +1091,13 @@ export default function GraphView() {
         {
           selector: ".source-hub.lod-card",
           style: {
-            width: 144,
-            height: 104,
+            width: sourceHubWidth,
+            height: sourceHubHeight,
             label: "data(cardLabel)",
             "font-size": "10px",
-            "text-max-width": "104px",
-            "text-valign": "bottom",
-            "text-margin-y": -10,
+            "text-max-width": `${sourceHubTextMaxWidth}px`,
+            "text-valign": "center",
+            "text-margin-y": 24,
           },
         },
         {
@@ -1332,16 +1353,18 @@ export default function GraphView() {
 
           const colCount = Math.min(3, Math.max(1, groups.length));
           const colWidth = 1220;
-          const cardW = 306;
-          const cardH = 128;
+          const cardW = COMPONENT_CARD_WIDTH;
+          const cardH = COMPONENT_CARD_HEIGHT;
           const gapX = 36;
-          const gapY = 34;
-          const groupPadX = 132;
-          const sourceHubW = 152;
-          const sourceHubGap = 22;
-          const groupPadTop = 240;
-          const groupGapY = 120;
-          const groupPadBottom = 92;
+          const gapY = 32;
+          const groupPadX = 72;
+          const sourceHubW = SOURCE_HUB_CARD_WIDTH;
+          const sourceHubRowH = SOURCE_HUB_CARD_HEIGHT;
+          const sourceHubGap = 18;
+          const sourceHubTopOffset = 64;
+          const groupPadTop = 176;
+          const groupGapY = 96;
+          const groupPadBottom = 64;
           const colHeights = Array.from({ length: colCount }, () => 0);
 
           groups.forEach(({ groupKey, items, hubs }) => {
@@ -1351,11 +1374,11 @@ export default function GraphView() {
             const rows = Math.ceil(itemCount / gridCols);
             const groupWidth = groupPadX * 2 + gridCols * cardW + (gridCols - 1) * gapX;
             const hubRows = Math.max(1, Math.ceil(hubs.length / Math.max(1, Math.floor((groupWidth - groupPadX * 2) / (sourceHubW + sourceHubGap)))));
-            const hubHeight = hubRows * 116 + Math.max(0, hubRows - 1) * sourceHubGap;
+            const hubHeight = hubRows * sourceHubRowH + Math.max(0, hubRows - 1) * sourceHubGap;
             const baseX = col * colWidth - ((colCount - 1) * colWidth) / 2;
             const baseY = colHeights[col];
             const startX = baseX - groupWidth / 2 + groupPadX + cardW / 2;
-            const startY = baseY + Math.max(groupPadTop, 92 + hubHeight + 72);
+            const startY = baseY + Math.max(groupPadTop, sourceHubTopOffset + hubHeight + 48);
             const groupHeight = (startY - baseY) + rows * cardH + Math.max(0, rows - 1) * gapY + groupPadBottom;
             const hubCols = Math.max(1, Math.min(hubs.length || 1, Math.floor((groupWidth - groupPadX * 2) / (sourceHubW + sourceHubGap)) || 1));
 
@@ -1367,7 +1390,7 @@ export default function GraphView() {
               const hubStartX = baseX - hubTotalWidth / 2 + sourceHubW / 2;
               presetPositions[`source:${groupKey}:${hub.kind}`] = {
                 x: hubStartX + hubCol * (sourceHubW + sourceHubGap),
-                y: baseY + 92 + hubRow * (116 + sourceHubGap),
+                y: baseY + sourceHubTopOffset + hubRow * (sourceHubRowH + sourceHubGap),
               };
             });
 
@@ -1384,8 +1407,8 @@ export default function GraphView() {
             }
             const groupNode = nodes.find((node) => node.data.id === `group:${groupKey}`);
             if (groupNode) {
-              groupNode.data.minWidth = Math.max(groupWidth + 44, 360);
-              groupNode.data.minHeight = Math.max(groupHeight, 260);
+              groupNode.data.minWidth = Math.max(groupWidth, 320);
+              groupNode.data.minHeight = Math.max(groupHeight, 220);
             }
             colHeights[col] += groupHeight + groupGapY;
           });
@@ -1447,7 +1470,7 @@ export default function GraphView() {
             ? bounds.x1 + bounds.w / 2
             : bounds.x1 + bounds.w * (26 / cardWidth);
           const top = isSourceHub
-            ? bounds.y1 + bounds.h * ((104 / 2 - 18) / 104)
+            ? bounds.y1 + bounds.h * 0.3
             : bounds.y1 + bounds.h * (24 / cardHeight);
           const img = document.createElement("img");
           img.src = logo;
@@ -1711,12 +1734,12 @@ export default function GraphView() {
               )}
             </div>
             {viewMode === "knowledge" && (
-              <div className="mt-2 flex min-w-0 items-center gap-2">
+              <div className="mt-2 inline-flex max-w-full items-center gap-2 rounded-lg bg-slate-50 px-2 py-1 dark:bg-slate-900/60">
                 <span className="shrink-0 text-[10px] font-bold uppercase text-slate-400">View</span>
                 <select
                   value={ceoView}
                   onChange={(e) => setCeoView(e.target.value)}
-                  className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 outline-none transition focus:border-brand-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                  className="h-7 w-40 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-bold text-slate-700 outline-none transition focus:border-brand-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200 sm:w-44"
                 >
                   {CEO_VIEWS.map(({ id, label }) => (
                     <option key={id} value={id}>{label}</option>
