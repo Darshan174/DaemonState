@@ -490,6 +490,18 @@ async def connector_processing_summary(
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     docs = list(await session.scalars(select(SourceDocument)))
+    if workspace_id:
+        try:
+            workspace_uuid = UUID(workspace_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid workspace_id")
+        connector_types = set(await session.scalars(
+            select(Connector.connector_type).where(Connector.workspace_id == workspace_uuid)
+        ))
+        docs = [
+            doc for doc in docs
+            if _source_document_matches_workspace(doc, workspace_id, connector_types)
+        ]
     totals: dict[str, int] = {ct: 0 for ct in CONNECTOR_CATALOG}
     processed: dict[str, int] = {ct: 0 for ct in CONNECTOR_CATALOG}
     unprocessed: dict[str, int] = {ct: 0 for ct in CONNECTOR_CATALOG}
@@ -512,6 +524,32 @@ async def connector_processing_summary(
         "total_documents": totals.get(ct, 0),
     } for ct in CONNECTOR_CATALOG]
     return {"items": items}
+
+
+def _source_document_matches_workspace(
+    doc: SourceDocument,
+    workspace_id: str,
+    connector_types: set[str],
+) -> bool:
+    metadata = _loads_json_dict(doc.metadata_json)
+    if metadata.get("workspace_id"):
+        return str(metadata["workspace_id"]) == workspace_id
+
+    source_type = doc.source_type
+    if source_type in connector_types:
+        return True
+    if source_type in {"github_issue", "github_pr"} and "github" in connector_types:
+        return True
+    if source_type.startswith("ai_context") and connector_types.intersection(
+        {"ai_context", *AI_SESSION_CONNECTORS}
+    ):
+        return True
+    if source_type == "agent_session" and connector_types.intersection(
+        {"ai_context", *AI_SESSION_CONNECTORS}
+    ):
+        return True
+
+    return source_type in {"local", "local_folder", "browser_upload", "paste"}
 
 
 # ── Slack OAuth ────────────────────────────────────────────────
@@ -1009,9 +1047,10 @@ async def ingest_ai_session(
         workspace_id=str(ws.id),
     )
 
+    external_id = f"{body.connector_type}:session:{body.session_id}"
     unprocessed_docs = list(await session.scalars(
         sa_select(SourceDocument)
-        .where(SourceDocument.source_type == body.connector_type)
+        .where(SourceDocument.external_id == external_id)
         .where(SourceDocument.processed_at.is_(None))
     ))
     ingestor = IngestionService(session)

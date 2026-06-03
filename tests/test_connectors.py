@@ -14,7 +14,7 @@ from sqlalchemy.pool import NullPool
 from app.database import get_db_session
 from app.main import app
 from app.migrations import run_migrations
-from app.models import Base, Component, Connector, Model, SourceDocument
+from app.models import Base, Component, Connector, Model, SourceDocument, Workspace
 from app.processing.embedder import HashingEmbedder
 
 TEST_DATABASE_URL = f"sqlite+aiosqlite:////private/tmp/test_connectors_{uuid4().hex}.db"
@@ -635,6 +635,41 @@ class TestAIContextImport:
         assert response.status_code == 422
 
 
+class TestAISessionIngest:
+    async def test_ai_session_ingest_processes_agent_session_document(self, client, db_session):
+        workspace = Workspace(id=uuid4(), name="AI Sessions", slug=f"ai-sessions-{uuid4().hex}")
+        db_session.add(workspace)
+        await db_session.flush()
+        await db_session.commit()
+
+        response = await client.post(
+            "/api/connectors/ai-session/ingest",
+            json={
+                "workspace_id": str(workspace.id),
+                "connector_type": "codex",
+                "session_id": "session-123",
+                "content": "Decision: use source documents as the graph provenance layer.",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["extract"]["documents_processed"] == 1
+        assert data["extract"]["components_created"] >= 1
+
+        doc = await db_session.scalar(
+            select(SourceDocument).where(SourceDocument.external_id == "codex:session:session-123")
+        )
+        assert doc is not None
+        assert doc.source_type == "agent_session"
+        assert doc.processed_at is not None
+
+        components = list(await db_session.scalars(
+            select(Component).where(Component.source_document_id == doc.id)
+        ))
+        assert components
+
+
 class TestProcessingSummary:
     async def test_processing_summary_counts_ai_context_documents(self, client, db_session):
         doc1 = SourceDocument(
@@ -749,6 +784,40 @@ class TestProcessingSummary:
         assert slack["processedDocuments"] >= 1
         assert slack["unprocessedDocuments"] >= 1
         assert slack["total_documents"] >= 2
+
+    async def test_processing_summary_filters_by_workspace(self, client, db_session):
+        ws_a = Workspace(id=uuid4(), name="Workspace A", slug=f"workspace-a-{uuid4().hex}")
+        ws_b = Workspace(id=uuid4(), name="Workspace B", slug=f"workspace-b-{uuid4().hex}")
+        db_session.add_all([
+            ws_a,
+            ws_b,
+            Connector(id=uuid4(), workspace_id=ws_a.id, connector_type="slack", status="connected"),
+            Connector(id=uuid4(), workspace_id=ws_b.id, connector_type="slack", status="connected"),
+            SourceDocument(
+                id=uuid4(),
+                source_type="slack",
+                external_id="slack:workspace-a",
+                content="Workspace A message",
+                metadata_json=json.dumps({"workspace_id": str(ws_a.id)}),
+            ),
+            SourceDocument(
+                id=uuid4(),
+                source_type="slack",
+                external_id="slack:workspace-b",
+                content="Workspace B message",
+                metadata_json=json.dumps({"workspace_id": str(ws_b.id)}),
+            ),
+        ])
+        await db_session.flush()
+        await db_session.commit()
+
+        response = await client.get(f"/api/connectors/processing-summary?workspace_id={ws_a.id}")
+        assert response.status_code == 200
+        data = response.json()
+        slack = next(item for item in data["items"] if item["connector_type"] == "slack")
+
+        assert slack["total_documents"] == 1
+        assert slack["unprocessedDocuments"] == 1
 
     async def test_connector_extraction_repairs_processed_docs_without_components(self, db_session):
         from app.extract.basic import extract_from_source_documents
