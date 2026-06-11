@@ -115,6 +115,11 @@ class TestGraphProvenance:
                 "channel_name": "growth",
                 "author_name": "Darshan",
                 "ts": "1.0",
+                "thread_ts": "1.0",
+                "parent_ts": "0.9",
+                "is_thread_reply": True,
+                "reply_count": 0,
+                "permalink": "https://slack.example/C123/p10",
             }),
         )
         gmail_component = Component(
@@ -144,6 +149,11 @@ class TestGraphProvenance:
         assert gmail["source_metadata_summary"]["snippet"] == "Launch plan update"
         assert slack["source_metadata_summary"]["channel_name"] == "growth"
         assert slack["source_metadata_summary"]["author_name"] == "Darshan"
+        assert slack["source_metadata_summary"]["thread_ts"] == "1.0"
+        assert slack["source_metadata_summary"]["parent_ts"] == "0.9"
+        assert slack["source_metadata_summary"]["is_thread_reply"] is True
+        assert slack["source_metadata_summary"]["reply_count"] == 0
+        assert slack["source_metadata_summary"]["permalink"] == "https://slack.example/C123/p10"
 
     async def test_workspace_graph_includes_legacy_connector_documents(self, client, db_session):
         workspace_id = uuid4()

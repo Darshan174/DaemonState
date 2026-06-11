@@ -997,6 +997,105 @@ class TestProviderSyncReporting:
         assert result["empty_skipped"] == 1
         assert result["filtered_skipped"] == 1
 
+    async def test_slack_sync_persists_thread_replies_and_permalinks(self, db_session, monkeypatch):
+        from app.sync import slack
+
+        class FakeSlackClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+            async def get(self, url, headers=None, params=None):
+                if url.endswith("/conversations.list"):
+                    return httpx.Response(
+                        200,
+                        json={
+                            "ok": True,
+                            "channels": [{"id": "C123", "name": "engineering", "is_member": True}],
+                        },
+                    )
+                if url.endswith("/conversations.history"):
+                    return httpx.Response(
+                        200,
+                        json={
+                            "ok": True,
+                            "messages": [
+                                {
+                                    "ts": "1.0",
+                                    "text": "Decision: use Postgres for production.",
+                                    "user": "U1",
+                                    "reply_count": 1,
+                                },
+                            ],
+                        },
+                    )
+                if url.endswith("/conversations.replies"):
+                    return httpx.Response(
+                        200,
+                        json={
+                            "ok": True,
+                            "messages": [
+                                {"ts": "1.0", "text": "Decision: use Postgres for production.", "user": "U1"},
+                                {
+                                    "ts": "1.1",
+                                    "thread_ts": "1.0",
+                                    "text": "Task - add migration notes.",
+                                    "user": "U2",
+                                },
+                            ],
+                        },
+                    )
+                if url.endswith("/chat.getPermalink"):
+                    ts = params["message_ts"]
+                    return httpx.Response(
+                        200,
+                        json={"ok": True, "permalink": f"https://slack.example/C123/p{ts}"},
+                    )
+                raise AssertionError(f"unexpected URL {url}")
+
+        monkeypatch.setattr(slack.httpx, "AsyncClient", FakeSlackClient)
+        connector = Connector(
+            id=uuid4(),
+            connector_type="slack",
+            status="connected",
+            credentials_json=json.dumps({"access_token": "slack-token"}),
+            config_json="{}",
+        )
+        db_session.add(connector)
+        await db_session.flush()
+
+        result = await slack.sync_slack(connector, db_session)
+
+        assert result["documents_fetched"] == 2
+        assert result["documents_persisted"] == 2
+        assert result["threads_synced"] == 1
+        assert result["thread_replies_fetched"] == 1
+        assert result["permalink_errors"] == 0
+
+        docs = list(await db_session.scalars(
+            select(SourceDocument).where(SourceDocument.source_type == "slack")
+        ))
+        by_external_id = {doc.external_id: doc for doc in docs}
+        parent = by_external_id["slack:C123:1.0"]
+        reply = by_external_id["slack:C123:1.1"]
+
+        assert parent.source_url == "https://slack.example/C123/p1.0"
+        assert reply.source_url == "https://slack.example/C123/p1.1"
+
+        parent_metadata = json.loads(parent.metadata_json)
+        reply_metadata = json.loads(reply.metadata_json)
+        assert parent_metadata["thread_ts"] == "1.0"
+        assert parent_metadata["is_thread_reply"] is False
+        assert parent_metadata["reply_count"] == 1
+        assert reply_metadata["thread_ts"] == "1.0"
+        assert reply_metadata["parent_ts"] == "1.0"
+        assert reply_metadata["is_thread_reply"] is True
+
     async def test_github_sync_reports_duplicate_skips(self, db_session, monkeypatch):
         from app.sync import github
 

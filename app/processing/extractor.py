@@ -268,6 +268,10 @@ class Extractor:
                     temporal_hint=detect_temporal(text),
                 ))
 
+        if _clean_inline((metadata or {}).get("source_type")).lower() == "slack":
+            existing_values = {_clean_inline(f.value).lower() for f in facts}
+            facts.extend(_slack_explicit_facts(content, metadata or {}, detect_temporal, existing_values))
+
         facts = _attach_slack_structure(facts, content, metadata or {})
 
         if not facts:
@@ -378,6 +382,8 @@ def _slack_fallback_fact(content: str, metadata: dict[str, Any]) -> ExtractedFac
         value_lines.append(f"Channel: {channel}")
     if author:
         value_lines.append(f"Author: {author}")
+    if metadata.get("is_thread_reply") and metadata.get("parent_ts"):
+        value_lines.append(f"Thread reply to: {metadata.get('parent_ts')}")
     if snippet:
         value_lines.extend(["", snippet])
 
@@ -396,9 +402,93 @@ def _slack_fallback_fact(content: str, metadata: dict[str, Any]) -> ExtractedFac
             "user_id": metadata.get("user_id") or metadata.get("author"),
             "ts": metadata.get("ts"),
             "thread_ts": metadata.get("thread_ts"),
+            "parent_ts": metadata.get("parent_ts"),
+            "is_thread_reply": metadata.get("is_thread_reply"),
+            "permalink": metadata.get("permalink"),
         }),
         excerpt=_truncate(snippet, 280) if snippet else None,
     )
+
+
+def _slack_explicit_facts(
+    content: str,
+    metadata: dict[str, Any],
+    detect_temporal,
+    existing_values: set[str],
+) -> list[ExtractedFact]:
+    """Conservative Slack-only patterns for common chat phrasing without colons."""
+    patterns = [
+        (
+            r"\b(?:we decided to|decided to)\s+(.+?)(?:[.!?](?:\s|$)|$)",
+            "Decision",
+            "Decision",
+            "decision",
+            0.78,
+        ),
+        (
+            r"^\s*(?:todo|task|action item|follow[- ]?up)\s*(?:-|:)\s*(.+?)\s*$",
+            "Task",
+            "Task",
+            "task",
+            0.74,
+        ),
+        (
+            r"\b(?:risk|concern|blocker)\s+(?:is|are)\s+(.+?)(?:[.!?](?:\s|$)|$)",
+            "Risk",
+            "Risk",
+            "blocker",
+            0.78,
+        ),
+        (
+            r"^\s*(?:feature|capability)\s*(?:-|:)\s*(.+?)\s*$",
+            "Feature",
+            "Feature",
+            "feature",
+            0.72,
+        ),
+        (
+            r"^\s*(?:metric|kpi|target|goal)\s*(?:-|:)\s*(.+?)\s*$",
+            "Metric",
+            "Metric",
+            "metric",
+            0.73,
+        ),
+    ]
+    facts: list[ExtractedFact] = []
+    snippet = _content_snippet(content)
+    provenance = _fallback_provenance(metadata, {
+        "channel_name": metadata.get("channel_name"),
+        "channel_id": metadata.get("channel_id"),
+        "author": metadata.get("author_name") or metadata.get("author") or metadata.get("user_id"),
+        "ts": metadata.get("ts"),
+        "thread_ts": metadata.get("thread_ts"),
+        "parent_ts": metadata.get("parent_ts"),
+        "is_thread_reply": metadata.get("is_thread_reply"),
+        "permalink": metadata.get("permalink"),
+    })
+
+    for pattern, model_name, prefix, fact_type, confidence in patterns:
+        for match in re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE):
+            text = _clean_inline(match.group(1))
+            if not text:
+                continue
+            key = text.lower()
+            if key in existing_values:
+                continue
+            existing_values.add(key)
+            temporal = "current" if model_name == "Risk" else detect_temporal(text)
+            facts.append(ExtractedFact(
+                model_name=model_name,
+                name=_truncate(f"{prefix}: {text}", 120),
+                value=text,
+                fact_type=fact_type,
+                confidence=confidence,
+                temporal=temporal,
+                temporal_hint=temporal,
+                provenance=provenance,
+                excerpt=_truncate(snippet, 280) if snippet else None,
+            ))
+    return facts
 
 
 def _attach_slack_structure(
@@ -418,7 +508,21 @@ def _attach_slack_structure(
 
     root = _slack_fallback_fact(content, metadata)
     snippet = root.excerpt or _truncate(content, 280)
+    provenance = _fallback_provenance(metadata, {
+        "channel_name": metadata.get("channel_name"),
+        "channel_id": metadata.get("channel_id"),
+        "author": metadata.get("author_name") or metadata.get("author") or metadata.get("user_id"),
+        "ts": metadata.get("ts"),
+        "thread_ts": metadata.get("thread_ts"),
+        "parent_ts": metadata.get("parent_ts"),
+        "is_thread_reply": metadata.get("is_thread_reply"),
+        "permalink": metadata.get("permalink"),
+    })
     for fact in facts:
+        if not fact.provenance:
+            fact.provenance = provenance
+        if not fact.excerpt and snippet:
+            fact.excerpt = _truncate(snippet, 280)
         if fact.model_name == "Message":
             continue
         fact.relationships.append(ExtractedRelationship(
@@ -456,6 +560,8 @@ def _slack_channel_fact(metadata: dict[str, Any]) -> ExtractedFact | None:
         provenance=_fallback_provenance(metadata, {
             "channel_name": metadata.get("channel_name"),
             "channel_id": metadata.get("channel_id"),
+            "thread_ts": metadata.get("thread_ts"),
+            "permalink": metadata.get("permalink"),
         }),
     )
 
@@ -464,6 +570,7 @@ def _fallback_provenance(metadata: dict[str, Any], extra: dict[str, Any]) -> str
     payload = {
         "source_type": metadata.get("source_type"),
         "external_id": metadata.get("external_id"),
+        "source_url": metadata.get("source_url") or metadata.get("permalink"),
         **extra,
     }
     return json.dumps({k: v for k, v in payload.items() if v not in (None, "", [])})

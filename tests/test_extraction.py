@@ -179,6 +179,44 @@ class TestRegexExtractor:
         assert fact.relationships[0].target_name == channel.name
         assert fact.relationships[0].relationship_type == "part_of"
 
+    def test_slack_explicit_chat_patterns_keep_provenance(self):
+        ext = Extractor()
+        facts = ext._regex_extract(
+            "We decided to ship thread-aware Slack ingest.\n"
+            "Task - add permalink tests.\n"
+            "Risk is Slack scopes may block reply access.",
+            {
+                "source_type": "slack",
+                "external_id": "slack:C123:1710000000.000100",
+                "channel_name": "engineering",
+                "author_name": "Darshan",
+                "user_id": "U123",
+                "ts": "1710000000.000100",
+                "thread_ts": "1710000000.000000",
+                "parent_ts": "1710000000.000000",
+                "is_thread_reply": True,
+                "permalink": "https://slack.example/C123/p1710000000000100",
+                "source_url": "https://slack.example/C123/p1710000000000100",
+            },
+        )
+
+        decision = next(f for f in facts if f.model_name == "Decision")
+        task = next(f for f in facts if f.model_name == "Task")
+        risk = next(f for f in facts if f.model_name == "Risk")
+        root = next(f for f in facts if f.name.startswith("Slack: #engineering"))
+
+        assert "thread-aware Slack ingest" in decision.value
+        assert "permalink tests" in task.value
+        assert "scopes may block" in risk.value
+        assert "Thread reply to: 1710000000.000000" in root.value
+
+        provenance = json.loads(decision.provenance)
+        assert provenance["source_url"] == "https://slack.example/C123/p1710000000000100"
+        assert provenance["parent_ts"] == "1710000000.000000"
+        assert provenance["is_thread_reply"] is True
+        assert decision.excerpt is not None
+        assert decision.relationships[0].relationship_type == "discussed_in"
+
 
 class TestTemporalHintDetection:
     def test_detects_future_context(self):
