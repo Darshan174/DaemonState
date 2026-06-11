@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import UUID
+
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +16,7 @@ class QueryRequest(BaseModel):
     question: str = Field(min_length=1)
     api_key: str | None = None
     model: str | None = None
+    workspace_id: UUID | None = None
 
 
 class QueryComponentRead(BaseModel):
@@ -42,7 +45,10 @@ async def query_context(
     session: AsyncSession = Depends(get_db_session),
 ) -> QueryResultRead:
     svc = QueryService(session, api_key=payload.api_key, model=payload.model)
-    result = await svc.query(payload.question)
+    result = await svc.query(
+        payload.question,
+        workspace_id=str(payload.workspace_id) if payload.workspace_id else None,
+    )
     return QueryResultRead(
         question=result.question,
         answer=result.answer,

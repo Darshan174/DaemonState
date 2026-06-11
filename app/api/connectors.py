@@ -506,11 +506,7 @@ async def connector_processing_summary(
     processed: dict[str, int] = {ct: 0 for ct in CONNECTOR_CATALOG}
     unprocessed: dict[str, int] = {ct: 0 for ct in CONNECTOR_CATALOG}
     for doc in docs:
-        source_type = doc.source_type
-        if source_type.startswith("ai_context"):
-            key = "ai_context"
-        else:
-            key = source_type
+        key = _processing_summary_key(doc)
         totals[key] = totals.get(key, 0) + 1
         if doc.processed_at is None:
             unprocessed[key] = unprocessed.get(key, 0) + 1
@@ -524,6 +520,18 @@ async def connector_processing_summary(
         "total_documents": totals.get(ct, 0),
     } for ct in CONNECTOR_CATALOG]
     return {"items": items}
+
+
+def _processing_summary_key(doc: SourceDocument) -> str:
+    source_type = doc.source_type
+    if source_type == "agent_session":
+        connector_type = str(_loads_json_dict(doc.metadata_json).get("connector_type") or "")
+        if connector_type in AI_SESSION_CONNECTORS:
+            return connector_type
+        return "ai_context"
+    if source_type.startswith("ai_context"):
+        return "ai_context"
+    return source_type
 
 
 def _source_document_matches_workspace(
@@ -1216,6 +1224,22 @@ def _job_to_dict(job: SyncJob) -> dict:
     }
 
 
+def _sync_result_with_skip_counts(sync_result: dict[str, Any]) -> dict[str, Any]:
+    result = dict(sync_result)
+    if "documents_skipped" not in result:
+        fetched = _metadata_int(result.get("documents_fetched"))
+        persisted = _metadata_int(result.get("documents_persisted"))
+        result["documents_skipped"] = max(fetched - persisted, 0)
+    return result
+
+
+def _metadata_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _oauth_close_html(success: bool, message: str) -> Response:
     color = "#16a34a" if success else "#dc2626"
     icon = "✓" if success else "✗"
@@ -1277,6 +1301,7 @@ async def _run_sync_job(job_id: str, connector_id: str, database_url: str) -> No
             else:
                 # Generic stub for connectors not yet implemented
                 sync_result = {"documents_fetched": 0, "documents_persisted": 0}
+            sync_result = _sync_result_with_skip_counts(sync_result)
 
             result_metadata: dict[str, Any] = {
                 "sync_mode": "polling",

@@ -12,6 +12,11 @@ from sqlalchemy.orm import selectinload
 from app.models import Component, Relationship, SourceDocument
 from app.agents.semantic_linker import SemanticRelationshipLinker
 from app.services.ingest import IngestionService
+from app.services.workspace_scope import (
+    filter_components_for_workspace,
+    filter_source_documents_for_workspace,
+    workspace_connector_types,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +40,13 @@ class GraphBuilderAgent:
         self.session = session
         self._ingestor = IngestionService(session)
 
-    async def run(self, limit: int = 100, api_key: str | None = None, model: str | None = None) -> dict:
+    async def run(
+        self,
+        limit: int = 100,
+        api_key: str | None = None,
+        model: str | None = None,
+        workspace_id: str | None = None,
+    ) -> dict:
         started_at = datetime.utcnow()
 
         extractor = None
@@ -46,12 +57,22 @@ class GraphBuilderAgent:
         else:
             ingestor = self._ingestor
 
-        pending = list(await self.session.scalars(
+        workspace_scope: tuple[str, set[str]] | None = None
+        pending_stmt = (
             select(SourceDocument)
             .where(SourceDocument.processed_at.is_(None))
             .order_by(SourceDocument.ingested_at.desc())
-            .limit(limit)
-        ))
+        )
+        if workspace_id:
+            workspace_scope = await workspace_connector_types(self.session, workspace_id)
+            pending_candidates = list(await self.session.scalars(pending_stmt))
+            pending = filter_source_documents_for_workspace(
+                pending_candidates,
+                workspace_scope[0],
+                workspace_scope[1],
+            )[:limit]
+        else:
+            pending = list(await self.session.scalars(pending_stmt.limit(limit)))
 
         docs_processed = 0
         components_created = 0
@@ -75,21 +96,52 @@ class GraphBuilderAgent:
 
         await self.session.commit()
 
-        relationships_inferred = await self._infer_deterministic_relationships()
+        relationships_inferred = await self._infer_deterministic_relationships(workspace_scope)
         relationships_inferred += await SemanticRelationshipLinker(
             self.session,
             threshold=0.84,
             max_candidates=250,
             require_cross_source_type=True,
+            workspace_scope=workspace_scope,
         ).create_relationships(limit=100)
-        relationships_inferred += await self._infer_cross_doc_relationships()
+        relationships_inferred += await self._infer_cross_doc_relationships(workspace_scope)
         await self.session.commit()
 
-        total_components = await self.session.scalar(select(func.count(Component.id))) or 0
-        total_relationships = await self.session.scalar(select(func.count(Relationship.id))) or 0
-        pending_after = await self.session.scalar(
-            select(func.count(SourceDocument.id)).where(SourceDocument.processed_at.is_(None))
-        ) or 0
+        if workspace_scope:
+            scoped_components = list(await self.session.scalars(
+                select(Component)
+                .options(selectinload(Component.source_document))
+            ))
+            scoped_components = filter_components_for_workspace(
+                scoped_components,
+                workspace_scope[0],
+                workspace_scope[1],
+            )
+            component_ids = {component.id for component in scoped_components}
+            total_components = len(scoped_components)
+            if component_ids:
+                total_relationships = await self.session.scalar(
+                    select(func.count(Relationship.id)).where(
+                        Relationship.source_component_id.in_(component_ids),
+                        Relationship.target_component_id.in_(component_ids),
+                    )
+                ) or 0
+            else:
+                total_relationships = 0
+            pending_after_candidates = list(await self.session.scalars(
+                select(SourceDocument).where(SourceDocument.processed_at.is_(None))
+            ))
+            pending_after = len(filter_source_documents_for_workspace(
+                pending_after_candidates,
+                workspace_scope[0],
+                workspace_scope[1],
+            ))
+        else:
+            total_components = await self.session.scalar(select(func.count(Component.id))) or 0
+            total_relationships = await self.session.scalar(select(func.count(Relationship.id))) or 0
+            pending_after = await self.session.scalar(
+                select(func.count(SourceDocument.id)).where(SourceDocument.processed_at.is_(None))
+            ) or 0
 
         from app.config import settings
         llm_active = bool(
@@ -112,10 +164,21 @@ class GraphBuilderAgent:
             },
         }
 
-    async def _infer_cross_doc_relationships(self) -> int:
+    async def _infer_cross_doc_relationships(
+        self,
+        workspace_scope: tuple[str, set[str]] | None = None,
+    ) -> int:
         components = list(await self.session.scalars(
-            select(Component).where(Component.status == "active")
+            select(Component)
+            .options(selectinload(Component.source_document))
+            .where(Component.status == "active")
         ))
+        if workspace_scope:
+            components = filter_components_for_workspace(
+                components,
+                workspace_scope[0],
+                workspace_scope[1],
+            )
         if not components:
             return 0
 
@@ -161,12 +224,21 @@ class GraphBuilderAgent:
 
         return inferred
 
-    async def _infer_deterministic_relationships(self) -> int:
+    async def _infer_deterministic_relationships(
+        self,
+        workspace_scope: tuple[str, set[str]] | None = None,
+    ) -> int:
         components = list(await self.session.scalars(
             select(Component)
             .options(selectinload(Component.source_document))
             .where(Component.status.in_(["active", "needs_review", "proposed"]))
         ))
+        if workspace_scope:
+            components = filter_components_for_workspace(
+                components,
+                workspace_scope[0],
+                workspace_scope[1],
+            )
         if not components:
             return 0
 

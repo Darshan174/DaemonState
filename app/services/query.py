@@ -10,6 +10,10 @@ from sqlalchemy.orm import selectinload
 
 from app.models import Component, Relationship, SourceDocument
 from app.processing.embedder import BaseEmbedder, build_default_embedder, cosine_similarity
+from app.services.workspace_scope import (
+    filter_components_for_workspace,
+    workspace_connector_types,
+)
 
 
 @dataclass
@@ -63,7 +67,7 @@ class QueryService:
         self._api_key = api_key
         self._model = model
 
-    async def query(self, question: str) -> QueryResult:
+    async def query(self, question: str, workspace_id: str | UUID | None = None) -> QueryResult:
         q_embedding = await self._embedder.embed_text(question)
 
         components = list(await self.session.scalars(
@@ -76,6 +80,14 @@ class QueryService:
             )
             .where(Component.status.in_(["active", "needs_review"]))
         ))
+        workspace_scope: tuple[str, set[str]] | None = None
+        if workspace_id:
+            workspace_scope = await workspace_connector_types(self.session, workspace_id)
+            components = filter_components_for_workspace(
+                components,
+                workspace_scope[0],
+                workspace_scope[1],
+            )
 
         scored = []
         for c in components:
@@ -109,6 +121,12 @@ class QueryService:
                 .options(selectinload(Component.model), selectinload(Component.source_document))
                 .where(Component.id.in_(related_ids))
             ))
+            if workspace_scope:
+                related = filter_components_for_workspace(
+                    related,
+                    workspace_scope[0],
+                    workspace_scope[1],
+                )
         else:
             related = []
 
