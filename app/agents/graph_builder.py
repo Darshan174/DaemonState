@@ -249,12 +249,15 @@ class GraphBuilderAgent:
 
         issues: dict[tuple[str, int], Component] = {}
         pull_requests: list[tuple[tuple[str, int], Component]] = []
+        github_targets: list[tuple[str, str, int, Component]] = []
+        document_targets = _document_reference_targets(components)
 
         for component in components:
             identity = _github_component_identity(component)
             if identity is None:
                 continue
             kind, repo, number = identity
+            github_targets.append((kind, repo, number, component))
             key = (repo, number)
             if kind == "issue":
                 issues[key] = component
@@ -262,6 +265,8 @@ class GraphBuilderAgent:
                 pull_requests.append((key, component))
 
         inferred = 0
+        inferred += self._infer_slack_github_references(components, github_targets, existing)
+        inferred += self._infer_slack_document_references(components, document_targets, existing)
         for key, pr_component in pull_requests:
             issue_component = issues.get(key)
             if issue_component is None or issue_component.id == pr_component.id:
@@ -281,6 +286,99 @@ class GraphBuilderAgent:
             ))
             existing.add(rel_key)
             inferred += 1
+
+        return inferred
+
+    def _infer_slack_document_references(
+        self,
+        components: list[Component],
+        document_targets: list[tuple[Component, list[dict]]],
+        existing: set[tuple],
+    ) -> int:
+        inferred = 0
+        if not document_targets:
+            return inferred
+
+        for slack_component in components:
+            if not _is_slack_component(slack_component):
+                continue
+
+            text_lower = _component_reference_text(slack_component).lower()
+            if not text_lower.strip():
+                continue
+
+            for target, identifiers in document_targets:
+                if target.id == slack_component.id:
+                    continue
+                if target.source_document_id == slack_component.source_document_id:
+                    continue
+                rel_key = (slack_component.id, target.id, "mentions")
+                if rel_key in existing:
+                    continue
+
+                matched_identifier = next(
+                    (
+                        identifier for identifier in identifiers
+                        if identifier["value"].lower() in text_lower
+                    ),
+                    None,
+                )
+                if matched_identifier is None:
+                    continue
+
+                self.session.add(Relationship(
+                    source_component_id=slack_component.id,
+                    target_component_id=target.id,
+                    relationship_type="mentions",
+                    confidence=matched_identifier["confidence"],
+                    evidence=(
+                        f"Slack source explicitly referenced document "
+                        f"{matched_identifier['kind']} '{matched_identifier['value']}'."
+                    ),
+                    origin="deterministic",
+                ))
+                existing.add(rel_key)
+                inferred += 1
+
+        return inferred
+
+    def _infer_slack_github_references(
+        self,
+        components: list[Component],
+        github_targets: list[tuple[str, str, int, Component]],
+        existing: set[tuple],
+    ) -> int:
+        inferred = 0
+        if not github_targets:
+            return inferred
+
+        for slack_component in components:
+            if not _is_slack_component(slack_component):
+                continue
+
+            for ref in _github_references_in_component(slack_component):
+                for target in _matching_github_targets(ref, github_targets):
+                    if target.id == slack_component.id:
+                        continue
+                    if target.source_document_id == slack_component.source_document_id:
+                        continue
+                    rel_key = (slack_component.id, target.id, "mentions")
+                    if rel_key in existing:
+                        continue
+
+                    self.session.add(Relationship(
+                        source_component_id=slack_component.id,
+                        target_component_id=target.id,
+                        relationship_type="mentions",
+                        confidence=ref["confidence"],
+                        evidence=(
+                            f"Slack source explicitly referenced GitHub {ref['label']} "
+                            f"'{ref['matched_text']}'."
+                        ),
+                        origin="deterministic",
+                    ))
+                    existing.add(rel_key)
+                    inferred += 1
 
         return inferred
 
@@ -333,6 +431,217 @@ def _github_component_identity(component: Component) -> tuple[str, str, int] | N
         return None
 
     return kind, str(repo), number
+
+
+def _is_slack_component(component: Component) -> bool:
+    doc = component.source_document
+    if doc is None:
+        return False
+    metadata = _parse_metadata(doc.metadata_json)
+    raw = " ".join([
+        doc.source_type or "",
+        str(metadata.get("source_type") or ""),
+    ]).lower()
+    return "slack" in raw
+
+
+def _component_reference_text(component: Component) -> str:
+    doc = component.source_document
+    metadata = _parse_metadata(doc.metadata_json if doc else None)
+    return "\n".join(
+        str(value or "")
+        for value in (
+            component.name,
+            component.value,
+            component.excerpt,
+            component.provenance,
+            doc.content if doc else "",
+            metadata.get("permalink"),
+            metadata.get("source_url"),
+            metadata.get("url"),
+            metadata.get("title"),
+            metadata.get("name"),
+            metadata.get("source_path"),
+            metadata.get("file_path"),
+            metadata.get("filename"),
+        )
+    )
+
+
+def _github_references_in_component(component: Component) -> list[dict]:
+    text = _component_reference_text(component)
+    refs: list[dict] = []
+    seen: set[tuple[str | None, str | None, int, str]] = set()
+
+    def add_ref(
+        *,
+        kind: str | None,
+        repo: str | None,
+        number: int,
+        matched_text: str,
+        confidence: float,
+    ) -> None:
+        normalized_repo = repo.strip() if repo else None
+        key = (kind, normalized_repo, number, matched_text)
+        if key in seen:
+            return
+        seen.add(key)
+        label = f"{normalized_repo or ''} {kind or 'item'} #{number}".strip()
+        refs.append({
+            "kind": kind,
+            "repo": normalized_repo,
+            "number": number,
+            "matched_text": matched_text.strip(),
+            "confidence": confidence,
+            "label": label,
+        })
+
+    for match in re.finditer(
+        r"https?://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(issues|pull)/(\d+)",
+        text,
+        re.IGNORECASE,
+    ):
+        path_kind = match.group(2).lower()
+        add_ref(
+            kind="pull_request" if path_kind == "pull" else "issue",
+            repo=match.group(1),
+            number=int(match.group(3)),
+            matched_text=match.group(0),
+            confidence=0.98,
+        )
+
+    for match in re.finditer(
+        r"\b([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        add_ref(
+            kind=None,
+            repo=match.group(1),
+            number=int(match.group(2)),
+            matched_text=match.group(0),
+            confidence=0.94,
+        )
+
+    for match in re.finditer(
+        r"\b(issue|issues|pr|pull request|pull)\s*#(\d+)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        raw_kind = match.group(1).lower()
+        add_ref(
+            kind="pull_request" if raw_kind in {"pr", "pull", "pull request"} else "issue",
+            repo=None,
+            number=int(match.group(2)),
+            matched_text=match.group(0),
+            confidence=0.9,
+        )
+
+    return refs
+
+
+def _document_reference_targets(components: list[Component]) -> list[tuple[Component, list[dict]]]:
+    targets: list[tuple[Component, list[dict]]] = []
+    for component in components:
+        if not _is_document_reference_target(component):
+            continue
+        identifiers = _document_reference_identifiers(component)
+        if identifiers:
+            targets.append((component, identifiers))
+    return targets
+
+
+def _is_document_reference_target(component: Component) -> bool:
+    doc = component.source_document
+    if doc is None:
+        return False
+    metadata = _parse_metadata(doc.metadata_json)
+    raw = " ".join([
+        doc.source_type or "",
+        str(metadata.get("source_type") or ""),
+        component.fact_type or "",
+        component.name or "",
+    ]).lower()
+    if "slack" in raw or "github" in raw:
+        return False
+    document_source_types = {
+        "local", "local_folder", "browser_upload", "paste", "gdrive", "notion",
+    }
+    return (
+        doc.source_type in document_source_types
+        or str(metadata.get("source_type") or "") in document_source_types
+        or component.fact_type in {"document", "fact"}
+    )
+
+
+def _document_reference_identifiers(component: Component) -> list[dict]:
+    doc = component.source_document
+    metadata = _parse_metadata(doc.metadata_json if doc else None)
+    candidates = [
+        ("url", doc.source_url if doc else None, 0.96),
+        ("url", metadata.get("source_url") or metadata.get("url") or metadata.get("web_url"), 0.96),
+        ("title", metadata.get("title") or metadata.get("name"), 0.9),
+        ("path", metadata.get("source_path") or metadata.get("file_path") or metadata.get("filename"), 0.88),
+        ("external id", doc.external_id if doc else None, 0.86),
+        ("component name", component.name, 0.84),
+    ]
+
+    identifiers: list[dict] = []
+    seen: set[str] = set()
+    for kind, raw_value, confidence in candidates:
+        value = _clean_reference_identifier(raw_value)
+        if not value or value.lower() in seen:
+            continue
+        if not _useful_document_identifier(kind, value):
+            continue
+        seen.add(value.lower())
+        identifiers.append({"kind": kind, "value": value, "confidence": confidence})
+    return identifiers
+
+
+def _clean_reference_identifier(value) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _useful_document_identifier(kind: str, value: str) -> bool:
+    lower = value.lower()
+    if kind == "url":
+        return lower.startswith(("http://", "https://")) and len(value) >= 12
+    if len(value) < 8:
+        return False
+    if lower in {"document", "untitled", "source", "local", "paste"}:
+        return False
+    if kind == "component name" and lower.startswith(("document:", "slack:", "email:")):
+        value = value.split(":", 1)[1].strip()
+        return len(value) >= 8
+    return bool(re.search(r"[A-Za-z]", value))
+
+
+def _matching_github_targets(
+    ref: dict,
+    targets: list[tuple[str, str, int, Component]],
+) -> list[Component]:
+    ref_kind = ref.get("kind")
+    ref_repo = ref.get("repo")
+    ref_number = ref.get("number")
+    candidates = [
+        component
+        for kind, repo, number, component in targets
+        if number == ref_number
+        and (ref_kind is None or kind == ref_kind)
+        and (ref_repo is None or repo.lower() == str(ref_repo).lower())
+    ]
+
+    if ref_repo is None:
+        unique_by_identity = {
+            (kind, repo, number)
+            for kind, repo, number, component in targets
+            if component in candidates
+        }
+        if len(unique_by_identity) != 1:
+            return []
+
+    return candidates
 
 
 def _parse_metadata(raw: str | dict | None) -> dict:
