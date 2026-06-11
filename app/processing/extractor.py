@@ -125,7 +125,8 @@ class Extractor:
         is_ollama = (self._model or "").startswith("ollama/")
         if self._model and (self._api_key or is_ollama):
             try:
-                return await self._llm_extract(content)
+                facts = await self._llm_extract(content)
+                return _attach_slack_structure(facts, content, metadata or {})
             except Exception as exc:
                 self.last_error = f"{type(exc).__name__}: {exc}"
                 logger.warning("llm extraction failed; falling back to regex: %s", self.last_error)
@@ -135,7 +136,9 @@ class Extractor:
         from litellm import acompletion
 
         truncated = content[:12000]
-        prompt = EXTRACTION_PROMPT.format(content=truncated)
+        # NOTE: str.format() would choke on the literal JSON braces in the
+        # prompt template, so substitute the placeholder directly.
+        prompt = EXTRACTION_PROMPT.replace("{content}", truncated)
 
         response = await acompletion(
             model=self._model,
@@ -265,29 +268,12 @@ class Extractor:
                     temporal_hint=detect_temporal(text),
                 ))
 
+        facts = _attach_slack_structure(facts, content, metadata or {})
+
         if not facts:
-            first_lines = content[:500].strip()
-            if first_lines:
-                source_type = str((metadata or {}).get("source_type") or "").lower()
-                external_id = str((metadata or {}).get("external_id") or "").strip()
-                if source_type == "gmail":
-                    model_name = "Email"
-                    name_prefix = "Email"
-                elif source_type == "slack":
-                    model_name = "Message"
-                    name_prefix = "Slack message"
-                elif source_type == "gdrive":
-                    model_name = "Document"
-                    name_prefix = "Drive document"
-                else:
-                    model_name = "Document"
-                    name_prefix = "Document"
-                title = external_id or first_lines.splitlines()[0][:80].strip() or "content"
-                facts.append(ExtractedFact(
-                    model_name=model_name, name=f"{name_prefix}: {title}"[:120],
-                    value=first_lines, fact_type="fact",
-                    confidence=0.50, temporal="unknown", temporal_hint="current",
-                ))
+            fallback = _source_fallback_fact(content, metadata or {})
+            if fallback is not None:
+                facts.append(fallback)
 
         return facts
 
@@ -303,3 +289,238 @@ class Extractor:
         if past_count > future_count and past_count > 0:
             return "past"
         return "current"
+
+
+def _source_fallback_fact(content: str, metadata: dict[str, Any]) -> ExtractedFact | None:
+    first_lines = content[:500].strip()
+    if not first_lines:
+        return None
+
+    source_type = _clean_inline(metadata.get("source_type")).lower()
+    if source_type == "gmail":
+        return _gmail_fallback_fact(content, metadata)
+    if source_type == "slack":
+        return _slack_fallback_fact(content, metadata)
+    if source_type == "gdrive":
+        return ExtractedFact(
+            model_name="Document",
+            name=_truncate(f"Drive document: {_clean_inline(metadata.get('name')) or _generic_title(first_lines, metadata)}", 120),
+            value=first_lines,
+            fact_type="document",
+            confidence=0.60,
+            temporal="unknown",
+            temporal_hint="current",
+            provenance=_fallback_provenance(metadata, {"name": metadata.get("name")}),
+            excerpt=_truncate(_clean_inline(first_lines), 280),
+        )
+
+    external_id = _clean_inline(metadata.get("external_id"))
+    title = external_id or first_lines.splitlines()[0][:80].strip() or "content"
+    return ExtractedFact(
+        model_name="Document",
+        name=f"Document: {title}"[:120],
+        value=first_lines,
+        fact_type="fact",
+        confidence=0.50,
+        temporal="unknown",
+        temporal_hint="current",
+    )
+
+
+def _gmail_fallback_fact(content: str, metadata: dict[str, Any]) -> ExtractedFact:
+    subject = _clean_inline(metadata.get("subject")) or "(no subject)"
+    sender = _email_sender_label(metadata.get("from"))
+    snippet = _clean_inline(metadata.get("snippet")) or _content_snippet(content)
+
+    sender_suffix = f" from {sender}" if sender else ""
+    name = _truncate(f"Email: {subject}{sender_suffix}", 120)
+    value_lines = [f"Subject: {subject}"]
+    if sender:
+        value_lines.append(f"From: {sender}")
+    if snippet:
+        value_lines.extend(["", snippet])
+
+    return ExtractedFact(
+        model_name="Email",
+        name=name,
+        value="\n".join(value_lines).strip() or content[:500].strip(),
+        fact_type="email",
+        confidence=0.70,
+        temporal="unknown",
+        temporal_hint="current",
+        provenance=_fallback_provenance(metadata, {
+            "subject": subject,
+            "from": sender,
+            "snippet": snippet,
+            "thread_id": metadata.get("thread_id"),
+        }),
+        excerpt=_truncate(snippet, 280) if snippet else None,
+    )
+
+
+def _slack_fallback_fact(content: str, metadata: dict[str, Any]) -> ExtractedFact:
+    channel = _slack_channel_label(metadata)
+    author = _slack_author_label(
+        metadata.get("author_name") or metadata.get("author") or metadata.get("user_name") or metadata.get("user_id")
+    )
+    snippet = _content_snippet(content)
+
+    context = " - ".join(part for part in (channel, author) if part)
+    if context and snippet:
+        name = f"Slack: {context}: {snippet}"
+    elif context:
+        name = f"Slack: {context}"
+    else:
+        name = f"Slack message: {snippet or _generic_title(content, metadata)}"
+
+    value_lines = []
+    if channel:
+        value_lines.append(f"Channel: {channel}")
+    if author:
+        value_lines.append(f"Author: {author}")
+    if snippet:
+        value_lines.extend(["", snippet])
+
+    return ExtractedFact(
+        model_name="Message",
+        name=_truncate(name, 120),
+        value="\n".join(value_lines).strip() or content[:500].strip(),
+        fact_type="message",
+        confidence=0.70,
+        temporal="unknown",
+        temporal_hint="current",
+        provenance=_fallback_provenance(metadata, {
+            "channel_name": metadata.get("channel_name"),
+            "channel_id": metadata.get("channel_id"),
+            "author": author,
+            "user_id": metadata.get("user_id") or metadata.get("author"),
+            "ts": metadata.get("ts"),
+            "thread_ts": metadata.get("thread_ts"),
+        }),
+        excerpt=_truncate(snippet, 280) if snippet else None,
+    )
+
+
+def _attach_slack_structure(
+    facts: list[ExtractedFact],
+    content: str,
+    metadata: dict[str, Any],
+) -> list[ExtractedFact]:
+    """Deterministic Slack structure rules:
+
+    - every Slack message keeps a Message root component as evidence anchor;
+    - extracted facts link to their message root via ``discussed_in``;
+    - the message root links to a channel hub component via ``part_of``.
+    """
+    source_type = _clean_inline(metadata.get("source_type")).lower()
+    if source_type != "slack":
+        return facts
+
+    root = _slack_fallback_fact(content, metadata)
+    snippet = root.excerpt or _truncate(content, 280)
+    for fact in facts:
+        if fact.model_name == "Message":
+            continue
+        fact.relationships.append(ExtractedRelationship(
+            target_name=root.name,
+            relationship_type="discussed_in",
+            confidence=0.9,
+            evidence=f'Extracted from Slack message: "{snippet}"',
+        ))
+    facts = [*facts, root]
+
+    channel = _slack_channel_fact(metadata)
+    if channel is not None:
+        root.relationships.append(ExtractedRelationship(
+            target_name=channel.name,
+            relationship_type="part_of",
+            confidence=0.95,
+            evidence=f"Message posted in Slack channel {_slack_channel_label(metadata)}.",
+        ))
+        facts.append(channel)
+    return facts
+
+
+def _slack_channel_fact(metadata: dict[str, Any]) -> ExtractedFact | None:
+    channel = _slack_channel_label(metadata)
+    if not channel:
+        return None
+    return ExtractedFact(
+        model_name="Message",
+        name=_truncate(f"Slack channel {channel}", 120),
+        value=f"Slack channel {channel} — hub for messages ingested from this channel.",
+        fact_type="fact",
+        confidence=0.9,
+        temporal="current",
+        temporal_hint="current",
+        provenance=_fallback_provenance(metadata, {
+            "channel_name": metadata.get("channel_name"),
+            "channel_id": metadata.get("channel_id"),
+        }),
+    )
+
+
+def _fallback_provenance(metadata: dict[str, Any], extra: dict[str, Any]) -> str:
+    payload = {
+        "source_type": metadata.get("source_type"),
+        "external_id": metadata.get("external_id"),
+        **extra,
+    }
+    return json.dumps({k: v for k, v in payload.items() if v not in (None, "", [])})
+
+
+def _generic_title(content: str, metadata: dict[str, Any]) -> str:
+    return _clean_inline(metadata.get("external_id")) or _clean_inline(content.splitlines()[0] if content else "") or "content"
+
+
+def _content_snippet(content: str, limit: int = 220) -> str:
+    lines = []
+    for line in content.splitlines():
+        clean = _clean_inline(line)
+        if not clean:
+            continue
+        if clean.startswith("[Gmail]") or clean.startswith("From:") or clean.startswith("To:") or clean.startswith("Date:"):
+            continue
+        lines.append(clean)
+    return _truncate(" ".join(lines) or _clean_inline(content), limit)
+
+
+def _clean_inline(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _truncate(value: str, max_chars: int) -> str:
+    text = _clean_inline(value)
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars - 3].rstrip()}..."
+
+
+def _email_sender_label(value: Any) -> str:
+    text = _clean_inline(value)
+    if not text:
+        return ""
+    match = re.match(r'(?:"?([^"<]+)"?\s*)?<([^>]+)>', text)
+    if match:
+        name = _clean_inline(match.group(1))
+        email = _clean_inline(match.group(2))
+        return name or email
+    return text
+
+
+def _slack_channel_label(metadata: dict[str, Any]) -> str:
+    channel = _clean_inline(metadata.get("channel_name"))
+    if channel and not _looks_like_slack_id(channel, "C"):
+        return channel if channel.startswith("#") else f"#{channel}"
+    return ""
+
+
+def _slack_author_label(value: Any) -> str:
+    author = _clean_inline(value)
+    if not author or _looks_like_slack_id(author, "UW"):
+        return ""
+    return author
+
+
+def _looks_like_slack_id(value: str, prefixes: str) -> bool:
+    return bool(re.fullmatch(rf"[{prefixes}][A-Z0-9]{{1,}}", value))
