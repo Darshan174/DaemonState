@@ -35,6 +35,7 @@ async def sync_github(connector: Connector, session: AsyncSession) -> dict:
 
     docs_fetched = 0
     docs_persisted = 0
+    duplicates_skipped = 0
     errors: list[str] = []
 
     async with httpx.AsyncClient(timeout=30) as http:
@@ -73,6 +74,7 @@ async def sync_github(connector: Connector, session: AsyncSession) -> dict:
                         select(SourceDocument).where(SourceDocument.external_id == external_id)
                     )
                     if existing:
+                        duplicates_skipped += 1
                         continue
 
                     title = item.get("title", "")
@@ -133,6 +135,8 @@ async def sync_github(connector: Connector, session: AsyncSession) -> dict:
     return {
         "documents_fetched": docs_fetched,
         "documents_persisted": docs_persisted,
+        "documents_skipped": duplicates_skipped,
+        "duplicates_skipped": duplicates_skipped,
         "repos_synced": len(repositories),
         "errors": errors,
     }

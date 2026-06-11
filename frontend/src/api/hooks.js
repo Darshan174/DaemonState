@@ -307,6 +307,15 @@ export function useCreateWorkspace() {
       // Auto-select the newly created workspace
       if (newWorkspace?.id) {
         localStorage.setItem(LS_KEY, newWorkspace.id);
+        qc.setQueryData(["workspaces"], (current = []) => {
+          if (!Array.isArray(current)) return [newWorkspace];
+          if (current.some((workspace) => workspace.id === newWorkspace.id)) {
+            return current.map((workspace) =>
+              workspace.id === newWorkspace.id ? newWorkspace : workspace,
+            );
+          }
+          return [...current, newWorkspace];
+        });
       }
       qc.invalidateQueries({ queryKey: ["workspaces"] });
     },
@@ -357,26 +366,16 @@ export function useDashboard() {
         };
       }
 
-      const [models, connectors, sources] = await Promise.all([
+      const [stats, models, connectorsPayload, sources] = await Promise.all([
+        api.get(`/stats?workspace_id=${wsId}`),
         api.get(`/models?workspace_id=${wsId}`),
         api.get(`/connectors?workspace_id=${wsId}`),
         api.get(`${FOUNDER_WORKFLOW_API.sourceDocuments}?workspace_id=${wsId}&limit=1`),
       ]);
-
-      // Fetch each model's detail to get actual component counts
-      const details = await Promise.all(
-        models.map((m) => api.get(`/models/${m.id}`)),
-      );
-      const relationshipsPerModel = await Promise.all(
-        models.map((m) => api.get(`/models/${m.id}/relationships`)),
-      );
-      const totalComponents = details.reduce(
-        (n, d) => n + (d.components?.length ?? 0),
-        0,
-      );
-      const relationshipCount = new Set(
-        relationshipsPerModel.flatMap((rels) => (rels ?? []).map((rel) => rel.id)),
-      ).size;
+      const connectors = normalizeConnectors(connectorsPayload);
+      const totalComponents = stats?.components
+        ?? models.reduce((n, m) => n + (m.component_count ?? 0), 0);
+      const relationshipCount = stats?.relationships ?? 0;
       
       const sourceDocumentCount = sources?.total ?? 0;
       const activeConnectorCount = connectors.filter(

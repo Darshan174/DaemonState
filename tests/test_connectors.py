@@ -677,6 +677,15 @@ class TestAISessionIngest:
         ))
         assert components
 
+        summary_response = await client.get(
+            f"/api/connectors/processing-summary?workspace_id={workspace.id}"
+        )
+        assert summary_response.status_code == 200
+        summary = summary_response.json()
+        codex = next(item for item in summary["items"] if item["connector_type"] == "codex")
+        assert codex["processedDocuments"] == 1
+        assert codex["total_documents"] == 1
+
 
 class TestProcessingSummary:
     async def test_processing_summary_counts_ai_context_documents(self, client, db_session):
@@ -930,6 +939,138 @@ class TestSyncJobFlow:
         assert "not" in detail or "unsupported" in detail
 
 
+class TestProviderSyncReporting:
+    async def test_slack_sync_reports_duplicate_and_filtered_skips(self, db_session, monkeypatch):
+        from app.sync import slack
+
+        class FakeSlackClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+            async def get(self, url, headers=None, params=None):
+                if url.endswith("/conversations.list"):
+                    return httpx.Response(
+                        200,
+                        json={
+                            "ok": True,
+                            "channels": [{"id": "C123", "name": "general", "is_member": True}],
+                        },
+                    )
+                if url.endswith("/conversations.history"):
+                    return httpx.Response(
+                        200,
+                        json={
+                            "ok": True,
+                            "messages": [
+                                {"ts": "1.0", "text": "Already imported", "user": "U1"},
+                                {"ts": "2.0", "text": "", "user": "U2"},
+                                {"ts": "3.0", "text": "Bot status", "user": "U3", "bot_id": "B1"},
+                            ],
+                        },
+                    )
+                raise AssertionError(f"unexpected URL {url}")
+
+        monkeypatch.setattr(slack.httpx, "AsyncClient", FakeSlackClient)
+        connector = Connector(
+            id=uuid4(),
+            connector_type="slack",
+            status="connected",
+            credentials_json=json.dumps({"access_token": "slack-token"}),
+            config_json="{}",
+        )
+        db_session.add_all([
+            connector,
+            SourceDocument(
+                id=uuid4(),
+                source_type="slack",
+                external_id="slack:C123:1.0",
+                content="Already imported",
+                metadata_json="{}",
+            ),
+        ])
+        await db_session.flush()
+
+        result = await slack.sync_slack(connector, db_session)
+
+        assert result["documents_fetched"] == 3
+        assert result["documents_persisted"] == 0
+        assert result["documents_skipped"] == 3
+        assert result["duplicates_skipped"] == 1
+        assert result["empty_skipped"] == 1
+        assert result["filtered_skipped"] == 1
+
+    async def test_github_sync_reports_duplicate_skips(self, db_session, monkeypatch):
+        from app.sync import github
+
+        def response(url, payload):
+            return httpx.Response(200, json=payload, request=httpx.Request("GET", url))
+
+        class FakeGitHubClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+            async def get(self, url, headers=None, params=None):
+                if url.endswith("/issues"):
+                    return response(
+                        url,
+                        [
+                            {
+                                "number": 7,
+                                "title": "Already imported issue",
+                                "body": "Existing body",
+                                "state": "open",
+                                "labels": [],
+                                "user": {"login": "octocat"},
+                                "html_url": "https://github.com/acme/project/issues/7",
+                                "created_at": "2026-05-07T10:00:00Z",
+                                "assignees": [],
+                            }
+                        ],
+                    )
+                if url.endswith("/pulls"):
+                    return response(url, [])
+                raise AssertionError(f"unexpected URL {url}")
+
+        monkeypatch.setattr(github.httpx, "AsyncClient", FakeGitHubClient)
+        connector = Connector(
+            id=uuid4(),
+            connector_type="github",
+            status="connected",
+            credentials_json=json.dumps({"access_token": "github-token"}),
+            config_json=json.dumps({"repositories": ["acme/project"]}),
+        )
+        db_session.add_all([
+            connector,
+            SourceDocument(
+                id=uuid4(),
+                source_type="github",
+                external_id="github:acme/project:issue:7",
+                content="Already imported issue",
+                metadata_json="{}",
+            ),
+        ])
+        await db_session.flush()
+
+        result = await github.sync_github(connector, db_session)
+
+        assert result["documents_fetched"] == 1
+        assert result["documents_persisted"] == 0
+        assert result["documents_skipped"] == 1
+        assert result["duplicates_skipped"] == 1
+
+
 class TestGoogleSync:
     async def test_sync_gmail_persists_messages(self, db_session, monkeypatch):
         from app.sync import google
@@ -1051,6 +1192,117 @@ class TestGoogleSync:
         assert "Action item: launch Drive sync." in doc.content
         metadata = json.loads(doc.metadata_json)
         assert metadata["name"] == "Roadmap"
+
+    async def test_sync_gmail_reports_duplicate_skips(self, db_session, monkeypatch):
+        from app.sync import google
+
+        class FakeGoogleClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+            async def get(self, url, headers=None, params=None):
+                if url.endswith("/users/me/messages"):
+                    return httpx.Response(200, json={"messages": [{"id": "msg-1"}]})
+                if url.endswith("/users/me/messages/msg-1"):
+                    return httpx.Response(
+                        200,
+                        json={
+                            "id": "msg-1",
+                            "threadId": "thread-1",
+                            "snippet": "Duplicate snippet",
+                            "payload": {"headers": [], "body": {}},
+                        },
+                    )
+                raise AssertionError(f"unexpected URL {url}")
+
+        monkeypatch.setattr(google.httpx, "AsyncClient", FakeGoogleClient)
+        connector = Connector(
+            id=uuid4(),
+            connector_type="gmail",
+            status="connected",
+            credentials_json=json.dumps({"access_token": "google-token"}),
+            config_json="{}",
+        )
+        db_session.add_all([
+            connector,
+            SourceDocument(
+                id=uuid4(),
+                source_type="gmail",
+                external_id="gmail:msg-1",
+                content="Already imported message",
+                metadata_json="{}",
+            ),
+        ])
+        await db_session.flush()
+
+        result = await google.sync_gmail(connector, db_session)
+
+        assert result["documents_fetched"] == 1
+        assert result["documents_persisted"] == 0
+        assert result["documents_skipped"] == 1
+        assert result["duplicates_skipped"] == 1
+
+    async def test_sync_gdrive_reports_duplicate_skips(self, db_session, monkeypatch):
+        from app.sync import google
+
+        class FakeGoogleClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+            async def get(self, url, headers=None, params=None):
+                if url.endswith("/drive/v3/files"):
+                    return httpx.Response(
+                        200,
+                        json={
+                            "files": [
+                                {
+                                    "id": "file-1",
+                                    "name": "Roadmap",
+                                    "mimeType": "application/vnd.google-apps.document",
+                                }
+                            ]
+                        },
+                    )
+                raise AssertionError(f"duplicate Drive file should not be downloaded: {url}")
+
+        monkeypatch.setattr(google.httpx, "AsyncClient", FakeGoogleClient)
+        connector = Connector(
+            id=uuid4(),
+            connector_type="gdrive",
+            status="connected",
+            credentials_json=json.dumps({"access_token": "google-token"}),
+            config_json="{}",
+        )
+        db_session.add_all([
+            connector,
+            SourceDocument(
+                id=uuid4(),
+                source_type="gdrive",
+                external_id="gdrive:file-1",
+                content="Already imported file",
+                metadata_json="{}",
+            ),
+        ])
+        await db_session.flush()
+
+        result = await google.sync_gdrive(connector, db_session)
+
+        assert result["documents_fetched"] == 1
+        assert result["documents_persisted"] == 0
+        assert result["documents_skipped"] == 1
+        assert result["duplicates_skipped"] == 1
 
     async def test_sync_gmail_without_credentials_errors(self, db_session):
         from app.sync.google import sync_gmail

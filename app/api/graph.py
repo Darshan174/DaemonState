@@ -11,7 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db_session
-from app.models import Component, Connector, Model, Relationship, SourceDocument
+from app.models import Component, Model, Relationship, SourceDocument
+from app.services.workspace_scope import (
+    filter_components_for_workspace,
+    filter_source_documents_for_workspace,
+    workspace_connector_types,
+)
 from app.taxonomy import (
     relationship_display_label,
     source_type_display,
@@ -19,52 +24,6 @@ from app.taxonomy import (
 )
 
 router = APIRouter()
-
-
-LEGACY_UNSCOPED_SOURCE_TYPES = {"local", "local_folder", "browser_upload", "paste"}
-
-
-def _metadata_dict(doc: SourceDocument) -> dict:
-    md = doc.metadata_json
-    if isinstance(md, dict):
-        return md
-    if isinstance(md, str):
-        try:
-            parsed = json.loads(md)
-            return parsed if isinstance(parsed, dict) else {}
-        except (json.JSONDecodeError, TypeError):
-            return {}
-    return {}
-
-
-def _source_matches_workspace(
-    doc: SourceDocument,
-    workspace_id: str,
-    connector_types: set[str],
-) -> bool:
-    metadata = _metadata_dict(doc)
-    metadata_workspace_id = metadata.get("workspace_id")
-    if metadata_workspace_id:
-        return str(metadata_workspace_id) == workspace_id
-
-    source_type = doc.source_type
-    if source_type in connector_types:
-        return True
-    if source_type in {"github_issue", "github_pr"} and "github" in connector_types:
-        return True
-    if source_type.startswith("ai_context") and "ai_context" in connector_types:
-        return True
-    if source_type == "agent_session" and connector_types.intersection({
-        "ai_context", "codex", "claude", "opencode",
-        "ai_context_codex", "ai_context_claude_code", "ai_context_opencode",
-    }):
-        return True
-
-    # Legacy uploads and pre-workspace connector rows were stored without a
-    # document-level workspace id. Until SourceDocument has a real FK, keep
-    # these visible in the active workspace instead of hiding processed graph
-    # data from the UI.
-    return source_type in LEGACY_UNSCOPED_SOURCE_TYPES
 
 
 class ModelRead(BaseModel):
@@ -168,17 +127,10 @@ async def get_graph(
         ]
     if workspace_id:
         try:
-            ws_uuid = UUID(workspace_id)
+            workspace_id_str, connector_types = await workspace_connector_types(session, workspace_id)
         except ValueError:
             raise HTTPException(status_code=422, detail="Invalid workspace_id")
-        connector_types = set(await session.scalars(
-            select(Connector.connector_type).where(Connector.workspace_id == ws_uuid)
-        ))
-        comps_to_keep = []
-        for c in components:
-            if c.source_document and _source_matches_workspace(c.source_document, workspace_id, connector_types):
-                comps_to_keep.append(c)
-        components = comps_to_keep
+        components = filter_components_for_workspace(components, workspace_id_str, connector_types)
     if confidence_min is not None:
         components = [c for c in components if c.confidence >= confidence_min]
 
@@ -290,6 +242,46 @@ async def get_stats(
     workspace_id: str | None = None,
     session: AsyncSession = Depends(get_db_session),
 ) -> StatsResponse:
+    if workspace_id:
+        try:
+            workspace_id_str, connector_types = await workspace_connector_types(session, workspace_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid workspace_id")
+
+        components = list(await session.scalars(
+            select(Component)
+            .options(selectinload(Component.source_document))
+        ))
+        components = filter_components_for_workspace(components, workspace_id_str, connector_types)
+        comp_ids = {c.id for c in components}
+        source_ids = {c.source_document_id for c in components if c.source_document_id}
+
+        docs = list(await session.scalars(select(SourceDocument)))
+        docs = filter_source_documents_for_workspace(docs, workspace_id_str, connector_types)
+        source_ids.update(doc.id for doc in docs)
+
+        if comp_ids:
+            relationships = await session.scalar(
+                select(func.count(Relationship.id))
+                .where(
+                    Relationship.source_component_id.in_(comp_ids),
+                    Relationship.target_component_id.in_(comp_ids),
+                    Relationship.status != "rejected",
+                )
+            )
+        else:
+            relationships = 0
+
+        return StatsResponse(
+            models=len({c.model_id for c in components}),
+            components=len(components),
+            relationships=relationships or 0,
+            sources=len(source_ids),
+            pending_review=sum(1 for c in components if c.status == "needs_review"),
+            proposed=sum(1 for c in components if c.status == "proposed"),
+            stale=sum(1 for c in components if c.status == "stale"),
+        )
+
     models = await session.scalar(select(func.count(Model.id)))
     components = await session.scalar(select(func.count(Component.id)))
     relationships = await session.scalar(select(func.count(Relationship.id)))
@@ -318,6 +310,7 @@ class BuildRequest(BaseModel):
     limit: int = 100
     api_key: str | None = None
     model: str | None = None
+    workspace_id: str | None = None
 
 
 class BuildResult(BaseModel):
@@ -339,7 +332,15 @@ async def build_graph(
 ) -> BuildResult:
     from app.agents.graph_builder import GraphBuilderAgent
     agent = GraphBuilderAgent(session)
-    result = await agent.run(limit=body.limit, api_key=body.api_key, model=body.model)
+    try:
+        result = await agent.run(
+            limit=body.limit,
+            api_key=body.api_key,
+            model=body.model,
+            workspace_id=body.workspace_id,
+        )
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid workspace_id")
     return BuildResult(**result)
 
 
@@ -508,7 +509,12 @@ async def get_graph_slice(
         if not isinstance(md, dict):
             return None
         summary = {}
-        for key in ("title", "author", "source", "tool", "platform", "workspace_id", "item_type", "number", "state", "merged", "repo_full_name"):
+        for key in (
+            "title", "author", "source", "tool", "platform", "workspace_id",
+            "item_type", "number", "state", "merged", "repo_full_name",
+            "subject", "from", "snippet", "message_id", "thread_id",
+            "channel_name", "author_name", "user_name", "ts", "thread_ts",
+        ):
             if key in md:
                 summary[key] = md[key]
         return summary if summary else None
@@ -648,7 +654,12 @@ async def get_component_detail(
         if not isinstance(md, dict):
             return None
         summary = {}
-        for key in ("title", "author", "source", "tool", "platform", "workspace_id", "item_type", "number", "state", "merged", "repo_full_name"):
+        for key in (
+            "title", "author", "source", "tool", "platform", "workspace_id",
+            "item_type", "number", "state", "merged", "repo_full_name",
+            "subject", "from", "snippet", "message_id", "thread_id",
+            "channel_name", "author_name", "user_name", "ts", "thread_ts",
+        ):
             if key in md:
                 summary[key] = md[key]
         return summary if summary else None
@@ -986,20 +997,11 @@ async def get_work_lens(
     components = list(await session.scalars(comp_stmt))
 
     if workspace_id:
-        filtered = []
-        for c in components:
-            if c.source_document:
-                md = c.source_document.metadata_json
-                if isinstance(md, dict) and md.get("workspace_id") == workspace_id:
-                    filtered.append(c)
-                elif isinstance(md, str):
-                    try:
-                        parsed = json.loads(md)
-                        if parsed.get("workspace_id") == workspace_id:
-                            filtered.append(c)
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-        components = filtered
+        try:
+            workspace_id_str, connector_types = await workspace_connector_types(session, workspace_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid workspace_id")
+        components = filter_components_for_workspace(components, workspace_id_str, connector_types)
 
     comp_ids = {c.id for c in components}
     rel_stmt = select(Relationship).where(
@@ -1085,7 +1087,12 @@ def _component_read(c: Component, relationship_count: int = 0) -> ComponentRead:
             except (json.JSONDecodeError, TypeError):
                 md = {}
         if isinstance(md, dict):
-            summary_keys = ["session_id", "tool", "model", "branch", "commit", "author", "number", "state", "title", "item_type", "repo_full_name", "merged"]
+            summary_keys = [
+                "session_id", "tool", "model", "branch", "commit", "author",
+                "number", "state", "title", "item_type", "repo_full_name", "merged",
+                "subject", "from", "snippet", "message_id", "thread_id",
+                "channel_name", "author_name", "user_name", "ts", "thread_ts",
+            ]
             source_meta = {k: v for k, v in md.items() if k in summary_keys and v}
     return ComponentRead(
         id=c.id, model_id=c.model_id,

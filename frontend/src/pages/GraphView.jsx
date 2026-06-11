@@ -8,6 +8,9 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
+import { useWorkspaces } from "../api/hooks";
+import { useWorkspaceSelection } from "../context/WorkspaceContext";
+import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
 import imgGmail from "@assets/gmail-icon.png";
 
 function svgDataUri(svg) {
@@ -101,7 +104,7 @@ const LOD_CARD_ZOOM = 0.85;
 const LOD_NODE_CLASSES = "lod-macro lod-compact lod-card";
 const LOD_EDGE_CLASSES = "lod-macro-edge lod-detail-edge";
 const COMPONENT_CARD_WIDTH = 286;
-const COMPONENT_CARD_HEIGHT = 118;
+const COMPONENT_CARD_HEIGHT = 132;
 const COMPONENT_CARD_TEXT_MAX_WIDTH = COMPONENT_CARD_WIDTH - 44;
 const SOURCE_HUB_CARD_WIDTH = 164;
 const SOURCE_HUB_CARD_HEIGHT = 116;
@@ -166,6 +169,21 @@ function shortLabel(value, maxWords = 5) {
   return `${words.slice(0, maxWords).join(" ")}...`;
 }
 
+function compactCardText(value, maxChars = 80) {
+  const clean = String(value || "").replace(/\s+/g, " ").trim();
+  if (!clean) return "";
+  const truncated = clean.length > maxChars ? `${clean.slice(0, maxChars - 3).trim()}...` : clean;
+  return truncated.replace(/(\S{24})(?=\S)/g, "$1 ");
+}
+
+function formatCardLabel(lines, maxLines = 4) {
+  return lines
+    .map((line) => compactCardText(line))
+    .filter(Boolean)
+    .slice(0, maxLines)
+    .join("\n");
+}
+
 // Strip common model-type prefixes that the containing box already communicates
 function stripModelPrefix(name) {
   return String(name || "")
@@ -205,6 +223,43 @@ function sourceKind(component = {}) {
 
 function sourceVisual(component = {}) {
   return SOURCE_VISUALS[sourceKind(component)] || SOURCE_VISUALS.other;
+}
+
+function connectorCardParts(component = {}, cleanName = "") {
+  const kind = sourceKind(component);
+  const meta = component.source_metadata_summary || {};
+  const valueSnippet = compactCardText(component.excerpt || meta.snippet || component.value, 92);
+
+  if (kind === "gmail") {
+    const title = meta.subject || cleanName.replace(/^Email:\s*/i, "");
+    return {
+      title: title || "Email",
+      context: meta.from ? `From: ${meta.from}` : "",
+      snippet: valueSnippet,
+    };
+  }
+
+  if (kind === "slack") {
+    const channel = meta.channel_name ? `#${String(meta.channel_name).replace(/^#/, "")}` : "";
+    const author = meta.author_name || meta.author || "";
+    const parsed = cleanName.replace(/^Slack(?: message)?:\s*/i, "");
+    const parsedTitle = parsed.split(":")[0];
+    return {
+      title: channel || parsedTitle || "Slack message",
+      context: author ? `By: ${author}` : "",
+      snippet: valueSnippet || (channel ? parsed.replace(parsedTitle, "").replace(/^:\s*/, "") : parsed),
+    };
+  }
+
+  return null;
+}
+
+function usefulDomainLabel(component = {}, modelName = "") {
+  const fact = String(component.fact_type || "").replace(/_/g, " ").trim();
+  if (!fact || /^(fact|email|message|document)$/i.test(fact)) {
+    return domainLabel(modelName);
+  }
+  return fact;
 }
 
 function graphGroup(component = {}, modelName = "") {
@@ -351,6 +406,15 @@ export default function GraphView() {
   const logoLayerRef = useRef(null);
   const cyRef = useRef(null);
   const { theme } = useTheme();
+  const { selectedId, setSelectedId } = useWorkspaceSelection();
+  const { data: workspaces = [], isLoading: workspacesLoading } = useWorkspaces();
+  const activeWorkspace = selectedId
+    ? workspaces.find((w) => w.id === selectedId) || null
+    : null;
+  const activeWorkspaceId = activeWorkspace?.id || null;
+  const workspaceQueryString = activeWorkspaceId
+    ? `?${new URLSearchParams({ workspace_id: activeWorkspaceId }).toString()}`
+    : "";
   const [viewMode, setViewMode] = useState("knowledge");
   const [graphData, setGraphData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -450,11 +514,22 @@ export default function GraphView() {
 
   useEffect(() => {
     async function fetchGraph() {
+      if (viewMode === "knowledge" && workspacesLoading) return;
+      if (viewMode === "knowledge" && !activeWorkspaceId) {
+        setGraphData({ models: [], components: [], relationships: [] });
+        setSelectedNode(null);
+        setSelectedEdge(null);
+        setLoading(false);
+        return;
+      }
       try {
         setLoading(true);
         setError(null);
         setSelectedNode(null);
-        const res = await fetch(viewMode === "repo" ? "/api/repo/graph" : "/api/graph");
+        setSelectedEdge(null);
+        const res = await fetch(
+          viewMode === "repo" ? "/api/repo/graph" : `/api/graph${workspaceQueryString}`,
+        );
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         setGraphData(data);
@@ -465,7 +540,7 @@ export default function GraphView() {
       }
     }
     fetchGraph();
-  }, [viewMode]);
+  }, [activeWorkspaceId, viewMode, workspaceQueryString, workspacesLoading]);
 
   useEffect(() => {
     fetch("/api/graph/agent-status")
@@ -476,9 +551,15 @@ export default function GraphView() {
 
   useEffect(() => {
     async function fetchWorkLens() {
+      if (workspacesLoading) return;
+      if (!activeWorkspaceId) {
+        setWorkLens(null);
+        setWorkLensLoading(false);
+        return;
+      }
       setWorkLensLoading(true);
       try {
-        const res = await fetch("/api/work-lens");
+        const res = await fetch(`/api/work-lens${workspaceQueryString}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         setWorkLens(await res.json());
       } catch (e) {
@@ -490,20 +571,25 @@ export default function GraphView() {
     fetchWorkLens();
     const interval = setInterval(fetchWorkLens, 30000);
     return () => clearInterval(interval);
-  }, []);
+  }, [activeWorkspaceId, workspaceQueryString, workspacesLoading]);
 
   async function handleBuildGraph() {
+    if (!activeWorkspaceId) {
+      setBuildResult({ error: "Select a workspace before building the graph." });
+      return;
+    }
     setBuilding(true);
     setBuildResult(null);
     const saved = (() => { try { return JSON.parse(localStorage.getItem("ce_ai_settings") || "{}"); } catch { return {}; } })();
     try {
-      const body = { limit: 100 };
+      const body = { limit: 100, workspace_id: activeWorkspaceId };
       if (saved.api_key) body.api_key = saved.api_key;
       if (saved.model) body.model = saved.model;
       const res = await fetch("/api/graph/build", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setBuildResult(data);
-      const graphRes = await fetch("/api/graph");
+      const graphRes = await fetch(`/api/graph${workspaceQueryString}`);
       if (graphRes.ok) setGraphData(await graphRes.json());
       fetch("/api/graph/agent-status").then((r) => r.json()).then(setAgentStatus).catch(() => {});
     } catch (e) {
@@ -523,12 +609,16 @@ export default function GraphView() {
     e?.preventDefault();
     const q = askQuery.trim();
     if (!q) return;
+    if (!activeWorkspaceId) {
+      setAskError("Select a workspace before asking the graph.");
+      return;
+    }
     setAskLoading(true);
     setAskError(null);
     setAskResult(null);
     const saved = (() => { try { return JSON.parse(localStorage.getItem("ce_ai_settings") || "{}"); } catch { return {}; } })();
     try {
-      const body = { question: q };
+      const body = { question: q, workspace_id: activeWorkspaceId };
       if (saved.api_key) body.api_key = saved.api_key;
       if (saved.model)   body.model   = saved.model;
       const res = await fetch("/api/query", {
@@ -765,24 +855,40 @@ export default function GraphView() {
         const groupKey = graphGroup(c, mName);
         const cleanName = stripModelPrefix(c.name);
 
-        // Three-line card label: source badge, entity, then model/link metadata.
-        const domain = (c.fact_type || domainLabel(mName) || "Fact").replace(/_/g, " ");
+        // Card labels should lead with the useful source content; detailed
+        // provenance stays in the side panel after selecting the node.
+        const domain = usefulDomainLabel(c, mName);
         const timeBadge = TEMPORAL_BADGE[temporal] || "";
-        const confidenceBadge = c.confidence != null ? `${Math.round(c.confidence * 100)}%` : "";
+        const confidenceBadge = c.confidence != null && c.confidence < 0.6 ? `Low confidence ${Math.round(c.confidence * 100)}%` : "";
         const relationshipCount = c.relationship_count ?? 0;
-        const linkBadge = relationshipCount > 0 ? `${relationshipCount} linked` : "isolated";
+        const linkBadge = relationshipCount > 0 ? `${relationshipCount} linked` : "";
         const chipLine = [source.label, domain].filter(Boolean).join("  /  ");
         const evidenceLine = [linkBadge, timeBadge, confidenceBadge].filter(Boolean).join("  /  ");
-        const displayName = shortLabel(cleanName, 7);
+        const connectorParts = connectorCardParts(c, cleanName);
+        const displayName = connectorParts?.title
+          ? compactCardText(connectorParts.title, 58)
+          : compactCardText(stripModelPrefix(c.display_title || cleanName), 58) || shortLabel(cleanName, 7);
+        const cardLabel = connectorParts
+          ? formatCardLabel([
+              `${source.icon}  ${connectorParts.title}`,
+              connectorParts.context,
+              connectorParts.snippet,
+              evidenceLine,
+            ])
+          : formatCardLabel([
+              `${source.icon}  ${displayName}`,
+              chipLine,
+              evidenceLine,
+            ]);
 
         nodes.push({
           data: {
             id: c.id,
             parent: `group:${groupKey}`,
-            label: `${source.icon}  ${displayName}\n${chipLine}\n${evidenceLine}`,
+            label: cardLabel,
             compactLabel: displayName,
-            cardLabel: `${source.icon}  ${displayName}\n${chipLine}\n${evidenceLine}`,
-            fullLabel: c.name,
+            cardLabel,
+            fullLabel: c.display_title || c.name,
             type: "component",
             value: c.value,
             confidence: c.confidence,
@@ -1667,6 +1773,17 @@ export default function GraphView() {
     filters.search,
     filters.confidence_threshold > 0 ? "confidence" : "",
   ].filter(Boolean).length;
+
+  if (viewMode === "knowledge" && !workspacesLoading && !activeWorkspaceId) {
+    return (
+      <WorkspaceTopicGate
+        workspaces={workspaces}
+        selectedId={selectedId}
+        onSelect={setSelectedId}
+      />
+    );
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -1732,6 +1849,13 @@ export default function GraphView() {
                   )}
                 </div>
               )}
+              {viewMode === "knowledge" && activeWorkspace && (
+                <div className="flex max-w-[18rem] items-center gap-1.5 rounded-lg bg-brand-50 px-2 py-1 text-[10px] font-bold text-brand-700 dark:bg-brand-900/30 dark:text-brand-300">
+                  <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+                  <span className="shrink-0">Workspace focused</span>
+                  <span className="truncate text-brand-900 dark:text-brand-100">{activeWorkspace.name}</span>
+                </div>
+              )}
             </div>
             {viewMode === "knowledge" && (
               <div className="mt-2 inline-flex max-w-full items-center gap-2 rounded-lg bg-slate-50 px-2 py-1 dark:bg-slate-900/60">
@@ -1757,7 +1881,7 @@ export default function GraphView() {
                   type="text"
                   value={filters.search}
                   onChange={(e) => setFilters((f) => ({ ...f, search: e.target.value }))}
-                  placeholder="Search graph..."
+                  placeholder="Search current workspace..."
                   className="h-9 w-40 rounded-xl border border-slate-200 bg-white/92 pl-8 pr-7 text-xs font-semibold text-slate-700 shadow-sm outline-none backdrop-blur-sm transition placeholder:text-slate-400 focus:border-brand-400 dark:border-slate-700 dark:bg-black/80 dark:text-slate-200 sm:w-52 xl:w-60"
                 />
                 {filters.search && (
@@ -1871,7 +1995,7 @@ export default function GraphView() {
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-xs font-black text-slate-900 dark:text-white">Filters</p>
-                <p className="text-[10px] font-semibold text-slate-400">{graphStats.components} nodes, {graphStats.relationships} edges, {graphStats.isolated} isolated</p>
+                <p className="text-[10px] font-semibold text-slate-400">{graphStats.components} workspace nodes, {graphStats.relationships} edges, {graphStats.isolated} isolated</p>
               </div>
               <button
                 type="button"
@@ -2202,12 +2326,14 @@ export default function GraphView() {
         )}
 
         <div
-          className="flex-1 relative rounded-2xl border border-slate-200 bg-white min-h-0 overflow-hidden dark:border-slate-700"
-          style={theme === "dark" ? {
-            backgroundColor: "#000",
-            backgroundImage: "radial-gradient(circle at 1px 1px, rgba(255,255,255,0.075) 1px, transparent 0)",
+          className="flex-1 relative rounded-2xl border border-slate-200 min-h-0 overflow-hidden dark:border-slate-700"
+          style={{
+            backgroundColor: theme === "dark" ? "#000" : "#fff",
+            backgroundImage: theme === "dark"
+              ? "radial-gradient(circle at 1px 1px, rgba(255,255,255,0.075) 1px, transparent 0)"
+              : "radial-gradient(circle at 1px 1px, rgba(15,23,42,0.11) 1px, transparent 0)",
             backgroundSize: "22px 22px",
-          } : undefined}
+          }}
         >
           <div ref={containerRef} className="absolute inset-0 rounded-2xl" />
           <div ref={logoLayerRef} className="pointer-events-none absolute inset-0 z-10" />
@@ -2371,7 +2497,7 @@ export default function GraphView() {
                   type="text"
                   value={askQuery}
                   onChange={(e) => setAskQuery(e.target.value)}
-                  placeholder="Ask about this graph… e.g. What are the current blockers?"
+                  placeholder="Ask within this workspace... e.g. What are the current blockers?"
                   className="flex-1 bg-transparent text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none"
                 />
                 <button
@@ -2490,7 +2616,7 @@ export default function GraphView() {
             ) : <div className="w-full h-1 rounded-full mb-3 bg-slate-200 dark:bg-slate-700" />;
           })()}
 
-          <h3 className="text-sm font-bold text-slate-900 dark:text-white mb-2.5 pr-6 leading-snug">
+          <h3 className="text-sm font-bold text-slate-900 dark:text-white mb-2.5 pr-6 leading-snug break-words">
             {selectedNode.fullLabel || selectedNode.label.split("\n")[0]}
           </h3>
 
@@ -2561,7 +2687,7 @@ export default function GraphView() {
           </div>
 
           {selectedNode.value && (
-            <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed mb-4">
+            <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed mb-4 whitespace-pre-wrap break-words">
               {selectedNode.value}
             </p>
           )}

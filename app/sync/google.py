@@ -27,6 +27,8 @@ async def sync_gmail(connector: Connector, session: AsyncSession) -> dict:
     token = await _access_token(connector, session)
     docs_fetched = 0
     docs_persisted = 0
+    duplicates_skipped = 0
+    empty_skipped = 0
     errors: list[str] = []
 
     async with httpx.AsyncClient(timeout=30) as http:
@@ -66,11 +68,13 @@ async def sync_gmail(connector: Connector, session: AsyncSession) -> dict:
             docs_fetched += 1
             external_id = f"gmail:{message_id}"
             if await _document_exists(external_id, session):
+                duplicates_skipped += 1
                 continue
 
             metadata = _gmail_metadata(message, connector)
             content = _gmail_content(message, metadata)
             if not content.strip():
+                empty_skipped += 1
                 continue
 
             session.add(
@@ -92,6 +96,9 @@ async def sync_gmail(connector: Connector, session: AsyncSession) -> dict:
     return {
         "documents_fetched": docs_fetched,
         "documents_persisted": docs_persisted,
+        "documents_skipped": duplicates_skipped + empty_skipped,
+        "duplicates_skipped": duplicates_skipped,
+        "empty_skipped": empty_skipped,
         "errors": errors,
     }
 
@@ -100,6 +107,8 @@ async def sync_gdrive(connector: Connector, session: AsyncSession) -> dict:
     token = await _access_token(connector, session)
     docs_fetched = 0
     docs_persisted = 0
+    duplicates_skipped = 0
+    empty_skipped = 0
     errors: list[str] = []
 
     async with httpx.AsyncClient(timeout=30) as http:
@@ -132,8 +141,10 @@ async def sync_gdrive(connector: Connector, session: AsyncSession) -> dict:
             file_id = item.get("id")
             if not file_id:
                 continue
+            docs_fetched += 1
             external_id = f"gdrive:{file_id}"
             if await _document_exists(external_id, session):
+                duplicates_skipped += 1
                 continue
 
             mime_type = item.get("mimeType", "")
@@ -145,6 +156,7 @@ async def sync_gdrive(connector: Connector, session: AsyncSession) -> dict:
 
             text = content.strip()
             if not text:
+                empty_skipped += 1
                 continue
 
             owners = item.get("owners") or []
@@ -171,7 +183,6 @@ async def sync_gdrive(connector: Connector, session: AsyncSession) -> dict:
                 )
             )
             docs_persisted += 1
-            docs_fetched += 1
 
         await session.commit()
 
@@ -179,6 +190,9 @@ async def sync_gdrive(connector: Connector, session: AsyncSession) -> dict:
     return {
         "documents_fetched": docs_fetched,
         "documents_persisted": docs_persisted,
+        "documents_skipped": duplicates_skipped + empty_skipped,
+        "duplicates_skipped": duplicates_skipped,
+        "empty_skipped": empty_skipped,
         "errors": errors,
     }
 

@@ -211,10 +211,18 @@ function badgeClass(tone) {
 }
 
 function getDestination(item) {
-  if (item.type === "review" && item.reviewItemId) return { href: `/app/review/${item.reviewItemId}`, label: "Open review" };
-  if (item.type === "decision") return item.sourceDocumentId ? { href: `/app/sources/${item.sourceDocumentId}`, label: "View source" } : { href: "/app/decisions", label: "Decision register" };
-  if (item.type === "source" && item.sourceDocumentId) return { href: `/app/sources/${item.sourceDocumentId}`, label: "Inspect source" };
-  if (item.type === "connector") return { href: item.connectorType ? `/app/connectors/${item.connectorType}/runs` : "/app/connectors", label: "Inspect runs" };
+  if (item.type === "connector") {
+    return {
+      href: item.connectorType ? `/app/connectors/${item.connectorType}/runs` : "/app/connectors",
+      label: "Inspect runs",
+    };
+  }
+  // Source documents and decisions both trace back to the source manager.
+  // Deep links to per-document/review/decision routes don't exist yet, so we
+  // link to the surfaces that do rather than bouncing through the catch-all.
+  if ((item.type === "source" || item.type === "decision") && item.sourceDocumentId) {
+    return { href: "/app/sources", label: "View in sources" };
+  }
   return null;
 }
 

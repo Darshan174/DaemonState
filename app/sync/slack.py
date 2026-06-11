@@ -24,6 +24,9 @@ async def sync_slack(connector: Connector, session: AsyncSession) -> dict:
 
     docs_fetched = 0
     docs_persisted = 0
+    duplicates_skipped = 0
+    empty_skipped = 0
+    filtered_skipped = 0
     channels_synced = 0
     errors: list[str] = []
 
@@ -93,7 +96,11 @@ async def sync_slack(connector: Connector, session: AsyncSession) -> dict:
             for msg in messages:
                 text = (msg.get("text") or "").strip()
                 # Skip empty messages, system subtypes (joins, leaves, etc.), and bot messages
-                if not text or msg.get("subtype") or msg.get("bot_id"):
+                if not text:
+                    empty_skipped += 1
+                    continue
+                if msg.get("subtype") or msg.get("bot_id"):
+                    filtered_skipped += 1
                     continue
 
                 external_id = f"slack:{channel_id}:{msg['ts']}"
@@ -103,19 +110,23 @@ async def sync_slack(connector: Connector, session: AsyncSession) -> dict:
                     select(SourceDocument).where(SourceDocument.external_id == external_id)
                 )
                 if existing:
+                    duplicates_skipped += 1
                     continue
 
+                author_name = _slack_author_name(msg)
                 doc = SourceDocument(
                     id=uuid4(),
                     source_type="slack",
                     external_id=external_id,
                     content=text,
-                    author=msg.get("user", ""),
+                    author=author_name or msg.get("user", ""),
                     source_url=None,
                     metadata_json=json.dumps({
                         "workspace_id": str(connector.workspace_id),
                         "channel_id": channel_id,
                         "channel_name": channel_name,
+                        "user_id": msg.get("user"),
+                        "author_name": author_name,
                         "ts": msg["ts"],
                         "thread_ts": msg.get("thread_ts"),
                         "reply_count": msg.get("reply_count", 0),
@@ -133,6 +144,20 @@ async def sync_slack(connector: Connector, session: AsyncSession) -> dict:
     return {
         "documents_fetched": docs_fetched,
         "documents_persisted": docs_persisted,
+        "documents_skipped": duplicates_skipped + empty_skipped + filtered_skipped,
+        "duplicates_skipped": duplicates_skipped,
+        "empty_skipped": empty_skipped,
+        "filtered_skipped": filtered_skipped,
         "channels_synced": channels_synced,
         "errors": errors,
     }
+
+
+def _slack_author_name(msg: dict) -> str:
+    profile = msg.get("user_profile") if isinstance(msg.get("user_profile"), dict) else {}
+    author = (
+        profile.get("real_name")
+        or profile.get("display_name")
+        or msg.get("username")
+    )
+    return str(author or "").strip()

@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models import Component, Relationship
 from app.processing.embedder import cosine_similarity
+from app.services.workspace_scope import filter_components_for_workspace
 
 
 @dataclass(frozen=True)
@@ -38,12 +39,14 @@ class SemanticRelationshipLinker:
         max_candidates: int = 300,
         neighbors_per_component: int = 5,
         require_cross_source_type: bool = True,
+        workspace_scope: tuple[str, set[str]] | None = None,
     ) -> None:
         self.session = session
         self.threshold = threshold
         self.max_candidates = max_candidates
         self.neighbors_per_component = neighbors_per_component
         self.require_cross_source_type = require_cross_source_type
+        self.workspace_scope = workspace_scope
 
     async def candidates(self) -> list[SemanticCandidate]:
         components = list(await self.session.scalars(
@@ -52,6 +55,12 @@ class SemanticRelationshipLinker:
             .where(Component.status.in_(["active", "needs_review", "proposed"]))
             .where(Component.embedding.is_not(None))
         ))
+        if self.workspace_scope:
+            components = filter_components_for_workspace(
+                components,
+                self.workspace_scope[0],
+                self.workspace_scope[1],
+            )
         embedded = [
             (component, vector)
             for component in components

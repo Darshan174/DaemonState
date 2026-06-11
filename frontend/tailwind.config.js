@@ -26,7 +26,7 @@ export default {
         "float": "float 6s ease-in-out infinite",
         "pulse-slow": "pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite",
         "blob": "blob 7s infinite",
-        "marquee": "marquee 35s linear infinite",
+        "marquee": "marquee 52s linear infinite",
       },
       keyframes: {
         shimmer: {
@@ -44,8 +44,8 @@ export default {
           "100%": { transform: "translate(0px, 0px) scale(1)" },
         },
         marquee: {
-          "0%": { transform: "translateX(0%)" },
-          "100%": { transform: "translateX(-100%)" },
+          "0%": { transform: "translate3d(0, 0, 0)" },
+          "100%": { transform: "translate3d(-100%, 0, 0)" },
         }
       },
     },

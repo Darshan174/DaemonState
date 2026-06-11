@@ -5,6 +5,7 @@ from uuid import uuid4
 
 
 from app.models import Component, Connector, Model, Relationship, SourceDocument, Workspace
+from app.processing.embedder import HashingEmbedder
 
 
 class TestGraphProvenance:
@@ -89,6 +90,60 @@ class TestGraphProvenance:
         data = resp.json()
         comp = next(c for c in data["components"] if c["id"] == str(component.id))
         assert comp["ingested_at"] is not None
+
+    async def test_connector_metadata_summary_includes_display_fields(self, client, db_session):
+        email_model = Model(id=uuid4(), name="Email")
+        message_model = Model(id=uuid4(), name="Message")
+        gmail_doc = SourceDocument(
+            id=uuid4(),
+            source_type="gmail",
+            external_id="gmail:msg-1",
+            content="Email body.",
+            metadata_json=json.dumps({
+                "subject": "Launch plan",
+                "from": "PM <pm@example.com>",
+                "snippet": "Launch plan update",
+                "thread_id": "thread-1",
+            }),
+        )
+        slack_doc = SourceDocument(
+            id=uuid4(),
+            source_type="slack",
+            external_id="slack:C123:1.0",
+            content="Slack body.",
+            metadata_json=json.dumps({
+                "channel_name": "growth",
+                "author_name": "Darshan",
+                "ts": "1.0",
+            }),
+        )
+        gmail_component = Component(
+            id=uuid4(), model_id=email_model.id, source_document_id=gmail_doc.id,
+            name="Email: Launch plan from PM", value="Launch plan update",
+            fact_type="email", confidence=0.7, status="active",
+        )
+        slack_component = Component(
+            id=uuid4(), model_id=message_model.id, source_document_id=slack_doc.id,
+            name="Slack: #growth - Darshan: Slack body", value="Slack body",
+            fact_type="message", confidence=0.7, status="active",
+        )
+        db_session.add_all([
+            email_model, message_model, gmail_doc, slack_doc,
+            gmail_component, slack_component,
+        ])
+        await db_session.flush()
+
+        resp = await client.get("/api/graph")
+        assert resp.status_code == 200
+        data = resp.json()
+        gmail = next(c for c in data["components"] if c["id"] == str(gmail_component.id))
+        slack = next(c for c in data["components"] if c["id"] == str(slack_component.id))
+
+        assert gmail["source_metadata_summary"]["subject"] == "Launch plan"
+        assert gmail["source_metadata_summary"]["from"] == "PM <pm@example.com>"
+        assert gmail["source_metadata_summary"]["snippet"] == "Launch plan update"
+        assert slack["source_metadata_summary"]["channel_name"] == "growth"
+        assert slack["source_metadata_summary"]["author_name"] == "Darshan"
 
     async def test_workspace_graph_includes_legacy_connector_documents(self, client, db_session):
         workspace_id = uuid4()
@@ -309,6 +364,67 @@ class TestStatsEndpoint:
         )
         assert resp.status_code == 200
 
+    async def test_stats_counts_only_workspace_graph_items(self, client, db_session):
+        ws1 = "00000000-0000-0000-0000-000000000031"
+        ws2 = "00000000-0000-0000-0000-000000000032"
+        model = Model(id=uuid4(), name="Scoped Stats")
+        doc_ws1 = SourceDocument(
+            id=uuid4(),
+            source_type="slack",
+            external_id="stats-ws1",
+            content="Workspace one stats.",
+            metadata_json=json.dumps({"workspace_id": ws1}),
+        )
+        doc_ws2 = SourceDocument(
+            id=uuid4(),
+            source_type="slack",
+            external_id="stats-ws2",
+            content="Workspace two stats.",
+            metadata_json=json.dumps({"workspace_id": ws2}),
+        )
+        active = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc_ws1.id,
+            name="WS1 active", value="Active", fact_type="fact",
+            confidence=0.8, status="active",
+        )
+        proposed = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc_ws1.id,
+            name="WS1 proposed", value="Proposed", fact_type="fact",
+            confidence=0.7, status="proposed",
+        )
+        stale_other = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc_ws2.id,
+            name="WS2 stale", value="Stale", fact_type="fact",
+            confidence=0.4, status="stale",
+        )
+        scoped_rel = Relationship(
+            id=uuid4(),
+            source_component_id=active.id,
+            target_component_id=proposed.id,
+            relationship_type="related_to",
+        )
+        cross_rel = Relationship(
+            id=uuid4(),
+            source_component_id=active.id,
+            target_component_id=stale_other.id,
+            relationship_type="related_to",
+        )
+        db_session.add_all([
+            model, doc_ws1, doc_ws2, active, proposed, stale_other, scoped_rel, cross_rel,
+        ])
+        await db_session.flush()
+
+        resp = await client.get("/api/stats", params={"workspace_id": ws1})
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["models"] == 1
+        assert data["components"] == 2
+        assert data["relationships"] == 1
+        assert data["sources"] == 1
+        assert data["proposed"] == 1
+        assert data["stale"] == 0
+
     async def test_stats_counts_proposed_components(self, client, db_session):
         model = Model(id=uuid4(), name="Roadmap")
         doc = SourceDocument(
@@ -332,6 +448,130 @@ class TestStatsEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert data["proposed"] >= 1
+
+
+class TestWorkspaceScopedGraphEndpoints:
+    async def test_work_lens_uses_graph_workspace_matching(self, client, db_session):
+        workspace_id = uuid4()
+        workspace = Workspace(id=workspace_id, name="Lens Workspace", slug=f"lens-{workspace_id.hex[:8]}")
+        connector = Connector(
+            id=uuid4(),
+            workspace_id=workspace_id,
+            connector_type="gmail",
+            status="connected",
+            config_json="{}",
+        )
+        model = Model(id=uuid4(), name="Risk")
+        legacy_gmail_doc = SourceDocument(
+            id=uuid4(),
+            source_type="gmail",
+            external_id="gmail:lens-legacy",
+            content="Risk: churn is increasing.",
+            metadata_json="{}",
+        )
+        other_doc = SourceDocument(
+            id=uuid4(),
+            source_type="slack",
+            external_id="slack:lens-other",
+            content="Risk: unrelated workspace.",
+            metadata_json=json.dumps({"workspace_id": "00000000-0000-0000-0000-000000000041"}),
+        )
+        scoped_risk = Component(
+            id=uuid4(), model_id=model.id, source_document_id=legacy_gmail_doc.id,
+            name="Scoped churn risk", value="Churn is increasing",
+            fact_type="risk", confidence=0.8, status="active",
+        )
+        other_risk = Component(
+            id=uuid4(), model_id=model.id, source_document_id=other_doc.id,
+            name="Other workspace risk", value="Unrelated",
+            fact_type="risk", confidence=0.8, status="active",
+        )
+        db_session.add_all([
+            workspace, connector, model, legacy_gmail_doc, other_doc, scoped_risk, other_risk,
+        ])
+        await db_session.flush()
+
+        resp = await client.get("/api/work-lens", params={"workspace_id": str(workspace_id)})
+        assert resp.status_code == 200
+        blocker_names = {item["name"] for item in resp.json()["blockers"]}
+
+        assert "Scoped churn risk" in blocker_names
+        assert "Other workspace risk" not in blocker_names
+
+    async def test_query_is_limited_to_workspace_components(self, client, db_session):
+        ws1 = "00000000-0000-0000-0000-000000000051"
+        ws2 = "00000000-0000-0000-0000-000000000052"
+        embedder = HashingEmbedder()
+        model = Model(id=uuid4(), name="Risk")
+        doc_ws1 = SourceDocument(
+            id=uuid4(),
+            source_type="slack",
+            external_id="query-ws1",
+            content="Billing risk for workspace one.",
+            metadata_json=json.dumps({"workspace_id": ws1}),
+        )
+        doc_ws2 = SourceDocument(
+            id=uuid4(),
+            source_type="slack",
+            external_id="query-ws2",
+            content="Billing risk for workspace two.",
+            metadata_json=json.dumps({"workspace_id": ws2}),
+        )
+        comp_ws1 = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc_ws1.id,
+            name="Workspace one billing risk", value="Billing risk is in workspace one",
+            fact_type="risk", confidence=0.9, status="active",
+            embedding=json.dumps(await embedder.embed_text("billing risk workspace one")),
+        )
+        comp_ws2 = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc_ws2.id,
+            name="Workspace two billing risk", value="Billing risk is in workspace two",
+            fact_type="risk", confidence=0.9, status="active",
+            embedding=json.dumps(await embedder.embed_text("billing risk workspace two")),
+        )
+        db_session.add_all([model, doc_ws1, doc_ws2, comp_ws1, comp_ws2])
+        await db_session.flush()
+
+        resp = await client.post("/api/query", json={
+            "question": "What is the billing risk?",
+            "workspace_id": ws1,
+        })
+        assert resp.status_code == 200
+        component_names = {component["name"] for component in resp.json()["components"]}
+
+        assert "Workspace one billing risk" in component_names
+        assert "Workspace two billing risk" not in component_names
+
+    async def test_graph_build_processes_only_workspace_pending_documents(self, client, db_session):
+        ws1 = "00000000-0000-0000-0000-000000000061"
+        ws2 = "00000000-0000-0000-0000-000000000062"
+        doc_ws1 = SourceDocument(
+            id=uuid4(),
+            source_type="slack",
+            external_id="build-ws1",
+            content="Decision: use workspace-first graph scoping.",
+            metadata_json=json.dumps({"workspace_id": ws1}),
+        )
+        doc_ws2 = SourceDocument(
+            id=uuid4(),
+            source_type="slack",
+            external_id="build-ws2",
+            content="Decision: keep this other workspace pending.",
+            metadata_json=json.dumps({"workspace_id": ws2}),
+        )
+        db_session.add_all([doc_ws1, doc_ws2])
+        await db_session.flush()
+
+        resp = await client.post("/api/graph/build", json={"workspace_id": ws1, "limit": 100})
+        assert resp.status_code == 200
+        data = resp.json()
+
+        await db_session.refresh(doc_ws1)
+        await db_session.refresh(doc_ws2)
+        assert data["docs_pending_before"] == 1
+        assert data["docs_processed"] == 1
+        assert doc_ws1.processed_at is not None
+        assert doc_ws2.processed_at is None
 
 
 class TestTimelineEndpoint:

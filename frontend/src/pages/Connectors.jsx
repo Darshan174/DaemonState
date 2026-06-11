@@ -1329,22 +1329,70 @@ function formatCompletedSyncNotice(connectorName, metadata) {
     return `${connectorName} sync completed.`;
   }
 
-  const fetched = Number(metadata.documents_fetched ?? 0);
-  const persisted = Number(metadata.documents_persisted ?? 0);
-  const processed = Number(metadata.documents_processed ?? 0);
+  const counts = getSyncDocumentCounts(metadata);
   const syncMode = metadata.sync_mode ? ` (${metadata.sync_mode})` : "";
+  const skippedSummary = formatSkippedSummary(counts);
+  const noNewWork = counts.noNewDocuments
+    ? " No new documents since last sync; all fetched items were already imported or skipped."
+    : "";
 
-  return `${connectorName} sync completed: fetched ${fetched}, stored ${persisted}, processed ${processed}${syncMode}.`;
+  return `${connectorName} sync completed: fetched ${counts.fetched}, stored ${counts.persisted} new, processed ${counts.processed} new${skippedSummary}${syncMode}.${noNewWork}`;
 }
 
 function summarizeSyncJob(metadata) {
   if (!metadata || typeof metadata !== "object") {
     return "Sync completed.";
   }
-  const fetched = Number(metadata.documents_fetched ?? 0);
-  const persisted = Number(metadata.documents_persisted ?? 0);
-  const processed = Number(metadata.documents_processed ?? 0);
-  return `Fetched ${fetched}, stored ${persisted}, processed ${processed}`;
+  const counts = getSyncDocumentCounts(metadata);
+  const skippedSummary = formatSkippedSummary(counts);
+  const suffix = counts.noNewDocuments
+    ? ". No new documents since last sync."
+    : "";
+  return `Fetched ${counts.fetched}, stored ${counts.persisted} new, processed ${counts.processed} new${skippedSummary}${suffix}`;
+}
+
+function getSyncDocumentCounts(metadata) {
+  const fetched = toSyncCount(metadata.documents_fetched);
+  const persisted = toSyncCount(metadata.documents_persisted);
+  const processed = toSyncCount(metadata.documents_processed);
+  const fallbackSkipped = Math.max(fetched - persisted, 0);
+  const skipped = toSyncCount(metadata.documents_skipped, fallbackSkipped);
+  const errors = Array.isArray(metadata.errors)
+    ? metadata.errors.length
+    : toSyncCount(metadata.errors_count);
+
+  return {
+    fetched,
+    persisted,
+    processed,
+    skipped,
+    duplicatesSkipped: toSyncCount(metadata.duplicates_skipped),
+    emptySkipped: toSyncCount(metadata.empty_skipped),
+    filteredSkipped: toSyncCount(metadata.filtered_skipped),
+    noNewDocuments: fetched > 0 && persisted === 0 && processed === 0 && errors === 0,
+  };
+}
+
+function formatSkippedSummary(counts) {
+  if (counts.skipped <= 0) return "";
+
+  const parts = [];
+  if (counts.duplicatesSkipped > 0) {
+    parts.push(`${counts.duplicatesSkipped} already imported`);
+  }
+  if (counts.emptySkipped > 0) {
+    parts.push(`${counts.emptySkipped} empty`);
+  }
+  if (counts.filteredSkipped > 0) {
+    parts.push(`${counts.filteredSkipped} filtered`);
+  }
+  const detail = parts.length ? ` (${parts.join(", ")})` : "";
+  return `, skipped ${counts.skipped}${detail}`;
+}
+
+function toSyncCount(value, fallback = 0) {
+  const number = Number(value ?? fallback);
+  return Number.isFinite(number) ? Math.max(number, 0) : fallback;
 }
 
 function formatDateTime(value) {
