@@ -251,6 +251,7 @@ class GraphBuilderAgent:
         pull_requests: list[tuple[tuple[str, int], Component]] = []
         github_targets: list[tuple[str, str, int, Component]] = []
         document_targets = _document_reference_targets(components)
+        slack_hubs = _slack_channel_hubs(components)
 
         for component in components:
             identity = _github_component_identity(component)
@@ -267,6 +268,7 @@ class GraphBuilderAgent:
         inferred = 0
         inferred += self._infer_slack_github_references(components, github_targets, existing)
         inferred += self._infer_slack_document_references(components, document_targets, existing)
+        inferred += self._infer_github_slack_references(components, slack_hubs, existing)
         for key, pr_component in pull_requests:
             issue_component = issues.get(key)
             if issue_component is None or issue_component.id == pr_component.id:
@@ -282,6 +284,47 @@ class GraphBuilderAgent:
                 relationship_type="part_of",
                 confidence=1.0,
                 evidence=f"GitHub metadata: PR #{number} and issue thread #{number} are the same item in {repo}.",
+                origin="deterministic",
+            ))
+            existing.add(rel_key)
+            inferred += 1
+
+        return inferred
+
+    def _infer_github_slack_references(
+        self,
+        components: list[Component],
+        slack_hubs: list[tuple[Component, str]],
+        existing: set[tuple],
+    ) -> int:
+        inferred = 0
+        if not slack_hubs:
+            return inferred
+
+        for github_component in components:
+            if _github_component_identity(github_component) is None:
+                continue
+
+            ref = _slack_reference_in_component(github_component, slack_hubs)
+            if ref is None:
+                continue
+
+            target, matched_text, confidence = ref
+            if target.id == github_component.id:
+                continue
+            if target.source_document_id == github_component.source_document_id:
+                continue
+
+            rel_key = (github_component.id, target.id, "mentions")
+            if rel_key in existing:
+                continue
+
+            self.session.add(Relationship(
+                source_component_id=github_component.id,
+                target_component_id=target.id,
+                relationship_type="mentions",
+                confidence=confidence,
+                evidence=f"GitHub source explicitly referenced Slack '{matched_text}'.",
                 origin="deterministic",
             ))
             existing.add(rel_key)
@@ -642,6 +685,60 @@ def _matching_github_targets(
             return []
 
     return candidates
+
+
+def _slack_channel_hubs(components: list[Component]) -> list[tuple[Component, str]]:
+    hubs: list[tuple[Component, str]] = []
+    for component in components:
+        if not _is_slack_component(component):
+            continue
+        channel = _slack_channel_name(component)
+        if not channel:
+            continue
+        text = " ".join([component.name or "", component.value or ""]).lower()
+        if "slack channel" not in text or "hub for messages" not in text:
+            continue
+        hubs.append((component, channel))
+    return hubs
+
+
+def _slack_reference_in_component(
+    component: Component,
+    slack_hubs: list[tuple[Component, str]],
+) -> tuple[Component, str, float] | None:
+    text = _component_reference_text(component)
+    if not re.search(r"\bslack\b", text, re.IGNORECASE):
+        return None
+
+    text_lower = text.lower()
+    explicit_matches = [
+        (hub, channel)
+        for hub, channel in slack_hubs
+        if f"#{channel}".lower() in text_lower
+        or re.search(rf"\b{re.escape(channel)}\b", text, re.IGNORECASE)
+    ]
+    if explicit_matches:
+        hub, channel = explicit_matches[0]
+        return hub, f"#{channel}", 0.94
+
+    if len(slack_hubs) == 1:
+        hub, channel = slack_hubs[0]
+        return hub, "Slack", 0.86
+
+    return None
+
+
+def _slack_channel_name(component: Component) -> str | None:
+    doc = component.source_document
+    metadata = _parse_metadata(doc.metadata_json if doc else None)
+    raw = metadata.get("channel_name")
+    if not raw:
+        match = re.search(r"Slack channel\s+#?([A-Za-z0-9_.-]+)", component.name or component.value or "", re.I)
+        raw = match.group(1) if match else None
+    channel = str(raw or "").strip().lstrip("#").lower()
+    if not channel or not re.search(r"[a-z]", channel):
+        return None
+    return channel
 
 
 def _parse_metadata(raw: str | dict | None) -> dict:

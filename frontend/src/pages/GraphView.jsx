@@ -2934,7 +2934,7 @@ export default function GraphView() {
             <div className="mb-4 rounded-xl border border-blue-100 bg-blue-50/80 p-2.5 text-xs text-blue-800 dark:border-blue-900/40 dark:bg-blue-950/20 dark:text-blue-300">
               <p className="mb-1 text-[10px] font-bold uppercase tracking-widest">Cross-source reference</p>
               <p className="leading-relaxed">
-                This edge was created because a Slack source explicitly named the target GitHub item or document. It is shown as deterministic, not AI-proposed.
+                This edge was created because one source explicitly named another source item, channel, or document. It is shown as deterministic, not AI-proposed.
               </p>
             </div>
           )}

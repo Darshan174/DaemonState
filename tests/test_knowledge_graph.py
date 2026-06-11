@@ -859,6 +859,56 @@ class TestGithubPRToIssueDeterministic:
         assert rels[0].confidence == 0.9
         assert "Product Context RFC" in rels[0].evidence
 
+    async def test_graph_builder_links_github_issue_that_mentions_slack_to_channel_hub(self, db_session):
+        github_model = Model(id=uuid4(), name="GitHub")
+        message_model = Model(id=uuid4(), name="Message")
+        issue_doc = SourceDocument(
+            id=uuid4(),
+            source_type="github",
+            external_id="issue-6",
+            content="Issue #6: Harden Slack connector retries",
+            metadata_json=json.dumps({
+                "item_type": "issue",
+                "repo_full_name": "org/repo",
+                "number": 6,
+            }),
+        )
+        slack_doc = SourceDocument(
+            id=uuid4(),
+            source_type="slack",
+            external_id="slack:C123:hub",
+            content="Slack channel #engineering hub",
+            metadata_json=json.dumps({"channel_name": "engineering"}),
+        )
+        issue_comp = Component(
+            id=uuid4(), model_id=github_model.id, source_document_id=issue_doc.id,
+            name="Issue #6: Harden Slack connector retries", value="Improve Slack sync reliability",
+            fact_type="issue", confidence=0.95, status="active",
+        )
+        slack_hub = Component(
+            id=uuid4(), model_id=message_model.id, source_document_id=slack_doc.id,
+            name="Slack channel #engineering",
+            value="Slack channel #engineering — hub for messages ingested from this channel.",
+            fact_type="fact", confidence=0.9, status="active",
+        )
+        db_session.add_all([github_model, message_model, issue_doc, slack_doc, issue_comp, slack_hub])
+        await db_session.flush()
+
+        agent = GraphBuilderAgent(db_session)
+        inferred = await agent._infer_deterministic_relationships()
+        await db_session.flush()
+
+        rels = (await db_session.scalars(
+            select(Relationship).where(Relationship.source_component_id == issue_comp.id)
+        )).all()
+        assert inferred == 1
+        assert len(rels) == 1
+        assert rels[0].target_component_id == slack_hub.id
+        assert rels[0].relationship_type == "mentions"
+        assert rels[0].origin == "deterministic"
+        assert rels[0].confidence == 0.86
+        assert "Slack" in rels[0].evidence
+
     async def test_pr_solves_issue_deterministic(self, db_session):
         model = Model(id=uuid4(), name="GitHub")
         db_session.add(model)
