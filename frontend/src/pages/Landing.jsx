@@ -215,10 +215,10 @@ export default function Landing() {
             <p className="text-xs font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500">Sync context from your favourite tools</p>
           </div>
           <div className="relative flex overflow-hidden group w-full opacity-60 hover:opacity-100 transition-opacity [mask-image:_linear-gradient(to_right,transparent_0,_black_128px,_black_calc(100%-128px),transparent_100%)]">
-            <div className="animate-marquee flex min-w-full shrink-0 items-center justify-around gap-14 py-2">
+            <div className="flex shrink-0 items-center justify-center gap-16 py-2 pr-16 [animation:marquee_52s_linear_infinite] [backface-visibility:hidden] [transform:translate3d(0,0,0)] [will-change:transform]">
               <Logos />
             </div>
-            <div className="animate-marquee flex min-w-full shrink-0 items-center justify-around gap-14 py-2" aria-hidden="true">
+            <div className="flex shrink-0 items-center justify-center gap-16 py-2 pr-16 [animation:marquee_52s_linear_infinite] [backface-visibility:hidden] [transform:translate3d(0,0,0)] [will-change:transform]" aria-hidden="true">
               <Logos />
             </div>
           </div>
@@ -288,12 +288,12 @@ export default function Landing() {
               {HOW_IT_WORKS.map((step, i) => (
                 <motion.div variants={itemVariants} key={step.number}>
                   <div className="relative rounded-3xl border border-slate-200/80 dark:border-slate-700/80 bg-white dark:bg-slate-800/90 p-8 shadow-sm transition-all duration-300 hover:-translate-y-1.5 hover:shadow-xl hover:shadow-brand-500/10 group">
-                    <div className="flex items-start gap-4 mb-5">
+                    <div className="mb-5 flex min-h-14 items-start justify-between gap-4">
                       <div className={`relative flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br ${step.color} shadow-lg`}>
                         <step.icon className="h-7 w-7 text-white" />
                         <span className="absolute -top-2 -right-2 flex h-5 w-5 items-center justify-center rounded-full bg-white dark:bg-slate-800 border-2 border-slate-100 dark:border-slate-700 text-[9px] font-black text-slate-700 dark:text-slate-300">{i + 1}</span>
                       </div>
-                      <span className="mt-1 inline-flex items-center rounded-full border border-brand-100 dark:border-brand-800/60 bg-brand-50 dark:bg-brand-900/30 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-brand-600 dark:text-brand-400">
+                      <span className="mt-1 inline-flex h-6 w-40 items-center justify-center rounded-full border border-brand-100 dark:border-brand-800/60 bg-brand-50 dark:bg-brand-900/30 px-3 text-center text-[10px] font-bold uppercase tracking-wide text-brand-600 dark:text-brand-400">
                         {step.chip}
                       </span>
                     </div>
@@ -579,41 +579,50 @@ function SpotlightCard({ children, className = "" }) {
 function Logos() {
   return (
     <>
-      <LogoItem name="Slack"><path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zm1.27 0a2.527 2.527 0 0 1 2.521-2.52 2.528 2.528 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zm0 1.27a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zm10.122 2.523a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.835zm-1.27 0a2.528 2.528 0 0 1-2.521 2.521 2.528 2.528 0 0 1-2.521-2.521V2.522A2.528 2.528 0 0 1 15.166 0a2.528 2.528 0 0 1 2.52 2.522v6.313zM15.166 18.958a2.528 2.528 0 0 1 2.52 2.522A2.528 2.528 0 0 1 15.166 24a2.528 2.528 0 0 1-2.521-2.522v-2.52h2.521zm0-1.27a2.528 2.528 0 0 1-2.52-2.521 2.528 2.528 0 0 1 2.52-2.521h6.313A2.528 2.528 0 0 1 24 15.166a2.528 2.528 0 0 1-2.522 2.52h-6.313z"/></LogoItem>
-      <LogoItem name="GitHub"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></LogoItem>
-      <LogoItem name="Zoom"><path d="M4.5 9A2.5 2.5 0 0 0 2 11.5v4A2.5 2.5 0 0 0 4.5 18h8A2.5 2.5 0 0 0 15 15.5v-4A2.5 2.5 0 0 0 12.5 9h-8zm11.2 5.5v-4a1 1 0 0 1 1.5-.86l4 2.5a1 1 0 0 1 0 1.72l-4 2.5a1 1 0 0 1-1.5-.86z"/></LogoItem>
-      <div className="flex items-center gap-2.5 text-xl font-bold tracking-tight text-slate-700 dark:text-slate-300">
-        <img src={gdriveIcon} alt="Google Drive" className="h-6 w-6 object-contain" />
-        Google Drive
-      </div>
-      <div className="flex items-center gap-2.5 text-xl font-bold tracking-tight text-slate-700 dark:text-slate-300">
-        <img src={gmailIcon} alt="Gmail" className="h-6 w-6 object-contain" />
-        Gmail
-      </div>
-      <div className="flex items-center gap-2.5 text-xl font-bold tracking-tight text-slate-700 dark:text-slate-300">
-        <img src={openaiIcon} alt="Codex" className="h-6 w-6 object-contain dark:invert" />
-        Codex
-      </div>
-      <div className="flex items-center gap-2.5 text-xl font-bold tracking-tight text-slate-700 dark:text-slate-300">
-        <div className="h-6 w-6 rounded-md flex items-center justify-center text-[10px] font-black text-white" style={{ background: "#D97757" }}>A</div>
-        Claude
-      </div>
-      <div className="flex items-center gap-2.5 text-xl font-bold tracking-tight text-slate-700 dark:text-slate-300">
-        <img src={opencodeIcon} alt="OpenCode" className="h-6 w-6 object-contain rounded" />
-        OpenCode
-      </div>
+      <LogoItem name="Slack">
+        <svg role="img" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" className="h-7 w-7">
+          <title>Slack</title>
+          <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zm1.27 0a2.527 2.527 0 0 1 2.521-2.52 2.528 2.528 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zm0 1.27a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zm10.122 2.523a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.835zm-1.27 0a2.528 2.528 0 0 1-2.521 2.521 2.528 2.528 0 0 1-2.521-2.521V2.522A2.528 2.528 0 0 1 15.166 0a2.528 2.528 0 0 1 2.52 2.522v6.313zM15.166 18.958a2.528 2.528 0 0 1 2.52 2.522A2.528 2.528 0 0 1 15.166 24a2.528 2.528 0 0 1-2.521-2.522v-2.52h2.521zm0-1.27a2.528 2.528 0 0 1-2.52-2.521 2.528 2.528 0 0 1 2.52-2.521h6.313A2.528 2.528 0 0 1 24 15.166a2.528 2.528 0 0 1-2.522 2.52h-6.313z" />
+        </svg>
+      </LogoItem>
+      <LogoItem name="GitHub">
+        <svg role="img" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" className="h-7 w-7">
+          <title>GitHub</title>
+          <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" />
+        </svg>
+      </LogoItem>
+      <LogoItem name="Zoom">
+        <svg role="img" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" className="h-7 w-7">
+          <title>Zoom</title>
+          <path d="M4.5 9A2.5 2.5 0 0 0 2 11.5v4A2.5 2.5 0 0 0 4.5 18h8A2.5 2.5 0 0 0 15 15.5v-4A2.5 2.5 0 0 0 12.5 9h-8zm11.2 5.5v-4a1 1 0 0 1 1.5-.86l4 2.5a1 1 0 0 1 0 1.72l-4 2.5a1 1 0 0 1-1.5-.86z" />
+        </svg>
+      </LogoItem>
+      <LogoItem name="Google Drive">
+        <img src={gdriveIcon} alt="" className="h-8 w-8 object-contain" />
+      </LogoItem>
+      <LogoItem name="Gmail">
+        <img src={gmailIcon} alt="" className="h-8 w-8 object-contain" />
+      </LogoItem>
+      <LogoItem name="Codex">
+        <img src={openaiIcon} alt="" className="h-7 w-7 object-contain dark:invert" />
+      </LogoItem>
+      <LogoItem name="Claude">
+        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#D97757] text-xs font-black text-white">A</span>
+      </LogoItem>
+      <LogoItem name="OpenCode">
+        <img src={opencodeIcon} alt="" className="h-8 w-8 object-contain rounded" />
+      </LogoItem>
     </>
   );
 }
 
 function LogoItem({ name, children }) {
   return (
-    <div className="flex items-center gap-2.5 text-xl font-bold tracking-tight text-slate-700 dark:text-slate-300">
-      <svg role="img" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" className="h-6 w-6">
-        <title>{name}</title>
+    <div className="flex items-center gap-3 text-xl font-bold tracking-tight text-slate-700 dark:text-slate-300">
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center">
         {children}
-      </svg>
-      {name}
+      </span>
+      <span className="leading-none">{name}</span>
     </div>
   );
 }

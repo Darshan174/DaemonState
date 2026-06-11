@@ -1,5 +1,32 @@
-import { useState, useEffect, useRef, useCallback } from "react";
-import { Upload, FileText, FileCode, FileJson, X, ChevronRight, CheckCircle, Clock, Layers, MessageSquare, Mail, HardDrive, Bot, Video, FolderOpen, Clipboard } from "lucide-react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { Upload, FileText, FileCode, FileJson, X, ChevronRight, ChevronDown, CheckCircle, Clock, Layers, MessageSquare, HardDrive, Bot, Video, FolderOpen, Clipboard } from "lucide-react";
+
+function GitHubIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z" />
+    </svg>
+  );
+}
+
+function GmailIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <path fill="#EA4335" d="M24 5.457v13.909c0 .904-.732 1.636-1.636 1.636h-3.819V11.73L12 16.64l-6.545-4.91v9.273H1.636A1.636 1.636 0 0 1 0 19.366V5.457c0-2.023 2.309-3.178 3.927-1.964L5.455 4.64 12 9.548l6.545-4.91 1.528-1.145C21.69 2.28 24 3.434 24 5.457z" />
+    </svg>
+  );
+}
+
+function SlackIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 122.8 122.8" aria-hidden="true">
+      <path fill="#E01E5A" d="M25.8 77.6c0 7.1-5.8 12.9-12.9 12.9S0 84.7 0 77.6s5.8-12.9 12.9-12.9h12.9v12.9zm6.5 0c0-7.1 5.8-12.9 12.9-12.9s12.9 5.8 12.9 12.9v32.3c0 7.1-5.8 12.9-12.9 12.9s-12.9-5.8-12.9-12.9V77.6z" />
+      <path fill="#36C5F0" d="M45.2 25.8c-7.1 0-12.9-5.8-12.9-12.9S38.1 0 45.2 0s12.9 5.8 12.9 12.9v12.9H45.2zm0 6.5c7.1 0 12.9 5.8 12.9 12.9s-5.8 12.9-12.9 12.9H12.9C5.8 58.1 0 52.3 0 45.2s5.8-12.9 12.9-12.9h32.3z" />
+      <path fill="#2EB67D" d="M97 45.2c0-7.1 5.8-12.9 12.9-12.9s12.9 5.8 12.9 12.9-5.8 12.9-12.9 12.9H97V45.2zm-6.5 0c0 7.1-5.8 12.9-12.9 12.9s-12.9-5.8-12.9-12.9V12.9C64.7 5.8 70.5 0 77.6 0s12.9 5.8 12.9 12.9v32.3z" />
+      <path fill="#ECB22E" d="M77.6 97c7.1 0 12.9 5.8 12.9 12.9s-5.8 12.9-12.9 12.9-12.9-5.8-12.9-12.9V97h12.9zm0-6.5c-7.1 0-12.9-5.8-12.9-12.9s5.8-12.9 12.9-12.9h32.3c7.1 0 12.9 5.8 12.9 12.9s-5.8 12.9-12.9 12.9H77.6z" />
+    </svg>
+  );
+}
 
 const TYPE_META = {
   markdown: { label: "Markdown", color: "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400", icon: FileText },
@@ -14,13 +41,13 @@ const TYPE_META = {
   local_folder: { label: "Local Folder", color: "bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300", icon: FolderOpen },
   browser_upload: { label: "Browser Upload", color: "bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300", icon: Upload },
   paste:    { label: "Pasted Text", color: "bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300", icon: Clipboard },
-  slack:    { label: "Slack", color: "bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300", icon: MessageSquare },
+  slack:    { label: "Slack", color: "bg-violet-50 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300", icon: SlackIcon },
   github:   { label: "GitHub", color: "bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900", icon: GitHubIcon },
   github_issue: { label: "GitHub", color: "bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900", icon: GitHubIcon },
   github_pr: { label: "GitHub", color: "bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900", icon: GitHubIcon },
   github_pull_request: { label: "GitHub", color: "bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900", icon: GitHubIcon },
   github_pull_request_review_comment: { label: "GitHub", color: "bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900", icon: GitHubIcon },
-  gmail:    { label: "Gmail", color: "bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-400", icon: Mail },
+  gmail:    { label: "Gmail", color: "bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400", icon: GmailIcon },
   gdrive:   { label: "Google Drive", color: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300", icon: HardDrive },
   google_drive: { label: "Google Drive", color: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300", icon: HardDrive },
   zoom:     { label: "Zoom", color: "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300", icon: Video },
@@ -36,6 +63,21 @@ const TYPE_META = {
   claude:   { label: "Claude", color: "bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300", icon: Bot },
   opencode: { label: "OpenCode", color: "bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200", icon: Bot },
 };
+
+const GITHUB_TYPES = ["github", "github_issue", "github_pr", "github_pull_request", "github_pull_request_review_comment"];
+const DOCUMENT_TYPES = [
+  "markdown", "md", "text", "txt", "json", "csv", "html", "pdf",
+  "local", "local_folder", "browser_upload", "paste",
+  "gdrive", "google_drive", "notion", "document",
+];
+
+const SOURCE_GROUPS = [
+  { id: "gmail", label: "Gmail", icon: GmailIcon, chip: "bg-red-50 dark:bg-red-900/30", types: ["gmail"] },
+  { id: "slack", label: "Slack", icon: SlackIcon, chip: "bg-violet-50 dark:bg-violet-900/30", types: ["slack"] },
+  { id: "documents", label: "Documents", icon: FileText, chip: "bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300", types: DOCUMENT_TYPES },
+  { id: "github", label: "GitHub", icon: GitHubIcon, chip: "bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900", types: GITHUB_TYPES },
+  { id: "others", label: "Others", icon: Layers, chip: "bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-300", types: null },
+];
 
 function sourceTypeKey(source) {
   const rawType = typeof source === "string"
@@ -84,12 +126,12 @@ function typeMeta(source) {
   };
 }
 
-function GitHubIcon({ className }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z" />
-    </svg>
-  );
+function groupIdForSource(source) {
+  const key = sourceTypeKey(source);
+  for (const group of SOURCE_GROUPS) {
+    if (group.types && group.types.includes(key)) return group.id;
+  }
+  return "others";
 }
 
 export default function SourceManager() {
@@ -101,21 +143,45 @@ export default function SourceManager() {
   const [selectedSource, setSelectedSource] = useState(null);
   const [selectedComponents, setSelectedComponents] = useState(null);
   const [loadingComponents, setLoadingComponents] = useState(false);
+  const [expandedGroupId, setExpandedGroupId] = useState(null);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef(null);
 
   const fetchSources = useCallback(async () => {
     try {
       setLoading(true);
-      const res = await fetch("/api/sources");
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setSources(Array.isArray(data) ? data : data.items || data.sources || []);
+      setError(null);
+      // Paginate through every source document so nothing is hidden.
+      const all = [];
+      let cursor = null;
+      for (let page = 0; page < 40; page++) {
+        const params = new URLSearchParams({ limit: "100" });
+        if (cursor) params.set("cursor", cursor);
+        const res = await fetch(`/api/source-documents?${params}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        all.push(...(data.items || []));
+        if (!data.has_more || !data.next_cursor) break;
+        cursor = data.next_cursor;
+      }
+      setSources(all);
     } catch (err) { setError(err.message); }
     finally { setLoading(false); }
   }, []);
 
   useEffect(() => { fetchSources(); }, [fetchSources]);
+
+  const groupedSources = useMemo(() => {
+    const buckets = Object.fromEntries(SOURCE_GROUPS.map((g) => [g.id, []]));
+    for (const source of sources) buckets[groupIdForSource(source)].push(source);
+    return SOURCE_GROUPS
+      .map((group) => ({ ...group, items: buckets[group.id] }))
+      .filter((group) => group.items.length > 0);
+  }, [sources]);
+
+  function toggleGroup(groupId) {
+    setExpandedGroupId((current) => (current === groupId ? null : groupId));
+  }
 
   async function handleFiles(files) {
     if (!files?.length) return;
@@ -144,9 +210,67 @@ export default function SourceManager() {
     setLoadingComponents(true);
     try {
       const res = await fetch(`/api/sources/${source.id}`);
-      setSelectedComponents(res.ok ? (await res.json()).components || [] : []);
+      if (res.ok) {
+        const detail = await res.json();
+        setSelectedSource({ ...source, ...detail });
+        setSelectedComponents(detail.components || []);
+      } else {
+        setSelectedComponents([]);
+      }
     } catch { setSelectedComponents([]); }
     finally { setLoadingComponents(false); }
+  }
+
+  function renderSourceRow(source) {
+    const meta = typeMeta(source);
+    const Icon = meta.icon;
+    const isSelected = selectedSource?.id === source.id;
+    return (
+      <button
+        key={source.id}
+        onClick={() => handleSourceClick(source)}
+        className={`w-full text-left px-3 py-2.5 rounded-lg border transition-all group ${
+          isSelected
+            ? "border-brand-300 dark:border-brand-700 bg-brand-50 dark:bg-brand-900/20 shadow-sm"
+            : "border-slate-200/80 dark:border-slate-700 bg-white/90 dark:bg-slate-800/80 hover:border-slate-300 dark:hover:border-slate-600 hover:bg-white dark:hover:bg-slate-800 hover:shadow-sm"
+        }`}
+      >
+        <div className="flex items-center gap-2.5">
+          <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${meta.color}`}>
+            <Icon className="w-3.5 h-3.5" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-[13px] font-semibold text-slate-800 dark:text-slate-200 truncate">
+                {source.external_id || source.id}
+              </span>
+              <ChevronRight className={`w-3.5 h-3.5 shrink-0 transition-transform ${isSelected ? "text-brand-500 rotate-90" : "text-slate-300 dark:text-slate-600 group-hover:text-slate-400"}`} />
+            </div>
+            {source.content_preview && (
+              <p className="text-[11px] text-slate-400 dark:text-slate-500 truncate mt-0.5">{source.content_preview}</p>
+            )}
+            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 mt-0.5">
+              {source.author && (
+                <span className="text-[11px] text-slate-400 truncate max-w-[10rem]">{source.author}</span>
+              )}
+              {source.ingested_at && (
+                <span className="text-[11px] text-slate-400">{new Date(source.ingested_at).toLocaleDateString()}</span>
+              )}
+              {source.processed_at ? (
+                <span className="flex items-center gap-1 text-[11px] text-emerald-600 dark:text-emerald-400">
+                  <CheckCircle className="w-3 h-3" /> processed
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400">
+                  <Clock className="w-3 h-3" /> pending
+                </span>
+              )}
+            </div>
+          </div>
+          <span className={`hidden sm:inline-flex items-center justify-center whitespace-nowrap text-[10px] font-bold px-2 py-0.5 rounded-md shrink-0 ${meta.color}`}>{meta.label}</span>
+        </div>
+      </button>
+    );
   }
 
   if (loading) {
@@ -161,7 +285,7 @@ export default function SourceManager() {
   }
 
   return (
-    <div className="flex h-full gap-5 max-w-5xl mx-auto">
+    <div className="flex min-h-full gap-5 max-w-5xl mx-auto">
       {/* Left panel */}
       <div className="flex-1 flex flex-col min-w-0 gap-4">
         {/* Header */}
@@ -169,7 +293,9 @@ export default function SourceManager() {
           <div>
             <h1 className="text-xl font-bold text-slate-900 dark:text-white">Source Manager</h1>
             <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-              {sources.length > 0 ? `${sources.length} document${sources.length !== 1 ? "s" : ""} ingested` : "Upload source documents to get started"}
+              {sources.length > 0
+                ? `${sources.length} document${sources.length !== 1 ? "s" : ""} ingested across ${groupedSources.length} source${groupedSources.length !== 1 ? "s" : ""}`
+                : "Upload source documents to get started"}
             </p>
           </div>
           <button
@@ -219,60 +345,46 @@ export default function SourceManager() {
           )}
         </div>
 
-        {/* Source list */}
-        <div className="flex-1 space-y-2 overflow-y-auto">
+        {/* Grouped source list */}
+        <div className="space-y-3 pb-8">
           {sources.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-center">
               <div className="w-14 h-14 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mb-4">
                 <Layers className="w-7 h-7 text-slate-300 dark:text-slate-600" />
               </div>
               <p className="text-sm font-semibold text-slate-500 dark:text-slate-400">No sources yet</p>
-              <p className="text-xs text-slate-400 mt-1">Upload files to populate your knowledge graph</p>
+              <p className="text-xs text-slate-400 mt-1">Upload files or sync a connector to populate your knowledge graph</p>
             </div>
           ) : (
-            sources.map((source) => {
-              const meta = typeMeta(source);
-              const Icon = meta.icon;
-              const isSelected = selectedSource?.id === source.id;
+            groupedSources.map((group) => {
+              const GroupIcon = group.icon;
+              const isExpanded = expandedGroupId === group.id;
               return (
-                <button
-                  key={source.id}
-                  onClick={() => handleSourceClick(source)}
-                  className={`w-full text-left p-4 rounded-xl border transition-all group ${
-                    isSelected
-                      ? "border-brand-300 dark:border-brand-700 bg-brand-50 dark:bg-brand-900/20 shadow-sm"
-                      : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:border-slate-300 dark:hover:border-slate-600 hover:shadow-sm"
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${meta.color}`}>
-                      <Icon className="w-4 h-4" />
+                <div key={group.id} className={`rounded-xl transition-colors ${isExpanded ? "bg-slate-50/80 dark:bg-slate-900/30" : ""}`}>
+                  <button
+                    onClick={() => toggleGroup(group.id)}
+                    aria-expanded={isExpanded}
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border transition-all ${
+                      isExpanded
+                        ? "border-brand-300/70 dark:border-brand-700/70 bg-white dark:bg-slate-900/50 shadow-sm shadow-brand-600/5"
+                        : "border-transparent hover:border-slate-200 dark:hover:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                    }`}
+                  >
+                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${group.chip}`}>
+                      <GroupIcon className="w-4 h-4" />
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold text-slate-800 dark:text-slate-200 truncate">
-                          {source.external_id || source.id}
-                        </span>
-                        <ChevronRight className={`w-3.5 h-3.5 shrink-0 transition-transform ${isSelected ? "text-brand-500 rotate-90" : "text-slate-300 dark:text-slate-600 group-hover:text-slate-400"}`} />
-                      </div>
-                      <div className="flex items-center gap-3 mt-0.5">
-                        {source.ingested_at && (
-                          <span className="text-xs text-slate-400">{new Date(source.ingested_at).toLocaleDateString()}</span>
-                        )}
-                        {source.processed_at ? (
-                          <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
-                            <CheckCircle className="w-3 h-3" /> processed
-                          </span>
-                        ) : (
-                          <span className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
-                            <Clock className="w-3 h-3" /> pending
-                          </span>
-                        )}
-                      </div>
+                    <span className="text-sm font-bold text-slate-800 dark:text-slate-100">{group.label}</span>
+                    <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-300">
+                      {group.items.length}
+                    </span>
+                    <ChevronDown className={`w-4 h-4 ml-auto text-slate-400 transition-transform duration-200 ${isExpanded ? "rotate-0" : "-rotate-90"}`} />
+                  </button>
+                  {isExpanded && (
+                    <div className="space-y-1.5 mt-2">
+                      {group.items.map((source) => renderSourceRow(source))}
                     </div>
-                    <span className={`inline-flex items-center justify-center whitespace-nowrap text-[10px] font-bold px-2.5 py-0.5 rounded-lg shrink-0 ${meta.color}`}>{meta.label}</span>
-                  </div>
-                </button>
+                  )}
+                </div>
               );
             })
           )}
@@ -281,7 +393,7 @@ export default function SourceManager() {
 
       {/* Right panel — detail */}
       {selectedSource && (
-        <div className="w-80 shrink-0 flex flex-col bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm overflow-hidden">
+        <div className="w-80 shrink-0 self-start flex flex-col bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm overflow-hidden">
           {/* Panel header */}
           <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 dark:border-slate-700">
             <div className="flex items-center gap-2.5 min-w-0">
@@ -300,13 +412,14 @@ export default function SourceManager() {
             </button>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-5 space-y-5">
+          <div className="p-5 space-y-5">
             {/* Preview */}
-            {selectedSource.content && (
+            {(selectedSource.content || selectedSource.content_preview) && (
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">Preview</p>
                 <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-900/60 text-xs text-slate-600 dark:text-slate-400 max-h-36 overflow-y-auto leading-relaxed whitespace-pre-wrap font-mono border border-slate-100 dark:border-slate-700/50">
-                  {selectedSource.content.slice(0, 800)}{selectedSource.content.length > 800 && "…"}
+                  {(selectedSource.content || selectedSource.content_preview).slice(0, 800)}
+                  {(selectedSource.content || "").length > 800 && "…"}
                 </div>
               </div>
             )}
