@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import asyncio
 from uuid import uuid4
 
 import httpx
@@ -15,6 +16,9 @@ logger = logging.getLogger(__name__)
 MAX_CHANNELS = 20
 MAX_MESSAGES_PER_CHANNEL = 200
 MAX_THREAD_REPLIES = 100
+MAX_SLACK_PAGES = 10
+MAX_SLACK_RETRIES = 2
+SLACK_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 async def sync_slack(connector: Connector, session: AsyncSession) -> dict:
@@ -32,26 +36,33 @@ async def sync_slack(connector: Connector, session: AsyncSession) -> dict:
     threads_synced = 0
     thread_replies_fetched = 0
     permalink_errors = 0
+    pages_fetched = 0
+    retry_count = 0
+    rate_limit_retries = 0
+    scope_limited_channels = 0
+    partial_failures = 0
     errors: list[str] = []
 
     headers = {"Authorization": f"Bearer {token}"}
 
     async with httpx.AsyncClient(timeout=30) as http:
-        # ── List channels ──────────────────────────────────────────
-        resp = await http.get(
+        channels, list_stats = await _slack_paginated_get(
+            http,
             "https://slack.com/api/conversations.list",
             headers=headers,
-            params={
-                "types": "public_channel",
-                "limit": MAX_CHANNELS,
-                "exclude_archived": "true",
-            },
+            params={"types": "public_channel", "limit": MAX_CHANNELS, "exclude_archived": "true"},
+            item_key="channels",
+            context="conversations.list",
         )
-        channels_data = resp.json()
-        if not channels_data.get("ok"):
-            raise ValueError(f"Slack conversations.list error: {channels_data.get('error', 'unknown')}")
+        pages_fetched += list_stats["pages_fetched"]
+        retry_count += list_stats["retries"]
+        rate_limit_retries += list_stats["rate_limit_retries"]
+        if list_stats["scope_limited"]:
+            scope_limited_channels += 1
+            errors.append("Slack channel list skipped due to missing scope or unavailable channels")
+        if list_stats["partial_failure"]:
+            partial_failures += 1
 
-        channels = channels_data.get("channels", [])
         logger.info("Slack sync: found %d channels", len(channels))
 
         for channel in channels:
@@ -62,38 +73,51 @@ async def sync_slack(connector: Connector, session: AsyncSession) -> dict:
             # If we already have access (is_member) or join succeeds, proceed.
             is_member = channel.get("is_member", False)
             if not is_member:
-                join_resp = await http.post(
+                join_resp, join_stats = await _slack_request_with_retries(
+                    http,
+                    "POST",
                     "https://slack.com/api/conversations.join",
                     headers=headers,
                     json={"channel": channel_id},
                 )
+                retry_count += join_stats["retries"]
+                rate_limit_retries += join_stats["rate_limit_retries"]
                 join_data = join_resp.json()
                 if join_data.get("ok"):
                     is_member = True
                 elif join_data.get("error") in ("method_not_supported_for_channel_type",):
                     # Private channel — skip silently
+                    scope_limited_channels += 1
                     continue
                 else:
+                    partial_failures += 1
                     errors.append(f"#{channel_name}: join failed ({join_data.get('error', 'unknown')})")
                     continue
 
-            # ── Fetch message history ──────────────────────────────
             try:
-                resp = await http.get(
+                messages, history_stats = await _slack_paginated_get(
+                    http,
                     "https://slack.com/api/conversations.history",
                     headers=headers,
                     params={"channel": channel_id, "limit": MAX_MESSAGES_PER_CHANNEL},
+                    item_key="messages",
+                    context=f"#{channel_name}: history",
                 )
-                history = resp.json()
             except Exception as exc:
+                partial_failures += 1
                 errors.append(f"#{channel_name}: {exc}")
                 continue
 
-            if not history.get("ok"):
-                errors.append(f"#{channel_name}: {history.get('error', 'unknown')}")
+            pages_fetched += history_stats["pages_fetched"]
+            retry_count += history_stats["retries"]
+            rate_limit_retries += history_stats["rate_limit_retries"]
+            if history_stats["scope_limited"]:
+                scope_limited_channels += 1
+                errors.append(f"#{channel_name}: history skipped due to Slack scope limits")
                 continue
-
-            messages = history.get("messages", [])
+            if history_stats["partial_failure"]:
+                partial_failures += 1
+                errors.append(f"#{channel_name}: history partially synced before a Slack API error")
             docs_fetched += len(messages)
             channels_synced += 1
 
@@ -131,11 +155,19 @@ async def sync_slack(connector: Connector, session: AsyncSession) -> dict:
                     msg["ts"],
                     errors,
                 )
-                if replies:
+                reply_messages, reply_stats = replies
+                pages_fetched += reply_stats["pages_fetched"]
+                retry_count += reply_stats["retries"]
+                rate_limit_retries += reply_stats["rate_limit_retries"]
+                if reply_stats["partial_failure"]:
+                    partial_failures += 1
+                if reply_stats["scope_limited"]:
+                    scope_limited_channels += 1
+                if reply_messages:
                     threads_synced += 1
-                    thread_replies_fetched += len(replies)
-                    docs_fetched += len(replies)
-                for reply in replies:
+                    thread_replies_fetched += len(reply_messages)
+                    docs_fetched += len(reply_messages)
+                for reply in reply_messages:
                     result = await _persist_slack_message(
                         reply,
                         connector,
@@ -175,6 +207,11 @@ async def sync_slack(connector: Connector, session: AsyncSession) -> dict:
         "threads_synced": threads_synced,
         "thread_replies_fetched": thread_replies_fetched,
         "permalink_errors": permalink_errors,
+        "pages_fetched": pages_fetched,
+        "retry_count": retry_count,
+        "rate_limit_retries": rate_limit_retries,
+        "scope_limited_channels": scope_limited_channels,
+        "partial_failures": partial_failures,
         "errors": errors,
     }
 
@@ -243,23 +280,38 @@ async def _fetch_thread_replies(
     channel_name: str,
     parent_ts: str,
     errors: list[str],
-) -> list[dict]:
+) -> tuple[list[dict], dict[str, int | bool]]:
+    empty_stats = {
+        "pages_fetched": 0,
+        "retries": 0,
+        "rate_limit_retries": 0,
+        "partial_failure": False,
+        "scope_limited": False,
+    }
     try:
-        resp = await http.get(
+        messages, stats = await _slack_paginated_get(
+            http,
             "https://slack.com/api/conversations.replies",
             headers=headers,
             params={"channel": channel_id, "ts": parent_ts, "limit": MAX_THREAD_REPLIES},
+            item_key="messages",
+            context=f"#{channel_name}: thread {parent_ts}",
         )
-        data = resp.json()
     except Exception as exc:
+        empty_stats["partial_failure"] = True
         errors.append(f"#{channel_name}: thread {parent_ts} replies failed ({exc})")
-        return []
+        return [], empty_stats
 
-    if not data.get("ok"):
-        errors.append(f"#{channel_name}: thread {parent_ts} replies failed ({data.get('error', 'unknown')})")
-        return []
+    scope_limited = stats.pop("scope_limited", False)
+    partial_failure = stats.pop("partial_failure", False)
+    stats["partial_failure"] = partial_failure
+    stats["scope_limited"] = scope_limited
+    if scope_limited:
+        errors.append(f"#{channel_name}: thread {parent_ts} replies skipped due to Slack scope limits")
+    elif partial_failure:
+        errors.append(f"#{channel_name}: thread {parent_ts} replies failed")
 
-    return [reply for reply in data.get("messages", []) if reply.get("ts") != parent_ts]
+    return [reply for reply in messages if reply.get("ts") != parent_ts], stats
 
 
 async def _slack_permalink(
@@ -269,7 +321,9 @@ async def _slack_permalink(
     ts: str,
 ) -> str | None:
     try:
-        resp = await http.get(
+        resp, _stats = await _slack_request_with_retries(
+            http,
+            "GET",
             "https://slack.com/api/chat.getPermalink",
             headers=headers,
             params={"channel": channel_id, "message_ts": ts},
@@ -282,6 +336,110 @@ async def _slack_permalink(
         return None
     permalink = data.get("permalink")
     return str(permalink) if permalink else None
+
+
+async def _slack_paginated_get(
+    http: httpx.AsyncClient,
+    url: str,
+    headers: dict[str, str],
+    params: dict,
+    item_key: str,
+    context: str,
+) -> tuple[list[dict], dict[str, int | bool]]:
+    items: list[dict] = []
+    cursor = ""
+    stats: dict[str, int | bool] = {
+        "pages_fetched": 0,
+        "retries": 0,
+        "rate_limit_retries": 0,
+        "partial_failure": False,
+        "scope_limited": False,
+    }
+
+    for _page in range(MAX_SLACK_PAGES):
+        page_params = dict(params)
+        if cursor:
+            page_params["cursor"] = cursor
+        resp, request_stats = await _slack_request_with_retries(
+            http,
+            "GET",
+            url,
+            headers=headers,
+            params=page_params,
+        )
+        stats["retries"] += request_stats["retries"]
+        stats["rate_limit_retries"] += request_stats["rate_limit_retries"]
+        if resp.status_code != 200:
+            stats["partial_failure"] = True
+            if not items:
+                raise ValueError(f"Slack {context} HTTP {resp.status_code}")
+            return items, stats
+        data = resp.json()
+        if not data.get("ok"):
+            error = data.get("error", "unknown")
+            if error in {"missing_scope", "not_in_channel", "channel_not_found", "is_archived"}:
+                stats["scope_limited"] = True
+                return items, stats
+            stats["partial_failure"] = True
+            if not items:
+                raise ValueError(f"Slack {context} error: {error}")
+            return items, stats
+
+        stats["pages_fetched"] += 1
+        items.extend(data.get(item_key, []))
+        cursor = str(data.get("response_metadata", {}).get("next_cursor") or "")
+        if not cursor:
+            return items, stats
+
+    stats["partial_failure"] = bool(cursor)
+    return items, stats
+
+
+async def _slack_request_with_retries(
+    http: httpx.AsyncClient,
+    method: str,
+    url: str,
+    **kwargs,
+) -> tuple[httpx.Response, dict[str, int]]:
+    retries = 0
+    rate_limit_retries = 0
+    response: httpx.Response | None = None
+    for attempt in range(MAX_SLACK_RETRIES + 1):
+        response = await _perform_http_request(http, method, url, **kwargs)
+        if response.status_code not in SLACK_RETRYABLE_STATUS_CODES:
+            return response, {"retries": retries, "rate_limit_retries": rate_limit_retries}
+        if attempt >= MAX_SLACK_RETRIES:
+            return response, {"retries": retries, "rate_limit_retries": rate_limit_retries}
+        retries += 1
+        if response.status_code == 429:
+            rate_limit_retries += 1
+        retry_after = _retry_after_seconds(response)
+        if retry_after > 0:
+            await asyncio.sleep(retry_after)
+    assert response is not None
+    return response, {"retries": retries, "rate_limit_retries": rate_limit_retries}
+
+
+async def _perform_http_request(
+    http: httpx.AsyncClient,
+    method: str,
+    url: str,
+    **kwargs,
+) -> httpx.Response:
+    request = getattr(http, "request", None)
+    if callable(request):
+        return await request(method, url, **kwargs)
+    if method.upper() == "POST":
+        return await http.post(url, **kwargs)
+    return await http.get(url, **kwargs)
+
+
+def _retry_after_seconds(response: httpx.Response) -> float:
+    raw = response.headers.get("Retry-After")
+    try:
+        return min(max(float(raw or 0), 0.0), 2.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _slack_author_name(msg: dict) -> str:

@@ -1096,6 +1096,149 @@ class TestProviderSyncReporting:
         assert reply_metadata["parent_ts"] == "1.0"
         assert reply_metadata["is_thread_reply"] is True
 
+    async def test_slack_sync_paginates_and_retries_rate_limits(self, db_session, monkeypatch):
+        from app.sync import slack
+
+        class FakeSlackClient:
+            def __init__(self, *args, **kwargs):
+                self.history_attempts = 0
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+            async def request(self, method, url, headers=None, params=None, json=None):
+                if url.endswith("/conversations.list"):
+                    return httpx.Response(
+                        200,
+                        json={
+                            "ok": True,
+                            "channels": [{"id": "C123", "name": "engineering", "is_member": True}],
+                        },
+                    )
+                if url.endswith("/conversations.history"):
+                    self.history_attempts += 1
+                    if self.history_attempts == 1:
+                        return httpx.Response(429, headers={"Retry-After": "0"}, json={"ok": False})
+                    cursor = (params or {}).get("cursor")
+                    if not cursor:
+                        return httpx.Response(
+                            200,
+                            json={
+                                "ok": True,
+                                "messages": [
+                                    {
+                                        "ts": "1.0",
+                                        "text": "Decision: use Slack pagination.",
+                                        "user": "U1",
+                                        "reply_count": 2,
+                                    },
+                                ],
+                                "response_metadata": {"next_cursor": ""},
+                            },
+                        )
+                if url.endswith("/conversations.replies"):
+                    cursor = (params or {}).get("cursor")
+                    if not cursor:
+                        return httpx.Response(
+                            200,
+                            json={
+                                "ok": True,
+                                "messages": [
+                                    {"ts": "1.0", "text": "Decision: use Slack pagination.", "user": "U1"},
+                                    {"ts": "1.1", "thread_ts": "1.0", "text": "Task - first reply.", "user": "U2"},
+                                ],
+                                "response_metadata": {"next_cursor": "next-replies"},
+                            },
+                        )
+                    return httpx.Response(
+                        200,
+                        json={
+                            "ok": True,
+                            "messages": [
+                                {"ts": "1.2", "thread_ts": "1.0", "text": "Task - second reply.", "user": "U3"},
+                            ],
+                            "response_metadata": {"next_cursor": ""},
+                        },
+                    )
+                if url.endswith("/chat.getPermalink"):
+                    ts = params["message_ts"]
+                    return httpx.Response(
+                        200,
+                        json={"ok": True, "permalink": f"https://slack.example/C123/p{ts}"},
+                    )
+                raise AssertionError(f"unexpected URL {method} {url}")
+
+        monkeypatch.setattr(slack.httpx, "AsyncClient", FakeSlackClient)
+        connector = Connector(
+            id=uuid4(),
+            connector_type="slack",
+            status="connected",
+            credentials_json=json.dumps({"access_token": "slack-token"}),
+            config_json="{}",
+        )
+        db_session.add(connector)
+        await db_session.flush()
+
+        result = await slack.sync_slack(connector, db_session)
+
+        assert result["documents_fetched"] == 3
+        assert result["documents_persisted"] == 3
+        assert result["threads_synced"] == 1
+        assert result["thread_replies_fetched"] == 2
+        assert result["pages_fetched"] == 4  # list, history, and two reply pages
+        assert result["retry_count"] == 1
+        assert result["rate_limit_retries"] == 1
+        assert result["partial_failures"] == 0
+
+    async def test_slack_sync_reports_scope_limited_history(self, db_session, monkeypatch):
+        from app.sync import slack
+
+        class FakeSlackClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+            async def get(self, url, headers=None, params=None):
+                if url.endswith("/conversations.list"):
+                    return httpx.Response(
+                        200,
+                        json={
+                            "ok": True,
+                            "channels": [{"id": "C123", "name": "restricted", "is_member": True}],
+                        },
+                    )
+                if url.endswith("/conversations.history"):
+                    return httpx.Response(200, json={"ok": False, "error": "missing_scope"})
+                raise AssertionError(f"unexpected URL {url}")
+
+        monkeypatch.setattr(slack.httpx, "AsyncClient", FakeSlackClient)
+        connector = Connector(
+            id=uuid4(),
+            connector_type="slack",
+            status="connected",
+            credentials_json=json.dumps({"access_token": "slack-token"}),
+            config_json="{}",
+        )
+        db_session.add(connector)
+        await db_session.flush()
+
+        result = await slack.sync_slack(connector, db_session)
+
+        assert result["documents_fetched"] == 0
+        assert result["documents_persisted"] == 0
+        assert result["channels_synced"] == 0
+        assert result["scope_limited_channels"] == 1
+        assert result["partial_failures"] == 0
+        assert "scope" in result["errors"][0].lower()
+
     async def test_github_sync_reports_duplicate_skips(self, db_session, monkeypatch):
         from app.sync import github
 
