@@ -342,6 +342,62 @@ class TestFullIngestion:
         )).all()
         assert len(components) == count
 
+    async def test_slack_document_creates_message_root_and_discussed_in_relationship(self, db_session):
+        import json as _json
+
+        doc = SourceDocument(
+            id=uuid4(), source_type="slack", external_id="slack:C999:100.1",
+            content="Decision: we will use PostgreSQL for the production deployment",
+            author="Darshan",
+            metadata_json=_json.dumps({
+                "channel_id": "C999",
+                "channel_name": "engineering",
+                "author_name": "Darshan",
+                "user_id": "U1",
+                "ts": "100.1",
+            }),
+        )
+        db_session.add(doc)
+        await db_session.flush()
+
+        svc = IngestionService(db_session)
+        count = await svc.process_document(doc.id)
+        assert count == 3
+
+        rows = (await db_session.execute(
+            select(Component, Model.name)
+            .join(Model, Component.model_id == Model.id)
+            .where(Component.source_document_id == doc.id)
+        )).all()
+        assert {model_name for _, model_name in rows} == {"Decision", "Message"}
+        decision = next(c for c, _ in rows if c.fact_type == "decision")
+        root = next(c for c, _ in rows if c.name.startswith("Slack: #engineering"))
+        channel = next(c for c, _ in rows if c.name == "Slack channel #engineering")
+        assert root.provenance is not None
+        assert channel.provenance is not None
+
+        discussed = (await db_session.scalars(
+            select(Relationship).where(
+                Relationship.source_component_id == decision.id,
+                Relationship.target_component_id == root.id,
+            )
+        )).all()
+        assert len(discussed) == 1
+        assert discussed[0].relationship_type == "discussed_in"
+        assert discussed[0].origin == "deterministic"
+        assert discussed[0].confidence == 0.9
+        assert "PostgreSQL" in discussed[0].evidence
+
+        part_of = (await db_session.scalars(
+            select(Relationship).where(
+                Relationship.source_component_id == root.id,
+                Relationship.target_component_id == channel.id,
+            )
+        )).all()
+        assert len(part_of) == 1
+        assert part_of[0].relationship_type == "part_of"
+        assert part_of[0].origin == "deterministic"
+
     async def test_process_document_skips_already_processed(self, db_session):
         doc = SourceDocument(
             id=uuid4(), source_type="local", external_id="processed",

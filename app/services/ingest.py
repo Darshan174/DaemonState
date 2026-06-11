@@ -46,6 +46,10 @@ class IngestionService:
         metadata = _parse_metadata(doc.metadata_json)
         metadata.setdefault("source_type", doc.source_type)
         metadata.setdefault("external_id", doc.external_id)
+        if doc.author:
+            metadata.setdefault("author", doc.author)
+        if doc.source_url:
+            metadata.setdefault("source_url", doc.source_url)
         facts = self._extract_source_facts(doc, metadata)
         if not facts:
             facts_list = await self._extractor.extract(doc.content, metadata)
@@ -219,7 +223,7 @@ def _determine_origin(source_type: str, rel) -> str:
     deterministic_types = {
         "solves", "fixes", "created_from", "part_of", "generated_by_agent",
         "implemented_in", "duplicates", "supersedes", "touches_file",
-        "resolved_by",
+        "resolved_by", "discussed_in",
     }
     rel_type = canonical_relationship_type(getattr(rel, "relationship_type", "related_to"))
     if rel_type in deterministic_types:

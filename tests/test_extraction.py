@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from app.processing.extractor import ExtractedFact, ExtractedRelationship, Extractor
 
 
@@ -74,6 +76,108 @@ class TestRegexExtractor:
         assert len(facts) == 1
         assert facts[0].model_name == "Document"
         assert facts[0].confidence == 0.50
+
+    def test_gmail_fallback_uses_subject_sender_and_snippet(self):
+        ext = Extractor()
+        facts = ext._regex_extract(
+            "[Gmail] Launch plan\nFrom: PM <pm@example.com>\n\nQuick update from PM.",
+            {
+                "source_type": "gmail",
+                "external_id": "gmail:18f98a7c",
+                "subject": "Launch plan",
+                "from": "PM <pm@example.com>",
+                "snippet": "Quick update from PM.",
+                "thread_id": "thread-1",
+            },
+        )
+
+        assert len(facts) == 1
+        fact = facts[0]
+        assert fact.model_name == "Email"
+        assert fact.fact_type == "email"
+        assert "Launch plan" in fact.name
+        assert "PM" in fact.name
+        assert "18f98a7c" not in fact.name
+        assert fact.excerpt == "Quick update from PM."
+        assert fact.confidence >= 0.7
+        assert fact.relationships == []
+        provenance = json.loads(fact.provenance)
+        assert provenance["external_id"] == "gmail:18f98a7c"
+
+    def test_slack_pattern_facts_link_back_to_message_root(self):
+        ext = Extractor()
+        facts = ext._regex_extract(
+            "Decision: we will use PostgreSQL for the production deployment",
+            {
+                "source_type": "slack",
+                "external_id": "slack:C999:100.1",
+                "channel_name": "engineering",
+                "author_name": "Darshan",
+                "user_id": "U1",
+                "ts": "100.1",
+            },
+        )
+
+        assert len(facts) == 3
+        decision = next(f for f in facts if f.model_name == "Decision")
+        root = next(f for f in facts if f.name.startswith("Slack: #engineering"))
+        channel = next(f for f in facts if f.name == "Slack channel #engineering")
+
+        assert len(decision.relationships) == 1
+        rel = decision.relationships[0]
+        assert rel.target_name == root.name
+        assert rel.relationship_type == "discussed_in"
+        assert rel.confidence == 0.9
+        assert "PostgreSQL" in rel.evidence
+
+        assert len(root.relationships) == 1
+        channel_rel = root.relationships[0]
+        assert channel_rel.target_name == channel.name
+        assert channel_rel.relationship_type == "part_of"
+        assert "#engineering" in channel_rel.evidence
+        assert channel.relationships == []
+
+    def test_non_slack_pattern_facts_get_no_message_root(self):
+        ext = Extractor()
+        facts = ext._regex_extract(
+            "Decision: we will use PostgreSQL for the production deployment",
+            {"source_type": "local", "external_id": "doc-1"},
+        )
+
+        assert len(facts) == 1
+        assert facts[0].model_name == "Decision"
+        assert facts[0].relationships == []
+
+    def test_slack_fallback_uses_channel_author_and_message(self):
+        ext = Extractor()
+        facts = ext._regex_extract(
+            "Please review the onboarding copy before launch.",
+            {
+                "source_type": "slack",
+                "external_id": "slack:C123:1710000000.000100",
+                "channel_name": "growth",
+                "author_name": "Darshan",
+                "user_id": "U123",
+                "ts": "1710000000.000100",
+            },
+        )
+
+        assert len(facts) == 2
+        fact = facts[0]
+        assert fact.model_name == "Message"
+        assert fact.fact_type == "message"
+        assert "#growth" in fact.name
+        assert "Darshan" in fact.name
+        assert "onboarding copy" in fact.name
+        assert "C123" not in fact.name
+        assert fact.excerpt == "Please review the onboarding copy before launch."
+
+        channel = facts[1]
+        assert channel.name == "Slack channel #growth"
+        assert channel.model_name == "Message"
+        assert len(fact.relationships) == 1
+        assert fact.relationships[0].target_name == channel.name
+        assert fact.relationships[0].relationship_type == "part_of"
 
 
 class TestTemporalHintDetection:
