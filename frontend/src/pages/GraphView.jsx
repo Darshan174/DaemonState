@@ -225,6 +225,39 @@ function sourceVisual(component = {}) {
   return SOURCE_VISUALS[sourceKind(component)] || SOURCE_VISUALS.other;
 }
 
+function sourceMetaEntries(meta = {}, max = 8) {
+  const hiddenKeys = new Set(["permalink"]);
+  return Object.entries(meta || {})
+    .filter(([key, value]) => !hiddenKeys.has(key) && value !== null && value !== undefined && value !== "")
+    .slice(0, max);
+}
+
+function formatMetaKey(key = "") {
+  return String(key).replace(/_/g, " ");
+}
+
+function slackContextRows(node = {}) {
+  const meta = node.source_metadata_summary || {};
+  const channel = meta.channel_name ? `#${String(meta.channel_name).replace(/^#/, "")}` : "";
+  return [
+    ["Channel", channel],
+    ["Author", meta.author_name || meta.user_name],
+    ["Message ts", meta.ts],
+    ["Thread ts", meta.thread_ts],
+    ["Parent ts", meta.parent_ts],
+    ["Reply count", meta.reply_count],
+  ].filter(([, value]) => value !== null && value !== undefined && value !== "");
+}
+
+function slackPermalink(node = {}) {
+  return node.source_metadata_summary?.permalink || node.source_url || "";
+}
+
+function isDeterministicMentionEdge(edge = {}) {
+  const rel = String(edge.label || edge.displayLabel || "").toLowerCase();
+  return edge.origin === "deterministic" && rel.includes("mentions");
+}
+
 function connectorCardParts(component = {}, cleanName = "") {
   const kind = sourceKind(component);
   const meta = component.source_metadata_summary || {};
@@ -2727,14 +2760,45 @@ export default function GraphView() {
                 <span className="font-mono text-slate-600 dark:text-slate-400 text-[10px] truncate max-w-[180px]" title={selectedNode.source_external_id}>{selectedNode.source_external_id}</span>
               </div>
             )}
+            {sourceKind(selectedNode) === "slack" && (
+              <div className="text-xs mt-1 rounded-xl border border-sky-100 bg-sky-50/70 p-2.5 dark:border-sky-900/40 dark:bg-sky-950/20">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-sky-700 dark:text-sky-300">Slack context</span>
+                  {selectedNode.source_metadata_summary?.is_thread_reply && (
+                    <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">
+                      Thread reply
+                    </span>
+                  )}
+                </div>
+                <div className="space-y-1">
+                  {slackContextRows(selectedNode).map(([label, value]) => (
+                    <div key={label} className="flex justify-between gap-2">
+                      <span className="text-slate-500">{label}</span>
+                      <span className="max-w-[170px] truncate font-mono text-[10px] text-slate-700 dark:text-slate-300" title={String(value)}>{String(value)}</span>
+                    </div>
+                  ))}
+                </div>
+                {slackPermalink(selectedNode) && (
+                  <a
+                    href={slackPermalink(selectedNode)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-white px-2.5 py-1.5 text-[10px] font-bold text-sky-700 shadow-sm ring-1 ring-sky-100 hover:bg-sky-50 dark:bg-slate-900 dark:text-sky-300 dark:ring-sky-900/50 dark:hover:bg-slate-800"
+                  >
+                    <MessageCircle className="h-3 w-3" />
+                    Open Slack message
+                  </a>
+                )}
+              </div>
+            )}
             {selectedNode.source_metadata_summary && Object.keys(selectedNode.source_metadata_summary).length > 0 && (
               <div className="text-xs mt-1 border-t border-slate-100 dark:border-slate-700 pt-2">
                 <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Source context</span>
                 <div className="mt-1 space-y-0.5">
-                  {Object.entries(selectedNode.source_metadata_summary).slice(0, 5).map(([k, v]) => (
+                  {sourceMetaEntries(selectedNode.source_metadata_summary).map(([k, v]) => (
                     <div key={k} className="flex justify-between">
-                      <span className="text-slate-500">{k}</span>
-                      <span className="text-slate-600 dark:text-slate-400 font-mono text-[10px]">{String(v)}</span>
+                      <span className="text-slate-500 capitalize">{formatMetaKey(k)}</span>
+                      <span className="max-w-[180px] truncate text-slate-600 dark:text-slate-400 font-mono text-[10px]" title={String(v)}>{String(v)}</span>
                     </div>
                   ))}
                 </div>
@@ -2865,6 +2929,15 @@ export default function GraphView() {
               </span>
             </div>
           </div>
+
+          {isDeterministicMentionEdge(selectedEdge) && (
+            <div className="mb-4 rounded-xl border border-blue-100 bg-blue-50/80 p-2.5 text-xs text-blue-800 dark:border-blue-900/40 dark:bg-blue-950/20 dark:text-blue-300">
+              <p className="mb-1 text-[10px] font-bold uppercase tracking-widest">Cross-source reference</p>
+              <p className="leading-relaxed">
+                This edge was created because one source explicitly named another source item, channel, or document. It is shown as deterministic, not AI-proposed.
+              </p>
+            </div>
+          )}
 
           {selectedEdge.evidence && (
             <div className="mb-4">

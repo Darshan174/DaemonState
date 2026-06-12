@@ -514,6 +514,7 @@ async def get_graph_slice(
             "item_type", "number", "state", "merged", "repo_full_name",
             "subject", "from", "snippet", "message_id", "thread_id",
             "channel_name", "author_name", "user_name", "ts", "thread_ts",
+            "parent_ts", "is_thread_reply", "reply_count", "permalink",
         ):
             if key in md:
                 summary[key] = md[key]
@@ -659,6 +660,7 @@ async def get_component_detail(
             "item_type", "number", "state", "merged", "repo_full_name",
             "subject", "from", "snippet", "message_id", "thread_id",
             "channel_name", "author_name", "user_name", "ts", "thread_ts",
+            "parent_ts", "is_thread_reply", "reply_count", "permalink",
         ):
             if key in md:
                 summary[key] = md[key]
@@ -1092,8 +1094,12 @@ def _component_read(c: Component, relationship_count: int = 0) -> ComponentRead:
                 "number", "state", "title", "item_type", "repo_full_name", "merged",
                 "subject", "from", "snippet", "message_id", "thread_id",
                 "channel_name", "author_name", "user_name", "ts", "thread_ts",
+                "parent_ts", "is_thread_reply", "reply_count", "permalink",
             ]
-            source_meta = {k: v for k, v in md.items() if k in summary_keys and v}
+            source_meta = {
+                k: v for k, v in md.items()
+                if k in summary_keys and v not in (None, "", [])
+            }
     return ComponentRead(
         id=c.id, model_id=c.model_id,
         model_name=c.model.name if c.model else None,

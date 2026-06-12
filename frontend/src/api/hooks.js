@@ -377,7 +377,7 @@ export function useDashboard() {
         ?? models.reduce((n, m) => n + (m.component_count ?? 0), 0);
       const relationshipCount = stats?.relationships ?? 0;
       
-      const sourceDocumentCount = sources?.total ?? 0;
+      const sourceDocumentCount = stats?.sources ?? sources?.total ?? 0;
       const activeConnectorCount = connectors.filter(
         (connector) => connector.status === "connected" || connector.status === "error",
       ).length;
