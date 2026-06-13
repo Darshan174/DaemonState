@@ -26,8 +26,9 @@ const SLACK_LOGO_URI = svgDataUri(`
 </svg>`);
 
 const GITHUB_LOGO_URI = svgDataUri(`
-<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="#181717">
-  <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+  <rect width="24" height="24" rx="5" fill="#ffffff"/>
+  <path fill="#24292f" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75 0 4.305 2.79 7.96 6.655 9.255.487.09.665-.212.665-.47 0-.232-.008-.844-.013-1.655-2.71.59-3.283-1.305-3.483-1.98-.117-.298-.622-1.305-1.108-1.58-.37-.202-.905-.695-.013-.708.84-.013 1.445.615 1.645.87.96 1.612 2.505 1.16 3.12.877.09-.693.37-1.16.675-1.43-2.377-.27-4.875-1.185-4.875-5.28 0-1.162.416-2.112 1.095-2.857-.11-.27-.475-1.372.105-2.857 0 0 .892-.285 2.925 1.117.847-.24 1.755-.36 2.655-.36.9 0 1.808.12 2.655.36 2.032-1.402 2.925-1.117 2.925-1.117.58 1.485.215 2.587.105 2.857.68.745 1.095 1.695 1.095 2.857 0 4.11-2.505 5.01-4.89 5.278.385.33.727.975.727 1.965 0 1.418-.013 2.558-.013 2.91 0 .258.172.568.667.47A9.72 9.72 0 0021.75 12c0-5.385-4.365-9.75-9.75-9.75z"/>
 </svg>`);
 
 const AI_LOGO_URI = svgDataUri(`
@@ -99,13 +100,13 @@ const EDGE_ORIGIN_STYLE = {
   human_verified:{ lineStyle: "solid", width: 2.4, opacity: 0.88, label: "Human Verified", color: "#059669" },
 };
 
-const LOD_MACRO_ZOOM = 0.5;
-const LOD_CARD_ZOOM = 0.85;
+const LOD_MACRO_ZOOM = 0.58;
+const LOD_CARD_ZOOM = 1.05;
 const LOD_NODE_CLASSES = "lod-macro lod-compact lod-card";
 const LOD_EDGE_CLASSES = "lod-macro-edge lod-detail-edge";
-const COMPONENT_CARD_WIDTH = 286;
-const COMPONENT_CARD_HEIGHT = 132;
-const COMPONENT_CARD_TEXT_MAX_WIDTH = COMPONENT_CARD_WIDTH - 44;
+const COMPONENT_CARD_WIDTH = 236;
+const COMPONENT_CARD_HEIGHT = 92;
+const COMPONENT_CARD_TEXT_MAX_WIDTH = COMPONENT_CARD_WIDTH - 36;
 const SOURCE_HUB_CARD_WIDTH = 164;
 const SOURCE_HUB_CARD_HEIGHT = 116;
 const SOURCE_HUB_TEXT_MAX_WIDTH = SOURCE_HUB_CARD_WIDTH - 34;
@@ -173,15 +174,48 @@ function compactCardText(value, maxChars = 80) {
   const clean = String(value || "").replace(/\s+/g, " ").trim();
   if (!clean) return "";
   const truncated = clean.length > maxChars ? `${clean.slice(0, maxChars - 3).trim()}...` : clean;
-  return truncated.replace(/(\S{24})(?=\S)/g, "$1 ");
+  return truncated;
 }
 
-function formatCardLabel(lines, maxLines = 4) {
+function stripSlackNoise(text, channel = "") {
+  let clean = String(text || "").replace(/^Slack(?: message)?:\s*/i, "").trim();
+  if (channel) {
+    const ch = String(channel).replace(/^#/, "");
+    clean = clean.replace(new RegExp(`^#?${ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*:?\\s*`, "i"), "");
+  }
+  return clean.replace(/\s+/g, " ").trim();
+}
+
+function formatCardLabel(lines, maxLines = 2) {
   return lines
     .map((line) => compactCardText(line))
     .filter(Boolean)
     .slice(0, maxLines)
     .join("\n");
+}
+
+function layoutGridColumns(itemCount) {
+  if (itemCount <= 1) return 1;
+  if (itemCount <= 4) return 2;
+  if (itemCount <= 10) return 3;
+  if (itemCount <= 22) return 4;
+  return 5;
+}
+
+function componentAttentionBadge(component = {}) {
+  const status = String(component.status || "").toLowerCase();
+  const parts = [];
+  if (status === "needs_review") parts.push("Needs review");
+  else if (status === "stale") parts.push("Stale");
+  else if (status === "blocked") parts.push("Blocked");
+  if (component.confidence != null && component.confidence < 0.6) {
+    parts.push(`Low confidence ${Math.round(component.confidence * 100)}%`);
+  } else if (component.temporal === "future") {
+    parts.push("Next");
+  } else if (component.temporal === "past") {
+    parts.push("Past");
+  }
+  return parts.join(" · ");
 }
 
 // Strip common model-type prefixes that the containing box already communicates
@@ -261,30 +295,122 @@ function isDeterministicMentionEdge(edge = {}) {
 function connectorCardParts(component = {}, cleanName = "") {
   const kind = sourceKind(component);
   const meta = component.source_metadata_summary || {};
-  const valueSnippet = compactCardText(component.excerpt || meta.snippet || component.value, 92);
+  const valueSnippet = compactCardText(component.excerpt || meta.snippet || component.value, 88);
 
   if (kind === "gmail") {
     const title = meta.subject || cleanName.replace(/^Email:\s*/i, "");
     return {
       title: title || "Email",
-      context: meta.from ? `From: ${meta.from}` : "",
+      context: meta.from ? meta.from : "",
       snippet: valueSnippet,
     };
   }
 
   if (kind === "slack") {
     const channel = meta.channel_name ? `#${String(meta.channel_name).replace(/^#/, "")}` : "";
-    const author = meta.author_name || meta.author || "";
-    const parsed = cleanName.replace(/^Slack(?: message)?:\s*/i, "");
-    const parsedTitle = parsed.split(":")[0];
+    const author = meta.author_name || meta.user_name || meta.author || "";
+    const parsed = stripSlackNoise(cleanName, channel);
+    const messageLead = compactCardText(
+      stripSlackNoise(component.display_title, channel)
+      || parsed.split(":").slice(1).join(":").trim()
+      || parsed,
+      52,
+    );
+    const snippetSource = stripSlackNoise(component.excerpt || meta.snippet || component.value, channel);
+    const snippet = snippetSource
+      && snippetSource.toLowerCase() !== messageLead.toLowerCase()
+      && !messageLead.toLowerCase().includes(snippetSource.slice(0, 28).toLowerCase())
+      ? compactCardText(snippetSource, 64)
+      : "";
+    const contextParts = [];
+    if (channel && messageLead && !messageLead.toLowerCase().includes(channel.toLowerCase())) {
+      contextParts.push(channel);
+    }
+    if (author) contextParts.push(author);
     return {
-      title: channel || parsedTitle || "Slack message",
-      context: author ? `By: ${author}` : "",
-      snippet: valueSnippet || (channel ? parsed.replace(parsedTitle, "").replace(/^:\s*/, "") : parsed),
+      title: messageLead || channel || "Slack message",
+      context: contextParts.join(" · "),
+      snippet,
+    };
+  }
+
+  if (kind === "github") {
+    const number = meta.number;
+    const itemType = String(meta.item_type || "").toLowerCase();
+    const isPr = itemType.includes("pull") || /\bpr\b/i.test(cleanName);
+    const rawTitle = meta.title
+      || cleanName.replace(/^(?:GH\s+)?(?:Issue|PR)\s*#?\d+\s*:?\s*/i, "")
+      || stripModelPrefix(cleanName);
+    const prefix = number ? (isPr ? `PR #${number}` : `Issue #${number}`) : (isPr ? "PR" : "Issue");
+    const title = rawTitle ? `${prefix}: ${compactCardText(rawTitle, 42)}` : prefix;
+    const repo = meta.repo || meta.repository || "";
+    const repoShort = repo ? String(repo).split("/").slice(-2).join("/") : "";
+    const state = meta.state || meta.merged_state || "";
+    const stateLabel = state ? String(state).replace(/_/g, " ") : "";
+    const context = [repoShort, stateLabel].filter(Boolean).join(" · ");
+    const snippetRaw = compactCardText(component.excerpt || meta.snippet || component.value, 64);
+    const snippet = snippetRaw
+      && !title.toLowerCase().includes(snippetRaw.toLowerCase())
+      && snippetRaw.toLowerCase() !== stateLabel.toLowerCase()
+      && snippetRaw.toLowerCase() !== repoShort.toLowerCase()
+      ? snippetRaw
+      : "";
+    return { title, context, snippet };
+  }
+
+  if (kind === "agent") {
+    const tool = meta.tool || meta.agent || "";
+    const session = meta.session_id ? `…${String(meta.session_id).slice(-6)}` : "";
+    return {
+      title: compactCardText(stripModelPrefix(component.display_title || cleanName), 54) || "AI session",
+      context: [tool, session].filter(Boolean).join(" · "),
+      snippet: valueSnippet,
+    };
+  }
+
+  if (kind === "local") {
+    const path = meta.path || meta.filename || "";
+    const fileName = path ? String(path).split("/").pop() : "";
+    return {
+      title: compactCardText(stripModelPrefix(component.display_title || cleanName), 54) || fileName || "Document",
+      context: fileName && !cleanName.includes(fileName) ? fileName : "",
+      snippet: valueSnippet,
     };
   }
 
   return null;
+}
+
+function buildComponentCardContent(component = {}, cleanName = "", modelName = "") {
+  const connector = connectorCardParts(component, cleanName);
+  const attention = componentAttentionBadge(component);
+  let title;
+  let context = "";
+  let detail = "";
+
+  if (connector) {
+    ({ title, context = "", snippet: detail = "" } = connector);
+  } else {
+    title = compactCardText(stripModelPrefix(component.display_title || cleanName), 56) || shortLabel(cleanName, 6);
+    const domain = usefulDomainLabel(component, modelName);
+    if (domain && !String(title).toLowerCase().includes(domain.toLowerCase())) {
+      context = domain;
+    }
+    detail = compactCardText(component.excerpt || component.value, 88);
+  }
+
+  if (detail && (detail === title || String(title).includes(detail.slice(0, 32)))) {
+    detail = "";
+  }
+
+  const cardLines = [title, context, detail, attention]
+    .map((line) => compactCardText(line, 72))
+    .filter(Boolean)
+    .slice(0, 2);
+  const cardLabel = cardLines.join("\n");
+  const compactLabel = compactCardText(title, 40) || shortLabel(cleanName, 5);
+
+  return { displayName: title, compactLabel, cardLabel };
 }
 
 function usefulDomainLabel(component = {}, modelName = "") {
@@ -348,9 +474,23 @@ function componentVisuals(component = {}, isGap = false) {
   return palette;
 }
 
-function readableViewport(cy, viewMode) {
-  const padding = viewMode === "repo" ? 72 : 36;
+function fitGraphViewport(cy, viewMode) {
+  if (!cy) return;
+  const padding = viewMode === "repo" ? 72 : 24;
+  cy.resize();
+  const ext = cy.elements().boundingBox();
+  if (!ext.w || !ext.h) {
+    cy.fit(undefined, padding);
+    applyGraphLod(cy);
+    return;
+  }
+  const fitZoom = Math.min(
+    (cy.width() - padding * 2) / ext.w,
+    (cy.height() - padding * 2) / ext.h,
+  );
+  cy.minZoom(Math.max(0.05, fitZoom * 0.78));
   cy.fit(undefined, padding);
+  applyGraphLod(cy);
 }
 
 function graphLod(zoom) {
@@ -387,6 +527,82 @@ function buildGraphStats(data) {
     proposedEdges: relationships.filter((r) => ["proposed", "ai_proposed"].includes(r.origin || "proposed")).length,
     isolated: components.filter((c) => !connected.has(c.id)).length,
   };
+}
+
+function buildGraphOverview(cy) {
+  try {
+    if (!cy || (typeof cy.destroyed === "function" && cy.destroyed())) return null;
+    const visibleNodes = cy.nodes().filter((node) => node.visible());
+    if (!visibleNodes.length) {
+      return { nodes: [], edges: [], viewport: null, bounds: null };
+    }
+
+    const zoom = cy.zoom() || 1;
+    const pan = cy.pan();
+    const viewport = {
+      x: -pan.x / zoom,
+      y: -pan.y / zoom,
+      w: cy.width() / zoom,
+      h: cy.height() / zoom,
+    };
+    const rawBounds = visibleNodes.boundingBox({
+      includeLabels: false,
+      includeNodes: true,
+    });
+    const x1 = Math.min(rawBounds.x1, viewport.x);
+    const y1 = Math.min(rawBounds.y1, viewport.y);
+    const x2 = Math.max(rawBounds.x2, viewport.x + viewport.w);
+    const y2 = Math.max(rawBounds.y2, viewport.y + viewport.h);
+
+    const nodes = [];
+    visibleNodes.forEach((node) => {
+      const box = node.boundingBox({ includeLabels: false, includeNodes: true });
+      if (![box.x1, box.y1, box.w, box.h].every(Number.isFinite)) return;
+      const type = node.data("type") || "";
+      nodes.push({
+        id: node.id(),
+        type,
+        x: box.x1,
+        y: box.y1,
+        w: Math.max(1, box.w),
+        h: Math.max(1, box.h),
+        fill: node.data("bgColor") || (type === "model" ? "transparent" : "#94a3b8"),
+        stroke: node.data("borderColor") || node.data("modelColor") || "#64748b",
+      });
+    });
+
+    const edges = [];
+    cy.edges().forEach((edge) => {
+      const source = edge.source();
+      const target = edge.target();
+      if (!edge.visible() || !source.visible() || !target.visible()) return;
+      const sourcePos = source.position();
+      const targetPos = target.position();
+      if (![sourcePos.x, sourcePos.y, targetPos.x, targetPos.y].every(Number.isFinite)) return;
+      edges.push({
+        id: edge.id(),
+        x1: sourcePos.x,
+        y1: sourcePos.y,
+        x2: targetPos.x,
+        y2: targetPos.y,
+        color: edge.data("edgeColor") || "#94a3b8",
+      });
+    });
+
+    return {
+      bounds: {
+        x: x1,
+        y: y1,
+        w: Math.max(1, x2 - x1),
+        h: Math.max(1, y2 - y1),
+      },
+      viewport,
+      nodes,
+      edges: edges.slice(0, 260),
+    };
+  } catch (_) {
+    return null;
+  }
 }
 
 // ── CEO View presets ──────────────────────────────────────────────
@@ -480,7 +696,7 @@ export default function GraphView() {
   const [askError, setAskError] = useState(null);
   const askInputRef = useRef(null);
   const [ceoView, setCeoView] = useState("workLens");
-  const [graphZoom, setGraphZoom] = useState(100);
+  const [graphOverview, setGraphOverview] = useState(null);
   const [showFilters, setShowFilters] = useState(false);
 
   // Agents sidebar
@@ -527,22 +743,26 @@ export default function GraphView() {
   const fitGraph = useCallback(() => {
     const cy = cyRef.current;
     if (!cy) return;
-    const currentZoom = cy.zoom();
-    cy.resize();
-    cy.fit(undefined, 36);
-    if (cy.zoom() > currentZoom) {
-      cy.zoom({ level: currentZoom, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
-      cy.center();
-    }
-    setGraphZoom(Math.round(cy.zoom() * 100));
-  }, []);
+    fitGraphViewport(cy, viewMode);
+  }, [viewMode]);
 
   const changeGraphZoom = useCallback((delta) => {
     const cy = cyRef.current;
     if (!cy) return;
     const nextZoom = Math.max(cy.minZoom(), Math.min(cy.maxZoom(), cy.zoom() + delta));
     cy.zoom({ level: nextZoom, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
-    setGraphZoom(Math.round(cy.zoom() * 100));
+  }, []);
+
+  const centerGraphOnOverviewPoint = useCallback((point) => {
+    const cy = cyRef.current;
+    if (!cy || !point) return;
+    const zoom = cy.zoom();
+    cy.animate({
+      pan: {
+        x: cy.width() / 2 - point.x * zoom,
+        y: cy.height() / 2 - point.y * zoom,
+      },
+    }, { duration: 120 });
   }, []);
 
   useEffect(() => {
@@ -878,6 +1098,8 @@ export default function GraphView() {
         connectedComponentIds.add(r.target_component_id);
       });
 
+      const componentGroupMap = new Map();
+
       components.forEach((c) => {
         const temporal = c.temporal || "unknown";
         const isGap = ceoView === "gaps" && !connectedComponentIds.has(c.id);
@@ -886,40 +1108,17 @@ export default function GraphView() {
 
         const mName = modelNameById.get(c.model_id) || "";
         const groupKey = graphGroup(c, mName);
+        componentGroupMap.set(c.id, groupKey);
         const cleanName = stripModelPrefix(c.name);
-
-        // Card labels should lead with the useful source content; detailed
-        // provenance stays in the side panel after selecting the node.
-        const domain = usefulDomainLabel(c, mName);
-        const timeBadge = TEMPORAL_BADGE[temporal] || "";
-        const confidenceBadge = c.confidence != null && c.confidence < 0.6 ? `Low confidence ${Math.round(c.confidence * 100)}%` : "";
+        const { compactLabel, cardLabel } = buildComponentCardContent(c, cleanName, mName);
         const relationshipCount = c.relationship_count ?? 0;
-        const linkBadge = relationshipCount > 0 ? `${relationshipCount} linked` : "";
-        const chipLine = [source.label, domain].filter(Boolean).join("  /  ");
-        const evidenceLine = [linkBadge, timeBadge, confidenceBadge].filter(Boolean).join("  /  ");
-        const connectorParts = connectorCardParts(c, cleanName);
-        const displayName = connectorParts?.title
-          ? compactCardText(connectorParts.title, 58)
-          : compactCardText(stripModelPrefix(c.display_title || cleanName), 58) || shortLabel(cleanName, 7);
-        const cardLabel = connectorParts
-          ? formatCardLabel([
-              `${source.icon}  ${connectorParts.title}`,
-              connectorParts.context,
-              connectorParts.snippet,
-              evidenceLine,
-            ])
-          : formatCardLabel([
-              `${source.icon}  ${displayName}`,
-              chipLine,
-              evidenceLine,
-            ]);
 
         nodes.push({
           data: {
             id: c.id,
             parent: `group:${groupKey}`,
-            label: cardLabel,
-            compactLabel: displayName,
+            label: compactLabel,
+            compactLabel,
             cardLabel,
             fullLabel: c.display_title || c.name,
             type: "component",
@@ -955,6 +1154,10 @@ export default function GraphView() {
         const hideLowConfidence = filters.confidence_threshold > 0 && (r.confidence ?? 0) < filters.confidence_threshold;
         if (hideLowConfidence) return;
 
+        const sourceGroup = componentGroupMap.get(r.source_component_id);
+        const targetGroup = componentGroupMap.get(r.target_component_id);
+        const sameGroup = Boolean(sourceGroup && targetGroup && sourceGroup === targetGroup);
+
         edges.push({
           data: {
             id: r.id,
@@ -975,6 +1178,7 @@ export default function GraphView() {
             sourceName: r.source_component_name,
             targetName: r.target_component_name,
           },
+          classes: sameGroup ? "route-taxi" : "route-bezier",
         });
       });
     }
@@ -1108,13 +1312,14 @@ export default function GraphView() {
           selector: "node[type='component']",
           style: {
             "background-color": "data(bgColor)",
-            "background-opacity": 0.95,
+            "background-opacity": 0.9,
             "border-color": "data(borderColor)",
             "border-width": 2,
             width: cardWidth,
             height: cardHeight,
             shape: "round-rectangle",
             "corner-radius": "10px",
+            "z-index": 2,
             label: "data(label)",
             "text-valign": "center",
             "text-halign": "center",
@@ -1148,18 +1353,20 @@ export default function GraphView() {
         {
           selector: "node[type='component'].lod-compact",
           style: {
-            width: 150,
-            height: 42,
+            width: 132,
+            height: 34,
             shape: "round-rectangle",
-            "corner-radius": "9px",
+            "corner-radius": "8px",
             label: "data(compactLabel)",
-            "font-size": "9px",
+            "font-size": "8.5px",
             "font-weight": "bold",
-            "text-max-width": "126px",
+            "text-max-width": "112px",
             "text-wrap": "wrap",
             "text-justification": "left",
+            "text-valign": "center",
+            "text-margin-x": 4,
             "background-color": "data(bgColor)",
-            "background-opacity": 0.98,
+            "background-opacity": 0.96,
             "border-width": 2,
           },
         },
@@ -1170,10 +1377,9 @@ export default function GraphView() {
             height: cardHeight,
             shape: "round-rectangle",
             "corner-radius": "10px",
-            label: "data(cardLabel)",
-            "font-size": "10.5px",
-            "text-max-width": `${cardTextMaxWidth}px`,
-            "text-justification": "left",
+            "background-opacity": 0.9,
+            label: "",
+            "text-opacity": 0,
           },
         },
         {
@@ -1347,7 +1553,7 @@ export default function GraphView() {
           },
         },
 
-        // ── RELATIONSHIP EDGES — indigo tint ──────────────────────
+        // ── RELATIONSHIP EDGES — routed outside cards; labels on demand ──
         {
           selector: "edge[edgeType='relationship']",
           style: {
@@ -1355,36 +1561,59 @@ export default function GraphView() {
             "line-color": "data(edgeColor)",
             "target-arrow-color": "data(edgeColor)",
             "target-arrow-shape": "triangle",
-            "arrow-scale": 1.1,
-            "curve-style": "bezier",
-            label: "data(shortLabel)",
+            "arrow-scale": 1,
+            "edge-distances": "intersection",
+            "source-endpoint": "outside-to-node",
+            "target-endpoint": "outside-to-node",
+            "source-distance-from-node": 4,
+            "target-distance-from-node": 8,
+            "z-index": 12,
+            "z-compound-depth": "top",
+            label: "",
             opacity: "data(edgeOpacity)",
-            "font-size": "9px",
+            "font-size": "8.5px",
             "font-weight": "bold",
-            color: isDark ? "#c7d2fe" : "#3730a3",
-            "text-rotation": "autorotate",
+            color: isDark ? "#dbeafe" : "#1e3a8a",
+            "text-rotation": "0deg",
             "text-background-opacity": 1,
             "text-background-color": edgeLabelBg,
-            "text-background-padding": "4px",
+            "text-background-padding": "3px",
             "text-border-opacity": 0,
-            "text-margin-y": -8,
-            "transition-property": "width opacity line-color target-arrow-color",
+            "text-margin-y": -10,
+            "transition-property": "width opacity line-color target-arrow-color z-index",
             "transition-duration": "180ms",
+          },
+        },
+        {
+          selector: "edge[edgeType='relationship'].route-taxi",
+          style: {
+            "curve-style": "taxi",
+            "taxi-direction": "auto",
+            "taxi-turn": 28,
+            "taxi-turn-min-distance": 12,
+          },
+        },
+        {
+          selector: "edge[edgeType='relationship'].route-bezier",
+          style: {
+            "curve-style": "unbundled-bezier",
+            "control-point-distances": 56,
+            "control-point-weights": 0.42,
           },
         },
         {
           selector: "edge[edgeType='relationship'].lod-macro-edge",
           style: {
             label: "",
-            width: 1,
-            opacity: 0.34,
-            "arrow-scale": 0.72,
+            width: 0.9,
+            opacity: 0.28,
+            "arrow-scale": 0.6,
           },
         },
         {
           selector: "edge[edgeType='relationship'].lod-detail-edge",
           style: {
-            label: "data(shortLabel)",
+            label: "",
             width: "data(edgeWidth)",
             opacity: "data(edgeOpacity)",
           },
@@ -1472,6 +1701,7 @@ export default function GraphView() {
           style: {
             opacity: 1,
             width: 2.5,
+            "z-index": 30,
             "line-color": isDark ? "#818cf8" : "#6366f1",
             "target-arrow-color": isDark ? "#818cf8" : "#6366f1",
           },
@@ -1490,26 +1720,26 @@ export default function GraphView() {
             }))
             .sort((a, b) => b.items.length - a.items.length);
 
-          const colCount = Math.min(3, Math.max(1, groups.length));
-          const colWidth = 1220;
+          const colCount = Math.min(4, Math.max(1, groups.length));
+          const colWidth = 980;
           const cardW = COMPONENT_CARD_WIDTH;
           const cardH = COMPONENT_CARD_HEIGHT;
           const gapX = 36;
-          const gapY = 32;
-          const groupPadX = 72;
+          const gapY = 28;
+          const groupPadX = 56;
           const sourceHubW = SOURCE_HUB_CARD_WIDTH;
           const sourceHubRowH = SOURCE_HUB_CARD_HEIGHT;
-          const sourceHubGap = 18;
-          const sourceHubTopOffset = 64;
-          const groupPadTop = 176;
-          const groupGapY = 96;
-          const groupPadBottom = 64;
+          const sourceHubGap = 14;
+          const sourceHubTopOffset = 52;
+          const groupPadTop = 132;
+          const groupGapY = 72;
+          const groupPadBottom = 48;
           const colHeights = Array.from({ length: colCount }, () => 0);
 
           groups.forEach(({ groupKey, items, hubs }) => {
             const col = colHeights.indexOf(Math.min(...colHeights));
             const itemCount = Math.max(1, items.length);
-            const gridCols = itemCount >= 40 ? 4 : itemCount >= 20 ? 3 : itemCount >= 8 ? 2 : 1;
+            const gridCols = layoutGridColumns(itemCount);
             const rows = Math.ceil(itemCount / gridCols);
             const groupWidth = groupPadX * 2 + gridCols * cardW + (gridCols - 1) * gapX;
             const hubRows = Math.max(1, Math.ceil(hubs.length / Math.max(1, Math.floor((groupWidth - groupPadX * 2) / (sourceHubW + sourceHubGap)))));
@@ -1562,48 +1792,129 @@ export default function GraphView() {
       wheelSensitivity: 0.18,
     });
 
-    cy.minZoom(viewMode === "repo" ? 0.35 : 0.28);
     cy.maxZoom(2.8);
-    readableViewport(cy, viewMode);
+    fitGraphViewport(cy, viewMode);
     applyGraphLod(cy);
-    setGraphZoom(Math.round(cy.zoom() * 100));
-    cy.on("zoom", () => {
+
+    const graphIsDestroyed = () => typeof cy.destroyed === "function" && cy.destroyed();
+    let overviewRafId = null;
+    const updateGraphOverview = () => {
+      if (graphIsDestroyed()) return;
+      setGraphOverview(buildGraphOverview(cy));
+    };
+    const scheduleGraphOverviewUpdate = () => {
+      if (overviewRafId) return;
+      overviewRafId = requestAnimationFrame(() => {
+        overviewRafId = null;
+        updateGraphOverview();
+      });
+    };
+    const handleGraphZoom = () => {
       applyGraphLod(cy);
-      setGraphZoom(Math.round(cy.zoom() * 100));
-    });
+      scheduleGraphOverviewUpdate();
+    };
+    const handleGraphMove = () => {
+      scheduleGraphOverviewUpdate();
+    };
+    scheduleGraphOverviewUpdate();
 
     const resizeObserver = new ResizeObserver(() => {
       cy.resize();
-      readableViewport(cy, viewMode);
-      setGraphZoom(Math.round(cy.zoom() * 100));
+      fitGraphViewport(cy, viewMode);
+      scheduleGraphOverviewUpdate();
     });
     resizeObserver.observe(containerRef.current);
 
     let logoRafId = null;
     const logoTimeoutIds = [];
-    const graphIsDestroyed = () => typeof cy.destroyed === "function" && cy.destroyed();
-    const updateLogoOverlays = () => {
+    const updateNodeOverlays = () => {
       const layer = logoLayerRef.current;
       if (!layer || !containerRef.current || graphIsDestroyed()) {
         return;
       }
-      if (viewMode !== "repo" && cy.zoom() < LOD_CARD_ZOOM) {
+      const showDetailOverlays = viewMode === "repo" || cy.zoom() >= LOD_CARD_ZOOM;
+      if (!showDetailOverlays) {
         layer.replaceChildren();
         return;
       }
+
       const fragment = document.createDocumentFragment();
+      const textColor = isDark ? "#f8fafc" : "#0f172a";
+      const mutedColor = isDark ? "#94a3b8" : "#64748b";
+
       cy.nodes().forEach((node) => {
         try {
-          const logo = node.data("logo");
           const type = node.data("type");
-          if (!logo || !["component", "sourceHub"].includes(type)) return;
+          if (!["component", "sourceHub"].includes(type)) return;
 
           const bounds = node.renderedBoundingBox({
             includeEdges: false,
             includeLabels: false,
             includeNodes: true,
           });
+          const logo = node.data("logo");
           const isSourceHub = type === "sourceHub";
+          const isCardLod = type === "component" && node.hasClass("lod-card");
+
+          if (isCardLod) {
+            const shell = document.createElement("div");
+            shell.className = "pointer-events-none absolute overflow-hidden";
+            shell.dataset.graphCard = node.id();
+            Object.assign(shell.style, {
+              left: `${bounds.x1}px`,
+              top: `${bounds.y1}px`,
+              width: `${bounds.w}px`,
+              height: `${bounds.h}px`,
+              borderRadius: "10px",
+            });
+
+            if (logo) {
+              const isGitHubLogo = String(logo).includes("24292f") || node.data("source_kind") === "github";
+              const img = document.createElement("img");
+              img.src = logo;
+              img.alt = "";
+              img.className = isGitHubLogo ? "absolute left-1.5 top-1.5 rounded bg-white p-0.5 object-contain" : "absolute left-1.5 top-1.5 rounded bg-white/95 p-0.5 object-contain dark:bg-slate-950/90";
+              Object.assign(img.style, { width: "20px", height: "20px" });
+              shell.appendChild(img);
+            }
+
+            const lines = String(node.data("cardLabel") || "").split("\n").filter(Boolean);
+            const textWrap = document.createElement("div");
+            Object.assign(textWrap.style, {
+              position: "absolute",
+              left: logo ? "28px" : "8px",
+              right: "8px",
+              top: "7px",
+              bottom: "6px",
+              overflow: "hidden",
+              display: "flex",
+              flexDirection: "column",
+              justifyContent: "center",
+              gap: "2px",
+            });
+
+            lines.slice(0, 2).forEach((line, index) => {
+              const lineEl = document.createElement("div");
+              lineEl.textContent = line;
+              Object.assign(lineEl.style, {
+                color: index === 0 ? textColor : mutedColor,
+                fontSize: index === 0 ? "10px" : "9px",
+                fontWeight: index === 0 ? "700" : "500",
+                lineHeight: "1.2",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              });
+              textWrap.appendChild(lineEl);
+            });
+            shell.appendChild(textWrap);
+            fragment.appendChild(shell);
+            return;
+          }
+
+          if (!logo) return;
+
+          const isGitHubLogo = String(logo).includes("24292f") || node.data("source_kind") === "github";
           const size = isSourceHub ? 34 : 24;
           const left = isSourceHub
             ? bounds.x1 + bounds.w / 2
@@ -1617,8 +1928,8 @@ export default function GraphView() {
           img.title = node.data("fullLabel") || node.data("label") || "";
           img.dataset.graphLogo = node.id();
           img.className = isSourceHub
-            ? "absolute rounded-md bg-white/95 p-1 object-contain shadow-sm dark:bg-slate-950/90"
-            : "absolute rounded bg-white/95 p-0.5 object-contain shadow-sm dark:bg-slate-950/90";
+            ? `absolute rounded-md object-contain shadow-sm ${isGitHubLogo ? "bg-white p-1" : "bg-white/95 p-1 dark:bg-slate-950/90"}`
+            : `absolute rounded object-contain shadow-sm ${isGitHubLogo ? "bg-white p-0.5" : "bg-white/95 p-0.5 dark:bg-slate-950/90"}`;
           Object.assign(img.style, {
             width: `${size}px`,
             height: `${size}px`,
@@ -1635,13 +1946,15 @@ export default function GraphView() {
       if (logoRafId) return;
       logoRafId = requestAnimationFrame(() => {
         logoRafId = null;
-        updateLogoOverlays();
+        updateNodeOverlays();
       });
     };
-    updateLogoOverlays();
-    logoTimeoutIds.push(setTimeout(updateLogoOverlays, 50));
-    logoTimeoutIds.push(setTimeout(updateLogoOverlays, 250));
+    updateNodeOverlays();
+    logoTimeoutIds.push(setTimeout(updateNodeOverlays, 50));
+    logoTimeoutIds.push(setTimeout(updateNodeOverlays, 250));
     cy.on("render zoom pan position", scheduleLogoOverlayUpdate);
+    cy.on("zoom", handleGraphZoom);
+    cy.on("pan position", handleGraphMove);
 
     cy.on("tap", "node", (evt) => {
       const data = evt.target.data();
@@ -1706,30 +2019,54 @@ export default function GraphView() {
       }
     });
 
-    // Edge labels — reveal on hover, hide when mouse leaves
+    // Edge labels — reveal on hover/select only so the overview stays readable
     cy.on("mouseover", "edge[edgeType='relationship']", (evt) => {
-      evt.target.style({ label: evt.target.data("label"), opacity: 1 });
+      evt.target.style({
+        label: evt.target.data("displayLabel") || evt.target.data("label"),
+        opacity: 1,
+        "z-index": 24,
+        "text-rotation": "0deg",
+      });
     });
     cy.on("mouseout", "edge[edgeType='relationship']", (evt) => {
       if (!evt.target.selected()) {
-        evt.target.style({ label: evt.target.data("shortLabel"), opacity: evt.target.data("edgeOpacity") ?? 0.6 });
+        evt.target.style({
+          label: "",
+          opacity: evt.target.data("edgeOpacity") ?? 0.6,
+          "z-index": 12,
+        });
       }
     });
     cy.on("select", "edge[edgeType='relationship']", (evt) => {
-      evt.target.style({ label: evt.target.data("label"), opacity: 1 });
+      evt.target.style({
+        label: evt.target.data("displayLabel") || evt.target.data("label"),
+        opacity: 1,
+        "z-index": 24,
+        "text-rotation": "0deg",
+      });
     });
     cy.on("unselect", "edge[edgeType='relationship']", (evt) => {
-      evt.target.style({ label: evt.target.data("shortLabel"), opacity: evt.target.data("edgeOpacity") ?? 0.6 });
+      evt.target.style({
+        label: "",
+        opacity: evt.target.data("edgeOpacity") ?? 0.6,
+        "z-index": 12,
+      });
     });
 
-    // Hover effect on card nodes — subtle lift
+    // Hover effect on card nodes — subtle lift + surface connected edges
     cy.on("mouseover", "node[type='component']", (evt) => {
       evt.target.style({ "border-width": 2.5, opacity: 1 });
+      evt.target.connectedEdges("[edgeType='relationship']").style({ "z-index": 20, opacity: 1 });
     });
     cy.on("mouseout", "node[type='component']", (evt) => {
       if (!evt.target.selected()) {
         evt.target.style({ "border-width": 2, opacity: 1 });
       }
+      evt.target.connectedEdges("[edgeType='relationship']").forEach((edge) => {
+        if (!edge.selected()) {
+          edge.style({ "z-index": 12, opacity: edge.data("edgeOpacity") ?? 0.6 });
+        }
+      });
     });
 
     cyRef.current = cy;
@@ -1773,11 +2110,15 @@ export default function GraphView() {
       containerEl.removeEventListener("mousemove", onMouseMove);
       containerEl.removeEventListener("mouseleave", onMouseLeave);
       cy.off("render zoom pan position", scheduleLogoOverlayUpdate);
+      cy.off("zoom", handleGraphZoom);
+      cy.off("pan position", handleGraphMove);
       logoTimeoutIds.forEach((timeoutId) => clearTimeout(timeoutId));
       if (logoRafId) cancelAnimationFrame(logoRafId);
+      if (overviewRafId) cancelAnimationFrame(overviewRafId);
       logoLayerRef.current?.replaceChildren();
       resizeObserver.disconnect();
       cy.destroy();
+      setGraphOverview(null);
     };
   }, [graphData, filteredData, viewMode, ceoView, theme]);
 
@@ -1843,7 +2184,7 @@ export default function GraphView() {
     <div className="relative flex h-full min-h-0 overflow-hidden">
       <div className="relative flex min-w-0 flex-1 flex-col">
         <div className="pointer-events-none absolute left-3 right-3 top-3 z-30 flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
-          <div className="pointer-events-auto max-w-full rounded-xl border border-slate-200 bg-white/92 p-2 shadow-sm backdrop-blur-sm dark:border-slate-700 dark:bg-slate-800/92 lg:max-w-[34rem]">
+          <div className="pointer-events-auto w-fit max-w-[calc(100vw-1.5rem)] self-start rounded-xl border border-slate-200 bg-white/92 p-2 shadow-sm backdrop-blur-sm dark:border-slate-700 dark:bg-slate-800/92">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-sm font-black text-slate-900 dark:text-white">Knowledge Graph</h2>
               <div className="flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 dark:border-slate-700 dark:bg-slate-900/70">
@@ -1882,14 +2223,14 @@ export default function GraphView() {
                   )}
                 </div>
               )}
-              {viewMode === "knowledge" && activeWorkspace && (
-                <div className="flex max-w-[18rem] items-center gap-1.5 rounded-lg bg-brand-50 px-2 py-1 text-[10px] font-bold text-brand-700 dark:bg-brand-900/30 dark:text-brand-300">
-                  <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
-                  <span className="shrink-0">Workspace focused</span>
-                  <span className="truncate text-brand-900 dark:text-brand-100">{activeWorkspace.name}</span>
-                </div>
-              )}
             </div>
+            {viewMode === "knowledge" && activeWorkspace && (
+              <div className="mt-2 flex w-fit max-w-full items-center gap-1.5 rounded-lg bg-brand-50 px-2 py-1 text-[10px] font-bold text-brand-700 dark:bg-brand-900/30 dark:text-brand-300">
+                <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+                <span className="shrink-0">Workspace focused</span>
+                <span className="truncate text-brand-900 dark:text-brand-100">{activeWorkspace.name}</span>
+              </div>
+            )}
             {viewMode === "knowledge" && (
               <div className="mt-2 inline-flex max-w-full items-center gap-2 rounded-lg bg-slate-50 px-2 py-1 dark:bg-slate-900/60">
                 <span className="shrink-0 text-[10px] font-bold uppercase text-slate-400">View</span>
@@ -2359,7 +2700,7 @@ export default function GraphView() {
         )}
 
         <div
-          className="flex-1 relative rounded-2xl border border-slate-200 min-h-0 overflow-hidden dark:border-slate-700"
+          className="flex-1 relative min-h-0 overflow-hidden"
           style={{
             backgroundColor: theme === "dark" ? "#000" : "#fff",
             backgroundImage: theme === "dark"
@@ -2368,23 +2709,24 @@ export default function GraphView() {
             backgroundSize: "22px 22px",
           }}
         >
-          <div ref={containerRef} className="absolute inset-0 rounded-2xl" />
+          <div ref={containerRef} className="absolute inset-0" />
           <div ref={logoLayerRef} className="pointer-events-none absolute inset-0 z-10" />
 
-          <div className="absolute bottom-3 left-3 z-20 flex items-center gap-1 rounded-xl border border-slate-200 bg-white/92 p-1 shadow-sm backdrop-blur-sm dark:border-slate-700 dark:bg-slate-800/92">
-            <button type="button" title="Zoom out" onClick={() => changeGraphZoom(-0.12)} className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white">
-              <Minus className="h-3.5 w-3.5" />
-            </button>
-            <span className="min-w-[2.75rem] text-center text-[11px] font-bold text-slate-600 dark:text-slate-300">{graphZoom}%</span>
-            <button type="button" title="Zoom in" onClick={() => changeGraphZoom(0.12)} className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white">
+          <div className="absolute bottom-4 left-4 z-20 flex flex-col items-center gap-1 rounded-xl border border-slate-200 bg-white/92 p-1 shadow-sm backdrop-blur-sm dark:border-slate-700 dark:bg-slate-800/92">
+            <button type="button" title="Zoom in" onClick={() => changeGraphZoom(0.12)} className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white">
               <Plus className="h-3.5 w-3.5" />
             </button>
-            <button type="button" title="Fit whole graph" onClick={fitGraph} className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white">
+            <button type="button" title="Zoom out" onClick={() => changeGraphZoom(-0.12)} className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white">
+              <Minus className="h-3.5 w-3.5" />
+            </button>
+            <button type="button" title="Fit whole graph" onClick={fitGraph} className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white">
               <Maximize2 className="h-3.5 w-3.5" />
             </button>
           </div>
 
-          <div className="absolute bottom-3 right-3 z-20 flex items-center gap-2">
+          <GraphMinimap overview={graphOverview} onCenter={centerGraphOnOverviewPoint} theme={theme} />
+
+          <div className="absolute bottom-4 right-4 z-20 flex items-center gap-2">
             <button
               type="button"
               onClick={handleBuildGraph}
@@ -3157,6 +3499,126 @@ export default function GraphView() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function GraphMinimap({ overview, onCenter, theme }) {
+  const svgRef = useRef(null);
+  if (!overview?.bounds || !overview.nodes?.length) return null;
+
+  const width = 184;
+  const height = 118;
+  const padding = 10;
+  const usableWidth = width - padding * 2;
+  const usableHeight = height - padding * 2;
+  const scale = Math.min(usableWidth / overview.bounds.w, usableHeight / overview.bounds.h);
+  const offsetX = padding + (usableWidth - overview.bounds.w * scale) / 2 - overview.bounds.x * scale;
+  const offsetY = padding + (usableHeight - overview.bounds.h * scale) / 2 - overview.bounds.y * scale;
+  const x = (value) => value * scale + offsetX;
+  const y = (value) => value * scale + offsetY;
+  const graphNodes = overview.nodes.filter((node) => node.type !== "model");
+  const groupNodes = overview.nodes.filter((node) => node.type === "model");
+  const viewport = overview.viewport
+    ? {
+      x: x(overview.viewport.x),
+      y: y(overview.viewport.y),
+      w: overview.viewport.w * scale,
+      h: overview.viewport.h * scale,
+    }
+    : null;
+
+  function handlePointerDown(event) {
+    if (!svgRef.current || !onCenter) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const sx = ((event.clientX - rect.left) / rect.width) * width;
+    const sy = ((event.clientY - rect.top) / rect.height) * height;
+    onCenter({
+      x: (sx - offsetX) / scale,
+      y: (sy - offsetY) / scale,
+    });
+  }
+
+  const isDark = theme === "dark";
+
+  return (
+    <div className="absolute bottom-20 right-4 z-20 rounded-xl border border-slate-200 bg-white/90 p-1.5 shadow-sm backdrop-blur-sm dark:border-slate-700 dark:bg-slate-900/88">
+      <svg
+        ref={svgRef}
+        width={width}
+        height={height}
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label="Graph minimap"
+        onPointerDown={handlePointerDown}
+        className="block cursor-crosshair rounded-lg"
+      >
+        <rect
+          x="0"
+          y="0"
+          width={width}
+          height={height}
+          rx="8"
+          fill={isDark ? "rgba(2,6,23,0.96)" : "rgba(248,250,252,0.96)"}
+        />
+        <pattern id="graph-minimap-grid" width="12" height="12" patternUnits="userSpaceOnUse">
+          <circle cx="1" cy="1" r="0.8" fill={isDark ? "rgba(148,163,184,0.28)" : "rgba(100,116,139,0.28)"} />
+        </pattern>
+        <rect x="0" y="0" width={width} height={height} rx="8" fill="url(#graph-minimap-grid)" />
+        {groupNodes.map((node) => (
+          <rect
+            key={node.id}
+            x={x(node.x)}
+            y={y(node.y)}
+            width={Math.max(8, node.w * scale)}
+            height={Math.max(8, node.h * scale)}
+            rx="4"
+            fill="transparent"
+            stroke={node.stroke}
+            strokeWidth="1"
+            opacity="0.28"
+          />
+        ))}
+        {overview.edges.map((edge) => (
+          <line
+            key={edge.id}
+            x1={x(edge.x1)}
+            y1={y(edge.y1)}
+            x2={x(edge.x2)}
+            y2={y(edge.y2)}
+            stroke={edge.color}
+            strokeWidth="1"
+            opacity="0.28"
+          />
+        ))}
+        {graphNodes.map((node) => (
+          <rect
+            key={node.id}
+            x={x(node.x)}
+            y={y(node.y)}
+            width={Math.max(node.type === "sourceHub" ? 7 : 4, node.w * scale)}
+            height={Math.max(node.type === "sourceHub" ? 5 : 3, node.h * scale)}
+            rx={node.type === "sourceHub" ? "2" : "1.5"}
+            fill={node.fill}
+            stroke={node.stroke}
+            strokeWidth="1"
+            opacity="0.82"
+          />
+        ))}
+        {viewport && (
+          <rect
+            x={viewport.x}
+            y={viewport.y}
+            width={Math.max(12, viewport.w)}
+            height={Math.max(10, viewport.h)}
+            rx="3"
+            fill="transparent"
+            stroke={isDark ? "#f8fafc" : "#0f172a"}
+            strokeWidth="1.5"
+            opacity="0.9"
+          />
+        )}
+      </svg>
     </div>
   );
 }
