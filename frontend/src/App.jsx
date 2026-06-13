@@ -14,7 +14,7 @@ const AgentsView   = lazy(() => import("./pages/AgentsView"));
 
 const NAV_ITEMS = [
   { to: "/app",             label: "Dashboard", end: true },
-  { to: "/app/graph",       label: "Graph",    badge: "AI" },
+  { to: "/app/graph",       label: "Graph" },
   { to: "/app/query",       label: "Ask" },
   { to: "/app/sources",     label: "Sources" },
   { to: "/app/connectors",  label: "Connectors" },
@@ -92,7 +92,7 @@ function AdminShell() {
         </div>
       </header>
 
-      <main className={`flex-1 min-h-0 dark:text-slate-100 ${isGraphPage ? "overflow-hidden px-3 py-3 md:px-4" : "overflow-y-auto px-4 py-6 md:px-6"}`}>
+      <main className={`flex-1 min-h-0 dark:text-slate-100 ${isGraphPage ? "overflow-hidden" : "overflow-y-auto px-4 py-6 md:px-6"}`}>
         <Suspense fallback={<PageLoader />}>
           <Routes>
             <Route index                                  element={<Dashboard />} />
