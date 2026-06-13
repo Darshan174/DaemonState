@@ -107,6 +107,12 @@ const LOD_EDGE_CLASSES = "lod-macro-edge lod-detail-edge";
 const COMPONENT_CARD_WIDTH = 236;
 const COMPONENT_CARD_HEIGHT = 92;
 const COMPONENT_CARD_TEXT_MAX_WIDTH = COMPONENT_CARD_WIDTH - 36;
+const CARD_OVERLAY_TITLE_PX = 12;
+const CARD_OVERLAY_META_PX = 11;
+const GROUP_HEADER_HEIGHT_PX = 30;
+const GROUP_HUB_CHIP_HEIGHT_PX = 42;
+const GROUP_HEADER_FLOAT_GAP_PX = 10;
+const GROUP_HEADER_BAND_PX = 40;
 const SOURCE_HUB_CARD_WIDTH = 164;
 const SOURCE_HUB_CARD_HEIGHT = 116;
 const SOURCE_HUB_TEXT_MAX_WIDTH = SOURCE_HUB_CARD_WIDTH - 34;
@@ -133,27 +139,34 @@ const SOURCE_FAMILY_META = {
 };
 
 const SOURCE_VISUALS = {
-  github: { icon: "GH", label: "GitHub", bg: "rgba(100,116,139,0.18)", border: "#64748b", color: "#e2e8f0", logo: GITHUB_LOGO_URI },
+  github: { icon: "GH", label: "GitHub", bg: "rgba(110,118,129,0.14)", border: "#6e7681", color: "#e6edf3", logo: GITHUB_LOGO_URI },
   gmail: { icon: "GM", label: "Gmail", bg: "rgba(14,165,233,0.18)", border: "#38bdf8", color: "#e0f2fe", logo: imgGmail },
-  slack: { icon: "SL", label: "Slack", bg: "rgba(20,184,166,0.18)", border: "#2dd4bf", color: "#ccfbf1", logo: SLACK_LOGO_URI },
+  slack: { icon: "SL", label: "Slack", bg: "rgba(29,155,209,0.14)", border: "#1d9bd1", color: "#e8f6fc", logo: SLACK_LOGO_URI },
   agent: { icon: "AI", label: "AI Session", bg: "rgba(124,58,237,0.18)", border: "#8b5cf6", color: "#ede9fe", logo: AI_LOGO_URI },
   local: { icon: "DOC", label: "Document", bg: "rgba(148,163,184,0.16)", border: "#94a3b8", color: "#e2e8f0", logo: "" },
   other: { icon: "SRC", label: "Source", bg: "rgba(20,184,166,0.14)", border: "#14b8a6", color: "#ccfbf1", logo: "" },
 };
 
 const GRAPH_GROUP_META = {
-  decisions: { label: "Decisions", color: "#f59e0b" },
-  work: { label: "Active Work", color: "#2563eb" },
-  risks: { label: "Risks & Blockers", color: "#ef4444" },
-  github: { label: "GitHub Delivery", color: "#334155" },
-  gmail: { label: "Gmail Inbox", color: "#38bdf8" },
-  slack: { label: "Slack Messages", color: "#2dd4bf" },
-  localDocs: { label: "Documents", color: "#94a3b8" },
-  agents: { label: "AI Sessions", color: "#7c3aed" },
-  sources: { label: "Sources", color: "#14b8a6" },
-  product: { label: "Product", color: "#22c55e" },
-  repo: { label: "Repository", color: "#64748b" },
-  other: { label: "Other Context", color: "#94a3b8" },
+  decisions: { label: "Decisions", color: "#d97706", short: "Decisions" },
+  work: { label: "Active Work", color: "#3b82f6", short: "Work" },
+  risks: { label: "Risks & Blockers", color: "#ef4444", short: "Risks" },
+  github: { label: "GitHub", color: "#6e7681", short: "GitHub" },
+  gmail: { label: "Gmail Inbox", color: "#38bdf8", short: "Gmail" },
+  slack: { label: "Slack", color: "#1d9bd1", short: "Slack" },
+  localDocs: { label: "Documents", color: "#94a3b8", short: "Docs" },
+  agents: { label: "AI Sessions", color: "#8b5cf6", short: "AI" },
+  sources: { label: "Sources", color: "#14b8a6", short: "Sources" },
+  product: { label: "Product", color: "#22c55e", short: "Product" },
+  repo: { label: "Repository", color: "#64748b", short: "Repo" },
+  other: { label: "Other Context", color: "#94a3b8", short: "Other" },
+};
+
+const GROUP_HEADER_LOGOS = {
+  github: GITHUB_LOGO_URI,
+  slack: SLACK_LOGO_URI,
+  gmail: imgGmail,
+  agents: AI_LOGO_URI,
 };
 
 const REPO_TYPE_COLORS = {
@@ -194,12 +207,71 @@ function formatCardLabel(lines, maxLines = 2) {
     .join("\n");
 }
 
-function layoutGridColumns(itemCount) {
+function layoutGridColumns(itemCount, maxCols = 3) {
   if (itemCount <= 1) return 1;
   if (itemCount <= 4) return 2;
   if (itemCount <= 10) return 3;
-  if (itemCount <= 22) return 4;
-  return 5;
+  return maxCols;
+}
+
+function appendSourceHubChip(container, {
+  logo,
+  count,
+  accent,
+  isDark,
+  textColor,
+  mutedColor,
+  headerBg,
+}) {
+  const chip = document.createElement("div");
+  Object.assign(chip.style, {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "8px",
+    padding: "6px 12px",
+    borderRadius: "12px",
+    background: headerBg,
+    border: `1.5px solid ${accent}`,
+    boxShadow: isDark ? "0 2px 10px rgba(0,0,0,0.28)" : "0 2px 8px rgba(15,23,42,0.08)",
+  });
+
+  if (logo) {
+    const img = document.createElement("img");
+    img.src = logo;
+    img.alt = "";
+    Object.assign(img.style, {
+      width: "28px",
+      height: "28px",
+      borderRadius: "6px",
+      objectFit: "contain",
+      background: "#fff",
+      padding: "2px",
+      flexShrink: "0",
+    });
+    chip.appendChild(img);
+  }
+
+  const countEl = document.createElement("span");
+  countEl.textContent = String(count);
+  Object.assign(countEl.style, {
+    color: textColor,
+    fontSize: `${CARD_OVERLAY_TITLE_PX + 2}px`,
+    fontWeight: "800",
+    lineHeight: "1",
+  });
+  chip.appendChild(countEl);
+
+  const unit = document.createElement("span");
+  unit.textContent = "items";
+  Object.assign(unit.style, {
+    color: mutedColor,
+    fontSize: `${CARD_OVERLAY_META_PX}px`,
+    fontWeight: "600",
+    lineHeight: "1",
+  });
+  chip.appendChild(unit);
+  container.appendChild(chip);
+  return chip;
 }
 
 function componentAttentionBadge(component = {}) {
@@ -455,15 +527,24 @@ function componentVisuals(component = {}, isGap = false) {
     };
   }
 
+  const kind = sourceKind(component);
   const family = sourceFamily(component);
   const status = String(component.status || "").toLowerCase();
-  const palette = {
-    github: { bg: "rgba(100,116,139,0.14)", border: "#64748b", stripe: "#94a3b8" },
-    agent: { bg: "rgba(124,58,237,0.14)", border: "#8b5cf6", stripe: "#a78bfa" },
-    communication: { bg: "rgba(14,165,233,0.14)", border: "#38bdf8", stripe: "#38bdf8" },
-    local: { bg: "rgba(20,184,166,0.13)", border: "#2dd4bf", stripe: "#2dd4bf" },
-    other: { bg: "rgba(148,163,184,0.12)", border: "#94a3b8", stripe: "#94a3b8" },
-  }[family] || { bg: "rgba(148,163,184,0.12)", border: "#94a3b8", stripe: "#94a3b8" };
+  const byKind = {
+    github: { bg: "rgba(110,118,129,0.11)", border: "#6e7681", stripe: "#8b949e" },
+    slack: { bg: "rgba(29,155,209,0.12)", border: "#1d9bd1", stripe: "#36c5f0" },
+    gmail: { bg: "rgba(56,189,248,0.12)", border: "#38bdf8", stripe: "#7dd3fc" },
+    agent: { bg: "rgba(124,58,237,0.13)", border: "#8b5cf6", stripe: "#a78bfa" },
+    local: { bg: "rgba(148,163,184,0.10)", border: "#94a3b8", stripe: "#cbd5e1" },
+  };
+  const byFamily = {
+    github: { bg: "rgba(110,118,129,0.11)", border: "#6e7681", stripe: "#8b949e" },
+    agent: { bg: "rgba(124,58,237,0.13)", border: "#8b5cf6", stripe: "#a78bfa" },
+    communication: { bg: "rgba(29,155,209,0.12)", border: "#1d9bd1", stripe: "#36c5f0" },
+    local: { bg: "rgba(148,163,184,0.10)", border: "#94a3b8", stripe: "#cbd5e1" },
+    other: { bg: "rgba(148,163,184,0.10)", border: "#94a3b8", stripe: "#cbd5e1" },
+  };
+  const palette = byKind[kind] || byFamily[family] || byFamily.other;
 
   if (status === "needs_review" || status === "proposed" || status === "draft") {
     return { ...palette, border: "#f59e0b" };
@@ -607,27 +688,18 @@ function buildGraphOverview(cy) {
 
 // ── CEO View presets ──────────────────────────────────────────────
 const CEO_VIEWS = [
-  { id: "all",        label: "All",            desc: "Full graph — every entity and relationship" },
-  { id: "birdsEye",   label: "Bird's Eye",     desc: "Company → Product → Feature → Task → PR → Customer" },
-  { id: "gaps",       label: "Gap Detector",   desc: "Highlights nodes with no connections — missing owners, orphaned tasks, unlinked decisions" },
-  { id: "decisions",  label: "Decision Trail", desc: "Message → Meeting → Decision → PR → Feature" },
-  { id: "aiSessions", label: "AI Sessions",    desc: "Agent sessions → decisions, files changed, bugs found, next steps" },
-  { id: "workLens",   label: "Work Lens",      desc: "Blockers, open decisions, active tasks, unresolved questions" },
-  { id: "github",     label: "GitHub Delivery", desc: "Issue → PR → files → decisions/tasks" },
-  { id: "repo",       label: "Repository",      desc: "Repos, files, changed modules" },
+  { id: "all",        label: "Overview",       desc: "Full graph — every component and relationship" },
+  { id: "gaps",       label: "Gap Detector",   desc: "Highlights isolated nodes with no connections" },
+  { id: "github",     label: "GitHub",         desc: "Issues, PRs, and delivery links" },
+  { id: "aiSessions", label: "AI Sessions",    desc: "Agent sessions and generated context" },
 ];
 
 const CEO_VIEW_MODEL_PATTERNS = {
-  birdsEye:   /^(company|product|feature|task|customer|user|pr|issue|repo|metric)/i,
-  decisions:  /^(decision|meeting|message|email|document|slack|zoom|discussion)/i,
   aiSessions: /^(agent session|agent|claude|codex|opencode|chatgpt|ai session)/i,
-  workLens:   /^(risk|task|decision|agent session|issue|pr|repo)/i,
   github:     /^(issue|pr|repo|github)/i,
-  repo:       /^(repo|github)/i,
 };
 
 const CEO_VIEW_FACT_TYPE_PATTERNS = {
-  workLens:   /^(blocker|task|decision|risk|open_question|issue|pr|pr_review_finding|github_issue|github_pr|changed_file|session_root|ai_task|ai_decision|ai_blocker)$/,
   github:     /^(github_issue|github_pr|pr_review_finding|issue|pr|changed_file|commit_reference)$/,
 };
 
@@ -695,7 +767,7 @@ export default function GraphView() {
   const [askLoading, setAskLoading] = useState(false);
   const [askError, setAskError] = useState(null);
   const askInputRef = useRef(null);
-  const [ceoView, setCeoView] = useState("workLens");
+  const [ceoView, setCeoView] = useState("all");
   const [graphOverview, setGraphOverview] = useState(null);
   const [showFilters, setShowFilters] = useState(false);
 
@@ -1052,44 +1124,36 @@ export default function GraphView() {
       // Strategy groups become compound parent containers. They are backed by source,
       // model, fact type, or relationship metadata; no synthetic facts are invented.
       visibleGroups.forEach((meta, groupKey) => {
+        const itemCount = components.filter(
+          (c) => graphGroup(c, modelNameById.get(c.model_id)) === groupKey,
+        ).length;
+        const hubSummary = groupSourceSummaries.get(groupKey);
+        const primaryHub = hubSummary
+          ? Array.from(hubSummary.values()).sort((a, b) => b.count - a.count)[0]
+          : null;
         nodes.push({
           data: {
             id: `group:${groupKey}`,
             label: meta.label,
+            shortLabel: meta.short || meta.label,
             fullLabel: meta.label,
             type: "model",
             modelId: groupKey,
+            groupKey,
             description: "",
-            modelColor: meta.color || "#6366f1",
+            modelColor: primaryHub?.border || meta.color || "#6366f1",
+            itemCount,
+            hubLogo: primaryHub?.logo || GROUP_HEADER_LOGOS[groupKey] || "",
+            hubCount: primaryHub?.count || itemCount,
+            hubAccent: primaryHub?.border || meta.color || "#6366f1",
             minWidth: 360,
-            minHeight: 260,
+            minHeight: 220,
           },
           classes: "model-node",
         });
       });
 
-      groupSourceSummaries.forEach((summary, groupKey) => {
-        Array.from(summary.values()).forEach((item) => {
-          nodes.push({
-            data: {
-              id: `source:${groupKey}:${item.kind}`,
-              parent: `group:${groupKey}`,
-            label: `${item.label}\n${item.count} components`,
-            compactLabel: `${item.label} (${item.count})`,
-            cardLabel: `${item.label}\n${item.count} components`,
-            fullLabel: `${item.label} source summary`,
-            type: "sourceHub",
-              sourceKind: item.kind,
-              bgColor: item.bg,
-              borderColor: item.border,
-              textColor: item.color,
-              logo: item.logo,
-              count: item.count,
-            },
-            classes: "source-hub",
-          });
-        });
-      });
+      // Source hub identity is rendered as the group header chip — no separate hub nodes.
 
       // Components are children of their strategy group compound node
       const connectedComponentIds = new Set();
@@ -1112,6 +1176,9 @@ export default function GraphView() {
         const cleanName = stripModelPrefix(c.name);
         const { compactLabel, cardLabel } = buildComponentCardContent(c, cleanName, mName);
         const relationshipCount = c.relationship_count ?? 0;
+        const groupHubs = groupSourceSummaries.get(groupKey);
+        const componentKind = sourceKind(c);
+        const hasGroupSourceHub = Boolean(groupHubs?.has(componentKind));
 
         nodes.push({
           data: {
@@ -1133,7 +1200,7 @@ export default function GraphView() {
             source_external_id: c.source_external_id,
             source_metadata_summary: c.source_metadata_summary,
             source_family: sourceFamily(c),
-            source_kind: sourceKind(c),
+            source_kind: componentKind,
             relationship_count: c.relationship_count,
             provenance: c.provenance,
             excerpt: c.excerpt,
@@ -1141,7 +1208,7 @@ export default function GraphView() {
             borderColor: visuals.border,
             stripeColor: visuals.stripe,
             badgeColor: source.border,
-            logo: source.logo,
+            logo: hasGroupSourceHub ? "" : source.logo,
           },
           classes: [isGap ? "gap-node" : "", relationshipCount === 0 ? "isolated-node" : "linked-node"].filter(Boolean).join(" "),
         });
@@ -1251,22 +1318,9 @@ export default function GraphView() {
             "border-opacity": 0.7,
             shape: "round-rectangle",
             "corner-radius": "16px",
-            padding: "58px",
-            label: "data(label)",
-            "text-valign": "top",
-            "text-halign": "left",
-            "text-margin-y": -28,
-            "text-margin-x": 12,
-            "text-max-width": 320,
-            "font-size": "13px",
-            "font-weight": "bold",
-            "text-wrap": "wrap",
-            color: modelTextColor,
-            "text-outline-color": labelOutlineColor,
-            "text-outline-width": 0,
-            "text-background-opacity": 0,
-            "text-background-padding": "0px",
-            "text-border-opacity": 0,
+            padding: "40px 32px 28px 32px",
+            label: "",
+            "text-opacity": 0,
             "min-width": "data(minWidth)",
             "min-height": "data(minHeight)",
             "bounds-expansion": 16,
@@ -1280,10 +1334,14 @@ export default function GraphView() {
             "background-opacity": isDark ? 0.16 : 0.08,
             "border-opacity": isDark ? 0.5 : 0.35,
             "border-width": 1,
-            "font-size": "34px",
-            "text-outline-width": 3,
-            "text-background-opacity": 0,
-            "text-margin-y": -34,
+            label: "data(shortLabel)",
+            "text-opacity": 1,
+            "font-size": "13px",
+            "font-weight": "bold",
+            color: modelTextColor,
+            "text-valign": "top",
+            "text-halign": "center",
+            "text-margin-y": -8,
             "compound-sizing-wrt-labels": "exclude",
             "min-width": 0,
             "min-height": 0,
@@ -1296,14 +1354,19 @@ export default function GraphView() {
           style: {
             "background-opacity": isDark ? 0.6 : 0.35,
             "border-opacity": 0.55,
-            "font-size": "22px",
-            "text-outline-width": 2,
-            "text-margin-y": -34,
+            label: "",
+            "text-opacity": 0,
             "compound-sizing-wrt-labels": "exclude",
             "min-width": 0,
             "min-height": 0,
             "bounds-expansion": 6,
-            padding: "34px",
+            padding: "40px 32px 28px 32px",
+          },
+        },
+        {
+          selector: ".model-node.lod-card",
+          style: {
+            padding: "44px 32px 28px 32px",
           },
         },
 
@@ -1438,11 +1501,8 @@ export default function GraphView() {
           style: {
             width: sourceHubWidth,
             height: sourceHubHeight,
-            label: "data(cardLabel)",
-            "font-size": "10px",
-            "text-max-width": `${sourceHubTextMaxWidth}px`,
-            "text-valign": "center",
-            "text-margin-y": 24,
+            label: "",
+            "text-opacity": 0,
           },
         },
         {
@@ -1721,47 +1781,30 @@ export default function GraphView() {
             .sort((a, b) => b.items.length - a.items.length);
 
           const colCount = Math.min(4, Math.max(1, groups.length));
-          const colWidth = 980;
+          const columnStride = 1080;
+          const laneGapY = 96;
+          const headerFloatClearance = GROUP_HUB_CHIP_HEIGHT_PX + GROUP_HEADER_FLOAT_GAP_PX + 8;
           const cardW = COMPONENT_CARD_WIDTH;
           const cardH = COMPONENT_CARD_HEIGHT;
-          const gapX = 36;
-          const gapY = 28;
-          const groupPadX = 56;
-          const sourceHubW = SOURCE_HUB_CARD_WIDTH;
-          const sourceHubRowH = SOURCE_HUB_CARD_HEIGHT;
-          const sourceHubGap = 14;
-          const sourceHubTopOffset = 52;
-          const groupPadTop = 132;
-          const groupGapY = 72;
-          const groupPadBottom = 48;
+          const gapX = 26;
+          const gapY = 20;
+          const groupPadX = 40;
+          const groupPadTop = GROUP_HEADER_BAND_PX;
+          const groupPadBottom = 32;
           const colHeights = Array.from({ length: colCount }, () => 0);
 
-          groups.forEach(({ groupKey, items, hubs }) => {
+          groups.forEach(({ groupKey, items }) => {
             const col = colHeights.indexOf(Math.min(...colHeights));
             const itemCount = Math.max(1, items.length);
-            const gridCols = layoutGridColumns(itemCount);
+            const gridCols = layoutGridColumns(itemCount, 3);
             const rows = Math.ceil(itemCount / gridCols);
-            const groupWidth = groupPadX * 2 + gridCols * cardW + (gridCols - 1) * gapX;
-            const hubRows = Math.max(1, Math.ceil(hubs.length / Math.max(1, Math.floor((groupWidth - groupPadX * 2) / (sourceHubW + sourceHubGap)))));
-            const hubHeight = hubRows * sourceHubRowH + Math.max(0, hubRows - 1) * sourceHubGap;
-            const baseX = col * colWidth - ((colCount - 1) * colWidth) / 2;
+            const groupWidth = groupPadX * 2 + gridCols * cardW + Math.max(0, gridCols - 1) * gapX;
+            const laneWidth = Math.min(groupWidth + 48, columnStride - 40);
+            const baseX = col * columnStride - ((colCount - 1) * columnStride) / 2;
             const baseY = colHeights[col];
-            const startX = baseX - groupWidth / 2 + groupPadX + cardW / 2;
-            const startY = baseY + Math.max(groupPadTop, sourceHubTopOffset + hubHeight + 48);
-            const groupHeight = (startY - baseY) + rows * cardH + Math.max(0, rows - 1) * gapY + groupPadBottom;
-            const hubCols = Math.max(1, Math.min(hubs.length || 1, Math.floor((groupWidth - groupPadX * 2) / (sourceHubW + sourceHubGap)) || 1));
-
-            hubs.forEach((hub, index) => {
-              const hubRow = Math.floor(index / hubCols);
-              const hubCol = index % hubCols;
-              const hubsInRow = Math.min(hubCols, hubs.length - hubRow * hubCols);
-              const hubTotalWidth = hubsInRow * sourceHubW + Math.max(0, hubsInRow - 1) * sourceHubGap;
-              const hubStartX = baseX - hubTotalWidth / 2 + sourceHubW / 2;
-              presetPositions[`source:${groupKey}:${hub.kind}`] = {
-                x: hubStartX + hubCol * (sourceHubW + sourceHubGap),
-                y: baseY + sourceHubTopOffset + hubRow * (sourceHubRowH + sourceHubGap),
-              };
-            });
+            const startX = baseX - laneWidth / 2 + groupPadX + cardW / 2;
+            const startY = baseY + headerFloatClearance + groupPadTop;
+            const groupHeight = headerFloatClearance + groupPadTop + rows * cardH + Math.max(0, rows - 1) * gapY + groupPadBottom;
 
             items.forEach((c, index) => {
               const row = Math.floor(index / gridCols);
@@ -1776,10 +1819,10 @@ export default function GraphView() {
             }
             const groupNode = nodes.find((node) => node.data.id === `group:${groupKey}`);
             if (groupNode) {
-              groupNode.data.minWidth = Math.max(groupWidth, 320);
-              groupNode.data.minHeight = Math.max(groupHeight, 220);
+              groupNode.data.minWidth = Math.max(laneWidth, 300);
+              groupNode.data.minHeight = Math.max(groupHeight, 180);
             }
-            colHeights[col] += groupHeight + groupGapY;
+            colHeights[col] += groupHeight + laneGapY;
           });
 
           return {
@@ -1832,8 +1875,10 @@ export default function GraphView() {
       if (!layer || !containerRef.current || graphIsDestroyed()) {
         return;
       }
-      const showDetailOverlays = viewMode === "repo" || cy.zoom() >= LOD_CARD_ZOOM;
-      if (!showDetailOverlays) {
+      const zoom = cy.zoom();
+      const showDetailOverlays = viewMode === "repo" || zoom >= LOD_CARD_ZOOM;
+      const showGroupChrome = viewMode !== "repo" && zoom >= LOD_MACRO_ZOOM;
+      if (!showDetailOverlays && !showGroupChrome) {
         layer.replaceChildren();
         return;
       }
@@ -1841,103 +1886,146 @@ export default function GraphView() {
       const fragment = document.createDocumentFragment();
       const textColor = isDark ? "#f8fafc" : "#0f172a";
       const mutedColor = isDark ? "#94a3b8" : "#64748b";
+      const headerBg = isDark ? "rgba(15,23,42,0.94)" : "rgba(255,255,255,0.96)";
 
-      cy.nodes().forEach((node) => {
+      if (showGroupChrome) {
+        cy.nodes(".model-node").forEach((node) => {
+          if (node.hasClass("lod-macro")) return;
+          try {
+            const bounds = node.renderedBoundingBox({
+              includeEdges: false,
+              includeLabels: false,
+              includeNodes: true,
+            });
+            const groupKey = node.data("groupKey") || node.data("modelId");
+            const meta = GRAPH_GROUP_META[groupKey] || GRAPH_GROUP_META.other;
+            const hubLogo = node.data("hubLogo");
+            const hubCount = node.data("hubCount") || node.data("itemCount") || 0;
+            const hubAccent = node.data("hubAccent") || meta.color;
+
+            const header = document.createElement("div");
+            header.className = "pointer-events-none absolute";
+            header.dataset.graphGroupHeader = node.id();
+            const chipTop = bounds.y1 - GROUP_HUB_CHIP_HEIGHT_PX - GROUP_HEADER_FLOAT_GAP_PX;
+            Object.assign(header.style, {
+              left: `${bounds.x1 + 14}px`,
+              top: `${chipTop}px`,
+              zIndex: "24",
+            });
+
+            if (hubLogo) {
+              appendSourceHubChip(header, {
+                logo: hubLogo,
+                count: hubCount,
+                accent: hubAccent,
+                isDark,
+                textColor,
+                mutedColor,
+                headerBg,
+              });
+            } else {
+              const fallback = document.createElement("div");
+              Object.assign(fallback.style, {
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "8px",
+                height: `${GROUP_HEADER_HEIGHT_PX}px`,
+                padding: "0 10px",
+                borderRadius: "999px",
+                background: headerBg,
+                border: `1.5px solid ${meta.color}`,
+              });
+              const dot = document.createElement("span");
+              Object.assign(dot.style, {
+                width: "10px",
+                height: "10px",
+                borderRadius: "999px",
+                background: meta.color,
+              });
+              fallback.appendChild(dot);
+              const title = document.createElement("span");
+              title.textContent = meta.short || meta.label;
+              Object.assign(title.style, {
+                color: textColor,
+                fontSize: `${CARD_OVERLAY_TITLE_PX}px`,
+                fontWeight: "700",
+              });
+              fallback.appendChild(title);
+              const badge = document.createElement("span");
+              badge.textContent = String(hubCount);
+              Object.assign(badge.style, {
+                color: mutedColor,
+                fontSize: "10px",
+                fontWeight: "700",
+                padding: "2px 7px",
+                borderRadius: "999px",
+                background: isDark ? "rgba(148,163,184,0.18)" : "rgba(148,163,184,0.14)",
+              });
+              fallback.appendChild(badge);
+              header.appendChild(fallback);
+            }
+            fragment.appendChild(header);
+          } catch (_) {}
+        });
+      }
+
+      if (!showDetailOverlays) {
+        layer.replaceChildren(fragment);
+        return;
+      }
+
+      cy.nodes("[type='component']").forEach((node) => {
         try {
-          const type = node.data("type");
-          if (!["component", "sourceHub"].includes(type)) return;
+          if (!node.hasClass("lod-card")) return;
 
           const bounds = node.renderedBoundingBox({
             includeEdges: false,
             includeLabels: false,
             includeNodes: true,
           });
-          const logo = node.data("logo");
-          const isSourceHub = type === "sourceHub";
-          const isCardLod = type === "component" && node.hasClass("lod-card");
 
-          if (isCardLod) {
-            const shell = document.createElement("div");
-            shell.className = "pointer-events-none absolute overflow-hidden";
-            shell.dataset.graphCard = node.id();
-            Object.assign(shell.style, {
-              left: `${bounds.x1}px`,
-              top: `${bounds.y1}px`,
-              width: `${bounds.w}px`,
-              height: `${bounds.h}px`,
-              borderRadius: "10px",
-            });
-
-            if (logo) {
-              const isGitHubLogo = String(logo).includes("24292f") || node.data("source_kind") === "github";
-              const img = document.createElement("img");
-              img.src = logo;
-              img.alt = "";
-              img.className = isGitHubLogo ? "absolute left-1.5 top-1.5 rounded bg-white p-0.5 object-contain" : "absolute left-1.5 top-1.5 rounded bg-white/95 p-0.5 object-contain dark:bg-slate-950/90";
-              Object.assign(img.style, { width: "20px", height: "20px" });
-              shell.appendChild(img);
-            }
-
-            const lines = String(node.data("cardLabel") || "").split("\n").filter(Boolean);
-            const textWrap = document.createElement("div");
-            Object.assign(textWrap.style, {
-              position: "absolute",
-              left: logo ? "28px" : "8px",
-              right: "8px",
-              top: "7px",
-              bottom: "6px",
-              overflow: "hidden",
-              display: "flex",
-              flexDirection: "column",
-              justifyContent: "center",
-              gap: "2px",
-            });
-
-            lines.slice(0, 2).forEach((line, index) => {
-              const lineEl = document.createElement("div");
-              lineEl.textContent = line;
-              Object.assign(lineEl.style, {
-                color: index === 0 ? textColor : mutedColor,
-                fontSize: index === 0 ? "10px" : "9px",
-                fontWeight: index === 0 ? "700" : "500",
-                lineHeight: "1.2",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              });
-              textWrap.appendChild(lineEl);
-            });
-            shell.appendChild(textWrap);
-            fragment.appendChild(shell);
-            return;
-          }
-
-          if (!logo) return;
-
-          const isGitHubLogo = String(logo).includes("24292f") || node.data("source_kind") === "github";
-          const size = isSourceHub ? 34 : 24;
-          const left = isSourceHub
-            ? bounds.x1 + bounds.w / 2
-            : bounds.x1 + bounds.w * (26 / cardWidth);
-          const top = isSourceHub
-            ? bounds.y1 + bounds.h * 0.3
-            : bounds.y1 + bounds.h * (24 / cardHeight);
-          const img = document.createElement("img");
-          img.src = logo;
-          img.alt = "";
-          img.title = node.data("fullLabel") || node.data("label") || "";
-          img.dataset.graphLogo = node.id();
-          img.className = isSourceHub
-            ? `absolute rounded-md object-contain shadow-sm ${isGitHubLogo ? "bg-white p-1" : "bg-white/95 p-1 dark:bg-slate-950/90"}`
-            : `absolute rounded object-contain shadow-sm ${isGitHubLogo ? "bg-white p-0.5" : "bg-white/95 p-0.5 dark:bg-slate-950/90"}`;
-          Object.assign(img.style, {
-            width: `${size}px`,
-            height: `${size}px`,
-            left: `${left}px`,
-            top: `${top}px`,
-            transform: "translate(-50%, -50%)",
+          const shell = document.createElement("div");
+          shell.className = "pointer-events-none absolute overflow-hidden";
+          shell.dataset.graphCard = node.id();
+          Object.assign(shell.style, {
+            left: `${bounds.x1}px`,
+            top: `${bounds.y1}px`,
+            width: `${bounds.w}px`,
+            height: `${bounds.h}px`,
+            borderRadius: "10px",
           });
-          fragment.appendChild(img);
+
+          const lines = String(node.data("cardLabel") || "").split("\n").filter(Boolean);
+          const textWrap = document.createElement("div");
+          Object.assign(textWrap.style, {
+            position: "absolute",
+            left: "10px",
+            right: "10px",
+            top: "8px",
+            bottom: "8px",
+            overflow: "hidden",
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "center",
+            gap: "3px",
+          });
+
+          lines.slice(0, 2).forEach((line, index) => {
+            const lineEl = document.createElement("div");
+            lineEl.textContent = line;
+            Object.assign(lineEl.style, {
+              color: index === 0 ? textColor : mutedColor,
+              fontSize: `${index === 0 ? CARD_OVERLAY_TITLE_PX : CARD_OVERLAY_META_PX}px`,
+              fontWeight: index === 0 ? "700" : "500",
+              lineHeight: "1.25",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            });
+            textWrap.appendChild(lineEl);
+          });
+          shell.appendChild(textWrap);
+          fragment.appendChild(shell);
         } catch (_) {}
       });
       layer.replaceChildren(fragment);
@@ -2644,9 +2732,8 @@ export default function GraphView() {
                   className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-all ${
                     ceoView === id
                       ? id === "gaps"       ? "bg-red-500 text-white shadow-sm"
-                      : id === "decisions"  ? "bg-amber-500 text-white shadow-sm"
                       : id === "aiSessions" ? "bg-violet-600 text-white shadow-sm"
-                      : id === "birdsEye"   ? "bg-sky-600 text-white shadow-sm"
+                      : id === "github"     ? "bg-slate-600 text-white shadow-sm"
                       : "bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-sm"
                       : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700"
                   }`}
