@@ -388,6 +388,7 @@ export default function Connectors() {
               onActionError={setActionError}
               onActionNotice={setActionNotice}
               onSyncJobSettled={handleSyncJobSettled}
+              onRefreshConnectors={query.refetch}
               onStartOAuth={openSlackConnectModal}
               onStartGenericOAuth={startGenericOAuth}
             />
@@ -454,6 +455,7 @@ function ConnectorCard({
   onActionError,
   onActionNotice,
   onSyncJobSettled,
+  onRefreshConnectors,
   onStartOAuth,
   onStartGenericOAuth,
 }) {
@@ -583,6 +585,7 @@ function ConnectorCard({
         onSuccess: () => {
           onChangeSlackClientSecret("");
           onToggleSlackSetup();
+          onRefreshConnectors?.();
           onActionNotice("Slack OAuth settings saved. You can connect Slack now.");
         },
       },
@@ -667,7 +670,15 @@ function ConnectorCard({
       onStartOAuth(installHref, status, slackConnectMode);
       return;
     }
-    onActionNotice("Managed Slack OAuth is not configured for this server. Use advanced setup only for a self-hosted Slack app.");
+    if (!workspaceId) {
+      onActionNotice("Select a workspace before connecting Slack.");
+      return;
+    }
+    if (!isConfigured) {
+      onActionNotice("Slack OAuth is not configured for this server. Use advanced self-hosted setup to add your Slack app credentials.");
+      return;
+    }
+    onActionError("Slack install URL is unavailable. Refresh connector status and try again.");
   };
 
   const handleAISessionIngest = (event) => {

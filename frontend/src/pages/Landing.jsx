@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { motion } from "framer-motion";
+import { motion, useInView } from "framer-motion";
 import {
   CheckCircle2, History, Cpu, ArrowRight,
   BookOpen, AlertCircle, Database, Zap, MessageSquare,
@@ -100,16 +100,16 @@ const itemVariants = {
 
 export default function Landing() {
   return (
-    <div className="min-h-screen relative bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-x-hidden transition-colors duration-300">
-      {/* Background grid + blobs */}
-      <div className="absolute inset-0 -z-10 h-full w-full bg-[linear-gradient(to_right,#8080800a_1px,transparent_1px),linear-gradient(to_bottom,#8080800a_1px,transparent_1px)] dark:bg-[linear-gradient(to_right,#ffffff06_1px,transparent_1px),linear-gradient(to_bottom,#ffffff06_1px,transparent_1px)] bg-[size:14px_24px]">
-        <div className="absolute top-0 -left-4 w-96 h-96 bg-brand-300 dark:bg-brand-700 rounded-full mix-blend-multiply dark:mix-blend-screen filter blur-3xl opacity-25 dark:opacity-10 animate-blob" />
-        <div className="absolute top-0 -right-4 w-96 h-96 bg-violet-300 dark:bg-violet-700 rounded-full mix-blend-multiply dark:mix-blend-screen filter blur-3xl opacity-25 dark:opacity-10 animate-blob" style={{ animationDelay: "2s" }} />
-        <div className="absolute -bottom-8 left-20 w-96 h-96 bg-brand-400 dark:bg-brand-800 rounded-full mix-blend-multiply dark:mix-blend-screen filter blur-3xl opacity-20 dark:opacity-10 animate-blob" style={{ animationDelay: "4s" }} />
+    <div className="min-h-screen relative bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-x-hidden">
+      {/* Background grid + blobs — static gradients to avoid scroll jank from mix-blend + blur animation */}
+      <div className="pointer-events-none absolute inset-0 -z-10 h-full w-full bg-[linear-gradient(to_right,#8080800a_1px,transparent_1px),linear-gradient(to_bottom,#8080800a_1px,transparent_1px)] dark:bg-[linear-gradient(to_right,#ffffff06_1px,transparent_1px),linear-gradient(to_bottom,#ffffff06_1px,transparent_1px)] bg-[size:14px_24px]">
+        <div className="absolute top-0 -left-4 h-96 w-96 rounded-full bg-brand-300/20 blur-3xl dark:bg-brand-700/15" />
+        <div className="absolute top-0 -right-4 h-96 w-96 rounded-full bg-violet-300/20 blur-3xl dark:bg-violet-700/15" />
+        <div className="absolute -bottom-8 left-20 h-96 w-96 rounded-full bg-brand-400/15 blur-3xl dark:bg-brand-800/10" />
       </div>
 
       {/* Header */}
-      <header className="sticky top-0 z-50 border-b border-slate-200/50 dark:border-slate-800/50 bg-white/70 dark:bg-slate-950/70 backdrop-blur-md transition-colors">
+      <header className="sticky top-0 z-50 border-b border-slate-200/60 dark:border-slate-800/60 bg-white/95 dark:bg-slate-950/95 supports-[backdrop-filter]:bg-white/80 supports-[backdrop-filter]:dark:bg-slate-950/80 supports-[backdrop-filter]:backdrop-blur-sm">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3.5">
           <div className="flex items-center gap-3">
             <CeIcon size={38} />
@@ -203,29 +203,31 @@ export default function Landing() {
             initial={{ opacity: 0, scale: 0.94, y: 30 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             transition={{ duration: 0.75, delay: 0.2 }}
-            className="rounded-[32px] border border-white/30 dark:border-slate-700/40 bg-white/50 dark:bg-slate-900/50 p-2 shadow-[0_32px_80px_-24px_rgba(79,70,229,0.18)] backdrop-blur-xl"
+            className="rounded-[32px] border border-white/30 dark:border-slate-700/40 bg-white/80 dark:bg-slate-900/80 p-2 shadow-[0_32px_80px_-24px_rgba(79,70,229,0.18)]"
           >
             <ContextGraphAnimation />
           </motion.div>
         </section>
 
         {/* ── Logos marquee ───────────────────────────── */}
-        <section className="border-y border-slate-200/50 dark:border-slate-800/50 bg-white/40 dark:bg-slate-900/40 py-10 backdrop-blur-sm overflow-hidden transition-colors">
+        <section className="border-y border-slate-200/50 dark:border-slate-800/50 bg-white/60 dark:bg-slate-900/60 py-10 overflow-hidden">
           <div className="mx-auto max-w-6xl px-6 text-center mb-8">
             <p className="text-xs font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500">Sync context from your favourite tools</p>
           </div>
-          <div className="relative flex overflow-hidden group w-full opacity-60 hover:opacity-100 transition-opacity [mask-image:_linear-gradient(to_right,transparent_0,_black_128px,_black_calc(100%-128px),transparent_100%)]">
-            <div className="flex shrink-0 items-center justify-center gap-16 py-2 pr-16 [animation:marquee_52s_linear_infinite] [backface-visibility:hidden] [transform:translate3d(0,0,0)] [will-change:transform]">
-              <Logos />
-            </div>
-            <div className="flex shrink-0 items-center justify-center gap-16 py-2 pr-16 [animation:marquee_52s_linear_infinite] [backface-visibility:hidden] [transform:translate3d(0,0,0)] [will-change:transform]" aria-hidden="true">
-              <Logos />
+          <div className="group relative w-full overflow-hidden opacity-60 transition-opacity hover:opacity-100 [mask-image:linear-gradient(to_right,transparent,black_128px,black_calc(100%-128px),transparent)]">
+            <div className="flex w-max animate-marquee">
+              <div className="flex shrink-0 items-center gap-16 py-2 pr-16">
+                <Logos />
+              </div>
+              <div className="flex shrink-0 items-center gap-16 py-2 pr-16" aria-hidden="true">
+                <Logos />
+              </div>
             </div>
           </div>
         </section>
 
         {/* ── Problem ─────────────────────────────────── */}
-        <section id="problem" className="bg-white/70 dark:bg-slate-900/70 backdrop-blur-md transition-colors">
+        <section id="problem" className="bg-white dark:bg-slate-900 [content-visibility:auto] [contain-intrinsic-size:auto_800px]">
           <div className="mx-auto max-w-6xl px-6 py-24">
             <motion.div
               initial="hidden" whileInView="visible" viewport={{ once: true, margin: "-100px" }}
@@ -260,7 +262,7 @@ export default function Landing() {
         </section>
 
         {/* ── How it works ────────────────────────────── */}
-        <section id="how" className="mx-auto max-w-6xl px-6 py-24">
+        <section id="how" className="mx-auto max-w-6xl px-6 py-24 [content-visibility:auto] [contain-intrinsic-size:auto_900px]">
           <motion.div
             initial="hidden" whileInView="visible" viewport={{ once: true, margin: "-100px" }}
             variants={itemVariants}
@@ -307,7 +309,7 @@ export default function Landing() {
         </section>
 
         {/* ── Extraction demo ─────────────────────────── */}
-        <section className="bg-slate-950 py-24 overflow-hidden relative">
+        <section className="relative overflow-hidden bg-slate-950 py-24 [content-visibility:auto] [contain-intrinsic-size:auto_700px]">
           <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_50%_at_50%_-10%,rgba(79,70,229,0.12),transparent)]" />
           <div className="mx-auto max-w-6xl px-6 relative">
             <motion.div
@@ -392,7 +394,7 @@ export default function Landing() {
         </section>
 
         {/* ── Capabilities ────────────────────────────── */}
-        <section id="solution" className="mx-auto max-w-6xl px-6 py-24">
+        <section id="solution" className="mx-auto max-w-6xl px-6 py-24 [content-visibility:auto] [contain-intrinsic-size:auto_800px]">
           <motion.div
             initial="hidden" whileInView="visible" viewport={{ once: true, margin: "-100px" }}
             variants={itemVariants}
@@ -426,7 +428,7 @@ export default function Landing() {
         </section>
 
         {/* ── Why startups ────────────────────────────── */}
-        <section id="fit" className="relative overflow-hidden bg-slate-950 text-white">
+        <section id="fit" className="relative overflow-hidden bg-slate-950 text-white [content-visibility:auto] [contain-intrinsic-size:auto_700px]">
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,_rgba(79,70,229,0.13),_transparent_40%)]" />
           <div className="relative mx-auto grid max-w-6xl gap-16 px-6 py-24 lg:grid-cols-[1fr_1.1fr] lg:items-center">
             <motion.div
@@ -513,7 +515,7 @@ export default function Landing() {
       </main>
 
       {/* ── Footer ──────────────────────────────────── */}
-      <footer className="border-t border-slate-200/50 dark:border-slate-800/50 bg-white/80 dark:bg-slate-950/80 py-10 backdrop-blur-sm transition-colors">
+      <footer className="border-t border-slate-200/50 dark:border-slate-800/50 bg-white dark:bg-slate-950 py-10">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-6 px-6 md:flex-row">
           <div className="flex items-center gap-3">
             <CeIcon size={30} />
@@ -628,32 +630,35 @@ function LogoItem({ name, children }) {
 }
 
 function ContextGraphAnimation() {
+  const ref = useRef(null);
+  const isInView = useInView(ref, { margin: "100px" });
+
   return (
-    <div className="relative w-full aspect-square rounded-[28px] bg-slate-950 overflow-hidden shadow-[inset_0_0_80px_rgba(0,0,0,0.7)] border border-slate-800">
+    <div ref={ref} className="relative w-full aspect-square rounded-[28px] bg-slate-950 overflow-hidden shadow-[inset_0_0_80px_rgba(0,0,0,0.7)] border border-slate-800">
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(79,70,229,0.22)_0%,transparent_65%)]" />
       <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.035)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.035)_1px,transparent_1px)] bg-[size:28px_28px] [mask-image:radial-gradient(ellipse_65%_65%_at_50%_50%,#000_20%,transparent_100%)]" />
 
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-        <motion.div animate={{ rotate: 360 }} transition={{ duration: 28, repeat: Infinity, ease: "linear" }} className="absolute w-52 h-52 border border-brand-500/25 rounded-full border-dashed" />
-        <motion.div animate={{ rotate: -360 }} transition={{ duration: 45, repeat: Infinity, ease: "linear" }} className="absolute w-[22rem] h-[22rem] border border-brand-400/08 rounded-full" />
+        <motion.div animate={isInView ? { rotate: 360 } : false} transition={{ duration: 28, repeat: Infinity, ease: "linear" }} className="absolute w-52 h-52 border border-brand-500/25 rounded-full border-dashed" />
+        <motion.div animate={isInView ? { rotate: -360 } : false} transition={{ duration: 45, repeat: Infinity, ease: "linear" }} className="absolute w-[22rem] h-[22rem] border border-brand-400/08 rounded-full" />
       </div>
 
       <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 400 400" fill="none">
-        <PulseLine x1="100" y1="100" x2="200" y2="200" delay={0} />
-        <PulseLine x1="300" y1="110" x2="200" y2="200" delay={0.7} />
-        <PulseLine x1="110" y1="300" x2="200" y2="200" delay={1.4} />
-        <PulseLine x1="290" y1="290" x2="200" y2="200" delay={2.1} />
+        <PulseLine x1="100" y1="100" x2="200" y2="200" delay={0} active={isInView} />
+        <PulseLine x1="300" y1="110" x2="200" y2="200" delay={0.7} active={isInView} />
+        <PulseLine x1="110" y1="300" x2="200" y2="200" delay={1.4} active={isInView} />
+        <PulseLine x1="290" y1="290" x2="200" y2="200" delay={2.1} active={isInView} />
       </svg>
 
-      <GraphNode x="25%" y="25%" delay={0} icon={<Database className="w-5 h-5" />} />
-      <GraphNode x="75%" y="27.5%" delay={1} icon={<Cpu className="w-5 h-5" />} />
-      <GraphNode x="27.5%" y="75%" delay={2} icon={<BookOpen className="w-5 h-5" />} />
-      <GraphNode x="72.5%" y="72.5%" delay={1.5} icon={<GitBranch className="w-5 h-5" />} />
+      <GraphNode x="25%" y="25%" delay={0} icon={<Database className="w-5 h-5" />} active={isInView} />
+      <GraphNode x="75%" y="27.5%" delay={1} icon={<Cpu className="w-5 h-5" />} active={isInView} />
+      <GraphNode x="27.5%" y="75%" delay={2} icon={<BookOpen className="w-5 h-5" />} active={isInView} />
+      <GraphNode x="72.5%" y="72.5%" delay={1.5} icon={<GitBranch className="w-5 h-5" />} active={isInView} />
 
       {/* Center — use the icon */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
         <motion.div
-          animate={{ boxShadow: ["0 0 20px rgba(79,70,229,0.3)", "0 0 60px rgba(99,102,241,0.8)", "0 0 20px rgba(79,70,229,0.3)"] }}
+          animate={isInView ? { boxShadow: ["0 0 20px rgba(79,70,229,0.3)", "0 0 60px rgba(99,102,241,0.8)", "0 0 20px rgba(79,70,229,0.3)"] } : false}
           transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
           className="z-10 rounded-[22px]"
         >
@@ -668,13 +673,13 @@ function ContextGraphAnimation() {
   );
 }
 
-function GraphNode({ x, y, icon, delay = 0 }) {
+function GraphNode({ x, y, icon, delay = 0, active = true }) {
   return (
     <motion.div
       className="absolute flex h-14 w-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-2xl border border-white/10 bg-slate-800/80 text-brand-300 shadow-[0_0_20px_rgba(79,70,229,0.15)] backdrop-blur-md"
       style={{ left: x, top: y }}
       initial={{ y: 0 }}
-      animate={{ y: [-6, 6, -6], rotateZ: [-2, 2, -2] }}
+      animate={active ? { y: [-6, 6, -6], rotateZ: [-2, 2, -2] } : { y: 0, rotateZ: 0 }}
       transition={{ duration: 5, repeat: Infinity, ease: "easeInOut", delay }}
     >
       <div className="opacity-90">{icon}</div>
@@ -682,7 +687,7 @@ function GraphNode({ x, y, icon, delay = 0 }) {
   );
 }
 
-function PulseLine({ x1, y1, x2, y2, delay }) {
+function PulseLine({ x1, y1, x2, y2, delay, active = true }) {
   return (
     <>
       <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="rgba(99,102,241,0.12)" strokeWidth="1.5" />
@@ -693,7 +698,7 @@ function PulseLine({ x1, y1, x2, y2, delay }) {
         strokeLinecap="round"
         style={{ filter: "drop-shadow(0 0 7px rgba(129,140,248,0.8))" }}
         initial={{ pathLength: 0, opacity: 0 }}
-        animate={{ pathLength: 1, opacity: [0, 1, 0] }}
+        animate={active ? { pathLength: 1, opacity: [0, 1, 0] } : { pathLength: 0, opacity: 0 }}
         transition={{ duration: 2.2, repeat: Infinity, ease: "circIn", delay }}
       />
     </>

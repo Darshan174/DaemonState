@@ -9,6 +9,7 @@
 import { useCallback } from "react";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "./client";
+import { resolveWorkspaceId } from "../context/WorkspaceContext";
 import {
   dashboardStats,
   evalCasesByDomain as mockEvalCasesByDomain,
@@ -212,9 +213,8 @@ const BROWSER_IMPORT_EXTENSIONS = new Set([
  * 1. localStorage selection (set by workspace switcher)
  * 2. The only workspace from the backend, when unambiguous
  *
- * Returns null if no workspaces exist.
- * Throws when multiple workspaces exist but no explicit browser selection
- * has been made yet.
+ * Returns null if no workspaces exist, or when multiple workspaces exist but no
+ * explicit browser selection has been made yet.
  */
 async function getWorkspaceId() {
   let workspaces;
@@ -227,11 +227,7 @@ async function getWorkspaceId() {
   if (workspaces.length === 0) return null;
 
   const stored = localStorage.getItem(LS_KEY);
-  if (stored && workspaces.some((w) => w.id === stored)) return stored;
-
-  if (workspaces.length === 1) return workspaces[0].id;
-
-  throw new Error("Multiple workspaces found. Select a workspace first.");
+  return resolveWorkspaceId(workspaces, stored);
 }
 
 function isBrowserFile(value) {
@@ -470,8 +466,8 @@ export function useConnectors() {
     queryFn: withFallback(
       async () => {
         const wsId = await getWorkspaceId();
-        if (!wsId) return mockConnectors;
-        const connectorPayload = await api.get(`/connectors?workspace_id=${wsId}`);
+        const connectorPath = wsId ? `/connectors?workspace_id=${wsId}` : "/connectors";
+        const connectorPayload = await api.get(connectorPath);
         if (Array.isArray(connectorPayload)) {
           const setupStatus = await api.get("/connectors/setup-status").catch(() => []);
           return { connectors: connectorPayload, setupStatus };
@@ -1730,6 +1726,8 @@ export function useSaveSlackOAuthSettings() {
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["connectors"] });
+      qc.invalidateQueries({ queryKey: ["connector-processing-summary"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
     },
   });
 }

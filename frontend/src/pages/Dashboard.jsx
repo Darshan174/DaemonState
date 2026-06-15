@@ -3,6 +3,7 @@ import {
   useDashboard,
 } from "../api/hooks";
 import Onboarding from "../components/Onboarding";
+import StatusView from "../components/StatusView";
 import {
   Search,
   MessageSquare,
@@ -21,6 +22,14 @@ export default function Dashboard() {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <div className="animate-spin rounded-full h-8 w-8 border-4 border-brand-200 dark:border-brand-800 border-t-brand-600 dark:border-t-brand-400" />
+      </div>
+    );
+  }
+
+  if (query.isError) {
+    return (
+      <div className="max-w-4xl mx-auto">
+        <StatusView query={query} empty="Dashboard data is not available yet." />
       </div>
     );
   }

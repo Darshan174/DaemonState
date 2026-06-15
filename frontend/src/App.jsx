@@ -2,6 +2,8 @@ import { Suspense, lazy } from "react";
 import { Routes, Route, NavLink, Navigate, Link, useLocation } from "react-router-dom";
 import ThemeToggle from "./components/ThemeToggle";
 import CeIcon from "./components/CeIcon";
+import WorkspaceSwitcher from "./components/WorkspaceSwitcher";
+import { useWorkspaces } from "./api/hooks";
 
 const GraphView    = lazy(() => import("./pages/GraphView"));
 const QueryView    = lazy(() => import("./pages/QueryView"));
@@ -47,6 +49,8 @@ export default function App() {
 function AdminShell() {
   const location = useLocation();
   const isGraphPage = location.pathname === "/app/graph";
+  const { data: workspaces } = useWorkspaces();
+  const showWorkspaceSwitcher = (workspaces?.length ?? 0) > 1;
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-slate-50 dark:bg-[#0a0c0f] transition-colors duration-300">
@@ -88,7 +92,10 @@ function AdminShell() {
             ))}
           </nav>
 
-          <ThemeToggle />
+          <div className="flex shrink-0 items-center gap-3">
+            {showWorkspaceSwitcher ? <WorkspaceSwitcher /> : null}
+            <ThemeToggle />
+          </div>
         </div>
       </header>
 

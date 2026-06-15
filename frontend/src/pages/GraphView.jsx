@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 import { useWorkspaces } from "../api/hooks";
-import { useWorkspaceSelection } from "../context/WorkspaceContext";
+import { resolveWorkspaceId, useWorkspaceSelection } from "../context/WorkspaceContext";
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
 import imgGmail from "@assets/gmail-icon.png";
 
@@ -729,10 +729,10 @@ export default function GraphView() {
   const { theme } = useTheme();
   const { selectedId, setSelectedId } = useWorkspaceSelection();
   const { data: workspaces = [], isLoading: workspacesLoading } = useWorkspaces();
-  const activeWorkspace = selectedId
-    ? workspaces.find((w) => w.id === selectedId) || null
+  const activeWorkspaceId = resolveWorkspaceId(workspaces, selectedId);
+  const activeWorkspace = activeWorkspaceId
+    ? workspaces.find((w) => w.id === activeWorkspaceId) || null
     : null;
-  const activeWorkspaceId = activeWorkspace?.id || null;
   const workspaceQueryString = activeWorkspaceId
     ? `?${new URLSearchParams({ workspace_id: activeWorkspaceId }).toString()}`
     : "";
