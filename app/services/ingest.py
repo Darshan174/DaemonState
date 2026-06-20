@@ -163,12 +163,13 @@ class IngestionService:
         if target_name == source.name:
             return
 
+        active_statuses = ["active", "needs_review", "proposed"]
         target = await self.session.scalar(
             select(Component).where(
                 Component.model_id == source.model_id,
                 Component.name == target_name,
                 Component.id != source.id,
-                Component.status.in_(["active", "needs_review", "proposed"]),
+                Component.status.in_(active_statuses),
             ).order_by(Component.confidence.desc()).limit(1)
         )
 
@@ -177,7 +178,28 @@ class IngestionService:
                 select(Component).where(
                     Component.name == target_name,
                     Component.id != source.id,
-                    Component.status.in_(["active", "needs_review", "proposed"]),
+                    Component.status.in_(active_statuses),
+                ).order_by(Component.confidence.desc()).limit(1)
+            )
+
+        if target is None:
+            target_prefix = f"{target_name}:"
+            target = await self.session.scalar(
+                select(Component).where(
+                    Component.model_id == source.model_id,
+                    Component.name.startswith(target_prefix),
+                    Component.id != source.id,
+                    Component.status.in_(active_statuses),
+                ).order_by(Component.confidence.desc()).limit(1)
+            )
+
+        if target is None:
+            target_prefix = f"{target_name}:"
+            target = await self.session.scalar(
+                select(Component).where(
+                    Component.name.startswith(target_prefix),
+                    Component.id != source.id,
+                    Component.status.in_(active_statuses),
                 ).order_by(Component.confidence.desc()).limit(1)
             )
 

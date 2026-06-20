@@ -78,7 +78,7 @@ export default function AgentsView() {
         iconColor="bg-blue-500"
         number="01"
         title="Ingestion Agent"
-        tagline="Reads Slack, GitHub, Gmail, Zoom, AI sessions → clean entities"
+        tagline="Reads Slack, GitHub, Gmail, Drive, and AI sessions into clean entities"
         examples={["Slack thread → Decision + Task + Risk + Owner", "GitHub PR → Feature + Files + Issue solved", "Agent session → Failed attempts + Next steps"]}
         action={<a href="/app/graph" className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white border border-slate-200 dark:border-slate-600 px-4 py-2 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-700 transition-all">Build Graph <ArrowRight className="w-3.5 h-3.5" /></a>}
       />

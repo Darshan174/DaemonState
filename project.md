@@ -1,11 +1,123 @@
 # Context Engine Project Brain
 
-Last audited: 2026-06-10
+Last audited: 2026-06-18
 
 This file is the durable project context for future AI agents. Its job is to
 replace repeated full-repo rediscovery. Read `instructions.md` first because the
 user intends that file to be the universal agent entry point. As of this audit
 `instructions.md` is empty, so `AGENTS.md` is the active repository rule file.
+
+## 2026-06-17 Implementation Update
+
+Observed after this run:
+
+- Phase 1 Board graph work is present: Board is the default URL state, Explore
+  is available through `?graph=explore`, Board groups components by source
+  family, cards are uniform, edges are quiet by default, labels reveal on
+  hover/select, Refine drawer and lens presets exist, Cmd+K focuses graph
+  search, and the minimap is implemented.
+- Phase 3 Explore is no longer a placeholder: it renders connected components
+  as source-logo circle nodes in a force layout, hides orphans by default,
+  freezes after the initial physics pass, dims non-matches during search, and
+  includes a 1-hop/2-hop local graph panel with Open in Board.
+- The graph inspector is implemented as a right rail with component value,
+  provenance, source links, trust metadata, connected relationships, and edge
+  approve/reject actions.
+- Query now has a versioned `query.v1` response with `top_k`,
+  `min_confidence`, optional hybrid lexical scoring, relationship expansion,
+  and a facts-used trace.
+- Query UI and Graph Ask render `trace.facts_used` and relationship expansion
+  counts.
+- Context packs can be generated from the full graph or from a selected graph
+  component plus 1-hop neighbors.
+- MCP exposes `query_context`, which uses the same `query.v1` facts-used trace
+  and relationship evidence contract as `/api/query`.
+- Dashboard includes an I/O card that distinguishes source feeds from the
+  graph/query/MCP/context-pack outputs agents consume.
+- `/api/seed-demo` creates an idempotent, source-backed demo workspace from
+  launch-available sources only: GitHub, Slack, Gmail, Google Drive, and Codex.
+- Generic regex/LLM extracted facts now inherit document-level provenance when
+  source-specific extractors did not already provide it.
+- Query returns a deterministic source-backed answer summary when no AI answer
+  model is configured, so the default self-hosted demo does not show a blank
+  answer.
+- Query status/confidence filtering now happens in SQL before semantic/lexical
+  ranking, so the new compound component index is used by the shared HTTP/MCP
+  query path.
+- SQLAlchemy model metadata and startup migrations now create idempotent
+  compound indexes for source-document sync lookup, pending extraction,
+  component filtering, and relationship traversal.
+- Source Manager now uses the shared frontend API client instead of raw fetch
+  calls, separates unsupported/historical provider records from supported
+  document imports, and has component smoke coverage.
+- Landing and mock fixture copy now use launch-available sources only; dormant
+  Notion/Zoom manual-connect actions were removed from the Connectors page, and
+  landing smoke coverage now guards those launch-source claims.
+- AgentsView ingestion-agent copy now uses launch-available source families
+  only, with smoke coverage preventing stale Zoom/Notion overclaims.
+- Frontend smoke tests now guard connector honesty so coming-soon providers stay
+  disabled and launch connectors expose only backend-backed actions.
+- Community health files now include `SECURITY.md`, bug/feature issue forms,
+  and a pull request template tied to provenance, relationship evidence, and
+  connector honesty.
+- `scripts/smoke.sh` now runs the repeatable local launch gate; `--docker`
+  adds container health, demo seed, stats, and query API smoke checks.
+- Bare-metal setup now creates `.venv`, validates Python versions with
+  `sys.version_info`, uses `npm ci`, and the start/dev/smoke scripts reuse
+  `.venv/bin/python` when present.
+- CLI ingest now carries `--sync` through to both single-source and bulk-source
+  HTTP paths; bulk source creation processes documents synchronously when
+  requested.
+- README quick-start clone commands now use the real GitHub remote and clone
+  into a stable lowercase `context-engine` directory.
+- Package metadata now advertises the MIT license, repository/issues URLs,
+  relevant keywords, and PyPI classifiers; metadata preparation is verified by
+  a no-dependency pip dry run.
+- Dockerfile now copies `LICENSE` alongside `pyproject.toml` and `README.md`
+  before `pip install .`, so license-file metadata works in container builds.
+- CI runs backend tests, Ruff, frontend tests, frontend build, Docker image
+  build, and smoke-compose config validation.
+- Launch-facing docs now exist for architecture, connectors, AI Context, Board
+  vs Explore, and MCP, linked from the README.
+- MCP examples now provide installed-CLI and local-checkout config snippets plus
+  an agent grounding prompt for source-backed `query_context` usage.
+- README now has a visual Product Tour with screenshots captured from the
+  seeded Board inspector and Ask facts-used trace; `docs/demo.md` provides the
+  credential-free demo walkthrough.
+- `scripts/doctor.sh` now provides read-only first-run diagnostics for Docker
+  and bare-metal setup paths, and README/demo docs point new users to it before
+  setup or the seeded demo.
+- Board default now opens at a readable card zoom when the full graph would
+  otherwise collapse into unlabeled dots; the minimap still shows whole-graph
+  orientation and the explicit fit button remains a true overview.
+- OSS basics now include `LICENSE` and `CONTRIBUTING.md`.
+- README launch copy now treats Slack, GitHub, Gmail, Google Drive, local
+  upload, and AI session imports as launch-available paths; Discord, Zoom, and
+  Wispr Flow remain `coming_soon`; Notion is not catalogued.
+
+Latest verification on 2026-06-18:
+
+- `python3 -m pytest tests/ -q`: 326 passed
+- `python3 -m pytest tests/test_docs.py -q`: 6 passed
+- `python3 -m pytest tests/test_graph_api.py -q`: 29 passed
+- `python3 -m pytest tests/test_migrations.py -q`: 8 passed
+- `bash -n scripts/doctor.sh`: passed
+- Shell script syntax check for setup/start/dev/doctor/smoke scripts: passed
+- `bash scripts/doctor.sh --bare-metal`: passed with one expected checkout
+  warning because `.venv` is not present in this workspace.
+- `ruff check app tests`: passed
+- `npm test`: 29 passed
+- `npm run build`: passed
+- `python3 -m pip install . --no-deps --dry-run`: passed
+- `bash scripts/smoke.sh`: passed
+- `bash scripts/smoke.sh --docker`: passed
+- `docker compose config --quiet`: passed
+- `docker compose -f docker-compose.smoke.yml -p context-engine-smoke config --quiet`: passed
+- Docker build/start/health smoke on port 18080: passed
+- Container API smoke: `/api/seed-demo` created 6 documents and 27 components;
+  `/api/stats` returned 10 models, 27 components, 19 relationships, and 6
+  sources; `/api/query` returned a non-empty `query.v1` source-backed answer;
+  Zoom and Notion setup guardrails returned the expected unavailable errors.
 
 ## One-Screen Summary
 
@@ -494,7 +606,7 @@ Backend catalog in `app/api/connectors.py` currently includes:
 | `discord` | coming_soon | Catalog only; sync fails as unsupported. |
 | `ai_context` | available | `/connectors/ai-context/import` creates source documents; processing summary groups subtypes. |
 | `local` | available | Source upload and direct connect for default workspace exist. |
-| `zoom` | coming_soon | OAuth/manual token routes exist, but sync endpoint treats `zoom` as unsupported and returns failed job. |
+| `zoom` | coming_soon | OAuth/manual token setup routes are disabled; sync endpoint treats `zoom` as unsupported and returns failed job. |
 | `gdrive` | available | Google OAuth route and `sync_gdrive()` exist; tests cover mocked exported files. |
 | `gmail` | available | Google OAuth route and `sync_gmail()` exist; tests cover mocked messages. |
 | `codex` | available | AI session paste/import through `/connectors/ai-session/ingest`. |
@@ -504,8 +616,9 @@ Backend catalog in `app/api/connectors.py` currently includes:
 
 Notion:
 
-- `POST /api/connectors/notion/connect` exists and stores a connector row.
 - `notion` is not in `CONNECTOR_CATALOG`.
+- `POST /api/connectors/notion/connect` is guarded and returns a not-catalogued
+  error instead of storing credentials.
 - There is no Notion sync worker path in `_run_sync_job`.
 - Do not describe Notion as a catalogued working connector.
 
@@ -552,6 +665,8 @@ Core:
 - `POST /sources/upload`: multipart upload as `local`.
 - `GET /sources`: legacy list, newest 100.
 - `GET /sources/{source_id}`: source detail with extracted components.
+- `POST /seed-demo`: idempotently seed a workspace with launch-available demo
+  source documents, then synchronously process them into graph facts.
 - `POST /query`: query graph.
 - `GET /repo/graph`: static-ish repo architecture graph for frontend repo view.
 
@@ -595,12 +710,12 @@ Connectors/workspaces:
 - `GET /connectors/slack/install`
 - `GET /connectors/slack/managed/install`
 - `GET /connectors/slack/callback`
-- `GET /connectors/zoom/install`
-- `GET /connectors/zoom/callback`
-- `POST /connectors/zoom/connect`
+- `GET /connectors/zoom/install` disabled while Zoom is coming soon.
+- `GET /connectors/zoom/callback` returns an OAuth failure page while Zoom is coming soon.
+- `POST /connectors/zoom/connect` disabled while Zoom is coming soon.
 - `GET /connectors/{connector_type}/install` for Google connectors only
 - `GET /connectors/{connector_type}/callback` for Google connectors only
-- `POST /connectors/notion/connect`
+- `POST /connectors/notion/connect` disabled because Notion is not catalogued.
 - `POST /connectors/github/connect`
 - `POST /connectors/{connector_type}/connect` generic catalog direct connect
   for `ai_context` and `local`; other catalog types return 400.
@@ -620,7 +735,6 @@ Agents:
 Frontend hooks reference these not-implemented or not-currently-backed routes:
 
 - `/operator/status`, `/admin/status`
-- `/seed-demo`
 - `/imports`
 - `/founder-brief`
 - `/decisions` and `/decisions/{id}/history`
@@ -684,7 +798,7 @@ Query:
 
 Sources:
 
-- `SourceManager.jsx` uses legacy `/api/sources` endpoints directly with `fetch`.
+- `SourceManager.jsx` uses the shared frontend API client for `/api/sources`.
 - Upload maps extensions to source types like markdown/text/json/csv/html/pdf,
   but backend stores whatever `source_type` is sent.
 - Clicking a source fetches `/api/sources/{id}` and shows extracted components.
@@ -693,8 +807,10 @@ Connectors:
 
 - `Connectors.jsx` uses `useConnectors()`, `useConnectorProcessingSummary()`,
   sync status/jobs hooks, and workspace selection.
-- Supports Slack OAuth, Google OAuth, GitHub token form, Zoom token form, AI
-  session paste/import, sync, disconnect, and sync-job inspection links.
+- Supports Slack OAuth, Google OAuth, GitHub token form, AI session
+  paste/import, sync, disconnect, and sync-job inspection links.
+- Coming-soon providers such as Zoom render disabled actions and do not expose a
+  manual token form in the launch UI.
 - UI derives availability/configuration from backend catalog/setup status plus
   frontend normalizers.
 
@@ -780,9 +896,9 @@ ctxe mcp
 
 Important CLI detail:
 
-- `ctxe ingest --sync` is parsed, but `run_ingest()` does not pass
-  `sync=true` to the `/api/sources` request. If synchronous CLI ingest matters,
-  verify/fix this.
+- `ctxe ingest --sync` appends `sync=true` for both single-file and directory
+  ingest. `POST /api/sources/bulk?sync=true` processes each document before
+  returning.
 
 ## Repo Map
 
@@ -832,12 +948,29 @@ Docs and planning:
 - `AGENTS.md`: permanent agent rules.
 - `instructions.md`: intended first-read file; empty as of 2026-06-10 audit.
 - `TASK_PLAN.md`: high-level product/agent plan. Useful as direction, not proof.
+- `docs/architecture.md`: current launch architecture guide.
+- `docs/connectors.md`: current launch connector truth and state semantics.
+- `docs/ai-context.md`: current AI session import schema, metadata contract,
+  extraction behavior, verification, and limits.
+- `docs/board-vs-explore.md`: current graph UX mode guide.
+- `docs/mcp.md`: current MCP usage and tool guide.
+- `docs/demo.md`: current credential-free launch demo walkthrough with
+  screenshots from the seeded demo workspace.
+- `examples/mcp/*`: copy-paste MCP configs and an agent prompt for grounding
+  coding agents in source-backed query traces.
+- `SECURITY.md`: reporting process and security expectations for source docs,
+  connector credentials, MCP/API access, and context packs.
+- `scripts/smoke.sh`: local launch gate plus optional Docker/API smoke.
+- `.github/PULL_REQUEST_TEMPLATE.md`: provenance/relationship/connector
+  checklist plus verification gates.
+- `.github/ISSUE_TEMPLATE/*`: bug and feature forms that keep reports tied to
+  the source-backed graph contract.
 - `docs/knowledge-graph-contract.md`: older graph contract plus acceptance
   criteria; many proposed items have since been partially implemented.
 - `docs/knowledge-graph-display-strategy.md`: graph display contract.
-- `docs/connectors-graph-contract.md`: connector/graph contract; some status is
-  stale relative to current code.
-- `docs/oss-readiness.md`: readiness review; some connector details are stale.
+- `docs/connectors-graph-contract.md`: historical connector/graph contract
+  review; not authoritative for current launch copy.
+- `docs/oss-readiness.md`: readiness review and remaining launch gaps.
 - `.agent-runs/*`: repo-local multi-agent task reports and handoffs. Useful as
   historical leads, not current proof.
 
@@ -868,14 +1001,14 @@ bash scripts/dev.sh
 Direct backend:
 
 ```bash
-uvicorn app.main:app --host localhost --port 8000 --reload
+.venv/bin/python -m uvicorn app.main:app --host localhost --port 8000 --reload
 ```
 
 Frontend:
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 npm run build
 ```
@@ -895,17 +1028,12 @@ python3 -m pytest -q
 python3 -m pytest -q tests/test_connectors.py
 python3 -m pytest -q tests/test_knowledge_graph.py tests/test_adversarial_graph.py tests/test_graph_api.py
 cd frontend && npm run build
-```
-
-Frontend test command exists:
-
-```bash
 cd frontend && npm test
 ```
 
-As of prior repo-local reports, there were no frontend test files, so Vitest may
-exit nonzero for "no tests found". Use `npm run build` as the reliable frontend
-verification gate unless frontend tests are added.
+Frontend tests now cover focused smoke behavior for Source Manager, Connectors,
+Landing and AgentsView launch copy, graph helpers, and query/context-pack
+helpers.
 
 Environment:
 
@@ -1028,10 +1156,10 @@ These are not future tasks; they are context guards against bad assumptions:
 - Several docs still describe six tables; current code has seven including
   `Workspace`.
 - Older docs said GitHub/Notion backend catalog entries were missing. Current
-  code has GitHub in catalog and a Notion connect route, but Notion is still not
-  catalogued and has no sync worker.
-- Older docs said Slack was unsupported. Current code has Slack OAuth and sync
-  worker paths, but provider support should still be described by tested
+  code has GitHub in catalog and a guarded Notion connect route, but Notion is
+  still not catalogued and has no sync worker.
+- Older docs had stale Slack connector status. Current code has Slack OAuth and
+  sync worker paths, but provider support should still be described by tested
   end-to-end behavior, not by route presence alone.
 - Frontend hooks contain a broader founder workflow product shell than the
   backend currently implements.

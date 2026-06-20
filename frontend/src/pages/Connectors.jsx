@@ -6,8 +6,6 @@ import imgOpenAI from "@assets/openai-icon.png";
 import imgOpenCode from "@assets/opencode-icon.png";
 import {
   useConnectGitHub,
-  useConnectZoom,
-  useConnectNotion,
   useIngestAISession,
   useSaveSlackOAuthSettings,
   useConnectorSyncJobs,
@@ -57,9 +55,7 @@ export default function Connectors() {
   const summaryQuery = useConnectorProcessingSummary();
   const workspaces = useWorkspaces();
   const { selectedId } = useWorkspaceSelection();
-  const connectNotionMut = useConnectNotion();
   const saveSlackOAuthMut = useSaveSlackOAuthSettings();
-  const connectZoomMut = useConnectZoom();
   const connectGitHubMut = useConnectGitHub();
   const syncMut = useSyncConnector();
   const disconnectMut = useDisconnectConnector();
@@ -76,10 +72,6 @@ export default function Connectors() {
   const [slackRedirectUri, setSlackRedirectUri] = useState(
     () => `${window.location.origin}/api/connectors/slack/callback`,
   );
-  const [notionFormOpen, setNotionFormOpen] = useState(false);
-  const [notionToken, setNotionToken] = useState("");
-  const [zoomFormOpen, setZoomFormOpen] = useState(false);
-  const [zoomToken, setZoomToken] = useState("");
   const [githubFormOpen, setGitHubFormOpen] = useState(false);
   const [githubToken, setGitHubToken] = useState("");
   const [githubRepositories, setGitHubRepositories] = useState("");
@@ -355,16 +347,6 @@ export default function Connectors() {
               onChangeSlackRedirectUri={setSlackRedirectUri}
               onToggleSlackSetup={() => setSlackSetupOpen((current) => !current)}
               saveSlackOAuthMut={saveSlackOAuthMut}
-              notionFormOpen={connector.type === "notion" ? notionFormOpen : false}
-              notionToken={notionToken}
-              onChangeNotionToken={setNotionToken}
-              onToggleNotionForm={() => setNotionFormOpen((current) => !current)}
-              connectNotionMut={connectNotionMut}
-              zoomFormOpen={connector.type === "zoom" ? zoomFormOpen : false}
-              zoomToken={zoomToken}
-              onChangeZoomToken={setZoomToken}
-              onToggleZoomForm={() => setZoomFormOpen((current) => !current)}
-              connectZoomMut={connectZoomMut}
               githubFormOpen={connector.type === "github" ? githubFormOpen : false}
               githubToken={githubToken}
               githubRepositories={githubRepositories}
@@ -426,16 +408,6 @@ function ConnectorCard({
   onChangeSlackRedirectUri,
   onToggleSlackSetup,
   saveSlackOAuthMut,
-  notionFormOpen,
-  notionToken,
-  onChangeNotionToken,
-  onToggleNotionForm,
-  connectNotionMut,
-  zoomFormOpen,
-  zoomToken,
-  onChangeZoomToken,
-  onToggleZoomForm,
-  connectZoomMut,
   githubFormOpen,
   githubToken,
   githubRepositories,
@@ -477,12 +449,6 @@ function ConnectorCard({
     syncModeNote,
     processedCount,
     totalProcessedCount,
-    authMode,
-    accountId,
-    ingestionMode,
-    sourceFocus,
-    lastWebhookEvent,
-    lastWebhookReceivedAt,
     provider,
     providerLabel,
     providerNote,
@@ -493,8 +459,6 @@ function ConnectorCard({
   } = connector;
 
   const isSlack = type === "slack";
-  const isNotion = type === "notion";
-  const isZoom = type === "zoom";
   const isGitHub = type === "github";
   const isGDrive = type === "gdrive";
   const isGmail = type === "gmail";
@@ -529,7 +493,6 @@ function ConnectorCard({
         : `/api/connectors/${type}/install?workspace_id=${workspaceId}`
     : null;
   const slackConnectMode = managedConnectAvailable ? "managed" : "self_hosted";
-  const zoomOauthHref = isZoom ? installHref : null;
   const processedDocuments = processing?.processedDocuments ?? totalProcessedCount;
   const pendingDocuments = processing?.unprocessedDocuments ?? Math.max(Number(itemsSynced || 0) - processedDocuments, 0);
   const syncStatusQuery = useConnectorSyncStatus(connectorId, {
@@ -587,48 +550,6 @@ function ConnectorCard({
           onToggleSlackSetup();
           onRefreshConnectors?.();
           onActionNotice("Slack OAuth settings saved. You can connect Slack now.");
-        },
-      },
-    );
-  };
-
-  const handleNotionConnect = (event) => {
-    event.preventDefault();
-    onActionError(null);
-    onActionNotice(null);
-    connectNotionMut.mutate(
-      { token: notionToken },
-      {
-        onError: (err) => onActionError(formatActionError(err) || "Failed to connect Notion."),
-        onSuccess: () => {
-          onChangeNotionToken("");
-          onToggleNotionForm();
-          onActionNotice(
-            status === "disconnected"
-              ? "Notion connected. Run a sync to start storing workspace pages."
-              : "Notion token updated. Run another sync to refresh workspace pages.",
-          );
-        },
-      },
-    );
-  };
-
-  const handleZoomConnect = (event) => {
-    event.preventDefault();
-    onActionError(null);
-    onActionNotice(null);
-    connectZoomMut.mutate(
-      { token: zoomToken },
-      {
-        onError: (err) => onActionError(formatActionError(err) || "Failed to connect Zoom."),
-        onSuccess: () => {
-          onChangeZoomToken("");
-          onToggleZoomForm();
-          onActionNotice(
-            status === "disconnected"
-              ? "Zoom manual token saved. Run a sync to start storing meeting transcripts."
-              : "Zoom manual token updated. Run another sync to refresh meeting transcripts.",
-          );
         },
       },
     );
@@ -853,20 +774,6 @@ function ConnectorCard({
             </div>
           </div>
         )}
-        {isZoom && availability !== "coming_soon" && status !== "disconnected" && (
-          <ZoomCapabilityPanel
-            status={status}
-            authMode={authMode}
-            accountId={accountId}
-            ingestionMode={ingestionMode}
-            sourceFocus={sourceFocus}
-            lastWebhookEvent={lastWebhookEvent}
-            lastWebhookReceivedAt={lastWebhookReceivedAt}
-            oauthHref={zoomOauthHref}
-            isDemo={isDemo}
-            oauthPending={oauthPending}
-          />
-        )}
         {isGitHub && status !== "disconnected" && <GitHubCapabilityPanel repositories={connector.repositories ?? null} />}
         {isSlack && status === "disconnected" && availability === "available" && (
           <SlackSetupHint isConfigured={isConfigured} managedConnectAvailable={managedConnectAvailable} />
@@ -884,7 +791,7 @@ function ConnectorCard({
             onCancel={onToggleSlackSetup}
           />
         )}
-        {redirectUri && status === "disconnected" && (isGoogleOAuth || zoomFormOpen || githubFormOpen || notionFormOpen) && (
+        {redirectUri && status === "disconnected" && (isGoogleOAuth || githubFormOpen) && (
           <div className="mt-2 rounded-md bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/50 px-2.5 py-2">
             <p className="text-[10px] font-medium text-blue-700 dark:text-blue-400 mb-0.5">
               Register this redirect URI in {isGoogleOAuth ? "Google Cloud Console" : `your ${name} app`}:
@@ -923,78 +830,6 @@ function ConnectorCard({
           </p>
         )}
       </div>
-
-      {isNotion && notionFormOpen && (
-        <form onSubmit={handleNotionConnect} className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 p-3 space-y-3">
-          <div>
-            <label htmlFor="notion-token" className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-              Notion integration token
-            </label>
-            <input
-              id="notion-token"
-              type="password"
-              value={notionToken}
-              onChange={(event) => onChangeNotionToken(event.target.value)}
-              placeholder="secret_xxx"
-              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
-            />
-          </div>
-          <div className="flex gap-2">
-            <button
-              type="submit"
-              disabled={connectNotionMut.isPending || !notionToken.trim()}
-              className="px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
-            >
-              {connectNotionMut.isPending
-                ? "Saving..."
-                : status === "connected" || status === "error"
-                  ? "Save Notion token"
-                  : "Save Notion token"}
-            </button>
-            <button
-              type="button"
-              onClick={onToggleNotionForm}
-              className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-white dark:bg-slate-800"
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
-      )}
-
-      {isZoom && zoomFormOpen && (
-        <form onSubmit={handleZoomConnect} className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 p-3 space-y-3">
-          <div>
-            <label htmlFor="zoom-token" className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-              Zoom access token
-            </label>
-            <input
-              id="zoom-token"
-              type="password"
-              value={zoomToken}
-              onChange={(event) => onChangeZoomToken(event.target.value)}
-              placeholder="zoom_access_token"
-              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
-            />
-          </div>
-          <div className="flex gap-2">
-            <button
-              type="submit"
-              disabled={connectZoomMut.isPending || !zoomToken.trim()}
-              className="px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
-            >
-              {connectZoomMut.isPending ? "Saving..." : "Save Zoom token"}
-            </button>
-            <button
-              type="button"
-              onClick={onToggleZoomForm}
-              className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-white dark:bg-slate-800"
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
-      )}
 
       {isGitHub && githubFormOpen && (
         <form onSubmit={handleGitHubConnect} className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 p-3 space-y-3">
@@ -1209,42 +1044,6 @@ function ConnectorCard({
           <span className="inline-flex items-center rounded-lg bg-amber-50 dark:bg-amber-900/30 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800/50">
             Google OAuth not configured
           </span>
-        ) : isNotion && status === "disconnected" ? (
-          <button
-            type="button"
-            disabled={isDemo || !workspaceId}
-            onClick={onToggleNotionForm}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
-          >
-            Connect Notion
-          </button>
-        ) : isNotion && (status === "connected" || status === "error") ? (
-          <button
-            type="button"
-            disabled={isDemo}
-            onClick={onToggleNotionForm}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 disabled:text-gray-400 disabled:cursor-not-allowed"
-          >
-            Update Notion token
-          </button>
-        ) : isZoom && status === "disconnected" ? (
-          <button
-            type="button"
-            disabled={isDemo || !workspaceId}
-            onClick={onToggleZoomForm}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
-          >
-            Use manual token
-          </button>
-        ) : isZoom && (status === "connected" || status === "error") ? (
-          <button
-            type="button"
-            disabled={isDemo}
-            onClick={onToggleZoomForm}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:bg-gray-900/30 disabled:text-gray-400 disabled:cursor-not-allowed"
-          >
-            Update Zoom token
-          </button>
         ) : isGitHub && status === "disconnected" ? (
           <button
             type="button"
@@ -1430,86 +1229,6 @@ function formatActionError(error) {
     return error.detail.map((item) => item.msg).join(". ");
   }
   return error.message || null;
-}
-
-function ZoomCapabilityPanel({
-  status,
-  authMode,
-  accountId,
-  ingestionMode,
-  sourceFocus,
-  lastWebhookEvent,
-  lastWebhookReceivedAt,
-  oauthHref,
-  isDemo,
-  oauthPending,
-}) {
-  const mode = authMode === "oauth" ? "oauth" : authMode === "manual_token" ? "manual_token" : "unknown";
-  const badgeClass =
-    mode === "oauth"
-      ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400"
-      : mode === "manual_token"
-        ? "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400"
-        : "bg-gray-100 dark:bg-gray-900/40 text-gray-600 dark:text-gray-400";
-
-  const modeLabel =
-    mode === "oauth"
-      ? "OAuth auto-sync"
-      : mode === "manual_token"
-        ? "Manual polling"
-        : "Choose auth mode";
-
-  const modeSummary =
-    mode === "oauth"
-      ? "Webhook-triggered sync is enabled for supported transcript and recording completion events."
-      : mode === "manual_token"
-        ? "This connector stays polling-only. Use Sync now to pull transcripts, or upgrade to OAuth for webhook-driven sync."
-        : "Zoom supports OAuth for webhook-triggered auto-sync or a manual token for polling-only transcript sync.";
-
-  const ctaLabel =
-    status === "connected" || status === "error"
-      ? mode === "oauth"
-        ? "Refresh Zoom OAuth"
-        : "Upgrade to Zoom OAuth"
-      : "Connect Zoom OAuth";
-
-  return (
-    <div className="mt-3 rounded-lg border border-sky-200 bg-sky-50 px-3 py-3 dark:border-sky-500/20 dark:bg-sky-500/10">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-[11px] font-bold uppercase tracking-wide text-sky-800 dark:text-sky-200">Zoom sync mode</p>
-        <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${badgeClass}`}>
-          {modeLabel}
-        </span>
-      </div>
-      <p className="mt-2 text-sm leading-5 text-sky-900 dark:text-sky-100">{modeSummary}</p>
-      {(ingestionMode || sourceFocus) && (
-        <p className="mt-2 text-xs text-sky-800 dark:text-sky-200/80">
-          {ingestionMode === "transcripts_only" ? "Transcript-only ingestion" : ingestionMode || "Ingestion configured"}
-          {sourceFocus ? ` · ${sourceFocus.replaceAll("_", " ")}` : ""}
-        </p>
-      )}
-      {accountId && (
-        <p className="mt-1 text-xs text-sky-800 dark:text-sky-200/80">
-          Account: {accountId}
-        </p>
-      )}
-      {(lastWebhookEvent || lastWebhookReceivedAt) && (
-        <p className="mt-1 text-xs text-sky-800 dark:text-sky-200/80">
-          Last webhook:
-          {lastWebhookEvent ? ` ${lastWebhookEvent}` : " event received"}
-          {lastWebhookReceivedAt ? ` · ${lastWebhookReceivedAt}` : ""}
-        </p>
-      )}
-      {!isDemo && !oauthPending && oauthHref && (
-        <a
-          href={oauthHref}
-          className="mt-3 inline-flex rounded-lg border border-sky-300 bg-white/80 px-3 py-1.5 text-xs font-bold text-sky-800 transition-colors hover:bg-white hover:text-sky-950 dark:border-sky-400/30 dark:bg-sky-950/40 dark:text-sky-100 dark:hover:bg-sky-900/60"
-        >
-          {ctaLabel}
-        </a>
-      )}
-    </div>
-  );
 }
 
 function GitHubCapabilityPanel({ repositories }) {
@@ -1818,7 +1537,6 @@ function ConnectorIconBadge({ type, color, name }) {
     gdrive: <img src={imgGDrive} alt="Google Drive" className="w-8 h-8 object-contain" />,
     gmail: <img src={imgGmail} alt="Gmail" className="w-6 h-6 object-contain" />,
     github: <GitHubIcon className="w-5 h-5 text-white" />,
-    notion: <NotionIcon className="w-5 h-5" />,
     codex: <img src={imgOpenAI} alt="OpenAI" className="w-7 h-7 object-contain" />,
     claude: <AnthropicIcon className="w-5 h-5 text-white" />,
     opencode: <img src={imgOpenCode} alt="OpenCode" className="w-8 h-8 object-contain" />,
@@ -1874,19 +1592,6 @@ function GitHubIcon({ className }) {
   return (
     <svg className={className} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="currentColor">
       <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
-    </svg>
-  );
-}
-
-function NotionIcon({ className }) {
-  return (
-    <svg className={className} viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-      <path d="M6.07 6.61C8.47 8.55 9.37 8.41 13.97 8.1L87.7 3.7C88.9 3.7 87.96 2.5 87.5 2.36L75.18.46C72.78.16 72.48.01 69.58.16L6.22 4.96C4.87 5.1 4.57 5.86 6.07 6.61Z" fill="#ffffff"/>
-      <path d="M8.47 17.4V90.69c0 3.59 1.79 4.93 5.84 4.64l80.2-4.64c4.04-.3 4.49-2.84 4.49-5.83V13.76c0-2.99-1.2-4.63-3.89-4.33L12.81 13.9C10.11 14.2 8.47 15.7 8.47 17.4Z" fill="#ffffff"/>
-      <path d="M59.22 21.25L29.33 23.2c-2.69.15-3.44 1.64-3.44 3.73v43.36c0 2.09 1.2 3.14 3.44 2.99l29.89-1.8c2.24-.15 2.69-1.34 2.69-3.44V24.24c0-2.09-.45-3.14-2.69-2.99Z" fill="#000000"/>
-      <path d="M56.83 25.64l-22.3 1.35v37.58l22.3-1.35V25.64Z" fill="#ffffff"/>
-      <path d="M42.69 30.07l-5.39.33v5.39l5.39-.33V30.07Z" fill="#000000"/>
-      <path d="M47.78 29.77l-3.89.24v5.39l3.89-.24V29.77Z" fill="#000000"/>
     </svg>
   );
 }

@@ -23,6 +23,7 @@ from sqlalchemy.orm import selectinload
 from app.database import AsyncSessionLocal
 from app.models import Component, Model, Relationship, SourceDocument
 from app.processing.embedder import HashingEmbedder, cosine_similarity
+from app.services.query import QueryService
 
 logger = logging.getLogger("context-engine.mcp")
 
@@ -58,6 +59,37 @@ async def list_tools() -> list[Tool]:
                     "limit": {
                         "type": "integer",
                         "description": "Maximum number of results (default 10)",
+                    },
+                },
+                "required": ["query"],
+            },
+        ),
+        Tool(
+            name="query_context",
+            description=(
+                "Ask a natural-language question over the knowledge graph. "
+                "Returns the same versioned query trace as the HTTP API: "
+                "facts used, source IDs, and relationship evidence. Use this "
+                "when an AI agent needs a grounded answer or context pack seed."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language question to answer from the graph",
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": "Number of top facts to retrieve, from 1 to 20. Default 8.",
+                    },
+                    "min_confidence": {
+                        "type": "number",
+                        "description": "Minimum component confidence, from 0.0 to 1.0. Default 0.0.",
+                    },
+                    "hybrid": {
+                        "type": "boolean",
+                        "description": "Whether to combine embedding and lexical overlap. Default true.",
                     },
                 },
                 "required": ["query"],
@@ -124,6 +156,13 @@ async def list_tools() -> list[Tool]:
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     if name == "search_nodes":
         return await _search_nodes(arguments["query"], arguments.get("limit", 10))
+    elif name == "query_context":
+        return await _query_context(
+            arguments["query"],
+            top_k=arguments.get("top_k", 8),
+            min_confidence=arguments.get("min_confidence", 0.0),
+            hybrid=arguments.get("hybrid", True),
+        )
     elif name == "expand_graph":
         return await _expand_graph(arguments["node_id"])
     elif name == "get_model":
@@ -134,6 +173,96 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         return await _get_status()
     else:
         return _text(f"Unknown tool: {name}")
+
+
+async def _query_context(
+    query: str,
+    top_k: int = 8,
+    min_confidence: float = 0.0,
+    hybrid: bool = True,
+) -> list[TextContent]:
+    try:
+        async with AsyncSessionLocal() as session:
+            svc = QueryService(session, embedder=HashingEmbedder())
+            result = await svc.query(
+                query,
+                top_k=top_k,
+                min_confidence=min_confidence,
+                hybrid=hybrid,
+            )
+
+        return _json_text({
+            "schema_version": result.schema_version,
+            "question": result.question,
+            "answer": result.answer,
+            "confidence": result.confidence,
+            "components": [
+                {
+                    "id": str(component.id),
+                    "model_name": component.model_name,
+                    "name": component.name,
+                    "value": component.value,
+                    "fact_type": component.fact_type,
+                    "confidence": component.confidence,
+                    "status": component.status,
+                    "source_document_id": str(component.source_document_id) if component.source_document_id else None,
+                    "source_type": component.source_label,
+                    "source_url": component.source_url,
+                    "provenance": component.provenance,
+                    "excerpt": component.excerpt,
+                    "rank": component.rank,
+                    "score": component.score,
+                    "matched": component.matched,
+                    "relationship_type": component.relationship_type,
+                    "relationship_evidence": component.relationship_evidence,
+                    "relationship_origin": component.relationship_origin,
+                }
+                for component in result.components
+            ],
+            "sources": result.sources,
+            "trace": {
+                "top_k": result.trace.top_k,
+                "min_confidence": result.trace.min_confidence,
+                "hybrid": result.trace.hybrid,
+                "matched_component_count": result.trace.matched_component_count,
+                "returned_component_count": result.trace.returned_component_count,
+                "expanded_relationship_count": result.trace.expanded_relationship_count,
+                "facts_used": [
+                    {
+                        "rank": fact.rank,
+                        "component_id": str(fact.component_id),
+                        "model_name": fact.model_name,
+                        "name": fact.name,
+                        "value": fact.value,
+                        "score": fact.score,
+                        "semantic_score": fact.semantic_score,
+                        "lexical_score": fact.lexical_score,
+                        "confidence": fact.confidence,
+                        "authority_weight": fact.authority_weight,
+                        "source_document_id": str(fact.source_document_id) if fact.source_document_id else None,
+                        "source_type": fact.source_type,
+                        "source_url": fact.source_url,
+                    }
+                    for fact in result.trace.facts_used
+                ],
+                "relationships_used": [
+                    {
+                        "id": str(rel.id),
+                        "source_component_id": str(rel.source_component_id),
+                        "target_component_id": str(rel.target_component_id),
+                        "relationship_type": rel.relationship_type,
+                        "confidence": rel.confidence,
+                        "evidence": rel.evidence,
+                        "origin": rel.origin,
+                    }
+                    for rel in result.trace.relationships_used
+                ],
+            },
+        })
+
+    except Exception as exc:
+        logger.exception("query_context failed")
+        return _text(f"Error: {exc}")
 
 
 async def _search_nodes(query: str, limit: int = 10) -> list[TextContent]:

@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from sqlalchemy import select
 
+from app.agents.context_pack import ContextPackAgent
 from app.agents.gap_detector import GapDetectorAgent
 from app.agents.relationship_agent import RelationshipAgent
 from app.agents.semantic_linker import SemanticRelationshipLinker
@@ -221,3 +222,63 @@ async def test_relationship_agent_candidate_pairs_are_not_limited_to_six_per_typ
     names = {(candidate.source.name, candidate.target.name) for candidate in candidates}
 
     assert ("Slack task 7", "GitHub task 7") in names
+
+
+async def test_context_pack_can_scope_to_selected_component_and_neighbors(db_session):
+    task_model = Model(id=uuid4(), name="Task")
+    decision_model = Model(id=uuid4(), name="Decision")
+    doc = SourceDocument(
+        id=uuid4(),
+        source_type="github_issue",
+        external_id="context-pack-selected",
+        content="Selected task and related decision.",
+        metadata_json="{}",
+    )
+    selected = Component(
+        id=uuid4(),
+        model_id=task_model.id,
+        source_document_id=doc.id,
+        name="Build Board graph",
+        value="Build the source-first Board graph",
+        fact_type="task",
+        temporal="current",
+        confidence=0.9,
+        status="active",
+    )
+    neighbor = Component(
+        id=uuid4(),
+        model_id=decision_model.id,
+        source_document_id=doc.id,
+        name="Board default",
+        value="Board is the default graph mode",
+        fact_type="decision",
+        confidence=0.9,
+        status="active",
+    )
+    unrelated = Component(
+        id=uuid4(),
+        model_id=task_model.id,
+        source_document_id=doc.id,
+        name="Unrelated task",
+        value="This should not be in the selected context pack",
+        fact_type="task",
+        confidence=0.9,
+        status="active",
+    )
+    rel = Relationship(
+        id=uuid4(),
+        source_component_id=selected.id,
+        target_component_id=neighbor.id,
+        relationship_type="depends_on",
+        evidence="Board task depends on the product decision.",
+        origin="deterministic",
+    )
+    db_session.add_all([task_model, decision_model, doc, selected, neighbor, unrelated, rel])
+    await db_session.flush()
+
+    pack = await ContextPackAgent(db_session).run(component_ids=[selected.id])
+
+    assert pack.entity_count == 2
+    assert "Build the source-first Board graph" in pack.content
+    assert "Board is the default graph mode" in pack.content
+    assert "This should not be in the selected context pack" not in pack.content

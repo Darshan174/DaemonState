@@ -787,6 +787,54 @@ class TestMCPProvenance:
         assert data["sources"] >= 1
         assert data["models"] >= 1
 
+    async def test_query_context_returns_trace_and_relationship_evidence(self, db_session, monkeypatch):
+        """MCP query_context mirrors the HTTP query trace contract."""
+        from app.processing.embedder import HashingEmbedder
+
+        embedder = HashingEmbedder()
+        model = Model(id=uuid4(), name="Risk")
+        doc = SourceDocument(
+            id=uuid4(),
+            source_type="github_issue",
+            external_id="mcp-query-trace",
+            content="Launch blocker and PR evidence.",
+            source_url="https://github.com/acme/app/issues/12",
+            metadata_json="{}",
+        )
+        blocker = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="Launch blocker", value="Launch blocker is unresolved",
+            fact_type="risk", confidence=0.95, status="active",
+            embedding=json.dumps(await embedder.embed_text("launch blocker unresolved")),
+            provenance="GitHub issue #12",
+        )
+        fix = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="Fix launch PR", value="PR #7 fixes launch blocker",
+            fact_type="github_pr", confidence=0.9, status="active",
+            embedding=json.dumps(await embedder.embed_text("unrelated pr text")),
+        )
+        rel = Relationship(
+            id=uuid4(),
+            source_component_id=fix.id,
+            target_component_id=blocker.id,
+            relationship_type="fixes",
+            confidence=0.92,
+            evidence="PR #7 explicitly says Fixes #12.",
+            origin="deterministic",
+        )
+        db_session.add_all([model, doc, blocker, fix, rel])
+        await db_session.flush()
+
+        mcp_server = self._patch_mcp_session(monkeypatch, db_session)
+        result = await mcp_server._query_context("launch blocker", top_k=1)
+        data = json.loads(result[0].text)
+
+        assert data["schema_version"] == "query.v1"
+        assert data["trace"]["facts_used"][0]["source_document_id"] == str(doc.id)
+        assert data["trace"]["relationships_used"][0]["evidence"] == "PR #7 explicitly says Fixes #12."
+        assert any(component["name"] == "Fix launch PR" for component in data["components"])
+
 
 # ── Section 6: Migration / Storage Safety ────────────────────────────────────
 

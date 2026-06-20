@@ -37,6 +37,8 @@ export default function WorkspaceSwitcher() {
     qc.invalidateQueries({ queryKey: ["connectors"] });
     qc.invalidateQueries({ queryKey: ["timeline"] });
     qc.invalidateQueries({ queryKey: ["connector-processing-summary"] });
+    qc.invalidateQueries({ queryKey: ["knowledge-graph"] });
+    qc.invalidateQueries({ queryKey: ["graph-slice"] });
     // If on a model detail page, navigate away — that model belongs to the old workspace
     if (location.pathname.startsWith("/app/model/")) {
       navigate("/app/models");

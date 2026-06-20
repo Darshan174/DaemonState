@@ -338,27 +338,60 @@ function buildActivityFromGraph(graph) {
   }));
 }
 
+function buildDashboardIo({ connectors = [], sourceCount = 0, componentCount = 0, relationshipCount = 0 } = {}) {
+  const availableConnectors = connectors.filter((connector) => connector.availability === "available");
+  const connectedConnectors = availableConnectors.filter((connector) => connector.status === "connected");
+  const comingSoonCount = connectors.filter((connector) => connector.availability === "coming_soon").length;
+  const activeFeeds = connectedConnectors.length > 0 ? connectedConnectors : availableConnectors.slice(0, 4);
+  const feedFallback = sourceCount > 0
+    ? [{ name: "Source documents", detail: `${sourceCount} raw source${sourceCount === 1 ? "" : "s"} preserved` }]
+    : [{ name: "Local files", detail: "Upload or import a source to start the graph" }];
+
+  return {
+    feeds: (activeFeeds.length > 0 ? activeFeeds.map((connector) => ({
+      name: connector.name,
+      detail: connector.status === "connected"
+        ? `${connector.itemsSynced || 0} item${connector.itemsSynced === 1 ? "" : "s"} synced`
+        : connector.message || "Available connector",
+    })) : feedFallback).slice(0, 4),
+    feedFooter: comingSoonCount > 0
+      ? `${comingSoonCount} planned connector${comingSoonCount === 1 ? "" : "s"} kept as coming soon`
+      : "Connector status is sourced from the backend catalog",
+    outputs: [
+      { name: "MCP server", detail: "Agent tools read graph facts with source IDs and evidence" },
+      { name: "Context packs", detail: "Selection or full-graph handoffs include 1-hop neighbors" },
+      { name: "Query API", detail: `${componentCount} facts searchable with retrieval trace` },
+      { name: "Graph UI", detail: `${relationshipCount} relationship${relationshipCount === 1 ? "" : "s"} inspectable` },
+    ],
+  };
+}
+
 export function useDashboard() {
   return useQuery({
     queryKey: ["dashboard"],
     queryFn: withFallback(async () => {
       const wsId = await getWorkspaceId();
       if (!wsId) {
-        const [stats, graph] = await Promise.all([
+        const [stats, graph, connectorsPayload] = await Promise.all([
           api.get("/stats"),
           api.get("/graph"),
+          api.get("/connectors"),
         ]);
 
         const sourceCount = stats?.sources ?? 0;
+        const componentCount = stats?.components ?? graph?.components?.length ?? 0;
+        const relationshipCount = stats?.relationships ?? graph?.relationships?.length ?? 0;
+        const connectors = normalizeConnectors(connectorsPayload);
         return {
           stats: [
             { label: "Sources", value: sourceCount, icon: "database", delta: sourceCount > 0 ? `${sourceCount} source${sourceCount === 1 ? "" : "s"} ingested` : "No sources yet" },
             { label: "Models", value: stats?.models ?? graph?.models?.length ?? 0, icon: "cube", delta: "Current backend" },
-            { label: "Components", value: stats?.components ?? graph?.components?.length ?? 0, icon: "puzzle", delta: `${stats?.pending_review ?? 0} pending review` },
-            { label: "Relationships", value: stats?.relationships ?? graph?.relationships?.length ?? 0, icon: "link", delta: "Graph edges" },
+            { label: "Components", value: componentCount, icon: "puzzle", delta: `${stats?.pending_review ?? 0} pending review` },
+            { label: "Relationships", value: relationshipCount, icon: "link", delta: "Graph edges" },
           ],
           activity: buildActivityFromGraph(graph),
           alerts: staleAlerts,
+          io: buildDashboardIo({ connectors, sourceCount, componentCount, relationshipCount }),
         };
       }
 
@@ -393,6 +426,12 @@ export function useDashboard() {
         ],
         activity: recentActivity, // no backend endpoint yet
         alerts: staleAlerts, // no backend endpoint yet
+        io: buildDashboardIo({
+          connectors,
+          sourceCount: sourceDocumentCount,
+          componentCount: totalComponents,
+          relationshipCount,
+        }),
       };
     }, MOCK_DASHBOARD),
   });
@@ -1639,38 +1678,6 @@ export function useRestoreSourceDocument() {
         qc.invalidateQueries({ queryKey: ["connector-sync-status", document.connectorId] });
         qc.invalidateQueries({ queryKey: ["connector-sync-jobs", document.connectorId] });
       }
-    },
-  });
-}
-
-export function useConnectNotion() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ token }) => {
-      const wsId = await getWorkspaceId();
-      return api.post("/connectors/notion/connect", { workspace_id: wsId, token });
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["connectors"] });
-      qc.invalidateQueries({ queryKey: ["connector-processing-summary"] });
-      qc.invalidateQueries({ queryKey: ["source-documents"] });
-      qc.invalidateQueries({ queryKey: ["dashboard"] });
-    },
-  });
-}
-
-export function useConnectZoom() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ token }) => {
-      const wsId = await getWorkspaceId();
-      return api.post("/connectors/zoom/connect", { workspace_id: wsId, token });
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["connectors"] });
-      qc.invalidateQueries({ queryKey: ["connector-processing-summary"] });
-      qc.invalidateQueries({ queryKey: ["source-documents"] });
-      qc.invalidateQueries({ queryKey: ["dashboard"] });
     },
   });
 }

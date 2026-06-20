@@ -11,7 +11,8 @@ import {
   Database,
   CheckCircle2,
   AlertCircle,
-  Clock
+  Clock,
+  Bot,
 } from "lucide-react";
 import { motion } from "framer-motion";
 
@@ -34,8 +35,18 @@ export default function Dashboard() {
     );
   }
 
-  const { stats = [], activity = [] } = query.data || {};
+  const { stats = [], activity = [], io = null } = query.data || {};
   const sourceCount = stats.find((stat) => stat.label === "Sources")?.value ?? 0;
+  const ioSummary = io ?? {
+    feeds: [{ name: "Source documents", detail: `${sourceCount} source${sourceCount === 1 ? "" : "s"} preserved` }],
+    feedFooter: "Connector status is sourced from the backend catalog",
+    outputs: [
+      { name: "MCP server", detail: "Agent tools read graph facts with source IDs and evidence" },
+      { name: "Context packs", detail: "Selection or full-graph handoffs include neighbors" },
+      { name: "Query API", detail: "Facts-used trace for grounded answers" },
+      { name: "Graph UI", detail: "Board and Explore views for inspection" },
+    ],
+  };
 
   // Show onboarding if no sources connected
   if (sourceCount === 0) {
@@ -99,6 +110,32 @@ export default function Dashboard() {
           cta="View timeline"
         />
       </div>
+
+      <motion.section
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.45, delay: 0.08 }}
+        className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900"
+      >
+        <div className="grid lg:grid-cols-[1fr_auto_1fr]">
+          <DashboardIoColumn
+            icon={<Database className="h-4 w-4" />}
+            title="What feeds"
+            items={ioSummary.feeds}
+            footer={ioSummary.feedFooter}
+            actionTo="/app/connectors"
+            actionLabel="Connectors"
+          />
+          <div className="hidden w-px bg-slate-200 dark:bg-slate-700 lg:block" />
+          <DashboardIoColumn
+            icon={<Bot className="h-4 w-4" />}
+            title="What agents consume"
+            items={ioSummary.outputs}
+            actionTo="/app/graph"
+            actionLabel="Graph"
+          />
+        </div>
+      </motion.section>
 
       {/* ── Secondary Activity/Health ─────────────── */}
       <div className="grid lg:grid-cols-2 gap-8 pt-4">
@@ -179,6 +216,44 @@ export default function Dashboard() {
         </motion.div>
       </div>
     </motion.div>
+  );
+}
+
+function DashboardIoColumn({ icon, title, items = [], footer, actionTo, actionLabel }) {
+  return (
+    <div className="p-5">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+            {icon}
+          </span>
+          <h3 className="text-sm font-bold text-slate-900 dark:text-white">{title}</h3>
+        </div>
+        <Link
+          to={actionTo}
+          className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2.5 py-1 text-[11px] font-bold text-slate-500 transition hover:bg-slate-50 hover:text-slate-800 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+        >
+          {actionLabel}
+          <ArrowRight className="h-3 w-3" />
+        </Link>
+      </div>
+      <div className="space-y-2.5">
+        {items.slice(0, 4).map((item) => (
+          <div key={`${title}-${item.name}`} className="flex items-start gap-3">
+            <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand-500" />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">{item.name}</p>
+              <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">{item.detail}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+      {footer ? (
+        <p className="mt-4 border-t border-slate-100 pt-3 text-[11px] font-medium text-slate-400 dark:border-slate-800">
+          {footer}
+        </p>
+      ) : null}
+    </div>
   );
 }
 

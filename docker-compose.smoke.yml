@@ -1,0 +1,22 @@
+services:
+  app:
+    build: .
+    ports:
+      - "${SMOKE_PORT:-18080}:8000"
+    volumes:
+      - ce_smoke_data:/data
+    environment:
+      DATABASE_URL: sqlite+aiosqlite:////data/context.db
+      DATA_DIR: /data
+      LITELLM_API_KEY: ${LITELLM_API_KEY:-}
+      EXTRACTION_MODEL: ${EXTRACTION_MODEL:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+volumes:
+  ce_smoke_data:

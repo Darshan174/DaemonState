@@ -1,5 +1,16 @@
 import { useState, useRef, useEffect } from "react";
-import { Sparkles, Search, ChevronRight, FileText, Loader2 } from "lucide-react";
+import {
+  ChevronRight,
+  ExternalLink,
+  FileText,
+  Loader2,
+  Search,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sparkles,
+} from "lucide-react";
+import { useWorkspaces } from "../api/hooks";
+import { resolveWorkspaceId, useWorkspaceSelection } from "../context/WorkspaceContext";
 
 const SUGGESTIONS = [
   "What is blocking our launch?",
@@ -14,22 +25,39 @@ export default function QueryView() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [history, setHistory] = useState([]);
+  const [topK, setTopK] = useState(8);
+  const [minConfidence, setMinConfidence] = useState(0);
+  const [hybrid, setHybrid] = useState(true);
   const inputRef = useRef(null);
+  const { selectedId } = useWorkspaceSelection();
+  const { data: workspaces = [] } = useWorkspaces();
+  const activeWorkspaceId = resolveWorkspaceId(workspaces, selectedId);
+  const activeWorkspace = activeWorkspaceId
+    ? workspaces.find((w) => w.id === activeWorkspaceId) || null
+    : null;
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
-  async function handleSubmit(e) {
+  async function handleSubmit(e, overrideQuestion) {
     e?.preventDefault();
-    const q = question.trim();
+    const q = (overrideQuestion || question).trim();
     if (!q) return;
+    if (overrideQuestion) setQuestion(overrideQuestion);
     setLoading(true);
     setError(null);
     setResult(null);
     try {
+      const body = {
+        question: q,
+        top_k: topK,
+        min_confidence: minConfidence,
+        hybrid,
+      };
+      if (activeWorkspaceId) body.workspace_id = activeWorkspaceId;
       const res = await fetch("/api/query", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -43,8 +71,7 @@ export default function QueryView() {
   }
 
   function askSuggestion(s) {
-    setQuestion(s);
-    setTimeout(() => inputRef.current?.form?.requestSubmit(), 0);
+    handleSubmit(null, s);
   }
 
   const hasResult = result || loading || error;
@@ -89,6 +116,47 @@ export default function QueryView() {
             Ask
           </button>
         </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          {activeWorkspace ? (
+            <span className="inline-flex items-center gap-1.5 rounded-lg bg-brand-50 px-2.5 py-1 text-[11px] font-bold text-brand-700 dark:bg-brand-900/30 dark:text-brand-300">
+              <ShieldCheck className="h-3.5 w-3.5" />
+              {activeWorkspace.name}
+            </span>
+          ) : null}
+          <span className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            Retrieval
+          </span>
+          <select
+            value={topK}
+            onChange={(e) => setTopK(Number(e.target.value))}
+            className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+          >
+            <option value={4}>Top 4</option>
+            <option value={8}>Top 8</option>
+            <option value={12}>Top 12</option>
+            <option value={20}>Top 20</option>
+          </select>
+          <select
+            value={minConfidence}
+            onChange={(e) => setMinConfidence(Number(e.target.value))}
+            className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+          >
+            <option value={0}>Any confidence</option>
+            <option value={0.5}>50%+</option>
+            <option value={0.7}>70%+</option>
+            <option value={0.85}>85%+</option>
+          </select>
+          <label className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
+            <input
+              type="checkbox"
+              checked={hybrid}
+              onChange={(e) => setHybrid(e.target.checked)}
+              className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+            />
+            Hybrid
+          </label>
+        </div>
       </form>
 
       {/* Suggestions (only when no result) */}
@@ -99,7 +167,7 @@ export default function QueryView() {
             {SUGGESTIONS.map((s) => (
               <button
                 key={s}
-                onClick={() => { setQuestion(s); setTimeout(() => handleSubmit(), 0); }}
+                onClick={() => askSuggestion(s)}
                 className="group flex items-center gap-3 p-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:border-brand-300 dark:hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/20 text-left transition-all"
               >
                 <span className="shrink-0 w-6 h-6 rounded-lg bg-brand-50 dark:bg-brand-900/40 flex items-center justify-center">
@@ -157,11 +225,59 @@ export default function QueryView() {
             </div>
           )}
 
-          {/* Cited components */}
-          {result.components?.length > 0 && (
+          {/* Facts used */}
+          {result.trace?.facts_used?.length > 0 && (
             <div className="ml-10 rounded-2xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-5 shadow-sm">
               <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-3">
-                {result.components.length} cited facts
+                Facts used ({result.trace.facts_used.length})
+              </p>
+              <div className="space-y-2">
+                {result.trace.facts_used.map((c) => (
+                  <div key={c.component_id} className="flex items-start gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-100 dark:border-slate-700/50">
+                    <span className="w-5 h-5 rounded-md bg-brand-100 dark:bg-brand-900/40 flex items-center justify-center text-[10px] font-bold text-brand-700 dark:text-brand-300 shrink-0 mt-0.5">
+                      {c.rank}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-bold text-slate-800 dark:text-slate-200 leading-snug">{c.value || c.name}</p>
+                      <p className="mt-0.5 text-[11px] text-slate-400">
+                        {c.model_name} · score {Number(c.score).toFixed(2)} · {Math.round(c.confidence * 100)}% confidence
+                      </p>
+                      {c.source_url ? (
+                        <a
+                          href={c.source_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-brand-600 hover:text-brand-700 dark:text-brand-400"
+                        >
+                          Source <ExternalLink className="h-3 w-3" />
+                        </a>
+                      ) : null}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {result.trace.relationships_used?.length > 0 && (
+                <div className="mt-4 border-t border-slate-100 pt-3 dark:border-slate-700">
+                  <p className="mb-2 text-[11px] font-bold uppercase tracking-widest text-slate-400">
+                    Relationship expansion ({result.trace.relationships_used.length})
+                  </p>
+                  <div className="space-y-1.5">
+                    {result.trace.relationships_used.slice(0, 5).map((rel) => (
+                      <div key={rel.id} className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-[11px] text-slate-600 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300">
+                        <span className="font-bold">{rel.relationship_type.replaceAll("_", " ")}</span>
+                        {rel.evidence ? <span className="block text-slate-400">{rel.evidence}</span> : null}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {result.trace?.facts_used?.length === 0 && result.components?.length > 0 && (
+            <div className="ml-10 rounded-2xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-5 shadow-sm">
+              <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-3">
+                Cited facts ({result.components.length})
               </p>
               <div className="space-y-2">
                 {result.components.map((c, i) => (
@@ -171,9 +287,6 @@ export default function QueryView() {
                     </span>
                     <div className="min-w-0 flex-1">
                       <p className="text-xs font-bold text-slate-800 dark:text-slate-200 leading-snug">{c.value || c.name}</p>
-                      {c.value && c.name && c.value !== c.name && (
-                        <p className="text-[11px] text-slate-400 mt-0.5">{c.name}</p>
-                      )}
                     </div>
                   </div>
                 ))}

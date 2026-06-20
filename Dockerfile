@@ -21,7 +21,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Install dependencies first (better layer caching)
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md LICENSE ./
 RUN pip install --no-cache-dir .
 
 # Copy application code

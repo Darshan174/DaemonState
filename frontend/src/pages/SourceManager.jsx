@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { Upload, FileText, FileCode, FileJson, X, ChevronRight, ChevronDown, CheckCircle, Clock, Layers, MessageSquare, HardDrive, Bot, Video, FolderOpen, Clipboard } from "lucide-react";
+import { Upload, FileText, FileCode, FileJson, X, ChevronRight, ChevronDown, CheckCircle, Clock, Layers, MessageSquare, HardDrive, Bot, Video, FolderOpen, Clipboard, AlertTriangle } from "lucide-react";
+import { api } from "../api/client";
 
 function GitHubIcon({ className }) {
   return (
@@ -68,14 +69,16 @@ const GITHUB_TYPES = ["github", "github_issue", "github_pr", "github_pull_reques
 const DOCUMENT_TYPES = [
   "markdown", "md", "text", "txt", "json", "csv", "html", "pdf",
   "local", "local_folder", "browser_upload", "paste",
-  "gdrive", "google_drive", "notion", "document",
+  "gdrive", "google_drive", "document",
 ];
+const UNSUPPORTED_PROVIDER_TYPES = ["notion", "zoom", "zoom_transcript"];
 
 const SOURCE_GROUPS = [
   { id: "gmail", label: "Gmail", icon: GmailIcon, chip: "bg-red-50 dark:bg-red-900/30", types: ["gmail"] },
   { id: "slack", label: "Slack", icon: SlackIcon, chip: "bg-violet-50 dark:bg-violet-900/30", types: ["slack"] },
   { id: "documents", label: "Documents", icon: FileText, chip: "bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300", types: DOCUMENT_TYPES },
   { id: "github", label: "GitHub", icon: GitHubIcon, chip: "bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900", types: GITHUB_TYPES },
+  { id: "unsupported", label: "Unsupported", icon: AlertTriangle, chip: "bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300", types: UNSUPPORTED_PROVIDER_TYPES },
   { id: "others", label: "Others", icon: Layers, chip: "bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-300", types: null },
 ];
 
@@ -157,9 +160,7 @@ export default function SourceManager() {
       for (let page = 0; page < 40; page++) {
         const params = new URLSearchParams({ limit: "100" });
         if (cursor) params.set("cursor", cursor);
-        const res = await fetch(`/api/source-documents?${params}`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
+        const data = await api.get(`/source-documents?${params}`);
         all.push(...(data.items || []));
         if (!data.has_more || !data.next_cursor) break;
         cursor = data.next_cursor;
@@ -192,12 +193,12 @@ export default function SourceManager() {
         const content = await file.text();
         const ext = file.name.split(".").pop()?.toLowerCase() || "";
         const sourceType = { md: "markdown", markdown: "markdown", txt: "text", text: "text", json: "json", csv: "csv", html: "html", htm: "html", pdf: "pdf" }[ext] || "text";
-        const res = await fetch("/api/sources", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ source_type: sourceType, external_id: file.name, content, metadata: { file_name: file.name, file_size: file.size } }),
+        await api.post("/sources", {
+          source_type: sourceType,
+          external_id: file.name,
+          content,
+          metadata: { file_name: file.name, file_size: file.size },
         });
-        if (!res.ok) { const body = await res.json().catch(() => ({})); throw new Error(body.detail || `HTTP ${res.status}: ${file.name}`); }
       }
       await fetchSources();
     } catch (err) { setUploadError(err.message); }
@@ -209,14 +210,9 @@ export default function SourceManager() {
     setSelectedComponents(null);
     setLoadingComponents(true);
     try {
-      const res = await fetch(`/api/sources/${source.id}`);
-      if (res.ok) {
-        const detail = await res.json();
-        setSelectedSource({ ...source, ...detail });
-        setSelectedComponents(detail.components || []);
-      } else {
-        setSelectedComponents([]);
-      }
+      const detail = await api.get(`/sources/${source.id}`);
+      setSelectedSource({ ...source, ...detail });
+      setSelectedComponents(detail.components || []);
     } catch { setSelectedComponents([]); }
     finally { setLoadingComponents(false); }
   }

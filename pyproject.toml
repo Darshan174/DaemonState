@@ -8,6 +8,30 @@ version = "0.2.0"
 description = "Structured context infrastructure for AI systems"
 readme = "README.md"
 requires-python = ">=3.12"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Context Engine contributors" },
+]
+keywords = [
+  "ai-agents",
+  "context-engineering",
+  "knowledge-graph",
+  "mcp",
+  "provenance",
+  "self-hosted",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Web Environment",
+  "Framework :: FastAPI",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Database",
+  "Topic :: Office/Business",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
   "fastapi>=0.115.12,<1.0.0",
   "httpx>=0.28.1,<1.0.0",
@@ -24,6 +48,12 @@ dependencies = [
 
 [project.scripts]
 ctxe = "app.cli.main:main"
+
+[project.urls]
+Homepage = "https://github.com/Darshan174/Context-Engine"
+Repository = "https://github.com/Darshan174/Context-Engine"
+Issues = "https://github.com/Darshan174/Context-Engine/issues"
+Documentation = "https://github.com/Darshan174/Context-Engine#readme"
 
 [project.optional-dependencies]
 dev = [

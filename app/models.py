@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     String,
     Text,
     func,
@@ -101,6 +102,11 @@ class SyncJob(Base):
 
 class SourceDocument(Base):
     __tablename__ = "source_documents"
+    __table_args__ = (
+        Index("ix_source_documents_source_type_external_id", "source_type", "external_id"),
+        Index("ix_source_documents_processed_at", "processed_at"),
+        Index("ix_source_documents_ingested_at", "ingested_at"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     source_type: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -134,6 +140,11 @@ class Model(Base):
 
 class Component(Base):
     __tablename__ = "components"
+    __table_args__ = (
+        Index("ix_components_status_confidence", "status", "confidence"),
+        Index("ix_components_model_status", "model_id", "status"),
+        Index("ix_components_source_status", "source_document_id", "status"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     model_id: Mapped[UUID] = mapped_column(ForeignKey("models.id"), nullable=False, index=True)
@@ -186,6 +197,17 @@ class Component(Base):
 
 class Relationship(Base):
     __tablename__ = "relationships"
+    __table_args__ = (
+        Index("ix_relationships_status_origin", "status", "origin"),
+        Index("ix_relationships_source_status", "source_component_id", "status"),
+        Index("ix_relationships_target_status", "target_component_id", "status"),
+        Index(
+            "ix_relationships_source_target_type",
+            "source_component_id",
+            "target_component_id",
+            "relationship_type",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     source_component_id: Mapped[UUID] = mapped_column(

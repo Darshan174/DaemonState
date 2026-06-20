@@ -7,11 +7,15 @@ Open-source structured context infrastructure for AI systems. Turns scattered pr
 ## Table of Contents
 
 - [What It Is](#what-it-is)
+- [Product Tour](#product-tour)
 - [Quick Start — Docker](#quick-start--docker)
 - [Quick Start — Bare Metal](#quick-start--bare-metal)
 - [Configuration](#configuration)
 - [AI / LLM Setup](#ai--llm-setup)
 - [PostgreSQL Setup](#postgresql-setup)
+- [Documentation](#documentation)
+- [Testing And Release Smoke](#testing-and-release-smoke)
+- [Community](#community)
 - [Deployment](#deployment)
 - [Connectors](#connectors)
 - [CLI](#cli)
@@ -22,7 +26,7 @@ Open-source structured context infrastructure for AI systems. Turns scattered pr
 
 ## What It Is
 
-Context Engine ingests documents from Slack, GitHub, Gmail, Zoom, Notion, and local files. It extracts structured facts (decisions, risks, features, tasks, blockers) into a knowledge graph you can query, visualize, and feed directly to AI agents.
+Context Engine ingests documents from local files, AI coding sessions, Slack, GitHub, Gmail, and Google Drive. It extracts structured facts (decisions, risks, features, tasks, blockers) into a source-backed knowledge graph you can query, visualize, and feed directly to AI agents.
 
 **Five built-in AI agents:**
 1. **Ingestion Agent** — reads raw sources → clean entities
@@ -35,16 +39,37 @@ Works fully offline with regex extraction. Plug in any LLM key to unlock AI-powe
 
 ---
 
+## Product Tour
+
+Run the demo seed, then start in **Board**. Context is grouped by source family,
+while the inspector carries provenance, relationship evidence, confidence, and
+review state.
+
+![Board graph with relationship inspector](docs/assets/board-inspector-demo.jpg)
+
+Ask questions with retrieval controls. Answers return a stable `query.v1`
+response and a visible facts-used trace instead of a black-box summary.
+
+![Ask UI with facts-used trace](docs/assets/query-trace-demo.jpg)
+
+For a click-by-click walkthrough of the seeded GitHub, Slack, Gmail, Google
+Drive, and Codex demo workspace, see [Demo Walkthrough](docs/demo.md).
+
+---
+
 ## Quick Start — Docker
 
 The fastest path. No Python or Node.js required on the host.
 
 ```bash
-git clone https://github.com/your-org/context-engine.git
+git clone https://github.com/Darshan174/Context-Engine.git context-engine
 cd context-engine
 
 # Copy and optionally edit the config
 cp .env.example .env
+
+# Optional read-only Docker path check
+bash scripts/doctor.sh --docker
 
 # Start (SQLite, single container)
 docker compose up --build
@@ -52,8 +77,21 @@ docker compose up --build
 
 Open **http://localhost:8000** — the UI and API are served from the same port.
 
+To explore without configuring provider credentials, click **Run Demo Workspace**
+in the onboarding flow or seed it from the API:
+
+```bash
+curl -X POST http://localhost:8000/api/seed-demo -H 'content-type: application/json' -d '{}'
+```
+
 To stop: `docker compose down`
 To wipe data: `docker compose down -v`
+
+Docker smoke test on an alternate port, useful before tagging a release:
+
+```bash
+bash scripts/smoke.sh --docker
+```
 
 ---
 
@@ -62,8 +100,11 @@ To wipe data: `docker compose down -v`
 Requires **Python 3.12+** and **Node.js 18+**.
 
 ```bash
-git clone https://github.com/your-org/context-engine.git
+git clone https://github.com/Darshan174/Context-Engine.git context-engine
 cd context-engine
+
+# Optional read-only prerequisite check
+bash scripts/doctor.sh --bare-metal
 
 # One-command setup (installs deps, builds frontend)
 bash scripts/setup.sh
@@ -73,6 +114,19 @@ bash scripts/start.sh
 ```
 
 Open **http://localhost:8000**
+
+`scripts/setup.sh` creates a local `.venv`, installs backend development
+dependencies there, installs frontend dependencies with `npm ci`, and builds the
+frontend bundle. `scripts/start.sh`, `scripts/dev.sh`, and `scripts/smoke.sh`
+automatically use `.venv/bin/python` when it exists. Set `PYTHON_BIN=/path/to/python`
+to override the interpreter, or `CONTEXT_ENGINE_USE_SYSTEM_PYTHON=1` during
+setup if you intentionally want to install into the active system environment.
+
+For a credential-free demo workspace:
+
+```bash
+curl -X POST http://localhost:8000/api/seed-demo -H 'content-type: application/json' -d '{}'
+```
 
 For development with hot reload on both frontend and backend:
 
@@ -156,6 +210,62 @@ The app auto-creates all tables on first start. No migration tool needed for a f
 
 ---
 
+## Documentation
+
+Launch-facing docs:
+
+- [Architecture](docs/architecture.md)
+- [Connectors](docs/connectors.md)
+- [AI Context](docs/ai-context.md)
+- [Board vs Explore](docs/board-vs-explore.md)
+- [MCP](docs/mcp.md)
+- [Demo Walkthrough](docs/demo.md)
+- [MCP examples](examples/mcp/)
+
+Historical contract reviews remain in `docs/` for audit context, but the files
+above plus this README are the current launch copy.
+
+## Testing And Release Smoke
+
+Run the local launch gates:
+
+```bash
+bash scripts/smoke.sh
+```
+
+This runs backend tests, Ruff, frontend tests, frontend build, and Docker
+compose config validation when Docker is available.
+
+For a faster read-only checkout and prerequisite diagnosis before setup or a
+demo, run:
+
+```bash
+bash scripts/doctor.sh
+```
+
+Before a public release tag, run the full container smoke:
+
+```bash
+bash scripts/smoke.sh --docker
+```
+
+The Docker smoke builds the image, starts the app on `SMOKE_PORT` (default
+`18080`), waits for `/health`, seeds the demo workspace, checks graph stats, and
+verifies `/api/query` returns a non-empty `query.v1` answer. It also checks that
+coming-soon or not-catalogued connector setup paths such as Zoom and Notion
+cannot create fake connected state.
+
+## Community
+
+- [Contributing guide](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- GitHub issue templates cover bugs and feature requests with source,
+  provenance, and connector-honesty prompts.
+- The pull request template asks contributors to verify provenance,
+  evidence-backed relationships, connector state, and core test gates.
+
+---
+
 ## Deployment
 
 ### Fly.io
@@ -204,7 +314,7 @@ Type=simple
 User=www-data
 WorkingDirectory=/opt/context-engine
 EnvironmentFile=/opt/context-engine/.env
-ExecStart=/usr/local/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+ExecStart=/opt/context-engine/.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 Restart=always
 
 [Install]
@@ -236,15 +346,22 @@ server {
 
 ## Connectors
 
-| Connector | Auth method | Notes |
-|---|---|---|
-| **File upload** | None | Drop MD, TXT, JSON, CSV, HTML, PDF |
-| **Slack** | OAuth or self-hosted token | Requires Slack app with `channels:history` scope |
-| **GitHub** | Personal access token | Ingests issues, PRs, reviews |
-| **Notion** | Integration token | Reads pages you share with the integration |
-| **Zoom** | Manual token | Reads meeting transcripts |
-| **Gmail** | Google OAuth | Requires Google Cloud project |
-| **Google Drive** | Google OAuth | Requires Google Cloud project |
+Connector states are intentionally conservative. A provider is listed as
+available only when the backend can create raw `SourceDocument` rows from it.
+
+| Connector | Status | Auth method | Notes |
+|---|---|---|---|
+| **File upload** | Available | None | Drop MD, TXT, JSON, CSV, HTML, PDF |
+| **AI sessions** | Available | None | Import Codex, Claude Code, OpenCode, and generic AI session text |
+| **Slack** | Available | OAuth or self-hosted token | Requires Slack app with channel history scopes |
+| **GitHub** | Available | Personal access token | Ingests issues and pull requests |
+| **Gmail** | Available | Google OAuth | Requires Google Cloud project |
+| **Google Drive** | Available | Google OAuth | Requires Google Cloud project |
+| **Discord** | Coming soon | Not wired | Catalog stub only |
+| **Zoom** | Coming soon | Not wired | Setup is guarded; sync is intentionally unsupported |
+| **Wispr Flow** | Coming soon | Not wired | Catalog stub only |
+
+Notion is not a catalogued connector in the current release.
 
 For OAuth connectors (Slack, Google), set the client ID/secret in `.env` and configure the redirect URI to point to your deployment:
 - Slack: `https://your-domain.com/api/connectors/slack/callback`
@@ -282,6 +399,20 @@ ctxe mcp
 }
 ```
 
+More copy-paste MCP configs and a grounding prompt for coding agents are in
+[examples/mcp](examples/mcp/).
+
+MCP tools:
+
+| Tool | Purpose |
+|---|---|
+| `query_context` | Ask the graph with the same `query.v1` facts-used trace returned by `/api/query` |
+| `search_nodes` | Rank matching graph components |
+| `expand_graph` | Return a component plus 1-hop relationship neighbors with evidence |
+| `get_model` | Browse components in a named model |
+| `list_models` | List available graph models |
+| `get_status` | Count sources, models, components, and relationships |
+
 ---
 
 ## API Reference
@@ -295,7 +426,7 @@ ctxe mcp
 | `GET` | `/api/sources` | List source documents |
 | `GET` | `/api/graph` | Full knowledge graph |
 | `POST` | `/api/graph/build` | Build/rebuild the graph |
-| `POST` | `/api/query` | Natural language query |
+| `POST` | `/api/query` | Natural language query with `top_k`, `min_confidence`, `hybrid`, and a versioned `trace` |
 | `GET` | `/api/models` | List domain models |
 | `GET` | `/api/connectors` | List connectors and status |
 | `POST` | `/api/agents/gaps` | Run Gap Detector agent |
