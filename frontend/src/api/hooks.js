@@ -9,6 +9,7 @@
 import { useCallback } from "react";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "./client";
+import { resolveWorkspaceId } from "../context/WorkspaceContext";
 import {
   dashboardStats,
   evalCasesByDomain as mockEvalCasesByDomain,
@@ -212,9 +213,8 @@ const BROWSER_IMPORT_EXTENSIONS = new Set([
  * 1. localStorage selection (set by workspace switcher)
  * 2. The only workspace from the backend, when unambiguous
  *
- * Returns null if no workspaces exist.
- * Throws when multiple workspaces exist but no explicit browser selection
- * has been made yet.
+ * Returns null if no workspaces exist, or when multiple workspaces exist but no
+ * explicit browser selection has been made yet.
  */
 async function getWorkspaceId() {
   let workspaces;
@@ -227,11 +227,7 @@ async function getWorkspaceId() {
   if (workspaces.length === 0) return null;
 
   const stored = localStorage.getItem(LS_KEY);
-  if (stored && workspaces.some((w) => w.id === stored)) return stored;
-
-  if (workspaces.length === 1) return workspaces[0].id;
-
-  throw new Error("Multiple workspaces found. Select a workspace first.");
+  return resolveWorkspaceId(workspaces, stored);
 }
 
 function isBrowserFile(value) {
@@ -342,27 +338,60 @@ function buildActivityFromGraph(graph) {
   }));
 }
 
+function buildDashboardIo({ connectors = [], sourceCount = 0, componentCount = 0, relationshipCount = 0 } = {}) {
+  const availableConnectors = connectors.filter((connector) => connector.availability === "available");
+  const connectedConnectors = availableConnectors.filter((connector) => connector.status === "connected");
+  const comingSoonCount = connectors.filter((connector) => connector.availability === "coming_soon").length;
+  const activeFeeds = connectedConnectors.length > 0 ? connectedConnectors : availableConnectors.slice(0, 4);
+  const feedFallback = sourceCount > 0
+    ? [{ name: "Source documents", detail: `${sourceCount} raw source${sourceCount === 1 ? "" : "s"} preserved` }]
+    : [{ name: "Local files", detail: "Upload or import a source to start the graph" }];
+
+  return {
+    feeds: (activeFeeds.length > 0 ? activeFeeds.map((connector) => ({
+      name: connector.name,
+      detail: connector.status === "connected"
+        ? `${connector.itemsSynced || 0} item${connector.itemsSynced === 1 ? "" : "s"} synced`
+        : connector.message || "Available connector",
+    })) : feedFallback).slice(0, 4),
+    feedFooter: comingSoonCount > 0
+      ? `${comingSoonCount} planned connector${comingSoonCount === 1 ? "" : "s"} kept as coming soon`
+      : "Connector status is sourced from the backend catalog",
+    outputs: [
+      { name: "MCP server", detail: "Agent tools read graph facts with source IDs and evidence" },
+      { name: "Context packs", detail: "Selection or full-graph handoffs include 1-hop neighbors" },
+      { name: "Query API", detail: `${componentCount} facts searchable with retrieval trace` },
+      { name: "Graph UI", detail: `${relationshipCount} relationship${relationshipCount === 1 ? "" : "s"} inspectable` },
+    ],
+  };
+}
+
 export function useDashboard() {
   return useQuery({
     queryKey: ["dashboard"],
     queryFn: withFallback(async () => {
       const wsId = await getWorkspaceId();
       if (!wsId) {
-        const [stats, graph] = await Promise.all([
+        const [stats, graph, connectorsPayload] = await Promise.all([
           api.get("/stats"),
           api.get("/graph"),
+          api.get("/connectors"),
         ]);
 
         const sourceCount = stats?.sources ?? 0;
+        const componentCount = stats?.components ?? graph?.components?.length ?? 0;
+        const relationshipCount = stats?.relationships ?? graph?.relationships?.length ?? 0;
+        const connectors = normalizeConnectors(connectorsPayload);
         return {
           stats: [
             { label: "Sources", value: sourceCount, icon: "database", delta: sourceCount > 0 ? `${sourceCount} source${sourceCount === 1 ? "" : "s"} ingested` : "No sources yet" },
             { label: "Models", value: stats?.models ?? graph?.models?.length ?? 0, icon: "cube", delta: "Current backend" },
-            { label: "Components", value: stats?.components ?? graph?.components?.length ?? 0, icon: "puzzle", delta: `${stats?.pending_review ?? 0} pending review` },
-            { label: "Relationships", value: stats?.relationships ?? graph?.relationships?.length ?? 0, icon: "link", delta: "Graph edges" },
+            { label: "Components", value: componentCount, icon: "puzzle", delta: `${stats?.pending_review ?? 0} pending review` },
+            { label: "Relationships", value: relationshipCount, icon: "link", delta: "Graph edges" },
           ],
           activity: buildActivityFromGraph(graph),
           alerts: staleAlerts,
+          io: buildDashboardIo({ connectors, sourceCount, componentCount, relationshipCount }),
         };
       }
 
@@ -397,6 +426,12 @@ export function useDashboard() {
         ],
         activity: recentActivity, // no backend endpoint yet
         alerts: staleAlerts, // no backend endpoint yet
+        io: buildDashboardIo({
+          connectors,
+          sourceCount: sourceDocumentCount,
+          componentCount: totalComponents,
+          relationshipCount,
+        }),
       };
     }, MOCK_DASHBOARD),
   });
@@ -470,8 +505,8 @@ export function useConnectors() {
     queryFn: withFallback(
       async () => {
         const wsId = await getWorkspaceId();
-        if (!wsId) return mockConnectors;
-        const connectorPayload = await api.get(`/connectors?workspace_id=${wsId}`);
+        const connectorPath = wsId ? `/connectors?workspace_id=${wsId}` : "/connectors";
+        const connectorPayload = await api.get(connectorPath);
         if (Array.isArray(connectorPayload)) {
           const setupStatus = await api.get("/connectors/setup-status").catch(() => []);
           return { connectors: connectorPayload, setupStatus };
@@ -1647,38 +1682,6 @@ export function useRestoreSourceDocument() {
   });
 }
 
-export function useConnectNotion() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ token }) => {
-      const wsId = await getWorkspaceId();
-      return api.post("/connectors/notion/connect", { workspace_id: wsId, token });
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["connectors"] });
-      qc.invalidateQueries({ queryKey: ["connector-processing-summary"] });
-      qc.invalidateQueries({ queryKey: ["source-documents"] });
-      qc.invalidateQueries({ queryKey: ["dashboard"] });
-    },
-  });
-}
-
-export function useConnectZoom() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ token }) => {
-      const wsId = await getWorkspaceId();
-      return api.post("/connectors/zoom/connect", { workspace_id: wsId, token });
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["connectors"] });
-      qc.invalidateQueries({ queryKey: ["connector-processing-summary"] });
-      qc.invalidateQueries({ queryKey: ["source-documents"] });
-      qc.invalidateQueries({ queryKey: ["dashboard"] });
-    },
-  });
-}
-
 export function useConnectGitHub() {
   const qc = useQueryClient();
   return useMutation({
@@ -1730,6 +1733,8 @@ export function useSaveSlackOAuthSettings() {
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["connectors"] });
+      qc.invalidateQueries({ queryKey: ["connector-processing-summary"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
     },
   });
 }

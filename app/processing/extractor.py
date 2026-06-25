@@ -126,7 +126,8 @@ class Extractor:
         if self._model and (self._api_key or is_ollama):
             try:
                 facts = await self._llm_extract(content)
-                return _attach_slack_structure(facts, content, metadata or {})
+                facts = _attach_slack_structure(facts, content, metadata or {})
+                return _attach_source_provenance(facts, content, metadata or {})
             except Exception as exc:
                 self.last_error = f"{type(exc).__name__}: {exc}"
                 logger.warning("llm extraction failed; falling back to regex: %s", self.last_error)
@@ -279,7 +280,7 @@ class Extractor:
             if fallback is not None:
                 facts.append(fallback)
 
-        return facts
+        return _attach_source_provenance(facts, content, metadata or {})
 
     @staticmethod
     def _detect_temporal_hint(content: str) -> str:
@@ -293,6 +294,28 @@ class Extractor:
         if past_count > future_count and past_count > 0:
             return "past"
         return "current"
+
+
+def _attach_source_provenance(
+    facts: list[ExtractedFact],
+    content: str,
+    metadata: dict[str, Any],
+) -> list[ExtractedFact]:
+    if not facts:
+        return facts
+
+    snippet = _content_snippet(content)
+    provenance = _fallback_provenance(metadata, {
+        "title": metadata.get("title") or metadata.get("name") or metadata.get("subject"),
+        "author": metadata.get("author") or metadata.get("from"),
+        "workspace_id": metadata.get("workspace_id"),
+    })
+    for fact in facts:
+        if not fact.provenance:
+            fact.provenance = provenance
+        if not fact.excerpt and snippet:
+            fact.excerpt = _truncate(snippet, 280)
+    return facts
 
 
 def _source_fallback_fact(content: str, metadata: dict[str, Any]) -> ExtractedFact | None:

@@ -2,11 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models import Component, Relationship
+from app.services.workspace_scope import (
+    filter_components_for_workspace,
+    workspace_connector_types,
+)
 from app.taxonomy import canonical_model_name, model_bucket
 
 
@@ -46,8 +51,12 @@ class ContextPackAgent:
         self.api_key = api_key
         self.model = model
 
-    async def run(self) -> ContextPack:
-        components, relationships = await self._load_graph()
+    async def run(
+        self,
+        component_ids: list[str | UUID] | None = None,
+        workspace_id: str | UUID | None = None,
+    ) -> ContextPack:
+        components, relationships = await self._load_graph(component_ids, workspace_id)
         now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
         if self.api_key and self.model:
@@ -61,9 +70,49 @@ class ContextPackAgent:
             generated_at=now,
         )
 
-    async def _load_graph(self):
+    async def _load_graph(
+        self,
+        component_ids: list[str | UUID] | None = None,
+        workspace_id: str | UUID | None = None,
+    ):
+        selected_ids = {UUID(str(cid)) for cid in (component_ids or [])}
+        if selected_ids:
+            seed_relationships = list(await self.session.scalars(
+                select(Relationship)
+                .where(Relationship.status != "rejected")
+                .where(
+                    Relationship.source_component_id.in_(selected_ids)
+                    | Relationship.target_component_id.in_(selected_ids)
+                )
+            ))
+            included_ids = set(selected_ids)
+            for rel in seed_relationships:
+                included_ids.add(rel.source_component_id)
+                included_ids.add(rel.target_component_id)
+
+            comp_result = await self.session.execute(
+                select(Component)
+                .where(Component.id.in_(included_ids))
+                .options(selectinload(Component.model), selectinload(Component.source_document))
+            )
+            components = comp_result.scalars().all()
+            rel_result = await self.session.execute(
+                select(Relationship)
+                .where(Relationship.status != "rejected")
+                .where(
+                    Relationship.source_component_id.in_(included_ids),
+                    Relationship.target_component_id.in_(included_ids),
+                )
+                .options(
+                    selectinload(Relationship.source_component),
+                    selectinload(Relationship.target_component),
+                )
+            )
+            relationships = rel_result.scalars().all()
+            return await self._apply_workspace_scope(components, relationships, workspace_id)
+
         comp_result = await self.session.execute(
-            select(Component).options(selectinload(Component.model))
+            select(Component).options(selectinload(Component.model), selectinload(Component.source_document))
         )
         components = comp_result.scalars().all()
         rel_result = await self.session.execute(
@@ -72,7 +121,24 @@ class ContextPackAgent:
                 selectinload(Relationship.target_component),
             )
         )
-        return components, rel_result.scalars().all()
+        relationships = rel_result.scalars().all()
+        return await self._apply_workspace_scope(components, relationships, workspace_id)
+
+    async def _apply_workspace_scope(self, components, relationships, workspace_id):
+        if not workspace_id:
+            return components, relationships
+        workspace_id_str, connector_types = await workspace_connector_types(self.session, workspace_id)
+        scoped_components = filter_components_for_workspace(
+            components,
+            workspace_id_str,
+            connector_types,
+        )
+        component_ids = {component.id for component in scoped_components}
+        scoped_relationships = [
+            rel for rel in relationships
+            if rel.source_component_id in component_ids and rel.target_component_id in component_ids
+        ]
+        return scoped_components, scoped_relationships
 
     def _rule_pack(self, components, relationships, now: str) -> str:
         by_type: dict[str, list[Component]] = {}

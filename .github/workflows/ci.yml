@@ -20,8 +20,16 @@ jobs:
         run: ruff check app tests
       - name: Run tests
         run: pytest tests/ -q
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Test frontend
+        working-directory: frontend
+        run: npm test
       - name: Build frontend
         working-directory: frontend
-        run: npm ci && npm run build
+        run: npm run build
       - name: Build Docker image
         run: docker build -t context-engine .
+      - name: Validate smoke compose
+        run: docker compose -f docker-compose.smoke.yml -p context-engine-smoke config --quiet

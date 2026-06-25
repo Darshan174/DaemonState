@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import { useSearchParams } from "react-router-dom";
 import cytoscape from "cytoscape";
 import {
   Zap, Network, AlertTriangle, MessageSquare, Package,
@@ -9,9 +10,49 @@ import {
 } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 import { useWorkspaces } from "../api/hooks";
-import { useWorkspaceSelection } from "../context/WorkspaceContext";
+import { resolveWorkspaceId, useWorkspaceSelection } from "../context/WorkspaceContext";
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
+import {
+  BOARD_CARD_WIDTH,
+  BOARD_CARD_HEIGHT,
+  BOARD_CARD_TEXT_MAX_WIDTH,
+  BOARD_READABLE_ZOOM,
+  boardReadablePan,
+  shouldUseReadableBoardViewport,
+  BOARD_LENSES,
+  boardGraphGroup,
+  passesBoardLens,
+  filterGapsLens,
+  boardCardVisuals,
+  resolveRelationshipEdgeStyle,
+} from "../graph/boardMode";
+import {
+  buildExploreNeighborhood,
+  filterExploreComponents,
+} from "../graph/exploreMode";
+import GraphInspector from "../components/GraphInspector";
 import imgGmail from "@assets/gmail-icon.png";
+
+function buildNodeConnections(cy, nodeId) {
+  const connected = [];
+  cy.edges(`[source = "${nodeId}"], [target = "${nodeId}"]`).forEach((e) => {
+    const src = e.data("source");
+    const tgt = e.data("target");
+    const otherId = src === nodeId ? tgt : src;
+    const otherNode = cy.getElementById(otherId);
+    if (!otherNode.length) return;
+    connected.push({
+      nodeId: otherId,
+      nodeLabel: otherNode.data("fullLabel") || otherNode.data("label"),
+      label: e.data("displayLabel") || e.data("label"),
+      edgeId: e.data("id"),
+      origin: e.data("origin"),
+      confidence: e.data("confidence"),
+      direction: src === nodeId ? "out" : "in",
+    });
+  });
+  return connected;
+}
 
 function svgDataUri(svg) {
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
@@ -101,7 +142,7 @@ const EDGE_ORIGIN_STYLE = {
 };
 
 const LOD_MACRO_ZOOM = 0.58;
-const LOD_CARD_ZOOM = 1.05;
+const LOD_CARD_ZOOM = BOARD_READABLE_ZOOM;
 const LOD_NODE_CLASSES = "lod-macro lod-compact lod-card";
 const LOD_EDGE_CLASSES = "lod-macro-edge lod-detail-edge";
 const COMPONENT_CARD_WIDTH = 236;
@@ -453,9 +494,8 @@ function connectorCardParts(component = {}, cleanName = "") {
   return null;
 }
 
-function buildComponentCardContent(component = {}, cleanName = "", modelName = "") {
+function buildComponentCardContent(component = {}, cleanName = "", modelName = "", { boardMode = false } = {}) {
   const connector = connectorCardParts(component, cleanName);
-  const attention = componentAttentionBadge(component);
   let title;
   let context = "";
   let detail = "";
@@ -475,10 +515,12 @@ function buildComponentCardContent(component = {}, cleanName = "", modelName = "
     detail = "";
   }
 
-  const cardLines = [title, context, detail, attention]
-    .map((line) => compactCardText(line, 72))
-    .filter(Boolean)
-    .slice(0, 2);
+  const cardLines = boardMode
+    ? [title, context || detail].map((line) => compactCardText(line, 72)).filter(Boolean).slice(0, 2)
+    : [title, context, detail, componentAttentionBadge(component)]
+        .map((line) => compactCardText(line, 72))
+        .filter(Boolean)
+        .slice(0, 2);
   const cardLabel = cardLines.join("\n");
   const compactLabel = compactCardText(title, 40) || shortLabel(cleanName, 5);
 
@@ -512,6 +554,11 @@ function graphGroup(component = {}, modelName = "") {
   if (kind === "local") return "localDocs";
   if (family === "local" || family === "communication") return "sources";
   return "other";
+}
+
+function resolveGraphGroup(component, modelName, layoutMode) {
+  if (layoutMode === "board") return boardGraphGroup(component, sourceKind, sourceFamily);
+  return graphGroup(component, modelName);
 }
 
 function sourceFamilyLabel(component = {}) {
@@ -555,7 +602,7 @@ function componentVisuals(component = {}, isGap = false) {
   return palette;
 }
 
-function fitGraphViewport(cy, viewMode) {
+function fitGraphViewport(cy, viewMode, graphLayout = "board", { preferReadableBoard = true } = {}) {
   if (!cy) return;
   const padding = viewMode === "repo" ? 72 : 24;
   cy.resize();
@@ -571,6 +618,11 @@ function fitGraphViewport(cy, viewMode) {
   );
   cy.minZoom(Math.max(0.05, fitZoom * 0.78));
   cy.fit(undefined, padding);
+  if (preferReadableBoard && shouldUseReadableBoardViewport({ viewMode, graphLayout, fitZoom })) {
+    const targetZoom = Math.min(BOARD_READABLE_ZOOM, cy.maxZoom ? cy.maxZoom() : BOARD_READABLE_ZOOM);
+    cy.zoom(targetZoom);
+    cy.pan(boardReadablePan(ext, targetZoom));
+  }
   applyGraphLod(cy);
 }
 
@@ -583,7 +635,8 @@ function graphLod(zoom) {
 function applyGraphLod(cy) {
   const lod = graphLod(cy.zoom());
   cy.batch(() => {
-    cy.nodes("[type='component'], .source-hub, .model-node").removeClass(LOD_NODE_CLASSES).addClass(lod);
+    cy.nodes(".explore-node").removeClass(LOD_NODE_CLASSES);
+    cy.nodes("[type='component']:not(.explore-node), .source-hub, .model-node").removeClass(LOD_NODE_CLASSES).addClass(lod);
     cy.edges("[edgeType='relationship']")
       .removeClass(LOD_EDGE_CLASSES)
       .addClass(lod === "lod-macro" ? "lod-macro-edge" : "lod-detail-edge");
@@ -686,22 +739,19 @@ function buildGraphOverview(cy) {
   }
 }
 
-// ── CEO View presets ──────────────────────────────────────────────
-const CEO_VIEWS = [
-  { id: "all",        label: "Overview",       desc: "Full graph — every component and relationship" },
-  { id: "gaps",       label: "Gap Detector",   desc: "Highlights isolated nodes with no connections" },
-  { id: "github",     label: "GitHub",         desc: "Issues, PRs, and delivery links" },
-  { id: "aiSessions", label: "AI Sessions",    desc: "Agent sessions and generated context" },
-];
-
-const CEO_VIEW_MODEL_PATTERNS = {
-  aiSessions: /^(agent session|agent|claude|codex|opencode|chatgpt|ai session)/i,
-  github:     /^(issue|pr|repo|github)/i,
-};
-
-const CEO_VIEW_FACT_TYPE_PATTERNS = {
-  github:     /^(github_issue|github_pr|pr_review_finding|issue|pr|changed_file|commit_reference)$/,
-};
+function componentMatchesSearch(component, query) {
+  if (!query) return true;
+  const haystack = [
+    component.name,
+    component.value,
+    component.fact_type,
+    component.source_type,
+    component.provenance,
+    component.excerpt,
+    JSON.stringify(component.source_metadata_summary),
+  ].filter(Boolean).join(" ").toLowerCase();
+  return haystack.includes(query);
+}
 
 // Map model name to a short domain label for the type chip
 function domainLabel(modelName) {
@@ -726,13 +776,22 @@ export default function GraphView() {
   const containerRef = useRef(null);
   const logoLayerRef = useRef(null);
   const cyRef = useRef(null);
+  const searchInputRef = useRef(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const graphLayout = searchParams.get("graph") === "explore" ? "explore" : "board";
+  const setGraphLayout = useCallback((layout) => {
+    const next = new URLSearchParams(searchParams);
+    if (layout === "board") next.delete("graph");
+    else next.set("graph", layout);
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
   const { theme } = useTheme();
   const { selectedId, setSelectedId } = useWorkspaceSelection();
   const { data: workspaces = [], isLoading: workspacesLoading } = useWorkspaces();
-  const activeWorkspace = selectedId
-    ? workspaces.find((w) => w.id === selectedId) || null
+  const activeWorkspaceId = resolveWorkspaceId(workspaces, selectedId);
+  const activeWorkspace = activeWorkspaceId
+    ? workspaces.find((w) => w.id === activeWorkspaceId) || null
     : null;
-  const activeWorkspaceId = activeWorkspace?.id || null;
   const workspaceQueryString = activeWorkspaceId
     ? `?${new URLSearchParams({ workspace_id: activeWorkspaceId }).toString()}`
     : "";
@@ -767,9 +826,11 @@ export default function GraphView() {
   const [askLoading, setAskLoading] = useState(false);
   const [askError, setAskError] = useState(null);
   const askInputRef = useRef(null);
-  const [ceoView, setCeoView] = useState("all");
+  const [boardLens, setBoardLens] = useState("all");
+  const [exploreDepth, setExploreDepth] = useState(1);
+  const [showTrustEdges, setShowTrustEdges] = useState(false);
   const [graphOverview, setGraphOverview] = useState(null);
-  const [showFilters, setShowFilters] = useState(false);
+  const [showRefine, setShowRefine] = useState(false);
 
   // Agents sidebar
   const [showAgents, setShowAgents] = useState(false);
@@ -790,14 +851,20 @@ export default function GraphView() {
   const [workLens, setWorkLens] = useState(null);
   const [workLensLoading, setWorkLensLoading] = useState(false);
 
-  async function callAgent(endpoint, setLoading, setResult, setError) {
+  async function callAgent(endpoint, setLoading, setResult, setError, extraBody = {}) {
     setLoading(true); setResult(null); setError(null);
     const s = getAiSettingsSaved();
     try {
+      const body = {
+        api_key: s.api_key || null,
+        model: s.model || null,
+        ...extraBody,
+      };
+      if (activeWorkspaceId) body.workspace_id = activeWorkspaceId;
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: s.api_key || null, model: s.model || null }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setResult(await res.json());
@@ -815,8 +882,8 @@ export default function GraphView() {
   const fitGraph = useCallback(() => {
     const cy = cyRef.current;
     if (!cy) return;
-    fitGraphViewport(cy, viewMode);
-  }, [viewMode]);
+    fitGraphViewport(cy, viewMode, graphLayout, { preferReadableBoard: false });
+  }, [viewMode, graphLayout]);
 
   const changeGraphZoom = useCallback((delta) => {
     const cy = cyRef.current;
@@ -835,6 +902,31 @@ export default function GraphView() {
         y: cy.height() / 2 - point.y * zoom,
       },
     }, { duration: 120 });
+  }, []);
+
+  const focusGraphNode = useCallback((nodeId, edgeId) => {
+    const cy = cyRef.current;
+    if (!cy || !nodeId) return;
+    const ele = cy.getElementById(nodeId);
+    if (!ele.length || ele.data("type") !== "component") return;
+
+    cy.elements().removeClass("search-match");
+    cy.elements().unselect();
+    ele.addClass("search-match");
+    ele.select();
+    cy.animate(
+      { center: { eles: ele }, zoom: Math.max(Math.min(cy.zoom() * 1.1, 2), 1) },
+      { duration: 200 },
+    );
+
+    setSelectedNode({ ...ele.data(), connected: buildNodeConnections(cy, nodeId) });
+    setSelectedEdge(null);
+    setEdgeReviewError(null);
+
+    if (edgeId) {
+      const edgeEle = cy.getElementById(edgeId);
+      if (edgeEle.length) edgeEle.select();
+    }
   }, []);
 
   useEffect(() => {
@@ -943,7 +1035,13 @@ export default function GraphView() {
     setAskResult(null);
     const saved = (() => { try { return JSON.parse(localStorage.getItem("ce_ai_settings") || "{}"); } catch { return {}; } })();
     try {
-      const body = { question: q, workspace_id: activeWorkspaceId };
+      const body = {
+        question: q,
+        workspace_id: activeWorkspaceId,
+        top_k: 8,
+        min_confidence: filters.confidence_threshold || 0,
+        hybrid: true,
+      };
       if (saved.api_key) body.api_key = saved.api_key;
       if (saved.model)   body.model   = saved.model;
       const res = await fetch("/api/query", {
@@ -994,23 +1092,46 @@ export default function GraphView() {
     }
   }
 
+  const centerOnSearchMatch = useCallback(() => {
+    const cy = cyRef.current;
+    const query = filters.search?.trim().toLowerCase();
+    if (!cy || !query) return;
+    const match = cy.nodes("[type='component']").filter((node) => {
+      const data = node.data();
+      return componentMatchesSearch(data, query);
+    }).first();
+    if (!match || match.empty()) return;
+    cy.animate({
+      center: { eles: match },
+      zoom: Math.max(cy.zoom(), LOD_CARD_ZOOM),
+    }, { duration: 220 });
+    match.addClass("search-match");
+    setTimeout(() => match.removeClass("search-match"), 1800);
+  }, [filters.search]);
+
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   const filteredData = useCallback(() => {
     if (!graphData) return { models: [], components: [], relationships: [] };
     if (viewMode === "repo") return graphData;
 
     const allModels = graphData.models || [];
+    const modelNameById = new Map(allModels.map((m) => [m.id, m.name]));
     let components = graphData.components || [];
     let relationships = graphData.relationships || [];
 
-    // CEO view: filter to relevant model types (except "gaps" shows everything)
-    const ceoPattern = CEO_VIEW_MODEL_PATTERNS[ceoView];
-    if (ceoPattern) {
-      const modelNameById = new Map(allModels.map((m) => [m.id, m.name]));
-      components = components.filter((c) => ceoPattern.test(modelNameById.get(c.model_id) || ""));
-    }
-    const factPattern = CEO_VIEW_FACT_TYPE_PATTERNS[ceoView];
-    if (factPattern) {
-      components = components.filter((c) => factPattern.test(String(c.fact_type || "").toLowerCase()));
+    if (graphLayout === "board" && boardLens !== "all" && boardLens !== "gaps") {
+      components = components.filter((c) => passesBoardLens(c, modelNameById.get(c.model_id), boardLens));
     }
 
     if (filters.model) {
@@ -1034,24 +1155,21 @@ export default function GraphView() {
       (r) => componentIds.has(r.source_component_id) && componentIds.has(r.target_component_id)
     );
 
+    if (graphLayout === "board" && boardLens === "gaps") {
+      components = filterGapsLens(components, relationships);
+      const gapIds = new Set(components.map((c) => c.id));
+      relationships = relationships.filter(
+        (r) => gapIds.has(r.source_component_id) && gapIds.has(r.target_component_id)
+      );
+    }
+
     if (filters.relationship_origin) {
       relationships = relationships.filter((r) => (r.origin || "proposed") === filters.relationship_origin);
     }
 
-    if (filters.search && filters.search.trim()) {
+    if (filters.search && filters.search.trim() && graphLayout !== "explore") {
       const q = filters.search.trim().toLowerCase();
-      components = components.filter((c) => {
-        const haystack = [
-          c.name,
-          c.value,
-          c.fact_type,
-          c.source_type,
-          c.provenance,
-          c.excerpt,
-          JSON.stringify(c.source_metadata_summary),
-        ].filter(Boolean).join(" ").toLowerCase();
-        return haystack.includes(q);
-      });
+      components = components.filter((c) => componentMatchesSearch(c, q));
       const searchedComponentIds = new Set(components.map((c) => c.id));
       relationships = relationships.filter(
         (r) => searchedComponentIds.has(r.source_component_id) && searchedComponentIds.has(r.target_component_id)
@@ -1059,13 +1177,19 @@ export default function GraphView() {
     }
 
     return { models: allModels, components, relationships };
-  }, [graphData, filters, viewMode, ceoView]);
+  }, [graphData, filters, viewMode, boardLens, graphLayout]);
 
   useEffect(() => {
     if (!containerRef.current || !graphData) return;
 
     const viewData = filteredData();
-    const { models = [], components = [], relationships = [] } = viewData;
+    const { models = [], relationships = [] } = viewData;
+    const isExplore = graphLayout === "explore" && viewMode === "knowledge";
+    const components = isExplore
+      ? filterExploreComponents(viewData.components || [], relationships)
+      : (viewData.components || []);
+    const isBoard = graphLayout === "board" && viewMode === "knowledge";
+    const searchQuery = filters.search?.trim().toLowerCase() || "";
 
     const nodes = [];
     const edges = [];
@@ -1073,19 +1197,26 @@ export default function GraphView() {
     const modelNameById = new Map(models.map((m) => [m.id, m.name]));
     const visibleGroups = new Map();
     const groupSourceSummaries = new Map();
-    components.forEach((component) => {
-      const groupKey = graphGroup(component, modelNameById.get(component.model_id));
-      if (!visibleGroups.has(groupKey)) {
-        visibleGroups.set(groupKey, GRAPH_GROUP_META[groupKey] || GRAPH_GROUP_META.other);
-      }
-      const kind = sourceKind(component);
-      const visual = sourceVisual(component);
-      if (!groupSourceSummaries.has(groupKey)) groupSourceSummaries.set(groupKey, new Map());
-      const summary = groupSourceSummaries.get(groupKey);
-      const current = summary.get(kind) || { ...visual, kind, count: 0 };
-      current.count += 1;
-      summary.set(kind, current);
-    });
+    const groupForComponent = (component) => resolveGraphGroup(
+      component,
+      modelNameById.get(component.model_id),
+      isBoard ? "board" : "legacy",
+    );
+    if (!isExplore) {
+      components.forEach((component) => {
+        const groupKey = groupForComponent(component);
+        if (!visibleGroups.has(groupKey)) {
+          visibleGroups.set(groupKey, GRAPH_GROUP_META[groupKey] || GRAPH_GROUP_META.other);
+        }
+        const kind = sourceKind(component);
+        const visual = sourceVisual(component);
+        if (!groupSourceSummaries.has(groupKey)) groupSourceSummaries.set(groupKey, new Map());
+        const summary = groupSourceSummaries.get(groupKey);
+        const current = summary.get(kind) || { ...visual, kind, count: 0 };
+        current.count += 1;
+        summary.set(kind, current);
+      });
+    }
 
     if (viewMode === "repo") {
       (viewData.nodes || []).forEach((node) => {
@@ -1121,37 +1252,39 @@ export default function GraphView() {
         });
       });
     } else {
-      // Strategy groups become compound parent containers. They are backed by source,
-      // model, fact type, or relationship metadata; no synthetic facts are invented.
-      visibleGroups.forEach((meta, groupKey) => {
-        const itemCount = components.filter(
-          (c) => graphGroup(c, modelNameById.get(c.model_id)) === groupKey,
-        ).length;
-        const hubSummary = groupSourceSummaries.get(groupKey);
-        const primaryHub = hubSummary
-          ? Array.from(hubSummary.values()).sort((a, b) => b.count - a.count)[0]
-          : null;
-        nodes.push({
-          data: {
-            id: `group:${groupKey}`,
-            label: meta.label,
-            shortLabel: meta.short || meta.label,
-            fullLabel: meta.label,
-            type: "model",
-            modelId: groupKey,
-            groupKey,
-            description: "",
-            modelColor: primaryHub?.border || meta.color || "#6366f1",
-            itemCount,
-            hubLogo: primaryHub?.logo || GROUP_HEADER_LOGOS[groupKey] || "",
-            hubCount: primaryHub?.count || itemCount,
-            hubAccent: primaryHub?.border || meta.color || "#6366f1",
-            minWidth: 360,
-            minHeight: 220,
-          },
-          classes: "model-node",
+      if (!isExplore) {
+        // Strategy groups become compound parent containers. They are backed by source,
+        // model, fact type, or relationship metadata; no synthetic facts are invented.
+        visibleGroups.forEach((meta, groupKey) => {
+          const itemCount = components.filter(
+            (c) => groupForComponent(c) === groupKey,
+          ).length;
+          const hubSummary = groupSourceSummaries.get(groupKey);
+          const primaryHub = hubSummary
+            ? Array.from(hubSummary.values()).sort((a, b) => b.count - a.count)[0]
+            : null;
+          nodes.push({
+            data: {
+              id: `group:${groupKey}`,
+              label: meta.label,
+              shortLabel: meta.short || meta.label,
+              fullLabel: meta.label,
+              type: "model",
+              modelId: groupKey,
+              groupKey,
+              description: "",
+              modelColor: primaryHub?.border || meta.color || "#6366f1",
+              itemCount,
+              hubLogo: primaryHub?.logo || GROUP_HEADER_LOGOS[groupKey] || "",
+              hubCount: primaryHub?.count || itemCount,
+              hubAccent: primaryHub?.border || meta.color || "#6366f1",
+              minWidth: 360,
+              minHeight: 220,
+            },
+            classes: "model-node",
+          });
         });
-      });
+      }
 
       // Source hub identity is rendered as the group header chip — no separate hub nodes.
 
@@ -1163,27 +1296,32 @@ export default function GraphView() {
       });
 
       const componentGroupMap = new Map();
+      let firstSearchMatchId = null;
 
       components.forEach((c) => {
         const temporal = c.temporal || "unknown";
-        const isGap = ceoView === "gaps" && !connectedComponentIds.has(c.id);
-        const visuals = componentVisuals(c, isGap);
+        const isGap = boardLens === "gaps";
+        const visuals = isBoard ? boardCardVisuals(c, isGap, sourceKind) : componentVisuals(c, isGap);
         const source = sourceVisual(c);
 
         const mName = modelNameById.get(c.model_id) || "";
-        const groupKey = graphGroup(c, mName);
+        const groupKey = isExplore ? sourceKind(c) : groupForComponent(c);
         componentGroupMap.set(c.id, groupKey);
         const cleanName = stripModelPrefix(c.name);
-        const { compactLabel, cardLabel } = buildComponentCardContent(c, cleanName, mName);
+        const { compactLabel, cardLabel } = buildComponentCardContent(c, cleanName, mName, { boardMode: isBoard });
         const relationshipCount = c.relationship_count ?? 0;
         const groupHubs = groupSourceSummaries.get(groupKey);
         const componentKind = sourceKind(c);
         const hasGroupSourceHub = Boolean(groupHubs?.has(componentKind));
+        const matchesSearch = componentMatchesSearch(c, searchQuery);
+        if (searchQuery && matchesSearch && !firstSearchMatchId) firstSearchMatchId = c.id;
+        const searchDimClass = searchQuery && !matchesSearch ? "search-dim" : "";
+        const searchMatchClass = c.id === firstSearchMatchId ? "search-match" : "";
 
         nodes.push({
           data: {
             id: c.id,
-            parent: `group:${groupKey}`,
+            ...(isExplore ? {} : { parent: `group:${groupKey}` }),
             label: compactLabel,
             compactLabel,
             cardLabel,
@@ -1191,12 +1329,15 @@ export default function GraphView() {
             type: "component",
             value: c.value,
             confidence: c.confidence,
+            authority_weight: c.authority_weight,
             status: c.status,
             fact_type: c.fact_type,
             temporal,
             modelId: c.model_id,
+            model: c.model_name,
             source_type: c.source_type,
             source_url: c.source_url,
+            source_document_id: c.source_document_id,
             source_external_id: c.source_external_id,
             source_metadata_summary: c.source_metadata_summary,
             source_family: sourceFamily(c),
@@ -1208,22 +1349,33 @@ export default function GraphView() {
             borderColor: visuals.border,
             stripeColor: visuals.stripe,
             badgeColor: source.border,
-            logo: hasGroupSourceHub ? "" : source.logo,
+            logo: isExplore ? source.logo : hasGroupSourceHub ? "" : source.logo,
+            sourceLabel: source.label,
           },
-          classes: [isGap ? "gap-node" : "", relationshipCount === 0 ? "isolated-node" : "linked-node"].filter(Boolean).join(" "),
+          classes: [
+            isExplore ? "explore-node" : "",
+            isGap ? "gap-node" : "",
+            relationshipCount === 0 ? "isolated-node" : "linked-node",
+            searchDimClass,
+            searchMatchClass,
+          ].filter(Boolean).join(" "),
         });
       });
 
       // Relationship edges only — compound parent handles "contains" visually
       relationships.forEach((r) => {
-        const origin = r.origin || "proposed";
-        const style = EDGE_ORIGIN_STYLE[origin] || EDGE_ORIGIN_STYLE.extracted;
         const hideLowConfidence = filters.confidence_threshold > 0 && (r.confidence ?? 0) < filters.confidence_threshold;
         if (hideLowConfidence) return;
 
         const sourceGroup = componentGroupMap.get(r.source_component_id);
         const targetGroup = componentGroupMap.get(r.target_component_id);
         const sameGroup = Boolean(sourceGroup && targetGroup && sourceGroup === targetGroup);
+        const edgeStyle = resolveRelationshipEdgeStyle({
+          relationship: r,
+          sameGroup,
+          showTrustEdges,
+          isDark: theme === "dark" || document.documentElement.classList.contains("dark"),
+        });
 
         edges.push({
           data: {
@@ -1234,18 +1386,21 @@ export default function GraphView() {
             displayLabel: r.display_label || (r.relationship_type || "related_to").replaceAll("_", " "),
             shortLabel: (r.relationship_type || "related_to").replaceAll("_", " "),
             edgeType: "relationship",
-            origin,
+            origin: edgeStyle.origin,
             confidence: r.confidence,
             evidence: r.evidence,
             status: r.status,
-            lineStyle: style.lineStyle,
-            edgeWidth: style.width,
-            edgeOpacity: style.opacity,
-            edgeColor: style.color,
+            lineStyle: edgeStyle.lineStyle,
+            edgeWidth: edgeStyle.width,
+            edgeOpacity: edgeStyle.opacity,
+            edgeColor: edgeStyle.color,
             sourceName: r.source_component_name,
             targetName: r.target_component_name,
           },
-          classes: sameGroup ? "route-taxi" : "route-bezier",
+          classes: [
+            isExplore ? "explore-edge" : "",
+            sameGroup && !isExplore ? "route-taxi" : "route-bezier",
+          ].filter(Boolean).join(" "),
         });
       });
     }
@@ -1261,9 +1416,9 @@ export default function GraphView() {
     const repoFileBorder = isDark ? "#64748b" : "#cbd5e1";
     const repoTextColor = isDark ? "#e5edf8" : "#1e293b";
     const repoLabelOutline = isDark ? "#0f172a" : "#ffffff";
-    const cardWidth = COMPONENT_CARD_WIDTH;
-    const cardHeight = COMPONENT_CARD_HEIGHT;
-    const cardTextMaxWidth = COMPONENT_CARD_TEXT_MAX_WIDTH;
+    const cardWidth = isBoard ? BOARD_CARD_WIDTH : COMPONENT_CARD_WIDTH;
+    const cardHeight = isBoard ? BOARD_CARD_HEIGHT : COMPONENT_CARD_HEIGHT;
+    const cardTextMaxWidth = isBoard ? BOARD_CARD_TEXT_MAX_WIDTH : COMPONENT_CARD_TEXT_MAX_WIDTH;
     const sourceHubWidth = SOURCE_HUB_CARD_WIDTH;
     const sourceHubHeight = SOURCE_HUB_CARD_HEIGHT;
     const sourceHubTextMaxWidth = SOURCE_HUB_TEXT_MAX_WIDTH;
@@ -1401,6 +1556,40 @@ export default function GraphView() {
           },
         },
         {
+          selector: "node.explore-node[type='component']",
+          style: {
+            width: 62,
+            height: 62,
+            shape: "ellipse",
+            "corner-radius": "0px",
+            "background-color": "data(bgColor)",
+            "background-opacity": 0.98,
+            "background-image": "data(logo)",
+            "background-fit": "contain",
+            "background-clip": "node",
+            "background-width": "64%",
+            "background-height": "64%",
+            "background-position-x": "50%",
+            "background-position-y": "50%",
+            "border-color": "data(borderColor)",
+            "border-width": 2,
+            label: "data(compactLabel)",
+            "text-opacity": 1,
+            "text-valign": "bottom",
+            "text-halign": "center",
+            "text-margin-y": 7,
+            "text-wrap": "wrap",
+            "text-max-width": "112px",
+            "text-justification": "center",
+            "font-size": "9px",
+            "font-weight": "700",
+            color: componentTextColor,
+            "text-outline-color": labelOutlineColor,
+            "text-outline-width": 1.5,
+            "z-index": 4,
+          },
+        },
+        {
           selector: "node[type='component'].lod-macro",
           style: {
             width: 18,
@@ -1516,6 +1705,20 @@ export default function GraphView() {
           style: {
             "border-style": "dashed",
             "border-opacity": 0.8,
+          },
+        },
+
+        {
+          selector: "node.search-dim",
+          style: {
+            opacity: 0.12,
+          },
+        },
+        {
+          selector: "node.search-match",
+          style: {
+            "border-width": 2.5,
+            "border-color": "#6366f1",
           },
         },
 
@@ -1662,6 +1865,18 @@ export default function GraphView() {
           },
         },
         {
+          selector: "edge.explore-edge[edgeType='relationship']",
+          style: {
+            "curve-style": "bezier",
+            "control-point-distances": 0,
+            "control-point-weights": 0.5,
+            width: 1.2,
+            opacity: "data(edgeOpacity)",
+            "target-arrow-shape": "triangle",
+            "arrow-scale": 0.75,
+          },
+        },
+        {
           selector: "edge[edgeType='relationship'].lod-macro-edge",
           style: {
             label: "",
@@ -1769,25 +1984,43 @@ export default function GraphView() {
       ],
       layout: viewMode === "repo"
         ? { name: "preset", fit: true, padding: 110 }
+        : isExplore
+          ? {
+            name: "cose",
+            animate: true,
+            animationDuration: 1900,
+            fit: true,
+            padding: 96,
+            randomize: true,
+            nodeRepulsion: 8200,
+            idealEdgeLength: 170,
+            edgeElasticity: 110,
+            nestingFactor: 1.1,
+            gravity: 0.28,
+            numIter: 2200,
+            initialTemp: 180,
+            coolingFactor: 0.95,
+            minTemp: 1.0,
+          }
         : (() => {
           const presetPositions = {};
           const groups = Array.from(visibleGroups.entries())
             .map(([groupKey, meta]) => ({
               groupKey,
               meta,
-              items: components.filter((c) => graphGroup(c, modelNameById.get(c.model_id)) === groupKey),
+              items: components.filter((c) => groupForComponent(c) === groupKey),
               hubs: Array.from(groupSourceSummaries.get(groupKey)?.values() || []),
             }))
             .sort((a, b) => b.items.length - a.items.length);
 
           const colCount = Math.min(4, Math.max(1, groups.length));
-          const columnStride = 1080;
-          const laneGapY = 96;
+          const columnStride = isBoard ? 960 : 1080;
+          const laneGapY = isBoard ? 120 : 96;
           const headerFloatClearance = GROUP_HUB_CHIP_HEIGHT_PX + GROUP_HEADER_FLOAT_GAP_PX + 8;
-          const cardW = COMPONENT_CARD_WIDTH;
-          const cardH = COMPONENT_CARD_HEIGHT;
-          const gapX = 26;
-          const gapY = 20;
+          const cardW = cardWidth;
+          const cardH = cardHeight;
+          const gapX = isBoard ? 24 : 26;
+          const gapY = isBoard ? 18 : 20;
           const groupPadX = 40;
           const groupPadTop = GROUP_HEADER_BAND_PX;
           const groupPadBottom = 32;
@@ -1796,7 +2029,7 @@ export default function GraphView() {
           groups.forEach(({ groupKey, items }) => {
             const col = colHeights.indexOf(Math.min(...colHeights));
             const itemCount = Math.max(1, items.length);
-            const gridCols = layoutGridColumns(itemCount, 3);
+            const gridCols = layoutGridColumns(itemCount, isBoard ? 4 : 3);
             const rows = Math.ceil(itemCount / gridCols);
             const groupWidth = groupPadX * 2 + gridCols * cardW + Math.max(0, gridCols - 1) * gapX;
             const laneWidth = Math.min(groupWidth + 48, columnStride - 40);
@@ -1836,8 +2069,14 @@ export default function GraphView() {
     });
 
     cy.maxZoom(2.8);
-    fitGraphViewport(cy, viewMode);
+    fitGraphViewport(cy, viewMode, graphLayout);
     applyGraphLod(cy);
+    const freezeExploreLayoutId = isExplore
+      ? setTimeout(() => {
+        if (typeof cy.destroyed === "function" && cy.destroyed()) return;
+        cy.nodes(".explore-node").lock();
+      }, 2100)
+      : null;
 
     const graphIsDestroyed = () => typeof cy.destroyed === "function" && cy.destroyed();
     let overviewRafId = null;
@@ -1863,7 +2102,7 @@ export default function GraphView() {
 
     const resizeObserver = new ResizeObserver(() => {
       cy.resize();
-      fitGraphViewport(cy, viewMode);
+      fitGraphViewport(cy, viewMode, graphLayout);
       scheduleGraphOverviewUpdate();
     });
     resizeObserver.observe(containerRef.current);
@@ -2047,29 +2286,10 @@ export default function GraphView() {
     cy.on("tap", "node", (evt) => {
       const data = evt.target.data();
       if (data.type === "component") {
-        const connectedEdges = cy.edges(`[source = "${data.id}"], [target = "${data.id}"]`);
-        const connected = [];
-        connectedEdges.forEach((e) => {
-          const src = e.data("source");
-          const tgt = e.data("target");
-          const otherId = src === data.id ? tgt : src;
-          const otherNode = cy.getElementById(otherId);
-          if (otherNode.length) {
-            connected.push({
-              id: otherId,
-              label: otherNode.data("fullLabel") || otherNode.data("label"),
-              edgeLabel: e.data("label"),
-              relationshipType: e.data("label"),
-              origin: e.data("origin"),
-              confidence: e.data("confidence"),
-              direction: src === data.id ? "out" : "in",
-            });
-          }
-        });
-        setSelectedNode({ ...data, connected });
+        setSelectedNode({ ...data, connected: buildNodeConnections(cy, data.id) });
         setSelectedEdge(null);
         setEdgeReviewError(null);
-        setShowFilters(false);
+        setShowRefine(false);
         setShowSidePanel(false);
         setShowAgents(false);
       } else {
@@ -2094,7 +2314,7 @@ export default function GraphView() {
       });
       setSelectedNode(null);
       setEdgeReviewError(null);
-      setShowFilters(false);
+      setShowRefine(false);
       setShowSidePanel(false);
       setShowAgents(false);
     });
@@ -2103,7 +2323,7 @@ export default function GraphView() {
       if (evt.target === cy) {
         setSelectedNode(null);
         setSelectedEdge(null);
-        setShowFilters(false);
+        setShowRefine(false);
       }
     });
 
@@ -2203,12 +2423,13 @@ export default function GraphView() {
       logoTimeoutIds.forEach((timeoutId) => clearTimeout(timeoutId));
       if (logoRafId) cancelAnimationFrame(logoRafId);
       if (overviewRafId) cancelAnimationFrame(overviewRafId);
+      if (freezeExploreLayoutId) clearTimeout(freezeExploreLayoutId);
       logoLayerRef.current?.replaceChildren();
       resizeObserver.disconnect();
       cy.destroy();
       setGraphOverview(null);
     };
-  }, [graphData, filteredData, viewMode, ceoView, theme]);
+  }, [graphData, filteredData, viewMode, boardLens, graphLayout, showTrustEdges, filters.search, theme]);
 
   const models = graphData?.models || [];
   const allComponents = graphData?.components || [];
@@ -2216,7 +2437,18 @@ export default function GraphView() {
   const statuses = [...new Set(allComponents.map((c) => c.status).filter(Boolean))];
   const currentViewData = filteredData();
   const graphStats = buildGraphStats(currentViewData);
-  const activeCeoView = CEO_VIEWS.find((v) => v.id === ceoView);
+  const visibleCanvasItemCount = graphLayout === "explore" && viewMode === "knowledge"
+    ? filterExploreComponents(currentViewData.components || [], currentViewData.relationships || []).length
+    : (currentViewData.components || currentViewData.nodes || []).length;
+  const exploreNeighborhood = graphLayout === "explore" && selectedNode
+    ? buildExploreNeighborhood(
+      selectedNode.id,
+      currentViewData.components || [],
+      currentViewData.relationships || [],
+      exploreDepth,
+    )
+    : [];
+  const activeBoardLens = BOARD_LENSES.find((v) => v.id === boardLens);
   const clearGraphFilters = () => setFilters({
     model: "",
     source_type: "",
@@ -2295,20 +2527,24 @@ export default function GraphView() {
                 ))}
               </div>
               {viewMode === "knowledge" && (
-                <div className="flex items-center gap-1.5 rounded-lg bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-500 dark:bg-slate-900/70 dark:text-slate-400">
-                  <Network className="h-3.5 w-3.5 text-brand-500" />
-                  <span className="text-slate-900 dark:text-white">{graphStats.components}</span>
-                  <span>nodes</span>
-                  <span className="text-slate-300 dark:text-slate-600">/</span>
-                  <span className="text-slate-900 dark:text-white">{graphStats.relationships}</span>
-                  <span>edges</span>
-                  {graphStats.isolated > 0 && (
-                    <>
-                      <span className="text-slate-300 dark:text-slate-600">/</span>
-                      <span className="text-red-500">{graphStats.isolated}</span>
-                      <span>isolated</span>
-                    </>
-                  )}
+                <div className="flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 dark:border-slate-700 dark:bg-slate-900/70">
+                  {[
+                    ["board", "Board"],
+                    ["explore", "Explore"],
+                  ].map(([layout, label]) => (
+                    <button
+                      key={layout}
+                      type="button"
+                      onClick={() => setGraphLayout(layout)}
+                      className={`rounded-md px-2.5 py-1 text-[11px] font-bold transition-colors ${
+                        graphLayout === layout
+                          ? "bg-brand-600 text-white"
+                          : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
@@ -2319,18 +2555,43 @@ export default function GraphView() {
                 <span className="truncate text-brand-900 dark:text-brand-100">{activeWorkspace.name}</span>
               </div>
             )}
+            {viewMode === "knowledge" && graphLayout === "board" && (
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <span className="shrink-0 text-[10px] font-bold uppercase text-slate-400">Lens</span>
+                {BOARD_LENSES.map(({ id, label, desc }) => (
+                  <button
+                    key={id}
+                    type="button"
+                    title={desc}
+                    onClick={() => setBoardLens(id)}
+                    className={`rounded-full px-2.5 py-1 text-[10px] font-bold transition-colors ${
+                      boardLens === id
+                        ? id === "gaps"
+                          ? "bg-red-500 text-white"
+                          : "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                        : "bg-slate-100 text-slate-500 hover:bg-slate-200 dark:bg-slate-900 dark:text-slate-400 dark:hover:bg-slate-800"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
             {viewMode === "knowledge" && (
-              <div className="mt-2 inline-flex max-w-full items-center gap-2 rounded-lg bg-slate-50 px-2 py-1 dark:bg-slate-900/60">
-                <span className="shrink-0 text-[10px] font-bold uppercase text-slate-400">View</span>
-                <select
-                  value={ceoView}
-                  onChange={(e) => setCeoView(e.target.value)}
-                  className="h-7 w-40 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-bold text-slate-700 outline-none transition focus:border-brand-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200 sm:w-44"
-                >
-                  {CEO_VIEWS.map(({ id, label }) => (
-                    <option key={id} value={id}>{label}</option>
-                  ))}
-                </select>
+              <div className="mt-2 flex items-center gap-1.5 rounded-lg bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-500 dark:bg-slate-900/70 dark:text-slate-400">
+                <Network className="h-3.5 w-3.5 text-brand-500" />
+                <span className="text-slate-900 dark:text-white">{graphStats.components}</span>
+                <span>nodes</span>
+                <span className="text-slate-300 dark:text-slate-600">/</span>
+                <span className="text-slate-900 dark:text-white">{graphStats.relationships}</span>
+                <span>edges</span>
+                {graphStats.isolated > 0 && (
+                  <>
+                    <span className="text-slate-300 dark:text-slate-600">/</span>
+                    <span className="text-red-500">{graphStats.isolated}</span>
+                    <span>isolated</span>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -2340,10 +2601,14 @@ export default function GraphView() {
               <div className="relative">
                 <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
                 <input
+                  ref={searchInputRef}
                   type="text"
                   value={filters.search}
                   onChange={(e) => setFilters((f) => ({ ...f, search: e.target.value }))}
-                  placeholder="Search current workspace..."
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") centerOnSearchMatch();
+                  }}
+                  placeholder="Search graph (⌘K)…"
                   className="h-9 w-40 rounded-xl border border-slate-200 bg-white/92 pl-8 pr-7 text-xs font-semibold text-slate-700 shadow-sm outline-none backdrop-blur-sm transition placeholder:text-slate-400 focus:border-brand-400 dark:border-slate-700 dark:bg-black/80 dark:text-slate-200 sm:w-52 xl:w-60"
                 />
                 {filters.search && (
@@ -2361,20 +2626,20 @@ export default function GraphView() {
               <button
                 type="button"
                 onClick={() => {
-                  setShowFilters((v) => !v);
+                  setShowRefine((v) => !v);
                   setShowSidePanel(false);
                   setShowAgents(false);
                   setSelectedNode(null);
                   setSelectedEdge(null);
                 }}
                 className={`flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-bold shadow-sm backdrop-blur-sm transition-colors ${
-                  showFilters
+                  showRefine
                     ? "border-sky-400 bg-sky-50/95 text-sky-700 dark:border-sky-600 dark:bg-sky-900/60 dark:text-sky-300"
                     : "border-slate-200 bg-white/92 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800/92 dark:text-slate-300 dark:hover:bg-slate-700"
                 }`}
               >
                 <SlidersHorizontal className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">Filters</span>
+                <span className="hidden sm:inline">Refine</span>
                 {activeFilterCount > 0 && (
                   <span className="rounded-full bg-sky-600 px-1.5 py-0.5 text-[9px] leading-none text-white">{activeFilterCount}</span>
                 )}
@@ -2396,7 +2661,7 @@ export default function GraphView() {
               type="button"
               onClick={() => {
                 setShowAsk((v) => !v);
-                setShowFilters(false);
+                setShowRefine(false);
                 setShowSidePanel(false);
                 setShowAgents(false);
                 setAskResult(null);
@@ -2416,9 +2681,8 @@ export default function GraphView() {
               type="button"
               onClick={() => {
                 setShowAgents((v) => !v);
-                setShowFilters(false);
+                setShowRefine(false);
                 setShowSidePanel(false);
-                setSelectedNode(null);
                 setSelectedEdge(null);
               }}
               className={`flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-bold shadow-sm backdrop-blur-sm transition-colors ${
@@ -2435,7 +2699,7 @@ export default function GraphView() {
               title="Source coverage and work lens"
               onClick={() => {
                 setShowSidePanel((v) => !v);
-                setShowFilters(false);
+                setShowRefine(false);
                 setShowAgents(false);
                 setSelectedNode(null);
                 setSelectedEdge(null);
@@ -2452,12 +2716,12 @@ export default function GraphView() {
           </div>
         </div>
 
-        {viewMode === "knowledge" && showFilters && (
+        {viewMode === "knowledge" && showRefine && (
           <div className="absolute right-3 top-28 z-40 w-[min(25rem,calc(100%-1.5rem))] rounded-xl border border-slate-200 bg-white/95 p-3 shadow-xl backdrop-blur-sm dark:border-slate-700 dark:bg-slate-800/95 lg:top-16">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-xs font-black text-slate-900 dark:text-white">Filters</p>
-                <p className="text-[10px] font-semibold text-slate-400">{graphStats.components} workspace nodes, {graphStats.relationships} edges, {graphStats.isolated} isolated</p>
+                <p className="text-xs font-black text-slate-900 dark:text-white">Refine</p>
+                <p className="text-[10px] font-semibold text-slate-400">{graphStats.components} nodes · {graphStats.relationships} edges</p>
               </div>
               <button
                 type="button"
@@ -2502,6 +2766,15 @@ export default function GraphView() {
                 <option value="proposed">Proposed</option>
               </select>
             </div>
+            <label className="mt-3 flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-semibold text-slate-600 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300">
+              <input
+                type="checkbox"
+                checked={showTrustEdges}
+                onChange={(e) => setShowTrustEdges(e.target.checked)}
+                className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+              />
+              Show edge trust styling
+            </label>
           </div>
         )}
 
@@ -2543,7 +2816,7 @@ export default function GraphView() {
               )}
             </div>
           )}
-          {viewMode === "knowledge" && showFilters && (
+          {viewMode === "knowledge" && showRefine && (
           <div className="flex gap-1.5 flex-wrap min-w-0">
             <select
               value={filters.model}
@@ -2634,9 +2907,9 @@ export default function GraphView() {
             {viewMode === "knowledge" && (
               <button
                 type="button"
-                onClick={() => setShowFilters((v) => !v)}
+                onClick={() => setShowRefine((v) => !v)}
                 className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition-colors ${
-                  showFilters
+                  showRefine
                     ? "border-sky-400 bg-sky-50 text-sky-700 dark:border-sky-600 dark:bg-sky-900/20 dark:text-sky-300"
                     : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700"
                 }`}
@@ -2723,14 +2996,14 @@ export default function GraphView() {
           <div className="hidden">
             <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 shrink-0">CEO View</span>
             <div className="flex gap-1.5 flex-wrap">
-              {CEO_VIEWS.map(({ id, label, desc }) => (
+              {BOARD_LENSES.map(({ id, label, desc }) => (
                 <button
                   key={id}
                   type="button"
                   title={desc}
-                  onClick={() => setCeoView(id)}
+                  onClick={() => setBoardLens(id)}
                   className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-all ${
-                    ceoView === id
+                    boardLens === id
                       ? id === "gaps"       ? "bg-red-500 text-white shadow-sm"
                       : id === "aiSessions" ? "bg-violet-600 text-white shadow-sm"
                       : id === "github"     ? "bg-slate-600 text-white shadow-sm"
@@ -2742,13 +3015,13 @@ export default function GraphView() {
                 </button>
               ))}
             </div>
-            {activeCeoView && ceoView !== "all" && (
-              <span className="text-[10px] text-slate-400 italic hidden lg:inline">{activeCeoView.desc}</span>
+            {activeBoardLens && boardLens !== "all" && (
+              <span className="text-[10px] text-slate-400 italic hidden lg:inline">{activeBoardLens.desc}</span>
             )}
           </div>
         )}
 
-        {viewMode === "knowledge" && showFilters && (
+        {viewMode === "knowledge" && showRefine && (
           <div className="hidden">
             <GraphStat label="Nodes" value={graphStats.components} />
             <GraphStat label="Edges" value={graphStats.relationships} />
@@ -2798,6 +3071,82 @@ export default function GraphView() {
         >
           <div ref={containerRef} className="absolute inset-0" />
           <div ref={logoLayerRef} className="pointer-events-none absolute inset-0 z-10" />
+
+          {graphLayout === "explore" && viewMode === "knowledge" && (
+            <div className="absolute bottom-16 right-4 top-24 z-30 flex w-[min(20rem,calc(100%-2rem))] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white/95 shadow-xl backdrop-blur-sm dark:border-slate-700 dark:bg-slate-900/95">
+              <div className="border-b border-slate-100 px-3 py-3 dark:border-slate-700">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-xs font-black text-slate-900 dark:text-white">Local graph</p>
+                    <p className="mt-0.5 text-[10px] font-semibold text-slate-400">
+                      Orphans hidden · {currentViewData.relationships?.length || 0} visible edges
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const nodeId = selectedNode?.id;
+                      setGraphLayout("board");
+                      if (nodeId) setTimeout(() => focusGraphNode(nodeId), 260);
+                    }}
+                    className="rounded-lg border border-slate-200 px-2.5 py-1 text-[10px] font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-800 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                  >
+                    Open in Board
+                  </button>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-1 rounded-lg bg-slate-100 p-0.5 dark:bg-slate-800">
+                  {[1, 2].map((depth) => (
+                    <button
+                      key={depth}
+                      type="button"
+                      onClick={() => setExploreDepth(depth)}
+                      className={`rounded-md px-2 py-1 text-[10px] font-bold transition ${
+                        exploreDepth === depth
+                          ? "bg-white text-slate-900 shadow-sm dark:bg-slate-700 dark:text-white"
+                          : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white"
+                      }`}
+                    >
+                      {depth}-hop
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                {!selectedNode ? (
+                  <div className="rounded-lg border border-dashed border-slate-200 p-4 text-center dark:border-slate-700">
+                    <Network className="mx-auto mb-2 h-6 w-6 text-slate-300 dark:text-slate-600" />
+                    <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">Select a node to inspect its neighborhood.</p>
+                  </div>
+                ) : exploreNeighborhood.length === 0 ? (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-800/70 dark:text-slate-400">
+                    No visible neighbors for {selectedNode.label}.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <p className="truncate text-[11px] font-bold uppercase tracking-wide text-slate-400">
+                      {selectedNode.label}
+                    </p>
+                    {exploreNeighborhood.map((neighbor) => (
+                      <button
+                        key={`${neighbor.id}-${neighbor.depth}`}
+                        type="button"
+                        onClick={() => focusGraphNode(neighbor.id)}
+                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-left transition hover:border-brand-300 hover:bg-brand-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:border-brand-700 dark:hover:bg-brand-900/20"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate text-xs font-bold text-slate-800 dark:text-slate-100">{neighbor.display_title || neighbor.name}</span>
+                          <span className="shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold text-slate-500 dark:bg-slate-700 dark:text-slate-300">
+                            {neighbor.depth} hop
+                          </span>
+                        </div>
+                        <p className="mt-1 text-[10px] font-semibold text-brand-600 dark:text-brand-400">{neighbor.relationship_label}</p>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           <div className="absolute bottom-4 left-4 z-20 flex flex-col items-center gap-1 rounded-xl border border-slate-200 bg-white/92 p-1 shadow-sm backdrop-blur-sm dark:border-slate-700 dark:bg-slate-800/92">
             <button type="button" title="Zoom in" onClick={() => changeGraphZoom(0.12)} className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white">
@@ -2927,7 +3276,7 @@ export default function GraphView() {
 
 
           {/* ── Empty state when filters hide everything ─────────── */}
-          {((currentViewData.components || currentViewData.nodes || []).length === 0) && !loading && (
+          {visibleCanvasItemCount === 0 && !loading && (
             <div className="absolute inset-0 z-10 flex items-center justify-center">
               <div className="text-center p-6 bg-white/95 dark:bg-slate-800/95 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-lg backdrop-blur-sm max-w-xs">
                 <Search className="w-8 h-8 text-slate-300 dark:text-slate-600 mx-auto mb-2" />
@@ -2935,6 +3284,8 @@ export default function GraphView() {
                 <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
                   {filters.search
                     ? `No results for "${filters.search}"`
+                    : graphLayout === "explore"
+                    ? "Explore hides isolated facts. Use Board or add relationships to inspect orphans."
                     : "Current filters hide every node."}
                 </p>
                 <button
@@ -2989,20 +3340,29 @@ export default function GraphView() {
                       {!askResult.answer && (
                         <p className="text-xs text-slate-400 italic">Configure AI to get synthesized answers — showing matching facts below.</p>
                       )}
-                      {askResult.components?.length > 0 && (
+                      {askResult.trace?.facts_used?.length > 0 && (
                         <div>
-                          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Cited facts ({askResult.components.length})</p>
+                          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">
+                            Facts used ({askResult.trace.facts_used.length})
+                          </p>
                           <div className="flex flex-col gap-1.5">
-                            {askResult.components.slice(0, 5).map((c, i) => (
-                              <div key={c.id || i} className="flex items-start gap-2 p-2 rounded-lg bg-slate-50 dark:bg-slate-900/60">
-                                <span className="w-4 h-4 rounded bg-brand-100 dark:bg-brand-900/40 flex items-center justify-center text-[9px] font-bold text-brand-700 dark:text-brand-300 shrink-0 mt-0.5">{i + 1}</span>
+                            {askResult.trace.facts_used.slice(0, 5).map((c) => (
+                              <div key={c.component_id} className="flex items-start gap-2 p-2 rounded-lg bg-slate-50 dark:bg-slate-900/60">
+                                <span className="w-4 h-4 rounded bg-brand-100 dark:bg-brand-900/40 flex items-center justify-center text-[9px] font-bold text-brand-700 dark:text-brand-300 shrink-0 mt-0.5">{c.rank}</span>
                                 <div className="min-w-0">
                                   <p className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">{c.value || stripModelPrefix(c.name)}</p>
-                                  <span className="text-[10px] text-slate-400">{c.model_name}</span>
+                                  <span className="text-[10px] text-slate-400">
+                                    {c.model_name} · score {Number(c.score).toFixed(2)} · {Math.round(c.confidence * 100)}%
+                                  </span>
                                 </div>
                               </div>
                             ))}
                           </div>
+                          {askResult.trace.relationships_used?.length > 0 && (
+                            <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50 px-2 py-1.5 text-[10px] text-slate-500 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-400">
+                              Expanded through {askResult.trace.relationships_used.length} relationship{askResult.trace.relationships_used.length === 1 ? "" : "s"}.
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -3013,6 +3373,22 @@ export default function GraphView() {
           )}
         </div>
       </div>
+
+      {(selectedNode || selectedEdge) && !showAgents && (
+        <GraphInspector
+          node={selectedNode}
+          edge={selectedEdge}
+          onClose={() => {
+            setSelectedNode(null);
+            setSelectedEdge(null);
+            setEdgeReviewError(null);
+          }}
+          onFocusNode={focusGraphNode}
+          onReviewEdge={reviewSelectedEdge}
+          edgeReviewLoading={edgeReviewLoading}
+          edgeReviewError={edgeReviewError}
+        />
+      )}
 
       {showSidePanel && (
         <div className="absolute bottom-3 right-3 top-20 z-40 flex w-[min(20rem,calc(100%-1.5rem))] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-800">
@@ -3053,398 +3429,16 @@ export default function GraphView() {
           relReport={relReport} relLoading={relLoading} relError={relError}
           onRunRel={() => callAgent("/api/agents/relationships", setRelLoading, setRelReport, setRelError)}
           packResult={packResult} packLoading={packLoading} packError={packError} packCopied={packCopied}
-          onRunPack={() => callAgent("/api/agents/context-pack", setPackLoading, setPackResult, setPackError)}
+          selectedNode={selectedNode}
+          onRunPack={() => callAgent(
+            "/api/agents/context-pack",
+            setPackLoading,
+            setPackResult,
+            setPackError,
+            selectedNode?.id ? { component_ids: [selectedNode.id] } : {},
+          )}
           onCopyPack={copyPack}
         />
-      )}
-
-      {selectedNode && !showAgents && (
-        <div className="absolute bottom-3 right-3 top-20 z-40 w-[min(22rem,calc(100%-1.5rem))] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-xl dark:border-slate-700 dark:bg-slate-800">
-          <button
-            onClick={() => setSelectedNode(null)}
-            className="float-right text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 text-xs font-bold"
-          >
-            close
-          </button>
-
-          {/* Status indicator bar */}
-          {(() => {
-            const sc = CARD_STATUS[selectedNode.status];
-            return sc ? (
-              <div
-                className="w-full h-1 rounded-full mb-3"
-                style={{ backgroundColor: sc.border }}
-              />
-            ) : <div className="w-full h-1 rounded-full mb-3 bg-slate-200 dark:bg-slate-700" />;
-          })()}
-
-          <h3 className="text-sm font-bold text-slate-900 dark:text-white mb-2.5 pr-6 leading-snug break-words">
-            {selectedNode.fullLabel || selectedNode.label.split("\n")[0]}
-          </h3>
-
-          {/* Warnings */}
-          {(() => {
-            const warnings = [];
-            if (selectedNode.status === "stale") warnings.push({ text: "Stale — may need review", color: "amber" });
-            if (selectedNode.status === "proposed") warnings.push({ text: "Proposed — not yet accepted", color: "amber" });
-            if (selectedNode.status === "blocked") warnings.push({ text: "Blocked — needs attention", color: "red" });
-            if (selectedNode.status === "deprecated") warnings.push({ text: "Deprecated — do not rely on", color: "red" });
-            if (selectedNode.confidence != null && selectedNode.confidence < 0.5) warnings.push({ text: `Low confidence (${Math.round(selectedNode.confidence * 100)}%)`, color: "red" });
-            if (!selectedNode.excerpt && !selectedNode.provenance) warnings.push({ text: "Missing evidence / provenance", color: "amber" });
-            if (!selectedNode.connected || selectedNode.connected.length === 0) warnings.push({ text: "Isolated — no relationships", color: "amber" });
-            if (warnings.length === 0) return null;
-            return (
-              <div className="mb-3 space-y-1">
-                {warnings.map((w, i) => (
-                  <div key={i} className={`flex items-center gap-1.5 text-[10px] font-bold px-2 py-1 rounded-lg ${
-                    w.color === "red"
-                      ? "bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400"
-                      : "bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400"
-                  }`}>
-                    <AlertTriangle className="w-3 h-3 shrink-0" />
-                    {w.text}
-                  </div>
-                ))}
-              </div>
-            );
-          })()}
-
-          {/* Chips row */}
-          <div className="flex flex-wrap gap-1.5 mb-3">
-            {selectedNode.fact_type && (
-              <span className="inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-brand-100 dark:bg-brand-900/30 text-brand-700 dark:text-brand-300">
-                {selectedNode.fact_type.replace(/_/g, " ")}
-              </span>
-            )}
-            {selectedNode.status && (() => {
-              const sm = STATUS_META[selectedNode.status];
-              return sm ? (
-                <span className={`inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${sm.pill}`}>
-                  {sm.label}
-                </span>
-              ) : (
-                <span className="inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-500">
-                  {selectedNode.status}
-                </span>
-              );
-            })()}
-            {selectedNode.temporal && selectedNode.temporal !== "unknown" && (() => {
-              const tm = TEMPORAL_META[selectedNode.temporal];
-              return tm ? (
-                <span className={`inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${tm.pill}`}>
-                  {tm.label}
-                </span>
-              ) : null;
-            })()}
-            {selectedNode.source_type && (
-              (() => {
-                const familyMeta = SOURCE_FAMILY_META[selectedNode.source_family] || SOURCE_FAMILY_META.other;
-                return (
-                  <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full ${familyMeta.bg} ${familyMeta.text}`}>
-                    {SOURCE_TYPE_ICONS[selectedNode.source_type] || selectedNode.source_type.replace(/_/g, " ")}
-                  </span>
-                );
-              })()
-            )}
-          </div>
-
-          {selectedNode.value && (
-            <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed mb-4 whitespace-pre-wrap break-words">
-              {selectedNode.value}
-            </p>
-          )}
-
-          <div className="space-y-2 mb-4">
-            {selectedNode.confidence != null && (
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-500">Confidence</span>
-                <span className={`font-bold ${selectedNode.confidence < 0.5 ? "text-red-600 dark:text-red-400" : "text-slate-700 dark:text-slate-300"}`}>
-                  {Math.round(selectedNode.confidence * 100)}%
-                </span>
-              </div>
-            )}
-            {selectedNode.authority_weight != null && (
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-500">Authority</span>
-                <span className="font-bold text-slate-700 dark:text-slate-300">
-                  {Math.round(selectedNode.authority_weight * 100)}%
-                </span>
-              </div>
-            )}
-            {selectedNode.source_type && (
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-500">Source</span>
-                <span className="font-bold text-slate-700 dark:text-slate-300 capitalize">{selectedNode.source_type.replace(/_/g, " ")}</span>
-              </div>
-            )}
-            {selectedNode.relationship_count != null && (
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-500">Relationships</span>
-                <span className="font-bold text-slate-700 dark:text-slate-300">{selectedNode.relationship_count}</span>
-              </div>
-            )}
-            {selectedNode.source_external_id && (
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-500">Source ID</span>
-                <span className="font-mono text-slate-600 dark:text-slate-400 text-[10px] truncate max-w-[180px]" title={selectedNode.source_external_id}>{selectedNode.source_external_id}</span>
-              </div>
-            )}
-            {sourceKind(selectedNode) === "slack" && (
-              <div className="text-xs mt-1 rounded-xl border border-sky-100 bg-sky-50/70 p-2.5 dark:border-sky-900/40 dark:bg-sky-950/20">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-sky-700 dark:text-sky-300">Slack context</span>
-                  {selectedNode.source_metadata_summary?.is_thread_reply && (
-                    <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">
-                      Thread reply
-                    </span>
-                  )}
-                </div>
-                <div className="space-y-1">
-                  {slackContextRows(selectedNode).map(([label, value]) => (
-                    <div key={label} className="flex justify-between gap-2">
-                      <span className="text-slate-500">{label}</span>
-                      <span className="max-w-[170px] truncate font-mono text-[10px] text-slate-700 dark:text-slate-300" title={String(value)}>{String(value)}</span>
-                    </div>
-                  ))}
-                </div>
-                {slackPermalink(selectedNode) && (
-                  <a
-                    href={slackPermalink(selectedNode)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-white px-2.5 py-1.5 text-[10px] font-bold text-sky-700 shadow-sm ring-1 ring-sky-100 hover:bg-sky-50 dark:bg-slate-900 dark:text-sky-300 dark:ring-sky-900/50 dark:hover:bg-slate-800"
-                  >
-                    <MessageCircle className="h-3 w-3" />
-                    Open Slack message
-                  </a>
-                )}
-              </div>
-            )}
-            {selectedNode.source_metadata_summary && Object.keys(selectedNode.source_metadata_summary).length > 0 && (
-              <div className="text-xs mt-1 border-t border-slate-100 dark:border-slate-700 pt-2">
-                <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Source context</span>
-                <div className="mt-1 space-y-0.5">
-                  {sourceMetaEntries(selectedNode.source_metadata_summary).map(([k, v]) => (
-                    <div key={k} className="flex justify-between">
-                      <span className="text-slate-500 capitalize">{formatMetaKey(k)}</span>
-                      <span className="max-w-[180px] truncate text-slate-600 dark:text-slate-400 font-mono text-[10px]" title={String(v)}>{String(v)}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            {selectedNode.source_url && (
-              <div className="flex justify-between items-start text-xs gap-2">
-                <span className="text-slate-500 shrink-0">URL</span>
-                <a
-                  href={selectedNode.source_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="font-medium text-brand-600 dark:text-brand-400 truncate hover:underline text-right"
-                  title={selectedNode.source_url}
-                >
-                  {selectedNode.source_url.replace(/^https?:\/\//, "").slice(0, 36)}{selectedNode.source_url.length > 46 ? "…" : ""}
-                </a>
-              </div>
-            )}
-            {selectedNode.excerpt && (
-              <div className="text-xs mt-1">
-                <span className="text-slate-500">Excerpt</span>
-                <p className="text-slate-600 dark:text-slate-400 italic mt-0.5 line-clamp-3">{selectedNode.excerpt}</p>
-              </div>
-            )}
-            {selectedNode.provenance && (
-              <div className="text-xs">
-                <span className="text-slate-500">Provenance</span>
-                <p className="text-slate-500 dark:text-slate-500 mt-0.5 font-mono text-[10px] break-all line-clamp-2">{selectedNode.provenance}</p>
-              </div>
-            )}
-          </div>
-
-          {selectedNode.connected?.length > 0 && (
-            <div>
-              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">
-                Connections ({selectedNode.connected.length})
-              </p>
-              {(() => {
-                const grouped = {};
-                selectedNode.connected.forEach((c) => {
-                  const type = c.relationshipType || "related";
-                  if (!grouped[type]) grouped[type] = [];
-                  grouped[type].push(c);
-                });
-                return Object.entries(grouped).map(([type, items]) => (
-                  <div key={type} className="mb-2">
-                    <p className="text-[9px] font-bold uppercase tracking-wider text-slate-500 mb-1">{type}</p>
-                    <div className="space-y-1">
-                      {items.map((c) => (
-                        <div
-                          key={c.id}
-                          className="flex items-center gap-2 text-xs p-2 rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700/50"
-                        >
-                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                            c.origin === "human_verified" ? "bg-emerald-400" :
-                            c.origin === "deterministic" ? "bg-blue-400" :
-                            c.origin === "ai_proposed" ? "bg-amber-400" :
-                            "bg-indigo-400"
-                          }`} />
-                          <span className="text-slate-700 dark:text-slate-300 truncate flex-1">{c.label}</span>
-                          <span className="text-[9px] font-semibold text-slate-400 ml-auto shrink-0">
-                            {c.direction === "out" ? "→" : "←"}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ));
-              })()}
-            </div>
-          )}
-        </div>
-      )}
-
-      {selectedEdge && !showAgents && (
-        <div className="absolute bottom-3 right-3 top-20 z-40 w-[min(22rem,calc(100%-1.5rem))] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-xl dark:border-slate-700 dark:bg-slate-800">
-          <button
-            onClick={() => setSelectedEdge(null)}
-            className="float-right text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 text-xs font-bold"
-          >
-            close
-          </button>
-
-          <div className="w-full h-1 rounded-full mb-3" style={{ backgroundColor: EDGE_ORIGIN_STYLE[selectedEdge.origin]?.color || "#94a3b8" }} />
-
-          <div className="flex items-center gap-2 mb-3">
-            <Link2 className="w-4 h-4 text-indigo-500" />
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-              {selectedEdge.displayLabel || selectedEdge.label}
-            </h3>
-          </div>
-
-          <div className="flex flex-wrap gap-1.5 mb-3">
-            {(() => {
-              const originLabel = EDGE_ORIGIN_STYLE[selectedEdge.origin]?.label || selectedEdge.origin;
-              const isUncertain = selectedEdge.origin === "ai_proposed" || selectedEdge.origin === "proposed";
-              return (
-                <span className={`inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${
-                  selectedEdge.origin === "human_verified" ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300" :
-                  selectedEdge.origin === "deterministic" ? "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300" :
-                  selectedEdge.origin === "ai_proposed" ? "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300" :
-                  selectedEdge.origin === "extracted" ? "bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300" :
-                  "bg-slate-100 dark:bg-slate-700 text-slate-500"
-                }`}>
-                  {isUncertain && "◌ "}{originLabel}
-                </span>
-              );
-            })()}
-            {selectedEdge.status && (
-              <span className="inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-500">
-                {selectedEdge.status}
-              </span>
-            )}
-          </div>
-
-          <div className="space-y-2 mb-4">
-            <div className="flex justify-between text-xs">
-              <span className="text-slate-500">Confidence</span>
-              <span className="font-bold text-slate-700 dark:text-slate-300">
-                {selectedEdge.confidence != null ? `${Math.round(selectedEdge.confidence * 100)}%` : "—"}
-              </span>
-            </div>
-            <div className="flex justify-between text-xs">
-              <span className="text-slate-500">Style</span>
-              <span className="font-bold text-slate-700 dark:text-slate-300">
-                {selectedEdge.origin === "ai_proposed" ? "Dashed (AI proposed)" : selectedEdge.origin === "proposed" ? "Dotted (proposed)" : selectedEdge.origin === "deterministic" ? "Solid (deterministic)" : selectedEdge.origin === "extracted" ? "Solid (extracted)" : selectedEdge.origin === "human_verified" ? "Solid (verified)" : "Solid"}
-              </span>
-            </div>
-          </div>
-
-          {isDeterministicMentionEdge(selectedEdge) && (
-            <div className="mb-4 rounded-xl border border-blue-100 bg-blue-50/80 p-2.5 text-xs text-blue-800 dark:border-blue-900/40 dark:bg-blue-950/20 dark:text-blue-300">
-              <p className="mb-1 text-[10px] font-bold uppercase tracking-widest">Cross-source reference</p>
-              <p className="leading-relaxed">
-                This edge was created because one source explicitly named another source item, channel, or document. It is shown as deterministic, not AI-proposed.
-              </p>
-            </div>
-          )}
-
-          {selectedEdge.evidence && (
-            <div className="mb-4">
-              <div className="flex items-center gap-2 mb-1.5">
-                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Evidence</p>
-                {selectedEdge.evidence.endsWith("(template evidence)") && (
-                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400">
-                    Template — weak
-                  </span>
-                )}
-              </div>
-              <div className={`text-xs text-slate-600 dark:text-slate-400 leading-relaxed p-2.5 rounded-lg border ${
-                selectedEdge.evidence.endsWith("(template evidence)")
-                  ? "bg-amber-50 dark:bg-amber-900/10 border-amber-100 dark:border-amber-800/30"
-                  : "bg-slate-50 dark:bg-slate-900/50 border-slate-100 dark:border-slate-700/50"
-              }`}>
-                {selectedEdge.evidence}
-              </div>
-            </div>
-          )}
-
-          {!selectedEdge.evidence && (
-            <div className="mb-4">
-              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Evidence</p>
-              <div className="flex items-center gap-1.5 text-xs text-red-600 dark:text-red-400 p-2.5 rounded-lg bg-red-50 dark:bg-red-900/10 border border-red-100 dark:border-red-800/30">
-                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                No evidence recorded for this relationship.
-              </div>
-            </div>
-          )}
-
-          {/* Source / target names if available */}
-          {selectedEdge.sourceName && selectedEdge.targetName && (
-            <div className="space-y-1.5 mb-4 text-xs border-t border-slate-100 dark:border-slate-700 pt-2">
-              <div className="flex justify-between">
-                <span className="text-slate-500">From</span>
-                <span className="font-bold text-slate-700 dark:text-slate-300 truncate max-w-[140px]" title={selectedEdge.sourceName}>{selectedEdge.sourceName}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">To</span>
-                <span className="font-bold text-slate-700 dark:text-slate-300 truncate max-w-[140px]" title={selectedEdge.targetName}>{selectedEdge.targetName}</span>
-              </div>
-            </div>
-          )}
-
-          {(selectedEdge.origin === "ai_proposed" || selectedEdge.origin === "proposed" || selectedEdge.status === "proposed") && (
-            <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-2.5 dark:border-amber-900/40 dark:bg-amber-950/20">
-              <p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-amber-700 dark:text-amber-300">Review proposed edge</p>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  disabled={edgeReviewLoading}
-                  onClick={() => reviewSelectedEdge("accept")}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-700 disabled:opacity-50"
-                >
-                  {edgeReviewLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
-                  Accept
-                </button>
-                <button
-                  type="button"
-                  disabled={edgeReviewLoading}
-                  onClick={() => reviewSelectedEdge("reject")}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-[11px] font-bold text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-900/50 dark:bg-slate-900 dark:text-red-300 dark:hover:bg-red-950/30"
-                >
-                  {edgeReviewLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <XCircle className="h-3.5 w-3.5" />}
-                  Reject
-                </button>
-              </div>
-              {edgeReviewError && (
-                <p className="mt-2 text-[10px] font-semibold text-red-600 dark:text-red-400">{edgeReviewError}</p>
-              )}
-            </div>
-          )}
-
-          <div className="text-[10px] text-slate-400 border-t border-slate-100 dark:border-slate-700 pt-2">
-            <p>Edge ID: <span className="font-mono text-slate-500 dark:text-slate-400">{selectedEdge.id.slice(0, 8)}…</span></p>
-          </div>
-        </div>
       )}
 
       {showAiSettings && (
@@ -3734,7 +3728,7 @@ function AgentsSidebarPanel({
   onClose,
   gapReport, gapLoading, gapError, onRunGaps,
   relReport, relLoading, relError, onRunRel,
-  packResult, packLoading, packError, packCopied, onRunPack, onCopyPack,
+  packResult, packLoading, packError, packCopied, selectedNode, onRunPack, onCopyPack,
 }) {
   return (
     <div className="absolute bottom-3 right-3 top-20 z-40 flex w-[min(22rem,calc(100%-1.5rem))] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-800">
@@ -3858,13 +3852,18 @@ function AgentsSidebarPanel({
           iconColor="bg-emerald-500"
           num="05"
           title="Context Pack"
-          desc="Generates a handoff prompt for AI agents"
+          desc={selectedNode?.label ? "Selection + 1-hop neighbors" : "Generates a handoff prompt for AI agents"}
           action={
             <SidebarRunBtn loading={packLoading} onClick={onRunPack} color="emerald">
-              Generate
+              {selectedNode?.id ? "Generate selected" : "Generate"}
             </SidebarRunBtn>
           }
         >
+          {selectedNode?.label && (
+            <div className="mt-2 rounded-lg border border-emerald-100 bg-emerald-50 px-2 py-1.5 text-[10px] text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-900/20 dark:text-emerald-300">
+              Seed: {selectedNode.label}
+            </div>
+          )}
           {packError && <SidebarError>{packError}</SidebarError>}
           {packResult && (
             <div className="mt-2">

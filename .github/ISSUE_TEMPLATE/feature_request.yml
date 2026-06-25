@@ -1,0 +1,58 @@
+name: Feature request
+description: Propose an improvement that fits the source-backed project memory direction.
+title: "[Feature]: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Context Engine is not a pipeline canvas or a separate vector KB. Feature requests should preserve source-backed memory, provenance, and honest connector states.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem does this solve for AI agents, coders, or startups?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the smallest useful version of the feature.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Connector
+        - Source ingestion
+        - Extraction quality
+        - Board graph
+        - Explore graph
+        - Inspector or trust UX
+        - Query or retrieval trace
+        - MCP or context packs
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: provenance
+    attributes:
+      label: Provenance and trust impact
+      description: How will facts, relationships, source links, and trust metadata stay auditable?
+    validations:
+      required: true
+  - type: checkboxes
+    id: principles
+    attributes:
+      label: Product principles
+      options:
+        - label: This does not add Input, KB, LLM, or Output nodes to the knowledge graph.
+          required: true
+        - label: This does not present unsupported connectors as working.
+          required: true
+        - label: This keeps MCP, query traces, or context packs as primary AI-agent outputs.
+          required: false

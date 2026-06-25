@@ -552,6 +552,108 @@ class TestWorkspaceScopedGraphEndpoints:
         assert "Workspace one billing risk" in component_names
         assert "Workspace two billing risk" not in component_names
 
+    async def test_query_exposes_versioned_trace_and_retrieval_knobs(self, client, db_session):
+        embedder = HashingEmbedder()
+        model = Model(id=uuid4(), name="Risk")
+        doc = SourceDocument(
+            id=uuid4(),
+            source_type="slack",
+            external_id="query-trace",
+            content="Launch blocker discussion.",
+            metadata_json="{}",
+        )
+        high_conf = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="Launch blocker", value="Launch blocker is unresolved",
+            fact_type="risk", confidence=0.9, status="active",
+            embedding=json.dumps(await embedder.embed_text("launch blocker unresolved")),
+        )
+        low_conf = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="Launch blocker maybe", value="Launch blocker maybe",
+            fact_type="risk", confidence=0.4, status="active",
+            embedding=json.dumps(await embedder.embed_text("launch blocker maybe")),
+        )
+        db_session.add_all([model, doc, high_conf, low_conf])
+        await db_session.flush()
+
+        resp = await client.post("/api/query", json={
+            "question": "launch blocker",
+            "top_k": 1,
+            "min_confidence": 0.8,
+            "hybrid": True,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["schema_version"] == "query.v1"
+        assert data["trace"]["top_k"] == 1
+        assert data["trace"]["min_confidence"] == 0.8
+        assert data["trace"]["matched_component_count"] == 1
+        assert data["trace"]["facts_used"][0]["name"] == "Launch blocker"
+        assert {component["name"] for component in data["components"]} == {"Launch blocker"}
+        assert data["answer"]
+        assert "Launch blocker" in data["answer"]
+
+        empty_resp = await client.post("/api/query", json={
+            "question": "launch blocker",
+            "min_confidence": 0.99,
+        })
+        assert empty_resp.status_code == 200
+        empty_data = empty_resp.json()
+        assert empty_data["trace"]["min_confidence"] == 0.99
+        assert empty_data["trace"]["matched_component_count"] == 0
+        assert empty_data["components"] == []
+        assert "No matching context found" in empty_data["answer"]
+
+    async def test_query_expands_relationships_from_top_matches(self, client, db_session):
+        embedder = HashingEmbedder()
+        model = Model(id=uuid4(), name="Task")
+        doc = SourceDocument(
+            id=uuid4(),
+            source_type="github_issue",
+            external_id="query-expand",
+            content="PR fixes the launch blocker.",
+            metadata_json="{}",
+        )
+        blocker = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="Launch blocker", value="Launch blocker is unresolved",
+            fact_type="risk", confidence=0.95, status="active",
+            embedding=json.dumps(await embedder.embed_text("launch blocker unresolved")),
+        )
+        fix = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="Fix launch PR", value="PR #7 fixes the blocker",
+            fact_type="github_pr", confidence=0.9, status="active",
+            embedding=json.dumps(await embedder.embed_text("totally different")),
+        )
+        rel = Relationship(
+            id=uuid4(),
+            source_component_id=fix.id,
+            target_component_id=blocker.id,
+            relationship_type="fixes",
+            confidence=0.92,
+            evidence="PR #7 explicitly says Fixes #12.",
+            origin="deterministic",
+        )
+        db_session.add_all([model, doc, blocker, fix, rel])
+        await db_session.flush()
+
+        resp = await client.post("/api/query", json={
+            "question": "launch blocker",
+            "top_k": 1,
+            "hybrid": True,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        names = {component["name"] for component in data["components"]}
+
+        assert "Launch blocker" in names
+        assert "Fix launch PR" in names
+        assert data["trace"]["expanded_relationship_count"] == 1
+        assert data["trace"]["relationships_used"][0]["evidence"] == "PR #7 explicitly says Fixes #12."
+
     async def test_graph_build_processes_only_workspace_pending_documents(self, client, db_session):
         ws1 = "00000000-0000-0000-0000-000000000061"
         ws2 = "00000000-0000-0000-0000-000000000062"

@@ -410,6 +410,94 @@ class TestSyncJobMigration:
                 pass
 
 
+class TestQueryAndSyncIndexMigration:
+    """Prove existing graph databases get launch-critical query indexes safely."""
+
+    async def test_migration_creates_graph_query_indexes_once(self):
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(_create_legacy_schema)
+
+            async with engine.begin() as conn:
+                await run_migrations(conn)
+            async with engine.begin() as conn:
+                await run_migrations(conn)
+
+            async with engine.connect() as conn:
+                source_indexes = await _index_names(conn, "source_documents")
+                component_indexes = await _index_names(conn, "components")
+                relationship_indexes = await _index_names(conn, "relationships")
+
+            expected_source_indexes = {
+                "ix_source_documents_source_type_external_id",
+                "ix_source_documents_processed_at",
+                "ix_source_documents_ingested_at",
+            }
+            expected_component_indexes = {
+                "ix_components_status_confidence",
+                "ix_components_model_status",
+                "ix_components_source_status",
+            }
+            expected_relationship_indexes = {
+                "ix_relationships_status_origin",
+                "ix_relationships_source_status",
+                "ix_relationships_target_status",
+                "ix_relationships_source_target_type",
+            }
+
+            assert expected_source_indexes <= set(source_indexes)
+            assert expected_component_indexes <= set(component_indexes)
+            assert expected_relationship_indexes <= set(relationship_indexes)
+            for index_name in (
+                expected_source_indexes
+                | expected_component_indexes
+                | expected_relationship_indexes
+            ):
+                all_indexes = source_indexes + component_indexes + relationship_indexes
+                assert all_indexes.count(index_name) == 1
+        finally:
+            await engine.dispose()
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    async def test_index_migration_noops_when_required_columns_are_missing(self):
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text("""
+                    CREATE TABLE source_documents (
+                        id TEXT PRIMARY KEY,
+                        external_id TEXT NOT NULL
+                    )
+                """))
+
+            async with engine.begin() as conn:
+                await run_migrations(conn)
+            async with engine.begin() as conn:
+                await run_migrations(conn)
+
+            async with engine.connect() as conn:
+                source_indexes = await _index_names(conn, "source_documents")
+                assert "ix_source_documents_source_type_external_id" not in source_indexes
+                assert "ix_source_documents_processed_at" not in source_indexes
+                assert "ix_source_documents_ingested_at" not in source_indexes
+        finally:
+            await engine.dispose()
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
 def _create_legacy_schema(connection):
     """Create the schema WITHOUT confidence and evidence on relationships."""
     connection.execute(text("""
@@ -461,3 +549,8 @@ def _create_legacy_schema(connection):
         )
     """))
     connection.commit()
+
+
+async def _index_names(conn, table_name: str) -> list[str]:
+    result = await conn.execute(text(f"PRAGMA index_list({table_name})"))
+    return [row[1] for row in result.fetchall()]

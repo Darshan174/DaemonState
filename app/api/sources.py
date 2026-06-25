@@ -108,6 +108,7 @@ async def create_source(
 async def create_sources_bulk(
     payload: SourceBulkCreate,
     background_tasks: BackgroundTasks,
+    sync: bool = False,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     doc_ids = []
@@ -124,10 +125,16 @@ async def create_sources_bulk(
         await session.flush()
         doc_ids.append(doc.id)
 
-    await session.commit()
-    from app.config import settings
-    for doc_id in doc_ids:
-        background_tasks.add_task(_run_ingestion, doc_id, settings.database_url)
+    if sync:
+        svc = IngestionService(session)
+        for doc_id in doc_ids:
+            await svc.process_document(doc_id)
+        await session.commit()
+    else:
+        await session.commit()
+        from app.config import settings
+        for doc_id in doc_ids:
+            background_tasks.add_task(_run_ingestion, doc_id, settings.database_url)
 
     return {"created": len(doc_ids), "document_ids": [str(d) for d in doc_ids]}
 

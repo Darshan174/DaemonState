@@ -4,14 +4,21 @@ Permanent repository rules for Codex and OpenCode agents working on Context Engi
 
 ## Mission
 
-Context Engine is an open source developer tool for turning scattered product, startup, and AI-agent context into a precise, source-backed knowledge graph.
+Context Engine is an open-source memory and progress layer for AI-native
+builders. Its first audience is solo founders and tiny teams using coding agents
+heavily.
 
 The main product value is:
 
-- seamless ingestion from local files, AI-agent sessions, and future work surfaces such as Slack, Discord, Gmail, meeting transcripts, and docs;
-- durable extraction into source documents, models, components, and optional relationships;
-- provenance for every extracted component;
-- clear current, past, and future context for product and engineering decisions.
+- preserve AI coding sessions and project activity as durable source evidence;
+- explain what changed, what matters, what is blocked, and what drifted;
+- generate a clean, source-backed context packet for the next agent run;
+- use a precise knowledge graph internally to connect sessions, tasks, decisions,
+  risks, code-host activity, and documents;
+- preserve provenance for every extracted component.
+
+Do not position the product as enterprise search, a generic company knowledge
+base, or an all-purpose RAG platform.
 
 ## Agent Roles
 
@@ -56,4 +63,3 @@ The main product value is:
 - Relationship: optional typed edge between two components, such as `depends_on`, `blocked_by`, `enables`, `contradicts`, `supersedes`, `confirms`, or `related_to`.
 - Connector: a configured or catalogued ingestion surface.
 - SyncJob: a connector sync attempt or status record.
-

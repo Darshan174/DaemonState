@@ -12,6 +12,7 @@ async def run_migrations(conn: AsyncConnection) -> None:
     await _migrate_relationships_confidence_evidence(conn)
     await _migrate_components_provenance_excerpt(conn)
     await _migrate_relationships_origin(conn)
+    await _migrate_query_and_sync_indexes(conn)
 
 
 async def _migrate_connectors_workspace_schema(conn: AsyncConnection) -> None:
@@ -334,3 +335,45 @@ async def _migrate_relationships_origin(conn: AsyncConnection) -> None:
         await conn.execute(text(
             "ALTER TABLE relationships ADD COLUMN origin VARCHAR(20) NOT NULL DEFAULT 'proposed'"
         ))
+
+
+async def _migrate_query_and_sync_indexes(conn: AsyncConnection) -> None:
+    index_specs = [
+        (
+            "source_documents",
+            "ix_source_documents_source_type_external_id",
+            ("source_type", "external_id"),
+        ),
+        ("source_documents", "ix_source_documents_processed_at", ("processed_at",)),
+        ("source_documents", "ix_source_documents_ingested_at", ("ingested_at",)),
+        ("components", "ix_components_status_confidence", ("status", "confidence")),
+        ("components", "ix_components_model_status", ("model_id", "status")),
+        ("components", "ix_components_source_status", ("source_document_id", "status")),
+        ("relationships", "ix_relationships_status_origin", ("status", "origin")),
+        ("relationships", "ix_relationships_source_status", ("source_component_id", "status")),
+        ("relationships", "ix_relationships_target_status", ("target_component_id", "status")),
+        (
+            "relationships",
+            "ix_relationships_source_target_type",
+            ("source_component_id", "target_component_id", "relationship_type"),
+        ),
+    ]
+
+    for table_name, index_name, column_names in index_specs:
+        await _create_index_if_columns_exist(conn, table_name, index_name, column_names)
+
+
+async def _create_index_if_columns_exist(
+    conn: AsyncConnection,
+    table_name: str,
+    index_name: str,
+    column_names: tuple[str, ...],
+) -> None:
+    columns = await _get_table_columns(conn, table_name)
+    if not columns or any(column_name not in columns for column_name in column_names):
+        return
+
+    quoted_columns = ", ".join(column_names)
+    await conn.execute(text(
+        f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} ({quoted_columns})"
+    ))

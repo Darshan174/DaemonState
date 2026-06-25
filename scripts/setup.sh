@@ -23,10 +23,14 @@ command -v python3 >/dev/null 2>&1 || error "Python 3.12+ is required. Install f
 command -v node    >/dev/null 2>&1 || error "Node.js 18+ is required. Install from https://nodejs.org"
 command -v npm     >/dev/null 2>&1 || error "npm is required (comes with Node.js)"
 
-PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+PYTHON_VERSION=$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')
 NODE_VERSION=$(node --version | sed 's/v//' | cut -d. -f1)
 
-[[ "${PYTHON_VERSION}" < "3.12" ]] && error "Python 3.12+ required (got ${PYTHON_VERSION})"
+python3 - <<'PY' >/dev/null || error "Python 3.12+ required (got ${PYTHON_VERSION})"
+import sys
+
+raise SystemExit(0 if sys.version_info >= (3, 12) else 1)
+PY
 [[ "${NODE_VERSION}" -lt 18 ]]     && error "Node.js 18+ required (got ${NODE_VERSION})"
 
 success "Python ${PYTHON_VERSION}, Node.js $(node --version)"
@@ -44,14 +48,27 @@ fi
 mkdir -p data
 success "data/ directory ready"
 
+# ── Virtual environment ───────────────────────────────────────────────────────
+VENV_DIR="${VENV_DIR:-.venv}"
+if [[ "${CONTEXT_ENGINE_USE_SYSTEM_PYTHON:-0}" == "1" ]]; then
+  warn "Using system Python because CONTEXT_ENGINE_USE_SYSTEM_PYTHON=1"
+  PYTHON_BIN="python3"
+else
+  info "Creating Python virtual environment at ${VENV_DIR}…"
+  python3 -m venv "${VENV_DIR}" || error "Could not create virtual environment. Install the Python venv module and retry."
+  PYTHON_BIN="${VENV_DIR}/bin/python"
+  "${PYTHON_BIN}" -m pip install --quiet --upgrade pip
+  success "Virtual environment ready"
+fi
+
 # ── Backend ───────────────────────────────────────────────────────────────────
 info "Installing Python backend…"
-pip install --quiet -e .
+"${PYTHON_BIN}" -m pip install --quiet -e ".[dev]"
 success "Backend installed"
 
 # ── Frontend ──────────────────────────────────────────────────────────────────
 info "Installing frontend dependencies…"
-(cd frontend && npm install --silent)
+(cd frontend && npm ci --silent)
 success "Frontend dependencies installed"
 
 info "Building frontend…"
@@ -66,7 +83,7 @@ echo "  Start the app:"
 echo -e "    ${BOLD}bash scripts/start.sh${RESET}"
 echo ""
 echo "  Or run directly:"
-echo -e "    ${BOLD}uvicorn app.main:app --host 0.0.0.0 --port 8000${RESET}"
+echo -e "    ${BOLD}${PYTHON_BIN} -m uvicorn app.main:app --host 0.0.0.0 --port 8000${RESET}"
 echo ""
 echo "  App will be available at: http://localhost:8000"
 echo ""

@@ -14,6 +14,7 @@ from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from app.api.connectors import DEFAULT_WORKSPACE_ID
 from app.database import _ensure_sqlite_parent_dir, get_db_session
 from app.main import app
 from app.migrations import run_migrations
@@ -204,7 +205,7 @@ class TestConnectorCatalog:
         assert local["availability"] == "available"
         assert local["connector_id"] is None
 
-    async def test_slack_initially_disconnected_and_unsupported(self, client):
+    async def test_slack_initially_disconnected_until_oauth_configured(self, client):
         response = await client.get("/api/connectors")
         assert response.status_code == 200
         data = response.json()
@@ -214,14 +215,15 @@ class TestConnectorCatalog:
         assert slack["is_configured"] is False
         assert slack["message"] is not None
 
-    async def test_slack_connect_is_rejected_as_unsupported(self, client):
+    async def test_slack_direct_connect_is_rejected_because_oauth_is_required(self, client):
         response = await client.post(
             "/api/connectors/slack/connect",
             json={"config": {"team_name": "Should Fail"}},
         )
         assert response.status_code == 400
         detail = response.json()["detail"].lower()
-        assert "not" in detail
+        assert "slack" in detail
+        assert "direct connect" in detail
 
 
 class TestConnectorSetupStatus:
@@ -313,7 +315,7 @@ class TestConnectorSetupStatus:
         ai_ctx = next(s for s in data if s["connector_type"] == "ai_context")
         assert ai_ctx["configured"] is True
 
-    async def test_slack_not_configured_unsupported(self, client):
+    async def test_slack_not_configured_until_oauth_settings_exist(self, client):
         response = await client.get("/api/connectors/setup-status")
         assert response.status_code == 200
         data = response.json()
@@ -323,13 +325,15 @@ class TestConnectorSetupStatus:
 
 
 class TestConnectorConnect:
-    async def test_connect_slack_returns_400_unsupported(self, client):
+    async def test_connect_slack_returns_400_direct_connect_not_supported(self, client):
         response = await client.post(
             "/api/connectors/slack/connect",
             json={"config": {"team_name": "Test Team", "bot_token": "xoxb-test"}},
         )
         assert response.status_code == 400
-        assert "not" in response.json()["detail"].lower() or "unsupported" in response.json()["detail"].lower()
+        detail = response.json()["detail"].lower()
+        assert "slack" in detail
+        assert "direct connect" in detail
 
     async def test_connect_zoom_returns_400_coming_soon(self, client):
         response = await client.post(
@@ -337,6 +341,63 @@ class TestConnectorConnect:
             json={"config": {}},
         )
         assert response.status_code == 400
+
+    async def test_zoom_manual_token_does_not_create_connected_connector(self, client, db_session):
+        workspace = Workspace(id=uuid4(), name="Zoom Guard", slug=f"zoom-guard-{uuid4().hex}")
+        db_session.add(workspace)
+        await db_session.flush()
+
+        response = await client.post(
+            "/api/connectors/zoom/connect",
+            json={"workspace_id": str(workspace.id), "token": "zoom-token"},
+        )
+
+        assert response.status_code == 400
+        assert "coming soon" in response.json()["detail"].lower()
+        connector = await db_session.scalar(
+            select(Connector).where(Connector.connector_type == "zoom")
+        )
+        assert connector is None
+
+    async def test_zoom_install_disabled_even_when_oauth_configured(self, client, monkeypatch):
+        monkeypatch.setenv("ZOOM_CLIENT_ID", "zoom-client")
+        monkeypatch.setenv("ZOOM_CLIENT_SECRET", "zoom-secret")
+
+        response = await client.get(
+            f"/api/connectors/zoom/install?workspace_id={DEFAULT_WORKSPACE_ID}"
+        )
+
+        assert response.status_code == 400
+        assert "coming soon" in response.json()["detail"].lower()
+
+    async def test_zoom_callback_does_not_create_connected_connector(self, client, db_session):
+        response = await client.get(
+            f"/api/connectors/zoom/callback?code=test-code&state={DEFAULT_WORKSPACE_ID}:state"
+        )
+
+        assert response.status_code == 200
+        assert "Zoom is coming soon" in response.text
+        connector = await db_session.scalar(
+            select(Connector).where(Connector.connector_type == "zoom")
+        )
+        assert connector is None
+
+    async def test_connect_notion_not_catalogued_and_does_not_create_connector(self, client, db_session):
+        workspace = Workspace(id=uuid4(), name="Notion Guard", slug=f"notion-guard-{uuid4().hex}")
+        db_session.add(workspace)
+        await db_session.flush()
+
+        response = await client.post(
+            "/api/connectors/notion/connect",
+            json={"workspace_id": str(workspace.id), "token": "secret-notion-token"},
+        )
+
+        assert response.status_code == 404
+        assert "notion" in response.json()["detail"].lower()
+        connector = await db_session.scalar(
+            select(Connector).where(Connector.connector_type == "notion")
+        )
+        assert connector is None
 
     async def test_connect_gdrive_returns_400_coming_soon(self, client):
         response = await client.post(
@@ -929,14 +990,15 @@ class TestSyncJobFlow:
         assert data["job_id"] is not None
         assert data["connector_id"] == str(connector.id)
 
-    async def test_slack_connect_returns_400_unsupported(self, client):
+    async def test_slack_direct_connect_returns_400(self, client):
         response = await client.post(
             "/api/connectors/slack/connect",
             json={"config": {"team_name": "Test Team"}},
         )
         assert response.status_code == 400
         detail = response.json()["detail"].lower()
-        assert "not" in detail or "unsupported" in detail
+        assert "slack" in detail
+        assert "direct connect" in detail
 
 
 class TestProviderSyncReporting:

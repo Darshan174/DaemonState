@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import UUID
+
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +17,8 @@ router = APIRouter()
 class AgentRequest(BaseModel):
     api_key: str | None = None
     model: str | None = None
+    workspace_id: UUID | None = None
+    component_ids: list[UUID] | None = None
 
 
 class GapItemOut(BaseModel):
@@ -76,7 +80,10 @@ async def run_context_pack(
     session: AsyncSession = Depends(get_db_session),
 ) -> ContextPackOut:
     agent = ContextPackAgent(session, api_key=payload.api_key, model=payload.model)
-    pack = await agent.run()
+    pack = await agent.run(
+        component_ids=payload.component_ids,
+        workspace_id=payload.workspace_id,
+    )
     return ContextPackOut(
         content=pack.content,
         entity_count=pack.entity_count,

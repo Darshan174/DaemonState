@@ -34,7 +34,7 @@ export default function Onboarding({ onComplete }) {
           setDemoStatus({
             status: "success",
             message:
-              data.status === "existing"
+              data.status === "ready"
                 ? `${data.workspaceName || "Demo workspace"} is ready.`
                 : `${data.workspaceName || "Demo workspace"} was seeded with demo context.`,
           });
@@ -120,7 +120,7 @@ export default function Onboarding({ onComplete }) {
         </h2>
         <p className="mt-2 text-slate-500 dark:text-slate-400 max-w-sm">
           {demoStatus?.message ||
-            "We're setting up a realistic startup environment with Slack threads, Notion docs, and Zoom transcripts."}
+            "We're setting up source-backed demo context from GitHub, Slack, Gmail, Google Drive, and Codex."}
         </p>
         {isError && (
           <div className="mt-6 flex flex-wrap justify-center gap-3">
@@ -242,7 +242,7 @@ export default function Onboarding({ onComplete }) {
         <OnboardingCard 
           icon={<PlayCircle className="w-6 h-6 text-emerald-600 dark:text-emerald-400" />}
           title="Run Demo Workspace"
-          description="Instant setup with high-quality mock data from Slack, Notion, and Zoom. Best for exploration."
+          description="Instant setup with source-backed demo data from GitHub, Slack, Gmail, Google Drive, and Codex."
           action="Start demo"
           onClick={handleRunDemo}
           color="emerald"
@@ -260,7 +260,7 @@ export default function Onboarding({ onComplete }) {
         <OnboardingCard 
           icon={<Key className="w-6 h-6 text-amber-600 dark:text-amber-400" />}
           title="Connect Live Sources"
-          description="Link Slack, GitHub, or Notion tokens to start continuous ingestion of live company data."
+          description="Link Slack, GitHub, Gmail, or Google Drive credentials to start continuous ingestion."
           action="Configure tokens"
           to="/app/connectors"
           color="amber"

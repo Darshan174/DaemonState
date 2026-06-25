@@ -68,10 +68,16 @@ def run_ingest(args: argparse.Namespace) -> int:
     }
 
     try:
+        suffix = "?sync=true" if args.sync else ""
         if len(payload["documents"]) == 1:
-            resp = api_request(args.base_url, "POST", "/api/sources", payload=payload["documents"][0])
+            resp = api_request(
+                args.base_url,
+                "POST",
+                f"/api/sources{suffix}",
+                payload=payload["documents"][0],
+            )
         else:
-            resp = api_request(args.base_url, "POST", "/api/sources/bulk", payload=payload)
+            resp = api_request(args.base_url, "POST", f"/api/sources/bulk{suffix}", payload=payload)
     except APIError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1

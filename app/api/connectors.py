@@ -225,6 +225,15 @@ def _google_configured() -> bool:
     return bool(_get_google_client_id() and _get_env("GOOGLE_CLIENT_SECRET"))
 
 
+def _raise_unavailable_connector(connector_type: str, detail: str | None = None) -> None:
+    catalog = CONNECTOR_CATALOG.get(connector_type)
+    name = catalog["name"] if catalog else connector_type
+    raise HTTPException(
+        status_code=400 if catalog else 404,
+        detail=detail or f"{name} connector is not available in this release.",
+    )
+
+
 
 def _connector_setup_status(connector_type: str, request: Request | None = None) -> dict[str, Any]:
     base = _public_base_url() or _request_base_url(request)
@@ -711,19 +720,10 @@ async def slack_callback(
 
 @router.get("/connectors/zoom/install")
 async def zoom_install(workspace_id: str, request: Request) -> RedirectResponse:
-    client_id = _get_env("ZOOM_CLIENT_ID")
-    if not client_id:
-        raise HTTPException(status_code=503, detail="Zoom OAuth is not configured on this server.")
-    redirect_uri = _get_env("ZOOM_REDIRECT_URI") or f"{_public_base_url()}/api/connectors/zoom/callback"
-    state = f"{workspace_id}:{secrets.token_urlsafe(16)}"
-    url = (
-        f"https://zoom.us/oauth/authorize"
-        f"?response_type=code"
-        f"&client_id={client_id}"
-        f"&redirect_uri={redirect_uri}"
-        f"&state={state}"
+    _raise_unavailable_connector(
+        "zoom",
+        "Zoom is coming soon; OAuth setup is disabled until transcript sync is implemented.",
     )
-    return RedirectResponse(url)
 
 
 @router.get("/connectors/zoom/callback")
@@ -734,6 +734,11 @@ async def zoom_callback(
     request: Request = None,
     session: AsyncSession = Depends(get_db_session),
 ) -> Response:
+    if CONNECTOR_CATALOG["zoom"]["availability"] != "available":
+        return _oauth_close_html(
+            success=False,
+            message="Zoom is coming soon; OAuth setup is disabled until transcript sync is implemented.",
+        )
     if error:
         return _oauth_close_html(success=False, message=f"Zoom OAuth error: {error}")
     if not code or not state:
@@ -776,7 +781,7 @@ async def zoom_callback(
     config.update({"auth_mode": "oauth", "ingestion_mode": "transcripts_only"})
     connector.config_json = json.dumps(config)
     await session.commit()
-    return _oauth_close_html(success=True, message="Zoom connected successfully.")
+    return _oauth_close_html(success=True, message="Zoom OAuth setup saved.")
 
 
 @router.post("/connectors/zoom/connect")
@@ -784,20 +789,10 @@ async def zoom_connect_token(
     payload: dict,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    workspace_id = payload.get("workspace_id")
-    token = payload.get("token", "").strip()
-    if not workspace_id or not token:
-        raise HTTPException(status_code=400, detail="Zoom connector is not available yet.")
-    ws = await _get_workspace(workspace_id, session)
-    connector = await _get_or_create_connector(ws.id, "zoom", session)
-    connector.status = "connected"
-    connector.credentials_json = json.dumps({"access_token": token})
-    config = json.loads(connector.config_json or "{}")
-    config.update({"auth_mode": "manual_token", "ingestion_mode": "transcripts_only"})
-    connector.config_json = json.dumps(config)
-    await session.commit()
-    await session.refresh(connector)
-    return _connector_to_dict(connector)
+    _raise_unavailable_connector(
+        "zoom",
+        "Zoom is coming soon; manual token setup is disabled until transcript sync is implemented.",
+    )
 
 
 # ── Google Drive & Gmail OAuth ─────────────────────────────────
@@ -905,19 +900,7 @@ async def notion_connect(
     payload: dict,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    workspace_id = payload.get("workspace_id")
-    token = payload.get("token", "").strip()
-    if not workspace_id or not token:
-        raise HTTPException(status_code=422, detail="workspace_id and token are required")
-    ws = await _get_workspace(workspace_id, session)
-    connector = await _get_or_create_connector(ws.id, "notion", session)
-    connector.status = "connected"
-    connector.credentials_json = json.dumps({"access_token": token})
-    config = json.loads(connector.config_json or "{}")
-    config.update({"auth_mode": "manual_token"})
-    connector.config_json = json.dumps(config)
-    await session.commit()
-    return _connector_to_dict(connector)
+    _raise_unavailable_connector("notion", "Notion is not a catalogued connector in this release.")
 
 
 # ── GitHub (token-based) ───────────────────────────────────────
