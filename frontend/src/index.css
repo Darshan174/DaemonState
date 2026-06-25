@@ -15,25 +15,41 @@
     letter-spacing: -0.02em;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    @apply text-slate-900 dark:text-slate-100;
+    @apply text-slate-900 dark:text-neutral-100;
     background:
-      radial-gradient(ellipse 65% 45% at 68% -8%, rgba(99,102,241,0.11) 0%, transparent 55%),
-      radial-gradient(ellipse 45% 35% at 4% 92%, rgba(167,139,250,0.08) 0%, transparent 52%),
-      #f8fafc;
+      radial-gradient(ellipse 60% 40% at 75% -8%, rgba(99,102,241,0.09) 0%, transparent 56%),
+      #f7f7f8;
     transition-property: background-color, border-color, color;
     transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
     transition-duration: 250ms;
   }
 
   .dark body {
-    background:
-      radial-gradient(ellipse 65% 45% at 68% -8%, rgba(99,102,241,0.20) 0%, transparent 55%),
-      radial-gradient(ellipse 45% 35% at 4% 92%, rgba(167,139,250,0.13) 0%, transparent 52%),
-      #07080d;
+    background-color: transparent;
+  }
+
+  html.dark::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background-color: #050506;
+    background-image:
+      radial-gradient(ellipse 70% 55% at 65% -12%, rgba(99, 102, 241, 0.14), transparent 60%),
+      linear-gradient(to right, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+    background-size: auto, 32px 32px, 32px 32px;
+  }
+
+  html.dark,
+  html.dark body,
+  html.dark #root {
+    background-color: transparent;
   }
 
   *:focus-visible {
-    @apply outline-none ring-2 ring-brand-500/60 ring-offset-2 ring-offset-white dark:ring-offset-slate-900;
+    @apply outline-none ring-2 ring-brand-500/60 ring-offset-2 ring-offset-white dark:ring-offset-black;
   }
 
   ::selection {
@@ -42,23 +58,19 @@
 }
 
 @layer components {
-  /* Shared card style */
   .card {
-    @apply bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm;
+    @apply bg-white dark:bg-black rounded-2xl border border-slate-200 dark:border-neutral-800 shadow-sm;
   }
 
-  /* Shared input style */
   .input {
-    @apply w-full px-4 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-medium text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-all;
+    @apply w-full px-4 py-2.5 bg-white dark:bg-black border border-slate-200 dark:border-neutral-800 rounded-xl text-sm font-medium text-slate-900 dark:text-neutral-100 placeholder:text-slate-400 dark:placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-all;
   }
 
-  /* Shared btn-primary */
   .btn-primary {
     @apply inline-flex items-center gap-2 px-4 py-2.5 bg-brand-600 hover:bg-brand-500 text-white text-sm font-bold rounded-xl transition-colors shadow-sm shadow-brand-600/20 disabled:opacity-50;
   }
 }
 
-/* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 5px;
   height: 5px;
@@ -74,14 +86,52 @@
   background: rgba(100, 116, 139, 0.35);
 }
 
-/* Dark mode scrollbar */
 .dark ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.12);
 }
 .dark ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.22);
 }
 
-/* Hide scrollbar for nav overflow */
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .context-visual *,
+  .animate-marquee,
+  .animate-shimmer,
+  .source-flow,
+  .source-orbit,
+  .source-icon-float {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+.source-flow {
+  animation: source-flow 24s linear infinite;
+  will-change: transform;
+}
+
+.source-orbit {
+  animation: source-orbit 7s linear infinite;
+}
+
+.source-icon-float {
+  animation: source-icon-float 3.8s ease-in-out infinite;
+}
+
+@keyframes source-flow {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(-50%, 0, 0); }
+}
+
+@keyframes source-orbit {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes source-icon-float {
+  0%, 100% { transform: translateY(0) rotate(-4deg); }
+  50% { transform: translateY(-3px) rotate(6deg); }
+}

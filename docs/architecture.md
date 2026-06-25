@@ -1,7 +1,15 @@
 # Architecture
 
-Context Engine is a self-hosted project memory service for AI agents. The core
-contract is source-backed: every extracted fact starts as a raw
+Context Engine is a self-hosted state-of-work service for AI-native builders.
+Its job is to reconstruct the current project state from AI coding sessions,
+code-host activity, conversations, and documents, then prepare trustworthy
+context for the next human or agent action.
+
+The graph is implementation infrastructure. The product output is a project
+brief: what happened, what matters, what is blocked, what drifted, and what to
+do next.
+
+The core contract is source-backed: every extracted fact starts as a raw
 `SourceDocument`, and graph nodes keep enough provenance for users and agents to
 audit where a claim came from.
 
@@ -81,6 +89,14 @@ instead of hand-rolled metadata checks.
 Context packs are generated from either the full graph or a selected component
 plus one-hop neighbors. MCP exposes the same query trace through `query_context`
 for AI-agent consumers.
+
+The intended high-level outputs are:
+
+- a current project-state brief;
+- blockers, risks, and unresolved work;
+- mismatches between agent-session intent and recorded project state;
+- source-backed answers to project questions;
+- a focused context packet for the next agent run.
 
 ## Launch Demo
 

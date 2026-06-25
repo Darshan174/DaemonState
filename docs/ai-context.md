@@ -1,9 +1,15 @@
 # AI Context
 
-AI Context imports preserve coding-agent sessions as raw source evidence before
-any extraction runs. Use this path for Codex, Claude Code, OpenCode, and generic
-agent notes when you want decisions, tasks, blockers, and file references to
-show up in Board, Explore, Ask, MCP, and context packs.
+AI coding-session memory is the primary product wedge.
+
+Context Engine preserves Codex, Claude Code, OpenCode, and generic agent
+sessions as raw source evidence, then extracts decisions, tasks, blockers, and
+file references. This lets the project carry useful memory from one agent run to
+the next instead of starting from a blank prompt every time.
+
+The session ID alone is not enough. Current imports require the session content.
+Context Engine does not log in to Codex or Claude and scrape a conversation from
+an ID.
 
 ## Current Paths
 
@@ -130,6 +136,8 @@ python3 -m pytest tests/test_ingestion.py tests/test_adversarial_graph.py -q
 
 ## Current Limits
 
+- A session ID identifies and deduplicates a session; it does not fetch content.
+- Users must paste, upload, or otherwise provide the session content.
 - Cursor is accepted only as generic AI context today.
 - Imports do not fetch referenced files automatically.
 - `/api/connectors/ai-context/import` creates raw source documents; run graph

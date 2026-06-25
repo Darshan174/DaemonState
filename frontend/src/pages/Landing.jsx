@@ -1,700 +1,714 @@
 import { useRef, useState } from "react";
+import { motion } from "framer-motion";
 import { Link } from "react-router-dom";
-import { motion, useInView } from "framer-motion";
 import {
-  CheckCircle2, History, Cpu, ArrowRight,
-  BookOpen, AlertCircle, Database, Zap, MessageSquare,
-  Network, PlugZap, BrainCircuit, Clock, GitBranch
+  AlertTriangle,
+  ArrowRight,
+  Bot,
+  CircleDot,
+  FileText,
+  GitBranch,
+  GitPullRequest,
+  Layers3,
+  Lightbulb,
+  MessageSquare,
+  PackageCheck,
+  Search,
+  ShieldCheck,
+  Sparkles,
+  TerminalSquare,
+  Upload,
 } from "lucide-react";
-import ThemeToggle from "../components/ThemeToggle";
 import CeIcon from "../components/CeIcon";
+import ThemeToggle from "../components/ThemeToggle";
 import gdriveIcon from "@assets/gdrive-icon.png";
 import gmailIcon from "@assets/gmail-icon.png";
 import openaiIcon from "@assets/openai-icon.png";
 import opencodeIcon from "@assets/opencode-icon.png";
 
-const PROBLEMS = [
-  {
-    icon: BookOpen,
-    title: "Context drifts faster than docs update",
-    body: "Product truth changes in Slack, GitHub, Gmail, and Drive long before any clean document catches up. AI reads stale docs.",
-  },
-  {
-    icon: Database,
-    title: "Critical knowledge stays siloed",
-    body: "Founders and lead engineers become the source of truth. Everyone else — including your AI agents — works off partial context.",
-  },
-  {
-    icon: AlertCircle,
-    title: "Wrong context is expensive",
-    body: "A stale roadmap answer, contradictory pricing, or outdated architecture assumption can create real product and customer damage.",
-  },
+const GITHUB_URL = "https://github.com/Darshan174/Context-Engine";
+
+const GRAPH_NODES = [
+  { id: "claude", label: "Claude session", meta: "Auth architecture", x: 13, y: 23, icon: Bot, tone: "violet" },
+  { id: "decision", label: "Decision", meta: "Use session tokens", x: 38, y: 18, icon: Lightbulb, tone: "amber" },
+  { id: "pr", label: "PR #184", meta: "Auth migration", x: 62, y: 35, icon: GitPullRequest, tone: "blue" },
+  { id: "blocker", label: "Blocker", meta: "Schema approval", x: 84, y: 22, icon: AlertTriangle, tone: "red" },
+  { id: "docs", label: "Broken docs", meta: "Old OAuth flow", x: 61, y: 73, icon: FileText, tone: "red" },
+  { id: "issue", label: "Issue #72", meta: "Stale callback", x: 33, y: 72, icon: CircleDot, tone: "slate" },
+  { id: "next", label: "Next agent task", meta: "Fix schema + docs", x: 86, y: 72, icon: Sparkles, tone: "green" },
 ];
 
-const HOW_IT_WORKS = [
+const GRAPH_EDGES = [
+  ["claude", "decision"],
+  ["decision", "pr"],
+  ["pr", "blocker"],
+  ["pr", "docs"],
+  ["issue", "docs"],
+  ["blocker", "next"],
+  ["docs", "next"],
+];
+
+const GRAPH_CARDS = [
   {
     number: "01",
-    title: "Connect your sources",
-    body: "Sync Slack, GitHub, Google Drive, Gmail, and AI session imports (Claude, Codex, OpenCode). Context Engine ingests messages, documents, and discussions with source provenance.",
-    icon: PlugZap,
-    color: "from-blue-500 to-cyan-500",
-    chip: "OAuth connectors",
+    title: "Capture the work",
+    body: "Import Codex, Claude Code, and OpenCode sessions alongside GitHub PRs, issues, chats, and docs.",
+    icon: Upload,
   },
   {
     number: "02",
-    title: "AI extracts atomic facts",
-    body: "Every document passes through an intelligent extraction pipeline. Facts are organized into domain models with temporal awareness — current, past, or future.",
-    icon: BrainCircuit,
-    color: "from-brand-500 to-violet-500",
-    chip: "Bring your own key",
+    title: "Map the relationships",
+    body: "See how decisions, blockers, files, PRs, ideas, and agent runs connect across the project.",
+    icon: GitBranch,
   },
   {
     number: "03",
-    title: "Query with full provenance",
-    body: "Ask questions and get grounded answers with source citations. Every fact traces back to the exact original document.",
-    icon: MessageSquare,
-    color: "from-violet-500 to-pink-500",
-    chip: "Temporal awareness",
+    title: "Act from the graph",
+    body: "Spot gaps, create next steps, and generate a clean handoff for yourself or the next agent.",
+    icon: PackageCheck,
   },
 ];
 
-const CAPABILITIES = [
+const TEMPLATES = [
   {
-    icon: Network,
-    title: "Knowledge Graph",
-    body: "Visualize domain models, atomic facts, and cross-domain relationships extracted from your sources. Filter by model, source, or temporal status.",
+    title: "Generate next-agent packet",
+    body: "Package the relevant goal, decisions, blockers, files, and next tasks.",
+    icon: PackageCheck,
   },
   {
-    icon: CheckCircle2,
-    title: "Structured Extraction",
-    body: "AI reads every ingested document and produces structured components — decisions, actions, risks, and blockers — with source provenance attached.",
+    title: "Find project gaps",
+    body: "Surface disconnected work, missing implementation, and unresolved blockers.",
+    icon: Search,
   },
   {
-    icon: History,
-    title: "What Changed Timeline",
-    body: "Rewind your knowledge graph. View a clear timeline of source ingestions, extraction runs, and component updates across your workspace.",
-  },
-  {
-    icon: MessageSquare,
-    title: "Natural Language Queries",
-    body: "Ask questions in plain language and get grounded answers. Every response cites the exact source document it was derived from.",
+    title: "Show stale decisions",
+    body: "Find decisions that no longer match the code, issue, PR, or documentation.",
+    icon: AlertTriangle,
   },
 ];
 
-const DIFFERENTIATORS = [
-  "Built for fast-moving teams, not generic enterprise search.",
-  "Self-hostable, source-backed system for complete data control.",
-  "Maintains explicit current truth, historical truth, and future plans.",
-  "Auditable, structured context for both humans and AI agents.",
-];
-
-const containerVariants = {
+const container = {
   hidden: { opacity: 0 },
-  visible: { opacity: 1, transition: { staggerChildren: 0.12 } },
+  visible: { opacity: 1, transition: { staggerChildren: 0.1 } },
 };
 
-const itemVariants = {
-  hidden: { opacity: 0, y: 24 },
+const item = {
+  hidden: { opacity: 0, y: 18 },
   visible: { opacity: 1, y: 0, transition: { duration: 0.5, ease: "easeOut" } },
 };
 
 export default function Landing() {
   return (
-    <div className="min-h-screen relative bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-x-hidden">
-      {/* Background grid + blobs — static gradients to avoid scroll jank from mix-blend + blur animation */}
-      <div className="pointer-events-none absolute inset-0 -z-10 h-full w-full bg-[linear-gradient(to_right,#8080800a_1px,transparent_1px),linear-gradient(to_bottom,#8080800a_1px,transparent_1px)] dark:bg-[linear-gradient(to_right,#ffffff06_1px,transparent_1px),linear-gradient(to_bottom,#ffffff06_1px,transparent_1px)] bg-[size:14px_24px]">
-        <div className="absolute top-0 -left-4 h-96 w-96 rounded-full bg-brand-300/20 blur-3xl dark:bg-brand-700/15" />
-        <div className="absolute top-0 -right-4 h-96 w-96 rounded-full bg-violet-300/20 blur-3xl dark:bg-violet-700/15" />
-        <div className="absolute -bottom-8 left-20 h-96 w-96 rounded-full bg-brand-400/15 blur-3xl dark:bg-brand-800/10" />
-      </div>
-
-      {/* Header */}
-      <header className="sticky top-0 z-50 border-b border-slate-200/60 dark:border-slate-800/60 bg-white/95 dark:bg-slate-950/95 supports-[backdrop-filter]:bg-white/80 supports-[backdrop-filter]:dark:bg-slate-950/80 supports-[backdrop-filter]:backdrop-blur-sm">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3.5">
-          <div className="flex items-center gap-3">
-            <CeIcon size={38} />
-            <div>
-              <p className="text-sm font-bold text-slate-900 dark:text-white leading-tight">Context Engine</p>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">Structured context for AI teams</p>
-            </div>
-          </div>
-
-          <nav className="hidden items-center gap-6 text-sm font-medium text-slate-500 dark:text-slate-400 md:flex">
-            <a href="#problem" className="transition-colors hover:text-brand-600 dark:hover:text-brand-400">Problem</a>
-            <a href="#how" className="transition-colors hover:text-brand-600 dark:hover:text-brand-400">How it works</a>
-            <a href="#fit" className="transition-colors hover:text-brand-600 dark:hover:text-brand-400">Why startups</a>
-          </nav>
-
-          <div className="flex items-center gap-3">
-            <ThemeToggle />
-            <Link
-              to="/app"
-              className="group relative flex items-center gap-2 overflow-hidden rounded-xl bg-brand-600 px-5 py-2.5 text-sm font-semibold text-white shadow-[0_0_15px_rgba(79,70,229,0.35)] transition-all duration-300 hover:bg-brand-500 hover:shadow-[0_0_28px_rgba(79,70,229,0.55)]"
-            >
-              <div className="absolute inset-0 flex h-full w-full justify-center [transform:skew(-12deg)_translateX(-100%)] group-hover:duration-700 group-hover:[transform:skew(-12deg)_translateX(100%)] z-10">
-                <div className="relative h-full w-8 bg-white/20" />
-              </div>
-              <span className="relative z-20">Open Dashboard</span>
-              <ArrowRight className="relative z-20 h-4 w-4 transition-transform group-hover:translate-x-1" />
-            </Link>
-          </div>
-        </div>
-      </header>
+    <div className="min-h-screen overflow-x-hidden bg-[#f4f4f2] text-[#111113] dark:bg-[#050505] dark:text-white">
+      <Header />
 
       <main>
-        {/* ── Hero ─────────────────────────────────────── */}
-        <section className="mx-auto grid max-w-6xl gap-12 px-6 py-24 lg:grid-cols-[minmax(0,1.15fr)_minmax(300px,0.85fr)] lg:items-center">
-          <motion.div
-            initial={{ opacity: 0, x: -30 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.65 }}
-            className="space-y-8"
-          >
-            <div className="inline-flex items-center gap-2 rounded-full border border-brand-200 dark:border-brand-700 bg-brand-50 dark:bg-brand-900/40 px-4 py-1.5 text-xs font-bold uppercase tracking-wide text-brand-700 dark:text-brand-300 shadow-sm">
-              <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-brand-400 opacity-75" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-brand-500" />
-              </span>
-              Open-source · AI-native context infrastructure
-            </div>
+        <section className="relative border-b border-black/10 dark:border-white/10">
+          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_right,rgba(17,17,19,0.055)_1px,transparent_1px),linear-gradient(to_bottom,rgba(17,17,19,0.055)_1px,transparent_1px)] bg-[size:48px_48px] [mask-image:linear-gradient(to_bottom,black,transparent_92%)] dark:bg-[linear-gradient(to_right,rgba(255,255,255,0.05)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.05)_1px,transparent_1px)]" />
 
-            <div className="space-y-5">
-              <h1 className="max-w-3xl text-5xl font-black tracking-tight text-slate-950 dark:text-white md:text-[3.6rem] md:leading-[1.07]">
-                The memory layer between your team and your{" "}
-                <span className="inline-block text-transparent bg-clip-text bg-[linear-gradient(110deg,#4f46e5,40%,#a78bfa,55%,#4f46e5)] bg-[length:200%_100%] animate-shimmer">AI</span>.
-              </h1>
-              <p className="max-w-xl text-lg leading-relaxed text-slate-600 dark:text-slate-300">
-                Connect your tools. AI extracts atomic facts into a living knowledge graph —
-                temporally aware, source-backed, and queryable in natural language.
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-4">
-              <motion.div whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.96 }} className="relative group">
-                <div className="absolute -inset-1 rounded-2xl bg-brand-500/40 blur-xl transition-all duration-500 group-hover:bg-brand-500/60 animate-pulse" />
-                <Link
-                  to="/app"
-                  className="group relative overflow-hidden flex items-center gap-2 rounded-2xl bg-brand-600 px-8 py-4 text-base font-bold text-white shadow-xl shadow-brand-600/25 transition-all duration-300 hover:bg-brand-500"
-                >
-                  <div className="absolute inset-0 flex h-full w-full justify-center [transform:skew(-12deg)_translateX(-100%)] group-hover:duration-700 group-hover:[transform:skew(-12deg)_translateX(100%)] z-10">
-                    <div className="relative h-full w-10 bg-white/20" />
-                  </div>
-                  <span className="relative z-20">Start for free</span>
-                  <ArrowRight className="h-5 w-5 relative z-20 transition-transform group-hover:translate-x-1" />
-                </Link>
-              </motion.div>
-              <motion.a
-                whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.96 }}
-                href="#how"
-                className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm px-6 py-3.5 text-sm font-semibold text-slate-700 dark:text-slate-200 shadow-sm transition-all duration-300 hover:bg-slate-50 dark:hover:bg-slate-700"
-              >
-                See how it works ↓
-              </motion.a>
-            </div>
-
-            <div className="grid gap-3 sm:grid-cols-3">
-              <HeroStat icon={Network} label="Knowledge Graph" value="Graph-native" />
-              <HeroStat icon={Clock} label="Temporal Layer" value="Past · Now · Future" />
-              <HeroStat icon={Zap} label="Extraction" value="AI-powered" />
-            </div>
-          </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0, scale: 0.94, y: 30 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            transition={{ duration: 0.75, delay: 0.2 }}
-            className="rounded-[32px] border border-white/30 dark:border-slate-700/40 bg-white/80 dark:bg-slate-900/80 p-2 shadow-[0_32px_80px_-24px_rgba(79,70,229,0.18)]"
-          >
-            <ContextGraphAnimation />
-          </motion.div>
-        </section>
-
-        {/* ── Logos marquee ───────────────────────────── */}
-        <section className="border-y border-slate-200/50 dark:border-slate-800/50 bg-white/60 dark:bg-slate-900/60 py-10 overflow-hidden">
-          <div className="mx-auto max-w-6xl px-6 text-center mb-8">
-            <p className="text-xs font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500">Sync context from your favourite tools</p>
-          </div>
-          <div className="group relative w-full overflow-hidden opacity-60 transition-opacity hover:opacity-100 [mask-image:linear-gradient(to_right,transparent,black_128px,black_calc(100%-128px),transparent)]">
-            <div className="flex w-max animate-marquee">
-              <div className="flex shrink-0 items-center gap-16 py-2 pr-16">
-                <Logos />
-              </div>
-              <div className="flex shrink-0 items-center gap-16 py-2 pr-16" aria-hidden="true">
-                <Logos />
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* ── Problem ─────────────────────────────────── */}
-        <section id="problem" className="bg-white dark:bg-slate-900 [content-visibility:auto] [contain-intrinsic-size:auto_800px]">
-          <div className="mx-auto max-w-6xl px-6 py-24">
+          <div className="relative mx-auto grid min-h-[calc(100vh-65px)] max-w-[1500px] lg:grid-cols-[0.72fr_1.28fr]">
             <motion.div
-              initial="hidden" whileInView="visible" viewport={{ once: true, margin: "-100px" }}
-              variants={itemVariants}
-              className="max-w-3xl"
+              initial="hidden"
+              animate="visible"
+              variants={container}
+              className="flex flex-col justify-between border-black/10 px-6 py-14 md:px-10 md:py-20 lg:border-r lg:px-14"
             >
-              <p className="text-sm font-bold uppercase tracking-widest text-brand-600 dark:text-brand-400">The Problem</p>
-              <h2 className="mt-4 text-3xl font-bold tracking-tight text-slate-950 dark:text-white md:text-5xl">
-                Your AI is only as good as the context you give it.{" "}
-                <span className="text-slate-400 dark:text-slate-500">Most teams give it the wrong context.</span>
-              </h2>
-            </motion.div>
-
-            <motion.div
-              initial="hidden" whileInView="visible" viewport={{ once: true, margin: "-50px" }}
-              variants={containerVariants}
-              className="mt-12 grid gap-6 md:grid-cols-3"
-            >
-              {PROBLEMS.map((item) => (
-                <motion.div variants={itemVariants} key={item.title} className="h-full">
-                  <SpotlightCard className="group h-full p-8">
-                    <div className="mb-6 inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-brand-50 dark:bg-brand-900/40 text-brand-600 dark:text-brand-400 transition-colors group-hover:bg-brand-600 group-hover:text-white relative z-10">
-                      <item.icon className="h-6 w-6" />
-                    </div>
-                    <h3 className="text-xl font-bold text-slate-900 dark:text-white relative z-10">{item.title}</h3>
-                    <p className="mt-3 text-base leading-relaxed text-slate-600 dark:text-slate-300 relative z-10">{item.body}</p>
-                  </SpotlightCard>
-                </motion.div>
-              ))}
-            </motion.div>
-          </div>
-        </section>
-
-        {/* ── How it works ────────────────────────────── */}
-        <section id="how" className="mx-auto max-w-6xl px-6 py-24 [content-visibility:auto] [contain-intrinsic-size:auto_900px]">
-          <motion.div
-            initial="hidden" whileInView="visible" viewport={{ once: true, margin: "-100px" }}
-            variants={itemVariants}
-            className="text-center max-w-2xl mx-auto mb-16"
-          >
-            <p className="text-sm font-bold uppercase tracking-widest text-brand-600 dark:text-brand-400">How it works</p>
-            <h2 className="mt-4 text-3xl font-bold tracking-tight text-slate-950 dark:text-white md:text-5xl">
-              From raw messages to{" "}
-              <span className="text-transparent bg-clip-text bg-gradient-to-r from-brand-600 to-violet-500">structured intelligence</span>
-            </h2>
-            <p className="mt-4 text-lg text-slate-600 dark:text-slate-400 leading-relaxed">
-              A three-stage pipeline that turns your scattered organizational knowledge into a queryable, AI-ready knowledge graph.
-            </p>
-          </motion.div>
-
-          <div className="relative">
-            {/* Connector line (desktop) */}
-            <div className="hidden lg:block absolute top-[4.5rem] left-[calc(16.67%+2rem)] right-[calc(16.67%+2rem)] h-px bg-gradient-to-r from-blue-400/40 via-brand-400/40 to-violet-400/40" />
-
-            <motion.div
-              initial="hidden" whileInView="visible" viewport={{ once: true, margin: "-50px" }}
-              variants={containerVariants}
-              className="grid gap-8 lg:grid-cols-3"
-            >
-              {HOW_IT_WORKS.map((step, i) => (
-                <motion.div variants={itemVariants} key={step.number}>
-                  <div className="relative rounded-3xl border border-slate-200/80 dark:border-slate-700/80 bg-white dark:bg-slate-800/90 p-8 shadow-sm transition-all duration-300 hover:-translate-y-1.5 hover:shadow-xl hover:shadow-brand-500/10 group">
-                    <div className="mb-5 flex min-h-14 items-start justify-between gap-4">
-                      <div className={`relative flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br ${step.color} shadow-lg`}>
-                        <step.icon className="h-7 w-7 text-white" />
-                        <span className="absolute -top-2 -right-2 flex h-5 w-5 items-center justify-center rounded-full bg-white dark:bg-slate-800 border-2 border-slate-100 dark:border-slate-700 text-[9px] font-black text-slate-700 dark:text-slate-300">{i + 1}</span>
-                      </div>
-                      <span className="mt-1 inline-flex h-6 w-40 items-center justify-center rounded-full border border-brand-100 dark:border-brand-800/60 bg-brand-50 dark:bg-brand-900/30 px-3 text-center text-[10px] font-bold uppercase tracking-wide text-brand-600 dark:text-brand-400">
-                        {step.chip}
-                      </span>
-                    </div>
-                    <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-3">{step.title}</h3>
-                    <p className="text-sm leading-relaxed text-slate-600 dark:text-slate-300">{step.body}</p>
-                  </div>
-                </motion.div>
-              ))}
-            </motion.div>
-          </div>
-        </section>
-
-        {/* ── Extraction demo ─────────────────────────── */}
-        <section className="relative overflow-hidden bg-slate-950 py-24 [content-visibility:auto] [contain-intrinsic-size:auto_700px]">
-          <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_50%_at_50%_-10%,rgba(79,70,229,0.12),transparent)]" />
-          <div className="mx-auto max-w-6xl px-6 relative">
-            <motion.div
-              initial="hidden" whileInView="visible" viewport={{ once: true, margin: "-100px" }}
-              variants={itemVariants}
-              className="text-center max-w-2xl mx-auto mb-14"
-            >
-              <p className="text-sm font-bold uppercase tracking-widest text-brand-400">AI Extraction in action</p>
-              <h2 className="mt-4 text-3xl font-bold tracking-tight text-white md:text-4xl">
-                Raw message → structured fact
-              </h2>
-              <p className="mt-4 text-slate-400">
-                Context Engine reads your conversations and distills them into atomic, temporally-aware components your AI can actually use.
-              </p>
-            </motion.div>
-
-            <motion.div
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, margin: "-60px" }}
-              transition={{ duration: 0.6 }}
-              className="grid gap-6 lg:grid-cols-[1fr_auto_1fr] items-center"
-            >
-              {/* Input card */}
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm">
-                <div className="flex items-center gap-2.5 mb-5">
-                  <div className="w-7 h-7 rounded-lg bg-[#4a154b] flex items-center justify-center">
-                    <svg viewBox="0 0 24 24" className="w-4 h-4" fill="#fff"><path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zm1.27 0a2.527 2.527 0 0 1 2.521-2.52 2.528 2.528 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zm0 1.27a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zm10.122 2.523a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.835zm-1.27 0a2.528 2.528 0 0 1-2.521 2.521 2.528 2.528 0 0 1-2.521-2.521V2.522A2.528 2.528 0 0 1 15.166 0a2.528 2.528 0 0 1 2.52 2.522v6.313zM15.166 18.958a2.528 2.528 0 0 1 2.52 2.522A2.528 2.528 0 0 1 15.166 24a2.528 2.528 0 0 1-2.521-2.522v-2.52h2.521zm0-1.27a2.528 2.528 0 0 1-2.52-2.521 2.528 2.528 0 0 1 2.52-2.521h6.313A2.528 2.528 0 0 1 24 15.166a2.528 2.528 0 0 1-2.522 2.52h-6.313z"/></svg>
-                  </div>
-                  <div>
-                    <span className="text-xs font-bold text-white">#product</span>
-                    <span className="ml-2 text-[10px] text-slate-500">Slack · 2 min ago</span>
-                  </div>
-                </div>
-                <div className="flex items-start gap-3">
-                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-orange-400 to-red-500 flex items-center justify-center text-[11px] font-black text-white shrink-0">SR</div>
-                  <div>
-                    <span className="text-xs font-bold text-slate-300">sarah.r</span>
-                    <p className="mt-1.5 text-sm text-slate-300 leading-relaxed">
-                      Team — we're pausing the Enterprise tier launch until Q3. Pricing still TBD, waiting on legal sign-off from contracts team. @mike can you update the roadmap doc?
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Arrow */}
-              <div className="hidden lg:flex flex-col items-center gap-2">
-                <div className="flex h-10 w-10 items-center justify-center rounded-full border border-brand-500/40 bg-brand-500/10">
-                  <BrainCircuit className="h-5 w-5 text-brand-400" />
-                </div>
-                <ArrowRight className="h-5 w-5 text-brand-500" />
-                <span className="text-[10px] font-bold uppercase tracking-wider text-brand-500">AI extracts</span>
-              </div>
-
-              {/* Output card */}
-              <div className="rounded-2xl border border-brand-500/30 bg-brand-950/50 dark:bg-brand-950/70 p-6 backdrop-blur-sm shadow-[0_0_40px_rgba(79,70,229,0.12)]">
-                <div className="flex items-center justify-between mb-4">
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-brand-400">Extracted component</span>
-                  <span className="flex items-center gap-1.5 text-[10px] font-bold text-emerald-400">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> active
+              <div>
+                <motion.div variants={item} className="mb-9 flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-[#6d5dfc] shadow-[0_0_18px_rgba(109,93,252,0.7)]" />
+                  <span className="text-[11px] font-bold uppercase tracking-[0.18em] text-black/48 dark:text-white/48">
+                    Open-source project graph for AI builders
                   </span>
-                </div>
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="rounded-full bg-brand-500/20 border border-brand-500/30 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-brand-300">Pricing</span>
-                    <span className="rounded-full bg-violet-500/20 border border-violet-500/30 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-violet-300">decision</span>
-                    <span className="rounded-full bg-violet-500/20 border border-violet-500/30 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-violet-300">future</span>
-                  </div>
-                  <p className="text-sm font-bold text-white leading-tight">Enterprise Tier Launch — Delayed to Q3</p>
-                  <p className="text-xs text-slate-400 leading-relaxed">
-                    Enterprise launch paused until Q3; pricing TBD pending legal team sign-off. Roadmap doc update requested.
-                  </p>
-                  <div className="pt-2 border-t border-white/10 flex items-center gap-3 text-[10px] text-slate-500">
-                    <span>Confidence: <span className="text-emerald-400 font-bold">91%</span></span>
-                    <span>·</span>
-                    <span>Source: <span className="text-slate-400 font-medium">Slack #product</span></span>
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          </div>
-        </section>
-
-        {/* ── Capabilities ────────────────────────────── */}
-        <section id="solution" className="mx-auto max-w-6xl px-6 py-24 [content-visibility:auto] [contain-intrinsic-size:auto_800px]">
-          <motion.div
-            initial="hidden" whileInView="visible" viewport={{ once: true, margin: "-100px" }}
-            variants={itemVariants}
-            className="max-w-3xl"
-          >
-            <p className="text-sm font-bold uppercase tracking-widest text-brand-600 dark:text-brand-400">Built-in capabilities</p>
-            <h2 className="mt-4 text-3xl font-bold tracking-tight text-slate-950 dark:text-white md:text-5xl">
-              A{" "}
-              <span className="text-transparent bg-clip-text bg-gradient-to-r from-brand-600 to-violet-500">grounded memory</span>
-              {" "}your whole team can trust.
-            </h2>
-          </motion.div>
-
-          <motion.div
-            initial="hidden" whileInView="visible" viewport={{ once: true, margin: "-50px" }}
-            variants={containerVariants}
-            className="mt-16 grid gap-6 md:grid-cols-2 lg:grid-cols-4"
-          >
-            {CAPABILITIES.map((item) => (
-              <motion.div variants={itemVariants} key={item.title} className="h-full">
-                <SpotlightCard className="group h-full p-8">
-                  <div className="mb-5 inline-flex h-10 w-10 items-center justify-center rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 transition-colors group-hover:bg-brand-50 dark:group-hover:bg-brand-900/40 group-hover:text-brand-600 dark:group-hover:text-brand-400 relative z-10">
-                    <item.icon className="h-5 w-5" />
-                  </div>
-                  <h3 className="text-lg font-bold text-slate-900 dark:text-white relative z-10">{item.title}</h3>
-                  <p className="mt-3 text-sm leading-relaxed text-slate-600 dark:text-slate-300 relative z-10">{item.body}</p>
-                </SpotlightCard>
-              </motion.div>
-            ))}
-          </motion.div>
-        </section>
-
-        {/* ── Why startups ────────────────────────────── */}
-        <section id="fit" className="relative overflow-hidden bg-slate-950 text-white [content-visibility:auto] [contain-intrinsic-size:auto_700px]">
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,_rgba(79,70,229,0.13),_transparent_40%)]" />
-          <div className="relative mx-auto grid max-w-6xl gap-16 px-6 py-24 lg:grid-cols-[1fr_1.1fr] lg:items-center">
-            <motion.div
-              initial="hidden" whileInView="visible" viewport={{ once: true, margin: "-100px" }}
-              variants={itemVariants}
-            >
-              <p className="text-sm font-bold uppercase tracking-widest text-brand-400">Why teams choose this</p>
-              <h2 className="mt-4 text-3xl font-bold tracking-tight md:text-5xl">
-                Generic search finds documents.
-                <br /><span className="text-slate-400">Context Engine knows what's true.</span>
-              </h2>
-              <p className="mt-6 max-w-xl text-lg leading-relaxed text-slate-300">
-                Small teams carry more context density per person than any enterprise. Decisions
-                move fast, documentation lags, and a single contradiction can damage a launch,
-                customer call, or roadmap commitment.
-              </p>
-            </motion.div>
-
-            <motion.div
-              initial="hidden" whileInView="visible" viewport={{ once: true, margin: "-50px" }}
-              variants={containerVariants}
-              className="space-y-4"
-            >
-              {DIFFERENTIATORS.map((item, i) => (
-                <motion.div
-                  variants={itemVariants}
-                  key={i}
-                  className="group flex items-center gap-4 rounded-2xl border border-white/10 bg-white/5 px-6 py-5 transition-colors hover:bg-white/10 hover:border-brand-500/50"
-                >
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand-500/20 text-brand-400 group-hover:bg-brand-500 group-hover:text-white transition-colors duration-300">
-                    <CheckCircle2 className="h-5 w-5" />
-                  </div>
-                  <p className="text-base font-medium leading-relaxed text-slate-200">{item}</p>
                 </motion.div>
-              ))}
-            </motion.div>
-          </div>
-        </section>
 
-        {/* ── CTA ─────────────────────────────────────── */}
-        <section className="mx-auto max-w-6xl px-6 py-24">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.96 }}
-            whileInView={{ opacity: 1, scale: 1 }}
-            viewport={{ once: true, margin: "-100px" }}
-            transition={{ duration: 0.6 }}
-            className="relative overflow-hidden rounded-[40px] border border-brand-100 dark:border-slate-700 bg-white dark:bg-slate-900 p-10 shadow-2xl shadow-brand-500/10 md:p-16 transition-colors"
-          >
-            <div className="absolute top-0 right-0 -mr-16 -mt-16 h-64 w-64 rounded-full bg-brand-500/10 blur-3xl" />
-            <div className="absolute bottom-0 left-0 -ml-16 -mb-16 h-64 w-64 rounded-full bg-violet-400/10 blur-3xl" />
-            <div className="absolute inset-0 bg-[linear-gradient(to_right,#8080800a_1px,transparent_1px),linear-gradient(to_bottom,#8080800a_1px,transparent_1px)] dark:bg-[linear-gradient(to_right,#ffffff04_1px,transparent_1px),linear-gradient(to_bottom,#ffffff04_1px,transparent_1px)] bg-[size:20px_20px]" />
+                <motion.h1
+                  variants={item}
+                  className="max-w-[680px] text-[3.6rem] font-medium leading-[0.94] tracking-[-0.065em] md:text-[5.1rem] lg:text-[4.55rem] 2xl:text-[5.5rem]"
+                >
+                  See your AI-built project as a{" "}
+                  <span className="text-[#6d5dfc]">living graph.</span>
+                </motion.h1>
 
-            <div className="relative flex flex-col items-start gap-8 lg:flex-row lg:items-center lg:justify-between">
-              <div className="max-w-xl space-y-4">
-                <div className="flex items-center gap-3">
-                  <CeIcon size={44} />
-                  <p className="text-sm font-bold uppercase tracking-widest text-brand-600 dark:text-brand-400">Context Engine</p>
-                </div>
-                <h2 className="text-3xl font-bold tracking-tight text-slate-950 dark:text-white md:text-4xl">
-                  Give your AI the context it actually needs.
-                </h2>
-                <p className="text-lg leading-relaxed text-slate-600 dark:text-slate-300">
-                  Open-source, self-hostable, and built for teams that move fast. Start syncing your
-                  tools in minutes and watch your knowledge graph come alive.
-                </p>
-              </div>
+                <motion.p
+                  variants={item}
+                  className="mt-7 max-w-xl text-lg font-normal leading-relaxed text-black/58 dark:text-white/55"
+                >
+                  Context Engine turns scattered agent runs, PRs, issues, chats, and decisions into
+                  a visual map of what happened, what is blocked, and what should happen next.
+                </motion.p>
 
-              <div className="flex flex-col gap-3 lg:items-end shrink-0">
-                <motion.div whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.96 }} className="relative group">
-                  <div className="absolute -inset-1 rounded-2xl bg-brand-500/30 blur-xl transition-all duration-500 group-hover:bg-brand-500/50 animate-pulse" />
+                <motion.p variants={item} className="mt-4 max-w-xl text-sm leading-relaxed text-black/42 dark:text-white/42">
+                  Explore the graph. Connect ideas. Spot gaps. Start the next human or agent with the
+                  full project state.
+                </motion.p>
+
+                <motion.div variants={item} className="mt-9 flex flex-wrap gap-3">
                   <Link
-                    to="/app"
-                    className="group flex items-center gap-2 rounded-2xl bg-brand-600 px-8 py-4 text-base font-bold text-white shadow-lg shadow-brand-500/25 transition-all duration-300 hover:bg-brand-500 relative z-10"
+                    to="/app/graph"
+                    className="group inline-flex items-center gap-3 bg-[#111113] px-6 py-3.5 text-sm font-bold text-white transition hover:bg-[#6d5dfc] dark:bg-white dark:text-black dark:hover:bg-[#a99fff]"
                   >
-                    Open the dashboard
-                    <ArrowRight className="h-5 w-5 transition-transform group-hover:translate-x-1" />
+                    Explore demo graph
+                    <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
+                  </Link>
+                  <Link
+                    to="/app/connectors"
+                    className="inline-flex items-center gap-3 border border-black/25 px-6 py-3.5 text-sm font-bold transition hover:border-black dark:border-white/25 dark:hover:border-white"
+                  >
+                    Import your project
+                    <Upload className="h-4 w-4" />
                   </Link>
                 </motion.div>
-                <p className="text-xs text-slate-400 dark:text-slate-500 text-center lg:text-right">Free · Open-source · No credit card</p>
+              </div>
+
+              <motion.div variants={item} className="mt-14 flex flex-wrap items-center gap-x-7 gap-y-3 border-t border-black/10 pt-5 dark:border-white/10">
+                <Proof icon={GitHubMark} text="Open source" />
+                <Proof icon={ShieldCheck} text="Your data stays yours" />
+                <Proof icon={TerminalSquare} text="Bring your own API key" />
+              </motion.div>
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, scale: 0.97 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ duration: 0.7, delay: 0.16 }}
+              className="flex min-h-[650px] items-center justify-center px-4 py-8 md:px-8 lg:px-10"
+            >
+              <LiveProjectGraph />
+            </motion.div>
+          </div>
+        </section>
+
+        <SourceStrip />
+
+        <section id="why-graph" className="border-b border-black/10 dark:border-white/10">
+          <div className="mx-auto grid max-w-[1500px] lg:grid-cols-[0.72fr_1.28fr]">
+            <div className="border-black/10 p-8 md:p-14 lg:border-r">
+              <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#6d5dfc]">Why graph?</p>
+              <h2 className="mt-6 text-4xl font-medium leading-[1.02] tracking-[-0.05em] md:text-6xl">
+                Every change affects something else.
+              </h2>
+              <p className="mt-7 max-w-md text-lg leading-relaxed text-black/54 dark:text-white/50">
+                Every agent run creates context. Every PR changes the plan. Every decision affects
+                future work. Context Engine connects them into one project graph you can explore,
+                edit, and hand off.
+              </p>
+            </div>
+
+            <div className="relative min-h-[500px] overflow-hidden p-7 md:p-12">
+              <div className="absolute inset-0 bg-[linear-gradient(to_right,rgba(17,17,19,0.055)_1px,transparent_1px),linear-gradient(to_bottom,rgba(17,17,19,0.055)_1px,transparent_1px)] bg-[size:42px_42px] dark:bg-[linear-gradient(to_right,rgba(255,255,255,0.05)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.05)_1px,transparent_1px)]" />
+              <GraphStory />
+            </div>
+          </div>
+        </section>
+
+        <section id="product" className="border-b border-black/10 dark:border-white/10">
+          <div className="mx-auto max-w-[1500px]">
+            <div className="grid border-b border-black/10 dark:border-white/10 lg:grid-cols-[0.72fr_1.28fr]">
+              <div className="border-black/10 p-8 md:p-14 lg:border-r">
+                <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#6d5dfc]">The product</p>
+                <h2 className="mt-6 text-4xl font-medium leading-[1.02] tracking-[-0.05em] md:text-6xl">
+                  One graph for every moving part of your project.
+                </h2>
+              </div>
+              <div className="flex items-end p-8 md:p-14">
+                <p className="max-w-2xl text-xl leading-relaxed text-black/54 dark:text-white/50">
+                  Built for solo founders, indie hackers, and AI coding-agent power users moving
+                  across Cursor, Claude Code, Codex, OpenCode, and GitHub.
+                </p>
               </div>
             </div>
-          </motion.div>
+
+            <motion.div
+              initial="hidden"
+              whileInView="visible"
+              viewport={{ once: true, margin: "-80px" }}
+              variants={container}
+              className="grid md:grid-cols-3"
+            >
+              {GRAPH_CARDS.map((card) => (
+                <motion.article
+                  key={card.number}
+                  variants={item}
+                  className="group min-h-[390px] border-b border-black/10 p-8 transition-colors hover:bg-white/60 dark:border-white/10 dark:hover:bg-white/[0.025] md:border-b-0 md:border-r md:last:border-r-0 md:p-10"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono text-xs text-black/35 dark:text-white/35">{card.number}</span>
+                    <card.icon className="h-5 w-5 text-black/35 transition-colors group-hover:text-[#6d5dfc] dark:text-white/35" />
+                  </div>
+                  <h3 className="mt-24 text-3xl font-medium tracking-[-0.035em]">{card.title}</h3>
+                  <p className="mt-5 text-base leading-relaxed text-black/52 dark:text-white/48">{card.body}</p>
+                </motion.article>
+              ))}
+            </motion.div>
+          </div>
+        </section>
+
+        <section className="border-b border-black/10 dark:border-white/10">
+          <div className="mx-auto grid max-w-[1500px] lg:grid-cols-2">
+            <div className="border-b border-black/10 p-8 dark:border-white/10 md:p-14 lg:border-b-0 lg:border-r">
+              <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#6d5dfc]">Killer use case</p>
+              <h2 className="mt-6 max-w-xl text-4xl font-medium leading-[1.02] tracking-[-0.05em] md:text-6xl">
+                Upload a coding session. Get a project graph.
+              </h2>
+              <p className="mt-7 max-w-xl text-lg leading-relaxed text-black/54 dark:text-white/50">
+                Paste a Claude, Codex, or OpenCode session. Context Engine preserves the raw source,
+                extracts decisions, tasks, blockers, and file references, then places them in the
+                project graph.
+              </p>
+              <Link to="/app/connectors" className="mt-9 inline-flex items-center gap-3 bg-[#6d5dfc] px-6 py-3.5 text-sm font-bold text-white transition hover:bg-[#5848ef]">
+                Import a session
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+            </div>
+            <SessionToGraph />
+          </div>
+        </section>
+
+        <section className="border-b border-black/10 dark:border-white/10">
+          <div className="mx-auto max-w-[1500px] px-6 py-24 md:px-10 md:py-28">
+            <div className="flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#6d5dfc]">Graph actions</p>
+                <h2 className="mt-5 text-4xl font-medium tracking-[-0.045em] md:text-6xl">Start from a useful question.</h2>
+              </div>
+              <p className="max-w-md text-black/50 dark:text-white/46">Use the graph to move the project forward—not just inspect it.</p>
+            </div>
+            <div className="mt-12 grid gap-px overflow-hidden border border-black/10 bg-black/10 dark:border-white/10 dark:bg-white/10 md:grid-cols-3">
+              {TEMPLATES.map((template) => (
+                <div key={template.title} className="group bg-[#f4f4f2] p-8 transition hover:bg-white dark:bg-[#050505] dark:hover:bg-[#0c0c0c] md:p-10">
+                  <template.icon className="h-5 w-5 text-[#6d5dfc]" />
+                  <h3 className="mt-14 text-2xl font-medium tracking-[-0.03em]">{template.title}</h3>
+                  <p className="mt-4 leading-relaxed text-black/50 dark:text-white/46">{template.body}</p>
+                  <span className="mt-8 inline-flex items-center gap-2 text-xs font-bold text-[#6d5dfc]">
+                    Run from graph <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-1" />
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="px-5 py-20 md:px-10 md:py-28">
+          <div className="relative mx-auto max-w-[1380px] overflow-hidden bg-[#111113] px-7 py-16 text-white dark:bg-white dark:text-black md:px-14 md:py-20">
+            <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_right,rgba(255,255,255,0.08)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.08)_1px,transparent_1px)] bg-[size:44px_44px] dark:bg-[linear-gradient(to_right,rgba(0,0,0,0.07)_1px,transparent_1px),linear-gradient(to_bottom,rgba(0,0,0,0.07)_1px,transparent_1px)]" />
+            <div className="relative flex flex-col gap-10 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-white/45 dark:text-black/45">
+                  Your agents move fast. Your project memory should keep up.
+                </p>
+                <h2 className="mt-5 max-w-4xl text-4xl font-medium leading-[0.98] tracking-[-0.05em] md:text-7xl">
+                  Map the project before the next change lands.
+                </h2>
+              </div>
+              <div className="flex shrink-0 flex-wrap gap-3">
+                <Link to="/app/graph" className="group inline-flex items-center gap-3 bg-white px-6 py-3.5 text-sm font-bold text-black transition hover:bg-[#a99fff] dark:bg-black dark:text-white">
+                  Explore graph
+                  <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
+                </Link>
+                <a href={GITHUB_URL} target="_blank" rel="noreferrer" className="inline-flex items-center gap-3 border border-white/30 px-6 py-3.5 text-sm font-bold dark:border-black/30">
+                  <GitHubMark className="h-4 w-4" />
+                  Star on GitHub
+                </a>
+              </div>
+            </div>
+          </div>
         </section>
       </main>
 
-      {/* ── Footer ──────────────────────────────────── */}
-      <footer className="border-t border-slate-200/50 dark:border-slate-800/50 bg-white dark:bg-slate-950 py-10">
-        <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-6 px-6 md:flex-row">
-          <div className="flex items-center gap-3">
-            <CeIcon size={30} />
-            <div>
-              <p className="text-sm font-bold text-slate-900 dark:text-white">Context Engine</p>
-              <p className="text-xs text-slate-400">© {new Date().getFullYear()} · Open-source</p>
-            </div>
-          </div>
-          <div className="flex gap-8 text-sm text-slate-500 dark:text-slate-400">
-            <a href="#" className="transition-colors hover:text-brand-600 dark:hover:text-brand-400">Documentation</a>
-            <a href="#" className="transition-colors hover:text-brand-600 dark:hover:text-brand-400">GitHub</a>
-            <a href="#" className="transition-colors hover:text-brand-600 dark:hover:text-brand-400">Privacy</a>
-          </div>
-        </div>
-      </footer>
+      <Footer />
     </div>
   );
 }
 
-function HeroStat({ icon: Icon, label, value }) {
+function Header() {
   return (
-    <div className="rounded-2xl border border-brand-100 dark:border-brand-800/50 bg-white/70 dark:bg-slate-800/70 px-4 py-3.5 shadow-sm backdrop-blur-sm transition-all hover:-translate-y-0.5 hover:border-brand-200 dark:hover:border-brand-700">
-      <div className="flex items-center gap-2 mb-1">
-        <Icon className="h-3.5 w-3.5 text-brand-500 dark:text-brand-400" />
-        <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-brand-600 dark:text-brand-400">{label}</p>
+    <header className="sticky top-0 z-50 border-b border-black/10 bg-[#f4f4f2]/90 backdrop-blur-xl dark:border-white/10 dark:bg-[#050505]/90">
+      <div className="mx-auto flex h-16 max-w-[1500px] items-center justify-between px-5 md:px-10">
+        <Link to="/" className="flex items-center gap-3">
+          <CeIcon size={32} />
+          <div>
+            <p className="text-sm font-bold leading-none">Context Engine</p>
+            <p className="mt-1 text-[9px] font-bold uppercase tracking-[0.15em] text-black/42 dark:text-white/42">
+              Project graph for AI builders
+            </p>
+          </div>
+        </Link>
+
+        <nav className="hidden items-center gap-7 text-xs font-bold text-black/50 dark:text-white/50 md:flex">
+          <a href="#why-graph" className="transition hover:text-black dark:hover:text-white">Why graph</a>
+          <a href="#product" className="transition hover:text-black dark:hover:text-white">Product</a>
+          <Link to="/app/connectors" className="transition hover:text-black dark:hover:text-white">Import</Link>
+        </nav>
+
+        <div className="flex items-center gap-3">
+          <ThemeToggle />
+          <a href={GITHUB_URL} target="_blank" rel="noreferrer" className="hidden items-center gap-2 text-xs font-bold sm:inline-flex">
+            <GitHubMark className="h-4 w-4" />
+            GitHub
+          </a>
+          <Link to="/app/graph" className="group inline-flex items-center gap-2 border border-black/25 px-4 py-2.5 text-xs font-bold transition hover:border-black dark:border-white/25 dark:hover:border-white">
+            Open graph
+            <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
+          </Link>
+        </div>
       </div>
-      <p className="text-sm font-bold text-slate-900 dark:text-white">{value}</p>
-    </div>
+    </header>
   );
 }
 
-function SpotlightCard({ children, className = "" }) {
-  const divRef = useRef(null);
-  const [isFocused, setIsFocused] = useState(false);
-  const [position, setPosition] = useState({ x: 0, y: 0 });
-  const [opacity, setOpacity] = useState(0);
+function LiveProjectGraph() {
+  const graphRef = useRef(null);
+  const draggingRef = useRef(null);
+  const [nodes, setNodes] = useState(GRAPH_NODES);
+  const [selected, setSelected] = useState("pr");
 
-  const handleMouseMove = (e) => {
-    if (!divRef.current || isFocused) return;
-    const rect = divRef.current.getBoundingClientRect();
-    setPosition({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+  const moveNode = (id, delta) => {
+    const bounds = graphRef.current?.getBoundingClientRect();
+    if (!bounds) return;
+    setNodes((current) =>
+      current.map((node) =>
+        node.id === id
+          ? {
+              ...node,
+              x: clamp(node.x + (delta.x / bounds.width) * 100, 7, 93),
+              y: clamp(node.y + (delta.y / bounds.height) * 100, 10, 90),
+            }
+          : node,
+      ),
+    );
+  };
+
+  const startDrag = (id, event) => {
+    event.preventDefault();
+    setSelected(id);
+    draggingRef.current = { id, x: event.clientX, y: event.clientY };
+  };
+
+  const continueDrag = (event) => {
+    const current = draggingRef.current;
+    if (!current) return;
+    moveNode(current.id, {
+      x: event.clientX - current.x,
+      y: event.clientY - current.y,
+    });
+    draggingRef.current = { ...current, x: event.clientX, y: event.clientY };
+  };
+
+  const stopDrag = () => {
+    draggingRef.current = null;
   };
 
   return (
-    <div
-      ref={divRef}
-      onMouseMove={handleMouseMove}
-      onFocus={() => { setIsFocused(true); setOpacity(1); }}
-      onBlur={() => { setIsFocused(false); setOpacity(0); }}
-      onMouseEnter={() => setOpacity(1)}
-      onMouseLeave={() => setOpacity(0)}
-      className={`relative overflow-hidden rounded-3xl border border-slate-200/80 dark:border-slate-700/80 bg-white dark:bg-slate-800/90 shadow-sm transition-all duration-300 hover:-translate-y-1.5 hover:border-brand-300 dark:hover:border-brand-600 hover:shadow-xl hover:shadow-brand-500/10 ${className}`}
-    >
+    <div className="w-full max-w-[900px] overflow-hidden border border-black/15 bg-[#ecece9] shadow-[0_35px_100px_rgba(17,17,19,0.14)] dark:border-white/15 dark:bg-[#090909] dark:shadow-[0_40px_110px_rgba(0,0,0,0.6)]">
+      <div className="flex items-center justify-between border-b border-black/10 px-5 py-4 dark:border-white/10">
+        <div className="flex items-center gap-3">
+          <div className="flex gap-1.5">
+            <span className="h-2 w-2 rounded-full bg-red-400" />
+            <span className="h-2 w-2 rounded-full bg-amber-400" />
+            <span className="h-2 w-2 rounded-full bg-emerald-400" />
+          </div>
+          <span className="font-mono text-[10px] text-black/45 dark:text-white/45">acme / project graph</span>
+        </div>
+        <div className="flex items-center gap-4">
+          <span className="hidden font-mono text-[9px] text-black/38 dark:text-white/38 sm:block">Drag any node</span>
+          <span className="flex items-center gap-2 text-[9px] font-bold uppercase tracking-[0.14em] text-emerald-600 dark:text-emerald-400">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+            Live
+          </span>
+        </div>
+      </div>
+
       <div
-        className="pointer-events-none absolute -inset-px opacity-0 transition duration-300 z-0"
-        style={{ opacity, background: `radial-gradient(400px circle at ${position.x}px ${position.y}px, rgba(99,102,241,0.08), transparent 40%)` }}
-      />
-      <div className="relative z-10 h-full w-full">{children}</div>
+        ref={graphRef}
+        onPointerMove={continueDrag}
+        onPointerUp={stopDrag}
+        onPointerCancel={stopDrag}
+        onPointerLeave={stopDrag}
+        className="relative aspect-[1.45/1] min-h-[470px] overflow-hidden"
+      >
+        <div className="absolute inset-0 bg-[linear-gradient(to_right,rgba(17,17,19,0.07)_1px,transparent_1px),linear-gradient(to_bottom,rgba(17,17,19,0.07)_1px,transparent_1px)] bg-[size:34px_34px] dark:bg-[linear-gradient(to_right,rgba(255,255,255,0.06)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.06)_1px,transparent_1px)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_62%_48%,rgba(109,93,252,0.13),transparent_34%)]" />
+
+        <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
+          {GRAPH_EDGES.map(([fromId, toId], index) => {
+            const from = nodes.find((node) => node.id === fromId);
+            const to = nodes.find((node) => node.id === toId);
+            if (!from || !to) return null;
+            return (
+              <g key={`${fromId}-${toId}`}>
+                <line x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke="rgba(109,93,252,0.28)" strokeWidth="0.45" vectorEffect="non-scaling-stroke" />
+                <motion.line
+                  x1={from.x}
+                  y1={from.y}
+                  x2={to.x}
+                  y2={to.y}
+                  stroke="#8173ff"
+                  strokeWidth="1.2"
+                  strokeLinecap="round"
+                  vectorEffect="non-scaling-stroke"
+                  initial={{ pathLength: 0, opacity: 0 }}
+                  animate={{ pathLength: 1, opacity: [0, 0.9, 0] }}
+                  transition={{ duration: 2.8, repeat: Infinity, delay: index * 0.35, repeatDelay: 1 }}
+                />
+              </g>
+            );
+          })}
+        </svg>
+
+        {nodes.map((node, index) => (
+          <GraphNode
+            key={node.id}
+            node={node}
+            selected={selected === node.id}
+            onStartDrag={(event) => startDrag(node.id, event)}
+            delay={index * 0.05}
+          />
+        ))}
+
+        <div className="absolute bottom-4 left-4 right-4 flex items-center justify-between border border-black/10 bg-[#f7f7f4]/90 px-4 py-3 backdrop-blur dark:border-white/10 dark:bg-[#111113]/90">
+          <div className="flex min-w-0 items-center gap-3">
+            <Layers3 className="h-4 w-4 shrink-0 text-[#6d5dfc]" />
+            <p className="truncate text-[10px] font-bold">
+              {nodes.find((node) => node.id === selected)?.label}{" "}
+              <span className="font-normal text-black/42 dark:text-white/42">
+                · {nodes.find((node) => node.id === selected)?.meta}
+              </span>
+            </p>
+          </div>
+          <span className="hidden font-mono text-[9px] text-black/35 dark:text-white/35 sm:block">7 nodes · 7 links</span>
+        </div>
+      </div>
     </div>
   );
 }
 
-function Logos() {
+function GraphNode({ node, selected, onStartDrag, delay }) {
+  const Icon = node.icon;
+
   return (
-    <>
-      <LogoItem name="Slack">
-        <svg role="img" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" className="h-7 w-7">
-          <title>Slack</title>
-          <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zm1.27 0a2.527 2.527 0 0 1 2.521-2.52 2.528 2.528 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zm0 1.27a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zm10.122 2.523a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.835zm-1.27 0a2.528 2.528 0 0 1-2.521 2.521 2.528 2.528 0 0 1-2.521-2.521V2.522A2.528 2.528 0 0 1 15.166 0a2.528 2.528 0 0 1 2.52 2.522v6.313zM15.166 18.958a2.528 2.528 0 0 1 2.52 2.522A2.528 2.528 0 0 1 15.166 24a2.528 2.528 0 0 1-2.521-2.522v-2.52h2.521zm0-1.27a2.528 2.528 0 0 1-2.52-2.521 2.528 2.528 0 0 1 2.52-2.521h6.313A2.528 2.528 0 0 1 24 15.166a2.528 2.528 0 0 1-2.522 2.52h-6.313z" />
-        </svg>
-      </LogoItem>
-      <LogoItem name="GitHub">
-        <svg role="img" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" className="h-7 w-7">
-          <title>GitHub</title>
-          <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" />
-        </svg>
-      </LogoItem>
-      <LogoItem name="Google Drive">
-        <img src={gdriveIcon} alt="" className="h-8 w-8 object-contain" />
-      </LogoItem>
-      <LogoItem name="Gmail">
-        <img src={gmailIcon} alt="" className="h-8 w-8 object-contain" />
-      </LogoItem>
-      <LogoItem name="Codex">
-        <img src={openaiIcon} alt="" className="h-7 w-7 object-contain dark:invert" />
-      </LogoItem>
-      <LogoItem name="Claude">
-        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#D97757] text-xs font-black text-white">A</span>
-      </LogoItem>
-      <LogoItem name="OpenCode">
-        <img src={opencodeIcon} alt="" className="h-8 w-8 object-contain rounded" />
-      </LogoItem>
-    </>
+    <motion.button
+      type="button"
+      onPointerDown={onStartDrag}
+      initial={{ opacity: 0, scale: 0.8 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ duration: 0.35, delay }}
+      className={`absolute z-10 cursor-grab select-none border px-3 py-2.5 text-left shadow-lg active:cursor-grabbing ${
+        selected
+          ? "border-[#6d5dfc] bg-white ring-4 ring-[#6d5dfc]/10 dark:bg-[#171719]"
+          : "border-black/15 bg-[#f8f8f5] hover:border-[#6d5dfc]/60 dark:border-white/15 dark:bg-[#111113]"
+      }`}
+      style={{ left: `${node.x}%`, top: `${node.y}%`, x: "-50%", y: "-50%", touchAction: "none" }}
+    >
+      <div className="flex items-center gap-2.5">
+        <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${nodeTone(node.tone)}`}>
+          <Icon className="h-4 w-4" />
+        </span>
+        <span>
+          <span className="block whitespace-nowrap text-[10px] font-bold">{node.label}</span>
+          <span className="mt-0.5 block whitespace-nowrap font-mono text-[8px] text-black/38 dark:text-white/38">{node.meta}</span>
+        </span>
+      </div>
+    </motion.button>
   );
 }
 
-function LogoItem({ name, children }) {
+function GraphStory() {
+  const story = [
+    { label: "Claude session", icon: Bot, tone: "violet" },
+    { label: "Decision", icon: Lightbulb, tone: "amber" },
+    { label: "PR #184", icon: GitPullRequest, tone: "blue" },
+    { label: "Broken docs", icon: FileText, tone: "red" },
+    { label: "Blocker", icon: AlertTriangle, tone: "red" },
+    { label: "Next task", icon: Sparkles, tone: "green" },
+  ];
+
   return (
-    <div className="flex items-center gap-3 text-xl font-bold tracking-tight text-slate-700 dark:text-slate-300">
-      <span className="flex h-9 w-9 shrink-0 items-center justify-center">
+    <div className="relative z-10 flex min-h-[400px] flex-col justify-center">
+      <div className="grid gap-3 sm:grid-cols-3">
+        {story.map((node, index) => (
+          <div key={node.label} className="relative">
+            <motion.div
+              initial={{ opacity: 0, y: 16 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true }}
+              transition={{ duration: 0.4, delay: index * 0.1 }}
+              className="flex min-h-28 items-center gap-3 border border-black/12 bg-[#f7f7f4]/90 p-4 dark:border-white/12 dark:bg-[#111113]/90"
+            >
+              <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${nodeTone(node.tone)}`}>
+                <node.icon className="h-4 w-4" />
+              </span>
+              <span className="text-sm font-bold">{node.label}</span>
+            </motion.div>
+            {index < story.length - 1 ? (
+              <ArrowRight className="absolute -right-2.5 top-1/2 z-20 hidden h-5 w-5 -translate-y-1/2 rounded-full bg-[#6d5dfc] p-1 text-white sm:block" />
+            ) : null}
+          </div>
+        ))}
+      </div>
+      <p className="mt-7 text-center font-mono text-[10px] uppercase tracking-[0.15em] text-black/38 dark:text-white/38">
+        Session → decision → implementation → drift → blocker → next action
+      </p>
+    </div>
+  );
+}
+
+function SessionToGraph() {
+  return (
+    <div className="relative min-h-[560px] overflow-hidden p-8 md:p-14">
+      <div className="absolute inset-0 bg-[linear-gradient(to_right,rgba(17,17,19,0.055)_1px,transparent_1px),linear-gradient(to_bottom,rgba(17,17,19,0.055)_1px,transparent_1px)] bg-[size:42px_42px] dark:bg-[linear-gradient(to_right,rgba(255,255,255,0.05)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.05)_1px,transparent_1px)]" />
+      <div className="relative z-10 flex h-full flex-col justify-center">
+        <div className="border border-black/12 bg-[#f7f7f4] p-5 dark:border-white/12 dark:bg-[#111113]">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <span className="flex h-9 w-9 items-center justify-center bg-[#d97757] text-xs font-black text-white">A</span>
+              <div>
+                <p className="text-sm font-bold">Claude session</p>
+                <p className="font-mono text-[9px] text-black/38 dark:text-white/38">auth-refactor.md</p>
+              </div>
+            </div>
+            <span className="text-[9px] font-bold uppercase tracking-[0.14em] text-emerald-600 dark:text-emerald-400">Parsed</span>
+          </div>
+          <div className="mt-5 space-y-2 font-mono text-[10px] leading-relaxed text-black/48 dark:text-white/48">
+            <p>Decision: move auth to session tokens</p>
+            <p>Blocker: migration schema is not approved</p>
+            <p>Next: update docs after PR #184 lands</p>
+          </div>
+        </div>
+
+        <div className="mx-auto flex h-16 w-px items-center justify-center bg-[#6d5dfc]/30">
+          <motion.span
+            className="h-2 w-2 rounded-full bg-[#6d5dfc]"
+            animate={{ y: [-24, 24] }}
+            transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
+          />
+        </div>
+
+        <div className="grid grid-cols-3 gap-2">
+          <ExtractedNode icon={Lightbulb} label="Decision" />
+          <ExtractedNode icon={AlertTriangle} label="Blocker" />
+          <ExtractedNode icon={GitPullRequest} label="PR link" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ExtractedNode({ icon: Icon, label }) {
+  return (
+    <div className="border border-black/12 bg-[#f7f7f4] p-4 text-center dark:border-white/12 dark:bg-[#111113]">
+      <span className="mx-auto flex h-9 w-9 items-center justify-center rounded-full bg-[#6d5dfc]/12 text-[#6d5dfc]">
+        <Icon className="h-4 w-4" />
+      </span>
+      <p className="mt-3 text-[10px] font-bold">{label}</p>
+    </div>
+  );
+}
+
+function Proof({ icon: Icon, text }) {
+  return (
+    <span className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.12em] text-black/48 dark:text-white/48">
+      <Icon className="h-3.5 w-3.5 text-[#6d5dfc]" />
+      {text}
+    </span>
+  );
+}
+
+function SourceStrip() {
+  const sources = [
+    { name: "Codex", icon: <img src={openaiIcon} alt="" className="h-5 w-5 object-contain dark:invert" />, accent: "from-emerald-400/25 to-cyan-400/10" },
+    { name: "Claude", icon: <span className="flex h-5 w-5 items-center justify-center bg-[#d97757] text-[9px] font-black text-white">A</span>, accent: "from-orange-400/25 to-amber-400/10" },
+    { name: "OpenCode", icon: <img src={opencodeIcon} alt="" className="h-5 w-5 rounded object-contain" />, accent: "from-slate-400/25 to-white/5" },
+    { name: "GitHub", icon: <GitBranch className="h-5 w-5" />, accent: "from-violet-400/25 to-fuchsia-400/10" },
+    { name: "Slack", icon: <MessageSquare className="h-5 w-5" />, accent: "from-sky-400/25 to-blue-400/10" },
+    { name: "Google Drive", icon: <img src={gdriveIcon} alt="" className="h-5 w-5 object-contain" />, accent: "from-emerald-400/25 to-yellow-400/10" },
+    { name: "Gmail", icon: <img src={gmailIcon} alt="" className="h-5 w-5 object-contain" />, accent: "from-red-400/25 to-orange-400/10" },
+  ];
+
+  return (
+    <section className="overflow-hidden border-b border-black/10 bg-white/45 dark:border-white/10 dark:bg-white/[0.025]">
+      <div className="mx-auto flex max-w-[1500px] flex-col md:flex-row">
+        <div className="relative z-10 flex shrink-0 items-center gap-4 border-b border-black/10 bg-[#f4f4f2] px-6 py-5 dark:border-white/10 dark:bg-[#080808] md:w-72 md:border-b-0 md:border-r md:px-10">
+          <span className="source-orbit relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[#6d5dfc]/40">
+            <span className="h-2 w-2 rounded-full bg-[#6d5dfc] shadow-[0_0_12px_#6d5dfc]" />
+            <span className="absolute -top-1 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-cyan-400" />
+            <span className="absolute bottom-0 left-0 h-1.5 w-1.5 rounded-full bg-violet-400" />
+          </span>
+          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-600 dark:text-neutral-200">Graph sources</p>
+        </div>
+        <div className="relative min-w-0 flex-1 overflow-hidden py-3 [mask-image:linear-gradient(to_right,transparent,black_5%,black_95%,transparent)]">
+          <div className="source-flow flex w-max items-center">
+            {[0, 1].map((group) => (
+              <div key={group} className="flex shrink-0 items-center gap-3 px-3" aria-hidden={group === 1}>
+                {sources.map((source, index) => (
+                  <Source key={`${group}-${source.name}`} name={source.name} accent={source.accent} delay={index * -0.55}>
+                    {source.icon}
+                  </Source>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function Source({ name, children, accent, delay }) {
+  return (
+    <div className="group flex min-w-max items-center gap-3 border border-slate-300/80 bg-white/80 px-4 py-3 text-xs font-bold text-slate-800 shadow-sm dark:border-white/15 dark:bg-[#111113] dark:text-white">
+      <span
+        className={`source-icon-float flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br ${accent} text-slate-800 ring-1 ring-black/5 dark:text-white dark:ring-white/10`}
+        style={{ animationDelay: `${delay}s` }}
+      >
         {children}
       </span>
-      <span className="leading-none">{name}</span>
+      <span className="pr-1">{name}</span>
+      <span className="h-1.5 w-1.5 rounded-full bg-[#6d5dfc] opacity-40 transition-opacity group-hover:opacity-100" />
     </div>
   );
 }
 
-function ContextGraphAnimation() {
-  const ref = useRef(null);
-  const isInView = useInView(ref, { margin: "100px" });
-
+function Footer() {
   return (
-    <div ref={ref} className="relative w-full aspect-square rounded-[28px] bg-slate-950 overflow-hidden shadow-[inset_0_0_80px_rgba(0,0,0,0.7)] border border-slate-800">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(79,70,229,0.22)_0%,transparent_65%)]" />
-      <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.035)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.035)_1px,transparent_1px)] bg-[size:28px_28px] [mask-image:radial-gradient(ellipse_65%_65%_at_50%_50%,#000_20%,transparent_100%)]" />
-
-      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-        <motion.div animate={isInView ? { rotate: 360 } : false} transition={{ duration: 28, repeat: Infinity, ease: "linear" }} className="absolute w-52 h-52 border border-brand-500/25 rounded-full border-dashed" />
-        <motion.div animate={isInView ? { rotate: -360 } : false} transition={{ duration: 45, repeat: Infinity, ease: "linear" }} className="absolute w-[22rem] h-[22rem] border border-brand-400/08 rounded-full" />
+    <footer className="border-t border-black/10 dark:border-white/10">
+      <div className="mx-auto flex max-w-[1500px] flex-col gap-6 px-6 py-10 md:flex-row md:items-center md:justify-between md:px-10">
+        <div className="flex items-center gap-3">
+          <CeIcon size={28} />
+          <div>
+            <p className="text-sm font-bold">Context Engine</p>
+            <p className="text-[10px] text-black/42 dark:text-white/42">The open-source project graph for AI builders.</p>
+          </div>
+        </div>
+        <div className="flex gap-6 text-xs font-bold text-black/45 dark:text-white/45">
+          <Link to="/app/graph" className="transition hover:text-black dark:hover:text-white">Graph</Link>
+          <Link to="/app/connectors" className="transition hover:text-black dark:hover:text-white">Import</Link>
+          <a href={GITHUB_URL} target="_blank" rel="noreferrer" className="transition hover:text-black dark:hover:text-white">GitHub</a>
+        </div>
       </div>
-
-      <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 400 400" fill="none">
-        <PulseLine x1="100" y1="100" x2="200" y2="200" delay={0} active={isInView} />
-        <PulseLine x1="300" y1="110" x2="200" y2="200" delay={0.7} active={isInView} />
-        <PulseLine x1="110" y1="300" x2="200" y2="200" delay={1.4} active={isInView} />
-        <PulseLine x1="290" y1="290" x2="200" y2="200" delay={2.1} active={isInView} />
-      </svg>
-
-      <GraphNode x="25%" y="25%" delay={0} icon={<Database className="w-5 h-5" />} active={isInView} />
-      <GraphNode x="75%" y="27.5%" delay={1} icon={<Cpu className="w-5 h-5" />} active={isInView} />
-      <GraphNode x="27.5%" y="75%" delay={2} icon={<BookOpen className="w-5 h-5" />} active={isInView} />
-      <GraphNode x="72.5%" y="72.5%" delay={1.5} icon={<GitBranch className="w-5 h-5" />} active={isInView} />
-
-      {/* Center — use the icon */}
-      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-        <motion.div
-          animate={isInView ? { boxShadow: ["0 0 20px rgba(79,70,229,0.3)", "0 0 60px rgba(99,102,241,0.8)", "0 0 20px rgba(79,70,229,0.3)"] } : false}
-          transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
-          className="z-10 rounded-[22px]"
-        >
-          <CeIcon size={88} className="drop-shadow-[0_0_18px_rgba(99,102,241,0.6)]" />
-        </motion.div>
-      </div>
-
-      <div className="absolute bottom-5 inset-x-0 text-center pointer-events-none">
-        <p className="text-[10px] uppercase font-bold tracking-[0.3em] text-brand-400/80">Knowledge Graph Active</p>
-      </div>
-    </div>
+    </footer>
   );
 }
 
-function GraphNode({ x, y, icon, delay = 0, active = true }) {
-  return (
-    <motion.div
-      className="absolute flex h-14 w-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-2xl border border-white/10 bg-slate-800/80 text-brand-300 shadow-[0_0_20px_rgba(79,70,229,0.15)] backdrop-blur-md"
-      style={{ left: x, top: y }}
-      initial={{ y: 0 }}
-      animate={active ? { y: [-6, 6, -6], rotateZ: [-2, 2, -2] } : { y: 0, rotateZ: 0 }}
-      transition={{ duration: 5, repeat: Infinity, ease: "easeInOut", delay }}
-    >
-      <div className="opacity-90">{icon}</div>
-    </motion.div>
-  );
+function nodeTone(tone) {
+  const tones = {
+    violet: "bg-violet-500/12 text-violet-600 dark:text-violet-300",
+    amber: "bg-amber-500/14 text-amber-700 dark:text-amber-300",
+    blue: "bg-blue-500/12 text-blue-600 dark:text-blue-300",
+    red: "bg-red-500/12 text-red-600 dark:text-red-300",
+    green: "bg-emerald-500/12 text-emerald-600 dark:text-emerald-300",
+    slate: "bg-slate-500/12 text-slate-600 dark:text-slate-300",
+  };
+  return tones[tone] || tones.slate;
 }
 
-function PulseLine({ x1, y1, x2, y2, delay, active = true }) {
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function GitHubMark({ className = "" }) {
   return (
-    <>
-      <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="rgba(99,102,241,0.12)" strokeWidth="1.5" />
-      <motion.line
-        x1={x1} y1={y1} x2={x2} y2={y2}
-        stroke="rgba(129,140,248,0.85)"
-        strokeWidth="2.5"
-        strokeLinecap="round"
-        style={{ filter: "drop-shadow(0 0 7px rgba(129,140,248,0.8))" }}
-        initial={{ pathLength: 0, opacity: 0 }}
-        animate={active ? { pathLength: 1, opacity: [0, 1, 0] } : { pathLength: 0, opacity: 0 }}
-        transition={{ duration: 2.2, repeat: Infinity, ease: "circIn", delay }}
-      />
-    </>
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className={className}>
+      <path d="M12 .7C5.6.7.5 5.9.5 12.3c0 5.1 3.3 9.5 7.9 11 .6.1.8-.3.8-.6v-2.2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.4-1.3-1.8-1.3-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.4-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6a11.6 11.6 0 0 0 7.9-11C23.5 5.9 18.4.7 12 .7Z" />
+    </svg>
   );
 }

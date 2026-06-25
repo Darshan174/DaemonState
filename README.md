@@ -1,12 +1,17 @@
 # Context Engine
 
-Open-source structured context infrastructure for AI systems. Turns scattered product knowledge into a living semantic graph — extract facts, explore relationships, detect gaps, and feed AI agents grounded context.
+The open-source project graph for AI-native builders.
+
+Context Engine turns agent runs, PRs, issues, chats, decisions, and documents
+into a visual map of what happened, what is blocked, and what should happen
+next.
 
 ---
 
 ## Table of Contents
 
 - [What It Is](#what-it-is)
+- [Who It Is For](#who-it-is-for)
 - [Product Tour](#product-tour)
 - [Quick Start — Docker](#quick-start--docker)
 - [Quick Start — Bare Metal](#quick-start--bare-metal)
@@ -26,29 +31,65 @@ Open-source structured context infrastructure for AI systems. Turns scattered pr
 
 ## What It Is
 
-Context Engine ingests documents from local files, AI coding sessions, Slack, GitHub, Gmail, and Google Drive. It extracts structured facts (decisions, risks, features, tasks, blockers) into a source-backed knowledge graph you can query, visualize, and feed directly to AI agents.
+Context Engine is a visual project map between your codebase, your project
+tools, and the AI agents changing them.
+
+Import Codex, Claude Code, and OpenCode sessions; connect GitHub and other
+project sources; then turn that activity into a source-backed view of:
+
+- what changed;
+- what is blocked or unresolved;
+- what agents decided or attempted;
+- where code, issues, and documentation disagree;
+- what the next human or agent should do;
+- a clean context packet for the next agent run.
+
+The project graph is the primary navigation surface. Users can explore
+relationships between sessions, decisions, tasks, risks, issues, PRs, and
+documents, then act from that graph.
 
 **Five built-in AI agents:**
-1. **Ingestion Agent** — reads raw sources → clean entities
-2. **Relationship Agent** — finds hidden links across sources
-3. **Gap Detector** — surfaces missing owners, blocked items, isolated nodes
-4. **Ask / Strategy Agent** — answers questions over the full graph with citations
-5. **Context Pack Agent** — generates ready-to-paste handoff prompts for coding agents
+1. **Ingestion Agent** — turns raw project activity into clean entities.
+2. **Relationship Agent** — links sessions, decisions, tasks, code, and sources.
+3. **Gap Detector** — surfaces missing owners, blockers, and disconnected work.
+4. **Ask / Strategy Agent** — answers project-state questions with citations.
+5. **Context Pack Agent** — generates a focused handoff for the next coding-agent run.
 
 Works fully offline with regex extraction. Plug in any LLM key to unlock AI-powered extraction and answers.
 
 ---
 
+## Who It Is For
+
+The first target is intentionally narrow:
+
+**Solo founders and tiny teams using AI coding agents heavily.**
+
+These teams move between Cursor, Claude Code, Codex, GitHub, Slack, and local
+files. Decisions and implementation details become fragmented across sessions,
+PRs, issues, and chat. Context Engine exists to reconstruct the current state of
+the project before the next person or agent starts work.
+
+It is not positioned as enterprise search, a generic company knowledge base, or
+an all-purpose RAG platform.
+
+See [Product Positioning](docs/product-positioning.md) for the wedge, daily-use
+test, and product boundaries.
+
+---
+
 ## Product Tour
 
-Run the demo seed, then start in **Board**. Context is grouped by source family,
-while the inspector carries provenance, relationship evidence, confidence, and
-review state.
+Run the demo seed, then start in **Board** to inspect the current state of work.
+The graph groups decisions, tasks, risks, PRs, issues, and AI sessions while the
+inspector carries provenance, relationship evidence, confidence, and review
+state.
 
 ![Board graph with relationship inspector](docs/assets/board-inspector-demo.jpg)
 
-Ask questions with retrieval controls. Answers return a stable `query.v1`
-response and a visible facts-used trace instead of a black-box summary.
+Ask questions such as “What is blocked?”, “What changed in auth?”, or “What
+should the next agent know?” Answers return a stable `query.v1` response and a
+visible facts-used trace instead of a black-box summary.
 
 ![Ask UI with facts-used trace](docs/assets/query-trace-demo.jpg)
 
@@ -215,6 +256,7 @@ The app auto-creates all tables on first start. No migration tool needed for a f
 Launch-facing docs:
 
 - [Architecture](docs/architecture.md)
+- [Product Positioning](docs/product-positioning.md)
 - [Connectors](docs/connectors.md)
 - [AI Context](docs/ai-context.md)
 - [Board vs Explore](docs/board-vs-explore.md)
