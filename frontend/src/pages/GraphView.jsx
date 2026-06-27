@@ -89,7 +89,7 @@ const SEV_PILL = {
   critical: "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400",
   high:     "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400",
   medium:   "bg-yellow-100 dark:bg-yellow-900/40 text-yellow-700 dark:text-yellow-400",
-  low:      "bg-slate-100 dark:bg-slate-700 text-slate-500",
+  low:      "bg-slate-100 dark:bg-black text-slate-500",
 };
 
 // Status → card border + background tint
@@ -128,8 +128,8 @@ const TEMPORAL_BADGE = { current: "Now", future: "Next", past: "Past", unknown: 
 const TEMPORAL_META = {
   current: { label: "Now",  pill: "bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-400" },
   future:  { label: "Next", pill: "bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-400" },
-  past:    { label: "Past", pill: "bg-slate-100 dark:bg-slate-700 text-slate-500" },
-  unknown: { label: "Unknown", pill: "bg-slate-100 dark:bg-slate-700 text-slate-400" },
+  past:    { label: "Past", pill: "bg-slate-100 dark:bg-black text-slate-500" },
+  unknown: { label: "Unknown", pill: "bg-slate-100 dark:bg-black text-slate-400" },
 };
 
 // Edge origin → visual style
@@ -141,15 +141,16 @@ const EDGE_ORIGIN_STYLE = {
   human_verified:{ lineStyle: "solid", width: 2.4, opacity: 0.88, label: "Human Verified", color: "#059669" },
 };
 
+const BOARD_MAX_ZOOM = 1.12;
 const LOD_MACRO_ZOOM = 0.58;
 const LOD_CARD_ZOOM = BOARD_READABLE_ZOOM;
 const LOD_NODE_CLASSES = "lod-macro lod-compact lod-card";
 const LOD_EDGE_CLASSES = "lod-macro-edge lod-detail-edge";
-const COMPONENT_CARD_WIDTH = 236;
-const COMPONENT_CARD_HEIGHT = 92;
+const COMPONENT_CARD_WIDTH = 280;
+const COMPONENT_CARD_HEIGHT = 112;
 const COMPONENT_CARD_TEXT_MAX_WIDTH = COMPONENT_CARD_WIDTH - 36;
-const CARD_OVERLAY_TITLE_PX = 12;
-const CARD_OVERLAY_META_PX = 11;
+const CARD_OVERLAY_TITLE_PX = 11;
+const CARD_OVERLAY_META_PX = 9.5;
 const GROUP_HEADER_HEIGHT_PX = 30;
 const GROUP_HUB_CHIP_HEIGHT_PX = 42;
 const GROUP_HEADER_FLOAT_GAP_PX = 10;
@@ -172,10 +173,10 @@ const SOURCE_TYPE_ICONS = {
 };
 
 const SOURCE_FAMILY_META = {
-  github: { label: "GitHub", icon: GitPullRequest, color: "#24292e", bg: "bg-slate-100 dark:bg-slate-700", text: "text-slate-700 dark:text-slate-200" },
+  github: { label: "GitHub", icon: GitPullRequest, color: "#24292e", bg: "bg-slate-100 dark:bg-black", text: "text-slate-700 dark:text-neutral-200" },
   agent: { label: "AI Session", icon: Bot, color: "#7c3aed", bg: "bg-violet-100 dark:bg-violet-900/30", text: "text-violet-700 dark:text-violet-300" },
   communication: { label: "Comms", icon: MessageCircle, color: "#0ea5e9", bg: "bg-sky-100 dark:bg-sky-900/30", text: "text-sky-700 dark:text-sky-300" },
-  local: { label: "Local", icon: FileText, color: "#64748b", bg: "bg-slate-100 dark:bg-slate-700", text: "text-slate-600 dark:text-slate-300" },
+  local: { label: "Local", icon: FileText, color: "#64748b", bg: "bg-slate-100 dark:bg-black", text: "text-slate-600 dark:text-neutral-300" },
   other: { label: "Source", icon: Layers3, color: "#14b8a6", bg: "bg-teal-100 dark:bg-teal-900/30", text: "text-teal-700 dark:text-teal-300" },
 };
 
@@ -227,8 +228,53 @@ function shortLabel(value, maxWords = 5) {
 function compactCardText(value, maxChars = 80) {
   const clean = String(value || "").replace(/\s+/g, " ").trim();
   if (!clean) return "";
-  const truncated = clean.length > maxChars ? `${clean.slice(0, maxChars - 3).trim()}...` : clean;
-  return truncated;
+  if (clean.length <= maxChars) return clean;
+  const clipped = clean.slice(0, Math.max(0, maxChars - 3)).trim();
+  const boundary = clipped.search(/\s+\S*$/);
+  const atWord = boundary > Math.floor(maxChars * 0.55) ? clipped.slice(0, boundary).trim() : clipped;
+  return `${atWord.replace(/[,:;./\\-]+$/, "").trim()}...`;
+}
+
+function cleanDisplayFragment(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .replace(/^\[[^\]]+\]\s*/i, "")
+    .replace(/^`?\/?`?\s*(Task|Note|Status|Decision|Blocker)\s*:\s*/i, "$1: ")
+    .replace(/^[,.;:)\]\s\/-]+/, "")
+    .trim();
+}
+
+function isWeakFragment(value) {
+  const text = cleanDisplayFragment(value);
+  if (!text) return true;
+  if (text.length < 12) return true;
+  if (/^[a-z]\s*[,.;:)/]/i.test(text)) return true;
+  if (/^[a-z]{1,2}\s*[/)]/.test(text)) return true;
+  if (/^[,.;:)]/.test(String(value || "").trim())) return true;
+  const opens = (text.match(/\(/g) || []).length;
+  const closes = (text.match(/\)/g) || []).length;
+  return closes > opens;
+}
+
+function sentenceCase(value) {
+  const text = cleanDisplayFragment(value);
+  if (!text) return "";
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function toolLabel(value) {
+  const raw = String(value || "").replace(/_/g, " ").trim();
+  if (!raw) return "AI";
+  if (/codex/i.test(raw)) return "Codex";
+  if (/claude/i.test(raw)) return "Claude";
+  if (/opencode|open code/i.test(raw)) return "OpenCode";
+  return raw.replace(/\b\w/g, (m) => m.toUpperCase());
+}
+
+function factKindLabel(component = {}, fallback = "Context") {
+  const raw = String(component.fact_type || component.model_name || fallback).replace(/_/g, " ").trim();
+  if (/session root/i.test(raw)) return "Session";
+  return raw ? raw.replace(/\b\w/g, (m) => m.toUpperCase()) : fallback;
 }
 
 function stripSlackNoise(text, channel = "") {
@@ -472,20 +518,26 @@ function connectorCardParts(component = {}, cleanName = "") {
   }
 
   if (kind === "agent") {
-    const tool = meta.tool || meta.agent || "";
+    const tool = toolLabel(meta.tool || meta.agent || "");
     const session = meta.session_id ? `…${String(meta.session_id).slice(-6)}` : "";
+    const rawTitle = stripModelPrefix(component.display_title || cleanName);
+    const readableTitle = isWeakFragment(rawTitle)
+      ? `${factKindLabel(component)} from ${tool} session`
+      : sentenceCase(rawTitle);
+    const readableSnippet = isWeakFragment(valueSnippet) || valueSnippet === readableTitle ? "" : valueSnippet;
     return {
-      title: compactCardText(stripModelPrefix(component.display_title || cleanName), 54) || "AI session",
+      title: compactCardText(readableTitle, 76) || `${tool} session`,
       context: [tool, session].filter(Boolean).join(" · "),
-      snippet: valueSnippet,
+      snippet: readableSnippet,
     };
   }
 
   if (kind === "local") {
     const path = meta.path || meta.filename || "";
     const fileName = path ? String(path).split("/").pop() : "";
+    const rawTitle = stripModelPrefix(component.display_title || cleanName);
     return {
-      title: compactCardText(stripModelPrefix(component.display_title || cleanName), 54) || fileName || "Document",
+      title: compactCardText(isWeakFragment(rawTitle) ? `Document fact from ${fileName || "local source"}` : sentenceCase(rawTitle), 76) || fileName || "Document",
       context: fileName && !cleanName.includes(fileName) ? fileName : "",
       snippet: valueSnippet,
     };
@@ -503,7 +555,11 @@ function buildComponentCardContent(component = {}, cleanName = "", modelName = "
   if (connector) {
     ({ title, context = "", snippet: detail = "" } = connector);
   } else {
-    title = compactCardText(stripModelPrefix(component.display_title || cleanName), 56) || shortLabel(cleanName, 6);
+    const rawTitle = stripModelPrefix(component.display_title || cleanName);
+    title = compactCardText(
+      isWeakFragment(rawTitle) ? `${factKindLabel(component)} from ${sourceFamilyLabel(component)}` : sentenceCase(rawTitle),
+      76,
+    ) || shortLabel(cleanName, 6);
     const domain = usefulDomainLabel(component, modelName);
     if (domain && !String(title).toLowerCase().includes(domain.toLowerCase())) {
       context = domain;
@@ -516,15 +572,15 @@ function buildComponentCardContent(component = {}, cleanName = "", modelName = "
   }
 
   const cardLines = boardMode
-    ? [title, context || detail].map((line) => compactCardText(line, 72)).filter(Boolean).slice(0, 2)
+    ? [title, context, detail].map((line) => compactCardText(line, 98)).filter(Boolean).slice(0, 3)
     : [title, context, detail, componentAttentionBadge(component)]
-        .map((line) => compactCardText(line, 72))
+        .map((line) => compactCardText(line, 98))
         .filter(Boolean)
-        .slice(0, 2);
+        .slice(0, 3);
   const cardLabel = cardLines.join("\n");
-  const compactLabel = compactCardText(title, 40) || shortLabel(cleanName, 5);
+  const compactLabel = compactCardText(title, 54) || shortLabel(cleanName, 5);
 
-  return { displayName: title, compactLabel, cardLabel };
+  return { displayName: title, compactLabel, cardLabel, cardTitle: title, cardContext: context, cardDetail: detail };
 }
 
 function usefulDomainLabel(component = {}, modelName = "") {
@@ -568,7 +624,7 @@ function sourceFamilyLabel(component = {}) {
 function componentVisuals(component = {}, isGap = false) {
   if (isGap) {
     return {
-      bg: "rgba(239,68,68,0.10)",
+      bg: "#fff1f2",
       border: "#ef4444",
       stripe: "#ef4444",
     };
@@ -578,18 +634,18 @@ function componentVisuals(component = {}, isGap = false) {
   const family = sourceFamily(component);
   const status = String(component.status || "").toLowerCase();
   const byKind = {
-    github: { bg: "rgba(110,118,129,0.11)", border: "#6e7681", stripe: "#8b949e" },
-    slack: { bg: "rgba(29,155,209,0.12)", border: "#1d9bd1", stripe: "#36c5f0" },
-    gmail: { bg: "rgba(56,189,248,0.12)", border: "#38bdf8", stripe: "#7dd3fc" },
-    agent: { bg: "rgba(124,58,237,0.13)", border: "#8b5cf6", stripe: "#a78bfa" },
-    local: { bg: "rgba(148,163,184,0.10)", border: "#94a3b8", stripe: "#cbd5e1" },
+    github: { bg: "#f8fafc", border: "#6e7681", stripe: "#8b949e" },
+    slack: { bg: "#f0f9ff", border: "#1d9bd1", stripe: "#36c5f0" },
+    gmail: { bg: "#f0f9ff", border: "#38bdf8", stripe: "#7dd3fc" },
+    agent: { bg: "#f5f3ff", border: "#8b5cf6", stripe: "#a78bfa" },
+    local: { bg: "#f8fafc", border: "#94a3b8", stripe: "#cbd5e1" },
   };
   const byFamily = {
-    github: { bg: "rgba(110,118,129,0.11)", border: "#6e7681", stripe: "#8b949e" },
-    agent: { bg: "rgba(124,58,237,0.13)", border: "#8b5cf6", stripe: "#a78bfa" },
-    communication: { bg: "rgba(29,155,209,0.12)", border: "#1d9bd1", stripe: "#36c5f0" },
-    local: { bg: "rgba(148,163,184,0.10)", border: "#94a3b8", stripe: "#cbd5e1" },
-    other: { bg: "rgba(148,163,184,0.10)", border: "#94a3b8", stripe: "#cbd5e1" },
+    github: { bg: "#f8fafc", border: "#6e7681", stripe: "#8b949e" },
+    agent: { bg: "#f5f3ff", border: "#8b5cf6", stripe: "#a78bfa" },
+    communication: { bg: "#f0f9ff", border: "#1d9bd1", stripe: "#36c5f0" },
+    local: { bg: "#f8fafc", border: "#94a3b8", stripe: "#cbd5e1" },
+    other: { bg: "#f8fafc", border: "#94a3b8", stripe: "#cbd5e1" },
   };
   const palette = byKind[kind] || byFamily[family] || byFamily.other;
 
@@ -602,7 +658,7 @@ function componentVisuals(component = {}, isGap = false) {
   return palette;
 }
 
-function fitGraphViewport(cy, viewMode, graphLayout = "board", { preferReadableBoard = true } = {}) {
+function fitGraphViewport(cy, viewMode, graphLayout = "board", { preferReadableBoard = false } = {}) {
   if (!cy) return;
   const padding = viewMode === "repo" ? 72 : 24;
   cy.resize();
@@ -1308,7 +1364,7 @@ export default function GraphView() {
         const groupKey = isExplore ? sourceKind(c) : groupForComponent(c);
         componentGroupMap.set(c.id, groupKey);
         const cleanName = stripModelPrefix(c.name);
-        const { compactLabel, cardLabel } = buildComponentCardContent(c, cleanName, mName, { boardMode: isBoard });
+        const { displayName, compactLabel, cardLabel, cardTitle, cardContext, cardDetail } = buildComponentCardContent(c, cleanName, mName, { boardMode: isBoard });
         const relationshipCount = c.relationship_count ?? 0;
         const groupHubs = groupSourceSummaries.get(groupKey);
         const componentKind = sourceKind(c);
@@ -1322,10 +1378,13 @@ export default function GraphView() {
           data: {
             id: c.id,
             ...(isExplore ? {} : { parent: `group:${groupKey}` }),
-            label: compactLabel,
+            label: displayName,
             compactLabel,
             cardLabel,
-            fullLabel: c.display_title || c.name,
+            cardTitle,
+            cardContext,
+            cardDetail,
+            fullLabel: displayName || c.display_title || c.name,
             type: "component",
             value: c.value,
             confidence: c.confidence,
@@ -1409,13 +1468,13 @@ export default function GraphView() {
     const modelBg = isDark ? "#101827" : "#f8fafc";
     const modelBgOpacity = isDark ? 1 : 0.95;
     const modelTextColor = isDark ? "#f8fafc" : "#0f172a";
-    const componentTextColor = isDark ? "#f8fafc" : "#1e293b";
-    const labelOutlineColor = isDark ? "#0f172a" : "#ffffff";
+    const componentTextColor = "#0f172a";
+    const labelOutlineColor = isDark ? "#000000" : "#ffffff";
     const edgeLabelBg = isDark ? "#1e293b" : "#ffffff";
     const repoFileBg = isDark ? "#263244" : "#f1f5f9";
     const repoFileBorder = isDark ? "#64748b" : "#cbd5e1";
     const repoTextColor = isDark ? "#e5edf8" : "#1e293b";
-    const repoLabelOutline = isDark ? "#0f172a" : "#ffffff";
+    const repoLabelOutline = isDark ? "#000000" : "#ffffff";
     const cardWidth = isBoard ? BOARD_CARD_WIDTH : COMPONENT_CARD_WIDTH;
     const cardHeight = isBoard ? BOARD_CARD_HEIGHT : COMPONENT_CARD_HEIGHT;
     const cardTextMaxWidth = isBoard ? BOARD_CARD_TEXT_MAX_WIDTH : COMPONENT_CARD_TEXT_MAX_WIDTH;
@@ -1466,7 +1525,7 @@ export default function GraphView() {
         {
           selector: ".model-node",
           style: {
-            "background-color": isDark ? "#0c1526" : "#f8fafc",
+            "background-color": isDark ? "#000000" : "#f8fafc",
             "background-opacity": modelBgOpacity,
             "border-color": "data(modelColor)",
             "border-width": 2,
@@ -1530,27 +1589,28 @@ export default function GraphView() {
           selector: "node[type='component']",
           style: {
             "background-color": "data(bgColor)",
-            "background-opacity": 0.9,
+            "background-opacity": 1,
             "border-color": "data(borderColor)",
-            "border-width": 2,
+            "border-width": 3,
             width: cardWidth,
             height: cardHeight,
             shape: "round-rectangle",
             "corner-radius": "10px",
-            "z-index": 2,
+            "z-index": 20,
+            "z-compound-depth": "top",
             label: "data(label)",
             "text-valign": "center",
             "text-halign": "center",
             "text-margin-x": 0,
             "text-margin-y": 0,
-            "font-size": "10.5px",
+            "font-size": "11px",
             "font-weight": "bold",
             "text-wrap": "wrap",
             "text-max-width": `${cardTextMaxWidth}px`,
             "text-justification": "left",
             color: componentTextColor,
             "text-outline-color": labelOutlineColor,
-            "text-outline-width": 1,
+            "text-outline-width": 0,
             "transition-property": "width height background-color border-width opacity font-size",
             "transition-duration": "180ms",
           },
@@ -1605,14 +1665,14 @@ export default function GraphView() {
         {
           selector: "node[type='component'].lod-compact",
           style: {
-            width: 132,
-            height: 34,
+            width: 170,
+            height: 44,
             shape: "round-rectangle",
             "corner-radius": "8px",
             label: "data(compactLabel)",
-            "font-size": "8.5px",
+            "font-size": "9.5px",
             "font-weight": "bold",
-            "text-max-width": "112px",
+            "text-max-width": "150px",
             "text-wrap": "wrap",
             "text-justification": "left",
             "text-valign": "center",
@@ -1629,7 +1689,7 @@ export default function GraphView() {
             height: cardHeight,
             shape: "round-rectangle",
             "corner-radius": "10px",
-            "background-opacity": 0.9,
+            "background-opacity": 1,
             label: "",
             "text-opacity": 0,
           },
@@ -1790,7 +1850,7 @@ export default function GraphView() {
           selector: ".repo-node",
           style: {
             "background-color": isDark ? "#1e293b" : "#334155",
-            "border-color": isDark ? "#64748b" : "#0f172a",
+            "border-color": isDark ? "#525252" : "#0f172a",
             color: "#f8fafc",
             width: 78,
             height: 36,
@@ -1805,14 +1865,14 @@ export default function GraphView() {
         {
           selector: "edge",
           style: {
-            width: 1.5,
-            "line-color": isDark ? "#334155" : "#cbd5e1",
-            "target-arrow-color": isDark ? "#334155" : "#cbd5e1",
+            width: 2.2,
+            "line-color": isDark ? "#64748b" : "#64748b",
+            "target-arrow-color": isDark ? "#64748b" : "#64748b",
             "target-arrow-shape": "triangle",
-            "arrow-scale": 0.8,
+            "arrow-scale": 1.1,
             "curve-style": "bezier",
             label: "",
-            opacity: 0.5,
+            opacity: 0.72,
           },
         },
 
@@ -1824,13 +1884,13 @@ export default function GraphView() {
             "line-color": "data(edgeColor)",
             "target-arrow-color": "data(edgeColor)",
             "target-arrow-shape": "triangle",
-            "arrow-scale": 1,
+            "arrow-scale": 1.55,
             "edge-distances": "intersection",
             "source-endpoint": "outside-to-node",
             "target-endpoint": "outside-to-node",
-            "source-distance-from-node": 4,
-            "target-distance-from-node": 8,
-            "z-index": 12,
+            "source-distance-from-node": 8,
+            "target-distance-from-node": 12,
+            "z-index": 8,
             "z-compound-depth": "top",
             label: "",
             opacity: "data(edgeOpacity)",
@@ -1873,16 +1933,16 @@ export default function GraphView() {
             width: 1.2,
             opacity: "data(edgeOpacity)",
             "target-arrow-shape": "triangle",
-            "arrow-scale": 0.75,
+            "arrow-scale": 1,
           },
         },
         {
           selector: "edge[edgeType='relationship'].lod-macro-edge",
           style: {
             label: "",
-            width: 0.9,
-            opacity: 0.28,
-            "arrow-scale": 0.6,
+            width: 1.5,
+            opacity: 0.5,
+            "arrow-scale": 0.85,
           },
         },
         {
@@ -1975,7 +2035,7 @@ export default function GraphView() {
           selector: "edge:selected",
           style: {
             opacity: 1,
-            width: 2.5,
+            width: 4,
             "z-index": 30,
             "line-color": isDark ? "#818cf8" : "#6366f1",
             "target-arrow-color": isDark ? "#818cf8" : "#6366f1",
@@ -2013,17 +2073,19 @@ export default function GraphView() {
             }))
             .sort((a, b) => b.items.length - a.items.length);
 
-          const colCount = Math.min(4, Math.max(1, groups.length));
-          const columnStride = isBoard ? 960 : 1080;
-          const laneGapY = isBoard ? 120 : 96;
+          const colCount = isBoard
+            ? Math.min(2, Math.max(1, groups.length))
+            : Math.min(4, Math.max(1, groups.length));
+          const columnStride = isBoard ? 980 : 1080;
+          const laneGapY = isBoard ? 68 : 96;
           const headerFloatClearance = GROUP_HUB_CHIP_HEIGHT_PX + GROUP_HEADER_FLOAT_GAP_PX + 8;
           const cardW = cardWidth;
           const cardH = cardHeight;
-          const gapX = isBoard ? 24 : 26;
+          const gapX = isBoard ? 28 : 26;
           const gapY = isBoard ? 18 : 20;
-          const groupPadX = 40;
+          const groupPadX = isBoard ? 32 : 40;
           const groupPadTop = GROUP_HEADER_BAND_PX;
-          const groupPadBottom = 32;
+          const groupPadBottom = isBoard ? 32 : 32;
           const colHeights = Array.from({ length: colCount }, () => 0);
 
           groups.forEach(({ groupKey, items }) => {
@@ -2032,10 +2094,10 @@ export default function GraphView() {
             const gridCols = layoutGridColumns(itemCount, isBoard ? 4 : 3);
             const rows = Math.ceil(itemCount / gridCols);
             const groupWidth = groupPadX * 2 + gridCols * cardW + Math.max(0, gridCols - 1) * gapX;
-            const laneWidth = Math.min(groupWidth + 48, columnStride - 40);
+            const laneWidth = isBoard ? groupWidth + 40 : Math.min(groupWidth + 48, columnStride - 40);
             const baseX = col * columnStride - ((colCount - 1) * columnStride) / 2;
             const baseY = colHeights[col];
-            const startX = baseX - laneWidth / 2 + groupPadX + cardW / 2;
+            const startX = baseX - groupWidth / 2 + groupPadX + cardW / 2;
             const startY = baseY + headerFloatClearance + groupPadTop;
             const groupHeight = headerFloatClearance + groupPadTop + rows * cardH + Math.max(0, rows - 1) * gapY + groupPadBottom;
 
@@ -2068,7 +2130,7 @@ export default function GraphView() {
       wheelSensitivity: 0.18,
     });
 
-    cy.maxZoom(2.8);
+    cy.maxZoom(isBoard ? BOARD_MAX_ZOOM : 2.8);
     fitGraphViewport(cy, viewMode, graphLayout);
     applyGraphLod(cy);
     const freezeExploreLayoutId = isExplore
@@ -2234,32 +2296,58 @@ export default function GraphView() {
             borderRadius: "10px",
           });
 
-          const lines = String(node.data("cardLabel") || "").split("\n").filter(Boolean);
+          const title = node.data("cardTitle") || node.data("label") || "";
+          const compactCard = bounds.h < 88;
+          const tinyCard = bounds.h < 56;
+          const detailLines = [
+            node.data("cardContext"),
+            node.data("cardDetail"),
+          ].filter(Boolean);
+          const cardTitleColor = "#0f172a";
+          const cardMutedColor = "#475569";
           const textWrap = document.createElement("div");
           Object.assign(textWrap.style, {
             position: "absolute",
-            left: "10px",
-            right: "10px",
-            top: "8px",
-            bottom: "8px",
+            left: compactCard ? "10px" : "14px",
+            right: compactCard ? "10px" : "14px",
+            top: compactCard ? "8px" : "12px",
+            bottom: compactCard ? "8px" : "12px",
             overflow: "hidden",
             display: "flex",
             flexDirection: "column",
             justifyContent: "center",
-            gap: "3px",
+            gap: compactCard ? "3px" : "5px",
           });
 
-          lines.slice(0, 2).forEach((line, index) => {
+          const titleEl = document.createElement("div");
+          titleEl.textContent = title;
+          Object.assign(titleEl.style, {
+            color: cardTitleColor,
+            fontSize: `${compactCard ? CARD_OVERLAY_TITLE_PX : CARD_OVERLAY_TITLE_PX + 1}px`,
+            fontWeight: "800",
+            lineHeight: compactCard ? "1.12" : "1.22",
+            overflow: "hidden",
+            display: "-webkit-box",
+            WebkitLineClamp: tinyCard ? "1" : "2",
+            WebkitBoxOrient: "vertical",
+            whiteSpace: "normal",
+          });
+          textWrap.appendChild(titleEl);
+
+          detailLines.slice(0, compactCard ? 1 : 2).forEach((line, index) => {
+            if (tinyCard) return;
             const lineEl = document.createElement("div");
             lineEl.textContent = line;
             Object.assign(lineEl.style, {
-              color: index === 0 ? textColor : mutedColor,
-              fontSize: `${index === 0 ? CARD_OVERLAY_TITLE_PX : CARD_OVERLAY_META_PX}px`,
-              fontWeight: index === 0 ? "700" : "500",
-              lineHeight: "1.25",
+              color: cardMutedColor,
+              fontSize: `${compactCard ? CARD_OVERLAY_META_PX - 0.5 : CARD_OVERLAY_META_PX}px`,
+              fontWeight: index === 0 ? "650" : "500",
+              lineHeight: "1.22",
               overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
+              display: "-webkit-box",
+              WebkitLineClamp: "1",
+              WebkitBoxOrient: "vertical",
+              whiteSpace: "normal",
             });
             textWrap.appendChild(lineEl);
           });
@@ -2341,7 +2429,7 @@ export default function GraphView() {
         evt.target.style({
           label: "",
           opacity: evt.target.data("edgeOpacity") ?? 0.6,
-          "z-index": 12,
+          "z-index": 8,
         });
       }
     });
@@ -2357,22 +2445,22 @@ export default function GraphView() {
       evt.target.style({
         label: "",
         opacity: evt.target.data("edgeOpacity") ?? 0.6,
-        "z-index": 12,
+        "z-index": 8,
       });
     });
 
     // Hover effect on card nodes — subtle lift + surface connected edges
     cy.on("mouseover", "node[type='component']", (evt) => {
-      evt.target.style({ "border-width": 2.5, opacity: 1 });
+      evt.target.style({ "border-width": 4, opacity: 1 });
       evt.target.connectedEdges("[edgeType='relationship']").style({ "z-index": 20, opacity: 1 });
     });
     cy.on("mouseout", "node[type='component']", (evt) => {
       if (!evt.target.selected()) {
-        evt.target.style({ "border-width": 2, opacity: 1 });
+        evt.target.style({ "border-width": 3, opacity: 1 });
       }
       evt.target.connectedEdges("[edgeType='relationship']").forEach((edge) => {
         if (!edge.selected()) {
-          edge.style({ "z-index": 12, opacity: edge.data("edgeOpacity") ?? 0.6 });
+          edge.style({ "z-index": 8, opacity: edge.data("edgeOpacity") ?? 0.6 });
         }
       });
     });
@@ -2483,7 +2571,7 @@ export default function GraphView() {
       <div className="flex items-center justify-center h-full">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-brand-200 border-t-brand-600 mx-auto mb-3" />
-          <p className="text-sm font-bold text-slate-800 dark:text-slate-200">Loading graph...</p>
+          <p className="text-sm font-bold text-slate-800 dark:text-neutral-200">Loading graph...</p>
         </div>
       </div>
     );
@@ -2492,7 +2580,7 @@ export default function GraphView() {
   if (error) {
     return (
       <div className="flex items-center justify-center h-full">
-        <div className="text-center p-6 bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700">
+        <div className="text-center p-6 bg-white dark:bg-black rounded-2xl border border-slate-200 dark:border-neutral-800">
           <p className="text-sm font-bold text-red-600 dark:text-red-400 mb-2">Failed to load graph</p>
           <p className="text-xs text-slate-500">{error}</p>
         </div>
@@ -2504,10 +2592,10 @@ export default function GraphView() {
     <div className="relative flex h-full min-h-0 overflow-hidden">
       <div className="relative flex min-w-0 flex-1 flex-col">
         <div className="pointer-events-none absolute left-3 right-3 top-3 z-30 flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
-          <div className="pointer-events-auto w-fit max-w-[calc(100vw-1.5rem)] self-start rounded-xl border border-slate-200 bg-white/92 p-2 shadow-sm backdrop-blur-sm dark:border-slate-700 dark:bg-slate-800/92">
+          <div className="pointer-events-auto w-fit max-w-[calc(100vw-1.5rem)] self-start rounded-xl border border-slate-200 bg-white/92 p-2 shadow-sm backdrop-blur-sm dark:border-neutral-800 dark:bg-black">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-sm font-black text-slate-900 dark:text-white">Knowledge Graph</h2>
-              <div className="flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 dark:border-slate-700 dark:bg-slate-900/70">
+              <div className="flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 dark:border-neutral-800 dark:bg-black">
                 {[
                   ["knowledge", "Knowledge"],
                   ["repo", "Repository"],
@@ -2519,7 +2607,7 @@ export default function GraphView() {
                     className={`rounded-md px-2.5 py-1 text-[11px] font-bold transition-colors ${
                       viewMode === mode
                         ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
-                        : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+                        : "text-slate-500 hover:text-slate-900 dark:text-neutral-400 dark:hover:text-white"
                     }`}
                   >
                     {label}
@@ -2527,7 +2615,7 @@ export default function GraphView() {
                 ))}
               </div>
               {viewMode === "knowledge" && (
-                <div className="flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 dark:border-slate-700 dark:bg-slate-900/70">
+                <div className="flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 dark:border-neutral-800 dark:bg-black">
                   {[
                     ["board", "Board"],
                     ["explore", "Explore"],
@@ -2539,7 +2627,7 @@ export default function GraphView() {
                       className={`rounded-md px-2.5 py-1 text-[11px] font-bold transition-colors ${
                         graphLayout === layout
                           ? "bg-brand-600 text-white"
-                          : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+                          : "text-slate-500 hover:text-slate-900 dark:text-neutral-400 dark:hover:text-white"
                       }`}
                     >
                       {label}
@@ -2569,7 +2657,7 @@ export default function GraphView() {
                         ? id === "gaps"
                           ? "bg-red-500 text-white"
                           : "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
-                        : "bg-slate-100 text-slate-500 hover:bg-slate-200 dark:bg-slate-900 dark:text-slate-400 dark:hover:bg-slate-800"
+                        : "bg-slate-100 text-slate-500 hover:bg-slate-200 dark:bg-black dark:text-neutral-400 dark:hover:bg-black"
                     }`}
                   >
                     {label}
@@ -2578,7 +2666,7 @@ export default function GraphView() {
               </div>
             )}
             {viewMode === "knowledge" && (
-              <div className="mt-2 flex items-center gap-1.5 rounded-lg bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-500 dark:bg-slate-900/70 dark:text-slate-400">
+              <div className="mt-2 flex items-center gap-1.5 rounded-lg bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-500 dark:bg-black dark:text-neutral-400">
                 <Network className="h-3.5 w-3.5 text-brand-500" />
                 <span className="text-slate-900 dark:text-white">{graphStats.components}</span>
                 <span>nodes</span>
@@ -2609,13 +2697,13 @@ export default function GraphView() {
                     if (e.key === "Enter") centerOnSearchMatch();
                   }}
                   placeholder="Search graph (⌘K)…"
-                  className="h-9 w-40 rounded-xl border border-slate-200 bg-white/92 pl-8 pr-7 text-xs font-semibold text-slate-700 shadow-sm outline-none backdrop-blur-sm transition placeholder:text-slate-400 focus:border-brand-400 dark:border-slate-700 dark:bg-black/80 dark:text-slate-200 sm:w-52 xl:w-60"
+                  className="h-9 w-40 rounded-xl border border-slate-200 bg-white/92 pl-8 pr-7 text-xs font-semibold text-slate-700 shadow-sm outline-none backdrop-blur-sm transition placeholder:text-slate-400 focus:border-brand-400 dark:border-neutral-800 dark:bg-black dark:text-neutral-200 sm:w-52 xl:w-60"
                 />
                 {filters.search && (
                   <button
                     type="button"
                     onClick={() => setFilters((f) => ({ ...f, search: "" }))}
-                    className="absolute right-2 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-300"
+                    className="absolute right-2 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-black dark:hover:text-slate-300"
                   >
                     <XIcon className="h-3 w-3" />
                   </button>
@@ -2635,7 +2723,7 @@ export default function GraphView() {
                 className={`flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-bold shadow-sm backdrop-blur-sm transition-colors ${
                   showRefine
                     ? "border-sky-400 bg-sky-50/95 text-sky-700 dark:border-sky-600 dark:bg-sky-900/60 dark:text-sky-300"
-                    : "border-slate-200 bg-white/92 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800/92 dark:text-slate-300 dark:hover:bg-slate-700"
+                    : "border-slate-200 bg-white/92 text-slate-600 hover:bg-slate-50 dark:border-neutral-800 dark:bg-black dark:text-neutral-300 dark:hover:bg-black"
                 }`}
               >
                 <SlidersHorizontal className="h-3.5 w-3.5" />
@@ -2649,7 +2737,7 @@ export default function GraphView() {
               type="button"
               onClick={() => setShowAiSettings(true)}
               title="Configure AI extraction"
-              className={`flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-bold shadow-sm backdrop-blur-sm transition-colors ${aiSettings.api_key ? "border-brand-400 bg-brand-50/95 text-brand-700 dark:border-brand-600 dark:bg-brand-900/60 dark:text-brand-300" : "border-slate-200 bg-white/92 text-slate-500 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800/92 dark:text-slate-300 dark:hover:bg-slate-700"}`}
+              className={`flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-bold shadow-sm backdrop-blur-sm transition-colors ${aiSettings.api_key ? "border-brand-400 bg-brand-50/95 text-brand-700 dark:border-brand-600 dark:bg-brand-900/60 dark:text-brand-300" : "border-slate-200 bg-white/92 text-slate-500 hover:bg-slate-50 dark:border-neutral-800 dark:bg-black dark:text-neutral-300 dark:hover:bg-black"}`}
             >
               <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="12" cy="12" r="3"/>
@@ -2671,7 +2759,7 @@ export default function GraphView() {
               className={`flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-bold shadow-sm backdrop-blur-sm transition-colors ${
                 showAsk
                   ? "border-brand-500 bg-brand-50/95 text-brand-700 dark:border-brand-500 dark:bg-brand-900/60 dark:text-brand-300"
-                  : "border-slate-200 bg-white/92 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800/92 dark:text-slate-300 dark:hover:bg-slate-700"
+                  : "border-slate-200 bg-white/92 text-slate-600 hover:bg-slate-50 dark:border-neutral-800 dark:bg-black dark:text-neutral-300 dark:hover:bg-black"
               }`}
             >
               <Search className="h-3.5 w-3.5" />
@@ -2688,7 +2776,7 @@ export default function GraphView() {
               className={`flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-bold shadow-sm backdrop-blur-sm transition-colors ${
                 showAgents
                   ? "border-violet-500 bg-violet-50/95 text-violet-700 dark:border-violet-500 dark:bg-violet-900/60 dark:text-violet-300"
-                  : "border-slate-200 bg-white/92 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800/92 dark:text-slate-300 dark:hover:bg-slate-700"
+                  : "border-slate-200 bg-white/92 text-slate-600 hover:bg-slate-50 dark:border-neutral-800 dark:bg-black dark:text-neutral-300 dark:hover:bg-black"
               }`}
             >
               <Bot className="h-3.5 w-3.5" />
@@ -2707,7 +2795,7 @@ export default function GraphView() {
               className={`flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-bold shadow-sm backdrop-blur-sm transition-colors ${
                 showSidePanel
                   ? "border-brand-500 bg-brand-50/95 text-brand-700 dark:border-brand-500 dark:bg-brand-900/60 dark:text-brand-300"
-                  : "border-slate-200 bg-white/92 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800/92 dark:text-slate-300 dark:hover:bg-slate-700"
+                  : "border-slate-200 bg-white/92 text-slate-600 hover:bg-slate-50 dark:border-neutral-800 dark:bg-black dark:text-neutral-300 dark:hover:bg-black"
               }`}
             >
               <Layers3 className="h-3.5 w-3.5" />
@@ -2717,7 +2805,7 @@ export default function GraphView() {
         </div>
 
         {viewMode === "knowledge" && showRefine && (
-          <div className="absolute right-3 top-28 z-40 w-[min(25rem,calc(100%-1.5rem))] rounded-xl border border-slate-200 bg-white/95 p-3 shadow-xl backdrop-blur-sm dark:border-slate-700 dark:bg-slate-800/95 lg:top-16">
+          <div className="absolute right-3 top-28 z-40 w-[min(25rem,calc(100%-1.5rem))] rounded-xl border border-slate-200 bg-white/95 p-3 shadow-xl backdrop-blur-sm dark:border-neutral-800 dark:bg-black lg:top-16">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-xs font-black text-slate-900 dark:text-white">Refine</p>
@@ -2726,38 +2814,38 @@ export default function GraphView() {
               <button
                 type="button"
                 onClick={clearGraphFilters}
-                className="rounded-lg border border-slate-200 px-2.5 py-1 text-[11px] font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-700 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-700"
+                className="rounded-lg border border-slate-200 px-2.5 py-1 text-[11px] font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-700 dark:border-neutral-800 dark:text-neutral-300 dark:hover:bg-black"
               >
                 Clear
               </button>
             </div>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              <select value={filters.model} onChange={(e) => setFilters((f) => ({ ...f, model: e.target.value }))} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+              <select value={filters.model} onChange={(e) => setFilters((f) => ({ ...f, model: e.target.value }))} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 dark:border-neutral-800 dark:bg-black dark:text-neutral-300">
                 <option value="">All models</option>
                 {models.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
               </select>
-              <select value={filters.source_type} onChange={(e) => setFilters((f) => ({ ...f, source_type: e.target.value }))} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+              <select value={filters.source_type} onChange={(e) => setFilters((f) => ({ ...f, source_type: e.target.value }))} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 dark:border-neutral-800 dark:bg-black dark:text-neutral-300">
                 <option value="">All sources</option>
                 {sourceTypes.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
-              <select value={filters.status} onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+              <select value={filters.status} onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 dark:border-neutral-800 dark:bg-black dark:text-neutral-300">
                 <option value="">All statuses</option>
                 {statuses.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
-              <select value={filters.temporal} onChange={(e) => setFilters((f) => ({ ...f, temporal: e.target.value }))} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+              <select value={filters.temporal} onChange={(e) => setFilters((f) => ({ ...f, temporal: e.target.value }))} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 dark:border-neutral-800 dark:bg-black dark:text-neutral-300">
                 <option value="">All time</option>
                 <option value="current">Current</option>
                 <option value="future">Future</option>
                 <option value="past">Past</option>
                 <option value="unknown">Unknown</option>
               </select>
-              <select value={filters.confidence_threshold} onChange={(e) => setFilters((f) => ({ ...f, confidence_threshold: Number(e.target.value) }))} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+              <select value={filters.confidence_threshold} onChange={(e) => setFilters((f) => ({ ...f, confidence_threshold: Number(e.target.value) }))} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 dark:border-neutral-800 dark:bg-black dark:text-neutral-300">
                 <option value={0}>All confidence</option>
                 <option value={0.5}>50% and up</option>
                 <option value={0.7}>70% and up</option>
                 <option value={0.85}>85% and up</option>
               </select>
-              <select value={filters.relationship_origin} onChange={(e) => setFilters((f) => ({ ...f, relationship_origin: e.target.value }))} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+              <select value={filters.relationship_origin} onChange={(e) => setFilters((f) => ({ ...f, relationship_origin: e.target.value }))} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 dark:border-neutral-800 dark:bg-black dark:text-neutral-300">
                 <option value="">All edges</option>
                 <option value="deterministic">Deterministic</option>
                 <option value="extracted">Extracted</option>
@@ -2766,7 +2854,7 @@ export default function GraphView() {
                 <option value="proposed">Proposed</option>
               </select>
             </div>
-            <label className="mt-3 flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-semibold text-slate-600 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300">
+            <label className="mt-3 flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-semibold text-slate-600 dark:border-neutral-800 dark:bg-black dark:text-neutral-300">
               <input
                 type="checkbox"
                 checked={showTrustEdges}
@@ -2780,7 +2868,7 @@ export default function GraphView() {
 
         <div className="hidden">
           <h2 className="text-lg font-bold text-slate-900 dark:text-white">Knowledge Graph</h2>
-          <div className="flex rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-1">
+          <div className="flex rounded-lg border border-slate-200 dark:border-neutral-800 bg-white dark:bg-black p-1">
             {[
               ["knowledge", "Knowledge"],
               ["repo", "Repository"],
@@ -2792,7 +2880,7 @@ export default function GraphView() {
                 className={`rounded-md px-3 py-1.5 text-xs font-bold transition-colors ${
                   viewMode === mode
                     ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
-                    : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+                    : "text-slate-500 hover:text-slate-900 dark:text-neutral-400 dark:hover:text-white"
                 }`}
               >
                 {label}
@@ -2800,16 +2888,16 @@ export default function GraphView() {
             ))}
           </div>
           {viewMode === "knowledge" && (
-            <div className="hidden md:flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2.5 py-1.5 text-[11px] font-bold text-slate-500 dark:text-slate-400">
+            <div className="hidden md:flex items-center gap-2 rounded-lg border border-slate-200 dark:border-neutral-800 bg-white dark:bg-black px-2.5 py-1.5 text-[11px] font-bold text-slate-500 dark:text-neutral-400">
               <Network className="h-3.5 w-3.5 text-brand-500" />
               <span className="text-slate-900 dark:text-white">{graphStats.components}</span>
               <span>nodes</span>
-              <span className="h-3 w-px bg-slate-200 dark:bg-slate-700" />
+              <span className="h-3 w-px bg-slate-200 dark:bg-black" />
               <span className="text-slate-900 dark:text-white">{graphStats.relationships}</span>
               <span>edges</span>
               {graphStats.isolated > 0 && (
                 <>
-                  <span className="h-3 w-px bg-slate-200 dark:bg-slate-700" />
+                  <span className="h-3 w-px bg-slate-200 dark:bg-black" />
                   <span className="text-red-500">{graphStats.isolated}</span>
                   <span>isolated</span>
                 </>
@@ -2821,7 +2909,7 @@ export default function GraphView() {
             <select
               value={filters.model}
               onChange={(e) => setFilters((f) => ({ ...f, model: e.target.value }))}
-              className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 max-w-[9.5rem]"
+              className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-neutral-800 bg-white dark:bg-black text-slate-700 dark:text-neutral-300 max-w-[9.5rem]"
             >
               <option value="">All models</option>
               {models.map((m) => (
@@ -2831,7 +2919,7 @@ export default function GraphView() {
             <select
               value={filters.source_type}
               onChange={(e) => setFilters((f) => ({ ...f, source_type: e.target.value }))}
-              className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 max-w-[9.5rem]"
+              className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-neutral-800 bg-white dark:bg-black text-slate-700 dark:text-neutral-300 max-w-[9.5rem]"
             >
               <option value="">All sources</option>
               {sourceTypes.map((s) => (
@@ -2841,7 +2929,7 @@ export default function GraphView() {
             <select
               value={filters.status}
               onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))}
-              className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 max-w-[9.5rem]"
+              className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-neutral-800 bg-white dark:bg-black text-slate-700 dark:text-neutral-300 max-w-[9.5rem]"
             >
               <option value="">All statuses</option>
               {statuses.map((s) => (
@@ -2851,7 +2939,7 @@ export default function GraphView() {
             <select
               value={filters.temporal}
               onChange={(e) => setFilters((f) => ({ ...f, temporal: e.target.value }))}
-              className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 max-w-[9.5rem]"
+              className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-neutral-800 bg-white dark:bg-black text-slate-700 dark:text-neutral-300 max-w-[9.5rem]"
             >
               <option value="">All time</option>
               <option value="current">Current (needs now)</option>
@@ -2862,7 +2950,7 @@ export default function GraphView() {
             <select
               value={filters.confidence_threshold}
               onChange={(e) => setFilters((f) => ({ ...f, confidence_threshold: Number(e.target.value) }))}
-              className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 max-w-[9.5rem]"
+              className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-neutral-800 bg-white dark:bg-black text-slate-700 dark:text-neutral-300 max-w-[9.5rem]"
             >
               <option value={0}>All confidence</option>
               <option value={0.5}>≥ 50%</option>
@@ -2872,7 +2960,7 @@ export default function GraphView() {
             <select
               value={filters.relationship_origin}
               onChange={(e) => setFilters((f) => ({ ...f, relationship_origin: e.target.value }))}
-              className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 max-w-[9.5rem]"
+              className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-neutral-800 bg-white dark:bg-black text-slate-700 dark:text-neutral-300 max-w-[9.5rem]"
             >
               <option value="">All edges</option>
               <option value="deterministic">Deterministic</option>
@@ -2890,7 +2978,7 @@ export default function GraphView() {
                 value={filters.search}
                 onChange={(e) => setFilters((f) => ({ ...f, search: e.target.value }))}
                 placeholder="Search graph…"
-                className="text-xs pl-8 pr-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 w-40 focus:outline-none focus:ring-1 focus:ring-brand-400"
+                className="text-xs pl-8 pr-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-neutral-800 bg-white dark:bg-black text-slate-700 dark:text-neutral-300 w-40 focus:outline-none focus:ring-1 focus:ring-brand-400"
               />
               {filters.search && (
                 <button
@@ -2911,7 +2999,7 @@ export default function GraphView() {
                 className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition-colors ${
                   showRefine
                     ? "border-sky-400 bg-sky-50 text-sky-700 dark:border-sky-600 dark:bg-sky-900/20 dark:text-sky-300"
-                    : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700"
+                    : "border-slate-200 dark:border-neutral-800 bg-white dark:bg-black text-slate-600 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-black"
                 }`}
               >
                 <SlidersHorizontal className="w-3.5 h-3.5" />
@@ -2919,7 +3007,7 @@ export default function GraphView() {
               </button>
             )}
             {agentStatus && (
-              <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full ${aiSettings.api_key || agentStatus.llm_enabled ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"}`}>
+              <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full ${aiSettings.api_key || agentStatus.llm_enabled ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" : "bg-slate-100 text-slate-500 dark:bg-black dark:text-neutral-400"}`}>
                 {aiSettings.api_key && aiSettings.model ? `AI: ${aiSettings.model}` : agentStatus.llm_enabled ? `LLM: ${agentStatus.extraction_model}` : "Regex extraction"}
               </span>
             )}
@@ -2927,7 +3015,7 @@ export default function GraphView() {
               type="button"
               onClick={() => setShowAiSettings(true)}
               title="Configure AI extraction"
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition-colors ${aiSettings.api_key ? "border-brand-400 bg-brand-50 text-brand-700 dark:border-brand-600 dark:bg-brand-900/20 dark:text-brand-400" : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700"}`}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition-colors ${aiSettings.api_key ? "border-brand-400 bg-brand-50 text-brand-700 dark:border-brand-600 dark:bg-brand-900/20 dark:text-brand-400" : "border-slate-200 dark:border-neutral-800 bg-white dark:bg-black text-slate-500 dark:text-neutral-400 hover:bg-slate-50 dark:hover:bg-black"}`}
             >
               <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="12" cy="12" r="3"/>
@@ -2946,7 +3034,7 @@ export default function GraphView() {
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold transition-colors ${
                 showAsk
                   ? "border-brand-500 bg-brand-50 text-brand-700 dark:border-brand-500 dark:bg-brand-900/20 dark:text-brand-400"
-                  : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700"
+                  : "border-slate-200 dark:border-neutral-800 bg-white dark:bg-black text-slate-600 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-black"
               }`}
             >
               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
@@ -2960,7 +3048,7 @@ export default function GraphView() {
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold transition-colors ${
                 showAgents
                   ? "border-violet-500 bg-violet-50 text-violet-700 dark:border-violet-500 dark:bg-violet-900/20 dark:text-violet-400"
-                  : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700"
+                  : "border-slate-200 dark:border-neutral-800 bg-white dark:bg-black text-slate-600 dark:text-neutral-300 hover:bg-slate-50 dark:hover:bg-black"
               }`}
             >
               <Bot className="w-3.5 h-3.5" />
@@ -3008,7 +3096,7 @@ export default function GraphView() {
                       : id === "aiSessions" ? "bg-violet-600 text-white shadow-sm"
                       : id === "github"     ? "bg-slate-600 text-white shadow-sm"
                       : "bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-sm"
-                      : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700"
+                      : "bg-slate-100 dark:bg-black text-slate-500 dark:text-neutral-400 hover:bg-slate-200 dark:hover:bg-black"
                   }`}
                 >
                   {label}
@@ -3073,8 +3161,8 @@ export default function GraphView() {
           <div ref={logoLayerRef} className="pointer-events-none absolute inset-0 z-10" />
 
           {graphLayout === "explore" && viewMode === "knowledge" && (
-            <div className="absolute bottom-16 right-4 top-24 z-30 flex w-[min(20rem,calc(100%-2rem))] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white/95 shadow-xl backdrop-blur-sm dark:border-slate-700 dark:bg-slate-900/95">
-              <div className="border-b border-slate-100 px-3 py-3 dark:border-slate-700">
+            <div className="absolute bottom-16 right-4 top-24 z-30 flex w-[min(20rem,calc(100%-2rem))] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white/95 shadow-xl backdrop-blur-sm dark:border-neutral-800 dark:bg-black">
+              <div className="border-b border-slate-100 px-3 py-3 dark:border-neutral-800">
                 <div className="flex items-center justify-between gap-2">
                   <div className="min-w-0">
                     <p className="text-xs font-black text-slate-900 dark:text-white">Local graph</p>
@@ -3089,12 +3177,12 @@ export default function GraphView() {
                       setGraphLayout("board");
                       if (nodeId) setTimeout(() => focusGraphNode(nodeId), 260);
                     }}
-                    className="rounded-lg border border-slate-200 px-2.5 py-1 text-[10px] font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-800 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                    className="rounded-lg border border-slate-200 px-2.5 py-1 text-[10px] font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-800 dark:border-neutral-800 dark:text-neutral-300 dark:hover:bg-black"
                   >
                     Open in Board
                   </button>
                 </div>
-                <div className="mt-3 grid grid-cols-2 gap-1 rounded-lg bg-slate-100 p-0.5 dark:bg-slate-800">
+                <div className="mt-3 grid grid-cols-2 gap-1 rounded-lg bg-slate-100 p-0.5 dark:bg-black">
                   {[1, 2].map((depth) => (
                     <button
                       key={depth}
@@ -3102,8 +3190,8 @@ export default function GraphView() {
                       onClick={() => setExploreDepth(depth)}
                       className={`rounded-md px-2 py-1 text-[10px] font-bold transition ${
                         exploreDepth === depth
-                          ? "bg-white text-slate-900 shadow-sm dark:bg-slate-700 dark:text-white"
-                          : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white"
+                          ? "bg-white text-slate-900 shadow-sm dark:bg-black dark:text-white"
+                          : "text-slate-500 hover:text-slate-800 dark:text-neutral-400 dark:hover:text-white"
                       }`}
                     >
                       {depth}-hop
@@ -3113,12 +3201,12 @@ export default function GraphView() {
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto p-3">
                 {!selectedNode ? (
-                  <div className="rounded-lg border border-dashed border-slate-200 p-4 text-center dark:border-slate-700">
+                  <div className="rounded-lg border border-dashed border-slate-200 p-4 text-center dark:border-neutral-800">
                     <Network className="mx-auto mb-2 h-6 w-6 text-slate-300 dark:text-slate-600" />
-                    <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">Select a node to inspect its neighborhood.</p>
+                    <p className="text-xs font-semibold text-slate-600 dark:text-neutral-300">Select a node to inspect its neighborhood.</p>
                   </div>
                 ) : exploreNeighborhood.length === 0 ? (
-                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-800/70 dark:text-slate-400">
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500 dark:border-neutral-800 dark:bg-black dark:text-neutral-400">
                     No visible neighbors for {selectedNode.label}.
                   </div>
                 ) : (
@@ -3131,11 +3219,11 @@ export default function GraphView() {
                         key={`${neighbor.id}-${neighbor.depth}`}
                         type="button"
                         onClick={() => focusGraphNode(neighbor.id)}
-                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-left transition hover:border-brand-300 hover:bg-brand-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:border-brand-700 dark:hover:bg-brand-900/20"
+                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-left transition hover:border-brand-300 hover:bg-brand-50 dark:border-neutral-800 dark:bg-black dark:hover:border-brand-700 dark:hover:bg-brand-900/20"
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <span className="truncate text-xs font-bold text-slate-800 dark:text-slate-100">{neighbor.display_title || neighbor.name}</span>
-                          <span className="shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold text-slate-500 dark:bg-slate-700 dark:text-slate-300">
+                          <span className="truncate text-xs font-bold text-slate-800 dark:text-neutral-100">{neighbor.display_title || neighbor.name}</span>
+                          <span className="shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold text-slate-500 dark:bg-black dark:text-neutral-300">
                             {neighbor.depth} hop
                           </span>
                         </div>
@@ -3148,14 +3236,14 @@ export default function GraphView() {
             </div>
           )}
 
-          <div className="absolute bottom-4 left-4 z-20 flex flex-col items-center gap-1 rounded-xl border border-slate-200 bg-white/92 p-1 shadow-sm backdrop-blur-sm dark:border-slate-700 dark:bg-slate-800/92">
-            <button type="button" title="Zoom in" onClick={() => changeGraphZoom(0.12)} className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white">
+          <div className="absolute bottom-4 left-4 z-20 flex flex-col items-center gap-1 rounded-xl border border-slate-200 bg-white/92 p-1 shadow-sm backdrop-blur-sm dark:border-neutral-800 dark:bg-black">
+            <button type="button" title="Zoom in" onClick={() => changeGraphZoom(0.12)} className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-neutral-300 dark:hover:bg-black dark:hover:text-white">
               <Plus className="h-3.5 w-3.5" />
             </button>
-            <button type="button" title="Zoom out" onClick={() => changeGraphZoom(-0.12)} className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white">
+            <button type="button" title="Zoom out" onClick={() => changeGraphZoom(-0.12)} className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-neutral-300 dark:hover:bg-black dark:hover:text-white">
               <Minus className="h-3.5 w-3.5" />
             </button>
-            <button type="button" title="Fit whole graph" onClick={fitGraph} className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white">
+            <button type="button" title="Fit whole graph" onClick={fitGraph} className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-neutral-300 dark:hover:bg-black dark:hover:text-white">
               <Maximize2 className="h-3.5 w-3.5" />
             </button>
           </div>
@@ -3192,7 +3280,7 @@ export default function GraphView() {
               className={`flex h-7 items-center gap-1 px-2 rounded-lg text-[11px] font-bold transition-colors ${
                 showSidePanel
                   ? "bg-brand-100 text-brand-700 dark:bg-brand-900/30 dark:text-brand-400"
-                  : "text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white"
+                  : "text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-neutral-300 dark:hover:bg-black dark:hover:text-white"
               }`}
             >
               <Layers3 className="h-3.5 w-3.5" />
@@ -3216,7 +3304,7 @@ export default function GraphView() {
                       className="w-8 h-3.5 rounded shrink-0 border"
                       style={{ borderColor: color, backgroundColor: `${color}18` }}
                     />
-                    <span className="text-[10px] text-slate-600 dark:text-slate-400">{label}</span>
+                    <span className="text-[10px] text-slate-600 dark:text-neutral-400">{label}</span>
                   </div>
                 ))}
               </div>
@@ -3230,8 +3318,8 @@ export default function GraphView() {
                   { badge: "Past", desc: "Completed / Old" },
                 ].map(({ badge, desc }) => (
                   <div key={badge} className="flex items-center gap-1.5">
-                    <span className="text-[9px] font-bold bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 px-1.5 py-0.5 rounded shrink-0">{badge}</span>
-                    <span className="text-[10px] text-slate-600 dark:text-slate-400">{desc}</span>
+                    <span className="text-[9px] font-bold bg-slate-100 dark:bg-black text-slate-500 dark:text-neutral-400 px-1.5 py-0.5 rounded shrink-0">{badge}</span>
+                    <span className="text-[10px] text-slate-600 dark:text-neutral-400">{desc}</span>
                   </div>
                 ))}
               </div>
@@ -3240,10 +3328,10 @@ export default function GraphView() {
               <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Box — domain</p>
               <div className="flex items-center gap-1.5">
                 <span className="w-8 h-4 rounded-md shrink-0 border-2 border-indigo-400 bg-transparent" />
-                <span className="text-[10px] text-slate-600 dark:text-slate-400">Each = one domain</span>
+                <span className="text-[10px] text-slate-600 dark:text-neutral-400">Each = one domain</span>
               </div>
             </div>
-            <div className="border-t border-slate-100 dark:border-slate-700 pt-2">
+            <div className="border-t border-slate-100 dark:border-neutral-800 pt-2">
               <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Edge — origin</p>
               <div className="flex flex-col gap-1">
                 {[
@@ -3264,12 +3352,12 @@ export default function GraphView() {
                           : { backgroundColor: color, height: 2 }
                       }
                     />
-                    <span className="text-[10px] text-slate-600 dark:text-slate-400">{label}</span>
+                    <span className="text-[10px] text-slate-600 dark:text-neutral-400">{label}</span>
                   </div>
                 ))}
               </div>
             </div>
-            <div className="border-t border-slate-100 dark:border-slate-700 pt-2">
+            <div className="border-t border-slate-100 dark:border-neutral-800 pt-2">
               <p className="text-[9px] text-slate-400 italic">Click edges to see evidence</p>
             </div>
           </div>
@@ -3278,10 +3366,10 @@ export default function GraphView() {
           {/* ── Empty state when filters hide everything ─────────── */}
           {visibleCanvasItemCount === 0 && !loading && (
             <div className="absolute inset-0 z-10 flex items-center justify-center">
-              <div className="text-center p-6 bg-white/95 dark:bg-slate-800/95 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-lg backdrop-blur-sm max-w-xs">
+              <div className="text-center p-6 bg-white/95 dark:bg-black rounded-2xl border border-slate-200 dark:border-neutral-800 shadow-lg backdrop-blur-sm max-w-xs">
                 <Search className="w-8 h-8 text-slate-300 dark:text-slate-600 mx-auto mb-2" />
-                <p className="text-sm font-bold text-slate-800 dark:text-slate-200 mb-1">No visible items</p>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+                <p className="text-sm font-bold text-slate-800 dark:text-neutral-200 mb-1">No visible items</p>
+                <p className="text-xs text-slate-500 dark:text-neutral-400 mb-3">
                   {filters.search
                     ? `No results for "${filters.search}"`
                     : graphLayout === "explore"
@@ -3300,8 +3388,8 @@ export default function GraphView() {
 
           {/* ── Ask AI slide-up panel ─────────────────────────────── */}
           {showAsk && (
-            <div className="absolute bottom-0 left-0 right-0 z-20 bg-white/95 dark:bg-slate-800/95 backdrop-blur-sm border-t border-slate-200 dark:border-slate-700 rounded-b-2xl shadow-xl">
-              <form onSubmit={handleAsk} className="flex items-center gap-2 px-4 py-3 border-b border-slate-100 dark:border-slate-700/60">
+            <div className="absolute bottom-0 left-0 right-0 z-20 bg-white/95 dark:bg-black backdrop-blur-sm border-t border-slate-200 dark:border-neutral-800 rounded-b-2xl shadow-xl">
+              <form onSubmit={handleAsk} className="flex items-center gap-2 px-4 py-3 border-b border-slate-100 dark:border-neutral-800/60">
                 <svg className="w-4 h-4 text-slate-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
                 </svg>
@@ -3311,7 +3399,7 @@ export default function GraphView() {
                   value={askQuery}
                   onChange={(e) => setAskQuery(e.target.value)}
                   placeholder="Ask within this workspace... e.g. What are the current blockers?"
-                  className="flex-1 bg-transparent text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none"
+                  className="flex-1 bg-transparent text-sm text-slate-900 dark:text-neutral-100 placeholder:text-slate-400 focus:outline-none"
                 />
                 <button
                   type="submit"
@@ -3334,7 +3422,7 @@ export default function GraphView() {
                       {askResult.answer && (
                         <div>
                           <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Answer</span>
-                          <p className="text-sm text-slate-800 dark:text-slate-200 leading-relaxed mt-1">{askResult.answer}</p>
+                          <p className="text-sm text-slate-800 dark:text-neutral-200 leading-relaxed mt-1">{askResult.answer}</p>
                         </div>
                       )}
                       {!askResult.answer && (
@@ -3347,10 +3435,10 @@ export default function GraphView() {
                           </p>
                           <div className="flex flex-col gap-1.5">
                             {askResult.trace.facts_used.slice(0, 5).map((c) => (
-                              <div key={c.component_id} className="flex items-start gap-2 p-2 rounded-lg bg-slate-50 dark:bg-slate-900/60">
+                              <div key={c.component_id} className="flex items-start gap-2 p-2 rounded-lg bg-slate-50 dark:bg-black">
                                 <span className="w-4 h-4 rounded bg-brand-100 dark:bg-brand-900/40 flex items-center justify-center text-[9px] font-bold text-brand-700 dark:text-brand-300 shrink-0 mt-0.5">{c.rank}</span>
                                 <div className="min-w-0">
-                                  <p className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">{c.value || stripModelPrefix(c.name)}</p>
+                                  <p className="text-[11px] font-semibold text-slate-700 dark:text-neutral-300">{c.value || stripModelPrefix(c.name)}</p>
                                   <span className="text-[10px] text-slate-400">
                                     {c.model_name} · score {Number(c.score).toFixed(2)} · {Math.round(c.confidence * 100)}%
                                   </span>
@@ -3359,7 +3447,7 @@ export default function GraphView() {
                             ))}
                           </div>
                           {askResult.trace.relationships_used?.length > 0 && (
-                            <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50 px-2 py-1.5 text-[10px] text-slate-500 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-400">
+                            <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50 px-2 py-1.5 text-[10px] text-slate-500 dark:border-neutral-800 dark:bg-black dark:text-neutral-400">
                               Expanded through {askResult.trace.relationships_used.length} relationship{askResult.trace.relationships_used.length === 1 ? "" : "s"}.
                             </div>
                           )}
@@ -3391,8 +3479,8 @@ export default function GraphView() {
       )}
 
       {showSidePanel && (
-        <div className="absolute bottom-3 right-3 top-20 z-40 flex w-[min(20rem,calc(100%-1.5rem))] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-800">
-          <div className="flex items-center border-b border-slate-100 dark:border-slate-700">
+        <div className="absolute bottom-3 right-3 top-20 z-40 flex w-[min(20rem,calc(100%-1.5rem))] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-neutral-800 dark:bg-black">
+          <div className="flex items-center border-b border-slate-100 dark:border-neutral-800">
             {[
               { id: "coverage", label: "Coverage" },
               { id: "work", label: "Work Lens" },
@@ -3402,7 +3490,7 @@ export default function GraphView() {
                 onClick={() => setSidePanelTab(tab.id)}
                 className={`flex-1 px-3 py-2 text-[11px] font-bold transition-colors ${
                   sidePanelTab === tab.id
-                    ? "bg-slate-50 dark:bg-slate-700 text-slate-900 dark:text-white"
+                    ? "bg-slate-50 dark:bg-black text-slate-900 dark:text-white"
                     : "text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
                 }`}
               >
@@ -3444,7 +3532,7 @@ export default function GraphView() {
       {showAiSettings && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center" onClick={() => setShowAiSettings(false)}>
 
-          <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-6 w-[22rem] shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-white dark:bg-black rounded-2xl border border-slate-200 dark:border-neutral-800 p-6 w-[22rem] shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-5">
               <div>
                 <h3 className="text-sm font-bold text-slate-900 dark:text-white">AI Extraction Settings</h3>
@@ -3455,7 +3543,7 @@ export default function GraphView() {
 
             <div className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1.5">Provider</label>
+                <label className="block text-xs font-semibold text-slate-600 dark:text-neutral-400 mb-1.5">Provider</label>
                 <select
                   value={aiSettings.provider || ""}
                   onChange={(e) => {
@@ -3464,7 +3552,7 @@ export default function GraphView() {
                     setAiSettings(newS);
                     localStorage.setItem("ce_ai_settings", JSON.stringify(newS));
                   }}
-                  className="w-full text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300"
+                  className="w-full text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-neutral-700 bg-slate-50 dark:bg-black text-slate-700 dark:text-neutral-300"
                 >
                   <option value="">— select provider —</option>
                   <option value="google">Google (Gemini)</option>
@@ -3475,7 +3563,7 @@ export default function GraphView() {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1.5">API Key</label>
+                <label className="block text-xs font-semibold text-slate-600 dark:text-neutral-400 mb-1.5">API Key</label>
                 <input
                   type="password"
                   value={aiSettings.api_key || ""}
@@ -3489,12 +3577,12 @@ export default function GraphView() {
                     aiSettings.provider === "google" ? "AIza..." :
                     "sk-..."
                   }
-                  className="w-full text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 font-mono"
+                  className="w-full text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-neutral-700 bg-slate-50 dark:bg-black text-slate-700 dark:text-neutral-300 font-mono"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1.5">Model</label>
+                <label className="block text-xs font-semibold text-slate-600 dark:text-neutral-400 mb-1.5">Model</label>
                 {aiSettings.provider === "custom" ? (
                   <input
                     type="text"
@@ -3505,7 +3593,7 @@ export default function GraphView() {
                       localStorage.setItem("ce_ai_settings", JSON.stringify(newS));
                     }}
                     placeholder="e.g. mistral-large, llama-3-70b"
-                    className="w-full text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 font-mono"
+                    className="w-full text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-neutral-700 bg-slate-50 dark:bg-black text-slate-700 dark:text-neutral-300 font-mono"
                   />
                 ) : (
                   <select
@@ -3515,7 +3603,7 @@ export default function GraphView() {
                       setAiSettings(newS);
                       localStorage.setItem("ce_ai_settings", JSON.stringify(newS));
                     }}
-                    className="w-full text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 font-mono"
+                    className="w-full text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-neutral-700 bg-slate-50 dark:bg-black text-slate-700 dark:text-neutral-300 font-mono"
                   >
                     <option value="">— select model —</option>
                     {aiSettings.provider === "google" ? (
@@ -3541,17 +3629,17 @@ export default function GraphView() {
                 )}
               </div>
 
-              <div className="rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 px-3 py-2.5 space-y-1.5">
-                <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">How it works</p>
-                <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
-                  When you click <strong className="text-slate-600 dark:text-slate-300">Build Graph</strong>, your synced source documents are sent to the AI. It reads each document and extracts:
+              <div className="rounded-lg bg-slate-50 dark:bg-black border border-slate-200 dark:border-neutral-800 px-3 py-2.5 space-y-1.5">
+                <p className="text-[10px] font-semibold text-slate-500 dark:text-neutral-400">How it works</p>
+                <p className="text-[10px] text-slate-500 dark:text-neutral-400 leading-relaxed">
+                  When you click <strong className="text-slate-600 dark:text-neutral-300">Build Graph</strong>, your synced source documents are sent to the AI. It reads each document and extracts:
                 </p>
-                <ul className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed list-disc pl-3 space-y-0.5">
-                  <li><strong className="text-slate-600 dark:text-slate-300">Domain models</strong> — business areas like Pricing, Features, Decisions</li>
-                  <li><strong className="text-slate-600 dark:text-slate-300">Atomic facts</strong> — each tagged as current, past, or future</li>
-                  <li><strong className="text-slate-600 dark:text-slate-300">Relationships</strong> — logical links between facts across models</li>
+                <ul className="text-[10px] text-slate-500 dark:text-neutral-400 leading-relaxed list-disc pl-3 space-y-0.5">
+                  <li><strong className="text-slate-600 dark:text-neutral-300">Domain models</strong> — business areas like Pricing, Features, Decisions</li>
+                  <li><strong className="text-slate-600 dark:text-neutral-300">Atomic facts</strong> — each tagged as current, past, or future</li>
+                  <li><strong className="text-slate-600 dark:text-neutral-300">Relationships</strong> — logical links between facts across models</li>
                 </ul>
-                <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed mt-1">
+                <p className="text-[10px] text-slate-500 dark:text-neutral-400 leading-relaxed mt-1">
                   Without a key, the built-in regex fallback is used instead. Your key never leaves this browser.
                 </p>
               </div>
@@ -3570,7 +3658,7 @@ export default function GraphView() {
                       setAiSettings(newS);
                       localStorage.removeItem("ce_ai_settings");
                     }}
-                    className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 text-slate-500 dark:text-slate-400 text-xs font-bold hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
+                    className="px-3 py-2 rounded-lg border border-slate-200 dark:border-neutral-700 text-slate-500 dark:text-neutral-400 text-xs font-bold hover:bg-slate-50 dark:hover:bg-black transition-colors"
                   >
                     Clear
                   </button>
@@ -3623,7 +3711,7 @@ function GraphMinimap({ overview, onCenter, theme }) {
   const isDark = theme === "dark";
 
   return (
-    <div className="absolute bottom-20 right-4 z-20 rounded-xl border border-slate-200 bg-white/90 p-1.5 shadow-sm backdrop-blur-sm dark:border-slate-700 dark:bg-slate-900/88">
+    <div className="absolute bottom-20 right-4 z-20 rounded-xl border border-slate-200 bg-white/90 p-1.5 shadow-sm backdrop-blur-sm dark:border-neutral-800 dark:bg-black">
       <svg
         ref={svgRef}
         width={width}
@@ -3706,7 +3794,7 @@ function GraphMinimap({ overview, onCenter, theme }) {
 
 function GraphStat({ label, value, icon: Icon, tone = "slate" }) {
   const tones = {
-    slate: "border-slate-200 bg-white text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200",
+    slate: "border-slate-200 bg-white text-slate-700 dark:border-neutral-800 dark:bg-black dark:text-neutral-200",
     red: "border-red-200 bg-red-50 text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300",
     amber: "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300",
   };
@@ -3731,9 +3819,9 @@ function AgentsSidebarPanel({
   packResult, packLoading, packError, packCopied, selectedNode, onRunPack, onCopyPack,
 }) {
   return (
-    <div className="absolute bottom-3 right-3 top-20 z-40 flex w-[min(22rem,calc(100%-1.5rem))] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-800">
+    <div className="absolute bottom-3 right-3 top-20 z-40 flex w-[min(22rem,calc(100%-1.5rem))] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-neutral-800 dark:bg-black">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 dark:border-slate-700 shrink-0">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 dark:border-neutral-800 shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-6 h-6 rounded-lg bg-violet-500 flex items-center justify-center">
             <Bot className="w-3.5 h-3.5 text-white" />
@@ -3742,7 +3830,7 @@ function AgentsSidebarPanel({
         </div>
         <button
           onClick={onClose}
-          className="w-6 h-6 flex items-center justify-center rounded-md text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+          className="w-6 h-6 flex items-center justify-center rounded-md text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-black transition-colors"
         >
           <XIcon className="w-3.5 h-3.5" />
         </button>
@@ -3759,7 +3847,7 @@ function AgentsSidebarPanel({
           title="Ingestion"
           desc="Slack · GitHub · Gmail → clean entities"
           action={
-            <a href="/app/graph" className="text-[10px] font-bold text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 border border-slate-200 dark:border-slate-600 px-2 py-1 rounded-lg transition-colors whitespace-nowrap">
+            <a href="/app/graph" className="text-[10px] font-bold text-slate-500 dark:text-neutral-400 hover:text-slate-700 dark:hover:text-slate-200 border border-slate-200 dark:border-neutral-700 px-2 py-1 rounded-lg transition-colors whitespace-nowrap">
               Build Graph →
             </a>
           }
@@ -3783,12 +3871,12 @@ function AgentsSidebarPanel({
             <div className="mt-2 space-y-1.5">
               <p className="text-[10px] text-slate-400">{relReport.message}</p>
               {relReport.suggested?.slice(0, 3).map((r, i) => (
-                <div key={i} className="flex items-start gap-1.5 p-2 rounded-lg bg-slate-50 dark:bg-slate-900/60 border border-slate-100 dark:border-slate-700/50">
-                  <span className={`text-[9px] font-bold px-1 rounded shrink-0 mt-0.5 ${r.confidence >= 0.7 ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400" : "bg-slate-100 dark:bg-slate-700 text-slate-500"}`}>
+                <div key={i} className="flex items-start gap-1.5 p-2 rounded-lg bg-slate-50 dark:bg-black border border-slate-100 dark:border-neutral-800/50">
+                  <span className={`text-[9px] font-bold px-1 rounded shrink-0 mt-0.5 ${r.confidence >= 0.7 ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400" : "bg-slate-100 dark:bg-black text-slate-500"}`}>
                     {Math.round(r.confidence * 100)}%
                   </span>
-                  <p className="text-[10px] text-slate-600 dark:text-slate-400 leading-snug">
-                    <span className="font-semibold text-slate-700 dark:text-slate-300">{r.source_name}</span>
+                  <p className="text-[10px] text-slate-600 dark:text-neutral-400 leading-snug">
+                    <span className="font-semibold text-slate-700 dark:text-neutral-300">{r.source_name}</span>
                     <span className="text-slate-400 mx-1">→</span>
                     {r.target_name}
                   </p>
@@ -3820,7 +3908,7 @@ function AgentsSidebarPanel({
                 Run
               </SidebarRunBtn>
             </div>
-            <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1.5 leading-relaxed">
+            <p className="text-[10px] text-slate-500 dark:text-neutral-400 mt-1.5 leading-relaxed">
               Scans the full graph — finds missing owners, blocked items, isolated nodes.
             </p>
           </div>
@@ -3840,7 +3928,7 @@ function AgentsSidebarPanel({
           title="Ask AI"
           desc="Questions over the full graph with citations"
           action={
-            <a href="/app/query" className="text-[10px] font-bold text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 border border-slate-200 dark:border-slate-600 px-2 py-1 rounded-lg transition-colors whitespace-nowrap">
+            <a href="/app/query" className="text-[10px] font-bold text-slate-500 dark:text-neutral-400 hover:text-slate-700 dark:hover:text-slate-200 border border-slate-200 dark:border-neutral-700 px-2 py-1 rounded-lg transition-colors whitespace-nowrap">
               Open →
             </a>
           }
@@ -3871,13 +3959,13 @@ function AgentsSidebarPanel({
                 <p className="text-[10px] text-slate-400">{packResult.entity_count} entities</p>
                 <button
                   onClick={onCopyPack}
-                  className={`flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-md transition-all ${packCopied ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400" : "bg-slate-100 dark:bg-slate-700 text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-600"}`}
+                  className={`flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-md transition-all ${packCopied ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400" : "bg-slate-100 dark:bg-black text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-600"}`}
                 >
                   {packCopied ? <Check className="w-2.5 h-2.5" /> : <Copy className="w-2.5 h-2.5" />}
                   {packCopied ? "Copied!" : "Copy"}
                 </button>
               </div>
-              <pre className="text-[10px] text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700 rounded-lg p-2.5 overflow-x-auto whitespace-pre-wrap leading-relaxed font-mono max-h-40 overflow-y-auto">
+              <pre className="text-[10px] text-slate-600 dark:text-neutral-300 bg-slate-50 dark:bg-black border border-slate-200 dark:border-neutral-800 rounded-lg p-2.5 overflow-x-auto whitespace-pre-wrap leading-relaxed font-mono max-h-40 overflow-y-auto">
                 {packResult.content}
               </pre>
             </div>
@@ -3891,7 +3979,7 @@ function AgentsSidebarPanel({
 
 function AgentRow({ icon, iconColor, num, title, desc, action, children }) {
   return (
-    <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/50 p-3">
+    <div className="rounded-xl border border-slate-200 dark:border-neutral-800 bg-white dark:bg-black p-3">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <div className={`w-5 h-5 rounded-md ${iconColor} flex items-center justify-center text-white shrink-0`}>
@@ -3900,9 +3988,9 @@ function AgentRow({ icon, iconColor, num, title, desc, action, children }) {
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
               <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wide">{num}</span>
-              <span className="text-xs font-bold text-slate-800 dark:text-slate-200">{title}</span>
+              <span className="text-xs font-bold text-slate-800 dark:text-neutral-200">{title}</span>
             </div>
-            <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-none mt-0.5 truncate">{desc}</p>
+            <p className="text-[10px] text-slate-500 dark:text-neutral-400 leading-none mt-0.5 truncate">{desc}</p>
           </div>
         </div>
         <div className="shrink-0">{action}</div>
@@ -3952,7 +4040,7 @@ function GapSidebarResult({ report }) {
           { label: "Gaps",     value: report.gaps.length, alert: critical + high > 0 },
           { label: "Isolated", value: report.stats.isolated, alert: report.stats.isolated > 0 },
         ].map(s => (
-          <div key={s.label} className="rounded-lg bg-slate-50 dark:bg-slate-900/60 border border-slate-100 dark:border-slate-700/50 p-2 text-center">
+          <div key={s.label} className="rounded-lg bg-slate-50 dark:bg-black border border-slate-100 dark:border-neutral-800/50 p-2 text-center">
             <p className={`text-base font-bold ${s.alert ? "text-red-600 dark:text-red-400" : "text-slate-900 dark:text-white"}`}>{s.value}</p>
             <p className="text-[9px] text-slate-400 uppercase tracking-wide">{s.label}</p>
           </div>
@@ -3968,13 +4056,13 @@ function GapSidebarResult({ report }) {
 
       {/* Top gaps */}
       {report.gaps.slice(0, 4).map((g, i) => (
-        <div key={i} className="flex items-start gap-1.5 p-2 rounded-lg bg-slate-50 dark:bg-slate-900/60 border border-slate-100 dark:border-slate-700/50">
+        <div key={i} className="flex items-start gap-1.5 p-2 rounded-lg bg-slate-50 dark:bg-black border border-slate-100 dark:border-neutral-800/50">
           <div className={`w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${SEV_DOT[g.severity] || SEV_DOT.low}`} />
           <div className="min-w-0">
             <div className="flex items-center gap-1 flex-wrap">
               <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${SEV_PILL[g.severity] || SEV_PILL.low}`}>{g.severity}</span>
             </div>
-            <p className="text-[10px] font-semibold text-slate-700 dark:text-slate-300 mt-0.5 leading-snug">{g.title}</p>
+            <p className="text-[10px] font-semibold text-slate-700 dark:text-neutral-300 mt-0.5 leading-snug">{g.title}</p>
             {g.recommendation && (
               <p className="text-[10px] text-brand-600 dark:text-brand-400 mt-0.5 flex items-center gap-0.5">
                 <ChevronRight className="w-2.5 h-2.5 shrink-0" />{g.recommendation}
@@ -4002,10 +4090,10 @@ function SourceCoveragePanel({ components }) {
   });
 
   const families = [
-    { key: "github", label: "GitHub", icon: GitPullRequest, color: "text-slate-700 dark:text-slate-300", bg: "bg-slate-100 dark:bg-slate-700" },
+    { key: "github", label: "GitHub", icon: GitPullRequest, color: "text-slate-700 dark:text-neutral-300", bg: "bg-slate-100 dark:bg-black" },
     { key: "agent", label: "AI Sessions", icon: Bot, color: "text-violet-700 dark:text-violet-300", bg: "bg-violet-100 dark:bg-violet-900/30" },
     { key: "communication", label: "Comms", icon: MessageCircle, color: "text-sky-700 dark:text-sky-300", bg: "bg-sky-100 dark:bg-sky-900/30" },
-    { key: "local", label: "Local", icon: FileText, color: "text-slate-600 dark:text-slate-300", bg: "bg-slate-100 dark:bg-slate-700" },
+    { key: "local", label: "Local", icon: FileText, color: "text-slate-600 dark:text-neutral-300", bg: "bg-slate-100 dark:bg-black" },
     { key: "other", label: "Other", icon: Layers3, color: "text-teal-700 dark:text-teal-300", bg: "bg-teal-100 dark:bg-teal-900/30" },
   ];
 
@@ -4016,12 +4104,12 @@ function SourceCoveragePanel({ components }) {
         {families.map(({ key, label, icon: Icon, color, bg }) => {
           const data = byFamily[key];
           return (
-            <div key={key} className="flex items-center justify-between gap-2 p-2 rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700/50">
+            <div key={key} className="flex items-center justify-between gap-2 p-2 rounded-lg bg-slate-50 dark:bg-black border border-slate-100 dark:border-neutral-800/50">
               <div className="flex items-center gap-2">
                 <div className={`w-6 h-6 rounded-md ${bg} flex items-center justify-center`}>
                   <Icon className={`w-3.5 h-3.5 ${color}`} />
                 </div>
-                <span className="text-xs font-bold text-slate-700 dark:text-slate-300">{label}</span>
+                <span className="text-xs font-bold text-slate-700 dark:text-neutral-300">{label}</span>
               </div>
               <span className="text-xs font-bold text-slate-500">{data ? data.count : 0}</span>
             </div>
@@ -4043,8 +4131,8 @@ function SourceCoveragePanel({ components }) {
               .slice(0, 8)
               .map(([type, count]) => (
                 <div key={type} className="flex items-center justify-between text-xs">
-                  <span className="text-slate-600 dark:text-slate-400 capitalize">{type.replace(/_/g, " ")}</span>
-                  <span className="font-bold text-slate-700 dark:text-slate-300">{count}</span>
+                  <span className="text-slate-600 dark:text-neutral-400 capitalize">{type.replace(/_/g, " ")}</span>
+                  <span className="font-bold text-slate-700 dark:text-neutral-300">{count}</span>
                 </div>
               ))}
           </div>
@@ -4087,7 +4175,7 @@ function WorkLensPanel({ data, loading }) {
           blue: "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400",
           sky: "bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-400",
           violet: "bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-400",
-          slate: "bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300",
+          slate: "bg-slate-100 dark:bg-black text-slate-600 dark:text-neutral-300",
         };
         return (
           <div key={key}>
@@ -4101,8 +4189,8 @@ function WorkLensPanel({ data, loading }) {
             {items.length > 0 ? (
               <div className="space-y-1">
                 {items.slice(0, 4).map((item) => (
-                  <div key={item.id} className="p-2 rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700/50">
-                    <p className="text-[11px] font-semibold text-slate-700 dark:text-slate-300 truncate">{item.name || item.display_title}</p>
+                  <div key={item.id} className="p-2 rounded-lg bg-slate-50 dark:bg-black border border-slate-100 dark:border-neutral-800/50">
+                    <p className="text-[11px] font-semibold text-slate-700 dark:text-neutral-300 truncate">{item.name || item.display_title}</p>
                     <div className="flex items-center gap-1.5 mt-0.5">
                       {item.model_name && <span className="text-[9px] text-slate-400">{item.model_name}</span>}
                       {item.confidence != null && (

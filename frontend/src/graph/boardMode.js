@@ -1,10 +1,10 @@
 /** Board view defaults — source-first clusters, quiet canvas, lens presets. */
 
-export const BOARD_CARD_WIDTH = 220;
-export const BOARD_CARD_HEIGHT = 80;
+export const BOARD_CARD_WIDTH = 188;
+export const BOARD_CARD_HEIGHT = 64;
 export const BOARD_CARD_TEXT_MAX_WIDTH = BOARD_CARD_WIDTH - 36;
-export const BOARD_READABLE_ZOOM = 0.82;
-export const BOARD_READABLE_PAN_PADDING = { x: 28, y: 86 };
+export const BOARD_READABLE_ZOOM = 0.52;
+export const BOARD_READABLE_PAN_PADDING = { x: 24, y: 72 };
 
 export const BOARD_LENSES = [
   { id: "all", label: "All Sources", desc: "Every source cluster in this workspace" },
@@ -14,7 +14,7 @@ export const BOARD_LENSES = [
 ];
 
 const BOARD_ACCENT = "#3b82f6";
-const BOARD_NEUTRAL_BORDER = "#64748b";
+const BOARD_NEUTRAL_BORDER = "#475569";
 
 export function boardGraphGroup(component, sourceKindFn, sourceFamilyFn) {
   const kind = sourceKindFn(component);
@@ -75,20 +75,20 @@ export function boardReadablePan(bounds, zoom, padding = BOARD_READABLE_PAN_PADD
 export function boardCardVisuals(component, isGap, sourceKindFn) {
   if (isGap) {
     return {
-      bg: "rgba(239,68,68,0.08)",
-      border: BOARD_NEUTRAL_BORDER,
+      bg: "#fff1f2",
+      border: "#ef4444",
       stripe: "#ef4444",
     };
   }
   const kind = sourceKindFn(component);
   const byKind = {
-    github: { bg: "rgba(59,130,246,0.08)", border: BOARD_NEUTRAL_BORDER, stripe: "#6e7681" },
-    slack: { bg: "rgba(59,130,246,0.08)", border: BOARD_NEUTRAL_BORDER, stripe: "#1d9bd1" },
-    gmail: { bg: "rgba(59,130,246,0.08)", border: BOARD_NEUTRAL_BORDER, stripe: "#38bdf8" },
-    agent: { bg: "rgba(59,130,246,0.08)", border: BOARD_NEUTRAL_BORDER, stripe: "#8b5cf6" },
-    local: { bg: "rgba(59,130,246,0.08)", border: BOARD_NEUTRAL_BORDER, stripe: "#94a3b8" },
+    github: { bg: "#f8fafc", border: BOARD_NEUTRAL_BORDER, stripe: "#6e7681" },
+    slack: { bg: "#f0f9ff", border: BOARD_NEUTRAL_BORDER, stripe: "#1d9bd1" },
+    gmail: { bg: "#f0f9ff", border: BOARD_NEUTRAL_BORDER, stripe: "#38bdf8" },
+    agent: { bg: "#f5f3ff", border: BOARD_NEUTRAL_BORDER, stripe: "#8b5cf6" },
+    local: { bg: "#f8fafc", border: BOARD_NEUTRAL_BORDER, stripe: "#94a3b8" },
   };
-  return byKind[kind] || { bg: "rgba(59,130,246,0.06)", border: BOARD_NEUTRAL_BORDER, stripe: BOARD_ACCENT };
+  return byKind[kind] || { bg: "#f8fafc", border: BOARD_NEUTRAL_BORDER, stripe: BOARD_ACCENT };
 }
 
 export function resolveRelationshipEdgeStyle({
@@ -99,11 +99,11 @@ export function resolveRelationshipEdgeStyle({
 }) {
   const origin = relationship.origin || "proposed";
   const originStyles = {
-    deterministic: { lineStyle: "solid", width: 2, opacity: 0.76, color: "#3b82f6" },
-    extracted: { lineStyle: "solid", width: 1.6, opacity: 0.56, color: "#8b5cf6" },
-    proposed: { lineStyle: "dotted", width: 1.4, opacity: 0.4, color: "#94a3b8" },
-    ai_proposed: { lineStyle: "dashed", width: 1.5, opacity: 0.44, color: "#f59e0b" },
-    human_verified: { lineStyle: "solid", width: 2.4, opacity: 0.88, color: "#059669" },
+    deterministic: { lineStyle: "solid", width: 3.8, opacity: 0.96, color: "#2563eb" },
+    extracted: { lineStyle: "solid", width: 3.4, opacity: 0.9, color: "#7c3aed" },
+    proposed: { lineStyle: "dotted", width: 2.8, opacity: 0.78, color: "#475569" },
+    ai_proposed: { lineStyle: "dashed", width: 3.1, opacity: 0.86, color: "#d97706" },
+    human_verified: { lineStyle: "solid", width: 4, opacity: 0.98, color: "#059669" },
   };
 
   if (showTrustEdges) {
@@ -115,8 +115,8 @@ export function resolveRelationshipEdgeStyle({
   return {
     origin,
     lineStyle: "solid",
-    width: sameGroup ? 1 : 1.5,
-    opacity: sameGroup ? 0.45 : 0.65,
+    width: sameGroup ? 3.2 : 4,
+    opacity: sameGroup ? 0.9 : 0.96,
     color: accent,
   };
 }

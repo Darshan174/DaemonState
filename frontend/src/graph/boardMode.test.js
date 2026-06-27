@@ -44,8 +44,9 @@ describe("filterGapsLens", () => {
 });
 
 describe("readable board viewport", () => {
-  it("uses a readable card viewport when full fit would collapse Board into dots", () => {
-    expect(BOARD_READABLE_ZOOM).toBeGreaterThan(0.7);
+  it("keeps the readable fallback below the compact board fit target", () => {
+    expect(BOARD_READABLE_ZOOM).toBeGreaterThan(0.5);
+    expect(BOARD_READABLE_ZOOM).toBeLessThan(0.7);
     expect(shouldUseReadableBoardViewport({
       viewMode: "knowledge",
       graphLayout: "board",
@@ -68,8 +69,8 @@ describe("readable board viewport", () => {
 
   it("pans the top-left graph bounds into the readable viewport", () => {
     const pan = boardReadablePan({ x1: -120, y1: 40 }, 0.82);
-    expect(pan.x).toBeCloseTo(126.4);
-    expect(pan.y).toBeCloseTo(53.2);
+    expect(pan.x).toBeCloseTo(122.4);
+    expect(pan.y).toBeCloseTo(39.2);
   });
 });
 
