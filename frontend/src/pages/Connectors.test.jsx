@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   syncMutate: vi.fn(),
   disconnectMutate: vi.fn(),
   ingestAISessionMutate: vi.fn(),
+  importAISessionByIdMutate: vi.fn(),
 }));
 
 function mutation(mutate) {
@@ -103,6 +104,7 @@ vi.mock("../api/hooks", () => ({
   useSyncConnector: () => mutation(mocks.syncMutate),
   useDisconnectConnector: () => mutation(mocks.disconnectMutate),
   useIngestAISession: () => mutation(mocks.ingestAISessionMutate),
+  useImportAISessionById: () => mutation(mocks.importAISessionByIdMutate),
 }));
 
 vi.mock("../context/WorkspaceContext", () => ({
@@ -146,5 +148,25 @@ describe("Connectors", () => {
     expect(screen.getByRole("button", { name: /connect with google/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /import session/i })).toBeInTheDocument();
     expect(screen.queryByText("Notion")).not.toBeInTheDocument();
+  });
+
+  it("imports AI sessions from local history by session ID", () => {
+    renderConnectors();
+
+    fireEvent.click(screen.getByRole("button", { name: /import session/i }));
+    fireEvent.change(screen.getByLabelText(/session id/i), {
+      target: { value: "019eff6d-f344-7a52-b0c9-3ce47f8adc21" },
+    });
+    const importButtons = screen.getAllByRole("button", { name: /import session/i });
+    fireEvent.click(importButtons[0]);
+
+    expect(mocks.importAISessionByIdMutate).toHaveBeenCalledWith(
+      {
+        connectorType: "codex",
+        sessionId: "019eff6d-f344-7a52-b0c9-3ce47f8adc21",
+      },
+      expect.any(Object),
+    );
+    expect(mocks.ingestAISessionMutate).not.toHaveBeenCalled();
   });
 });

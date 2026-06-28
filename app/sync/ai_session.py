@@ -64,6 +64,7 @@ async def ingest_ai_session(
     session_id: str,
     content: str,
     workspace_id: str | None = None,
+    metadata_extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     messages = _parse_session_content(content)
 
@@ -85,12 +86,15 @@ async def ingest_ai_session(
     now = datetime.utcnow()
     metadata = {
         "session_id": session_id,
+        "tool": connector_type,
         "message_count": len(messages),
         "connector_type": connector_type,
         "ingested_at": now.isoformat(),
     }
     if workspace_id:
         metadata["workspace_id"] = workspace_id
+    if metadata_extra:
+        metadata.update({k: v for k, v in metadata_extra.items() if v not in (None, "", [])})
     meta = json.dumps(metadata)
 
     if existing:

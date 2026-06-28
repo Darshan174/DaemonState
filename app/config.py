@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     zoom_client_secret: str | None = None
     zoom_redirect_uri: str | None = None
     public_base_url: str | None = None
+    codex_home: str | None = None
+    claude_home: str | None = None
+    opencode_home: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",
