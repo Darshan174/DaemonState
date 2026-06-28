@@ -4,6 +4,15 @@ import ThemeToggle from "./components/ThemeToggle";
 import CeIcon from "./components/CeIcon";
 import WorkspaceSwitcher from "./components/WorkspaceSwitcher";
 import { useWorkspaces } from "./api/hooks";
+import {
+  Activity,
+  Cable,
+  CircleDot,
+  Database,
+  GitBranch,
+  LayoutDashboard,
+  Search,
+} from "lucide-react";
 
 const GraphView    = lazy(() => import("./pages/GraphView"));
 const QueryView    = lazy(() => import("./pages/QueryView"));
@@ -15,12 +24,12 @@ const Changes      = lazy(() => import("./pages/Changes"));
 const AgentsView   = lazy(() => import("./pages/AgentsView"));
 
 const NAV_ITEMS = [
-  { to: "/app",             label: "Dashboard", end: true },
-  { to: "/app/graph",       label: "Graph" },
-  { to: "/app/query",       label: "Ask" },
-  { to: "/app/sources",     label: "Sources" },
-  { to: "/app/connectors",  label: "Connectors" },
-  { to: "/app/changes",     label: "Changes" },
+  { to: "/app",             label: "Dashboard", icon: LayoutDashboard, end: true },
+  { to: "/app/graph",       label: "Graph", icon: GitBranch },
+  { to: "/app/query",       label: "Ask", icon: Search },
+  { to: "/app/sources",     label: "Sources", icon: Database },
+  { to: "/app/connectors",  label: "Connectors", icon: Cable },
+  { to: "/app/changes",     label: "Changes", icon: Activity },
 ];
 
 function PageLoader() {
@@ -53,35 +62,34 @@ function AdminShell() {
   const showWorkspaceSwitcher = (workspaces?.length ?? 0) > 1;
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-slate-50 dark:bg-[#0a0c0f] transition-colors duration-300">
-      <header className="shrink-0 border-b border-slate-200/50 bg-white/70 backdrop-blur-md transition-colors dark:border-slate-800/50 dark:bg-slate-950/70">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-3.5">
-          {/* Brand */}
-          <Link to="/" className="flex shrink-0 items-center gap-3 group">
-            <span className="group-hover:scale-105 transition-transform duration-200">
-              <CeIcon size={38} />
+    <div className="flex h-screen flex-col overflow-hidden bg-[#f5f6f8] text-slate-950 transition-colors duration-300 dark:bg-transparent dark:text-neutral-100">
+      <header className="shrink-0 border-b border-black/[0.08] bg-white/78 backdrop-blur-2xl transition-colors dark:border-white/[0.08] dark:bg-[#050507]/82">
+        <div className="mx-auto grid max-w-[1500px] grid-cols-[auto_1fr_auto] items-center gap-4 px-4 py-3 md:px-6">
+          <Link to="/" className="group flex min-w-0 shrink-0 items-center gap-3">
+            <span className="transition-transform duration-200 group-hover:scale-105">
+              <CeIcon size={34} />
             </span>
             <span className="hidden sm:block">
-              <span className="block text-sm font-bold leading-tight text-slate-900 dark:text-white">Context Engine</span>
-              <span className="block text-[11px] leading-tight text-slate-500 dark:text-slate-400">Structured context for AI teams</span>
+              <span className="block text-sm font-bold leading-tight text-slate-950 dark:text-white">Context Engine</span>
+              <span className="block text-[11px] leading-tight text-slate-500 dark:text-neutral-500">Project memory graph</span>
             </span>
           </Link>
 
-          {/* Nav */}
-          <nav className="flex items-center gap-0.5 overflow-x-auto no-scrollbar">
-            {NAV_ITEMS.map(({ to, label, end, badge }) => (
+          <nav className="mx-auto flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-slate-200/80 bg-slate-100/80 p-1 no-scrollbar shadow-inner shadow-black/[0.03] dark:border-white/[0.08] dark:bg-white/[0.035]">
+            {NAV_ITEMS.map(({ to, label, icon: Icon, end, badge }) => (
               <NavLink
                 key={to}
                 to={to}
                 end={end || to === "/app"}
                 className={({ isActive }) =>
-                  `relative inline-flex items-center gap-1.5 h-9 px-3.5 text-[13px] font-medium rounded-lg transition-all duration-150 whitespace-nowrap ${
+                  `relative inline-flex h-8 items-center gap-2 rounded-md px-3 text-[12px] font-semibold transition-all duration-150 whitespace-nowrap ${
                     isActive
-                      ? "bg-slate-100 dark:bg-white/10 text-slate-900 dark:text-white font-semibold"
-                      : "text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-white/5"
+                      ? "bg-white text-slate-950 shadow-sm ring-1 ring-black/[0.04] dark:bg-white/[0.1] dark:text-white dark:ring-white/[0.08]"
+                      : "text-slate-500 hover:bg-white/55 hover:text-slate-900 dark:text-neutral-500 dark:hover:bg-white/[0.05] dark:hover:text-neutral-200"
                   }`
                 }
               >
+                <Icon className="h-3.5 w-3.5" />
                 {label}
                 {badge && (
                   <span className="text-[9px] font-black px-1 py-0.5 rounded bg-brand-500 text-white leading-none tracking-wide">
@@ -92,14 +100,21 @@ function AdminShell() {
             ))}
           </nav>
 
-          <div className="flex shrink-0 items-center gap-3">
+          <div className="flex min-w-0 shrink-0 items-center justify-end gap-2">
             {showWorkspaceSwitcher ? <WorkspaceSwitcher /> : null}
+            <div className="hidden items-center gap-1.5 rounded-lg border border-slate-200/80 bg-white/70 px-2.5 py-1.5 text-[11px] font-bold text-slate-500 dark:border-white/[0.08] dark:bg-white/[0.045] dark:text-neutral-400 md:flex">
+              <CircleDot className="h-3 w-3 text-emerald-500" />
+              Live
+            </div>
             <ThemeToggle />
           </div>
         </div>
       </header>
 
-      <main className={`flex-1 min-h-0 dark:text-slate-100 ${isGraphPage ? "overflow-hidden" : "overflow-y-auto px-4 py-6 md:px-6"}`}>
+      <main className={`relative flex-1 min-h-0 dark:text-neutral-100 ${isGraphPage ? "overflow-hidden" : "overflow-y-auto px-4 py-7 md:px-6"}`}>
+        {!isGraphPage ? (
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-40 border-b border-black/[0.04] bg-[linear-gradient(135deg,rgba(255,255,255,0.68),rgba(79,70,229,0.06),rgba(20,184,166,0.04))] dark:border-white/[0.04] dark:bg-[linear-gradient(135deg,rgba(255,255,255,0.055),rgba(94,106,210,0.10),rgba(20,184,166,0.045))]" />
+        ) : null}
         <Suspense fallback={<PageLoader />}>
           <Routes>
             <Route index                                  element={<Dashboard />} />
