@@ -17,7 +17,7 @@ export const INSPECTOR_STATUS = {
 export const INSPECTOR_TEMPORAL = {
   current: { label: "Now", pill: "bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-400" },
   future: { label: "Next", pill: "bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-400" },
-  past: { label: "Past", pill: "bg-slate-100 dark:bg-slate-700 text-slate-500" },
+  past: { label: "Past", pill: "bg-slate-100 dark:bg-black text-slate-500" },
 };
 
 export function githubSourceUrl(node = {}) {

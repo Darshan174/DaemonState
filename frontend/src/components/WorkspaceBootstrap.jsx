@@ -16,7 +16,7 @@ export default function WorkspaceBootstrap({ children }) {
   // While checking, show a minimal loader
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-screen bg-gray-50 dark:bg-gray-900/30">
+      <div className="flex items-center justify-center h-screen bg-gray-50 dark:bg-transparent">
         <p className="text-sm text-gray-400">Connecting to backend...</p>
       </div>
     );
@@ -28,7 +28,7 @@ export default function WorkspaceBootstrap({ children }) {
 
     // Real server error (4xx/5xx) — surface it instead of silently proceeding
     return (
-      <div className="flex items-center justify-center h-screen bg-gray-50 dark:bg-gray-900/30">
+      <div className="flex items-center justify-center h-screen bg-gray-50 dark:bg-transparent">
         <div className="w-full max-w-sm mx-4 text-center">
           <div className="w-10 h-10 rounded-full bg-red-100 dark:bg-red-900/40 flex items-center justify-center mx-auto mb-3">
             <span className="text-red-500 text-lg font-bold">!</span>
@@ -66,19 +66,18 @@ export default function WorkspaceBootstrap({ children }) {
   };
 
   return (
-    <div className="relative flex h-screen items-center justify-center bg-slate-50 text-slate-900 transition-colors dark:bg-slate-950 dark:text-slate-100">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(79,70,229,0.12)_0%,transparent_70%)] dark:bg-[radial-gradient(circle_at_center,rgba(79,70,229,0.15)_0%,transparent_70%)]" />
+    <div className="relative flex h-screen items-center justify-center bg-slate-50 text-slate-900 transition-colors dark:bg-transparent dark:text-neutral-100">
       <div className="w-full max-w-md mx-4 relative z-10">
-        <div className="bg-white dark:bg-slate-800 rounded-[32px] border border-slate-200 dark:border-slate-800/50 shadow-2xl p-10">
+        <div className="bg-white dark:bg-black rounded-[32px] border border-slate-200 dark:border-neutral-800/50 shadow-2xl p-10">
           <div className="flex items-center gap-3 mb-8">
             <span className="w-10 h-10 rounded-2xl bg-brand-600 flex items-center justify-center text-white font-bold text-sm shadow-lg shadow-brand-500/30">
               CE
             </span>
-            <span className="font-bold text-slate-900 dark:text-slate-200 text-xl tracking-tight">Context Engine</span>
+            <span className="font-bold text-slate-900 dark:text-neutral-200 text-xl tracking-tight">Context Engine</span>
           </div>
 
-          <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-200 mb-2">Create Workspace</h2>
-          <p className="text-sm text-slate-500 dark:text-slate-400 mb-8 leading-relaxed">
+          <h2 className="text-2xl font-bold text-slate-900 dark:text-neutral-200 mb-2">Create Workspace</h2>
+          <p className="text-sm text-slate-500 dark:text-neutral-400 mb-8 leading-relaxed">
             Every startup needs a grounded memory. Set up your first workspace to start ingesting context.
           </p>
 
@@ -91,7 +90,7 @@ export default function WorkspaceBootstrap({ children }) {
                 onChange={(e) => setName(e.target.value)}
                 placeholder="e.g. Acme Corp"
                 required
-                className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-900/30 border border-slate-200 dark:border-slate-800/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 transition-all text-sm font-medium text-slate-900 dark:text-slate-100 placeholder:text-slate-400"
+                className="w-full px-4 py-3 bg-slate-50 dark:bg-black border border-slate-200 dark:border-neutral-800/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 transition-all text-sm font-medium text-slate-900 dark:text-neutral-100 placeholder:text-slate-400"
               />
             </div>
 

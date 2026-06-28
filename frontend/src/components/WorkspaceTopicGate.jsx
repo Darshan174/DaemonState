@@ -51,17 +51,17 @@ export default function WorkspaceTopicGate({
   }
 
   return (
-    <div className="flex h-full min-h-[520px] items-center justify-center bg-slate-50 p-4 dark:bg-slate-950 sm:p-6">
-      <div className="w-full max-w-3xl rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:p-6">
+    <div className="flex h-full min-h-[520px] items-center justify-center bg-slate-50 p-4 dark:bg-transparent sm:p-6">
+      <div className="w-full max-w-3xl rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-black sm:p-6">
         <div className="mb-6 flex items-start gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-700 dark:bg-black dark:text-neutral-200">
             <FolderKanban className="h-5 w-5" />
           </div>
           <div className="min-w-0">
             <h1 className="text-xl font-bold tracking-tight text-slate-950 dark:text-white">
               Create or choose a workspace
             </h1>
-            <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-500 dark:text-slate-400">
+            <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-500 dark:text-neutral-400">
               Use one workspace for each project so sources, decisions, and relationships stay together.
             </p>
           </div>
@@ -87,9 +87,9 @@ export default function WorkspaceTopicGate({
                   key={workspace.id}
                   type="button"
                   onClick={() => onSelect(workspace.id)}
-                  className="flex min-h-16 items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-left transition hover:border-slate-300 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-slate-600 dark:hover:bg-slate-800"
+                  className="flex min-h-16 items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-left transition hover:border-slate-300 hover:bg-slate-50 dark:border-neutral-800 dark:bg-black dark:hover:border-slate-600 dark:hover:bg-black"
                 >
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-300">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-slate-100 text-slate-500 dark:bg-black dark:text-neutral-300">
                     <FolderKanban className="h-4 w-4" />
                   </div>
                   <div className="min-w-0">
@@ -106,22 +106,22 @@ export default function WorkspaceTopicGate({
           </section>
         )}
 
-        <form onSubmit={handleCreate} className="rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-950/60">
+        <form onSubmit={handleCreate} className="rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-neutral-800 dark:bg-black">
           <div className="mb-3 flex items-center gap-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-white text-slate-600 ring-1 ring-slate-200 dark:bg-slate-900 dark:text-slate-300 dark:ring-slate-700">
+            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-white text-slate-600 ring-1 ring-slate-200 dark:bg-black dark:text-neutral-300 dark:ring-slate-700">
               <Plus className="h-4 w-4" />
             </div>
             <div>
               <h3 className="text-sm font-bold text-slate-900 dark:text-white">
                 New workspace
               </h3>
-              <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+              <p className="text-xs font-medium text-slate-500 dark:text-neutral-400">
                 Name it after the product, repo, customer, or initiative.
               </p>
             </div>
           </div>
 
-          <label className="mb-1.5 block text-xs font-bold text-slate-500 dark:text-slate-400">
+          <label className="mb-1.5 block text-xs font-bold text-slate-500 dark:text-neutral-400">
             Workspace name
           </label>
           <div className="flex flex-col gap-2 sm:flex-row">
@@ -130,7 +130,7 @@ export default function WorkspaceTopicGate({
               value={name}
               onChange={(event) => setName(event.target.value)}
               placeholder="Context Engine"
-              className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-slate-400 focus:ring-4 focus:ring-slate-200/70 dark:border-slate-700 dark:bg-slate-900 dark:text-white dark:focus:border-slate-500 dark:focus:ring-slate-800"
+              className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-slate-400 focus:ring-4 focus:ring-slate-200/70 dark:border-neutral-800 dark:bg-black dark:text-white dark:focus:border-slate-500 dark:focus:ring-neutral-800"
             />
             <button
               type="submit"

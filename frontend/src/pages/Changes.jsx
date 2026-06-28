@@ -48,15 +48,15 @@ export default function Changes() {
   const totalEvents = sourceId ? sourceFiltered.length : (timelineQuery.data?.totalEvents ?? changes.length);
 
   return (
-    <div className="max-w-3xl mx-auto space-y-6">
-      {/* Header */}
+    <div className="relative z-10 mx-auto max-w-4xl space-y-6">
       <div className="flex items-start justify-between gap-4">
         <div>
+          <p className="eyebrow">Audit trail</p>
           <div className="flex items-center gap-2.5">
-            <h1 className="text-xl font-bold text-slate-900 dark:text-white">Changes</h1>
+            <h1 className="mt-1 text-2xl font-semibold text-slate-950 dark:text-white">Changes</h1>
             {usesMockData && <MockBadge />}
           </div>
-          <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
+          <p className="text-sm text-slate-500 dark:text-neutral-400 mt-0.5">
             {totalEvents} event{totalEvents !== 1 ? "s" : ""}
             {generatedAt ? ` · Updated ${formatDate(generatedAt)}` : ""}
           </p>
@@ -64,7 +64,7 @@ export default function Changes() {
       </div>
 
       {/* Filter bar */}
-      <div className="flex items-center gap-1.5 p-1.5 bg-slate-100 dark:bg-slate-800 rounded-xl w-fit">
+      <div className="flex w-fit items-center gap-1.5 rounded-lg border border-slate-200/80 bg-slate-100/80 p-1.5 shadow-inner shadow-black/[0.03] dark:border-white/[0.08] dark:bg-white/[0.035]">
         {FILTERS.map((f) => {
           const active = type === f.key;
           return (
@@ -77,8 +77,8 @@ export default function Changes() {
               }}
               className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
                 active
-                  ? "bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm"
-                  : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300"
+                  ? "bg-white text-slate-900 shadow-sm dark:bg-white/[0.1] dark:text-white"
+                  : "text-slate-500 dark:text-neutral-400 hover:text-slate-700 dark:hover:text-slate-300"
               }`}
             >
               {f.label}
@@ -92,13 +92,13 @@ export default function Changes() {
 
       {/* Timeline */}
       {filtered.length === 0 ? (
-        <div className="rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-8 text-center">
-          <p className="text-sm font-semibold text-slate-600 dark:text-slate-300">No changes match this filter.</p>
+        <div className="rounded-xl bg-white dark:bg-black border border-slate-200 dark:border-neutral-800 p-8 text-center">
+          <p className="text-sm font-semibold text-slate-600 dark:text-neutral-300">No changes match this filter.</p>
         </div>
       ) : (
         <div className="relative">
           {/* Vertical line */}
-          <div className="absolute left-[19px] top-3 bottom-3 w-px bg-slate-200 dark:bg-slate-700" />
+          <div className="absolute bottom-3 left-[19px] top-3 w-px bg-slate-200 dark:bg-white/[0.08]" />
           <div className="space-y-3">
             {filtered.map((item) => <ChangeCard key={item.id} item={item} />)}
           </div>
@@ -106,7 +106,7 @@ export default function Changes() {
             <button
               onClick={() => timelineQuery.fetchNextPage()}
               disabled={timelineQuery.isFetchingNextPage}
-              className="mt-4 w-full py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors disabled:opacity-50"
+              className="mt-4 w-full py-2.5 rounded-xl border border-slate-200 dark:border-neutral-800 text-xs font-semibold text-slate-500 hover:bg-slate-50 dark:hover:bg-black transition-colors disabled:opacity-50"
             >
               {timelineQuery.isFetchingNextPage ? "Loading…" : "Load more"}
             </button>
@@ -138,26 +138,26 @@ function ChangeCard({ item }) {
         <Icon className="w-2.5 h-2.5 text-white" />
       </div>
       {/* Card */}
-      <div className="flex-1 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-4 shadow-sm min-w-0">
+      <div className="panel min-w-0 flex-1 p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="flex-1 min-w-0">
             <div className="flex flex-wrap items-center gap-2 mb-1.5">
-              <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">{item.title}</h3>
+              <h3 className="text-sm font-semibold text-slate-800 dark:text-neutral-200">{item.title}</h3>
               <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${badgeClass(tone)}`}>
                 {fmtLabel(item.type)}
               </span>
               {item.status && (
-                <span className="rounded-full bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-[10px] font-medium text-slate-500 dark:text-slate-400">
+                <span className="rounded-full bg-slate-100 dark:bg-black px-2 py-0.5 text-[10px] font-medium text-slate-500 dark:text-neutral-400">
                   {fmtLabel(item.status)}
                 </span>
               )}
             </div>
-            {item.summary && <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">{item.summary}</p>}
+            {item.summary && <p className="text-xs text-slate-500 dark:text-neutral-400 leading-relaxed">{item.summary}</p>}
             {meta.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {meta.map((e) => (
-                  <span key={`${item.id}-${e.label}`} className="rounded-lg bg-slate-50 dark:bg-slate-900/60 border border-slate-100 dark:border-slate-700/50 px-2 py-0.5 text-[10px] text-slate-500 dark:text-slate-400">
-                    <span className="font-semibold text-slate-600 dark:text-slate-300">{e.label}:</span> {e.value}
+                  <span key={`${item.id}-${e.label}`} className="rounded-md border border-slate-200/70 bg-slate-50/80 px-2 py-0.5 text-[10px] text-slate-500 dark:border-white/[0.08] dark:bg-white/[0.035] dark:text-neutral-400">
+                    <span className="font-semibold text-slate-600 dark:text-neutral-300">{e.label}:</span> {e.value}
                   </span>
                 ))}
               </div>
@@ -166,12 +166,12 @@ function ChangeCard({ item }) {
           <div className="flex flex-col items-end gap-2 shrink-0">
             <p className="text-[11px] text-slate-400 whitespace-nowrap">{formatDate(item.occurredAt)}</p>
             {destination && (
-              <Link to={destination.href} className="text-[11px] font-semibold text-brand-600 dark:text-brand-400 hover:text-brand-500 whitespace-nowrap">
-                {destination.label} →
+              <Link to={destination.href} className="whitespace-nowrap text-[11px] font-semibold text-brand-600 hover:text-brand-500 dark:text-brand-400">
+                {destination.label} -&gt;
               </Link>
             )}
             {graphDest && (
-              <Link to={graphDest.href} className="text-[10px] font-bold px-2.5 py-1 rounded-lg bg-slate-900 dark:bg-slate-700 text-white hover:bg-slate-800 transition-colors whitespace-nowrap">
+              <Link to={graphDest.href} className="whitespace-nowrap rounded-md bg-slate-900 px-2.5 py-1 text-[10px] font-bold text-white transition-colors hover:bg-slate-800 dark:bg-white/[0.08]">
                 {graphDest.label}
               </Link>
             )}
@@ -206,8 +206,8 @@ function badgeClass(tone) {
     emerald: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400",
     amber:   "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400",
     rose:    "bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-400",
-    slate:   "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400",
-  }[tone] || "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400";
+    slate:   "bg-slate-100 dark:bg-black text-slate-600 dark:text-neutral-400",
+  }[tone] || "bg-slate-100 dark:bg-black text-slate-600 dark:text-neutral-400";
 }
 
 function getDestination(item) {
@@ -249,8 +249,8 @@ function formatDate(v) {
 
 function ChangesEmptyState() {
   return (
-    <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-12 text-center shadow-sm">
-      <div className="w-14 h-14 rounded-2xl bg-brand-50 dark:bg-brand-900/30 flex items-center justify-center mx-auto mb-5">
+    <div className="panel p-12 text-center">
+      <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-lg bg-brand-500/10">
         <Clock className="w-7 h-7 text-brand-500" />
       </div>
       <h2 className="text-lg font-bold text-slate-900 dark:text-white">No changes yet</h2>
@@ -258,10 +258,10 @@ function ChangesEmptyState() {
         This timeline fills in once source documents, review transitions, and decisions start flowing through your workspace.
       </p>
       <div className="mt-8 flex items-center justify-center gap-3">
-        <Link to="/app" className="px-5 py-2.5 bg-brand-600 text-white text-sm font-bold rounded-xl hover:bg-brand-500 transition-colors shadow-sm shadow-brand-600/20">
+        <Link to="/app" className="btn-primary px-5 py-2.5">
           Add context
         </Link>
-        <Link to="/app/sources" className="px-5 py-2.5 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-sm font-bold rounded-xl hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors">
+        <Link to="/app/sources" className="pill-control px-5 py-2.5 text-sm font-bold">
           Upload sources
         </Link>
       </div>

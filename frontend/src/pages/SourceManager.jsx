@@ -32,16 +32,16 @@ function SlackIcon({ className }) {
 const TYPE_META = {
   markdown: { label: "Markdown", color: "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400", icon: FileText },
   md:       { label: "Markdown", color: "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400", icon: FileText },
-  text:     { label: "Text", color: "bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300", icon: FileText },
-  txt:      { label: "Text", color: "bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300", icon: FileText },
+  text:     { label: "Text", color: "bg-slate-100 dark:bg-black text-slate-600 dark:text-neutral-300", icon: FileText },
+  txt:      { label: "Text", color: "bg-slate-100 dark:bg-black text-slate-600 dark:text-neutral-300", icon: FileText },
   json:     { label: "JSON", color: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400", icon: FileJson },
   csv:      { label: "CSV", color: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400", icon: FileCode },
   html:     { label: "HTML", color: "bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-400", icon: FileCode },
   pdf:      { label: "PDF", color: "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400", icon: FileText },
-  local:    { label: "Local File", color: "bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300", icon: FolderOpen },
-  local_folder: { label: "Local Folder", color: "bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300", icon: FolderOpen },
-  browser_upload: { label: "Browser Upload", color: "bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300", icon: Upload },
-  paste:    { label: "Pasted Text", color: "bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300", icon: Clipboard },
+  local:    { label: "Local File", color: "bg-slate-100 dark:bg-black text-slate-600 dark:text-neutral-300", icon: FolderOpen },
+  local_folder: { label: "Local Folder", color: "bg-slate-100 dark:bg-black text-slate-600 dark:text-neutral-300", icon: FolderOpen },
+  browser_upload: { label: "Browser Upload", color: "bg-slate-100 dark:bg-black text-slate-600 dark:text-neutral-300", icon: Upload },
+  paste:    { label: "Pasted Text", color: "bg-slate-100 dark:bg-black text-slate-600 dark:text-neutral-300", icon: Clipboard },
   slack:    { label: "Slack", color: "bg-violet-50 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300", icon: SlackIcon },
   github:   { label: "GitHub", color: "bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900", icon: GitHubIcon },
   github_issue: { label: "GitHub", color: "bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900", icon: GitHubIcon },
@@ -59,10 +59,10 @@ const TYPE_META = {
   agent_session: { label: "AI Context", color: "bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-300", icon: Bot },
   ai_context_codex: { label: "Codex", color: "bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-300", icon: Bot },
   ai_context_claude_code: { label: "Claude", color: "bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300", icon: Bot },
-  ai_context_opencode: { label: "OpenCode", color: "bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200", icon: Bot },
+  ai_context_opencode: { label: "OpenCode", color: "bg-slate-100 dark:bg-black text-slate-700 dark:text-neutral-200", icon: Bot },
   codex:    { label: "Codex", color: "bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-300", icon: Bot },
   claude:   { label: "Claude", color: "bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300", icon: Bot },
-  opencode: { label: "OpenCode", color: "bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200", icon: Bot },
+  opencode: { label: "OpenCode", color: "bg-slate-100 dark:bg-black text-slate-700 dark:text-neutral-200", icon: Bot },
 };
 
 const GITHUB_TYPES = ["github", "github_issue", "github_pr", "github_pull_request", "github_pull_request_review_comment"];
@@ -79,7 +79,7 @@ const SOURCE_GROUPS = [
   { id: "documents", label: "Documents", icon: FileText, chip: "bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300", types: DOCUMENT_TYPES },
   { id: "github", label: "GitHub", icon: GitHubIcon, chip: "bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900", types: GITHUB_TYPES },
   { id: "unsupported", label: "Unsupported", icon: AlertTriangle, chip: "bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300", types: UNSUPPORTED_PROVIDER_TYPES },
-  { id: "others", label: "Others", icon: Layers, chip: "bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-300", types: null },
+  { id: "others", label: "Others", icon: Layers, chip: "bg-slate-100 dark:bg-black text-slate-500 dark:text-neutral-300", types: null },
 ];
 
 function sourceTypeKey(source) {
@@ -124,7 +124,7 @@ function typeMeta(source) {
 
   return {
     label: providedLabel || known?.label || humanizeSourceType(key),
-    color: known?.color || "bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300",
+    color: known?.color || "bg-slate-100 dark:bg-black text-slate-600 dark:text-neutral-300",
     icon: known?.icon || FileText,
   };
 }
@@ -225,10 +225,10 @@ export default function SourceManager() {
       <button
         key={source.id}
         onClick={() => handleSourceClick(source)}
-        className={`w-full text-left px-3 py-2.5 rounded-lg border transition-all group ${
+        className={`group w-full rounded-lg border px-3 py-2.5 text-left transition-all ${
           isSelected
-            ? "border-brand-300 dark:border-brand-700 bg-brand-50 dark:bg-brand-900/20 shadow-sm"
-            : "border-slate-200/80 dark:border-slate-700 bg-white/90 dark:bg-slate-800/80 hover:border-slate-300 dark:hover:border-slate-600 hover:bg-white dark:hover:bg-slate-800 hover:shadow-sm"
+            ? "border-brand-400/60 bg-brand-500/10 shadow-sm dark:border-brand-500/60"
+            : "border-slate-200/80 bg-white/[0.84] hover:border-slate-300 hover:bg-white hover:shadow-sm dark:border-white/[0.08] dark:bg-white/[0.035] dark:hover:border-white/[0.16] dark:hover:bg-white/[0.055]"
         }`}
       >
         <div className="flex items-center gap-2.5">
@@ -237,7 +237,7 @@ export default function SourceManager() {
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
-              <span className="text-[13px] font-semibold text-slate-800 dark:text-slate-200 truncate">
+              <span className="text-[13px] font-semibold text-slate-800 dark:text-neutral-200 truncate">
                 {source.external_id || source.id}
               </span>
               <ChevronRight className={`w-3.5 h-3.5 shrink-0 transition-transform ${isSelected ? "text-brand-500 rotate-90" : "text-slate-300 dark:text-slate-600 group-hover:text-slate-400"}`} />
@@ -263,7 +263,7 @@ export default function SourceManager() {
               )}
             </div>
           </div>
-          <span className={`hidden sm:inline-flex items-center justify-center whitespace-nowrap text-[10px] font-bold px-2 py-0.5 rounded-md shrink-0 ${meta.color}`}>{meta.label}</span>
+          <span className={`hidden shrink-0 items-center justify-center whitespace-nowrap rounded-md px-2 py-0.5 text-[10px] font-bold sm:inline-flex ${meta.color}`}>{meta.label}</span>
         </div>
       </button>
     );
@@ -281,14 +281,13 @@ export default function SourceManager() {
   }
 
   return (
-    <div className="flex min-h-full gap-5 max-w-5xl mx-auto">
-      {/* Left panel */}
-      <div className="flex-1 flex flex-col min-w-0 gap-4">
-        {/* Header */}
+    <div className="relative z-10 mx-auto flex min-h-full max-w-6xl gap-5">
+      <div className="flex min-w-0 flex-1 flex-col gap-4">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-bold text-slate-900 dark:text-white">Source Manager</h1>
-            <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
+            <p className="eyebrow">Ingestion</p>
+            <h1 className="mt-1 text-2xl font-semibold text-slate-950 dark:text-white">Source Manager</h1>
+            <p className="mt-1 text-sm text-slate-500 dark:text-neutral-400">
               {sources.length > 0
                 ? `${sources.length} document${sources.length !== 1 ? "s" : ""} ingested across ${groupedSources.length} source${groupedSources.length !== 1 ? "s" : ""}`
                 : "Upload source documents to get started"}
@@ -296,7 +295,7 @@ export default function SourceManager() {
           </div>
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm font-bold rounded-xl transition-colors shadow-sm shadow-brand-600/20"
+            className="btn-primary"
           >
             <Upload className="w-4 h-4" />
             Upload
@@ -306,7 +305,7 @@ export default function SourceManager() {
 
         {/* Errors */}
         {(uploadError || error) && (
-          <div className="p-3.5 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40">
+          <div className="rounded-lg border border-red-200 bg-red-50 p-3.5 dark:border-red-800/40 dark:bg-red-900/20">
             <p className="text-sm text-red-700 dark:text-red-300">{uploadError || error}</p>
           </div>
         )}
@@ -317,24 +316,24 @@ export default function SourceManager() {
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
           onClick={() => fileInputRef.current?.click()}
-          className={`cursor-pointer p-8 border-2 border-dashed rounded-2xl text-center transition-all ${
+          className={`cursor-pointer rounded-lg border border-dashed p-8 text-center transition-all ${
             dragOver
-              ? "border-brand-500 bg-brand-50 dark:bg-brand-900/20 scale-[1.01]"
-              : "border-slate-200 dark:border-slate-700 hover:border-brand-300 dark:hover:border-brand-600 hover:bg-slate-50 dark:hover:bg-slate-800/50"
+              ? "scale-[1.01] border-brand-500 bg-brand-500/10"
+              : "border-slate-200/90 bg-white/55 hover:border-brand-400/60 hover:bg-white/80 dark:border-white/[0.08] dark:bg-white/[0.025] dark:hover:border-brand-500/60 dark:hover:bg-white/[0.045]"
           }`}
         >
           {uploading ? (
             <div className="flex items-center justify-center gap-3">
               <div className="w-5 h-5 border-2 border-brand-200 border-t-brand-600 rounded-full animate-spin" />
-              <span className="text-sm font-medium text-slate-600 dark:text-slate-400">Uploading…</span>
+              <span className="text-sm font-medium text-slate-600 dark:text-neutral-400">Uploading…</span>
             </div>
           ) : (
             <>
-              <div className="w-10 h-10 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto mb-3">
+              <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200/80 bg-white dark:border-white/[0.08] dark:bg-white/[0.045]">
                 <Upload className="w-5 h-5 text-slate-400" />
               </div>
-              <p className="text-sm font-medium text-slate-600 dark:text-slate-400">
-                Drop files here or <span className="text-brand-600 dark:text-brand-400 font-semibold">browse</span>
+              <p className="text-sm font-medium text-slate-600 dark:text-neutral-400">
+                Drop files here or <span className="font-semibold text-brand-600 dark:text-brand-400">browse</span>
               </p>
               <p className="text-xs text-slate-400 mt-1">MD · TXT · JSON · CSV · HTML · PDF</p>
             </>
@@ -345,10 +344,10 @@ export default function SourceManager() {
         <div className="space-y-3 pb-8">
           {sources.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-center">
-              <div className="w-14 h-14 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mb-4">
+              <div className="w-14 h-14 rounded-2xl bg-slate-100 dark:bg-black flex items-center justify-center mb-4">
                 <Layers className="w-7 h-7 text-slate-300 dark:text-slate-600" />
               </div>
-              <p className="text-sm font-semibold text-slate-500 dark:text-slate-400">No sources yet</p>
+              <p className="text-sm font-semibold text-slate-500 dark:text-neutral-400">No sources yet</p>
               <p className="text-xs text-slate-400 mt-1">Upload files or sync a connector to populate your knowledge graph</p>
             </div>
           ) : (
@@ -356,21 +355,21 @@ export default function SourceManager() {
               const GroupIcon = group.icon;
               const isExpanded = expandedGroupId === group.id;
               return (
-                <div key={group.id} className={`rounded-xl transition-colors ${isExpanded ? "bg-slate-50/80 dark:bg-slate-900/30" : ""}`}>
+                <div key={group.id} className={`rounded-lg transition-colors ${isExpanded ? "bg-slate-50/80 dark:bg-white/[0.025]" : ""}`}>
                   <button
                     onClick={() => toggleGroup(group.id)}
                     aria-expanded={isExpanded}
-                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border transition-all ${
+                    className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 transition-all ${
                       isExpanded
-                        ? "border-brand-300/70 dark:border-brand-700/70 bg-white dark:bg-slate-900/50 shadow-sm shadow-brand-600/5"
-                        : "border-transparent hover:border-slate-200 dark:hover:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                        ? "border-brand-400/50 bg-white/[0.86] shadow-sm shadow-brand-600/5 dark:bg-white/[0.045]"
+                        : "border-transparent hover:border-slate-200 hover:bg-white/70 dark:hover:border-white/[0.08] dark:hover:bg-white/[0.035]"
                     }`}
                   >
                     <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${group.chip}`}>
                       <GroupIcon className="w-4 h-4" />
                     </div>
-                    <span className="text-sm font-bold text-slate-800 dark:text-slate-100">{group.label}</span>
-                    <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-300">
+                    <span className="text-sm font-bold text-slate-800 dark:text-neutral-100">{group.label}</span>
+                    <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-black text-slate-500 dark:text-neutral-300">
                       {group.items.length}
                     </span>
                     <ChevronDown className={`w-4 h-4 ml-auto text-slate-400 transition-transform duration-200 ${isExpanded ? "rotate-0" : "-rotate-90"}`} />
@@ -389,9 +388,8 @@ export default function SourceManager() {
 
       {/* Right panel — detail */}
       {selectedSource && (
-        <div className="w-80 shrink-0 self-start flex flex-col bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm overflow-hidden">
-          {/* Panel header */}
-          <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 dark:border-slate-700">
+        <div className="panel flex w-80 shrink-0 self-start flex-col overflow-hidden">
+          <div className="flex items-center justify-between border-b border-slate-200/80 px-5 py-4 dark:border-white/[0.08]">
             <div className="flex items-center gap-2.5 min-w-0">
               <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${typeMeta(selectedSource).color}`}>
                 {(() => { const Icon = typeMeta(selectedSource).icon; return <Icon className="w-3.5 h-3.5" />; })()}
@@ -402,7 +400,7 @@ export default function SourceManager() {
             </div>
             <button
               onClick={() => { setSelectedSource(null); setSelectedComponents(null); }}
-              className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors shrink-0"
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-white/[0.055]"
             >
               <X className="w-4 h-4" />
             </button>
@@ -413,7 +411,7 @@ export default function SourceManager() {
             {(selectedSource.content || selectedSource.content_preview) && (
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">Preview</p>
-                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-900/60 text-xs text-slate-600 dark:text-slate-400 max-h-36 overflow-y-auto leading-relaxed whitespace-pre-wrap font-mono border border-slate-100 dark:border-slate-700/50">
+                <div className="panel-subtle max-h-36 overflow-y-auto p-3.5 font-mono text-xs leading-relaxed text-slate-600 whitespace-pre-wrap dark:text-neutral-400">
                   {(selectedSource.content || selectedSource.content_preview).slice(0, 800)}
                   {(selectedSource.content || "").length > 800 && "…"}
                 </div>
@@ -434,14 +432,14 @@ export default function SourceManager() {
               ) : selectedComponents?.length > 0 ? (
                 <div className="space-y-2">
                   {selectedComponents.map((c, i) => (
-                    <div key={c.id || i} className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-100 dark:border-slate-700/50">
-                      <p className="text-xs font-semibold text-slate-700 dark:text-slate-300 leading-snug">{c.value || c.name}</p>
+                    <div key={c.id || i} className="panel-subtle p-3">
+                      <p className="text-xs font-semibold text-slate-700 dark:text-neutral-300 leading-snug">{c.value || c.name}</p>
                       {c.value && c.name && c.value !== c.name && (
                         <p className="text-[11px] text-slate-400 mt-1">{c.name}</p>
                       )}
                       {c.confidence != null && (
                         <div className="mt-1.5 flex items-center gap-1.5">
-                          <div className="flex-1 h-1 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
+                          <div className="flex-1 h-1 rounded-full bg-slate-200 dark:bg-black overflow-hidden">
                             <div className="h-full bg-brand-400 rounded-full" style={{ width: `${Math.round(c.confidence * 100)}%` }} />
                           </div>
                           <span className="text-[10px] text-slate-400 shrink-0">{Math.round(c.confidence * 100)}%</span>

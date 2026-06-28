@@ -62,20 +62,24 @@ export default function Dashboard() {
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4 }}
-      className="max-w-6xl mx-auto space-y-10 relative z-10"
+      className="app-page relative z-10"
     >
-      {/* ── Founder Header ────────────────────────── */}
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-6">
+      <div className="flex flex-col justify-between gap-6 md:flex-row md:items-end">
         <div>
-          <h2 className="text-4xl font-extrabold text-slate-900 dark:text-white tracking-tight">Workspace Overview</h2>
-          <p className="text-slate-500 dark:text-slate-400 mt-3 text-lg leading-relaxed">
-            Your startup memory is grounded in <span className="font-bold text-brand-600 dark:text-brand-400 bg-brand-50 dark:bg-brand-900/40 px-2 py-0.5 rounded-md">{sourceCount} source documents</span>.
+          <p className="eyebrow">Workspace command center</p>
+          <h2 className="mt-3 text-4xl font-semibold leading-tight text-slate-950 dark:text-white md:text-5xl">Context graph status</h2>
+          <p className="mt-3 max-w-2xl text-base leading-relaxed text-slate-500 dark:text-neutral-400">
+            Your workspace memory is grounded in{" "}
+            <span className="rounded-md border border-brand-500/20 bg-brand-500/10 px-2 py-0.5 font-bold text-brand-700 dark:text-brand-300">
+              {sourceCount} source documents
+            </span>
+            , with provenance preserved for agent handoffs and query traces.
           </p>
         </div>
         <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
           <Link
             to="/app/query"
-            className="group relative inline-flex items-center gap-2 overflow-hidden px-6 py-3.5 bg-brand-600 text-white rounded-2xl font-bold shadow-xl shadow-brand-600/30 hover:bg-brand-500 transition-all"
+            className="group relative inline-flex items-center gap-2 overflow-hidden rounded-lg bg-brand-600 px-5 py-3 text-sm font-bold text-white shadow-[0_18px_42px_rgba(79,70,229,0.32)] transition-all hover:bg-brand-500 dark:shadow-[0_0_0_1px_rgba(255,255,255,0.08)]"
           >
             <div className="absolute inset-0 flex h-full w-full justify-center [transform:skew(-12deg)_translateX(-100%)] group-hover:duration-1000 group-hover:[transform:skew(-12deg)_translateX(100%)]">
               <div className="relative h-full w-8 bg-white/20" />
@@ -86,8 +90,7 @@ export default function Dashboard() {
         </motion.div>
       </div>
 
-      {/* ── Core Founder Actions ──────────────────── */}
-      <div className="grid md:grid-cols-3 gap-6">
+      <div className="grid gap-4 md:grid-cols-3">
         <FounderCard
           icon={<Search className="w-6 h-6 text-brand-600 dark:text-brand-400" />}
           title="Ask Context"
@@ -115,7 +118,7 @@ export default function Dashboard() {
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.45, delay: 0.08 }}
-        className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900"
+        className="panel overflow-hidden"
       >
         <div className="grid lg:grid-cols-[1fr_auto_1fr]">
           <DashboardIoColumn
@@ -126,7 +129,7 @@ export default function Dashboard() {
             actionTo="/app/connectors"
             actionLabel="Connectors"
           />
-          <div className="hidden w-px bg-slate-200 dark:bg-slate-700 lg:block" />
+          <div className="hidden w-px bg-slate-200/80 dark:bg-white/[0.08] lg:block" />
           <DashboardIoColumn
             icon={<Bot className="h-4 w-4" />}
             title="What agents consume"
@@ -137,17 +140,19 @@ export default function Dashboard() {
         </div>
       </motion.section>
 
-      {/* ── Secondary Activity/Health ─────────────── */}
-      <div className="grid lg:grid-cols-2 gap-8 pt-4">
+      <div className="grid gap-5 pt-1 lg:grid-cols-[1.1fr_0.9fr]">
         <motion.div
           initial={{ opacity: 0, x: -20 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.5, delay: 0.1 }}
-          className="bg-white/70 dark:bg-slate-800/70 backdrop-blur-xl rounded-[32px] border border-white/60 dark:border-slate-700/60 p-8 shadow-[0_8px_30px_rgba(0,0,0,0.04)] dark:shadow-[0_8px_30px_rgba(0,0,0,0.2)] transition-colors"
+          className="panel p-6 transition-colors"
         >
-          <div className="flex items-center justify-between mb-6">
-            <h3 className="text-lg font-bold text-slate-900 dark:text-white tracking-tight">Recent Activity</h3>
-            <Link to="/app/sources" className="text-sm font-bold text-brand-600 dark:text-brand-400 hover:text-brand-500 bg-brand-50 dark:bg-brand-900/40 px-3 py-1 rounded-full transition-colors">View all</Link>
+          <div className="mb-6 flex items-center justify-between">
+            <div>
+              <p className="eyebrow">Timeline</p>
+              <h3 className="mt-1 text-lg font-semibold text-slate-950 dark:text-white">Recent Activity</h3>
+            </div>
+            <Link to="/app/sources" className="pill-control px-3 py-1.5 text-xs font-bold">View all</Link>
           </div>
 
           {activity.length === 0 ? (
@@ -156,15 +161,15 @@ export default function Dashboard() {
               <p className="text-sm font-medium">No recent activity found.</p>
             </div>
           ) : (
-            <div className="space-y-6">
+            <div className="space-y-3">
               {activity.slice(0, 5).map((a) => (
-                <div key={a.id} className="flex items-start gap-4">
+                <div key={a.id} className="panel-subtle flex items-start gap-3 px-3 py-3">
                   <div className={`mt-1 w-2 h-2 rounded-full shrink-0 ${a.type === 'alert' ? 'bg-red-500' :
                       a.type === 'create' ? 'bg-emerald-500' :
                         'bg-brand-500'
                     }`} />
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-slate-800 dark:text-slate-200 leading-snug">{a.text}</p>
+                    <p className="text-sm font-medium text-slate-800 dark:text-neutral-200 leading-snug">{a.text}</p>
                     <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">{a.ts}</p>
                   </div>
                 </div>
@@ -177,11 +182,14 @@ export default function Dashboard() {
           initial={{ opacity: 0, x: 20 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.5, delay: 0.2 }}
-          className="bg-[#0B0F19] rounded-[32px] p-8 text-white shadow-[0_20px_40px_rgba(0,0,0,0.2)] border border-slate-800 relative overflow-hidden"
+          className="relative overflow-hidden rounded-lg border border-white/[0.09] bg-[#07080a] p-6 text-white shadow-[0_24px_80px_rgba(0,0,0,0.42)]"
         >
-          <div className="absolute top-0 right-0 w-64 h-64 bg-brand-500/10 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none" />
-          <h3 className="text-lg font-bold mb-6 relative z-10">Workspace Health</h3>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_right,rgba(255,255,255,0.045)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.045)_1px,transparent_1px)] bg-[size:32px_32px]" />
+          <div className="relative z-10 mb-6">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-white/42">Health</p>
+            <h3 className="mt-1 text-lg font-semibold">Workspace Health</h3>
+          </div>
+          <div className="relative z-10 grid grid-cols-2 gap-3">
             <HealthStat
               label="Source Docs"
               value={sourceCount}
@@ -194,7 +202,7 @@ export default function Dashboard() {
             />
           </div>
 
-          <div className="mt-8 p-6 bg-white/5 rounded-2xl border border-white/10">
+          <div className="relative z-10 mt-6 rounded-lg border border-white/10 bg-white/[0.045] p-5">
             <div className="flex items-start gap-4">
               <AlertCircle className="w-5 h-5 text-brand-400 shrink-0" />
               <div>
@@ -209,7 +217,7 @@ export default function Dashboard() {
 
           <Link
             to="/app/sources"
-            className="mt-8 w-full py-3.5 bg-white/10 hover:bg-white/20 border border-white/10 rounded-xl text-sm font-bold transition-all text-center block focus:ring-2 focus:ring-brand-500 focus:outline-none"
+            className="relative z-10 mt-6 block w-full rounded-lg border border-white/10 bg-white/[0.08] py-3 text-center text-sm font-bold transition-all hover:bg-white/[0.14] focus:outline-none focus:ring-2 focus:ring-brand-500"
           >
             Explore workspace sources
           </Link>
@@ -221,35 +229,35 @@ export default function Dashboard() {
 
 function DashboardIoColumn({ icon, title, items = [], footer, actionTo, actionLabel }) {
   return (
-    <div className="p-5">
-      <div className="mb-4 flex items-center justify-between gap-3">
+    <div className="p-5 md:p-6">
+      <div className="mb-5 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200/80 bg-slate-50 text-slate-600 dark:border-white/[0.08] dark:bg-white/[0.045] dark:text-neutral-300">
             {icon}
           </span>
-          <h3 className="text-sm font-bold text-slate-900 dark:text-white">{title}</h3>
+          <h3 className="text-sm font-semibold text-slate-950 dark:text-white">{title}</h3>
         </div>
         <Link
           to={actionTo}
-          className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2.5 py-1 text-[11px] font-bold text-slate-500 transition hover:bg-slate-50 hover:text-slate-800 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+          className="pill-control inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold"
         >
           {actionLabel}
           <ArrowRight className="h-3 w-3" />
         </Link>
       </div>
-      <div className="space-y-2.5">
+      <div className="space-y-3">
         {items.slice(0, 4).map((item) => (
           <div key={`${title}-${item.name}`} className="flex items-start gap-3">
             <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand-500" />
             <div className="min-w-0">
-              <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">{item.name}</p>
-              <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">{item.detail}</p>
+              <p className="text-sm font-semibold text-slate-800 dark:text-neutral-200">{item.name}</p>
+              <p className="text-xs leading-relaxed text-slate-500 dark:text-neutral-400">{item.detail}</p>
             </div>
           </div>
         ))}
       </div>
       {footer ? (
-        <p className="mt-4 border-t border-slate-100 pt-3 text-[11px] font-medium text-slate-400 dark:border-slate-800">
+        <p className="mt-4 border-t border-slate-200/70 pt-3 text-[11px] font-medium text-slate-400 dark:border-white/[0.08]">
           {footer}
         </p>
       ) : null}
@@ -262,18 +270,18 @@ function FounderCard({ icon, title, description, to, cta, alert }) {
     <motion.div whileHover={{ y: -4, scale: 1.01 }} transition={{ duration: 0.2 }}>
       <Link
         to={to}
-        className={`flex flex-col h-full p-8 bg-white/70 dark:bg-slate-800/70 backdrop-blur-xl border ${alert ? 'border-amber-200 dark:border-amber-800 bg-amber-50/50 dark:bg-amber-900/20' : 'border-white/60 dark:border-slate-700/60'} shadow-[0_8px_30px_rgba(0,0,0,0.04)] dark:shadow-[0_8px_30px_rgba(0,0,0,0.2)] rounded-[32px] hover:border-brand-300 dark:hover:border-brand-600 hover:shadow-xl hover:shadow-brand-500/10 dark:hover:shadow-brand-500/5 transition-all group overflow-hidden relative`}
+        className={`group relative flex h-full flex-col overflow-hidden rounded-lg border p-6 backdrop-blur-xl transition-all ${alert ? 'border-amber-300/70 bg-amber-50/75 dark:border-amber-500/35 dark:bg-amber-500/10' : 'border-slate-200/80 bg-white/[0.82] shadow-[0_16px_48px_rgba(15,23,42,0.06)] hover:border-slate-300 dark:border-white/[0.09] dark:bg-neutral-950/90 dark:shadow-[0_24px_80px_rgba(0,0,0,0.34)] dark:hover:border-white/[0.16]'}`}
       >
-        <div className="absolute inset-0 bg-gradient-to-br from-white/40 dark:from-white/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+        <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/70 to-transparent opacity-0 transition-opacity group-hover:opacity-100 dark:via-white/30" />
         <div className="relative z-10 flex-col flex h-full">
-          <div className={`w-14 h-14 rounded-2xl ${alert ? 'bg-amber-100 dark:bg-amber-900/40' : 'bg-brand-50/50 dark:bg-brand-900/30 border border-brand-100/50 dark:border-brand-800/50'} flex items-center justify-center mb-6 group-hover:scale-110 transition-transform duration-300`}>
+          <div className={`mb-5 flex h-12 w-12 items-center justify-center rounded-lg ${alert ? 'bg-amber-100 dark:bg-amber-900/40' : 'border border-brand-500/20 bg-brand-500/10'} transition-transform duration-300 group-hover:scale-105`}>
             {icon}
           </div>
-          <h3 className="text-xl font-bold text-slate-900 dark:text-white tracking-tight">{title}</h3>
-          <p className="mt-3 text-slate-500 dark:text-slate-400 text-sm leading-relaxed flex-1">
+          <h3 className="text-lg font-semibold text-slate-950 dark:text-white">{title}</h3>
+          <p className="mt-3 text-slate-500 dark:text-neutral-400 text-sm leading-relaxed flex-1">
             {description}
           </p>
-          <div className="mt-8 flex items-center gap-2 text-sm font-bold text-brand-600 dark:text-brand-400">
+          <div className="mt-7 flex items-center gap-2 text-sm font-bold text-brand-600 dark:text-brand-400">
             <span>{cta}</span>
             <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
           </div>
@@ -285,7 +293,7 @@ function FounderCard({ icon, title, description, to, cta, alert }) {
 
 function HealthStat({ label, value, icon }) {
   return (
-    <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
+    <div className="rounded-lg border border-white/10 bg-white/[0.055] p-4">
       <div className="flex items-center gap-2 text-slate-400 mb-1">
         {icon}
         <span className="text-[10px] font-bold uppercase tracking-widest">{label}</span>
