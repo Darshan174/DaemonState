@@ -1,16 +1,17 @@
 # Context Engine
 
-The open-source project graph for AI-native builders.
+The open-source context graph for teams building software with AI agents.
 
 Context Engine turns agent runs, PRs, issues, chats, decisions, and documents
-into a visual map of what happened, what is blocked, and what should happen
-next.
+into a visual map of what happened, what is backed by evidence, where the
+project is blocked, and what should happen next.
 
 ---
 
 ## Table of Contents
 
 - [What It Is](#what-it-is)
+- [What We're Aiming For](#what-were-aiming-for)
 - [Who It Is For](#who-it-is-for)
 - [Product Tour](#product-tour)
 - [Quick Start — Docker](#quick-start--docker)
@@ -59,6 +60,43 @@ Works fully offline with regex extraction. Plug in any LLM key to unlock AI-powe
 
 ---
 
+## What We're Aiming For
+
+The aim is for Context Engine to become the working memory layer for
+AI-assisted software projects.
+
+The core product idea is simple:
+
+```text
+sources -> evidence -> claims -> models
+```
+
+Raw sources are not enough. Agent transcripts, issues, pull requests, meeting
+notes, chats, and docs need to be organized into evidence-backed claims, then
+assembled into project models a human or agent can trust.
+
+The graph stays the main interface because the hard part is not storing more
+text. The hard part is understanding how facts, decisions, blockers, conflicts,
+and next actions relate to each other. In two or three seconds, the graph should
+make the current state legible:
+
+- where the important claims came from;
+- which sources support or contradict them;
+- where evidence is missing;
+- which conflicts need review;
+- what context is healthy enough to hand to the next agent.
+
+The direction is a local-first, source-grounded system that helps small teams
+keep momentum while using AI agents heavily. It should make context portable
+between tools, auditable back to original sources, and useful before the next
+coding session starts.
+
+Context Engine is not trying to be a generic dashboard, a table-heavy project
+manager, or another chat wrapper. It is a graph-first context engine for turning
+fragmented work into inspectable project state.
+
+---
+
 ## Who It Is For
 
 The first target is intentionally narrow:
@@ -80,10 +118,17 @@ test, and product boundaries.
 
 ## Product Tour
 
-Run the demo seed, then start in **Board** to inspect the current state of work.
-The graph groups decisions, tasks, risks, PRs, issues, and AI sessions while the
-inspector carries provenance, relationship evidence, confidence, and review
-state.
+Run the demo seed, then start in **Graph** to inspect the current state of work.
+The main surface is a draggable, connectable graph that keeps the pipeline
+visible: sources flow into evidence, evidence supports claims, and claims form
+models. Cluster labels, cleaner node titles, context health, gaps, and conflicts
+are designed to make the graph readable at a glance while preserving the full
+relationship map.
+
+Click a node to inspect its evidence, claims, gaps, conflicts, and suggested
+actions. The inspector carries provenance, relationship evidence, confidence,
+and review state so users can understand why the graph believes something and
+what still needs human attention.
 
 ![Board graph with relationship inspector](docs/assets/board-inspector-demo.jpg)
 
