@@ -6,6 +6,7 @@ import imgOpenAI from "@assets/openai-icon.png";
 import imgOpenCode from "@assets/opencode-icon.png";
 import {
   useConnectGitHub,
+  useImportAISessionById,
   useIngestAISession,
   useSaveSlackOAuthSettings,
   useConnectorSyncJobs,
@@ -25,7 +26,7 @@ const STATUS_PILL = {
   disconnected: "bg-gray-100 dark:bg-gray-900/40 text-gray-600 dark:text-gray-400",
   warning: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400",
   error: "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400",
-  coming_soon: "bg-slate-100 dark:bg-slate-900/40 text-slate-600 dark:text-slate-400",
+  coming_soon: "bg-slate-100 dark:bg-black text-slate-600 dark:text-neutral-400",
 };
 
 const STATUS_LABEL = {
@@ -76,9 +77,11 @@ export default function Connectors() {
   const [githubToken, setGitHubToken] = useState("");
   const [githubRepositories, setGitHubRepositories] = useState("");
   const [aiSessionFormOpenFor, setAISessionFormOpenFor] = useState(null);
+  const [aiSessionImportMode, setAISessionImportMode] = useState("local");
   const [aiSessionId, setAISessionId] = useState("");
   const [aiSessionContent, setAISessionContent] = useState("");
   const ingestAISessionMut = useIngestAISession();
+  const importAISessionByIdMut = useImportAISessionById();
 
   const workspaceId = useMemo(
     () => resolveWorkspaceId(workspaces.data, selectedId),
@@ -285,26 +288,27 @@ export default function Connectors() {
   }
 
   return (
-    <div className="max-w-5xl mx-auto space-y-7">
+    <div className="app-page relative z-10">
       <div className="flex items-start justify-between gap-4">
         <div>
+          <p className="eyebrow">Data plane</p>
           <div className="flex items-center gap-3">
-            <h2 className="text-3xl font-bold tracking-tight text-slate-950 dark:text-white">Connectors</h2>
+            <h2 className="mt-1 text-3xl font-semibold text-slate-950 dark:text-white">Connectors</h2>
             {isMock && <MockBadge />}
           </div>
-          <p className="mt-1.5 text-sm text-slate-500 dark:text-slate-400">
+          <p className="mt-1.5 text-sm text-slate-500 dark:text-neutral-400">
             Connect your sources. Each connector fetches raw messages and documents, then extracts structured facts into the knowledge graph.
           </p>
         </div>
       </div>
 
       {actionError && (
-        <div className="rounded-xl border border-red-200 dark:border-red-800/50 bg-red-50 dark:bg-red-900/30 p-4">
+        <div className="rounded-lg border border-red-200 bg-red-50 p-4 dark:border-red-800/50 dark:bg-red-900/30">
           <p className="text-sm text-red-700 dark:text-red-400">{actionError}</p>
         </div>
       )}
       {actionNotice && (
-        <div className="rounded-xl border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/30 p-4">
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-800/50 dark:bg-emerald-900/30">
           <p className="text-sm text-emerald-700 dark:text-emerald-400">{actionNotice}</p>
         </div>
       )}
@@ -329,7 +333,7 @@ export default function Connectors() {
       {list.length === 0 ? (
         <StatusView query={{ data: list, isLoading: false, isError: false }} empty="No connectors configured." />
       ) : (
-        <div className="grid sm:grid-cols-2 gap-5">
+        <div className="grid gap-4 sm:grid-cols-2">
           {list.map((connector) => (
             <ConnectorCard
               key={connector.type}
@@ -357,14 +361,18 @@ export default function Connectors() {
               aiSessionFormOpen={["codex", "claude", "opencode"].includes(connector.type) ? aiSessionFormOpenFor === connector.type : false}
               aiSessionId={aiSessionId}
               aiSessionContent={aiSessionContent}
+              aiSessionImportMode={aiSessionImportMode}
+              onChangeAISessionImportMode={setAISessionImportMode}
               onChangeAISessionId={setAISessionId}
               onChangeAISessionContent={setAISessionContent}
               onToggleAISessionForm={() => {
                 setAISessionFormOpenFor((f) => f === connector.type ? null : connector.type);
+                setAISessionImportMode("local");
                 setAISessionId("");
                 setAISessionContent("");
               }}
               ingestAISessionMut={ingestAISessionMut}
+              importAISessionByIdMut={importAISessionByIdMut}
               syncMut={syncMut}
               disconnectMut={disconnectMut}
               onActionError={setActionError}
@@ -383,7 +391,7 @@ export default function Connectors() {
 
 function QuickPathStep({ title, description, to, action }) {
   return (
-    <div className="rounded-xl border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 px-4 py-4">
+    <div className="panel-subtle px-4 py-4">
       <p className="text-sm font-semibold text-gray-800 dark:text-gray-300">{title}</p>
       <p className="mt-2 text-xs text-gray-600 dark:text-gray-400">{description}</p>
       <Link to={to} className="mt-4 inline-flex text-xs font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
@@ -418,10 +426,13 @@ function ConnectorCard({
   aiSessionFormOpen,
   aiSessionId,
   aiSessionContent,
+  aiSessionImportMode,
+  onChangeAISessionImportMode,
   onChangeAISessionId,
   onChangeAISessionContent,
   onToggleAISessionForm,
   ingestAISessionMut,
+  importAISessionByIdMut,
   syncMut,
   disconnectMut,
   onActionError,
@@ -606,25 +617,40 @@ function ConnectorCard({
     event.preventDefault();
     onActionError(null);
     onActionNotice(null);
-    ingestAISessionMut.mutate(
-      { connectorType: type, sessionId: aiSessionId.trim() || `session-${Date.now()}`, content: aiSessionContent },
-      {
-        onError: (err) => onActionError(err?.message || `Failed to ingest ${name} session.`),
-        onSuccess: (data) => {
-          onChangeAISessionContent("");
-          onChangeAISessionId("");
-          onToggleAISessionForm();
-          const docs = data?.ingest?.documents_persisted ?? 0;
-          const updated = data?.ingest?.documents_updated ?? 0;
-          const comps = data?.extract?.components_created ?? 0;
-          onActionNotice(
-            docs > 0
-              ? `${name} session ingested. ${comps > 0 ? `${comps} graph component${comps === 1 ? "" : "s"} extracted.` : "Run a sync to extract graph facts."}`
-              : updated > 0
-                ? `${name} session updated. ${comps > 0 ? `${comps} graph component${comps === 1 ? "" : "s"} extracted.` : ""}`
-                : `${name} session processed.`,
-          );
+    const sessionId = aiSessionId.trim();
+    const onSuccess = (data) => {
+      onChangeAISessionContent("");
+      onChangeAISessionId("");
+      onToggleAISessionForm();
+      const docs = data?.ingest?.documents_persisted ?? 0;
+      const updated = data?.ingest?.documents_updated ?? 0;
+      const comps = data?.extract?.components_created ?? 0;
+      const modeSuffix = data?.resolved_from ? " from local history" : "";
+      onActionNotice(
+        docs > 0
+          ? `${name} session ingested${modeSuffix}. ${comps > 0 ? `${comps} graph component${comps === 1 ? "" : "s"} extracted.` : "Run a sync to extract graph facts."}`
+          : updated > 0
+            ? `${name} session updated${modeSuffix}. ${comps > 0 ? `${comps} graph component${comps === 1 ? "" : "s"} extracted.` : ""}`
+            : `${name} session processed.`,
+      );
+    };
+
+    if (aiSessionImportMode === "local") {
+      importAISessionByIdMut.mutate(
+        { connectorType: type, sessionId },
+        {
+          onError: (err) => onActionError(formatActionError(err) || `Failed to import ${name} session from local history.`),
+          onSuccess,
         },
+      );
+      return;
+    }
+
+    ingestAISessionMut.mutate(
+      { connectorType: type, sessionId: sessionId || `session-${Date.now()}`, content: aiSessionContent },
+      {
+        onError: (err) => onActionError(formatActionError(err) || `Failed to ingest ${name} session.`),
+        onSuccess,
       },
     );
   };
@@ -649,7 +675,7 @@ function ConnectorCard({
   }, [latestSyncJob, name, onSyncJobSettled]);
 
   return (
-    <div className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-gray-800/50 p-5 flex flex-col gap-4 hover:shadow-sm transition-shadow">
+    <div className="panel rounded-xl [border-radius:0.5rem] flex flex-col gap-4 p-5 transition-all hover:border-slate-300 dark:hover:border-white/[0.16]">
       <div className="flex items-center gap-3">
         <ConnectorIconBadge type={type} color={color} name={name} />
         <div className="flex-1 min-w-0">
@@ -666,13 +692,13 @@ function ConnectorCard({
           <p className="text-xs text-gray-500">{description}</p>
         </div>
         <span
-          className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium ${STATUS_PILL[status]}`}
+          className={`rounded-md px-2.5 py-0.5 text-[11px] font-bold ${STATUS_PILL[status]}`}
         >
           {STATUS_LABEL[status]}
         </span>
       </div>
 
-      <div className="rounded-lg bg-gray-50 dark:bg-gray-900/30 border border-gray-100 dark:border-gray-800/30 p-3">
+      <div className="panel-subtle p-3">
         <div className="grid grid-cols-2 text-xs text-gray-500 gap-y-1">
           <span>Last sync</span>
           <span className="text-right text-gray-700 dark:text-gray-400">{lastSync}</span>
@@ -696,7 +722,7 @@ function ConnectorCard({
           </div>
         )}
         {latestSyncJob && (
-          <div className="mt-3 rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-3">
+          <div className="mt-3 rounded-lg border border-slate-200/80 bg-white/[0.84] px-3 py-3 dark:border-white/[0.08] dark:bg-white/[0.035]">
             <div className="flex items-center justify-between gap-3">
               <p className="text-[11px] uppercase tracking-wide text-gray-400">Latest job</p>
               <span
@@ -731,7 +757,7 @@ function ConnectorCard({
           </div>
         )}
         {recentSyncJobs.length > 1 && (
-          <div className="mt-3 rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-3">
+          <div className="mt-3 rounded-lg border border-slate-200/80 bg-white/[0.84] px-3 py-3 dark:border-white/[0.08] dark:bg-white/[0.035]">
             <div className="flex items-center justify-between gap-3">
               <p className="text-[11px] uppercase tracking-wide text-gray-400">Recent runs</p>
               {connectorId && (
@@ -832,7 +858,7 @@ function ConnectorCard({
       </div>
 
       {isGitHub && githubFormOpen && (
-        <form onSubmit={handleGitHubConnect} className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 p-3 space-y-3">
+        <form onSubmit={handleGitHubConnect} className="panel-subtle space-y-3 p-3">
           {/* Setup guide */}
           <div className="rounded-lg border border-sky-200 dark:border-sky-500/20 bg-sky-50 dark:bg-sky-500/10 px-3 py-2.5 space-y-1.5">
             <p className="text-[11px] font-bold uppercase tracking-wide text-sky-800 dark:text-sky-200">
@@ -875,7 +901,7 @@ function ConnectorCard({
               value={githubToken}
               onChange={(event) => onChangeGitHubToken(event.target.value)}
               placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
-              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40 font-mono"
+              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-black px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40 font-mono"
             />
           </div>
           <div>
@@ -888,7 +914,7 @@ function ConnectorCard({
               onChange={(event) => onChangeGitHubRepositories(event.target.value)}
               placeholder={"your-org/repo-name\nyour-org/another-repo"}
               rows={3}
-              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40 font-mono"
+              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-black px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40 font-mono"
             />
             <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
               One <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">owner/repo</code> per line. Example: <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">acme/backend</code>
@@ -909,7 +935,7 @@ function ConnectorCard({
             <button
               type="button"
               onClick={onToggleGitHubForm}
-              className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-white dark:bg-slate-800"
+              className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-white dark:bg-black"
             >
               Cancel
             </button>
@@ -918,51 +944,81 @@ function ConnectorCard({
       )}
 
       {isAISession && aiSessionFormOpen && (
-        <form onSubmit={handleAISessionIngest} className="rounded-lg border border-gray-200 dark:border-gray-800/50 bg-gray-50 dark:bg-gray-900/30 p-3 space-y-3">
+        <form onSubmit={handleAISessionIngest} className="panel-subtle space-y-3 p-3">
           <div>
             <p className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">
               Import a {name} session
             </p>
+            <div className="inline-flex rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-black p-0.5 mb-3">
+              {[
+                ["local", "Local history"],
+                ["paste", "Paste content"],
+              ].map(([mode, label]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => onChangeAISessionImportMode(mode)}
+                  className={`px-3 py-1.5 text-[11px] font-medium rounded-md ${
+                    aiSessionImportMode === mode
+                      ? "bg-gray-900 text-white dark:bg-white dark:text-black"
+                      : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <label htmlFor={`${type}-session-id`} className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-              Session label <span className="text-gray-400">(optional — used for deduplication)</span>
+              Session ID {aiSessionImportMode === "paste" && <span className="text-gray-400">(optional — used for deduplication)</span>}
             </label>
             <input
               id={`${type}-session-id`}
               type="text"
               value={aiSessionId}
               onChange={(e) => onChangeAISessionId(e.target.value)}
-              placeholder={`my-${type}-session-1`}
-              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+              placeholder={aiSessionImportMode === "local" ? (type === "opencode" ? "ses_..." : "019eff6d-f344-...") : `my-${type}-session-1`}
+              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-black px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
             />
+            {aiSessionImportMode === "local" && (
+              <p className="mt-1 text-[11px] text-gray-400">
+                Reads from local {name} history on this machine. No website scraping.
+              </p>
+            )}
           </div>
-          <div>
-            <label htmlFor={`${type}-session-content`} className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-              Session content
-            </label>
-            <textarea
-              id={`${type}-session-content`}
-              value={aiSessionContent}
-              onChange={(e) => onChangeAISessionContent(e.target.value)}
-              placeholder={"Paste your conversation export here. JSON (messages array), markdown (Human:/Assistant: format), or plain text are all supported."}
-              rows={6}
-              className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40 font-mono text-xs"
-            />
-            <p className="mt-1 text-[11px] text-gray-400">
-              Supports OpenAI JSON export, Claude markdown, or raw conversation text.
-            </p>
-          </div>
+          {aiSessionImportMode === "paste" && (
+            <div>
+              <label htmlFor={`${type}-session-content`} className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                Session content
+              </label>
+              <textarea
+                id={`${type}-session-content`}
+                value={aiSessionContent}
+                onChange={(e) => onChangeAISessionContent(e.target.value)}
+                placeholder={"Paste your conversation export here. JSON (messages array), markdown (Human:/Assistant: format), or plain text are all supported."}
+                rows={6}
+                className="w-full rounded-lg border border-gray-200 dark:border-gray-800/50 bg-white dark:bg-black px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40 font-mono text-xs"
+              />
+              <p className="mt-1 text-[11px] text-gray-400">
+                Supports OpenAI JSON export, Claude markdown, or raw conversation text.
+              </p>
+            </div>
+          )}
           <div className="flex gap-2">
             <button
               type="submit"
-              disabled={ingestAISessionMut.isPending || !aiSessionContent.trim()}
+              disabled={
+                ingestAISessionMut.isPending ||
+                importAISessionByIdMut.isPending ||
+                (aiSessionImportMode === "local" ? !aiSessionId.trim() : !aiSessionContent.trim())
+              }
               className="px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
             >
-              {ingestAISessionMut.isPending ? "Importing..." : "Import session"}
+              {ingestAISessionMut.isPending || importAISessionByIdMut.isPending ? "Importing..." : "Import session"}
             </button>
             <button
               type="button"
               onClick={onToggleAISessionForm}
-              className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-white dark:bg-slate-800"
+              className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-800/50 text-gray-700 dark:text-gray-400 hover:bg-white dark:bg-black"
             >
               Cancel
             </button>
@@ -987,14 +1043,14 @@ function ConnectorCard({
             Upload files
           </Link>
         ) : type === "ai_context" && status === "disconnected" ? (
-          <span className="inline-flex items-center rounded-lg bg-slate-100 dark:bg-slate-900/40 px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-800/50">
+          <span className="inline-flex items-center rounded-lg bg-slate-100 dark:bg-black px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-neutral-400 border border-slate-200 dark:border-neutral-800/50">
             Use Codex, Claude, or OpenCode import
           </span>
         ) : isSlack && canConnect ? (
           <button
             type="button"
             onClick={handleSlackConnectAction}
-            className="inline-flex items-center gap-2 rounded-full bg-white border border-gray-200 px-4 py-2 text-sm font-medium text-gray-900 hover:bg-gray-50 shadow-sm transition-colors dark:bg-slate-800 dark:border-gray-700 dark:text-white dark:hover:bg-slate-700"
+            className="inline-flex items-center gap-2 rounded-full bg-white border border-gray-200 px-4 py-2 text-sm font-medium text-gray-900 hover:bg-gray-50 shadow-sm transition-colors dark:bg-black dark:border-gray-700 dark:text-white dark:hover:bg-black"
           >
             <SlackLogoIcon className="w-5 h-5" />
             Connect to Slack
@@ -1023,7 +1079,7 @@ function ConnectorCard({
             type="button"
             disabled={isDemo || !workspaceId}
             onClick={handleGoogleOAuth}
-            className="inline-flex items-center gap-2 rounded-full bg-white border border-gray-200 px-4 py-2 text-sm font-medium text-gray-900 hover:bg-gray-50 shadow-sm transition-colors dark:bg-slate-800 dark:border-gray-700 dark:text-white dark:hover:bg-slate-700"
+            className="inline-flex items-center gap-2 rounded-full bg-white border border-gray-200 px-4 py-2 text-sm font-medium text-gray-900 hover:bg-gray-50 shadow-sm transition-colors dark:bg-black dark:border-gray-700 dark:text-white dark:hover:bg-black"
           >
             <GoogleIcon className="w-4 h-4" />
             Connect with Google
@@ -1244,7 +1300,7 @@ function GitHubCapabilityPanel({ repositories }) {
           {repoList.map((repo) => (
             <span
               key={repo}
-              className="rounded-full bg-white dark:bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-gray-700 dark:text-gray-400 border border-gray-200 dark:border-gray-800/50"
+              className="rounded-full bg-white dark:bg-black px-2 py-0.5 text-[10px] font-medium text-gray-700 dark:text-gray-400 border border-gray-200 dark:border-gray-800/50"
             >
               {repo}
             </span>
@@ -1271,7 +1327,7 @@ function SlackConnectModal({ mode, redirectUri, onCancel, onContinue }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
-      <div className="w-full max-w-lg rounded-2xl border border-gray-200 dark:border-gray-800/60 bg-white dark:bg-slate-900 p-6 shadow-2xl">
+      <div className="w-full max-w-lg rounded-2xl border border-gray-200 dark:border-gray-800/60 bg-white dark:bg-black p-6 shadow-2xl">
         <div className="flex justify-end">
           <button
             type="button"
@@ -1328,7 +1384,7 @@ function SlackConnectModal({ mode, redirectUri, onCancel, onContinue }) {
                 <p className="mt-1.5 leading-relaxed text-sm">
                   In Slack app settings, open OAuth & Permissions and add this Redirect URL before continuing:
                 </p>
-                <code className="mt-2 block rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-[11px] font-mono text-gray-800 break-all dark:border-gray-800 dark:bg-slate-950 dark:text-gray-200">
+                <code className="mt-2 block rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-[11px] font-mono text-gray-800 break-all dark:border-gray-800 dark:bg-black dark:text-gray-200">
                   {redirectUri}
                 </code>
               </div>
@@ -1386,7 +1442,7 @@ function SlackOAuthSettingsForm({
             value={clientId}
             onChange={(event) => onChangeClientId(event.target.value)}
             placeholder="123456789.123456789"
-            className="mt-1 w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-amber-500/40 dark:border-amber-800/50 dark:bg-slate-900 dark:text-gray-100"
+            className="mt-1 w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-amber-500/40 dark:border-amber-800/50 dark:bg-black dark:text-gray-100"
           />
         </div>
         <div>
@@ -1399,7 +1455,7 @@ function SlackOAuthSettingsForm({
             value={clientSecret}
             onChange={(event) => onChangeClientSecret(event.target.value)}
             placeholder="Slack app client secret"
-            className="mt-1 w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-amber-500/40 dark:border-amber-800/50 dark:bg-slate-900 dark:text-gray-100"
+            className="mt-1 w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-amber-500/40 dark:border-amber-800/50 dark:bg-black dark:text-gray-100"
           />
         </div>
         <div>
@@ -1410,7 +1466,7 @@ function SlackOAuthSettingsForm({
             id="slack-redirect-uri"
             value={redirectUri}
             onChange={(event) => onChangeRedirectUri(event.target.value)}
-            className="mt-1 w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-amber-500/40 dark:border-amber-800/50 dark:bg-slate-900 dark:text-gray-100"
+            className="mt-1 w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-amber-500/40 dark:border-amber-800/50 dark:bg-black dark:text-gray-100"
           />
         </div>
       </div>
@@ -1428,7 +1484,7 @@ function SlackOAuthSettingsForm({
         <button
           type="button"
           onClick={onCancel}
-          className="px-3 py-1.5 text-xs font-medium rounded-lg border border-amber-200 bg-white text-amber-900 hover:bg-amber-100 dark:border-amber-800/50 dark:bg-slate-900 dark:text-amber-200"
+          className="px-3 py-1.5 text-xs font-medium rounded-lg border border-amber-200 bg-white text-amber-900 hover:bg-amber-100 dark:border-amber-800/50 dark:bg-black dark:text-amber-200"
         >
           Cancel
         </button>
@@ -1517,7 +1573,7 @@ function SlackSummaryBanner({ connector, isDemo, oauthPending, workspaceId, onSt
           <button
             type="button"
             onClick={() => onStartOAuth(reconnectHref, connector.status, slackConnectMode)}
-            className="shrink-0 inline-flex items-center gap-2 rounded-full bg-white border border-gray-200 px-4 py-2 text-sm font-medium text-gray-900 hover:bg-gray-50 shadow-sm transition-colors dark:bg-slate-800 dark:border-gray-700 dark:text-white dark:hover:bg-slate-700"
+            className="shrink-0 inline-flex items-center gap-2 rounded-full bg-white border border-gray-200 px-4 py-2 text-sm font-medium text-gray-900 hover:bg-gray-50 shadow-sm transition-colors dark:bg-black dark:border-gray-700 dark:text-white dark:hover:bg-black"
           >
             <SlackLogoIcon className="w-4 h-4" />
             Connect to Slack

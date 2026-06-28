@@ -747,6 +747,79 @@ class TestAISessionIngest:
         assert codex["processedDocuments"] == 1
         assert codex["total_documents"] == 1
 
+    async def test_ai_session_import_by_id_resolves_local_history(self, client, db_session, monkeypatch):
+        from app.sync.session_resolvers import ResolvedSession
+
+        workspace = Workspace(id=uuid4(), name="Local Sessions", slug=f"local-sessions-{uuid4().hex}")
+        db_session.add(workspace)
+        await db_session.flush()
+        await db_session.commit()
+
+        def _fake_resolver(connector_type, session_id):
+            assert connector_type == "claude"
+            assert session_id == "claude-session-1"
+            return ResolvedSession(
+                connector_type="claude",
+                session_id=session_id,
+                content="Decision: keep local session imports source-backed.\nNext step: add resolver tests.",
+                metadata={
+                    "tool": "claude_code",
+                    "source_path": "/tmp/claude-session-1.jsonl",
+                    "title": "Resolver test",
+                },
+            )
+
+        monkeypatch.setattr("app.sync.session_resolvers.resolve_local_ai_session", _fake_resolver)
+
+        response = await client.post(
+            "/api/connectors/ai-session/import-by-id",
+            json={
+                "workspace_id": str(workspace.id),
+                "connector_type": "claude",
+                "session_id": "claude-session-1",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["resolved_from"] == "/tmp/claude-session-1.jsonl"
+        assert data["extract"]["documents_processed"] == 1
+        assert data["extract"]["components_created"] >= 1
+
+        doc = await db_session.scalar(
+            select(SourceDocument).where(SourceDocument.external_id == "claude:session:claude-session-1")
+        )
+        assert doc is not None
+        metadata = json.loads(doc.metadata_json)
+        assert metadata["tool"] == "claude_code"
+        assert metadata["source_path"] == "/tmp/claude-session-1.jsonl"
+        assert metadata["workspace_id"] == str(workspace.id)
+
+    async def test_ai_session_import_by_id_returns_404_when_not_found(self, client, db_session, monkeypatch):
+        from app.sync.session_resolvers import SessionResolutionError
+
+        workspace = Workspace(id=uuid4(), name="Missing Sessions", slug=f"missing-sessions-{uuid4().hex}")
+        db_session.add(workspace)
+        await db_session.flush()
+        await db_session.commit()
+
+        def _missing_resolver(connector_type, session_id):
+            raise SessionResolutionError("Codex session not found locally: missing-session")
+
+        monkeypatch.setattr("app.sync.session_resolvers.resolve_local_ai_session", _missing_resolver)
+
+        response = await client.post(
+            "/api/connectors/ai-session/import-by-id",
+            json={
+                "workspace_id": str(workspace.id),
+                "connector_type": "codex",
+                "session_id": "missing-session",
+            },
+        )
+
+        assert response.status_code == 404
+        assert "not found locally" in response.json()["detail"]
+
 
 class TestProcessingSummary:
     async def test_processing_summary_counts_ai_context_documents(self, client, db_session):

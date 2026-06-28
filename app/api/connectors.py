@@ -1012,33 +1012,86 @@ class AISessionIngestRequest(BaseModel):
     content: str
 
 
+class AISessionImportByIdRequest(BaseModel):
+    workspace_id: str
+    connector_type: str
+    session_id: str
+
+
 @router.post("/connectors/ai-session/ingest")
 async def ingest_ai_session(
     body: AISessionIngestRequest,
     session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    if not body.content.strip():
+        raise HTTPException(status_code=422, detail="Session content must not be empty.")
+    return await _ingest_ai_session_content(
+        session=session,
+        workspace_id=body.workspace_id,
+        connector_type=body.connector_type,
+        session_id=body.session_id,
+        content=body.content,
+    )
+
+
+@router.post("/connectors/ai-session/import-by-id")
+async def import_ai_session_by_id(
+    body: AISessionImportByIdRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    from app.sync.session_resolvers import SessionResolutionError, resolve_local_ai_session
+
+    if body.connector_type not in AI_SESSION_CONNECTORS:
+        raise HTTPException(status_code=422, detail=f"Unknown AI session connector: {body.connector_type}")
+    if not body.session_id.strip():
+        raise HTTPException(status_code=422, detail="Session ID must not be empty.")
+    try:
+        resolved = resolve_local_ai_session(body.connector_type, body.session_id.strip())
+    except SessionResolutionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    result = await _ingest_ai_session_content(
+        session=session,
+        workspace_id=body.workspace_id,
+        connector_type=body.connector_type,
+        session_id=body.session_id.strip(),
+        content=resolved.content,
+        metadata_extra=resolved.metadata,
+    )
+    result["resolved_from"] = resolved.metadata.get("source_path")
+    return result
+
+
+async def _ingest_ai_session_content(
+    *,
+    session: AsyncSession,
+    workspace_id: str,
+    connector_type: str,
+    session_id: str,
+    content: str,
+    metadata_extra: dict[str, Any] | None = None,
 ) -> dict:
     from app.sync.ai_session import ingest_ai_session as _ingest
     from app.services.ingest import IngestionService
     from app.models import SourceDocument
     from sqlalchemy import select as sa_select
 
-    if body.connector_type not in AI_SESSION_CONNECTORS:
-        raise HTTPException(status_code=422, detail=f"Unknown AI session connector: {body.connector_type}")
-    if not body.content.strip():
-        raise HTTPException(status_code=422, detail="Session content must not be empty.")
+    if connector_type not in AI_SESSION_CONNECTORS:
+        raise HTTPException(status_code=422, detail=f"Unknown AI session connector: {connector_type}")
 
-    ws = await _get_workspace(body.workspace_id, session)
-    connector = await _get_or_create_connector(ws.id, body.connector_type, session)
+    ws = await _get_workspace(workspace_id, session)
+    connector = await _get_or_create_connector(ws.id, connector_type, session)
 
     ingest_result = await _ingest(
-        body.connector_type,
+        connector_type,
         session,
-        body.session_id,
-        body.content,
+        session_id,
+        content,
         workspace_id=str(ws.id),
+        metadata_extra=metadata_extra,
     )
 
-    external_id = f"{body.connector_type}:session:{body.session_id}"
+    external_id = f"{connector_type}:session:{session_id}"
     unprocessed_docs = list(await session.scalars(
         sa_select(SourceDocument)
         .where(SourceDocument.external_id == external_id)
