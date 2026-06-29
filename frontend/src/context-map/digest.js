@@ -76,6 +76,59 @@ export function cardsById(cards = []) {
   return new Map(cards.map((card) => [card.id, card]));
 }
 
+export function buildSessionKnowledgeMap(digest, workspaceName = "selected workspace") {
+  const cards = [...(digest?.cards || [])].sort(
+    (a, b) => (b.attention_score || 0) - (a.attention_score || 0),
+  );
+
+  const groups = {
+    aiSessions: cards.filter(isAiSession).slice(0, 5),
+    decisions: cards.filter((card) => card.type === "decision").slice(0, 7),
+    prs: cards.filter(isPullRequest).slice(0, 7),
+    blockers: cards.filter(isBlocker).slice(0, 6),
+    brokenDocs: cards.filter(isBrokenDoc).slice(0, 5),
+    issues: cards.filter(isIssue).slice(0, 7),
+  };
+
+  return {
+    ...groups,
+    nextAgentPrompt: buildNextAgentPrompt({ groups, workspaceName, health: digest?.health }),
+  };
+}
+
+export function preciseLine(value, maxWords = 9) {
+  const cleaned = String(value || "")
+    .replace(/https?:\/\/\S+/g, "")
+    .replace(/[*_`#>\[\]()]/g, " ")
+    .replace(/\b(decision|blocker|risk|task|issue|summary|context)\s*:\s*/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return "Not captured yet";
+
+  const firstThought = cleaned.split(/[.!?\n]/).find(Boolean)?.trim() || cleaned;
+  const words = firstThought.split(/\s+/).filter(Boolean);
+  if (words.length <= maxWords) return firstThought;
+  return `${words.slice(0, maxWords).join(" ")}...`;
+}
+
+export function primarySourceUrl(card) {
+  return (card?.provenance || []).find((source) => source.source_url)?.source_url || null;
+}
+
+export function pullRequestLabel(card) {
+  const text = searchableText(card);
+  const url = primarySourceUrl(card) || "";
+  const number = url.match(/\/pull\/(\d+)/i)?.[1] || text.match(/\bpr\s*#?(\d+)\b/i)?.[1];
+  return number ? `PR #${number}` : preciseLine(card?.title, 5);
+}
+
+export function issueLabel(card) {
+  const text = searchableText(card);
+  const url = primarySourceUrl(card) || "";
+  const number = url.match(/\/issues\/(\d+)/i)?.[1] || text.match(/\bissue\s*#?(\d+)\b/i)?.[1];
+  return number ? `Issue #${number}` : preciseLine(card?.title, 5);
+}
+
 export function relatedCards(card, cards = [], links = []) {
   if (!card) return [];
   const byId = cardsById(cards);
@@ -196,4 +249,98 @@ function missingContext(cards) {
     missing.push("Confirm owner, reproduction steps, or acceptance criteria for blockers.");
   }
   return missing;
+}
+
+function isAiSession(card) {
+  const text = searchableText(card);
+  return (
+    card.type === "agent_session" ||
+    /\b(ai session|agent session|codex|claude|opencode|cursor)\b/i.test(text)
+  );
+}
+
+function isPullRequest(card) {
+  const text = searchableText(card);
+  const url = primarySourceUrl(card) || "";
+  return /\/pull\/\d+/i.test(url) || /\b(pr|pull request)\s*#?\d*\b/i.test(text);
+}
+
+function isIssue(card) {
+  const text = searchableText(card);
+  const url = primarySourceUrl(card) || "";
+  return !isPullRequest(card) && (/\/issues\/\d+/i.test(url) || /\bissue\s*#?\d*\b/i.test(text));
+}
+
+function isBlocker(card) {
+  const text = searchableText(card);
+  return (
+    card.type === "blocker" ||
+    card.status === "blocked" ||
+    card.status === "conflict" ||
+    /\b(blocked|blocker|blocking|cannot proceed|approval needed|schema approval)\b/i.test(text)
+  );
+}
+
+function isBrokenDoc(card) {
+  const text = searchableText(card);
+  return (
+    /\b(broken docs?|stale docs?|docs? drift|devrel|readme|runbook|guide|oauth flow|documentation)\b/i.test(text) ||
+    (card.type === "file" && /\b(md|markdown|docs?|readme|runbook|guide)\b/i.test(text))
+  );
+}
+
+function searchableText(card) {
+  return [
+    card?.title,
+    card?.summary,
+    card?.why_it_matters,
+    card?.next_action,
+    card?.status,
+    card?.type,
+    ...(card?.badges || []).map((badge) => badge.label),
+    ...(card?.provenance || []).flatMap((source) => [
+      source.source_type,
+      source.source_label,
+      source.source_url,
+      source.excerpt,
+    ]),
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function buildNextAgentPrompt({ groups, workspaceName, health }) {
+  const lines = [
+    `Continue work on Context Engine for ${workspaceName}.`,
+    "",
+    "Goal: use the session knowledge map as the source of truth for the next focused change.",
+    "",
+    "Current context:",
+    ...promptItems("AI sessions", groups.aiSessions, (card) => `${preciseLine(card.title, 7)} - ${preciseLine(card.summary, 14)}`),
+    ...promptItems("Decisions", groups.decisions, (card) => preciseLine(card.summary || card.title, 14)),
+    ...promptItems("PRs", groups.prs, (card) => `${pullRequestLabel(card)} - ${primarySourceUrl(card) || "link missing"} - ${preciseLine(card.summary || card.title, 12)}`),
+    ...promptItems("Blockers", groups.blockers, (card) => preciseLine(card.summary || card.title, 12)),
+    ...promptItems("Broken docs", groups.brokenDocs, (card) => `${preciseLine(card.title, 7)} - ${preciseLine(card.summary, 12)}`),
+    ...promptItems("Issues", groups.issues, (card) => `${issueLabel(card)} - ${primarySourceUrl(card) || "link missing"} - ${preciseLine(card.summary || card.title, 12)}`),
+    "",
+    "Instructions:",
+    "1. Start by checking git status and the active branch. Do not revert unrelated local changes.",
+    "2. Read the files touched by the current task before editing.",
+    "3. Resolve blockers first, then update PRs/issues/docs with exact links and short summaries.",
+    "4. Keep user-facing summaries short and plain. No academic jargon.",
+    "5. Run the narrow relevant tests plus the frontend build before committing.",
+    "6. Commit only the files you intentionally changed and push the branch.",
+    "",
+    `Health: ${health?.summary || "No health summary captured yet."}`,
+  ];
+
+  return lines.join("\n");
+}
+
+function promptItems(label, cards, render) {
+  if (!cards.length) return [`- ${label}: none captured yet.`];
+  return [
+    `- ${label}:`,
+    ...cards.slice(0, 5).map((card) => `  - ${render(card)}`),
+  ];
 }

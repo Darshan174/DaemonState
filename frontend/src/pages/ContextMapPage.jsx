@@ -1,10 +1,8 @@
-import { Suspense, lazy, useEffect, useMemo, useState } from "react";
+import { Suspense, lazy } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
-  ArrowRight,
   CheckCircle2,
-  Clock3,
   Database,
   GitBranch,
   Loader2,
@@ -15,8 +13,7 @@ import { resolveWorkspaceId, useWorkspaceSelection } from "../context/WorkspaceC
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
 import { useBuildContext, useContextDigest } from "../context-map/api";
 import DigestBoard from "../context-map/components/DigestBoard";
-import ContextInspector from "../context-map/components/ContextInspector";
-import { HEALTH_META, TONE_CLASSES, cardsById, formatTimeAgo } from "../context-map/digest";
+import { HEALTH_META, TONE_CLASSES, formatTimeAgo } from "../context-map/digest";
 
 const LegacyGraphView = lazy(() => import("./GraphView"));
 
@@ -43,21 +40,8 @@ function ContextDigestSurface() {
   const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId);
   const digestQuery = useContextDigest(activeWorkspaceId);
   const buildContext = useBuildContext(activeWorkspaceId);
-  const [selectedCardId, setSelectedCardId] = useState(null);
 
   const digest = digestQuery.data;
-  const byId = useMemo(() => cardsById(digest?.cards || []), [digest]);
-  const selectedCard = selectedCardId ? byId.get(selectedCardId) : null;
-
-  useEffect(() => {
-    if (!digest?.cards?.length) {
-      setSelectedCardId(null);
-      return;
-    }
-    if (!selectedCardId || !byId.has(selectedCardId)) {
-      setSelectedCardId(digest.cards[0].id);
-    }
-  }, [digest, selectedCardId, byId]);
 
   if (!workspacesQuery.isLoading && !activeWorkspaceId) {
     return (
@@ -156,49 +140,18 @@ function ContextDigestSurface() {
         ) : null}
       </header>
 
-      <div className="grid shrink-0 grid-cols-2 border-b border-slate-200 bg-white dark:border-neutral-800 dark:bg-[#07080a] md:grid-cols-4">
-        <HealthTile label="Health" value={healthMeta.label} detail={health.summary} icon={CheckCircle2} tone={healthMeta.tone} />
-        <HealthTile label="Blockers" value={health.blocker_count ?? 0} detail={`${health.conflict_count ?? 0} conflicts`} icon={AlertTriangle} tone={(health.blocker_count || health.conflict_count) ? "red" : "gray"} />
-        <HealthTile label="Unverified" value={health.unverified_count ?? 0} detail={`${health.stale_count ?? 0} stale`} icon={Clock3} tone={health.unverified_count ? "amber" : "gray"} />
-        <HealthTile label="Agent-ready" value={`${health.agent_ready_score ?? 0}%`} detail={`${digest?.cards?.length || 0} cards ranked`} icon={ArrowRight} tone={(health.agent_ready_score ?? 0) >= 75 ? "green" : "blue"} />
-      </div>
-
-      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        <main className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6">
+      <div className="min-h-0 flex-1">
+        <main className="h-full min-h-0 overflow-y-auto px-4 py-4 md:px-6">
           {digest?.cards?.length ? (
             <DigestBoard
               digest={digest}
-              selectedCardId={selectedCardId}
-              onSelectCard={(card) => setSelectedCardId(card.id)}
+              workspaceName={activeWorkspace?.name || "selected workspace"}
             />
           ) : (
             <EmptyDigest onBuild={() => buildContext.mutate()} building={buildContext.isPending} />
           )}
         </main>
-        <ContextInspector
-          card={selectedCard}
-          cards={digest?.cards || []}
-          links={digest?.links || []}
-          onClose={() => setSelectedCardId(null)}
-        />
       </div>
-    </div>
-  );
-}
-
-function HealthTile({ label, value, detail, icon: Icon, tone = "gray" }) {
-  return (
-    <div className="min-h-24 border-r border-slate-200 px-4 py-3 last:border-r-0 dark:border-neutral-800 md:px-5">
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <p className="text-[11px] font-bold uppercase text-slate-400">{label}</p>
-        <span className={`flex h-7 w-7 items-center justify-center rounded-md border ${TONE_CLASSES[tone] || TONE_CLASSES.gray}`}>
-          <Icon className="h-3.5 w-3.5" />
-        </span>
-      </div>
-      <p className="text-2xl font-black text-slate-950 dark:text-white">{value}</p>
-      <p className="mt-1 line-clamp-1 text-[11px] font-semibold text-slate-500 dark:text-neutral-400">
-        {detail}
-      </p>
     </div>
   );
 }
