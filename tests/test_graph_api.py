@@ -686,6 +686,117 @@ class TestWorkspaceScopedGraphEndpoints:
         assert doc_ws2.processed_at is None
 
 
+class TestContextDigestEndpoint:
+    async def test_context_digest_ranks_attention_cards_with_provenance(self, client, db_session):
+        model = Model(id=uuid4(), name="Auth")
+        doc = SourceDocument(
+            id=uuid4(),
+            source_type="github_pr",
+            external_id="pr-18",
+            source_url="https://github.example/acme/repo/pull/18",
+            content="OAuth callback handling is missing.",
+            metadata_json=json.dumps({
+                "title": "PR #18 OAuth callback",
+                "repo_full_name": "acme/repo",
+            }),
+        )
+        blocker = Component(
+            id=uuid4(),
+            model_id=model.id,
+            source_document_id=doc.id,
+            name="OAuth callback missing",
+            value="Auth flow is blocked by missing OAuth callback handling.",
+            fact_type="blocker",
+            confidence=0.91,
+            authority_weight=0.9,
+            status="active",
+            excerpt="OAuth callback handling is missing.",
+        )
+        decision = Component(
+            id=uuid4(),
+            model_id=model.id,
+            source_document_id=doc.id,
+            name="Keep FastAPI auth path",
+            value="Decision: keep the FastAPI auth path for OAuth.",
+            fact_type="decision",
+            confidence=0.64,
+            authority_weight=0.6,
+            status="needs_review",
+        )
+        rel = Relationship(
+            id=uuid4(),
+            source_component_id=decision.id,
+            target_component_id=blocker.id,
+            relationship_type="blocks",
+            confidence=0.88,
+            evidence="Decision work is blocked until OAuth callback exists.",
+        )
+        db_session.add_all([model, doc, blocker, decision, rel])
+        await db_session.flush()
+
+        resp = await client.get("/api/context/digest")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["health"]["blocker_count"] >= 1
+        assert data["health"]["agent_ready_score"] < 100
+        assert data["cards"][0]["title"] == "Blocker: OAuth callback missing"
+        assert data["cards"][0]["status"] == "blocked"
+        assert data["cards"][0]["attention_score"] > data["cards"][1]["attention_score"]
+        assert data["cards"][0]["provenance"][0]["source_label"] == "PR #18 OAuth callback"
+        assert data["cards"][0]["provenance"][0]["source_url"] == "https://github.example/acme/repo/pull/18"
+        assert any(cluster["id"] == "needs_attention" for cluster in data["clusters"])
+        assert any(link["relationship_id"] == str(rel.id) for link in data["links"])
+
+    async def test_context_digest_supports_workspace_id(self, client, db_session):
+        ws1 = "00000000-0000-0000-0000-000000000061"
+        ws2 = "00000000-0000-0000-0000-000000000062"
+        model = Model(id=uuid4(), name="Workspace Digest")
+        doc_ws1 = SourceDocument(
+            id=uuid4(),
+            source_type="slack",
+            external_id="digest-ws1",
+            content="Workspace one blocker.",
+            metadata_json=json.dumps({"workspace_id": ws1}),
+        )
+        doc_ws2 = SourceDocument(
+            id=uuid4(),
+            source_type="slack",
+            external_id="digest-ws2",
+            content="Workspace two blocker.",
+            metadata_json=json.dumps({"workspace_id": ws2}),
+        )
+        comp_ws1 = Component(
+            id=uuid4(),
+            model_id=model.id,
+            source_document_id=doc_ws1.id,
+            name="Workspace one blocker",
+            value="Workspace one is blocked.",
+            fact_type="blocker",
+            confidence=0.8,
+            status="active",
+        )
+        comp_ws2 = Component(
+            id=uuid4(),
+            model_id=model.id,
+            source_document_id=doc_ws2.id,
+            name="Workspace two blocker",
+            value="Workspace two is blocked.",
+            fact_type="blocker",
+            confidence=0.8,
+            status="active",
+        )
+        db_session.add_all([model, doc_ws1, doc_ws2, comp_ws1, comp_ws2])
+        await db_session.flush()
+
+        resp = await client.get("/api/context/digest", params={"workspace_id": ws1})
+        assert resp.status_code == 200
+        card_titles = {card["title"] for card in resp.json()["cards"]}
+
+        assert "Blocker: Workspace one blocker" in card_titles
+        assert "Blocker: Workspace two blocker" not in card_titles
+
+
 class TestTimelineEndpoint:
     async def test_timeline_returns_events(self, client, db_session):
         doc = SourceDocument(
