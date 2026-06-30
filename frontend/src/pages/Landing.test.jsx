@@ -28,6 +28,9 @@ describe("Landing", () => {
     expect(screen.getByText("Recently indexed")).toBeInTheDocument();
     expect(screen.getByText("Auth refactor")).toBeInTheDocument();
     expect(screen.getByText("PR #184")).toBeInTheDocument();
+    expect(screen.getByText("For AI agents")).toBeInTheDocument();
+    expect(screen.getByText("Give every coding agent the same project memory.")).toBeInTheDocument();
+    expect(screen.getByText("$ ctxe mcp")).toBeInTheDocument();
     expect(screen.getByText("Move from memory to work.")).toBeInTheDocument();
     expect(screen.getAllByText("Google Drive").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Gmail").length).toBeGreaterThan(0);

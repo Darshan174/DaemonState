@@ -155,6 +155,21 @@ const ACTIONS = [
   },
 ];
 
+const AGENT_COMMANDS = [
+  {
+    prompt: "$ ctxe mcp",
+    response: "context-engine tools ready for Codex, Claude, Cursor, and OpenCode",
+  },
+  {
+    prompt: '$ ctxe query "what should the next agent know?"',
+    response: "Auth is blocked on schema approval. Update OAuth docs after PR #184 lands.",
+  },
+  {
+    prompt: "$ ctxe ingest ./agent-runs --sync",
+    response: "18 facts indexed, 6 decisions linked, 3 blockers surfaced",
+  },
+];
+
 export default function Landing() {
   const [query, setQuery] = useState("");
   const normalizedQuery = query.trim().toLowerCase();
@@ -226,6 +241,7 @@ export default function Landing() {
           <SourceDirectory />
         </section>
 
+        <AgentNativeSection />
         <ActionDirectory />
       </main>
     </div>
@@ -363,6 +379,61 @@ function SourceDirectory() {
             <span className="hidden text-xs font-medium text-slate-400 dark:text-neutral-500 sm:inline">{source.detail}</span>
           </Link>
         ))}
+      </div>
+    </section>
+  );
+}
+
+function AgentNativeSection() {
+  return (
+    <section className="border-t border-slate-200 py-7 dark:border-white/10">
+      <div className="grid gap-4 md:grid-cols-[0.8fr_1.2fr] md:items-stretch">
+        <div className="rounded-lg border border-slate-200 bg-white p-5 dark:border-white/10 dark:bg-white/[0.055]">
+          <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-neutral-500">
+            <Bot className="h-4 w-4 text-violet-500" />
+            For AI agents
+          </div>
+          <h2 className="mt-3 text-2xl font-bold tracking-tight text-slate-950 dark:text-white">
+            Give every coding agent the same project memory.
+          </h2>
+          <p className="mt-3 text-sm leading-6 text-slate-500 dark:text-neutral-400">
+            Run Context Engine as an MCP server or CLI-backed memory layer so agents can ask what changed,
+            what is blocked, and what context belongs in the next session.
+          </p>
+          <div className="mt-5 flex flex-wrap gap-2 text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-neutral-500">
+            <span className="inline-flex items-center gap-1.5 rounded-md bg-slate-100 px-2.5 py-1.5 dark:bg-white/10">
+              <TerminalSquare className="h-3.5 w-3.5 text-blue-500" />
+              MCP server
+            </span>
+            <span className="inline-flex items-center gap-1.5 rounded-md bg-slate-100 px-2.5 py-1.5 dark:bg-white/10">
+              <Search className="h-3.5 w-3.5 text-emerald-500" />
+              Source-backed answers
+            </span>
+            <span className="inline-flex items-center gap-1.5 rounded-md bg-slate-100 px-2.5 py-1.5 dark:bg-white/10">
+              <PackageCheck className="h-3.5 w-3.5 text-violet-500" />
+              Handoff packets
+            </span>
+          </div>
+        </div>
+
+        <div className="overflow-hidden rounded-lg border border-slate-200 bg-slate-950 text-slate-100 shadow-sm dark:border-white/10">
+          <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+            <div className="flex items-center gap-1.5">
+              <span className="h-2.5 w-2.5 rounded-full bg-red-400" />
+              <span className="h-2.5 w-2.5 rounded-full bg-amber-400" />
+              <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
+            </div>
+            <span className="font-mono text-[10px] text-slate-500">agent-context.sh</span>
+          </div>
+          <div className="space-y-4 px-4 py-4 font-mono text-xs leading-6">
+            {AGENT_COMMANDS.map((item) => (
+              <div key={item.prompt}>
+                <p className="text-emerald-300">{item.prompt}</p>
+                <p className="mt-1 text-slate-400">{item.response}</p>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </section>
   );
