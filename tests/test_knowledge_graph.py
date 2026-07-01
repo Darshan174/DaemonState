@@ -355,8 +355,61 @@ Risk: Data migration may fail on large tables
 Unresolved question: What about backwards compatibility?
 """
         facts = extract_agent_session(content, {"tool": "codex"})
-        risk_facts = [f for f in facts if f.fact_type == "blocker"]
-        assert len(risk_facts) >= 1
+        blocker_facts = [f for f in facts if f.fact_type == "blocker"]
+        risk_facts = [f for f in facts if f.fact_type == "risk"]
+        assert any(f.value == "Need AWS credentials" for f in blocker_facts)
+        assert any(f.value == "Need AWS credentials" and f.temporal == "current" for f in blocker_facts)
+        assert any(f.value == "Data migration may fail on large tables" for f in risk_facts)
+        assert any(f.value == "What about backwards compatibility?" for f in risk_facts)
+
+        failed = extract_agent_session("Failed: OAuth redirect test timed out", {"tool": "codex"})
+        assert any(
+            f.value == "OAuth redirect test timed out" and f.fact_type == "blocker" and f.temporal == "past"
+            for f in failed
+        )
+
+    def test_ignores_user_instruction_sections(self):
+        content = """[USER]
+Risk: request escalation and prefix_rule handling can affect tools.
+Decision: base_instructions govern the session.
+
+[ASSISTANT]
+Decision: Keep graph zoom scoped to the digest board.
+Risk: Data migration may fail on large tables.
+"""
+        facts = extract_agent_session(content, {"tool": "codex"})
+        extracted = {f.value for f in facts if f.fact_type in {"decision", "risk", "blocker"}}
+
+        assert "Keep graph zoom scoped to the digest board" in extracted
+        assert "Data migration may fail on large tables" in extracted
+        assert not any("prefix_rule" in value for value in extracted)
+        assert not any("base_instructions" in value for value in extracted)
+
+    def test_skips_progress_update_fragments(self):
+        content = """# Session
+
+Risk: only because Vitest does not accept Jest's --runInBand flag here, so I'm rerunning the project test command.
+Risk: Data migration may fail on large tables.
+"""
+        facts = extract_agent_session(content, {"tool": "codex"})
+        extracted = {f.value for f in facts if f.fact_type in {"decision", "risk", "blocker"}}
+
+        assert "Data migration may fail on large tables" in extracted
+        assert not any("rerunning" in value for value in extracted)
+
+    def test_skips_instruction_and_media_noise(self):
+        content = f"""# Session
+
+Decision: Keep graph zoom scoped to the digest board
+Decision: base_instructions require request escalation and prefix_rule handling
+Blocker: data:image/png;base64,{"A" * 220}
+"""
+        facts = extract_agent_session(content, {"tool": "codex"})
+        extracted = {f.value for f in facts if f.fact_type in {"decision", "blocker"}}
+
+        assert "Keep graph zoom scoped to the digest board" in extracted
+        assert not any("base_instructions" in value for value in extracted)
+        assert not any("data:image" in value for value in extracted)
 
     def test_extracts_file_references(self):
         content = """# Session
