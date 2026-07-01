@@ -488,7 +488,9 @@ def extract_agent_session(content: str, doc_metadata: dict[str, Any] | None = No
         excerpt=content[:300] if content else session.title,
     ))
 
-    task_items = _extract_session_tasks(content, session_provenance)
+    extraction_content = _agent_session_signal_text(content)
+
+    task_items = _extract_session_tasks(extraction_content, session_provenance)
     for task in task_items:
         task.relationships.append(ExtractedRelationship(
             target_name=session_name,
@@ -498,7 +500,7 @@ def extract_agent_session(content: str, doc_metadata: dict[str, Any] | None = No
         ))
     facts.extend(task_items)
 
-    decision_items = _extract_session_decisions(content, session_provenance)
+    decision_items = _extract_session_decisions(extraction_content, session_provenance)
     for dec in decision_items:
         dec.relationships.append(ExtractedRelationship(
             target_name=session_name,
@@ -508,7 +510,7 @@ def extract_agent_session(content: str, doc_metadata: dict[str, Any] | None = No
         ))
     facts.extend(decision_items)
 
-    risk_items = _extract_session_risks(content, session_provenance)
+    risk_items = _extract_session_risks(extraction_content, session_provenance)
     for risk in risk_items:
         risk.relationships.append(ExtractedRelationship(
             target_name=session_name,
@@ -518,7 +520,7 @@ def extract_agent_session(content: str, doc_metadata: dict[str, Any] | None = No
         ))
     facts.extend(risk_items)
 
-    file_refs = _extract_session_file_refs(content, session_provenance)
+    file_refs = _extract_session_file_refs(extraction_content, session_provenance)
     for ref in file_refs:
         ref.relationships.append(ExtractedRelationship(
             target_name=session_name,
@@ -536,8 +538,8 @@ def _extract_session_tasks(content: str, provenance: str) -> list[ExtractedFact]
     seen: set[str] = set()
 
     for m in re.finditer(r"^\s*[-*]\s+(.+?)$", content, re.MULTILINE):
-        text = m.group(1).strip()
-        if not text:
+        text = _clean_session_fact_text(m.group(1))
+        if not _is_extractable_session_fact(text):
             continue
         first_word = text.split()[0].rstrip(":").lower() if text.split() else ""
         if first_word in ("next", "step", "todo", "action", "task", "follow"):
@@ -551,9 +553,9 @@ def _extract_session_tasks(content: str, provenance: str) -> list[ExtractedFact]
                     provenance=provenance, excerpt=cleaned[:300],
                 ))
 
-    for m in re.finditer(r"(?:next step|todo|action item|follow.?up)\s*:?\s*(.+?)(?:\n|$)", content, re.IGNORECASE):
-        text = m.group(1).strip()
-        if text and len(text) > 5 and text not in seen:
+    for m in re.finditer(r"^\s*(?:next step|todo|action item|follow.?up)\s*:?\s*(.+?)\s*$", content, re.MULTILINE | re.IGNORECASE):
+        text = _clean_session_fact_text(m.group(1))
+        if _is_extractable_session_fact(text) and text not in seen:
             seen.add(text)
             facts.append(ExtractedFact(
                 model_name="Task", name=f"Task: {text[:120]}",
@@ -570,12 +572,12 @@ def _extract_session_decisions(content: str, provenance: str) -> list[ExtractedF
     seen: set[str] = set()
 
     decision_patterns = [
-        r"(?:decision|decided|we chose|we will use|recommendation|verdict)\s*:?\s*(.+?)(?:\n|$)",
+        r"^\s*(?:decision|decided|we decided(?:\s+to)?|we chose|we will use|recommendation|verdict)\s*:?\s*(.+?)\s*$",
     ]
     for pattern in decision_patterns:
-        for m in re.finditer(pattern, content, re.IGNORECASE):
-            text = m.group(1).strip()
-            if text and len(text) > 5 and text not in seen:
+        for m in re.finditer(pattern, content, re.MULTILINE | re.IGNORECASE):
+            text = _clean_session_fact_text(m.group(1))
+            if _is_extractable_session_fact(text) and text not in seen:
                 seen.add(text)
                 facts.append(ExtractedFact(
                     model_name="Decision", name=f"Decision: {text[:120]}",
@@ -588,8 +590,9 @@ def _extract_session_decisions(content: str, provenance: str) -> list[ExtractedF
         start = m.end()
         end = content.find("\n#", start)
         section = content[start:end].strip() if end != -1 else content[start:].strip()
+        section = _clean_session_fact_text(section)
         summary = section[:200].strip()
-        if summary and summary not in seen:
+        if _is_extractable_session_fact(summary) and summary not in seen:
             seen.add(summary)
             facts.append(ExtractedFact(
                 model_name="Decision", name=f"Session decision: {summary[:80]}",
@@ -606,24 +609,112 @@ def _extract_session_risks(content: str, provenance: str) -> list[ExtractedFact]
     seen: set[str] = set()
 
     risk_patterns = [
-        r"(?:blocker|blocked by|risk|concern|unresolved question|open question|failed)\s*:?\s*(.+?)(?:\n|$)",
+        r"^\s*(blocker|blocked by|risk|concern|unresolved question|open question|failed)\s*:?\s*(.+?)\s*$",
     ]
     for pattern in risk_patterns:
-        for m in re.finditer(pattern, content, re.IGNORECASE):
-            text = m.group(1).strip()
-            if text and len(text) > 5 and text not in seen:
+        for m in re.finditer(pattern, content, re.MULTILINE | re.IGNORECASE):
+            label = m.group(1).lower()
+            text = _clean_session_fact_text(m.group(2))
+            if _is_extractable_session_fact(text) and text not in seen:
                 seen.add(text)
-                temporal = "current"
-                if "failed" in text.lower():
-                    temporal = "past"
+                is_blocker = label in {"blocker", "blocked by", "failed"}
+                temporal = "past" if label == "failed" or "failed" in text.lower() else "current"
+                prefix = "Blocker" if is_blocker else "Risk"
                 facts.append(ExtractedFact(
-                    model_name="Risk", name=f"Risk: {text[:120]}",
-                    value=text, fact_type="blocker", confidence=0.82,
+                    model_name="Risk", name=f"{prefix}: {text[:120]}",
+                    value=text, fact_type="blocker" if is_blocker else "risk", confidence=0.82,
                     temporal=temporal, temporal_hint=temporal,
                     provenance=provenance, excerpt=text[:300],
                 ))
 
     return facts
+
+
+def _agent_session_signal_text(content: str) -> str:
+    role_re = re.compile(r"^\[(?P<role>[A-Z_ -]+)\]\s*$")
+    sections: list[tuple[str, list[str]]] = []
+    current_role: str | None = None
+    current_lines: list[str] = []
+
+    for line in content.splitlines():
+        marker = role_re.match(line.strip())
+        if marker:
+            if current_role is not None:
+                sections.append((current_role, current_lines))
+            current_role = marker.group("role").strip().lower()
+            current_lines = []
+            continue
+        if current_role is not None:
+            current_lines.append(line)
+
+    if current_role is not None:
+        sections.append((current_role, current_lines))
+    if not sections:
+        return content
+
+    useful_roles = {"assistant", "ai", "codex", "claude", "opencode", "gpt", "session"}
+    useful_sections = [
+        "\n".join(lines).strip()
+        for role, lines in sections
+        if role in useful_roles and "\n".join(lines).strip()
+    ]
+    return "\n\n".join(useful_sections)
+
+
+def _clean_session_fact_text(value: str | None) -> str:
+    text = str(value or "")
+    text = re.sub(r"data:image/[a-z0-9.+-]+;base64,\S+", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"[A-Za-z0-9+/]{140,}={0,2}", " ", text)
+    text = re.sub(r"[*_`#>\[\](){}\"]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return re.sub(r"^[./\\\s:;-]+|[./\\\s:;-]+$", "", text)
+
+
+def _is_extractable_session_fact(text: str) -> bool:
+    if len(text) <= 5:
+        return False
+    if _looks_like_session_fragment(text):
+        return False
+    if re.search(r"data:image/|base64|[A-Za-z0-9+/]{180,}={0,2}", text, re.IGNORECASE):
+        return False
+    if re.search(
+        r"\b(base_instructions|permissions instructions|developer instructions|knowledge cutoff|"
+        r"request escalation|prefix_rule|sandbox_permissions|function_call|function_call_output|"
+        r"internal_chat_message_metadata|local_images|session_meta|tool_call|working with the user)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False
+    words = re.findall(r"[A-Za-z][A-Za-z0-9'-]{2,}", text)
+    if len(words) < 2:
+        return False
+    compact = re.sub(r"\s+", "", text)
+    noisy_chars = sum(1 for ch in compact if ch in "/.\\{}[]<>_=+:;|")
+    return not (len(compact) >= 12 and len(words) < 3 and noisy_chars / max(1, len(compact)) > 0.34)
+
+
+def _looks_like_session_fragment(text: str) -> bool:
+    clean = text.strip()
+    if not clean:
+        return True
+    if re.match(r"^[,.;:]", clean):
+        return True
+    if re.match(r"^[A-Za-z]\b[,.;:]?", clean):
+        return True
+    if re.match(
+        r"^(?:and|or|but|then|before|after|while|because|only because|once|when|whether|"
+        r"which|that|is|are|was|were|appears)\b",
+        clean,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.match(r"^\w{1,12},\s+(?:and|then|but|so)\b", clean, re.IGNORECASE):
+        return True
+    if re.search(r"\b(?:I(?:'|’)m|I(?:'|’)ll|I am|I will)\b", clean):
+        return True
+    if re.search(r"\bnext pass will\b", clean, re.IGNORECASE):
+        return True
+    return False
 
 
 def _extract_session_file_refs(content: str, provenance: str) -> list[ExtractedFact]:
