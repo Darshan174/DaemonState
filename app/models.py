@@ -366,7 +366,12 @@ class Fact(Base):
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="active")
     provenance: Mapped[str | None] = mapped_column(Text, nullable=True)
     excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
-    extractor_version: Mapped[str] = mapped_column(String(50), nullable=False, default="extractor.v1")
+    extractor_version: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="extractor.v1",
+        server_default="extractor.v1",
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

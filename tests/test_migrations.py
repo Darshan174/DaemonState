@@ -431,6 +431,84 @@ class TestSyncJobMigration:
                 pass
 
 
+class TestFactIdentityMigration:
+    """Prove fact backfills work against tables created without DB defaults."""
+
+    async def test_backfill_sets_extractor_version_without_database_default(self):
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(_create_legacy_schema)
+
+            async with engine.begin() as conn:
+                await conn.execute(text("""
+                    CREATE TABLE facts (
+                        id TEXT PRIMARY KEY,
+                        workspace_id TEXT,
+                        entity_id TEXT,
+                        component_id TEXT NOT NULL UNIQUE,
+                        source_document_id TEXT NOT NULL,
+                        claim TEXT NOT NULL,
+                        fact_type TEXT NOT NULL DEFAULT 'fact',
+                        confidence REAL NOT NULL DEFAULT 0.5,
+                        status TEXT NOT NULL DEFAULT 'active',
+                        provenance TEXT,
+                        excerpt TEXT,
+                        extractor_version TEXT NOT NULL,
+                        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    )
+                """))
+                await conn.execute(text(
+                    "INSERT INTO source_documents "
+                    "(id, source_type, external_id, content, metadata) "
+                    "VALUES "
+                    "('40000000-0000-0000-0000-000000000001', 'github_issue', "
+                    "'issue-11', 'Issue #11: Codex/fix graph review: closed', '{}')"
+                ))
+                await conn.execute(text(
+                    "INSERT INTO models (id, name) VALUES "
+                    "('40000000-0000-0000-0000-000000000002', 'Issue')"
+                ))
+                await conn.execute(text(
+                    "INSERT INTO components "
+                    "(id, model_id, source_document_id, name, value, fact_type, confidence, status) "
+                    "VALUES "
+                    "('40000000-0000-0000-0000-000000000003', "
+                    "'40000000-0000-0000-0000-000000000002', "
+                    "'40000000-0000-0000-0000-000000000001', "
+                    "'Issue #11', 'Codex/fix graph review: closed', 'issue', 0.95, 'active')"
+                ))
+
+            async with engine.begin() as conn:
+                await run_migrations(conn)
+            async with engine.begin() as conn:
+                await run_migrations(conn)
+
+            async with engine.connect() as conn:
+                rows = (await conn.execute(text("""
+                    SELECT claim, fact_type, confidence, extractor_version
+                    FROM facts
+                    WHERE component_id = '40000000-0000-0000-0000-000000000003'
+                """))).fetchall()
+
+            assert rows == [(
+                "Issue #11: Codex/fix graph review: closed",
+                "issue",
+                0.95,
+                "extractor.v1",
+            )]
+        finally:
+            await engine.dispose()
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
 class TestQueryAndSyncIndexMigration:
     """Prove existing graph databases get launch-critical query indexes safely."""
 
