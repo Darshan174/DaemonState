@@ -388,17 +388,38 @@ class TestSyncJobMigration:
                 columns = {row[1] for row in result.fetchall()}
                 assert "result_metadata_json" in columns
                 assert "result_metadata" not in columns
+                assert "workspace_id" in columns
+                assert "job_type" in columns
+                assert "idempotency_key" in columns
+                assert "attempt_count" in columns
+                assert "max_attempts" in columns
+                assert "queued_at" in columns
+                assert "available_at" in columns
+                assert "lease_expires_at" in columns
+                assert "locked_by" in columns
+                assert "dead_lettered_at" in columns
 
                 row = (await conn.execute(text("""
-                    SELECT result_metadata_json FROM sync_jobs
+                    SELECT workspace_id, job_type, idempotency_key, attempt_count,
+                           max_attempts, result_metadata_json, queued_at
+                    FROM sync_jobs
                     WHERE id = '00000000-0000-0000-0000-000000000002'
                 """))).fetchone()
                 assert row is not None
-                assert "documents_fetched" in row[0]
+                assert row[0] == "00000000-0000-0000-0000-000000000000"
+                assert row[1] == "connector_sync"
+                assert row[2] == "connector_sync:00000000-0000-0000-0000-000000000001"
+                assert row[3] == 0
+                assert row[4] == 3
+                assert "documents_fetched" in row[5]
+                assert row[6] is not None
 
             async with AsyncSession(engine, expire_on_commit=False) as session:
                 session.add(SyncJob(
+                    workspace_id=UUID("00000000-0000-0000-0000-000000000000"),
                     connector_id=UUID("00000000-0000-0000-0000-000000000001"),
+                    job_type="connector_sync",
+                    idempotency_key="connector_sync:00000000-0000-0000-0000-000000000001",
                     status="pending",
                 ))
                 await session.commit()
@@ -431,6 +452,12 @@ class TestQueryAndSyncIndexMigration:
                 source_indexes = await _index_names(conn, "source_documents")
                 component_indexes = await _index_names(conn, "components")
                 relationship_indexes = await _index_names(conn, "relationships")
+                retrieval_event_columns = await _table_columns(conn, "retrieval_events")
+                retrieval_event_indexes = await _index_names(conn, "retrieval_events")
+                sync_job_indexes = await _index_names(conn, "sync_jobs")
+                entity_alias_indexes = await _index_names(conn, "entity_aliases")
+                fact_indexes = await _index_names(conn, "facts")
+                mention_indexes = await _index_names(conn, "mentions")
 
             expected_source_indexes = {
                 "ix_source_documents_source_type_external_id",
@@ -448,16 +475,68 @@ class TestQueryAndSyncIndexMigration:
                 "ix_relationships_target_status",
                 "ix_relationships_source_target_type",
             }
+            expected_retrieval_event_columns = {
+                "workspace_id",
+                "question",
+                "answer",
+                "trace_json",
+                "created_at",
+            }
+            expected_retrieval_event_indexes = {
+                "ix_retrieval_events_workspace_created",
+                "ix_retrieval_events_created_at",
+            }
+            expected_sync_job_indexes = {
+                "ix_sync_jobs_workspace_status",
+                "ix_sync_jobs_idempotency_key",
+                "ix_sync_jobs_job_type_status",
+                "ix_sync_jobs_queue_due",
+                "ix_sync_jobs_lease_expires_at",
+            }
+            expected_entity_alias_indexes = {
+                "ix_entity_aliases_workspace_normalized",
+                "ix_entity_aliases_entity",
+            }
+            expected_fact_indexes = {
+                "ix_facts_workspace_status_confidence",
+                "ix_facts_workspace_entity",
+                "ix_facts_source_document",
+            }
+            expected_mention_indexes = {
+                "ix_mentions_workspace_normalized",
+                "ix_mentions_entity",
+                "ix_mentions_source_document",
+            }
 
             assert expected_source_indexes <= set(source_indexes)
             assert expected_component_indexes <= set(component_indexes)
             assert expected_relationship_indexes <= set(relationship_indexes)
+            assert expected_retrieval_event_columns <= set(retrieval_event_columns)
+            assert expected_retrieval_event_indexes <= set(retrieval_event_indexes)
+            assert expected_sync_job_indexes <= set(sync_job_indexes)
+            assert expected_entity_alias_indexes <= set(entity_alias_indexes)
+            assert expected_fact_indexes <= set(fact_indexes)
+            assert expected_mention_indexes <= set(mention_indexes)
             for index_name in (
                 expected_source_indexes
                 | expected_component_indexes
                 | expected_relationship_indexes
+                | expected_retrieval_event_indexes
+                | expected_sync_job_indexes
+                | expected_entity_alias_indexes
+                | expected_fact_indexes
+                | expected_mention_indexes
             ):
-                all_indexes = source_indexes + component_indexes + relationship_indexes
+                all_indexes = (
+                    source_indexes
+                    + component_indexes
+                    + relationship_indexes
+                    + retrieval_event_indexes
+                    + sync_job_indexes
+                    + entity_alias_indexes
+                    + fact_indexes
+                    + mention_indexes
+                )
                 assert all_indexes.count(index_name) == 1
         finally:
             await engine.dispose()
@@ -490,6 +569,93 @@ class TestQueryAndSyncIndexMigration:
                 assert "ix_source_documents_source_type_external_id" not in source_indexes
                 assert "ix_source_documents_processed_at" not in source_indexes
                 assert "ix_source_documents_ingested_at" not in source_indexes
+        finally:
+            await engine.dispose()
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+class TestWorkspaceOwnershipMigration:
+    """Prove legacy metadata-scoped rows gain first-class workspace columns."""
+
+    async def test_backfills_source_and_component_workspace_ids_from_metadata(self):
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+        workspace_id = "33333333-3333-3333-3333-333333333333"
+
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(_create_legacy_schema)
+
+            async with engine.begin() as conn:
+                await conn.execute(text(
+                    "INSERT INTO source_documents "
+                    "(id, source_type, external_id, content, metadata) "
+                    "VALUES "
+                    "('30000000-0000-0000-0000-000000000001', "
+                    "'slack', 'slack:C1:1', 'Decision: Ship it.', :metadata)"
+                ), {"metadata": f'{{"workspace_id":"{workspace_id}"}}'})
+                await conn.execute(text(
+                    "INSERT INTO models (id, name) VALUES "
+                    "('30000000-0000-0000-0000-000000000002', 'Decision')"
+                ))
+                await conn.execute(text(
+                    "INSERT INTO components "
+                    "(id, model_id, source_document_id, name, value, fact_type, confidence, status) "
+                    "VALUES "
+                    "('30000000-0000-0000-0000-000000000003', "
+                    "'30000000-0000-0000-0000-000000000002', "
+                    "'30000000-0000-0000-0000-000000000001', "
+                    "'Ship', 'Ship it.', 'decision', 0.8, 'active')"
+                ))
+
+            async with engine.begin() as conn:
+                await run_migrations(conn)
+            async with engine.begin() as conn:
+                await run_migrations(conn)
+
+            async with engine.connect() as conn:
+                source_columns = {
+                    row[1] for row in (await conn.execute(text("PRAGMA table_info(source_documents)"))).fetchall()
+                }
+                component_columns = {
+                    row[1] for row in (await conn.execute(text("PRAGMA table_info(components)"))).fetchall()
+                }
+                entity_columns = {
+                    row[1] for row in (await conn.execute(text("PRAGMA table_info(entities)"))).fetchall()
+                }
+                assert "workspace_id" in source_columns
+                assert "workspace_id" in component_columns
+                assert "identity_key" in component_columns
+                assert "entity_id" in component_columns
+                assert {"id", "workspace_id", "identity_key", "canonical_name"} <= entity_columns
+
+                source_row = (await conn.execute(text(
+                    "SELECT workspace_id FROM source_documents "
+                    "WHERE id = '30000000-0000-0000-0000-000000000001'"
+                ))).fetchone()
+                component_row = (await conn.execute(text(
+                    "SELECT workspace_id, identity_key, entity_id FROM components "
+                    "WHERE id = '30000000-0000-0000-0000-000000000003'"
+                ))).fetchone()
+                assert source_row is not None
+                assert component_row is not None
+                assert source_row[0] == UUID(workspace_id).hex
+                assert component_row[0] == UUID(workspace_id).hex
+                assert component_row[1] == "component:ship"
+                assert component_row[2]
+
+                entity_row = (await conn.execute(text(
+                    "SELECT workspace_id, identity_key, canonical_name FROM entities "
+                    "WHERE id = :entity_id"
+                ), {"entity_id": component_row[2]})).fetchone()
+                assert entity_row is not None
+                assert entity_row[0] == UUID(workspace_id).hex
+                assert entity_row[1] == "component:ship"
+                assert entity_row[2] == "Ship"
         finally:
             await engine.dispose()
             try:
@@ -548,9 +714,32 @@ def _create_legacy_schema(connection):
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
     """))
+    connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS sync_jobs (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT,
+            connector_id TEXT NOT NULL,
+            job_type TEXT NOT NULL DEFAULT 'connector_sync',
+            idempotency_key TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL DEFAULT 3,
+            error_type TEXT,
+            error_message TEXT,
+            result_metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            started_at TEXT,
+            completed_at TEXT
+        )
+    """))
     connection.commit()
 
 
 async def _index_names(conn, table_name: str) -> list[str]:
     result = await conn.execute(text(f"PRAGMA index_list({table_name})"))
+    return [row[1] for row in result.fetchall()]
+
+
+async def _table_columns(conn, table_name: str) -> list[str]:
+    result = await conn.execute(text(f"PRAGMA table_info({table_name})"))
     return [row[1] for row in result.fetchall()]

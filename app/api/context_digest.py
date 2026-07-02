@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+import re
+from datetime import datetime, timedelta
 from typing import Literal
 from uuid import UUID
 
@@ -18,6 +19,7 @@ from app.services.workspace_scope import (
     workspace_connector_types,
 )
 from app.taxonomy import relationship_display_label, source_type_display
+from app.time import utc_now
 
 router = APIRouter()
 
@@ -171,6 +173,8 @@ async def get_context_digest(
     )
     blocker_component_ids = _blocked_component_ids(relationships)
 
+    components = [component for component in components if not _is_digest_noise_component(component)]
+
     cards = [
         _component_to_card(
             component,
@@ -203,7 +207,7 @@ async def get_context_digest(
     health = _digest_health(cards)
     return ContextDigest(
         workspace_id=workspace_id_str,
-        generated_at=_utcnow(),
+        generated_at=utc_now(),
         health=health,
         cards=cards,
         clusters=_clusters(cards),
@@ -241,6 +245,115 @@ def _blocked_component_ids(relationships: list[Relationship]) -> set[UUID]:
         elif rel.relationship_type == "blocked_by":
             component_ids.add(rel.source_component_id)
     return component_ids
+
+
+def _is_digest_noise_component(component: Component) -> bool:
+    if _looks_like_agent_session_fragment(component):
+        return True
+
+    fields = [
+        component.name,
+        component.value,
+        component.excerpt,
+        component.provenance,
+    ]
+    source = component.source_document
+    if source:
+        fields.extend([
+            source.external_id,
+            source.source_url,
+        ])
+    text = " ".join(str(value) for value in fields if value)
+    if _looks_like_digest_noise(text):
+        return True
+
+    clean = _clean_digest_text(" ".join(str(value) for value in (component.name, component.value, component.excerpt) if value))
+    words = re.findall(r"[A-Za-z][A-Za-z0-9'-]{2,}", clean)
+    if len(words) < 2 and (component.fact_type or "").lower() in {"decision", "blocker", "risk", "ai_decision", "ai_blocker"}:
+        return True
+    return False
+
+
+def _looks_like_agent_session_fragment(component: Component) -> bool:
+    source_type = (component.source_document.source_type if component.source_document else "").lower()
+    if not (
+        source_type in {"agent_session", "codex", "claude", "opencode"}
+        or source_type.startswith("ai_context")
+    ):
+        return False
+
+    fact_type = (component.fact_type or "").lower()
+    if fact_type not in {"decision", "blocker", "risk", "task", "action_item", "ai_decision", "ai_blocker", "ai_task"}:
+        return False
+
+    text = _strip_digest_label(_clean_digest_text(component.value or component.name or component.excerpt))
+    if not text:
+        return True
+    words = re.findall(r"[A-Za-z][A-Za-z0-9'-]{2,}", text)
+    if len(words) < 3:
+        return True
+    if re.match(r"^[,.;:]", text):
+        return True
+    if re.match(r"^[A-Za-z]\b[,.;:]?", text):
+        return True
+    if re.match(
+        r"^(?:and|or|but|then|before|after|while|because|only because|once|when|whether|"
+        r"which|that|is|are|was|were|appears)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.match(r"^\w{1,12},\s+(?:and|then|but|so)\b", text, re.IGNORECASE):
+        return True
+    if re.search(r"\b(?:I(?:'|’)m|I(?:'|’)ll|I am|I will)\b", text):
+        return True
+    if re.search(r"\bnext pass will\b", text, re.IGNORECASE):
+        return True
+    return False
+
+
+def _strip_digest_label(text: str) -> str:
+    return re.sub(
+        r"^\s*(?:decision|task|risk|blocker|file|session|agent session)\s*:\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+
+
+def _looks_like_digest_noise(value: str | None) -> bool:
+    text = str(value or "")
+    if not text.strip():
+        return False
+    if re.search(r"data:image/|base64|[A-Za-z0-9+/]{180,}={0,2}", text, re.IGNORECASE):
+        return True
+    if re.search(
+        r"\b(base_instructions|permissions instructions|developer instructions|system message|"
+        r"knowledge cutoff|request escalation|prefix_rule|sandbox_permissions|"
+        r"function_call|function_call_output|internal_chat_message_metadata|local_images|"
+        r"session_meta|tool_call|do not revert unrelated|working with the user)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return True
+    compact = re.sub(r"\s+", "", text)
+    if len(compact) >= 12:
+        noisy_chars = sum(1 for ch in compact if ch in "/.\\{}[]<>_=+:;|")
+        word_count = len(re.findall(r"[A-Za-z][A-Za-z0-9'-]{2,}", text))
+        if word_count < 3 and noisy_chars / max(1, len(compact)) > 0.34:
+            return True
+    return False
+
+
+def _clean_digest_text(value: str | None) -> str:
+    text = str(value or "")
+    text = re.sub(r"\s+From:\s+[^<\n]*<[^>]+>[\s\S]*$", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+Reply to this email[\s\S]*$", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"data:image/[a-z0-9.+-]+;base64,\S+", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"[A-Za-z0-9+/]{140,}={0,2}", " ", text)
+    text = re.sub(r"[*_`>\[\](){}\"]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return re.sub(r"^[./\\\s:;-]+|[./\\\s:;-]+$", "", text)
 
 
 def _component_to_card(
@@ -293,10 +406,13 @@ def _card_type(component: Component) -> CardType:
     fact_type = (component.fact_type or "fact").lower()
     source_type = (component.source_document.source_type if component.source_document else "").lower()
 
-    if fact_type in {"blocker", "ai_blocker"}:
-        return "blocker"
     if fact_type == "risk":
         return "risk"
+    if fact_type in {"blocker", "ai_blocker"}:
+        title = _clean_digest_text(component.name)
+        if title.lower().startswith("risk:"):
+            return "risk"
+        return "blocker"
     if fact_type in {"decision", "ai_decision", "outcome"}:
         return "decision"
     if fact_type in {"task", "action_item", "ai_task", "issue", "github_issue", "pr", "github_pr"}:
@@ -376,11 +492,7 @@ def _is_recent(component: Component) -> bool:
     timestamp = source.ingested_at if source else component.created_at
     if not timestamp:
         return False
-    return _utcnow() - timestamp.replace(tzinfo=None) <= timedelta(days=7)
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return utc_now() - timestamp.replace(tzinfo=None) <= timedelta(days=7)
 
 
 def _is_agent_source(component: Component) -> bool:
@@ -394,7 +506,7 @@ def _is_recent_agent_or_pr(component: Component) -> bool:
 
 
 def _display_title(component: Component, card_type: CardType) -> str:
-    title = (component.name or "").strip() or _summary(component)
+    title = _clean_digest_text(component.name) or _summary(component)
     prefixes = {
         "decision": "Decision",
         "task": "Task",
@@ -410,9 +522,9 @@ def _display_title(component: Component, card_type: CardType) -> str:
 
 
 def _summary(component: Component) -> str:
-    value = (component.value or "").strip()
+    value = _clean_digest_text(component.value)
     if not value:
-        return (component.name or "No summary available.").strip()
+        return _clean_digest_text(component.name) or "No summary available."
     return value if len(value) <= 320 else f"{value[:317].rstrip()}..."
 
 
@@ -530,14 +642,14 @@ def _source_label(component: Component) -> str:
     ):
         value = metadata.get(key)
         if value:
-            return str(value)
-    return source.external_id or source_type_display(source.source_type)
+            return _clean_digest_text(value) or source_type_display(source.source_type)
+    return _clean_digest_text(source.external_id) or source_type_display(source.source_type)
 
 
 def _excerpt(component: Component) -> str | None:
-    excerpt = (component.excerpt or component.provenance or "").strip()
+    excerpt = _clean_digest_text(component.excerpt or component.provenance)
     if not excerpt:
-        excerpt = (component.value or "").strip()
+        excerpt = _clean_digest_text(component.value)
     if not excerpt:
         return None
     return excerpt if len(excerpt) <= 260 else f"{excerpt[:257].rstrip()}..."

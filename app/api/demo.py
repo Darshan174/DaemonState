@@ -236,6 +236,8 @@ async def _find_seed_document(
     ))
     workspace_id_str = str(workspace_id)
     for doc in docs:
+        if doc.workspace_id == workspace_id:
+            return doc
         metadata = _metadata_dict(doc.metadata_json)
         if metadata.get("demo_seed") is True and str(metadata.get("workspace_id")) == workspace_id_str:
             return doc
@@ -253,6 +255,7 @@ def _build_seed_document(spec: dict[str, Any], workspace: Workspace) -> SourceDo
     if not isinstance(content, str):
         content = json.dumps(content)
     return SourceDocument(
+        workspace_id=workspace.id,
         source_type=spec["source_type"],
         external_id=spec["external_id"],
         content=content,

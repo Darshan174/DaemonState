@@ -8,11 +8,12 @@ from re import sub
 from uuid import uuid4
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.connectors import _get_env, _get_google_client_id
 from app.models import Connector, SourceDocument
+from app.services.credentials import dump_credentials, load_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ async def sync_gmail(connector: Connector, session: AsyncSession) -> dict:
 
             docs_fetched += 1
             external_id = f"gmail:{message_id}"
-            if await _document_exists(external_id, session):
+            if await _document_exists(external_id, connector, session):
                 duplicates_skipped += 1
                 continue
 
@@ -80,6 +81,7 @@ async def sync_gmail(connector: Connector, session: AsyncSession) -> dict:
             session.add(
                 SourceDocument(
                     id=uuid4(),
+                    workspace_id=connector.workspace_id,
                     source_type="gmail",
                     external_id=external_id,
                     content=content,
@@ -143,7 +145,7 @@ async def sync_gdrive(connector: Connector, session: AsyncSession) -> dict:
                 continue
             docs_fetched += 1
             external_id = f"gdrive:{file_id}"
-            if await _document_exists(external_id, session):
+            if await _document_exists(external_id, connector, session):
                 duplicates_skipped += 1
                 continue
 
@@ -174,6 +176,7 @@ async def sync_gdrive(connector: Connector, session: AsyncSession) -> dict:
             session.add(
                 SourceDocument(
                     id=uuid4(),
+                    workspace_id=connector.workspace_id,
                     source_type="gdrive",
                     external_id=external_id,
                     content=f"[Drive File] {item.get('name', 'Untitled')}\n\n{text[:20000]}",
@@ -236,22 +239,24 @@ async def _refresh_access_token(connector: Connector, session: AsyncSession) -> 
 
     credentials["access_token"] = access_token
     credentials["expires_in"] = data.get("expires_in")
-    connector.credentials_json = json.dumps(credentials)
+    connector.credentials_json = dump_credentials(credentials)
     await session.commit()
     return access_token
 
 
 def _credentials(connector: Connector) -> dict[str, object]:
-    try:
-        data = json.loads(connector.credentials_json or "{}")
-    except json.JSONDecodeError:
-        data = {}
-    return data if isinstance(data, dict) else {}
+    return load_credentials(connector.credentials_json)
 
 
-async def _document_exists(external_id: str, session: AsyncSession) -> bool:
+async def _document_exists(external_id: str, connector: Connector, session: AsyncSession) -> bool:
     existing = await session.scalar(
-        select(SourceDocument).where(SourceDocument.external_id == external_id)
+        select(SourceDocument).where(
+            SourceDocument.external_id == external_id,
+            or_(
+                SourceDocument.workspace_id == connector.workspace_id,
+                SourceDocument.workspace_id.is_(None),
+            ),
+        )
     )
     return existing is not None
 

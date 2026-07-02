@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import json
 
-from app.processing.extractor import ExtractedFact, ExtractedRelationship, Extractor
+from app.processing.extractor import (
+    ExtractedFact,
+    ExtractedRelationship,
+    Extractor,
+    _facts_from_llm_payload,
+    evaluate_extraction_quality,
+)
 
 
 class TestRegexExtractor:
@@ -252,6 +258,79 @@ class TestTemporalHintDetection:
         for fact in facts:
             assert hasattr(fact, "temporal_hint")
             assert fact.temporal_hint in ("current", "past", "future")
+
+
+class TestLLMExtractionContract:
+    def test_llm_payload_skips_invalid_items_and_clamps_fields(self):
+        facts, warnings = _facts_from_llm_payload({
+            "facts": [
+                {
+                    "model_name": "Decisions",
+                    "name": "OAuth2 auth decision",
+                    "value": "Use OAuth2 for auth.",
+                    "fact_type": "decision",
+                    "confidence": 1.7,
+                    "temporal": "later",
+                    "relationships": [
+                        {
+                            "target_name": "Auth service",
+                            "relationship_type": "depends",
+                            "confidence": "-0.3",
+                        },
+                        {"relationship_type": "mentions"},
+                    ],
+                },
+                {"value": "Missing name"},
+                "not an object",
+            ],
+        })
+
+        assert len(facts) == 1
+        fact = facts[0]
+        assert fact.model_name == "Decision"
+        assert fact.confidence == 1.0
+        assert fact.temporal == "unknown"
+        assert len(fact.relationships) == 1
+        assert fact.relationships[0].target_name == "Auth service"
+        assert fact.relationships[0].confidence == 0.0
+        assert "fact_0_invalid_temporal" in warnings
+        assert "fact_1_missing_name" in warnings
+        assert "fact_2_not_object" in warnings
+
+    def test_extraction_quality_report_counts_risks(self):
+        rel = ExtractedRelationship(
+            target_name="Auth service",
+            relationship_type="depends_on",
+            confidence=0.8,
+        )
+        facts = [
+            ExtractedFact(
+                model_name="Decision",
+                name="OAuth2 auth decision",
+                value="Use OAuth2 for auth.",
+                fact_type="decision",
+                confidence=0.9,
+                relationships=[rel],
+            ),
+            ExtractedFact(
+                model_name="Decision",
+                name="OAuth2 auth decision",
+                value="Use OAuth2 for auth.",
+                fact_type="decision",
+                confidence=0.4,
+            ),
+        ]
+
+        report = evaluate_extraction_quality(facts)
+
+        assert report.fact_count == 2
+        assert report.relationship_count == 1
+        assert report.low_confidence_count == 1
+        assert report.missing_provenance_count == 2
+        assert report.missing_relationship_evidence_count == 1
+        assert report.duplicate_fact_count == 1
+        assert report.model_counts == {"Decision": 2}
+        assert report.fact_type_counts == {"decision": 2}
 
 
 class TestExtractedFactDataclass:

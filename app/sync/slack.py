@@ -6,10 +6,11 @@ import asyncio
 from uuid import uuid4
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Connector, SourceDocument
+from app.services.credentials import load_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ SLACK_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 async def sync_slack(connector: Connector, session: AsyncSession) -> dict:
-    creds = json.loads(connector.credentials_json or "{}")
+    creds = load_credentials(connector.credentials_json)
     token = creds.get("access_token", "")
     if not token:
         raise ValueError("No Slack access token found on connector.")
@@ -237,7 +238,13 @@ async def _persist_slack_message(
     external_id = f"slack:{channel_id}:{ts}"
 
     existing = await session.scalar(
-        select(SourceDocument).where(SourceDocument.external_id == external_id)
+        select(SourceDocument).where(
+            SourceDocument.external_id == external_id,
+            or_(
+                SourceDocument.workspace_id == connector.workspace_id,
+                SourceDocument.workspace_id.is_(None),
+            ),
+        )
     )
     if existing:
         return "duplicate"
@@ -262,6 +269,7 @@ async def _persist_slack_message(
     }
     doc = SourceDocument(
         id=uuid4(),
+        workspace_id=connector.workspace_id,
         source_type="slack",
         external_id=external_id,
         content=text,

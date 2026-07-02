@@ -1,13 +1,245 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from uuid import uuid4
 
 from sqlalchemy import select
 
-from app.models import Component, Model, Relationship, SourceDocument
+from app.models import (
+    Component,
+    Entity,
+    EntityAlias,
+    Fact,
+    Mention,
+    Model,
+    Relationship,
+    SourceDocument,
+    Workspace,
+)
 from app.processing.extractor import ExtractedFact, ExtractedRelationship
+from app.services.identity import identity_key_for_component_name
 from app.services.ingest import IngestionService
+
+
+class _StaticExtractor:
+    def __init__(self, facts):
+        self.facts = facts
+
+    async def extract(self, content, metadata):
+        return list(self.facts)
+
+
+class TestWorkspaceScopedIngestion:
+    async def test_duplicate_facts_do_not_merge_across_workspaces(self, db_session):
+        ws_a = Workspace(id=uuid4(), name="Workspace A", slug=f"workspace-a-{uuid4().hex}")
+        ws_b = Workspace(id=uuid4(), name="Workspace B", slug=f"workspace-b-{uuid4().hex}")
+        db_session.add_all([ws_a, ws_b])
+        await db_session.flush()
+
+        fact = ExtractedFact(
+            model_name="Decision",
+            name="Shared launch decision",
+            value="Ship the workspace-scoped retrieval change.",
+            fact_type="decision",
+            confidence=0.9,
+        )
+        doc_a = SourceDocument(
+            id=uuid4(),
+            workspace_id=ws_a.id,
+            source_type="local",
+            external_id="shared-doc",
+            content="Decision: Ship the workspace-scoped retrieval change.",
+            metadata_json=json.dumps({"workspace_id": str(ws_a.id)}),
+        )
+        doc_b = SourceDocument(
+            id=uuid4(),
+            workspace_id=ws_b.id,
+            source_type="local",
+            external_id="shared-doc",
+            content="Decision: Ship the workspace-scoped retrieval change.",
+            metadata_json=json.dumps({"workspace_id": str(ws_b.id)}),
+        )
+        db_session.add_all([doc_a, doc_b])
+        await db_session.flush()
+
+        svc = IngestionService(db_session, extractor=_StaticExtractor([fact]))
+        assert await svc.process_document(doc_a.id) == 1
+        assert await svc.process_document(doc_b.id) == 1
+
+        components = list(await db_session.scalars(
+            select(Component).where(Component.name == "Shared launch decision")
+        ))
+        assert len(components) == 2
+        assert {component.workspace_id for component in components} == {ws_a.id, ws_b.id}
+
+
+class TestComponentIdentityKeys:
+    def test_identity_key_normalizes_labels_case_and_punctuation(self):
+        assert (
+            identity_key_for_component_name("Decision: OAuth2 rate-limit auth!")
+            == "component:oauth2-rate-limit-auth"
+        )
+        assert (
+            identity_key_for_component_name("oauth2 rate limit auth")
+            == "component:oauth2-rate-limit-auth"
+        )
+
+    async def test_upsert_uses_identity_key_without_merging_distinct_values(self, db_session):
+        svc = IngestionService(db_session)
+        model = await svc._get_or_create_model("Decision")
+        doc = SourceDocument(
+            id=uuid4(), source_type="local", external_id="identity-upsert",
+            content="Decision: OAuth2 rate limit auth.", metadata_json="{}",
+        )
+        db_session.add(doc)
+        await db_session.flush()
+
+        first = await svc._upsert_component(model, doc, ExtractedFact(
+            model_name="Decision",
+            name="Decision: OAuth2 rate-limit auth",
+            value="Use OAuth2 rate limits for auth.",
+            fact_type="decision",
+            confidence=0.7,
+        ))
+        duplicate = await svc._upsert_component(model, doc, ExtractedFact(
+            model_name="Decision",
+            name="oauth2 rate limit auth",
+            value="Use OAuth2 rate limits for auth.",
+            fact_type="decision",
+            confidence=0.9,
+        ))
+        distinct = await svc._upsert_component(model, doc, ExtractedFact(
+            model_name="Decision",
+            name="OAuth2 rate limit auth",
+            value="Revisit OAuth2 rate limits after enterprise review.",
+            fact_type="decision",
+            confidence=0.8,
+        ))
+
+        assert duplicate.id == first.id
+        assert duplicate.confidence == 0.9
+        assert first.identity_key == "component:oauth2-rate-limit-auth"
+        assert distinct.id != first.id
+        assert distinct.identity_key == first.identity_key
+        assert first.entity_id is not None
+        assert distinct.entity_id == first.entity_id
+
+        entity = await db_session.get(Entity, first.entity_id)
+        assert entity is not None
+        assert entity.identity_key == "component:oauth2-rate-limit-auth"
+        assert entity.canonical_name == "Decision: OAuth2 rate-limit auth"
+
+    async def test_process_document_records_fact_mentions_and_aliases(self, db_session):
+        fact = ExtractedFact(
+            model_name="Decision",
+            name="Decision: Use Postgres retrieval",
+            value="Use Postgres text and vector indexes for production retrieval.",
+            fact_type="decision",
+            confidence=0.91,
+            provenance="doc:decision",
+            excerpt="Decision: Use Postgres retrieval",
+        )
+        doc = SourceDocument(
+            id=uuid4(),
+            source_type="local",
+            external_id="identity-provenance",
+            content="Decision: Use Postgres retrieval",
+            metadata_json="{}",
+        )
+        db_session.add(doc)
+        await db_session.flush()
+
+        svc = IngestionService(db_session, extractor=_StaticExtractor([fact]))
+        assert await svc.process_document(doc.id) == 1
+
+        component = await db_session.scalar(select(Component).where(
+            Component.name == "Decision: Use Postgres retrieval"
+        ))
+        assert component is not None
+        stored_fact = await db_session.scalar(select(Fact).where(Fact.component_id == component.id))
+        mention = await db_session.scalar(select(Mention).where(Mention.component_id == component.id))
+        alias = await db_session.scalar(select(EntityAlias).where(
+            EntityAlias.entity_id == component.entity_id
+        ))
+
+        assert stored_fact is not None
+        assert stored_fact.claim.startswith("Decision: Use Postgres retrieval:")
+        assert stored_fact.provenance == "doc:decision"
+        assert mention is not None
+        assert mention.normalized_mention == "use postgres retrieval"
+        assert alias is not None
+        assert alias.normalized_alias == "use postgres retrieval"
+
+    async def test_relationship_target_resolution_uses_identity_key(self, db_session):
+        svc = IngestionService(db_session)
+        model = await svc._get_or_create_model("Feature")
+        doc = SourceDocument(
+            id=uuid4(), source_type="local", external_id="identity-rel",
+            content="SSO depends on OAuth2.", metadata_json="{}",
+        )
+        db_session.add(doc)
+        await db_session.flush()
+
+        target = await svc._upsert_component(model, doc, ExtractedFact(
+            model_name="Feature",
+            name="Feature: OAuth2 rate-limit auth",
+            value="OAuth2 rate-limit auth module",
+            fact_type="feature",
+            confidence=0.85,
+        ))
+        source = await svc._upsert_component(model, doc, ExtractedFact(
+            model_name="Feature",
+            name="SSO support",
+            value="SSO requires auth hardening.",
+            fact_type="feature",
+            confidence=0.82,
+        ))
+
+        await svc._create_relationship(source, ExtractedRelationship(
+            target_name="OAuth2 rate limit auth",
+            relationship_type="depends_on",
+            confidence=0.85,
+        ))
+
+        rels = (await db_session.scalars(
+            select(Relationship).where(Relationship.source_component_id == source.id)
+        )).all()
+        assert len(rels) == 1
+        assert rels[0].target_component_id == target.id
+
+    async def test_entities_are_workspace_scoped(self, db_session):
+        ws_a = Workspace(id=uuid4(), name="Identity A", slug=f"identity-a-{uuid4().hex}")
+        ws_b = Workspace(id=uuid4(), name="Identity B", slug=f"identity-b-{uuid4().hex}")
+        db_session.add_all([ws_a, ws_b])
+        await db_session.flush()
+
+        svc = IngestionService(db_session)
+        model = await svc._get_or_create_model("Decision")
+        doc_a = SourceDocument(
+            id=uuid4(), workspace_id=ws_a.id, source_type="local",
+            external_id="entity-a", content="Decision: Shared", metadata_json="{}",
+        )
+        doc_b = SourceDocument(
+            id=uuid4(), workspace_id=ws_b.id, source_type="local",
+            external_id="entity-b", content="Decision: Shared", metadata_json="{}",
+        )
+        db_session.add_all([doc_a, doc_b])
+        await db_session.flush()
+
+        comp_a = await svc._upsert_component(model, doc_a, ExtractedFact(
+            model_name="Decision", name="Shared entity", value="Workspace A fact",
+            fact_type="decision", confidence=0.9,
+        ))
+        comp_b = await svc._upsert_component(model, doc_b, ExtractedFact(
+            model_name="Decision", name="Shared entity", value="Workspace B fact",
+            fact_type="decision", confidence=0.9,
+        ))
+
+        assert comp_a.identity_key == comp_b.identity_key
+        assert comp_a.entity_id is not None
+        assert comp_b.entity_id is not None
+        assert comp_a.entity_id != comp_b.entity_id
 
 
 class TestCrossModelRelationships:

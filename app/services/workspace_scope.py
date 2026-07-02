@@ -46,10 +46,14 @@ def source_matches_workspace(
     workspace_id: str,
     connector_types: set[str],
 ) -> bool:
+    explicit_workspace_id = getattr(doc, "workspace_id", None)
+    if explicit_workspace_id:
+        return workspace_ids_equal(explicit_workspace_id, workspace_id)
+
     metadata = metadata_dict(doc)
     metadata_workspace_id = metadata.get("workspace_id")
     if metadata_workspace_id:
-        return str(metadata_workspace_id) == workspace_id
+        return workspace_ids_equal(metadata_workspace_id, workspace_id)
 
     source_type = doc.source_type
     if source_type in connector_types:
@@ -87,8 +91,24 @@ def filter_components_for_workspace(
     workspace_id: str,
     connector_types: set[str],
 ) -> list[Component]:
-    return [
-        component for component in components
-        if component.source_document
-        and source_matches_workspace(component.source_document, workspace_id, connector_types)
-    ]
+    filtered: list[Component] = []
+    for component in components:
+        explicit_workspace_id = getattr(component, "workspace_id", None)
+        if explicit_workspace_id:
+            if workspace_ids_equal(explicit_workspace_id, workspace_id):
+                filtered.append(component)
+            continue
+        if component.source_document and source_matches_workspace(
+            component.source_document,
+            workspace_id,
+            connector_types,
+        ):
+            filtered.append(component)
+    return filtered
+
+
+def workspace_ids_equal(left: object, right: object) -> bool:
+    try:
+        return UUID(str(left)) == UUID(str(right))
+    except (TypeError, ValueError):
+        return str(left) == str(right)

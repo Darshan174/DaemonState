@@ -199,6 +199,8 @@ async def _query_context(
             "components": [
                 {
                     "id": str(component.id),
+                    "entity_id": str(component.entity_id) if component.entity_id else None,
+                    "identity_key": component.identity_key,
                     "model_name": component.model_name,
                     "name": component.name,
                     "value": component.value,
@@ -221,9 +223,19 @@ async def _query_context(
             ],
             "sources": result.sources,
             "trace": {
+                "retrieval_strategy": result.trace.retrieval_strategy,
+                "vector_candidate_count": result.trace.vector_candidate_count,
+                "text_candidate_count": result.trace.text_candidate_count,
+                "vector_prefilter_limit": result.trace.vector_prefilter_limit,
+                "text_prefilter_limit": result.trace.text_prefilter_limit,
                 "top_k": result.trace.top_k,
                 "min_confidence": result.trace.min_confidence,
                 "hybrid": result.trace.hybrid,
+                "candidate_component_count": result.trace.candidate_component_count,
+                "scoped_component_count": result.trace.scoped_component_count,
+                "scored_component_count": result.trace.scored_component_count,
+                "entity_group_count": result.trace.entity_group_count,
+                "entity_duplicate_count": result.trace.entity_duplicate_count,
                 "matched_component_count": result.trace.matched_component_count,
                 "returned_component_count": result.trace.returned_component_count,
                 "expanded_relationship_count": result.trace.expanded_relationship_count,
@@ -231,6 +243,8 @@ async def _query_context(
                     {
                         "rank": fact.rank,
                         "component_id": str(fact.component_id),
+                        "entity_id": str(fact.entity_id) if fact.entity_id else None,
+                        "identity_key": fact.identity_key,
                         "model_name": fact.model_name,
                         "name": fact.name,
                         "value": fact.value,
@@ -303,6 +317,8 @@ async def _search_nodes(query: str, limit: int = 10) -> list[TextContent]:
         for score, comp in top:
             entry = {
                 "id": str(comp.id),
+                "entity_id": str(comp.entity_id) if comp.entity_id else None,
+                "identity_key": comp.identity_key,
                 "name": comp.name,
                 "value": comp.value,
                 "confidence": comp.confidence,
@@ -366,6 +382,8 @@ async def _expand_graph(node_id: str) -> list[TextContent]:
                 for nb in nb_result.scalars().all():
                     entry = {
                         "id": str(nb.id),
+                        "entity_id": str(nb.entity_id) if nb.entity_id else None,
+                        "identity_key": nb.identity_key,
                         "name": nb.name,
                         "value": nb.value,
                         "confidence": nb.confidence,
@@ -401,6 +419,8 @@ async def _expand_graph(node_id: str) -> list[TextContent]:
         return _json_text({
             "node": {
                 "id": str(comp.id),
+                "entity_id": str(comp.entity_id) if comp.entity_id else None,
+                "identity_key": comp.identity_key,
                 "name": comp.name,
                 "value": comp.value,
                 "confidence": comp.confidence,
