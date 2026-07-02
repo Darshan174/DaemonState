@@ -617,10 +617,8 @@ def _extract_session_risks(content: str, provenance: str) -> list[ExtractedFact]
             text = _clean_session_fact_text(m.group(2))
             if _is_extractable_session_fact(text) and text not in seen:
                 seen.add(text)
-                temporal = "current"
-                if "failed" in text.lower():
-                    temporal = "past"
                 is_blocker = label in {"blocker", "blocked by", "failed"}
+                temporal = "past" if label == "failed" or "failed" in text.lower() else "current"
                 prefix = "Blocker" if is_blocker else "Risk"
                 facts.append(ExtractedFact(
                     model_name="Risk", name=f"{prefix}: {text[:120]}",

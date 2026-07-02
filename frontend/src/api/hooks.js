@@ -1723,6 +1723,26 @@ export function useIngestAISession() {
   });
 }
 
+export function useImportAISessionById() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ connectorType, sessionId }) => {
+      const wsId = await getWorkspaceId();
+      return api.post("/connectors/ai-session/import-by-id", {
+        workspace_id: wsId,
+        connector_type: connectorType,
+        session_id: sessionId,
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["connectors"] });
+      qc.invalidateQueries({ queryKey: ["connector-processing-summary"] });
+      qc.invalidateQueries({ queryKey: ["source-documents"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+}
+
 export function useSaveSlackOAuthSettings() {
   const qc = useQueryClient();
   return useMutation({

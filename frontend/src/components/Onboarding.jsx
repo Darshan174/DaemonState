@@ -115,10 +115,10 @@ export default function Onboarding({ onComplete }) {
             <Loader2 className="w-8 h-8 animate-spin" />
           )}
         </div>
-        <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100">
+        <h2 className="text-xl font-bold text-slate-900 dark:text-neutral-100">
           {isError ? "Demo seed failed" : isSuccess ? "Demo workspace ready" : "Seeding Demo Workspace"}
         </h2>
-        <p className="mt-2 text-slate-500 dark:text-slate-400 max-w-sm">
+        <p className="mt-2 text-slate-500 dark:text-neutral-400 max-w-sm">
           {demoStatus?.message ||
             "We're setting up source-backed demo context from GitHub, Slack, Gmail, Google Drive, and Codex."}
         </p>
@@ -135,7 +135,7 @@ export default function Onboarding({ onComplete }) {
             <button
               type="button"
               onClick={() => setStep("choice")}
-              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200 dark:hover:bg-slate-800"
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 transition-colors hover:bg-slate-50 dark:border-neutral-800 dark:bg-black dark:text-neutral-200 dark:hover:bg-black"
             >
               Back to options
             </button>
@@ -150,18 +150,18 @@ export default function Onboarding({ onComplete }) {
       <div className="py-6">
         <button 
           onClick={() => setStep("choice")}
-          className="mb-6 flex items-center gap-2 text-sm font-medium text-slate-500 hover:text-slate-800 dark:text-slate-300 transition-colors"
+          className="mb-6 flex items-center gap-2 text-sm font-medium text-slate-500 hover:text-slate-800 dark:text-neutral-300 transition-colors"
         >
           <ArrowRight className="w-4 h-4 rotate-180" />
           Back to options
         </button>
 
-        <h2 className="text-xl font-bold text-slate-900 dark:text-slate-200 mb-2">Import your context</h2>
+        <h2 className="text-xl font-bold text-slate-900 dark:text-neutral-200 mb-2">Import your context</h2>
         <p className="text-slate-500 mb-8">Upload Markdown, text, JSON, CSV, or HTML files to ground your workspace truth.</p>
 
         <div className="space-y-6">
           <div 
-            className="border-2 border-dashed border-slate-200 dark:border-slate-800/50 rounded-2xl p-10 flex flex-col items-center justify-center bg-slate-50/50 hover:bg-slate-50 dark:bg-slate-900/30 transition-colors cursor-pointer group"
+            className="border-2 border-dashed border-slate-200 dark:border-neutral-800/50 rounded-2xl p-10 flex flex-col items-center justify-center bg-slate-50/50 hover:bg-slate-50 dark:bg-black transition-colors cursor-pointer group"
             onClick={() => document.getElementById('file-upload').click()}
           >
             <input 
@@ -172,10 +172,10 @@ export default function Onboarding({ onComplete }) {
               className="hidden" 
               onChange={handleFileUpload}
             />
-            <div className="w-12 h-12 rounded-full bg-white dark:bg-slate-800 shadow-sm flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+            <div className="w-12 h-12 rounded-full bg-white dark:bg-black shadow-sm flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
               <UploadCloud className="w-6 h-6 text-brand-600 dark:text-brand-400" />
             </div>
-            <p className="text-sm font-bold text-slate-900 dark:text-slate-200">Click to select files</p>
+            <p className="text-sm font-bold text-slate-900 dark:text-neutral-200">Click to select files</p>
             <p className="text-xs text-slate-500 mt-1">MD, TXT, JSON, CSV, HTML, YAML, XML, LOG (up to 10MB each)</p>
           </div>
 
@@ -183,10 +183,10 @@ export default function Onboarding({ onComplete }) {
             <div className="space-y-2">
               <p className="text-xs font-bold uppercase tracking-widest text-slate-400 mb-2">Selected Files ({files.length})</p>
               {files.map((file, i) => (
-                <div key={i} className="flex items-center justify-between p-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-800/50 rounded-xl">
+                <div key={i} className="flex items-center justify-between p-3 bg-white dark:bg-black border border-slate-200 dark:border-neutral-800/50 rounded-xl">
                   <div className="flex items-center gap-3">
                     <FileText className="w-4 h-4 text-slate-400" />
-                    <span className="text-sm font-medium text-slate-700 dark:text-slate-400 truncate max-w-[200px]">{file.name}</span>
+                    <span className="text-sm font-medium text-slate-700 dark:text-neutral-400 truncate max-w-[200px]">{file.name}</span>
                   </div>
                   <button onClick={(e) => { e.stopPropagation(); removeFile(i); }} className="p-1 text-slate-400 hover:text-red-500">
                     <X className="w-4 h-4" />
@@ -234,7 +234,8 @@ export default function Onboarding({ onComplete }) {
   return (
     <div className="py-6">
       <div className="mb-10">
-        <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-200">Welcome to Context Engine</h2>
+        <p className="eyebrow">First run</p>
+        <h2 className="mt-2 text-3xl font-semibold text-slate-950 dark:text-neutral-100">Welcome to Context Engine</h2>
         <p className="text-slate-500 mt-2">Get started by seeding your workspace with initial truth.</p>
       </div>
 
@@ -275,28 +276,28 @@ function OnboardingCard({ icon, title, description, action, onClick, to, color }
     emerald: "bg-emerald-50 dark:bg-emerald-950/40",
     brand: "bg-brand-50 dark:bg-brand-900/30",
     amber: "bg-amber-50 dark:bg-amber-950/40",
-  }[color] ?? "bg-slate-50 dark:bg-slate-900/40";
+  }[color] ?? "bg-slate-50 dark:bg-black";
 
   const CardContent = (
-    <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 p-6 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700/70 rounded-[24px] hover:border-brand-300 dark:hover:border-brand-600 hover:shadow-xl hover:shadow-brand-500/5 transition-all group">
+    <div className="panel group flex flex-col justify-between gap-6 p-6 transition-all hover:border-brand-400/50 md:flex-row md:items-center">
       <div className="flex items-start gap-5">
-        <div className={`w-14 h-14 rounded-2xl ${iconBackground} flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform`}>
+        <div className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-lg ${iconBackground} transition-transform group-hover:scale-105`}>
           {icon}
         </div>
         <div>
-          <h3 className="text-lg font-bold text-slate-900 dark:text-slate-200">{title}</h3>
+          <h3 className="text-lg font-semibold text-slate-950 dark:text-neutral-200">{title}</h3>
           <p className="mt-1 text-sm text-slate-500 max-w-md">{description}</p>
         </div>
       </div>
       {to ? (
-        <Link to={to} className={`px-6 py-2.5 rounded-xl bg-slate-900 text-white text-sm font-bold hover:bg-slate-800 transition-colors inline-flex items-center gap-2`}>
+        <Link to={to} className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-6 py-2.5 text-sm font-bold text-white transition-colors hover:bg-slate-800 dark:bg-white dark:text-slate-950 dark:hover:bg-neutral-200">
           {action}
           <ArrowRight className="w-4 h-4" />
         </Link>
       ) : (
         <button 
           onClick={onClick}
-          className={`px-6 py-2.5 rounded-xl bg-slate-900 text-white text-sm font-bold hover:bg-slate-800 transition-colors flex items-center gap-2`}
+          className="flex items-center gap-2 rounded-lg bg-slate-900 px-6 py-2.5 text-sm font-bold text-white transition-colors hover:bg-slate-800 dark:bg-white dark:text-slate-950 dark:hover:bg-neutral-200"
         >
           {action}
           <ArrowRight className="w-4 h-4" />

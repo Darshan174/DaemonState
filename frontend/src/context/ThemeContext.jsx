@@ -8,16 +8,16 @@ function isTheme(value) {
 }
 
 function getInitialTheme() {
-  if (typeof window === "undefined") return "light";
+  if (typeof window === "undefined") return "dark";
 
   try {
     const stored = localStorage.getItem(THEME_STORAGE_KEY);
     if (isTheme(stored)) return stored;
   } catch {
-    return "light";
+    return "dark";
   }
 
-  return "light";
+  return "dark";
 }
 
 function applyTheme(nextTheme) {

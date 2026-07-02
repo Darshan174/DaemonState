@@ -5,6 +5,7 @@
 @layer base {
   body {
     font-family:
+      Inter,
       "Satoshi",
       system-ui,
       -apple-system,
@@ -12,13 +13,15 @@
       "Segoe UI",
       sans-serif;
     font-weight: 500;
-    letter-spacing: -0.02em;
+    letter-spacing: 0;
+    font-feature-settings: "calt", "kern", "liga", "ss03";
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     @apply text-slate-900 dark:text-neutral-100;
     background:
-      radial-gradient(ellipse 60% 40% at 75% -8%, rgba(99,102,241,0.09) 0%, transparent 56%),
-      #f7f7f8;
+      linear-gradient(135deg, rgba(255,255,255,0.92), rgba(245,247,251,0.96)),
+      radial-gradient(ellipse 52% 32% at 72% -10%, rgba(79, 70, 229, 0.12), transparent 62%),
+      #f5f6f8;
     transition-property: background-color, border-color, color;
     transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
     transition-duration: 250ms;
@@ -34,12 +37,13 @@
     inset: 0;
     z-index: -1;
     pointer-events: none;
-    background-color: #050506;
+    background-color: #050507;
     background-image:
-      radial-gradient(ellipse 70% 55% at 65% -12%, rgba(99, 102, 241, 0.14), transparent 60%),
-      linear-gradient(to right, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
-      linear-gradient(to bottom, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
-    background-size: auto, 32px 32px, 32px 32px;
+      radial-gradient(ellipse 60% 42% at 68% -12%, rgba(94, 106, 210, 0.2), transparent 62%),
+      radial-gradient(ellipse 46% 34% at 6% 18%, rgba(20, 184, 166, 0.08), transparent 58%),
+      linear-gradient(to right, rgba(255, 255, 255, 0.034) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(255, 255, 255, 0.034) 1px, transparent 1px);
+    background-size: auto, auto, 36px 36px, 36px 36px;
   }
 
   html.dark,
@@ -59,15 +63,35 @@
 
 @layer components {
   .card {
-    @apply bg-white dark:bg-black rounded-2xl border border-slate-200 dark:border-neutral-800 shadow-sm;
+    @apply rounded-lg border border-slate-200/80 bg-white/90 shadow-[0_16px_45px_rgba(15,23,42,0.06)] backdrop-blur-xl dark:border-white/[0.09] dark:bg-neutral-950/90 dark:shadow-[0_24px_80px_rgba(0,0,0,0.35)];
   }
 
   .input {
-    @apply w-full px-4 py-2.5 bg-white dark:bg-black border border-slate-200 dark:border-neutral-800 rounded-xl text-sm font-medium text-slate-900 dark:text-neutral-100 placeholder:text-slate-400 dark:placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 transition-all;
+    @apply w-full rounded-lg border border-slate-200/80 bg-white/90 px-4 py-2.5 text-sm font-medium text-slate-900 shadow-sm transition-all placeholder:text-slate-400 focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30 dark:border-white/[0.09] dark:bg-white/[0.045] dark:text-neutral-100 dark:placeholder:text-neutral-500;
   }
 
   .btn-primary {
-    @apply inline-flex items-center gap-2 px-4 py-2.5 bg-brand-600 hover:bg-brand-500 text-white text-sm font-bold rounded-xl transition-colors shadow-sm shadow-brand-600/20 disabled:opacity-50;
+    @apply inline-flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white shadow-[0_14px_35px_rgba(79,70,229,0.22)] transition-colors hover:bg-brand-500 disabled:opacity-50 dark:shadow-[0_0_0_1px_rgba(255,255,255,0.08)];
+  }
+
+  .panel {
+    @apply rounded-lg border border-slate-200/80 bg-white/80 shadow-[0_18px_55px_rgba(15,23,42,0.07)] backdrop-blur-xl dark:border-white/[0.09] dark:bg-neutral-950/90 dark:shadow-[0_24px_80px_rgba(0,0,0,0.38)];
+  }
+
+  .panel-subtle {
+    @apply rounded-lg border border-slate-200/70 bg-slate-50/80 dark:border-white/[0.075] dark:bg-white/[0.035];
+  }
+
+  .pill-control {
+    @apply rounded-lg border border-slate-200/80 bg-white/90 text-slate-600 shadow-sm backdrop-blur transition-colors hover:border-slate-300 hover:text-slate-950 dark:border-white/[0.09] dark:bg-white/[0.045] dark:text-neutral-300 dark:hover:border-white/[0.16] dark:hover:text-white;
+  }
+
+  .app-page {
+    @apply mx-auto w-full max-w-6xl space-y-7;
+  }
+
+  .eyebrow {
+    @apply text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-neutral-500;
   }
 }
 

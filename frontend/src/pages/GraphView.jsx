@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import cytoscape from "cytoscape";
 import {
@@ -21,16 +21,28 @@ import {
   shouldUseReadableBoardViewport,
   BOARD_LENSES,
   boardGraphGroup,
+  boardModelColor,
+  boardModelGroupKey,
+  boardShardGeometry,
+  buildBoardShardClusterLayout,
   passesBoardLens,
   filterGapsLens,
-  boardCardVisuals,
   resolveRelationshipEdgeStyle,
 } from "../graph/boardMode";
 import {
   buildExploreNeighborhood,
   filterExploreComponents,
 } from "../graph/exploreMode";
-import GraphInspector from "../components/GraphInspector";
+import {
+  GraphToolbar,
+  ModelInspector,
+  SourceLegend,
+} from "../components/contextAssembly";
+import {
+  MODEL_TYPE_META,
+  buildContextAssembly,
+  findAssemblyModelForNode,
+} from "../graph/contextAssembly";
 import imgGmail from "@assets/gmail-icon.png";
 
 function buildNodeConnections(cy, nodeId) {
@@ -301,6 +313,243 @@ function layoutGridColumns(itemCount, maxCols = 3) {
   return maxCols;
 }
 
+function boardModelMeta(component = {}, modelName = "") {
+  const label = modelName || component.model_name || "Unmodeled Context";
+  const groupKey = boardModelGroupKey(component.model_id);
+  return {
+    label,
+    short: shortLabel(label, 3),
+    color: assemblyModelColor(label, `${component.fact_type || ""} ${component.value || ""}`) || boardModelColor(`${groupKey}:${label}`),
+  };
+}
+
+function boardGroupMetaFromKey(groupKey, modelsByGroup) {
+  return modelsByGroup.get(groupKey) || {
+    label: "Unmodeled Context",
+    short: "Unmodeled",
+    color: boardModelColor(groupKey),
+  };
+}
+
+function assemblyModelColor(label = "", context = "") {
+  const text = `${label} ${context}`.toLowerCase();
+  if (/bug|fix|error|oauth|regression/.test(text)) return MODEL_TYPE_META.bug.color;
+  if (/blocker|blocked|risk/.test(text)) return MODEL_TYPE_META.blocker.color;
+  if (/decision|decide/.test(text)) return MODEL_TYPE_META.decision.color;
+  if (/release|ship|launch/.test(text)) return MODEL_TYPE_META.release.color;
+  if (/component|service|api|frontend|backend|connector|engine/.test(text)) return MODEL_TYPE_META.component.color;
+  if (/task|issue|pr|action/.test(text)) return MODEL_TYPE_META.task.color;
+  if (/feature|journey|flow/.test(text)) return MODEL_TYPE_META.feature.color;
+  return MODEL_TYPE_META.area.color;
+}
+
+function hexToRgb(hex = "#64748b") {
+  const clean = String(hex).replace("#", "");
+  const value = clean.length === 3
+    ? clean.split("").map((char) => char + char).join("")
+    : clean.padEnd(6, "0").slice(0, 6);
+  const int = Number.parseInt(value, 16);
+  return {
+    r: (int >> 16) & 255,
+    g: (int >> 8) & 255,
+    b: int & 255,
+  };
+}
+
+function mixRgb(rgb, target, amount) {
+  const ratio = Math.max(0, Math.min(1, amount));
+  return {
+    r: Math.round(rgb.r + (target.r - rgb.r) * ratio),
+    g: Math.round(rgb.g + (target.g - rgb.g) * ratio),
+    b: Math.round(rgb.b + (target.b - rgb.b) * ratio),
+  };
+}
+
+function rgbCss(rgb) {
+  return `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`;
+}
+
+function truncateShardLabel(value = "", maxChars = 12) {
+  const clean = String(value || "")
+    .replace(/\s+/g, " ")
+    .replace(/\b(?:open|closed|merged|draft)\s*$/i, "")
+    .replace(/[,:;./\\-]+$/, "")
+    .trim();
+  if (!clean) return "";
+  if (clean.length <= maxChars) return clean;
+  const clipped = clean.slice(0, Math.max(1, maxChars - 1)).trim();
+  const boundary = clipped.search(/\s+\S*$/);
+  const atWord = boundary > Math.floor(maxChars * 0.48) ? clipped.slice(0, boundary).trim() : clipped;
+  return `${atWord.replace(/[,:;./\\-]+$/, "").trim()}…`;
+}
+
+function shardLabelMetrics(bounds = {}) {
+  const width = Math.max(42, Number(bounds.w) || BOARD_CARD_WIDTH);
+  const height = Math.max(32, Number(bounds.h) || BOARD_CARD_HEIGHT);
+  const desiredPx = Math.max(8.5, Math.min(15, height * 0.22));
+  const labelWidth = Math.max(34, Math.min(width * 0.86, width - 6));
+  return {
+    width,
+    height,
+    fontSize: desiredPx,
+    labelWidth,
+    maxPrimary: Math.max(6, Math.min(22, Math.floor(width / (desiredPx * 0.62)))),
+    maxSecondary: Math.max(4, Math.min(18, Math.floor(width / (desiredPx * 0.76)))),
+  };
+}
+
+function shardTextLines(primary = "", secondary = "", status = "", bounds = {}) {
+  const { width, height, maxPrimary, maxSecondary } = shardLabelMetrics(bounds);
+  const rawPrimary = String(primary || "").replace(/\s+/g, " ").trim();
+  const rawSecondary = String(secondary || "")
+    .replace(/\s+/g, " ")
+    .replace(/\b(?:Codex|session)\s*[·›-]\s*…?[a-f0-9]{5,}\b/gi, "")
+    .replace(/\b(?:Codex|session)\b\s*$/gi, "")
+    .trim();
+  const normalizedStatus = String(status || "").replace(/_/g, " ").trim();
+  const allowSecondLine = height >= 52 && width >= 58;
+
+  const issueMatch = rawPrimary.match(/\b(Issue|PR)\s*#?(\d+)\s*:?\s*(.*)$/i);
+  if (issueMatch) {
+    const kind = issueMatch[1].toUpperCase() === "PR" ? "PR" : "Issue";
+    const purpose = issueMatch[3] || rawSecondary || normalizedStatus;
+    const lines = [
+      `${kind} #${issueMatch[2]}`,
+      truncateShardLabel(purpose, maxSecondary),
+    ].filter(Boolean);
+    return allowSecondLine ? lines.slice(0, 2) : lines.slice(0, 1);
+  }
+
+  const fileMatch = rawPrimary.match(/^File:\s*(.+)$/i);
+  if (fileMatch) {
+    const filename = fileMatch[1].split("/").pop();
+    const lines = [
+      truncateShardLabel(filename, maxPrimary),
+      rawSecondary ? truncateShardLabel(rawSecondary, maxSecondary) : "file",
+    ].filter(Boolean);
+    return allowSecondLine ? lines.slice(0, 2) : lines.slice(0, 1);
+  }
+
+  const lines = [
+    truncateShardLabel(rawPrimary, maxPrimary),
+    truncateShardLabel(rawSecondary || normalizedStatus, maxSecondary),
+  ].filter(Boolean);
+  return allowSecondLine ? lines.slice(0, 2) : lines.slice(0, 1);
+}
+
+function assemblyFragmentVisuals(component = {}, modelColor = "#64748b", isGap = false) {
+  if (isGap) return { bg: "rgba(154,95,95,0.12)", border: "#9a5f5f", stripe: "#9a5f5f", fill: "#9a5f5f" };
+  const confidence = Number.isFinite(Number(component.confidence)) ? Math.max(0, Math.min(1, Number(component.confidence))) : 0.58;
+  const status = String(component.status || "").toLowerCase();
+  const conflict = /conflict|contradict|mismatch/.test(`${component.fact_type || ""} ${component.name || ""} ${component.value || ""}`.toLowerCase());
+  const rgb = hexToRgb(modelColor);
+  const pale = mixRgb(rgb, { r: 255, g: 255, b: 255 }, 0.55 - confidence * 0.28);
+  const full = mixRgb(rgb, { r: 15, g: 23, b: 42 }, confidence > 0.82 ? 0.12 : 0.02);
+  const alpha = 0.12 + confidence * 0.28;
+  if (conflict) return { bg: "rgba(154,95,95,0.22)", border: "#9a5f5f", stripe: "#9a5f5f", fill: "#9a5f5f" };
+  if (status === "blocked") return { bg: "rgba(154,122,69,0.24)", border: "#9a7a45", stripe: "#9a7a45", fill: "#9a7a45" };
+  if (status === "stale" || status === "deprecated" || status === "superseded") {
+    return { bg: `rgba(${rgb.r},${rgb.g},${rgb.b},0.08)`, border: "rgba(100,116,139,0.55)", stripe: modelColor, fill: rgbCss(mixRgb(rgb, { r: 148, g: 163, b: 184 }, 0.58)) };
+  }
+  if (confidence < 0.5 || status === "needs_review" || status === "proposed") {
+    return { bg: `rgba(${rgb.r},${rgb.g},${rgb.b},0.12)`, border: "rgba(100,116,139,0.72)", stripe: modelColor, fill: rgbCss(pale) };
+  }
+  return { bg: `rgba(${rgb.r},${rgb.g},${rgb.b},${alpha})`, border: modelColor, stripe: modelColor, fill: rgbCss(full) };
+}
+
+function appendBoardShardOverlay(container, {
+  svgPoints,
+  rotation,
+  fill,
+  stroke,
+  labelLines = [],
+  labelFontSize = 7,
+  labelWidth = 44,
+  opacity = 1,
+  selected = false,
+  isDark = false,
+}) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 100 100");
+  svg.setAttribute("preserveAspectRatio", "none");
+  Object.assign(svg.style, {
+    width: "100%",
+    height: "100%",
+    position: "absolute",
+    inset: "0",
+    display: "block",
+    overflow: "hidden",
+    zIndex: "1",
+    filter: isDark ? "drop-shadow(0 8px 13px rgba(0,0,0,0.32))" : "drop-shadow(0 7px 11px rgba(15,23,42,0.12))",
+    transform: `rotate(${rotation || 0}deg)`,
+    transformOrigin: "50% 50%",
+  });
+
+  const polygon = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+  polygon.setAttribute("points", svgPoints);
+  polygon.setAttribute("fill", fill);
+  polygon.setAttribute("stroke", selected ? "#111827" : stroke);
+  polygon.setAttribute("stroke-width", selected ? "4.5" : "2.5");
+  polygon.setAttribute("stroke-linejoin", "miter");
+  polygon.setAttribute("opacity", String(opacity));
+  svg.appendChild(polygon);
+  container.appendChild(svg);
+
+  if (labelLines.length) {
+    const mainFontSize = Number(labelFontSize) || 7;
+    const label = document.createElement("div");
+    Object.assign(label.style, {
+      position: "absolute",
+      left: "50%",
+      top: "50%",
+      width: `${Math.max(28, Number(labelWidth) || 44)}px`,
+      maxWidth: "88%",
+      transform: "translate(-50%, -50%)",
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: labelLines.length > 1 ? "1px" : "0",
+      color: "#f8fafc",
+      fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
+      fontStyle: "normal",
+      fontWeight: "850",
+      letterSpacing: "0",
+      lineHeight: "1.02",
+      textAlign: "center",
+      textShadow: isDark
+        ? "0 1px 2px rgba(2,6,23,0.95), 0 0 4px rgba(2,6,23,0.8)"
+        : "0 1px 2px rgba(15,23,42,0.82), 0 0 3px rgba(15,23,42,0.68)",
+      overflow: "hidden",
+      pointerEvents: "none",
+      zIndex: "2",
+    });
+
+    labelLines.forEach((line, index) => {
+      const row = document.createElement("span");
+      row.textContent = line;
+      Object.assign(row.style, {
+        display: "block",
+        width: "100%",
+        minWidth: "0",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+        fontSize: `${index === 0 ? mainFontSize : mainFontSize * 0.78}px`,
+        fontStyle: "normal",
+        fontWeight: index === 0 ? "850" : "750",
+      });
+      if (index === 1) {
+        row.style.opacity = "0.9";
+      }
+      label.appendChild(row);
+    });
+
+    container.appendChild(label);
+  }
+
+}
+
 function appendSourceHubChip(container, {
   logo,
   count,
@@ -361,6 +610,126 @@ function appendSourceHubChip(container, {
   return chip;
 }
 
+function appendModelHeaderChip(container, {
+  label,
+  count,
+  subtitle,
+  sourceLogo,
+  accent,
+  isDark,
+  textColor,
+  mutedColor,
+  headerBg,
+}) {
+  const chip = document.createElement("div");
+  Object.assign(chip.style, {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "7px",
+    maxWidth: "210px",
+    padding: "5px 8px",
+    borderRadius: "10px",
+    background: headerBg,
+    border: `1px solid ${accent}`,
+    boxShadow: isDark ? "0 2px 10px rgba(0,0,0,0.25)" : "0 2px 8px rgba(15,23,42,0.08)",
+  });
+
+  const mark = document.createElement("span");
+  Object.assign(mark.style, {
+    position: "relative",
+    width: "20px",
+    height: "18px",
+    flexShrink: "0",
+  });
+  [
+    { left: 1, top: 3, width: 9, height: 8, clipPath: "polygon(8% 18%, 78% 0%, 100% 70%, 22% 100%)", rotate: -18, opacity: 1 },
+    { left: 9, top: 0, width: 10, height: 9, clipPath: "polygon(20% 0%, 96% 28%, 72% 100%, 0% 72%)", rotate: 9, opacity: 0.78 },
+    { left: 7, top: 9, width: 11, height: 8, clipPath: "polygon(0% 22%, 86% 0%, 100% 72%, 28% 100%)", rotate: -8, opacity: 0.58 },
+  ].forEach((piece) => {
+    const shard = document.createElement("span");
+    Object.assign(shard.style, {
+      position: "absolute",
+      left: `${piece.left}px`,
+      top: `${piece.top}px`,
+      width: `${piece.width}px`,
+      height: `${piece.height}px`,
+      clipPath: piece.clipPath,
+      transform: `rotate(${piece.rotate}deg)`,
+      background: accent,
+      opacity: String(piece.opacity),
+    });
+    mark.appendChild(shard);
+  });
+  chip.appendChild(mark);
+
+  const text = document.createElement("span");
+  Object.assign(text.style, {
+    display: "flex",
+    flexDirection: "column",
+    minWidth: "0",
+  });
+
+  const title = document.createElement("span");
+  title.textContent = label;
+  Object.assign(title.style, {
+    minWidth: "0",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    color: textColor,
+    fontSize: `${CARD_OVERLAY_TITLE_PX}px`,
+    fontWeight: "850",
+  });
+  text.appendChild(title);
+
+  if (subtitle) {
+    const sub = document.createElement("span");
+    sub.textContent = subtitle;
+    Object.assign(sub.style, {
+      minWidth: "0",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap",
+      color: mutedColor,
+      fontSize: `${CARD_OVERLAY_META_PX - 1}px`,
+      fontWeight: "700",
+      lineHeight: "1.1",
+    });
+    text.appendChild(sub);
+  }
+  chip.appendChild(text);
+
+  if (sourceLogo) {
+    const img = document.createElement("img");
+    img.src = sourceLogo;
+    img.alt = "";
+    Object.assign(img.style, {
+      width: "18px",
+      height: "18px",
+      borderRadius: "5px",
+      objectFit: "contain",
+      background: "#fff",
+      padding: "1px",
+      flexShrink: "0",
+    });
+    chip.appendChild(img);
+  }
+
+  const countEl = document.createElement("span");
+  countEl.textContent = String(count);
+  Object.assign(countEl.style, {
+    color: mutedColor,
+    fontSize: `${CARD_OVERLAY_META_PX - 0.5}px`,
+    fontWeight: "800",
+    padding: "2px 6px",
+    borderRadius: "999px",
+    background: isDark ? "rgba(148,163,184,0.18)" : "rgba(148,163,184,0.14)",
+    flexShrink: "0",
+  });
+  chip.appendChild(countEl);
+  container.appendChild(chip);
+}
+
 function componentAttentionBadge(component = {}) {
   const status = String(component.status || "").toLowerCase();
   const parts = [];
@@ -375,6 +744,48 @@ function componentAttentionBadge(component = {}) {
     parts.push("Past");
   }
   return parts.join(" · ");
+}
+
+function componentIsConflict(component = {}) {
+  return /conflict|contradict|mismatch|disagree|regression/.test(
+    `${component.fact_type || ""} ${component.status || ""} ${component.name || ""} ${component.value || ""}`.toLowerCase(),
+  );
+}
+
+function componentHasSourceEvidence(component = {}) {
+  return Boolean(
+    component.excerpt
+      || component.provenance
+      || component.source_document_id
+      || component.source_url
+      || component.source_external_id,
+  );
+}
+
+function componentHealthFlags(component = {}, isConnected = false) {
+  const status = String(component.status || "").toLowerCase();
+  const confidence = Number(component.confidence);
+  const lowConfidence = Number.isFinite(confidence) && confidence < 0.5;
+  const conflict = componentIsConflict(component);
+  const missingEvidence = !componentHasSourceEvidence(component);
+  const blocked = status === "blocked";
+  const stale = ["stale", "deprecated", "superseded"].includes(status);
+  const gap = !isConnected || missingEvidence || lowConfidence || ["needs_review", "proposed"].includes(status);
+
+  if (conflict) return { conflict, gap, blocked, stale, lowConfidence, missingEvidence, label: "Conflict", tone: "red" };
+  if (blocked) return { conflict, gap: true, blocked, stale, lowConfidence, missingEvidence, label: "Blocked", tone: "red" };
+  if (gap) {
+    const label = !isConnected
+      ? "Gap: no links"
+      : missingEvidence
+        ? "Gap: evidence"
+        : lowConfidence
+          ? "Low confidence"
+          : "Needs review";
+    return { conflict, gap, blocked, stale, lowConfidence, missingEvidence, label, tone: "amber" };
+  }
+  if (stale) return { conflict, gap: false, blocked, stale, lowConfidence, missingEvidence, label: "Stale", tone: "slate" };
+  return { conflict, gap: false, blocked, stale, lowConfidence, missingEvidence, label: "", tone: "slate" };
 }
 
 // Strip common model-type prefixes that the containing box already communicates
@@ -613,7 +1024,7 @@ function graphGroup(component = {}, modelName = "") {
 }
 
 function resolveGraphGroup(component, modelName, layoutMode) {
-  if (layoutMode === "board") return boardGraphGroup(component, sourceKind, sourceFamily);
+  if (layoutMode === "board") return boardModelGroupKey(component.model_id);
   return graphGroup(component, modelName);
 }
 
@@ -834,10 +1245,12 @@ export default function GraphView() {
   const cyRef = useRef(null);
   const searchInputRef = useRef(null);
   const [searchParams, setSearchParams] = useSearchParams();
-  const graphLayout = searchParams.get("graph") === "explore" ? "explore" : "board";
+  const graphParam = searchParams.get("graph");
+  const graphLayout = graphParam === "explore" ? "explore" : graphParam === "assembly" ? "assembly" : "board";
   const setGraphLayout = useCallback((layout) => {
     const next = new URLSearchParams(searchParams);
-    if (layout === "board") next.delete("graph");
+    if (layout === "board" || layout === "overview") next.delete("graph");
+    else if (layout === "assembly") next.set("graph", "assembly");
     else next.set("graph", layout);
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
@@ -887,6 +1300,7 @@ export default function GraphView() {
   const [showTrustEdges, setShowTrustEdges] = useState(false);
   const [graphOverview, setGraphOverview] = useState(null);
   const [showRefine, setShowRefine] = useState(false);
+  const [hoveredAssemblyItem, setHoveredAssemblyItem] = useState(null);
 
   // Agents sidebar
   const [showAgents, setShowAgents] = useState(false);
@@ -1186,7 +1600,8 @@ export default function GraphView() {
     let components = graphData.components || [];
     let relationships = graphData.relationships || [];
 
-    if (graphLayout === "board" && boardLens !== "all" && boardLens !== "gaps") {
+    const isBoardLikeLayout = graphLayout === "board" || graphLayout === "assembly";
+    if (isBoardLikeLayout && boardLens !== "all" && boardLens !== "gaps") {
       components = components.filter((c) => passesBoardLens(c, modelNameById.get(c.model_id), boardLens));
     }
 
@@ -1211,7 +1626,16 @@ export default function GraphView() {
       (r) => componentIds.has(r.source_component_id) && componentIds.has(r.target_component_id)
     );
 
-    if (graphLayout === "board" && boardLens === "gaps") {
+    if (graphLayout === "assembly" && selectedNode) {
+      const focusedModelId = selectedNode.type === "model"
+        ? String(selectedNode.modelId || selectedNode.id || "").replace(/^model:/, "")
+        : selectedNode.modelId || selectedNode.model_id;
+      if (focusedModelId) {
+        components = components.filter((c) => c.model_id === focusedModelId);
+      }
+    }
+
+    if (isBoardLikeLayout && boardLens === "gaps") {
       components = filterGapsLens(components, relationships);
       const gapIds = new Set(components.map((c) => c.id));
       relationships = relationships.filter(
@@ -1233,7 +1657,7 @@ export default function GraphView() {
     }
 
     return { models: allModels, components, relationships };
-  }, [graphData, filters, viewMode, boardLens, graphLayout]);
+  }, [graphData, filters, viewMode, boardLens, graphLayout, selectedNode]);
 
   useEffect(() => {
     if (!containerRef.current || !graphData) return;
@@ -1244,15 +1668,30 @@ export default function GraphView() {
     const components = isExplore
       ? filterExploreComponents(viewData.components || [], relationships)
       : (viewData.components || []);
-    const isBoard = graphLayout === "board" && viewMode === "knowledge";
+    const isBoard = (graphLayout === "board" || graphLayout === "assembly") && viewMode === "knowledge";
     const searchQuery = filters.search?.trim().toLowerCase() || "";
 
     const nodes = [];
     const edges = [];
 
     const modelNameById = new Map(models.map((m) => [m.id, m.name]));
+    const modelsByGroup = new Map(models.map((m) => {
+      const groupKey = boardModelGroupKey(m.id);
+      const meta = {
+        label: m.name || "Unmodeled Context",
+        short: shortLabel(m.name || "Unmodeled", 3),
+        color: assemblyModelColor(m.name || "Unmodeled Context") || boardModelColor(`${groupKey}:${m.name || ""}`),
+      };
+      return [groupKey, meta];
+    }));
+    const connectedComponentIds = new Set();
+    relationships.forEach((r) => {
+      connectedComponentIds.add(r.source_component_id);
+      connectedComponentIds.add(r.target_component_id);
+    });
     const visibleGroups = new Map();
     const groupSourceSummaries = new Map();
+    const groupHealthSummaries = new Map();
     const groupForComponent = (component) => resolveGraphGroup(
       component,
       modelNameById.get(component.model_id),
@@ -1262,7 +1701,12 @@ export default function GraphView() {
       components.forEach((component) => {
         const groupKey = groupForComponent(component);
         if (!visibleGroups.has(groupKey)) {
-          visibleGroups.set(groupKey, GRAPH_GROUP_META[groupKey] || GRAPH_GROUP_META.other);
+          visibleGroups.set(
+            groupKey,
+            isBoard
+              ? (modelsByGroup.get(groupKey) || boardModelMeta(component, modelNameById.get(component.model_id)))
+              : (GRAPH_GROUP_META[groupKey] || GRAPH_GROUP_META.other),
+          );
         }
         const kind = sourceKind(component);
         const visual = sourceVisual(component);
@@ -1271,6 +1715,16 @@ export default function GraphView() {
         const current = summary.get(kind) || { ...visual, kind, count: 0 };
         current.count += 1;
         summary.set(kind, current);
+
+        if (!groupHealthSummaries.has(groupKey)) {
+          groupHealthSummaries.set(groupKey, { gaps: 0, conflicts: 0, lowConfidence: 0, blocked: 0 });
+        }
+        const health = componentHealthFlags(component, connectedComponentIds.has(component.id));
+        const groupHealth = groupHealthSummaries.get(groupKey);
+        if (health.gap) groupHealth.gaps += 1;
+        if (health.conflict) groupHealth.conflicts += 1;
+        if (health.lowConfidence) groupHealth.lowConfidence += 1;
+        if (health.blocked) groupHealth.blocked += 1;
       });
     }
 
@@ -1319,6 +1773,12 @@ export default function GraphView() {
           const primaryHub = hubSummary
             ? Array.from(hubSummary.values()).sort((a, b) => b.count - a.count)[0]
             : null;
+          const groupHealth = groupHealthSummaries.get(groupKey) || { gaps: 0, conflicts: 0 };
+          const headerBits = [
+            `${itemCount} evidence`,
+            groupHealth.gaps ? `${groupHealth.gaps} gap${groupHealth.gaps === 1 ? "" : "s"}` : "",
+            groupHealth.conflicts ? `${groupHealth.conflicts} conflict${groupHealth.conflicts === 1 ? "" : "s"}` : "",
+          ].filter(Boolean);
           nodes.push({
             data: {
               id: `group:${groupKey}`,
@@ -1328,16 +1788,20 @@ export default function GraphView() {
               type: "model",
               modelId: groupKey,
               groupKey,
+              headerLabel: meta.label,
               description: "",
-              modelColor: primaryHub?.border || meta.color || "#6366f1",
+              modelColor: isBoard ? (meta.color || "#7c3aed") : (primaryHub?.border || meta.color || "#6366f1"),
               itemCount,
+              gapCount: groupHealth.gaps,
+              conflictCount: groupHealth.conflicts,
+              headerSubtitle: headerBits.join(" · "),
               hubLogo: primaryHub?.logo || GROUP_HEADER_LOGOS[groupKey] || "",
               hubCount: primaryHub?.count || itemCount,
-              hubAccent: primaryHub?.border || meta.color || "#6366f1",
+              hubAccent: isBoard ? (meta.color || "#7c3aed") : (primaryHub?.border || meta.color || "#6366f1"),
               minWidth: 360,
               minHeight: 220,
             },
-            classes: "model-node",
+            classes: `model-node${isBoard ? " board-model-node" : ""}`,
           });
         });
       }
@@ -1345,23 +1809,22 @@ export default function GraphView() {
       // Source hub identity is rendered as the group header chip — no separate hub nodes.
 
       // Components are children of their strategy group compound node
-      const connectedComponentIds = new Set();
-      relationships.forEach((r) => {
-        connectedComponentIds.add(r.source_component_id);
-        connectedComponentIds.add(r.target_component_id);
-      });
-
       const componentGroupMap = new Map();
       let firstSearchMatchId = null;
 
-      components.forEach((c) => {
+      components.forEach((c, componentIndex) => {
         const temporal = c.temporal || "unknown";
-        const isGap = boardLens === "gaps";
-        const visuals = isBoard ? boardCardVisuals(c, isGap, sourceKind) : componentVisuals(c, isGap);
-        const source = sourceVisual(c);
-
+        const health = componentHealthFlags(c, connectedComponentIds.has(c.id));
+        const isGap = boardLens === "gaps" || health.gap;
         const mName = modelNameById.get(c.model_id) || "";
         const groupKey = isExplore ? sourceKind(c) : groupForComponent(c);
+        const modelMeta = visibleGroups.get(groupKey);
+        const visuals = isBoard
+          ? assemblyFragmentVisuals(c, modelMeta?.color || "#64748b", isGap)
+          : componentVisuals(c, isGap);
+        const shard = isBoard ? boardShardGeometry(c.id, componentIndex) : null;
+        const source = sourceVisual(c);
+
         componentGroupMap.set(c.id, groupKey);
         const cleanName = stripModelPrefix(c.name);
         const { displayName, compactLabel, cardLabel, cardTitle, cardContext, cardDetail } = buildComponentCardContent(c, cleanName, mName, { boardMode: isBoard });
@@ -1402,18 +1865,34 @@ export default function GraphView() {
             source_family: sourceFamily(c),
             source_kind: componentKind,
             relationship_count: c.relationship_count,
+            healthLabel: health.label,
+            healthTone: health.tone,
+            isGap: health.gap,
+            isConflict: health.conflict,
+            missingEvidence: health.missingEvidence,
             provenance: c.provenance,
             excerpt: c.excerpt,
             bgColor: visuals.bg,
             borderColor: visuals.border,
             stripeColor: visuals.stripe,
+            pieceFill: visuals.fill || visuals.stripe,
+            pieceWidth: shard?.width || BOARD_CARD_WIDTH,
+            pieceHeight: shard?.height || BOARD_CARD_HEIGHT,
+            pieceRotation: shard?.rotation || 0,
+            piecePolygon: shard?.polygonPoints || "",
+            pieceClipPath: shard?.clipPath || "",
+            pieceSvgPoints: shard?.svgPoints || "",
             badgeColor: source.border,
             logo: isExplore ? source.logo : hasGroupSourceHub ? "" : source.logo,
             sourceLabel: source.label,
           },
           classes: [
             isExplore ? "explore-node" : "",
-            isGap ? "gap-node" : "",
+            isBoard ? "board-component" : "",
+            isBoard ? `source-${componentKind}` : "",
+            health.gap ? "gap-node" : "",
+            health.conflict ? "conflict-node" : "",
+            health.lowConfidence ? "low-confidence-node" : "",
             relationshipCount === 0 ? "isolated-node" : "linked-node",
             searchDimClass,
             searchMatchClass,
@@ -1435,6 +1914,14 @@ export default function GraphView() {
           showTrustEdges,
           isDark: theme === "dark" || document.documentElement.classList.contains("dark"),
         });
+        const relationshipText = `${r.relationship_type || ""} ${r.display_label || ""} ${r.status || ""}`.toLowerCase();
+        const isConflictEdge = /conflict|contradict|blocks|blocked/.test(relationshipText);
+        const isWeakEdge = (r.confidence ?? 0.54) < 0.62 || ["proposed", "ai_proposed"].includes(r.origin || "proposed");
+        const isVerifiedEdge = (r.origin === "human_verified" || r.status === "accepted");
+        const isDeterministicEdge = r.origin === "deterministic";
+        const mutedByDefault = isBoard && !showTrustEdges && isWeakEdge && !isConflictEdge && !isVerifiedEdge && !isDeterministicEdge;
+        const defaultBoardWidth = isConflictEdge ? 2.4 : isVerifiedEdge || isDeterministicEdge ? 1.35 : 0.55;
+        const defaultBoardOpacity = isConflictEdge ? 0.88 : isVerifiedEdge || isDeterministicEdge ? 0.34 : sameGroup ? 0.032 : 0.052;
 
         edges.push({
           data: {
@@ -1450,14 +1937,18 @@ export default function GraphView() {
             evidence: r.evidence,
             status: r.status,
             lineStyle: edgeStyle.lineStyle,
-            edgeWidth: edgeStyle.width,
-            edgeOpacity: edgeStyle.opacity,
+            edgeWidth: isBoard && !showTrustEdges ? defaultBoardWidth : edgeStyle.width,
+            edgeOpacity: isBoard && !showTrustEdges ? defaultBoardOpacity : edgeStyle.opacity,
             edgeColor: edgeStyle.color,
             sourceName: r.source_component_name,
             targetName: r.target_component_name,
           },
           classes: [
             isExplore ? "explore-edge" : "",
+            isConflictEdge ? "relationship-conflict" : "",
+            isWeakEdge && showTrustEdges ? "relationship-weak" : "",
+            mutedByDefault ? "relationship-muted" : "",
+            isVerifiedEdge ? "relationship-verified" : "",
             sameGroup && !isExplore ? "route-taxi" : "route-bezier",
           ].filter(Boolean).join(" "),
         });
@@ -1543,6 +2034,19 @@ export default function GraphView() {
           },
         },
         {
+          selector: ".board-model-node",
+          style: {
+            "background-color": isDark ? "#0f172a" : "#ffffff",
+            "background-opacity": 0,
+            "border-width": 0,
+            "border-style": "solid",
+            "border-color": "data(modelColor)",
+            "border-opacity": 0,
+            padding: "70px 44px 44px 44px",
+            "bounds-expansion": 22,
+          },
+        },
+        {
           selector: ".model-node.lod-macro",
           style: {
             "background-opacity": isDark ? 0.16 : 0.08,
@@ -1616,6 +2120,22 @@ export default function GraphView() {
           },
         },
         {
+          selector: "node.board-component[type='component']",
+          style: {
+            width: "data(pieceWidth)",
+            height: "data(pieceHeight)",
+            shape: "polygon",
+            "shape-polygon-points": "data(piecePolygon)",
+            label: "",
+            "text-opacity": 0,
+            "background-color": "data(pieceFill)",
+            "background-opacity": isDark ? 0.16 : 0.12,
+            "border-width": 1.2,
+            "border-color": "data(stripeColor)",
+            "border-opacity": isDark ? 0.3 : 0.22,
+          },
+        },
+        {
           selector: "node.explore-node[type='component']",
           style: {
             width: 62,
@@ -1642,7 +2162,7 @@ export default function GraphView() {
             "text-max-width": "112px",
             "text-justification": "center",
             "font-size": "9px",
-            "font-weight": "700",
+            "font-weight": "bold",
             color: componentTextColor,
             "text-outline-color": labelOutlineColor,
             "text-outline-width": 1.5,
@@ -1654,7 +2174,7 @@ export default function GraphView() {
           style: {
             width: 18,
             height: 18,
-            shape: "ellipse",
+            shape: "rhomboid",
             label: "",
             "background-color": "data(stripeColor)",
             "background-opacity": 1,
@@ -1663,10 +2183,25 @@ export default function GraphView() {
           },
         },
         {
+          selector: "node.board-component[type='component'].lod-macro",
+          style: {
+            width: "data(pieceWidth)",
+            height: "data(pieceHeight)",
+            shape: "polygon",
+            "shape-polygon-points": "data(piecePolygon)",
+            label: "",
+            "background-color": "data(pieceFill)",
+            "background-opacity": isDark ? 0.16 : 0.1,
+            "border-width": 1,
+            "border-color": "data(stripeColor)",
+            "border-opacity": isDark ? 0.26 : 0.18,
+          },
+        },
+        {
           selector: "node[type='component'].lod-compact",
           style: {
-            width: 170,
-            height: 44,
+            width: isBoard ? 132 : 170,
+            height: isBoard ? 42 : 44,
             shape: "round-rectangle",
             "corner-radius": "8px",
             label: "data(compactLabel)",
@@ -1690,6 +2225,21 @@ export default function GraphView() {
             shape: "round-rectangle",
             "corner-radius": "10px",
             "background-opacity": 1,
+            label: "",
+            "text-opacity": 0,
+          },
+        },
+        {
+          selector: "node.board-component[type='component'].lod-compact, node.board-component[type='component'].lod-card",
+          style: {
+            width: "data(pieceWidth)",
+            height: "data(pieceHeight)",
+            shape: "polygon",
+            "shape-polygon-points": "data(piecePolygon)",
+            "background-color": "data(pieceFill)",
+            "background-opacity": isDark ? 0.16 : 0.1,
+            "border-color": "data(stripeColor)",
+            "border-opacity": isDark ? 0.26 : 0.18,
             label: "",
             "text-opacity": 0,
           },
@@ -1786,10 +2336,31 @@ export default function GraphView() {
         {
           selector: ".gap-node",
           style: {
-            opacity: 0.4,
+            opacity: 0.92,
             "border-style": "dashed",
-            "border-width": 2,
-            "border-color": "#ef4444",
+            "border-width": 2.4,
+            "border-color": "#d97706",
+            "border-opacity": 0.96,
+            "background-opacity": isBoard ? 0.2 : 0.96,
+          },
+        },
+        {
+          selector: ".conflict-node",
+          style: {
+            opacity: 1,
+            "border-style": "solid",
+            "border-width": 3.2,
+            "border-color": "#dc2626",
+            "border-opacity": 1,
+            "background-opacity": isBoard ? 0.34 : 1,
+            "z-index": 28,
+          },
+        },
+        {
+          selector: ".low-confidence-node",
+          style: {
+            "border-style": "dashed",
+            "border-color": "#b45309",
           },
         },
 
@@ -1940,9 +2511,9 @@ export default function GraphView() {
           selector: "edge[edgeType='relationship'].lod-macro-edge",
           style: {
             label: "",
-            width: 1.5,
-            opacity: 0.5,
-            "arrow-scale": 0.85,
+            width: isBoard ? 0.75 : 1.5,
+            opacity: isBoard ? 0.1 : 0.5,
+            "arrow-scale": isBoard ? 0.35 : 0.85,
           },
         },
         {
@@ -1951,6 +2522,41 @@ export default function GraphView() {
             label: "",
             width: "data(edgeWidth)",
             opacity: "data(edgeOpacity)",
+          },
+        },
+        {
+          selector: "edge[edgeType='relationship'].relationship-weak",
+          style: {
+            "line-style": "dashed",
+            "line-dash-pattern": [8, 5],
+            opacity: isBoard ? 0.28 : 0.62,
+          },
+        },
+        {
+          selector: "edge[edgeType='relationship'].relationship-muted",
+          style: {
+            width: isBoard ? 0.45 : 1,
+            opacity: isBoard ? 0.026 : 0.28,
+            "arrow-scale": isBoard ? 0.2 : 0.55,
+          },
+        },
+        {
+          selector: "edge[edgeType='relationship'].relationship-verified",
+          style: {
+            "line-style": "solid",
+            "line-color": isDark ? "#8aa39a" : "#5f7f6f",
+            "target-arrow-color": isDark ? "#8aa39a" : "#5f7f6f",
+            opacity: isBoard ? 0.42 : 0.88,
+          },
+        },
+        {
+          selector: "edge[edgeType='relationship'].relationship-conflict",
+          style: {
+            "line-style": "solid",
+            "line-color": "#9a5f5f",
+            "target-arrow-color": "#9a5f5f",
+            width: isBoard ? 2.2 : 3.6,
+            opacity: 0.86,
           },
         },
 
@@ -2076,7 +2682,7 @@ export default function GraphView() {
           const colCount = isBoard
             ? Math.min(2, Math.max(1, groups.length))
             : Math.min(4, Math.max(1, groups.length));
-          const columnStride = isBoard ? 980 : 1080;
+          const columnStride = isBoard ? 760 : 1080;
           const laneGapY = isBoard ? 68 : 96;
           const headerFloatClearance = GROUP_HUB_CHIP_HEIGHT_PX + GROUP_HEADER_FLOAT_GAP_PX + 8;
           const cardW = cardWidth;
@@ -2091,24 +2697,57 @@ export default function GraphView() {
           groups.forEach(({ groupKey, items }) => {
             const col = colHeights.indexOf(Math.min(...colHeights));
             const itemCount = Math.max(1, items.length);
-            const gridCols = layoutGridColumns(itemCount, isBoard ? 4 : 3);
-            const rows = Math.ceil(itemCount / gridCols);
-            const groupWidth = groupPadX * 2 + gridCols * cardW + Math.max(0, gridCols - 1) * gapX;
-            const laneWidth = isBoard ? groupWidth + 40 : Math.min(groupWidth + 48, columnStride - 40);
             const baseX = col * columnStride - ((colCount - 1) * columnStride) / 2;
             const baseY = colHeights[col];
-            const startX = baseX - groupWidth / 2 + groupPadX + cardW / 2;
-            const startY = baseY + headerFloatClearance + groupPadTop;
-            const groupHeight = headerFloatClearance + groupPadTop + rows * cardH + Math.max(0, rows - 1) * gapY + groupPadBottom;
+            let laneWidth;
+            let groupHeight;
 
-            items.forEach((c, index) => {
-              const row = Math.floor(index / gridCols);
-              const itemCol = index % gridCols;
-              presetPositions[c.id] = {
-                x: startX + itemCol * (cardW + gapX),
-                y: startY + row * (cardH + gapY),
-              };
-            });
+            if (isBoard) {
+              const cluster = buildBoardShardClusterLayout(items.length, { cardWidth: cardW, cardHeight: cardH });
+              laneWidth = Math.max(cluster.width, 460);
+              groupHeight = headerFloatClearance + cluster.height + groupPadBottom;
+              const centerY = baseY + headerFloatClearance + cluster.height / 2;
+
+              items.forEach((c, index) => {
+                const slot = cluster.positions[index] || { x: 0, y: 0 };
+                const shard = boardShardGeometry(c.id, index, {
+                  angle: slot.rotation || 0,
+                  scale: slot.scale || 1,
+                });
+                const nodeForItem = nodes.find((node) => node.data.id === c.id);
+                if (nodeForItem) {
+                  Object.assign(nodeForItem.data, {
+                    pieceWidth: shard.width,
+                    pieceHeight: shard.height,
+                    pieceRotation: shard.rotation,
+                    piecePolygon: shard.polygonPoints,
+                    pieceClipPath: shard.clipPath,
+                    pieceSvgPoints: shard.svgPoints,
+                  });
+                }
+                presetPositions[c.id] = {
+                  x: baseX + slot.x,
+                  y: centerY + slot.y,
+                };
+              });
+            } else {
+              const gridCols = layoutGridColumns(itemCount, 3);
+              const rows = Math.ceil(itemCount / gridCols);
+              const groupWidth = groupPadX * 2 + gridCols * cardW + Math.max(0, gridCols - 1) * gapX;
+              laneWidth = Math.min(groupWidth + 48, columnStride - 40);
+              const startX = baseX - groupWidth / 2 + groupPadX + cardW / 2;
+              const startY = baseY + headerFloatClearance + groupPadTop;
+              groupHeight = headerFloatClearance + groupPadTop + rows * cardH + Math.max(0, rows - 1) * gapY + groupPadBottom;
+
+              items.forEach((c, index) => {
+                const row = Math.floor(index / gridCols);
+                const itemCol = index % gridCols;
+                presetPositions[c.id] = {
+                  x: startX + itemCol * (cardW + gapX),
+                  y: startY + row * (cardH + gapY),
+                };
+              });
+            }
             if (items.length === 0) {
               presetPositions[`group:${groupKey}`] = { x: baseX, y: baseY + groupHeight / 2 };
             }
@@ -2178,8 +2817,9 @@ export default function GraphView() {
       }
       const zoom = cy.zoom();
       const showDetailOverlays = viewMode === "repo" || zoom >= LOD_CARD_ZOOM;
-      const showGroupChrome = viewMode !== "repo" && zoom >= LOD_MACRO_ZOOM;
-      if (!showDetailOverlays && !showGroupChrome) {
+      const showShardOverlays = isBoard;
+      const showGroupChrome = viewMode !== "repo" && (isBoard || zoom >= LOD_MACRO_ZOOM);
+      if (!showDetailOverlays && !showGroupChrome && !showShardOverlays) {
         layer.replaceChildren();
         return;
       }
@@ -2191,7 +2831,7 @@ export default function GraphView() {
 
       if (showGroupChrome) {
         cy.nodes(".model-node").forEach((node) => {
-          if (node.hasClass("lod-macro")) return;
+          if (node.hasClass("lod-macro") && !isBoard) return;
           try {
             const bounds = node.renderedBoundingBox({
               includeEdges: false,
@@ -2199,7 +2839,7 @@ export default function GraphView() {
               includeNodes: true,
             });
             const groupKey = node.data("groupKey") || node.data("modelId");
-            const meta = GRAPH_GROUP_META[groupKey] || GRAPH_GROUP_META.other;
+            const meta = isBoard ? boardGroupMetaFromKey(groupKey, modelsByGroup) : (GRAPH_GROUP_META[groupKey] || GRAPH_GROUP_META.other);
             const hubLogo = node.data("hubLogo");
             const hubCount = node.data("hubCount") || node.data("itemCount") || 0;
             const hubAccent = node.data("hubAccent") || meta.color;
@@ -2207,14 +2847,30 @@ export default function GraphView() {
             const header = document.createElement("div");
             header.className = "pointer-events-none absolute";
             header.dataset.graphGroupHeader = node.id();
-            const chipTop = bounds.y1 - GROUP_HUB_CHIP_HEIGHT_PX - GROUP_HEADER_FLOAT_GAP_PX;
+            const chipLeft = isBoard ? bounds.x1 + bounds.w / 2 : bounds.x1 + 14;
+            const chipTop = isBoard
+              ? bounds.y2 - GROUP_HUB_CHIP_HEIGHT_PX
+              : bounds.y1 - GROUP_HUB_CHIP_HEIGHT_PX - GROUP_HEADER_FLOAT_GAP_PX;
             Object.assign(header.style, {
-              left: `${bounds.x1 + 14}px`,
+              left: `${chipLeft}px`,
               top: `${chipTop}px`,
+              transform: isBoard ? "translateX(-50%)" : "none",
               zIndex: "24",
             });
 
-            if (hubLogo) {
+            if (isBoard) {
+              appendModelHeaderChip(header, {
+                label: node.data("headerLabel") || meta.label,
+                count: hubCount,
+                subtitle: node.data("headerSubtitle"),
+                sourceLogo: "",
+                accent: hubAccent,
+                isDark,
+                textColor,
+                mutedColor,
+                headerBg,
+              });
+            } else if (hubLogo) {
               appendSourceHubChip(header, {
                 logo: hubLogo,
                 count: hubCount,
@@ -2270,14 +2926,15 @@ export default function GraphView() {
         });
       }
 
-      if (!showDetailOverlays) {
+      if (!showDetailOverlays && !showShardOverlays) {
         layer.replaceChildren(fragment);
         return;
       }
 
       cy.nodes("[type='component']").forEach((node) => {
         try {
-          if (!node.hasClass("lod-card")) return;
+          const isBoardShard = isBoard && node.hasClass("board-component");
+          if (!node.visible() || (!isBoardShard && !node.hasClass("lod-card"))) return;
 
           const bounds = node.renderedBoundingBox({
             includeEdges: false,
@@ -2286,20 +2943,49 @@ export default function GraphView() {
           });
 
           const shell = document.createElement("div");
-          shell.className = "pointer-events-none absolute overflow-hidden";
+          shell.className = "pointer-events-none absolute";
           shell.dataset.graphCard = node.id();
           Object.assign(shell.style, {
             left: `${bounds.x1}px`,
             top: `${bounds.y1}px`,
             width: `${bounds.w}px`,
             height: `${bounds.h}px`,
-            borderRadius: "10px",
           });
+
+          if (isBoardShard) {
+            shell.dataset.graphShard = node.id();
+            const labelMetrics = shardLabelMetrics(bounds);
+            Object.assign(shell.style, {
+              zIndex: node.selected() || node.hasClass("search-match") ? "18" : "12",
+              overflow: "visible",
+            });
+            const status = String(node.data("status") || "").toLowerCase();
+            appendBoardShardOverlay(shell, {
+              svgPoints: node.data("pieceSvgPoints") || "4,16 78,5 96,45 62,92 12,82",
+              rotation: node.data("pieceRotation") || 0,
+              fill: node.data("pieceFill") || node.data("stripeColor") || "#7c3aed",
+              stroke: node.hasClass("search-match") ? "#4f46e5" : (node.data("stripeColor") || "#7c3aed"),
+              labelLines: shardTextLines(
+                node.data("compactLabel") || node.data("cardTitle") || node.data("label"),
+                node.data("healthLabel") || node.data("cardDetail") || node.data("fact_type") || node.data("cardContext"),
+                node.data("status"),
+                bounds,
+              ),
+              labelFontSize: labelMetrics.fontSize,
+              labelWidth: labelMetrics.labelWidth,
+              opacity: node.hasClass("search-dim") ? 0.16 : status === "stale" || status === "deprecated" || status === "superseded" ? 0.52 : 1,
+              selected: node.selected() || node.hasClass("search-match"),
+              isDark,
+            });
+            fragment.appendChild(shell);
+            return;
+          }
 
           const title = node.data("cardTitle") || node.data("label") || "";
           const compactCard = bounds.h < 88;
           const tinyCard = bounds.h < 56;
           const detailLines = [
+            node.data("healthLabel"),
             node.data("cardContext"),
             node.data("cardDetail"),
           ].filter(Boolean);
@@ -2380,6 +3066,13 @@ export default function GraphView() {
         setShowRefine(false);
         setShowSidePanel(false);
         setShowAgents(false);
+      } else if (data.type === "model") {
+        setSelectedNode({ ...data, id: data.id });
+        setSelectedEdge(null);
+        setEdgeReviewError(null);
+        setShowRefine(false);
+        setShowSidePanel(false);
+        setShowAgents(false);
       } else {
         setSelectedNode(null);
       }
@@ -2453,6 +3146,17 @@ export default function GraphView() {
     cy.on("mouseover", "node[type='component']", (evt) => {
       evt.target.style({ "border-width": 4, opacity: 1 });
       evt.target.connectedEdges("[edgeType='relationship']").style({ "z-index": 20, opacity: 1 });
+      const data = evt.target.data();
+      const pos = evt.target.renderedPosition();
+      setHoveredAssemblyItem({
+        x: pos.x + 16,
+        y: pos.y + 16,
+        title: data.cardTitle || data.label,
+        source: data.sourceLabel || data.source_type || "Source",
+        confidence: data.confidence != null ? `${Math.round(data.confidence * 100)}%` : "n/a",
+        status: data.status || "active",
+        summary: data.cardDetail || data.value || data.fullLabel,
+      });
     });
     cy.on("mouseout", "node[type='component']", (evt) => {
       if (!evt.target.selected()) {
@@ -2463,6 +3167,7 @@ export default function GraphView() {
           edge.style({ "z-index": 8, opacity: edge.data("edgeOpacity") ?? 0.6 });
         }
       });
+      setHoveredAssemblyItem(null);
     });
 
     cyRef.current = cy;
@@ -2516,6 +3221,7 @@ export default function GraphView() {
       resizeObserver.disconnect();
       cy.destroy();
       setGraphOverview(null);
+      setHoveredAssemblyItem(null);
     };
   }, [graphData, filteredData, viewMode, boardLens, graphLayout, showTrustEdges, filters.search, theme]);
 
@@ -2524,6 +3230,8 @@ export default function GraphView() {
   const sourceTypes = [...new Set(allComponents.map((c) => c.source_type).filter(Boolean))];
   const statuses = [...new Set(allComponents.map((c) => c.status).filter(Boolean))];
   const currentViewData = filteredData();
+  const assembly = useMemo(() => buildContextAssembly(currentViewData), [currentViewData]);
+  const selectedAssemblyModel = selectedNode ? findAssemblyModelForNode(assembly, selectedNode) : null;
   const graphStats = buildGraphStats(currentViewData);
   const visibleCanvasItemCount = graphLayout === "explore" && viewMode === "knowledge"
     ? filterExploreComponents(currentViewData.components || [], currentViewData.relationships || []).length
@@ -2589,13 +3297,36 @@ export default function GraphView() {
   }
 
   return (
-    <div className="relative flex h-full min-h-0 overflow-hidden">
+    <div className="relative flex h-full min-h-0 overflow-hidden bg-[#f5f6f8] dark:bg-[#050507]">
       <div className="relative flex min-w-0 flex-1 flex-col">
         <div className="pointer-events-none absolute left-3 right-3 top-3 z-30 flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
-          <div className="pointer-events-auto w-fit max-w-[calc(100vw-1.5rem)] self-start rounded-xl border border-slate-200 bg-white/92 p-2 shadow-sm backdrop-blur-sm dark:border-neutral-800 dark:bg-black">
+          <GraphToolbar
+            workspaceName={activeWorkspace?.name}
+            stats={assembly.stats}
+            search={filters.search}
+            onSearchChange={(value) => setFilters((f) => ({ ...f, search: value }))}
+            onSearchEnter={centerOnSearchMatch}
+            mode={graphLayout === "board" ? "overview" : graphLayout}
+            onModeChange={(mode) => {
+              if (mode === "assembly" && !selectedAssemblyModel) {
+                setGraphLayout("assembly");
+              } else {
+                setGraphLayout(mode);
+              }
+            }}
+            onToggleRefine={() => {
+              setShowRefine((v) => !v);
+              setShowSidePanel(false);
+              setShowAgents(false);
+              setSelectedNode(null);
+              setSelectedEdge(null);
+            }}
+            activeFilterCount={activeFilterCount}
+          />
+          <div className="hidden pointer-events-auto w-fit max-w-[calc(100vw-1.5rem)] self-start rounded-lg border border-slate-200/80 bg-white/90 p-2 shadow-[0_16px_45px_rgba(15,23,42,0.08)] backdrop-blur-xl dark:border-white/[0.09] dark:bg-neutral-950/90 dark:shadow-[0_24px_80px_rgba(0,0,0,0.38)]">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-sm font-black text-slate-900 dark:text-white">Knowledge Graph</h2>
-              <div className="flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 dark:border-neutral-800 dark:bg-black">
+              <div className="flex rounded-lg border border-slate-200/80 bg-slate-100/80 p-0.5 dark:border-white/[0.08] dark:bg-white/[0.04]">
                 {[
                   ["knowledge", "Knowledge"],
                   ["repo", "Repository"],
@@ -2615,7 +3346,7 @@ export default function GraphView() {
                 ))}
               </div>
               {viewMode === "knowledge" && (
-                <div className="flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 dark:border-neutral-800 dark:bg-black">
+              <div className="flex rounded-lg border border-slate-200/80 bg-slate-100/80 p-0.5 dark:border-white/[0.08] dark:bg-white/[0.04]">
                   {[
                     ["board", "Board"],
                     ["explore", "Explore"],
@@ -2637,7 +3368,7 @@ export default function GraphView() {
               )}
             </div>
             {viewMode === "knowledge" && activeWorkspace && (
-              <div className="mt-2 flex w-fit max-w-full items-center gap-1.5 rounded-lg bg-brand-50 px-2 py-1 text-[10px] font-bold text-brand-700 dark:bg-brand-900/30 dark:text-brand-300">
+              <div className="mt-2 flex w-fit max-w-full items-center gap-1.5 rounded-lg border border-brand-500/20 bg-brand-500/10 px-2 py-1 text-[10px] font-bold text-brand-700 dark:text-brand-300">
                 <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
                 <span className="shrink-0">Workspace focused</span>
                 <span className="truncate text-brand-900 dark:text-brand-100">{activeWorkspace.name}</span>
@@ -2665,8 +3396,8 @@ export default function GraphView() {
                 ))}
               </div>
             )}
-            {viewMode === "knowledge" && (
-              <div className="mt-2 flex items-center gap-1.5 rounded-lg bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-500 dark:bg-black dark:text-neutral-400">
+            {false && viewMode === "knowledge" && (
+              <div className="mt-2 flex items-center gap-1.5 rounded-lg border border-slate-200/80 bg-slate-100/80 px-2 py-1 text-[10px] font-bold text-slate-500 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-neutral-400">
                 <Network className="h-3.5 w-3.5 text-brand-500" />
                 <span className="text-slate-900 dark:text-white">{graphStats.components}</span>
                 <span>nodes</span>
@@ -2685,7 +3416,7 @@ export default function GraphView() {
           </div>
 
           <div className="pointer-events-auto flex flex-wrap items-center justify-end gap-2">
-            {viewMode === "knowledge" && (
+            {false && viewMode === "knowledge" && (
               <div className="relative">
                 <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
                 <input
@@ -2697,7 +3428,7 @@ export default function GraphView() {
                     if (e.key === "Enter") centerOnSearchMatch();
                   }}
                   placeholder="Search graph (⌘K)…"
-                  className="h-9 w-40 rounded-xl border border-slate-200 bg-white/92 pl-8 pr-7 text-xs font-semibold text-slate-700 shadow-sm outline-none backdrop-blur-sm transition placeholder:text-slate-400 focus:border-brand-400 dark:border-neutral-800 dark:bg-black dark:text-neutral-200 sm:w-52 xl:w-60"
+                  className="h-9 w-40 rounded-lg border border-slate-200/80 bg-white/90 pl-8 pr-7 text-xs font-semibold text-slate-700 shadow-sm outline-none backdrop-blur-xl transition placeholder:text-slate-400 focus:border-brand-400 dark:border-white/[0.09] dark:bg-neutral-950/90 dark:text-neutral-200 sm:w-52 xl:w-60"
                 />
                 {filters.search && (
                   <button
@@ -2720,7 +3451,7 @@ export default function GraphView() {
                   setSelectedNode(null);
                   setSelectedEdge(null);
                 }}
-                className={`flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-bold shadow-sm backdrop-blur-sm transition-colors ${
+                className={`flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-bold shadow-sm backdrop-blur-xl transition-colors ${
                   showRefine
                     ? "border-sky-400 bg-sky-50/95 text-sky-700 dark:border-sky-600 dark:bg-sky-900/60 dark:text-sky-300"
                     : "border-slate-200 bg-white/92 text-slate-600 hover:bg-slate-50 dark:border-neutral-800 dark:bg-black dark:text-neutral-300 dark:hover:bg-black"
@@ -2737,7 +3468,7 @@ export default function GraphView() {
               type="button"
               onClick={() => setShowAiSettings(true)}
               title="Configure AI extraction"
-              className={`flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-bold shadow-sm backdrop-blur-sm transition-colors ${aiSettings.api_key ? "border-brand-400 bg-brand-50/95 text-brand-700 dark:border-brand-600 dark:bg-brand-900/60 dark:text-brand-300" : "border-slate-200 bg-white/92 text-slate-500 hover:bg-slate-50 dark:border-neutral-800 dark:bg-black dark:text-neutral-300 dark:hover:bg-black"}`}
+                className={`flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-bold shadow-sm backdrop-blur-xl transition-colors ${aiSettings.api_key ? "border-brand-400 bg-brand-50/95 text-brand-700 dark:border-brand-600 dark:bg-brand-900/60 dark:text-brand-300" : "border-slate-200/80 bg-white/90 text-slate-500 hover:bg-white dark:border-white/[0.09] dark:bg-neutral-950/90 dark:text-neutral-300 dark:hover:bg-white/[0.055]"}`}
             >
               <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="12" cy="12" r="3"/>
@@ -2756,7 +3487,7 @@ export default function GraphView() {
                 setAskError(null);
                 setTimeout(() => askInputRef.current?.focus(), 80);
               }}
-              className={`flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-bold shadow-sm backdrop-blur-sm transition-colors ${
+                className={`flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-bold shadow-sm backdrop-blur-xl transition-colors ${
                 showAsk
                   ? "border-brand-500 bg-brand-50/95 text-brand-700 dark:border-brand-500 dark:bg-brand-900/60 dark:text-brand-300"
                   : "border-slate-200 bg-white/92 text-slate-600 hover:bg-slate-50 dark:border-neutral-800 dark:bg-black dark:text-neutral-300 dark:hover:bg-black"
@@ -2773,7 +3504,7 @@ export default function GraphView() {
                 setShowSidePanel(false);
                 setSelectedEdge(null);
               }}
-              className={`flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-bold shadow-sm backdrop-blur-sm transition-colors ${
+                className={`flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-bold shadow-sm backdrop-blur-xl transition-colors ${
                 showAgents
                   ? "border-violet-500 bg-violet-50/95 text-violet-700 dark:border-violet-500 dark:bg-violet-900/60 dark:text-violet-300"
                   : "border-slate-200 bg-white/92 text-slate-600 hover:bg-slate-50 dark:border-neutral-800 dark:bg-black dark:text-neutral-300 dark:hover:bg-black"
@@ -2792,7 +3523,7 @@ export default function GraphView() {
                 setSelectedNode(null);
                 setSelectedEdge(null);
               }}
-              className={`flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-bold shadow-sm backdrop-blur-sm transition-colors ${
+                className={`flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-bold shadow-sm backdrop-blur-xl transition-colors ${
                 showSidePanel
                   ? "border-brand-500 bg-brand-50/95 text-brand-700 dark:border-brand-500 dark:bg-brand-900/60 dark:text-brand-300"
                   : "border-slate-200 bg-white/92 text-slate-600 hover:bg-slate-50 dark:border-neutral-800 dark:bg-black dark:text-neutral-300 dark:hover:bg-black"
@@ -2805,7 +3536,7 @@ export default function GraphView() {
         </div>
 
         {viewMode === "knowledge" && showRefine && (
-          <div className="absolute right-3 top-28 z-40 w-[min(25rem,calc(100%-1.5rem))] rounded-xl border border-slate-200 bg-white/95 p-3 shadow-xl backdrop-blur-sm dark:border-neutral-800 dark:bg-black lg:top-16">
+          <div className="absolute right-3 top-28 z-40 w-[min(25rem,calc(100%-1.5rem))] rounded-lg border border-slate-200/80 bg-white/95 p-3 shadow-xl backdrop-blur-xl dark:border-white/[0.09] dark:bg-neutral-950/95 lg:top-16">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-xs font-black text-slate-900 dark:text-white">Refine</p>
@@ -3150,15 +3881,66 @@ export default function GraphView() {
         <div
           className="flex-1 relative min-h-0 overflow-hidden"
           style={{
-            backgroundColor: theme === "dark" ? "#000" : "#fff",
+            backgroundColor: theme === "dark" ? "#050507" : "#f8fafc",
             backgroundImage: theme === "dark"
-              ? "radial-gradient(circle at 1px 1px, rgba(255,255,255,0.075) 1px, transparent 0)"
-              : "radial-gradient(circle at 1px 1px, rgba(15,23,42,0.11) 1px, transparent 0)",
-            backgroundSize: "22px 22px",
+              ? "radial-gradient(circle at 1px 1px, rgba(255,255,255,0.085) 1px, transparent 0), linear-gradient(135deg, rgba(94,106,210,0.09), transparent 34%)"
+              : "radial-gradient(circle at 1px 1px, rgba(15,23,42,0.10) 1px, transparent 0), linear-gradient(135deg, rgba(79,70,229,0.07), transparent 38%)",
+            backgroundSize: "24px 24px, auto",
           }}
         >
           <div ref={containerRef} className="absolute inset-0" />
           <div ref={logoLayerRef} className="pointer-events-none absolute inset-0 z-10" />
+
+          {hoveredAssemblyItem && (
+            <div
+              className="pointer-events-none absolute z-40 max-w-xs rounded-lg border border-slate-200/80 bg-white/95 px-3 py-2 text-xs shadow-xl backdrop-blur-xl dark:border-white/[0.09] dark:bg-neutral-950/95"
+              style={{
+                left: Math.min(hoveredAssemblyItem.x, 960),
+                top: Math.max(76, hoveredAssemblyItem.y),
+              }}
+            >
+              <p className="truncate font-black text-slate-900 dark:text-white">{hoveredAssemblyItem.title}</p>
+              <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] font-bold text-slate-500 dark:text-neutral-400">
+                <span>{hoveredAssemblyItem.source}</span>
+                <span>{hoveredAssemblyItem.confidence}</span>
+                <span>{hoveredAssemblyItem.status}</span>
+              </div>
+              {hoveredAssemblyItem.summary ? (
+                <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-slate-600 dark:text-neutral-300">
+                  {hoveredAssemblyItem.summary}
+                </p>
+              ) : null}
+            </div>
+          )}
+
+          {viewMode === "knowledge" && graphLayout !== "explore" && (
+            <div className="absolute bottom-24 left-4 z-20 hidden xl:block">
+              <SourceLegend />
+            </div>
+          )}
+
+          {viewMode === "knowledge" && graphLayout === "assembly" && (
+            <div className="pointer-events-none absolute left-1/2 top-24 z-20 w-[min(30rem,calc(100%-2rem))] -translate-x-1/2 rounded-lg border border-slate-200/80 bg-white/90 px-3 py-2 text-xs shadow-sm backdrop-blur-xl dark:border-white/[0.09] dark:bg-neutral-950/90">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="font-black text-slate-900 dark:text-white">
+                    {selectedAssemblyModel ? selectedAssemblyModel.name : "Select a model or fragment to focus assembly"}
+                  </p>
+                  <p className="mt-0.5 truncate text-[10px] font-semibold text-slate-500 dark:text-neutral-400">
+                    {selectedAssemblyModel
+                      ? `${selectedAssemblyModel.claims.length} claims · ${selectedAssemblyModel.fragments.length} evidence fragments · ${selectedAssemblyModel.missingContext.length} gaps`
+                      : "Assembly view shows one model, its claims, evidence, missing context, conflicts, and suggested next action."}
+                  </p>
+                </div>
+                {selectedAssemblyModel ? (
+                  <div className="shrink-0 text-right">
+                    <p className="text-[10px] font-bold text-slate-400">Confidence</p>
+                    <p className="font-black text-slate-900 dark:text-white">{selectedAssemblyModel.confidence.label}</p>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          )}
 
           {graphLayout === "explore" && viewMode === "knowledge" && (
             <div className="absolute bottom-16 right-4 top-24 z-30 flex w-[min(20rem,calc(100%-2rem))] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white/95 shadow-xl backdrop-blur-sm dark:border-neutral-800 dark:bg-black">
@@ -3463,7 +4245,8 @@ export default function GraphView() {
       </div>
 
       {(selectedNode || selectedEdge) && !showAgents && (
-        <GraphInspector
+        <ModelInspector
+          assembly={assembly}
           node={selectedNode}
           edge={selectedEdge}
           onClose={() => {
