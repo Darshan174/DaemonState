@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import json
 import re
-from datetime import datetime
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,8 +16,24 @@ from app.services.workspace_scope import (
     filter_source_documents_for_workspace,
     workspace_connector_types,
 )
+from app.time import utc_now
 
 logger = logging.getLogger(__name__)
+
+
+def _merge_extraction_quality(target: dict, report) -> None:
+    if report is None:
+        return
+    for key in (
+        "fact_count",
+        "relationship_count",
+        "low_confidence_count",
+        "missing_provenance_count",
+        "missing_excerpt_count",
+        "missing_relationship_evidence_count",
+        "duplicate_fact_count",
+    ):
+        target[key] += int(getattr(report, key, 0) or 0)
 
 
 class GraphBuilderAgent:
@@ -47,7 +62,7 @@ class GraphBuilderAgent:
         model: str | None = None,
         workspace_id: str | None = None,
     ) -> dict:
-        started_at = datetime.utcnow()
+        started_at = utc_now()
 
         extractor = None
         if api_key or model:
@@ -77,13 +92,37 @@ class GraphBuilderAgent:
         docs_processed = 0
         components_created = 0
         errors: list[dict] = []
+        extraction_quality = {
+            "fact_count": 0,
+            "relationship_count": 0,
+            "low_confidence_count": 0,
+            "missing_provenance_count": 0,
+            "missing_excerpt_count": 0,
+            "missing_relationship_evidence_count": 0,
+            "duplicate_fact_count": 0,
+            "contract_warning_count": 0,
+        }
 
         for doc in pending:
             try:
                 n = await ingestor.process_document(doc.id)
                 components_created += n
                 docs_processed += 1
-                extraction_error = getattr(ingestor._extractor, "last_error", None)
+                _merge_extraction_quality(
+                    extraction_quality,
+                    getattr(ingestor, "last_extraction_report", None),
+                )
+                extraction_warnings = list(
+                    getattr(ingestor, "last_extraction_warnings", []) or []
+                )
+                if extraction_warnings:
+                    extraction_quality["contract_warning_count"] += len(extraction_warnings)
+                    errors.append({
+                        "doc_id": str(doc.id),
+                        "warning": "extraction_contract_warnings",
+                        "warnings": extraction_warnings[:10],
+                    })
+                extraction_error = getattr(ingestor, "last_extraction_error", None)
                 if extraction_error:
                     errors.append({
                         "doc_id": str(doc.id),
@@ -150,7 +189,7 @@ class GraphBuilderAgent:
 
         return {
             "started_at": started_at.isoformat(),
-            "finished_at": datetime.utcnow().isoformat(),
+            "finished_at": utc_now().isoformat(),
             "llm_extraction": llm_active,
             "docs_processed": docs_processed,
             "docs_pending_before": len(pending),
@@ -161,6 +200,7 @@ class GraphBuilderAgent:
                 "total_components": total_components,
                 "total_relationships": total_relationships,
                 "pending_docs": pending_after,
+                "extraction_quality": extraction_quality,
             },
         }
 

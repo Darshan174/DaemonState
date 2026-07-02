@@ -3,13 +3,18 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Component, Model, Relationship, SourceDocument
+from app.services.identity import (
+    ensure_entity_for_identity,
+    identity_key_for_component_name,
+    record_component_evidence,
+)
+from app.time import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -126,11 +131,22 @@ async def extract_github_documents(
         raw_name = f"{display_type} #{number}: {title}"
         component_name = raw_name[:55] + ("…" if len(raw_name) > 55 else "")
         status_val = ("merged" if merged else state)
+        primary_identity_key = identity_key_for_component_name(component_name)
+        primary_entity = await ensure_entity_for_identity(
+            session,
+            model_id=github_model.id,
+            workspace_id=doc.workspace_id,
+            identity_key=primary_identity_key,
+            canonical_name=component_name,
+        )
 
         primary_comp = Component(
             id=uuid4(),
+            workspace_id=doc.workspace_id,
+            entity_id=primary_entity.id if primary_entity else None,
             model_id=github_model.id,
             source_document_id=doc.id,
+            identity_key=primary_identity_key,
             name=component_name,
             value=status_val,
             fact_type=item_type,
@@ -145,11 +161,23 @@ async def extract_github_documents(
         # Label components create tagged sub-facts linking PRs/issues to domain topics
         label_comps: list[Component] = []
         for label in labels[:5]:
+            label_name = f"{display_type} #{number} [{label}]"
+            label_identity_key = identity_key_for_component_name(label_name)
+            label_entity = await ensure_entity_for_identity(
+                session,
+                model_id=github_model.id,
+                workspace_id=doc.workspace_id,
+                identity_key=label_identity_key,
+                canonical_name=label_name,
+            )
             label_comp = Component(
                 id=uuid4(),
+                workspace_id=doc.workspace_id,
+                entity_id=label_entity.id if label_entity else None,
                 model_id=github_model.id,
                 source_document_id=doc.id,
-                name=f"{display_type} #{number} [{label}]",
+                identity_key=label_identity_key,
+                name=label_name,
                 value=label,
                 fact_type="label",
                 confidence=0.90,
@@ -177,10 +205,21 @@ async def extract_github_documents(
 
                 fact_temporal = _infer_temporal(value, fact_type)
                 short_name = value[:55] + ("…" if len(value) > 55 else "")
+                extra_identity_key = identity_key_for_component_name(short_name)
+                extra_entity = await ensure_entity_for_identity(
+                    session,
+                    model_id=github_model.id,
+                    workspace_id=doc.workspace_id,
+                    identity_key=extra_identity_key,
+                    canonical_name=short_name,
+                )
                 extra = Component(
                     id=uuid4(),
+                    workspace_id=doc.workspace_id,
+                    entity_id=extra_entity.id if extra_entity else None,
                     model_id=github_model.id,
                     source_document_id=doc.id,
+                    identity_key=extra_identity_key,
                     name=short_name,
                     value=value,
                     fact_type=fact_type,
@@ -194,6 +233,12 @@ async def extract_github_documents(
                 components_created += 1
 
         await session.flush()
+        for component in [primary_comp, *label_comps, *pattern_comps]:
+            await record_component_evidence(
+                session,
+                component=component,
+                extracted_fact=component,
+            )
 
         # Create edges: primary PR/Issue → each derived fact
         all_derived = (label_comps + pattern_comps)[:8]
@@ -206,7 +251,7 @@ async def extract_github_documents(
             )
             session.add(rel)
 
-        doc.processed_at = datetime.utcnow()
+        doc.processed_at = utc_now()
         docs_processed += 1
 
     await session.commit()
@@ -222,6 +267,7 @@ async def extract_from_source_documents(
     source_type: str,
     session: AsyncSession,
     batch_size: int = 500,
+    workspace_id: UUID | None = None,
 ) -> dict:
     from app.services.ingest import IngestionService
 
@@ -229,13 +275,16 @@ async def extract_from_source_documents(
     # regex extractor produced zero components. Include those legacy rows so a
     # later sync can repair the graph without requiring manual DB edits.
     has_components = exists().where(Component.source_document_id == SourceDocument.id)
-    docs = list(await session.scalars(
+    stmt = (
         select(SourceDocument)
         .where(SourceDocument.source_type == source_type)
         .where((SourceDocument.processed_at.is_(None)) | (~has_components))
         .order_by(SourceDocument.ingested_at.desc())
-        .limit(batch_size)
-    ))
+    )
+    if workspace_id:
+        stmt = stmt.where(SourceDocument.workspace_id == workspace_id)
+    stmt = stmt.limit(batch_size)
+    docs = list(await session.scalars(stmt))
 
     ingestor = IngestionService(session)
     components_created = 0

@@ -1,11 +1,27 @@
 from __future__ import annotations
 
 import json
-from uuid import uuid4
+from uuid import UUID, uuid4
 
+from sqlalchemy import select
 
-from app.models import Component, Connector, Model, Relationship, SourceDocument, Workspace
+from app.models import (
+    Component,
+    Connector,
+    Entity,
+    Model,
+    Relationship,
+    RetrievalEvent,
+    SourceDocument,
+    Workspace,
+)
 from app.processing.embedder import HashingEmbedder
+from app.services.vector_search import (
+    TextSearchMatch,
+    TextSearchResult,
+    VectorSearchMatch,
+    VectorSearchResult,
+)
 
 
 class TestGraphProvenance:
@@ -515,6 +531,7 @@ class TestWorkspaceScopedGraphEndpoints:
         model = Model(id=uuid4(), name="Risk")
         doc_ws1 = SourceDocument(
             id=uuid4(),
+            workspace_id=UUID(ws1),
             source_type="slack",
             external_id="query-ws1",
             content="Billing risk for workspace one.",
@@ -522,19 +539,20 @@ class TestWorkspaceScopedGraphEndpoints:
         )
         doc_ws2 = SourceDocument(
             id=uuid4(),
+            workspace_id=UUID(ws2),
             source_type="slack",
             external_id="query-ws2",
             content="Billing risk for workspace two.",
             metadata_json=json.dumps({"workspace_id": ws2}),
         )
         comp_ws1 = Component(
-            id=uuid4(), model_id=model.id, source_document_id=doc_ws1.id,
+            id=uuid4(), workspace_id=UUID(ws1), model_id=model.id, source_document_id=doc_ws1.id,
             name="Workspace one billing risk", value="Billing risk is in workspace one",
             fact_type="risk", confidence=0.9, status="active",
             embedding=json.dumps(await embedder.embed_text("billing risk workspace one")),
         )
         comp_ws2 = Component(
-            id=uuid4(), model_id=model.id, source_document_id=doc_ws2.id,
+            id=uuid4(), workspace_id=UUID(ws2), model_id=model.id, source_document_id=doc_ws2.id,
             name="Workspace two billing risk", value="Billing risk is in workspace two",
             fact_type="risk", confidence=0.9, status="active",
             embedding=json.dumps(await embedder.embed_text("billing risk workspace two")),
@@ -551,6 +569,10 @@ class TestWorkspaceScopedGraphEndpoints:
 
         assert "Workspace one billing risk" in component_names
         assert "Workspace two billing risk" not in component_names
+        trace = resp.json()["trace"]
+        assert trace["candidate_component_count"] == 1
+        assert trace["scoped_component_count"] == 1
+        assert trace["scored_component_count"] == 1
 
     async def test_query_exposes_versioned_trace_and_retrieval_knobs(self, client, db_session):
         embedder = HashingEmbedder()
@@ -587,13 +609,31 @@ class TestWorkspaceScopedGraphEndpoints:
         data = resp.json()
 
         assert data["schema_version"] == "query.v1"
+        assert data["trace"]["retrieval_strategy"] == "python_scan"
+        assert data["trace"]["vector_candidate_count"] == 0
+        assert data["trace"]["vector_prefilter_limit"] is None
         assert data["trace"]["top_k"] == 1
         assert data["trace"]["min_confidence"] == 0.8
+        assert data["trace"]["candidate_component_count"] == 1
+        assert data["trace"]["scoped_component_count"] == 1
+        assert data["trace"]["scored_component_count"] == 1
         assert data["trace"]["matched_component_count"] == 1
         assert data["trace"]["facts_used"][0]["name"] == "Launch blocker"
         assert {component["name"] for component in data["components"]} == {"Launch blocker"}
         assert data["answer"]
         assert "Launch blocker" in data["answer"]
+        events = list(await db_session.scalars(
+            select(RetrievalEvent).order_by(RetrievalEvent.created_at.desc())
+        ))
+        assert events
+        latest = events[0]
+        assert latest.question == "launch blocker"
+        assert latest.schema_version == "query.v1"
+        assert latest.top_k == 1
+        assert latest.min_confidence == 0.8
+        assert latest.component_count == 1
+        trace_payload = json.loads(latest.trace_json)
+        assert trace_payload["facts_used"][0]["name"] == "Launch blocker"
 
         empty_resp = await client.post("/api/query", json={
             "question": "launch blocker",
@@ -602,9 +642,209 @@ class TestWorkspaceScopedGraphEndpoints:
         assert empty_resp.status_code == 200
         empty_data = empty_resp.json()
         assert empty_data["trace"]["min_confidence"] == 0.99
+        assert empty_data["trace"]["candidate_component_count"] == 0
+        assert empty_data["trace"]["scoped_component_count"] == 0
+        assert empty_data["trace"]["scored_component_count"] == 0
         assert empty_data["trace"]["matched_component_count"] == 0
         assert empty_data["components"] == []
         assert "No matching context found" in empty_data["answer"]
+        empty_event = await db_session.scalar(
+            select(RetrievalEvent).where(RetrievalEvent.min_confidence == 0.99)
+        )
+        assert empty_event is not None
+        assert empty_event.component_count == 0
+        assert "No matching context found" in empty_event.answer
+
+    async def test_query_uses_vector_prefilter_when_available(
+        self,
+        client,
+        db_session,
+        monkeypatch,
+    ):
+        embedder = HashingEmbedder()
+        model = Model(id=uuid4(), name="Risk")
+        doc = SourceDocument(
+            id=uuid4(),
+            source_type="slack",
+            external_id="query-vector-prefilter",
+            content="Launch risk discussion.",
+            metadata_json="{}",
+        )
+        lexical_best = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="Launch blocker exact", value="Launch blocker appears in this text",
+            fact_type="risk", confidence=0.99, status="active",
+            embedding=json.dumps(await embedder.embed_text("launch blocker exact")),
+        )
+        vector_best = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="Vector-ranked blocker", value="The indexed vector path selected this fact",
+            fact_type="risk", confidence=0.7, status="active",
+            embedding=json.dumps(await embedder.embed_text("indexed semantic match")),
+        )
+        db_session.add_all([model, doc, lexical_best, vector_best])
+        await db_session.flush()
+
+        async def fake_vector_search(*args, **kwargs):
+            assert kwargs["limit"] >= 100
+            return VectorSearchResult(
+                enabled=True,
+                matches=[
+                    VectorSearchMatch(
+                        component_id=vector_best.id,
+                        semantic_score=0.98,
+                    )
+                ],
+            )
+
+        monkeypatch.setattr("app.services.query.search_component_vectors", fake_vector_search)
+
+        resp = await client.post("/api/query", json={
+            "question": "launch blocker",
+            "top_k": 1,
+            "hybrid": True,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["trace"]["retrieval_strategy"] == "postgres_vector"
+        assert data["trace"]["vector_candidate_count"] == 1
+        assert data["trace"]["vector_prefilter_limit"] >= 100
+        assert data["trace"]["candidate_component_count"] == 1
+        assert data["trace"]["facts_used"][0]["name"] == "Vector-ranked blocker"
+        assert {component["name"] for component in data["components"]} == {
+            "Vector-ranked blocker"
+        }
+
+    async def test_query_uses_postgres_text_prefilter_when_available(
+        self,
+        client,
+        db_session,
+        monkeypatch,
+    ):
+        embedder = HashingEmbedder()
+        model = Model(id=uuid4(), name="Risk")
+        doc = SourceDocument(
+            id=uuid4(),
+            source_type="slack",
+            external_id="query-text-prefilter",
+            content="Launch risk discussion.",
+            metadata_json="{}",
+        )
+        text_best = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="Text-ranked blocker", value="Full-text search selected this blocker",
+            fact_type="risk", confidence=0.8, status="active",
+            embedding=json.dumps(await embedder.embed_text("unrelated semantic vector")),
+        )
+        hidden = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="Hidden blocker", value="Should be excluded by text prefilter",
+            fact_type="risk", confidence=0.99, status="active",
+            embedding=json.dumps(await embedder.embed_text("launch blocker")),
+        )
+        db_session.add_all([model, doc, text_best, hidden])
+        await db_session.flush()
+
+        async def fake_text_search(*args, **kwargs):
+            assert kwargs["limit"] >= 100
+            return TextSearchResult(
+                enabled=True,
+                matches=[
+                    TextSearchMatch(
+                        component_id=text_best.id,
+                        lexical_score=1.3,
+                    )
+                ],
+            )
+
+        monkeypatch.setattr("app.services.query.search_component_text", fake_text_search)
+
+        resp = await client.post("/api/query", json={
+            "question": "launch blocker",
+            "top_k": 1,
+            "hybrid": True,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["trace"]["retrieval_strategy"] == "postgres_text"
+        assert data["trace"]["text_candidate_count"] == 1
+        assert data["trace"]["text_prefilter_limit"] >= 100
+        assert data["trace"]["candidate_component_count"] == 1
+        assert data["trace"]["facts_used"][0]["name"] == "Text-ranked blocker"
+        assert {component["name"] for component in data["components"]} == {
+            "Text-ranked blocker"
+        }
+
+    async def test_query_diversifies_top_matches_by_entity(self, client, db_session):
+        embedder = HashingEmbedder()
+        model = Model(id=uuid4(), name="Risk")
+        doc = SourceDocument(
+            id=uuid4(),
+            source_type="slack",
+            external_id="query-entity-diversity",
+            content="Billing risks from several sources.",
+            metadata_json="{}",
+        )
+        billing_entity = Entity(
+            id=uuid4(),
+            model_id=model.id,
+            identity_key="component:billing-risk",
+            canonical_name="Billing risk",
+        )
+        security_entity = Entity(
+            id=uuid4(),
+            model_id=model.id,
+            identity_key="component:security-risk",
+            canonical_name="Security risk",
+        )
+        repeated_best = Component(
+            id=uuid4(), entity_id=billing_entity.id,
+            identity_key=billing_entity.identity_key,
+            model_id=model.id, source_document_id=doc.id,
+            name="Billing risk primary", value="Billing risk blocks launch",
+            fact_type="risk", confidence=0.95, status="active",
+            embedding=json.dumps(await embedder.embed_text("billing risk blocks launch")),
+        )
+        repeated_duplicate = Component(
+            id=uuid4(), entity_id=billing_entity.id,
+            identity_key=billing_entity.identity_key,
+            model_id=model.id, source_document_id=doc.id,
+            name="Billing risk duplicate", value="Billing risk also blocks onboarding",
+            fact_type="risk", confidence=0.94, status="active",
+            embedding=json.dumps(await embedder.embed_text("billing risk blocks launch")),
+        )
+        other_entity = Component(
+            id=uuid4(), entity_id=security_entity.id,
+            identity_key=security_entity.identity_key,
+            model_id=model.id, source_document_id=doc.id,
+            name="Security review", value="Security review needs follow-up",
+            fact_type="risk", confidence=0.7, status="active",
+            embedding=json.dumps(await embedder.embed_text("security review")),
+        )
+        db_session.add_all([
+            model, doc, billing_entity, security_entity,
+            repeated_best, repeated_duplicate, other_entity,
+        ])
+        await db_session.flush()
+
+        resp = await client.post("/api/query", json={
+            "question": "billing risk",
+            "top_k": 2,
+            "hybrid": True,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        names = [component["name"] for component in data["components"] if component["matched"]]
+
+        assert names == ["Billing risk primary", "Security review"]
+        assert data["trace"]["scored_component_count"] == 3
+        assert data["trace"]["entity_group_count"] == 2
+        assert data["trace"]["entity_duplicate_count"] == 1
+        assert data["trace"]["matched_component_count"] == 2
+        assert data["trace"]["facts_used"][0]["entity_id"] == str(billing_entity.id)
+        assert data["trace"]["facts_used"][1]["entity_id"] == str(security_entity.id)
 
     async def test_query_expands_relationships_from_top_matches(self, client, db_session):
         embedder = HashingEmbedder()
@@ -682,6 +922,8 @@ class TestWorkspaceScopedGraphEndpoints:
         await db_session.refresh(doc_ws2)
         assert data["docs_pending_before"] == 1
         assert data["docs_processed"] == 1
+        assert data["stats"]["extraction_quality"]["fact_count"] >= 1
+        assert data["stats"]["extraction_quality"]["contract_warning_count"] == 0
         assert doc_ws1.processed_at is not None
         assert doc_ws2.processed_at is None
 
@@ -795,6 +1037,97 @@ class TestContextDigestEndpoint:
 
         assert "Blocker: Workspace one blocker" in card_titles
         assert "Blocker: Workspace two blocker" not in card_titles
+
+    async def test_context_digest_filters_instruction_and_media_noise(self, client, db_session):
+        model = Model(id=uuid4(), name="Codex session digest")
+        doc = SourceDocument(
+            id=uuid4(),
+            source_type="agent_session",
+            external_id="codex:session:noisy",
+            content="Codex session with one real decision and noisy payload fragments.",
+            metadata_json=json.dumps({"tool": "codex", "session_id": "noisy"}),
+        )
+        valid = Component(
+            id=uuid4(),
+            model_id=model.id,
+            source_document_id=doc.id,
+            name="Keep graph zoom inside board",
+            value="Decision: keep graph zoom scoped to the digest board instead of scaling the page.",
+            fact_type="decision",
+            confidence=0.82,
+            status="active",
+        )
+        instruction_noise = Component(
+            id=uuid4(),
+            model_id=model.id,
+            source_document_id=doc.id,
+            name="Decision: base_instructions",
+            value="developer instructions require request escalation, prefix_rule handling, and current date handling.",
+            fact_type="decision",
+            confidence=0.91,
+            status="active",
+        )
+        media_noise = Component(
+            id=uuid4(),
+            model_id=model.id,
+            source_document_id=doc.id,
+            name="./",
+            value=f"data:image/png;base64,{'A' * 220}",
+            fact_type="blocker",
+            confidence=0.91,
+            status="active",
+        )
+        progress_noise = Component(
+            id=uuid4(),
+            model_id=model.id,
+            source_document_id=doc.id,
+            name="Risk: only because Vitest does not accept Jest's --runInBand flag here, so I'm rerunning the actual project test command.",
+            value="only because Vitest does not accept Jest's --runInBand flag here, so I'm rerunning the actual project test command.",
+            fact_type="blocker",
+            confidence=0.82,
+            status="active",
+        )
+        db_session.add_all([model, doc, valid, instruction_noise, media_noise, progress_noise])
+        await db_session.flush()
+
+        resp = await client.get("/api/context/digest")
+        assert resp.status_code == 200
+        titles = {card["title"] for card in resp.json()["cards"]}
+
+        assert "Decision: Keep graph zoom inside board" in titles
+        assert "Decision: base_instructions" not in titles
+        assert "Blocker: ./" not in titles
+        assert not any("runInBand" in title for title in titles)
+
+    async def test_context_digest_treats_agent_risk_as_risk_not_critical_blocker(self, client, db_session):
+        model = Model(id=uuid4(), name="Codex session risk")
+        doc = SourceDocument(
+            id=uuid4(),
+            source_type="agent_session",
+            external_id="codex:session:risk",
+            content="Codex session with one risk.",
+            metadata_json=json.dumps({"tool": "codex", "session_id": "risk"}),
+        )
+        risk = Component(
+            id=uuid4(),
+            model_id=model.id,
+            source_document_id=doc.id,
+            name="Risk: Docker packaging still needs verification",
+            value="Docker packaging still needs verification before release.",
+            fact_type="blocker",
+            confidence=0.82,
+            status="active",
+        )
+        db_session.add_all([model, doc, risk])
+        await db_session.flush()
+
+        resp = await client.get("/api/context/digest")
+        assert resp.status_code == 200
+        data = resp.json()
+        card = next(card for card in data["cards"] if card["title"] == "Risk: Docker packaging still needs verification")
+
+        assert card["type"] == "risk"
+        assert data["health"]["status"] != "critical"
 
 
 class TestTimelineEndpoint:

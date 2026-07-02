@@ -37,6 +37,8 @@ class ModelRead(BaseModel):
 
 class ComponentRead(BaseModel):
     id: UUID
+    entity_id: UUID | None = None
+    identity_key: str | None = None
     model_id: UUID
     model_name: str | None = None
     name: str
@@ -527,6 +529,8 @@ async def get_graph_slice(
         ) for m in models],
         components=[ComponentRead(
             id=c.id, model_id=c.model_id,
+            entity_id=c.entity_id,
+            identity_key=c.identity_key,
             model_name=c.model.name if c.model else None,
             name=c.name, value=c.value, fact_type=c.fact_type,
             temporal=c.temporal,
@@ -1102,6 +1106,8 @@ def _component_read(c: Component, relationship_count: int = 0) -> ComponentRead:
             }
     return ComponentRead(
         id=c.id, model_id=c.model_id,
+        entity_id=c.entity_id,
+        identity_key=c.identity_key,
         model_name=c.model.name if c.model else None,
         name=c.name,
         display_title=c.name,

@@ -34,6 +34,19 @@ class ExtractedFact:
     excerpt: str | None = None
 
 
+@dataclass
+class ExtractionQualityReport:
+    fact_count: int = 0
+    relationship_count: int = 0
+    low_confidence_count: int = 0
+    missing_provenance_count: int = 0
+    missing_excerpt_count: int = 0
+    missing_relationship_evidence_count: int = 0
+    duplicate_fact_count: int = 0
+    model_counts: dict[str, int] = field(default_factory=dict)
+    fact_type_counts: dict[str, int] = field(default_factory=dict)
+
+
 EXTRACTION_PROMPT = """You are a context extraction engine for startup knowledge graphs.
 
 Extract structured facts and organize them into CANONICAL ENTITY TYPES:
@@ -119,19 +132,23 @@ class Extractor:
         self._model = model or settings.extraction_model
         self._api_key = api_key or settings.litellm_api_key
         self.last_error: str | None = None
+        self.last_warnings: list[str] = []
+        self.last_report: ExtractionQualityReport | None = None
 
     async def extract(self, content: str, metadata: dict[str, Any] | None = None) -> list[ExtractedFact]:
         self.last_error = None
+        self.last_warnings = []
+        self.last_report = None
         is_ollama = (self._model or "").startswith("ollama/")
         if self._model and (self._api_key or is_ollama):
             try:
                 facts = await self._llm_extract(content)
                 facts = _attach_slack_structure(facts, content, metadata or {})
-                return _attach_source_provenance(facts, content, metadata or {})
+                return self._finish_extraction(_attach_source_provenance(facts, content, metadata or {}))
             except Exception as exc:
                 self.last_error = f"{type(exc).__name__}: {exc}"
                 logger.warning("llm extraction failed; falling back to regex: %s", self.last_error)
-        return self._regex_extract(content, metadata)
+        return self._finish_extraction(self._regex_extract(content, metadata))
 
     async def _llm_extract(self, content: str) -> list[ExtractedFact]:
         from litellm import acompletion
@@ -154,32 +171,15 @@ class Extractor:
 
         raw = response.choices[0].message.content
         data = json.loads(raw)
-        facts = []
-        for item in data.get("facts", []):
-            rels = [
-                ExtractedRelationship(
-                    target_name=r["target_name"],
-                    relationship_type=canonical_relationship_type(r.get("relationship_type", "related_to")),
-                    confidence=min(max(float(r.get("confidence", 0.7)), 0.0), 1.0),
-                    evidence=r.get("evidence"),
-                )
-                for r in item.get("relationships", [])
-                if r.get("target_name")
-            ]
-            temporal = item.get("temporal", "unknown")
-            if temporal not in ("current", "past", "future", "unknown"):
-                temporal = "unknown"
-            facts.append(ExtractedFact(
-                model_name=canonical_model_name(item.get("model_name", "Document")),
-                name=item["name"],
-                value=item["value"],
-                fact_type=item.get("fact_type", "fact"),
-                confidence=min(max(float(item.get("confidence", 0.7)), 0.0), 1.0),
-                temporal=temporal,
-                temporal_hint=temporal if temporal != "unknown" else "current",
-                relationships=rels,
-            ))
+        facts, warnings = _facts_from_llm_payload(data)
+        self.last_warnings.extend(warnings)
+        if not facts:
+            raise ValueError("LLM extraction returned no valid facts")
         return facts[:20]
+
+    def _finish_extraction(self, facts: list[ExtractedFact]) -> list[ExtractedFact]:
+        self.last_report = evaluate_extraction_quality(facts)
+        return facts
 
     def _regex_extract(self, content: str, metadata: dict[str, Any] | None = None) -> list[ExtractedFact]:
         facts: list[ExtractedFact] = []
@@ -316,6 +316,124 @@ def _attach_source_provenance(
         if not fact.excerpt and snippet:
             fact.excerpt = _truncate(snippet, 280)
     return facts
+
+
+def _facts_from_llm_payload(data: Any) -> tuple[list[ExtractedFact], list[str]]:
+    warnings: list[str] = []
+    if not isinstance(data, dict):
+        return [], ["llm_payload_not_object"]
+
+    raw_facts = data.get("facts")
+    if not isinstance(raw_facts, list):
+        return [], ["llm_facts_not_list"]
+
+    facts: list[ExtractedFact] = []
+    for idx, item in enumerate(raw_facts):
+        if len(facts) >= 20:
+            warnings.append("llm_fact_limit_truncated")
+            break
+        if not isinstance(item, dict):
+            warnings.append(f"fact_{idx}_not_object")
+            continue
+
+        name = _truncate(_clean_inline(item.get("name")), 255)
+        value = _clean_inline(item.get("value"))
+        if not name:
+            warnings.append(f"fact_{idx}_missing_name")
+            continue
+        if not value:
+            warnings.append(f"fact_{idx}_missing_value")
+            continue
+
+        temporal = _clean_inline(item.get("temporal")).lower() or "unknown"
+        if temporal not in ("current", "past", "future", "unknown"):
+            warnings.append(f"fact_{idx}_invalid_temporal")
+            temporal = "unknown"
+
+        relationships = _relationships_from_llm_item(item, idx, warnings)
+        facts.append(ExtractedFact(
+            model_name=canonical_model_name(item.get("model_name", "Document")),
+            name=name,
+            value=value,
+            fact_type=_truncate(_clean_inline(item.get("fact_type")) or "fact", 50),
+            confidence=_coerce_confidence(item.get("confidence"), 0.7, warnings, f"fact_{idx}_invalid_confidence"),
+            temporal=temporal,
+            temporal_hint=temporal if temporal != "unknown" else "current",
+            relationships=relationships,
+            provenance=_optional_clean_text(item.get("provenance"), 2000),
+            excerpt=_optional_clean_text(item.get("excerpt"), 500),
+        ))
+
+    return facts, warnings
+
+
+def _relationships_from_llm_item(
+    item: dict,
+    fact_index: int,
+    warnings: list[str],
+) -> list[ExtractedRelationship]:
+    raw_relationships = item.get("relationships", [])
+    if raw_relationships in (None, ""):
+        return []
+    if not isinstance(raw_relationships, list):
+        warnings.append(f"fact_{fact_index}_relationships_not_list")
+        return []
+
+    relationships: list[ExtractedRelationship] = []
+    for rel_index, raw_rel in enumerate(raw_relationships[:20]):
+        if not isinstance(raw_rel, dict):
+            warnings.append(f"fact_{fact_index}_rel_{rel_index}_not_object")
+            continue
+        target_name = _truncate(_clean_inline(raw_rel.get("target_name")), 255)
+        if not target_name:
+            warnings.append(f"fact_{fact_index}_rel_{rel_index}_missing_target")
+            continue
+        relationships.append(ExtractedRelationship(
+            target_name=target_name,
+            relationship_type=canonical_relationship_type(raw_rel.get("relationship_type", "related_to")),
+            confidence=_coerce_confidence(
+                raw_rel.get("confidence"),
+                0.7,
+                warnings,
+                f"fact_{fact_index}_rel_{rel_index}_invalid_confidence",
+            ),
+            evidence=_optional_clean_text(raw_rel.get("evidence"), 500),
+        ))
+    if len(raw_relationships) > 20:
+        warnings.append(f"fact_{fact_index}_relationships_truncated")
+    return relationships
+
+
+def evaluate_extraction_quality(facts: list[ExtractedFact]) -> ExtractionQualityReport:
+    report = ExtractionQualityReport(fact_count=len(facts))
+    seen_keys: set[tuple[str, str, str]] = set()
+    for fact in facts:
+        model_name = canonical_model_name(fact.model_name)
+        fact_type = _clean_inline(fact.fact_type) or "fact"
+        report.model_counts[model_name] = report.model_counts.get(model_name, 0) + 1
+        report.fact_type_counts[fact_type] = report.fact_type_counts.get(fact_type, 0) + 1
+        if _safe_float(fact.confidence, 0.0) < 0.6:
+            report.low_confidence_count += 1
+        if not fact.provenance:
+            report.missing_provenance_count += 1
+        if not fact.excerpt:
+            report.missing_excerpt_count += 1
+
+        dedupe_key = (
+            model_name.lower(),
+            _clean_inline(fact.name).lower(),
+            _clean_inline(fact.value).lower(),
+        )
+        if dedupe_key in seen_keys:
+            report.duplicate_fact_count += 1
+        else:
+            seen_keys.add(dedupe_key)
+
+        report.relationship_count += len(fact.relationships)
+        report.missing_relationship_evidence_count += sum(
+            1 for rel in fact.relationships if not rel.evidence
+        )
+    return report
 
 
 def _source_fallback_fact(content: str, metadata: dict[str, Any]) -> ExtractedFact | None:
@@ -617,6 +735,32 @@ def _content_snippet(content: str, limit: int = 220) -> str:
 
 def _clean_inline(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _optional_clean_text(value: Any, max_chars: int) -> str | None:
+    cleaned = _clean_inline(value)
+    return _truncate(cleaned, max_chars) if cleaned else None
+
+
+def _coerce_confidence(
+    value: Any,
+    default: float,
+    warnings: list[str],
+    warning_code: str,
+) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        warnings.append(warning_code)
+        confidence = default
+    return min(max(confidence, 0.0), 1.0)
+
+
+def _safe_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _truncate(value: str, max_chars: int) -> str:

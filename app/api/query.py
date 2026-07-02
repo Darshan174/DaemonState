@@ -24,6 +24,8 @@ class QueryRequest(BaseModel):
 
 class QueryComponentRead(BaseModel):
     id: str
+    entity_id: str | None = None
+    identity_key: str | None = None
     model_name: str
     name: str
     value: str
@@ -47,6 +49,8 @@ class QueryComponentRead(BaseModel):
 class QueryTraceFactRead(BaseModel):
     rank: int
     component_id: str
+    entity_id: str | None = None
+    identity_key: str | None = None
     model_name: str
     name: str
     value: str
@@ -71,9 +75,19 @@ class QueryTraceRelationshipRead(BaseModel):
 
 
 class QueryTraceRead(BaseModel):
+    retrieval_strategy: str
+    vector_candidate_count: int
+    text_candidate_count: int
+    vector_prefilter_limit: int | None = None
+    text_prefilter_limit: int | None = None
     top_k: int
     min_confidence: float
     hybrid: bool
+    candidate_component_count: int
+    scoped_component_count: int
+    scored_component_count: int
+    entity_group_count: int
+    entity_duplicate_count: int
     matched_component_count: int
     returned_component_count: int
     expanded_relationship_count: int
@@ -111,7 +125,10 @@ async def query_context(
         confidence=result.confidence,
         components=[
             QueryComponentRead(
-                id=str(c.id), model_name=c.model_name, name=c.name,
+                id=str(c.id),
+                entity_id=str(c.entity_id) if c.entity_id else None,
+                identity_key=c.identity_key,
+                model_name=c.model_name, name=c.name,
                 value=c.value, fact_type=c.fact_type, confidence=c.confidence,
                 authority_weight=c.authority_weight, status=c.status,
                 source_document_id=str(c.source_document_id) if c.source_document_id else None,
@@ -130,9 +147,19 @@ async def query_context(
         ],
         sources=result.sources,
         trace=QueryTraceRead(
+            retrieval_strategy=result.trace.retrieval_strategy,
+            vector_candidate_count=result.trace.vector_candidate_count,
+            text_candidate_count=result.trace.text_candidate_count,
+            vector_prefilter_limit=result.trace.vector_prefilter_limit,
+            text_prefilter_limit=result.trace.text_prefilter_limit,
             top_k=result.trace.top_k,
             min_confidence=result.trace.min_confidence,
             hybrid=result.trace.hybrid,
+            candidate_component_count=result.trace.candidate_component_count,
+            scoped_component_count=result.trace.scoped_component_count,
+            scored_component_count=result.trace.scored_component_count,
+            entity_group_count=result.trace.entity_group_count,
+            entity_duplicate_count=result.trace.entity_duplicate_count,
             matched_component_count=result.trace.matched_component_count,
             returned_component_count=result.trace.returned_component_count,
             expanded_relationship_count=result.trace.expanded_relationship_count,
@@ -140,6 +167,8 @@ async def query_context(
                 QueryTraceFactRead(
                     rank=f.rank,
                     component_id=str(f.component_id),
+                    entity_id=str(f.entity_id) if f.entity_id else None,
+                    identity_key=f.identity_key,
                     model_name=f.model_name,
                     name=f.name,
                     value=f.value,

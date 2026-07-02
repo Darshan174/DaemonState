@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import SourceDocument
+from app.time import utc_now
 
 
 def _parse_session_content(content: str) -> list[dict[str, str]]:
@@ -64,6 +64,7 @@ async def ingest_ai_session(
     session_id: str,
     content: str,
     workspace_id: str | None = None,
+    metadata_extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     messages = _parse_session_content(content)
 
@@ -77,23 +78,31 @@ async def ingest_ai_session(
         return {"documents_fetched": 0, "documents_persisted": 0}
 
     external_id = f"{connector_type}:session:{session_id}"
+    workspace_uuid = _coerce_workspace_uuid(workspace_id)
 
-    existing = await session.scalar(
-        select(SourceDocument).where(SourceDocument.external_id == external_id)
-    )
+    existing_stmt = select(SourceDocument).where(SourceDocument.external_id == external_id)
+    if workspace_uuid:
+        existing_stmt = existing_stmt.where(SourceDocument.workspace_id == workspace_uuid)
+    else:
+        existing_stmt = existing_stmt.where(SourceDocument.workspace_id.is_(None))
+    existing = await session.scalar(existing_stmt)
 
-    now = datetime.utcnow()
+    now = utc_now()
     metadata = {
         "session_id": session_id,
+        "tool": connector_type,
         "message_count": len(messages),
         "connector_type": connector_type,
         "ingested_at": now.isoformat(),
     }
     if workspace_id:
         metadata["workspace_id"] = workspace_id
+    if metadata_extra:
+        metadata.update({k: v for k, v in metadata_extra.items() if v not in (None, "", [])})
     meta = json.dumps(metadata)
 
     if existing:
+        existing.workspace_id = workspace_uuid
         existing.content = full_text
         existing.metadata_json = meta
         existing.processed_at = None
@@ -102,6 +111,7 @@ async def ingest_ai_session(
 
     doc = SourceDocument(
         id=uuid4(),
+        workspace_id=workspace_uuid,
         source_type="agent_session",
         external_id=external_id,
         content=full_text,
@@ -110,3 +120,12 @@ async def ingest_ai_session(
     session.add(doc)
     await session.commit()
     return {"documents_fetched": len(messages), "documents_persisted": 1}
+
+
+def _coerce_workspace_uuid(value: object) -> UUID | None:
+    if value in (None, ""):
+        return None
+    try:
+        return value if isinstance(value, UUID) else UUID(str(value))
+    except (TypeError, ValueError):
+        return None
