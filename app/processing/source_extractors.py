@@ -553,7 +553,7 @@ def _extract_session_tasks(content: str, provenance: str) -> list[ExtractedFact]
                     provenance=provenance, excerpt=cleaned[:300],
                 ))
 
-    for m in re.finditer(r"^\s*(?:next step|todo|action item|follow.?up)\s*:?\s*(.+?)\s*$", content, re.MULTILINE | re.IGNORECASE):
+    for m in re.finditer(r"^\s*(?:next step|todo|action item|task|follow.?up)\s*:?\s*(.+?)\s*$", content, re.MULTILINE | re.IGNORECASE):
         text = _clean_session_fact_text(m.group(1))
         if _is_extractable_session_fact(text) and text not in seen:
             seen.add(text)

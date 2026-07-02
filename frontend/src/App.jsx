@@ -14,7 +14,7 @@ import {
   Search,
 } from "lucide-react";
 
-const GraphView    = lazy(() => import("./pages/GraphView"));
+const ContextMapPage = lazy(() => import("./pages/ContextMapPage"));
 const QueryView    = lazy(() => import("./pages/QueryView"));
 const SourceManager = lazy(() => import("./pages/SourceManager"));
 const Landing      = lazy(() => import("./pages/Landing"));
@@ -25,7 +25,7 @@ const AgentsView   = lazy(() => import("./pages/AgentsView"));
 
 const NAV_ITEMS = [
   { to: "/app",             label: "Dashboard", icon: LayoutDashboard, end: true },
-  { to: "/app/graph",       label: "Graph", icon: GitBranch },
+  { to: "/app/graph",       label: "Context", icon: GitBranch },
   { to: "/app/query",       label: "Ask", icon: Search },
   { to: "/app/sources",     label: "Sources", icon: Database },
   { to: "/app/connectors",  label: "Connectors", icon: Cable },
@@ -119,7 +119,7 @@ function AdminShell() {
           <Routes>
             <Route index                                  element={<Dashboard />} />
             <Route path="dashboard"                       element={<Navigate to="/app" replace />} />
-            <Route path="graph"                           element={<GraphView />} />
+            <Route path="graph"                           element={<ContextMapPage />} />
             <Route path="query"                           element={<QueryView />} />
             <Route path="sources"                         element={<SourceManager />} />
             <Route path="agents"                          element={<Navigate to="/app/graph" replace />} />

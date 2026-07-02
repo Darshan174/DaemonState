@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,11 +14,17 @@ from sqlalchemy.orm import selectinload
 from app.database import get_db_session
 from app.models import Component, SourceDocument
 from app.services.ingest import IngestionService
+from app.services.workspace_scope import (
+    source_matches_workspace,
+    workspace_connector_types,
+    workspace_ids_equal,
+)
 
 router = APIRouter()
 
 
 class SourceCreate(BaseModel):
+    workspace_id: UUID | None = None
     source_type: str = Field(min_length=1, max_length=50)
     external_id: str = Field(min_length=1, max_length=255)
     content: str = Field(min_length=1)
@@ -33,6 +39,7 @@ class SourceBulkCreate(BaseModel):
 
 class SourceRead(BaseModel):
     id: UUID
+    workspace_id: UUID | None = None
     source_type: str
     external_id: str
     author: str | None
@@ -45,6 +52,8 @@ class SourceRead(BaseModel):
 
 class SourceComponentRead(BaseModel):
     id: UUID
+    entity_id: UUID | None = None
+    identity_key: str | None = None
     name: str
     value: str
     fact_type: str
@@ -81,13 +90,18 @@ async def create_source(
     sync: bool = False,
     session: AsyncSession = Depends(get_db_session),
 ) -> SourceDocument:
+    metadata = dict(payload.metadata)
+    workspace_id = payload.workspace_id or _metadata_workspace_uuid(metadata)
+    if workspace_id:
+        metadata.setdefault("workspace_id", str(workspace_id))
     doc = SourceDocument(
+        workspace_id=workspace_id,
         source_type=payload.source_type,
         external_id=payload.external_id,
         content=payload.content,
         author=payload.author,
         source_url=payload.url,
-        metadata_json=json.dumps(payload.metadata),
+        metadata_json=json.dumps(metadata),
     )
     session.add(doc)
     await session.flush()
@@ -113,13 +127,18 @@ async def create_sources_bulk(
 ) -> dict:
     doc_ids = []
     for item in payload.documents:
+        metadata = dict(item.metadata)
+        workspace_id = item.workspace_id or _metadata_workspace_uuid(metadata)
+        if workspace_id:
+            metadata.setdefault("workspace_id", str(workspace_id))
         doc = SourceDocument(
+            workspace_id=workspace_id,
             source_type=item.source_type,
             external_id=item.external_id,
             content=item.content,
             author=item.author,
             source_url=item.url,
-            metadata_json=json.dumps(item.metadata),
+            metadata_json=json.dumps(metadata),
         )
         session.add(doc)
         await session.flush()
@@ -142,15 +161,20 @@ async def create_sources_bulk(
 @router.post("/sources/upload", response_model=SourceRead, status_code=201)
 async def upload_source(
     background_tasks: BackgroundTasks,
+    workspace_id: UUID | None = None,
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_db_session),
 ) -> SourceRead:
     content = (await file.read()).decode("utf-8", errors="replace")
+    metadata = {"filename": file.filename}
+    if workspace_id:
+        metadata["workspace_id"] = str(workspace_id)
     doc = SourceDocument(
+        workspace_id=workspace_id,
         source_type="local",
         external_id=file.filename or "upload",
         content=content,
-        metadata_json=json.dumps({"filename": file.filename}),
+        metadata_json=json.dumps(metadata),
     )
     session.add(doc)
     await session.flush()
@@ -160,6 +184,7 @@ async def upload_source(
     background_tasks.add_task(_run_ingestion, doc.id, settings.database_url)
     return SourceRead(
         id=doc.id,
+        workspace_id=doc.workspace_id,
         source_type=doc.source_type,
         external_id=doc.external_id,
         author=doc.author,
@@ -171,23 +196,37 @@ async def upload_source(
 
 @router.get("/sources", response_model=list[SourceRead])
 async def list_sources(
+    workspace_id: str | None = None,
     session: AsyncSession = Depends(get_db_session),
 ) -> list[SourceDocument]:
-    result = await session.scalars(
-        select(SourceDocument).order_by(SourceDocument.ingested_at.desc()).limit(100)
-    )
+    stmt = select(SourceDocument).order_by(SourceDocument.ingested_at.desc())
+    if workspace_id:
+        workspace_id_str, connector_types = await _source_workspace_scope(session, workspace_id)
+        docs = list(await session.scalars(stmt))
+        return [
+            doc for doc in docs
+            if source_matches_workspace(doc, workspace_id_str, connector_types)
+        ][:100]
+
+    result = await session.scalars(stmt.limit(100))
     return list(result)
 
 
 @router.get("/sources/{source_id}", response_model=SourceDetailRead)
 async def get_source(
     source_id: UUID,
+    workspace_id: str | None = None,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     doc = await session.get(SourceDocument, source_id)
     if doc is None:
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Source not found")
+    workspace_id_str = None
+    connector_types: set[str] = set()
+    if workspace_id:
+        workspace_id_str, connector_types = await _source_workspace_scope(session, workspace_id)
+        if not source_matches_workspace(doc, workspace_id_str, connector_types):
+            raise HTTPException(status_code=404, detail="Source not found")
 
     try:
         metadata = json.loads(doc.metadata_json or "{}") if isinstance(doc.metadata_json, str) else (doc.metadata_json or {})
@@ -200,9 +239,16 @@ async def get_source(
         .where(Component.source_document_id == source_id)
         .order_by(Component.created_at.desc())
     ))
+    if workspace_id_str:
+        components = [
+            component for component in components
+            if not component.workspace_id
+            or workspace_ids_equal(component.workspace_id, workspace_id_str)
+        ]
 
     return {
         "id": doc.id,
+        "workspace_id": doc.workspace_id,
         "source_type": doc.source_type,
         "external_id": doc.external_id,
         "author": doc.author,
@@ -214,6 +260,8 @@ async def get_source(
         "components": [
             {
                 "id": c.id,
+                "entity_id": c.entity_id,
+                "identity_key": c.identity_key,
                 "name": c.name,
                 "value": c.value,
                 "fact_type": c.fact_type,
@@ -228,3 +276,23 @@ async def get_source(
             for c in components
         ],
     }
+
+
+def _metadata_workspace_uuid(metadata: dict[str, Any]) -> UUID | None:
+    value = metadata.get("workspace_id")
+    if value in (None, ""):
+        return None
+    try:
+        return value if isinstance(value, UUID) else UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+async def _source_workspace_scope(
+    session: AsyncSession,
+    workspace_id: str,
+) -> tuple[str, set[str]]:
+    try:
+        return await workspace_connector_types(session, workspace_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid workspace_id")

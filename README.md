@@ -157,11 +157,12 @@ cp .env.example .env
 # Optional read-only Docker path check
 bash scripts/doctor.sh --docker
 
-# Start (SQLite, single container)
+# Start (SQLite app + sync worker)
 docker compose up --build
 ```
 
 Open **http://localhost:8000** — the UI and API are served from the same port.
+Connector sync jobs are drained by the `worker` service in the same compose file.
 
 To explore without configuring provider credentials, click **Run Demo Workspace**
 in the onboarding flow or seed it from the API:
@@ -236,17 +237,33 @@ cp .env.example .env
 |---|---|---|
 | `DATABASE_URL` | `sqlite+aiosqlite:///data/context.db` | Database connection string |
 | `DATA_DIR` | `./data` | Directory for SQLite file and uploads |
+| `SERVER_API_KEY` | _(empty)_ | Optional API key required for `/api/*` routes when set |
+| `API_RATE_LIMIT_PER_MINUTE` | `0` | Optional in-process `/api/*` rate limit per client/API key; `0` disables it |
 | `LITELLM_API_KEY` | _(empty)_ | API key for your LLM provider |
 | `EXTRACTION_MODEL` | _(empty)_ | LiteLLM model for entity extraction |
 | `EMBEDDING_MODEL` | _(empty)_ | LiteLLM model for embeddings (optional) |
+| `PGVECTOR_INDEX_DIMENSION` | `1024` | Dimension used for the Postgres HNSW vector index |
+| `PGVECTOR_CANDIDATE_LIMIT` | `200` | Minimum candidate pool fetched from pgvector before graph scoring |
+| `SYNC_WORKER_LEASE_SECONDS` | `300` | How long a worker owns a running sync job before another worker can reclaim it |
+| `SYNC_WORKER_RETRY_BASE_SECONDS` | `30` | Initial connector-sync retry delay after a failed attempt |
+| `SYNC_WORKER_RETRY_MAX_SECONDS` | `900` | Maximum connector-sync retry delay |
+| `SYNC_WORKER_POLL_INTERVAL_SECONDS` | `2` | Poll interval for `ctxe worker sync --watch` |
 | `GOOGLE_CLIENT_ID` | _(empty)_ | Google OAuth — for Gmail/Drive connectors |
 | `GOOGLE_CLIENT_SECRET` | _(empty)_ | Google OAuth |
 | `SLACK_CLIENT_ID` | _(empty)_ | Slack OAuth — for Slack connector |
 | `SLACK_CLIENT_SECRET` | _(empty)_ | Slack OAuth |
 | `SLACK_MANAGED_INSTALL_URL` | _(empty)_ | Managed one-click Slack install URL. When set, the primary Slack button uses this hosted app path instead of self-hosted credentials |
-| `ENCRYPTION_KEY` | _(empty)_ | Fernet key used to decrypt managed Slack broker callbacks |
+| `ENCRYPTION_KEY` | _(empty)_ | Fernet key used to encrypt connector credentials and decrypt managed Slack broker callbacks |
+| `PREVIOUS_ENCRYPTION_KEYS` | _(empty)_ | Comma-separated old Fernet keys accepted only while rotating encrypted connector credentials |
 | `PUBLIC_BASE_URL` | _(empty)_ | External app URL used for OAuth callbacks in deployed environments |
 | `PORT` | `8000` | Port the server listens on |
+
+Credential rotation path:
+
+1. Set `ENCRYPTION_KEY` to the new Fernet key.
+2. Set `PREVIOUS_ENCRYPTION_KEYS` to the old key or comma-separated old keys.
+3. Run `ctxe credentials rotate` to rewrite stored connector payloads with the primary key.
+4. Remove old keys after all stored connector payloads have been rewritten.
 
 ---
 
@@ -285,6 +302,9 @@ For production or multi-user deployments, use PostgreSQL instead of SQLite.
 **Option A — Docker Compose with Postgres:**
 
 Edit `docker-compose.yml` and uncomment the Postgres variant at the bottom of the file (instructions are inline).
+The Postgres variant uses `pgvector/pgvector:pg16` so native vector search is available.
+Startup migrations also add Postgres full-text `tsvector` indexes and `jsonb`
+metadata indexes for source-backed hybrid retrieval.
 
 **Option B — External database:**
 
@@ -292,7 +312,42 @@ Edit `docker-compose.yml` and uncomment the Postgres variant at the bottom of th
 DATABASE_URL=postgresql://user:password@your-host:5432/context_engine
 ```
 
-The app auto-creates all tables on first start. No migration tool needed for a fresh install.
+For native semantic retrieval on an external Postgres database, install the
+`vector` extension and set `PGVECTOR_INDEX_DIMENSION` to the dimension of your
+stored embeddings. The app auto-creates tables, pgvector helpers, full-text
+indexes, metadata `jsonb` indexes, and startup migrations on first start.
+
+For explicit migration control, use Alembic through the CLI:
+
+```bash
+ctxe db upgrade
+ctxe db current
+ctxe db history
+```
+
+Existing databases that were already created by older Context Engine startup
+migrations can be marked as current after the app has successfully started:
+
+```bash
+ctxe db stamp-head
+```
+
+## Worker Queue
+
+Connector sync requests create durable `sync_jobs` rows. The API does not run
+provider sync inside the web process; run a worker process beside the app:
+
+```bash
+ctxe worker sync --watch
+```
+
+The worker claims due jobs with a lease, retries failed connector syncs with
+exponential backoff, reclaims expired leases, and moves exhausted jobs to
+`dead_letter`. For cron-style draining or tests, omit `--watch` to run one pass:
+
+```bash
+ctxe worker sync --limit 10
+```
 
 ---
 
@@ -412,6 +467,30 @@ systemctl daemon-reload
 systemctl enable --now context-engine
 ```
 
+Run the connector sync worker as a second service:
+
+```bash
+cat > /etc/systemd/system/context-engine-worker.service << 'EOF'
+[Unit]
+Description=Context Engine Sync Worker
+After=network.target context-engine.service
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/context-engine
+EnvironmentFile=/opt/context-engine/.env
+ExecStart=/opt/context-engine/.venv/bin/ctxe worker sync --watch
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now context-engine-worker
+```
+
 ### nginx reverse proxy (optional)
 
 ```nginx
@@ -469,9 +548,23 @@ ctxe query "What is blocking the launch?"
 # Open the graph explorer in terminal
 ctxe graph
 
+# Drain connector sync jobs once, or run as a long-lived worker
+ctxe worker sync
+ctxe worker sync --watch
+
+# Run the built-in extraction quality eval corpus
+ctxe eval extraction
+
+# Run database migrations explicitly
+ctxe db upgrade
+
 # Start the MCP server (for Claude Desktop / Cursor / Windsurf)
 ctxe mcp
 ```
+
+For protected deployments, set `SERVER_API_KEY` on the server and pass
+`--api-key` to `ctxe ingest`, `ctxe query`, and `ctxe graph`, or set
+`CONTEXT_ENGINE_API_KEY` in the CLI environment.
 
 **MCP (Model Context Protocol) config for Claude Desktop:**
 

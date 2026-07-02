@@ -4,21 +4,29 @@ import json
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import Component, Relationship, SourceDocument
+from app.models import Component, Relationship, RetrievalEvent, SourceDocument
 from app.processing.embedder import BaseEmbedder, build_default_embedder, cosine_similarity
 from app.services.workspace_scope import (
     filter_components_for_workspace,
+    normalize_workspace_id,
     workspace_connector_types,
+)
+from app.services.vector_search import (
+    pgvector_candidate_limit,
+    search_component_text,
+    search_component_vectors,
 )
 
 
 @dataclass
 class QueryComponent:
     id: UUID
+    entity_id: UUID | None
+    identity_key: str | None
     model_name: str
     name: str
     value: str
@@ -43,6 +51,8 @@ class QueryComponent:
 class QueryTraceFact:
     rank: int
     component_id: UUID
+    entity_id: UUID | None
+    identity_key: str | None
     model_name: str
     name: str
     value: str
@@ -69,9 +79,19 @@ class QueryTraceRelationship:
 
 @dataclass
 class QueryTrace:
+    retrieval_strategy: str
+    vector_candidate_count: int
+    text_candidate_count: int
+    vector_prefilter_limit: int | None
+    text_prefilter_limit: int | None
     top_k: int
     min_confidence: float
     hybrid: bool
+    candidate_component_count: int
+    scoped_component_count: int
+    scored_component_count: int
+    entity_group_count: int
+    entity_duplicate_count: int
     matched_component_count: int
     returned_component_count: int
     expanded_relationship_count: int
@@ -130,6 +150,39 @@ class QueryService:
         top_k = max(1, min(int(top_k or 8), 20))
         min_confidence = max(0.0, min(float(min_confidence or 0.0), 1.0))
         q_embedding = await self._embedder.embed_text(question)
+        workspace_uuid: UUID | None = None
+        vector_prefilter_limit = pgvector_candidate_limit(top_k)
+        vector_search = await search_component_vectors(
+            self.session,
+            q_embedding,
+            workspace_id=_event_workspace_id(workspace_id),
+            min_confidence=min_confidence,
+            limit=vector_prefilter_limit,
+        )
+        text_search = await search_component_text(
+            self.session,
+            question,
+            workspace_id=_event_workspace_id(workspace_id),
+            min_confidence=min_confidence,
+            limit=vector_prefilter_limit,
+        ) if hybrid else None
+        vector_ids = [match.component_id for match in vector_search.matches]
+        text_ids = [match.component_id for match in text_search.matches] if text_search else []
+        candidate_ids = _ordered_unique_ids([*vector_ids, *text_ids])
+        retrieval_strategy = _retrieval_strategy(
+            vector_enabled=vector_search.enabled,
+            vector_count=len(vector_ids),
+            text_enabled=bool(text_search and text_search.enabled),
+            text_count=len(text_ids),
+        )
+        vector_scores_by_id = {
+            match.component_id: match.semantic_score
+            for match in vector_search.matches
+        }
+        text_scores_by_id = {
+            match.component_id: match.lexical_score
+            for match in (text_search.matches if text_search else [])
+        }
 
         component_stmt = (
             select(Component)
@@ -143,9 +196,21 @@ class QueryService:
         )
         if min_confidence > 0:
             component_stmt = component_stmt.where(Component.confidence >= min_confidence)
+        if candidate_ids:
+            component_stmt = component_stmt.where(Component.id.in_(candidate_ids))
+
+        workspace_scope: tuple[str, set[str]] | None = None
+        if workspace_id:
+            _, workspace_uuid = normalize_workspace_id(workspace_id)
+            component_stmt = component_stmt.where(
+                or_(
+                    Component.workspace_id == workspace_uuid,
+                    Component.workspace_id.is_(None),
+                )
+            )
 
         components = list(await self.session.scalars(component_stmt))
-        workspace_scope: tuple[str, set[str]] | None = None
+        candidate_component_count = len(components)
         if workspace_id:
             workspace_scope = await workspace_connector_types(self.session, workspace_id)
             components = filter_components_for_workspace(
@@ -153,30 +218,54 @@ class QueryService:
                 workspace_scope[0],
                 workspace_scope[1],
             )
+        scoped_component_count = len(components)
 
         scored: list[tuple[float, float, float, Component]] = []
         for c in components:
             c_embedding = _parse_embedding(c.embedding)
-            sem = cosine_similarity(q_embedding, c_embedding)
-            lexical = _lexical_score(question, c) if hybrid else 0.0
+            sem = vector_scores_by_id.get(c.id)
+            if sem is None:
+                sem = cosine_similarity(q_embedding, c_embedding)
+            lexical = text_scores_by_id.get(c.id)
+            if lexical is None:
+                lexical = _lexical_score(question, c) if hybrid else 0.0
             score = sem * 2.0 + lexical + c.confidence * 0.5 + c.authority_weight * 0.3
             scored.append((score, sem, lexical, c))
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        top = scored[:top_k]
+        entity_group_count = len({
+            _component_entity_group_key(c)
+            for _, _, _, c in scored
+        })
+        entity_duplicate_count = max(0, len(scored) - entity_group_count)
+        top = _diversify_scored_by_entity(scored, top_k)
 
         if not top:
             empty_trace = QueryTrace(
+                retrieval_strategy=retrieval_strategy,
+                vector_candidate_count=len(vector_ids),
+                text_candidate_count=len(text_ids),
+                vector_prefilter_limit=(
+                    vector_prefilter_limit if vector_search.enabled else None
+                ),
+                text_prefilter_limit=(
+                    vector_prefilter_limit if text_search and text_search.enabled else None
+                ),
                 top_k=top_k,
                 min_confidence=min_confidence,
                 hybrid=hybrid,
+                candidate_component_count=candidate_component_count,
+                scoped_component_count=scoped_component_count,
+                scored_component_count=len(scored),
+                entity_group_count=entity_group_count,
+                entity_duplicate_count=entity_duplicate_count,
                 matched_component_count=0,
                 returned_component_count=0,
                 expanded_relationship_count=0,
                 facts_used=[],
                 relationships_used=[],
             )
-            return QueryResult(
+            result = QueryResult(
                 question=question,
                 schema_version="query.v1",
                 answer=f'No matching context found for "{question}".',
@@ -185,6 +274,8 @@ class QueryService:
                 sources=[],
                 trace=empty_trace,
             )
+            await self._record_retrieval_event(result, workspace_id)
+            return result
 
         related_ids = set()
         relationships_used: list[Relationship] = []
@@ -242,6 +333,8 @@ class QueryService:
 
             result_components.append(QueryComponent(
                 id=c.id,
+                entity_id=c.entity_id,
+                identity_key=c.identity_key,
                 model_name=model_name,
                 name=c.name,
                 value=c.value,
@@ -261,6 +354,8 @@ class QueryService:
             facts_used.append(QueryTraceFact(
                 rank=rank,
                 component_id=c.id,
+                entity_id=c.entity_id,
+                identity_key=c.identity_key,
                 model_name=model_name,
                 name=c.name,
                 value=c.value,
@@ -290,6 +385,8 @@ class QueryService:
                 rel = relationship_by_component_id.get(c.id)
                 result_components.append(QueryComponent(
                     id=c.id,
+                    entity_id=c.entity_id,
+                    identity_key=c.identity_key,
                     model_name=c.model.name if c.model else "Unknown",
                     name=c.name,
                     value=c.value,
@@ -339,9 +436,23 @@ class QueryService:
             for rel in _dedupe_relationships(relationships_used)
         ]
         trace = QueryTrace(
+            retrieval_strategy=retrieval_strategy,
+            vector_candidate_count=len(vector_ids),
+            text_candidate_count=len(text_ids),
+            vector_prefilter_limit=(
+                vector_prefilter_limit if vector_search.enabled else None
+            ),
+            text_prefilter_limit=(
+                vector_prefilter_limit if text_search and text_search.enabled else None
+            ),
             top_k=top_k,
             min_confidence=min_confidence,
             hybrid=hybrid,
+            candidate_component_count=candidate_component_count,
+            scoped_component_count=scoped_component_count,
+            scored_component_count=len(scored),
+            entity_group_count=entity_group_count,
+            entity_duplicate_count=entity_duplicate_count,
             matched_component_count=len(top_component_ids),
             returned_component_count=len(result_components),
             expanded_relationship_count=len(trace_relationships),
@@ -349,7 +460,7 @@ class QueryService:
             relationships_used=trace_relationships,
         )
 
-        return QueryResult(
+        result = QueryResult(
             question=question,
             schema_version="query.v1",
             answer=answer,
@@ -358,6 +469,8 @@ class QueryService:
             sources=sources,
             trace=trace,
         )
+        await self._record_retrieval_event(result, workspace_id)
+        return result
 
     async def _generate_answer(self, question: str, top: list[tuple[float, Component]]) -> str:
         """Generate a coherent answer using LLM if API key available, else summarise top facts."""
@@ -407,6 +520,26 @@ class QueryService:
 
         return _fallback_answer_from_facts(question, top)
 
+    async def _record_retrieval_event(
+        self,
+        result: QueryResult,
+        workspace_id: str | UUID | None,
+    ) -> None:
+        self.session.add(RetrievalEvent(
+            workspace_id=_event_workspace_id(workspace_id),
+            question=result.question,
+            answer=result.answer,
+            schema_version=result.schema_version,
+            confidence=result.confidence,
+            top_k=result.trace.top_k,
+            min_confidence=result.trace.min_confidence,
+            hybrid=result.trace.hybrid,
+            component_count=len(result.components),
+            source_count=len(result.sources),
+            trace_json=json.dumps(_query_trace_to_dict(result.trace), sort_keys=True),
+        ))
+        await self.session.flush()
+
 
 
 def _parse_embedding(raw: str | None) -> list[float] | None:
@@ -416,6 +549,99 @@ def _parse_embedding(raw: str | None) -> list[float] | None:
         return json.loads(raw)
     except (json.JSONDecodeError, TypeError):
         return None
+
+
+def _ordered_unique_ids(values: list[UUID]) -> list[UUID]:
+    seen: set[UUID] = set()
+    ordered: list[UUID] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
+def _retrieval_strategy(
+    *,
+    vector_enabled: bool,
+    vector_count: int,
+    text_enabled: bool,
+    text_count: int,
+) -> str:
+    if vector_count and text_count:
+        return "postgres_hybrid"
+    if vector_count:
+        return "postgres_vector"
+    if text_count:
+        return "postgres_text"
+    if vector_enabled or text_enabled:
+        return "python_scan"
+    return "python_scan"
+
+
+def _event_workspace_id(workspace_id: str | UUID | None) -> UUID | None:
+    if workspace_id in (None, ""):
+        return None
+    try:
+        return workspace_id if isinstance(workspace_id, UUID) else UUID(str(workspace_id))
+    except (TypeError, ValueError):
+        return None
+
+
+def _query_trace_to_dict(trace: QueryTrace) -> dict:
+    return {
+        "retrieval_strategy": trace.retrieval_strategy,
+        "vector_candidate_count": trace.vector_candidate_count,
+        "text_candidate_count": trace.text_candidate_count,
+        "vector_prefilter_limit": trace.vector_prefilter_limit,
+        "text_prefilter_limit": trace.text_prefilter_limit,
+        "top_k": trace.top_k,
+        "min_confidence": trace.min_confidence,
+        "hybrid": trace.hybrid,
+        "candidate_component_count": trace.candidate_component_count,
+        "scoped_component_count": trace.scoped_component_count,
+        "scored_component_count": trace.scored_component_count,
+        "entity_group_count": trace.entity_group_count,
+        "entity_duplicate_count": trace.entity_duplicate_count,
+        "matched_component_count": trace.matched_component_count,
+        "returned_component_count": trace.returned_component_count,
+        "expanded_relationship_count": trace.expanded_relationship_count,
+        "facts_used": [
+            {
+                "rank": fact.rank,
+                "component_id": str(fact.component_id),
+                "entity_id": str(fact.entity_id) if fact.entity_id else None,
+                "identity_key": fact.identity_key,
+                "model_name": fact.model_name,
+                "name": fact.name,
+                "value": fact.value,
+                "score": fact.score,
+                "semantic_score": fact.semantic_score,
+                "lexical_score": fact.lexical_score,
+                "confidence": fact.confidence,
+                "authority_weight": fact.authority_weight,
+                "source_document_id": (
+                    str(fact.source_document_id) if fact.source_document_id else None
+                ),
+                "source_type": fact.source_type,
+                "source_url": fact.source_url,
+            }
+            for fact in trace.facts_used
+        ],
+        "relationships_used": [
+            {
+                "id": str(rel.id),
+                "source_component_id": str(rel.source_component_id),
+                "target_component_id": str(rel.target_component_id),
+                "relationship_type": rel.relationship_type,
+                "confidence": rel.confidence,
+                "evidence": rel.evidence,
+                "origin": rel.origin,
+            }
+            for rel in trace.relationships_used
+        ],
+    }
 
 
 def _fallback_answer_from_facts(question: str, top: list[tuple[float, Component]]) -> str:
@@ -459,6 +685,39 @@ def _lexical_score(question: str, component: Component) -> float:
     ])
     overlap = query_tokens & _tokenize(haystack)
     return min(len(overlap) * 0.35, 1.4)
+
+
+def _diversify_scored_by_entity(
+    scored: list[tuple[float, float, float, Component]],
+    limit: int,
+) -> list[tuple[float, float, float, Component]]:
+    selected: list[tuple[float, float, float, Component]] = []
+    deferred: list[tuple[float, float, float, Component]] = []
+    seen_groups: set[tuple[str, str]] = set()
+
+    for item in scored:
+        group_key = _component_entity_group_key(item[3])
+        if group_key in seen_groups:
+            deferred.append(item)
+            continue
+        seen_groups.add(group_key)
+        selected.append(item)
+        if len(selected) >= limit:
+            return selected
+
+    for item in deferred:
+        selected.append(item)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def _component_entity_group_key(component: Component) -> tuple[str, str]:
+    if component.entity_id:
+        return ("entity", str(component.entity_id))
+    if component.identity_key:
+        return ("identity", component.identity_key)
+    return ("component", str(component.id))
 
 
 def _dedupe_relationships(relationships: list[Relationship]) -> list[Relationship]:

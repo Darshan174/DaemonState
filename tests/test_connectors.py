@@ -18,7 +18,7 @@ from app.api.connectors import DEFAULT_WORKSPACE_ID
 from app.database import _ensure_sqlite_parent_dir, get_db_session
 from app.main import app
 from app.migrations import run_migrations
-from app.models import Base, Component, Connector, Model, SourceDocument, Workspace
+from app.models import Base, Component, Connector, Model, SourceDocument, SyncJob, Workspace
 from app.processing.embedder import HashingEmbedder
 
 TEST_DATABASE_URL = os.environ.get(
@@ -56,6 +56,8 @@ def _force_local_providers(monkeypatch):
     monkeypatch.setattr("app.config.settings.google_client_id", None, raising=False)
     monkeypatch.setattr("app.config.settings.google_client_secret", None, raising=False)
     monkeypatch.setattr("app.config.settings.database_url", TEST_DATABASE_URL, raising=False)
+    monkeypatch.setattr("app.config.settings.encryption_key", None, raising=False)
+    monkeypatch.setattr("app.config.settings.server_api_key", None, raising=False)
 
 
 @pytest.fixture(scope="session")
@@ -139,6 +141,41 @@ class TestConnectorCatalog:
         for item in setup_status:
             assert "connector_type" in item, "Missing connector_type in setup status"
             assert item["connector_type"] == item["type"]
+
+    async def test_connector_catalog_redacts_sensitive_config_values(self, client, db_session):
+        workspace = Workspace(id=uuid4(), name="Secrets", slug=f"secrets-{uuid4().hex}")
+        connector = Connector(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            connector_type="github",
+            status="connected",
+            config_json=json.dumps({
+                "repositories": ["acme/project"],
+                "bot_token": "raw-bot-token",
+                "nested": {
+                    "apiKey": "raw-api-key",
+                    "password": "raw-password",
+                    "token_count": 12,
+                },
+            }),
+            credentials_json=json.dumps({"access_token": "raw-credential-token"}),
+        )
+        db_session.add_all([workspace, connector])
+        await db_session.flush()
+        await db_session.commit()
+
+        response = await client.get(f"/api/connectors?workspace_id={workspace.id}")
+
+        assert response.status_code == 200
+        assert "raw-bot-token" not in response.text
+        assert "raw-api-key" not in response.text
+        assert "raw-password" not in response.text
+        assert "raw-credential-token" not in response.text
+        github = next(c for c in response.json()["connectors"] if c["type"] == "github")
+        assert github["config"]["bot_token"] == "[redacted]"
+        assert github["config"]["nested"]["apiKey"] == "[redacted]"
+        assert github["config"]["nested"]["password"] == "[redacted]"
+        assert github["config"]["nested"]["token_count"] == 12
 
     async def test_connectors_have_required_fields(self, client):
         response = await client.get("/api/connectors")
@@ -444,6 +481,37 @@ class TestConnectorConnect:
         assert data["type"] == "ai_context"
         assert data["status"] == "connected"
 
+    async def test_github_connect_encrypts_credentials_when_key_configured(self, client, db_session, monkeypatch):
+        from cryptography.fernet import Fernet
+        from app.services.credentials import credentials_are_encrypted, load_credentials
+
+        key = Fernet.generate_key().decode()
+        monkeypatch.setattr("app.config.settings.encryption_key", key, raising=False)
+        workspace = Workspace(id=uuid4(), name="Encrypted GitHub", slug=f"encrypted-github-{uuid4().hex}")
+        db_session.add(workspace)
+        await db_session.flush()
+
+        response = await client.post(
+            "/api/connectors/github/connect",
+            json={
+                "workspace_id": str(workspace.id),
+                "token": "github-secret-token",
+                "repositories": ["acme/project"],
+            },
+        )
+
+        assert response.status_code == 200
+        connector = await db_session.scalar(
+            select(Connector).where(
+                Connector.workspace_id == workspace.id,
+                Connector.connector_type == "github",
+            )
+        )
+        assert connector is not None
+        assert "github-secret-token" not in connector.credentials_json
+        assert credentials_are_encrypted(connector.credentials_json) is True
+        assert load_credentials(connector.credentials_json)["access_token"] == "github-secret-token"
+
 
 class TestConnectorSyncAndDisconnect:
     async def test_sync_slack_returns_pending_job(self, client, db_session):
@@ -530,6 +598,56 @@ class TestConnectorSyncAndDisconnect:
         data = response.json()
         assert isinstance(data, list)
         assert len(data) == 0
+
+    async def test_sync_job_responses_redact_sensitive_metadata(self, client, db_session):
+        workspace = Workspace(id=uuid4(), name="Job Secrets", slug=f"job-secrets-{uuid4().hex}")
+        connector = Connector(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            connector_type="slack",
+            status="connected",
+            config_json="{}",
+            credentials_json=json.dumps({"access_token": "raw-connector-token"}),
+        )
+        job = SyncJob(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            connector_id=connector.id,
+            job_type="connector_sync",
+            status="failed",
+            error_type="RuntimeError",
+            error_message=(
+                "request failed access_token=raw-error-token "
+                "Authorization: Bearer raw-bearer-token "
+                '{"refresh_token": "raw-json-token"}'
+            ),
+            result_metadata_json=json.dumps({
+                "documents_fetched": 2,
+                "access_token": "raw-result-token",
+                "nested": {
+                    "clientSecret": "raw-client-secret",
+                    "token_count": 42,
+                },
+            }),
+        )
+        db_session.add_all([workspace, connector, job])
+        await db_session.flush()
+        await db_session.commit()
+
+        response = await client.get(f"/api/connectors/{connector.id}/sync-jobs")
+
+        assert response.status_code == 200
+        assert "raw-connector-token" not in response.text
+        assert "raw-error-token" not in response.text
+        assert "raw-bearer-token" not in response.text
+        assert "raw-json-token" not in response.text
+        assert "raw-result-token" not in response.text
+        assert "raw-client-secret" not in response.text
+        data = response.json()[0]
+        assert data["error_message"].count("[redacted]") >= 2
+        assert data["result_metadata"]["access_token"] == "[redacted]"
+        assert data["result_metadata"]["nested"]["clientSecret"] == "[redacted]"
+        assert data["result_metadata"]["nested"]["token_count"] == 42
 
     async def test_disconnect_connector(self, client):
         connect_resp = await client.post(
@@ -906,14 +1024,14 @@ class TestProcessingSummary:
         assert ai_ctx["total_documents"] >= 4
 
     async def test_processing_summary_separates_processed_and_pending_documents(self, client, db_session):
-        from datetime import datetime
+        from app.time import utc_now
 
         processed_doc = SourceDocument(
             id=uuid4(),
             source_type="slack",
             external_id="processed-slack-doc",
             content="Processed Slack content",
-            processed_at=datetime.utcnow(),
+            processed_at=utc_now(),
             metadata_json="{}",
         )
         pending_doc = SourceDocument(
@@ -972,14 +1090,14 @@ class TestProcessingSummary:
 
     async def test_connector_extraction_repairs_processed_docs_without_components(self, db_session):
         from app.extract.basic import extract_from_source_documents
-        from datetime import datetime
+        from app.time import utc_now
 
         doc = SourceDocument(
             id=uuid4(),
             source_type="slack",
             external_id="slack:C123:1",
             content="Plain status update without explicit graph keywords.",
-            processed_at=datetime.utcnow(),
+            processed_at=utc_now(),
             metadata_json=json.dumps({"channel_name": "general"}),
         )
         db_session.add(doc)
@@ -1062,6 +1180,42 @@ class TestSyncJobFlow:
         assert data["status"] == "pending"
         assert data["job_id"] is not None
         assert data["connector_id"] == str(connector.id)
+        assert data["job_type"] == "connector_sync"
+        assert data["idempotency_key"].endswith(f":{connector.id}")
+        assert data["attempt_count"] == 0
+
+    async def test_sync_reuses_active_job_for_same_connector(self, client, db_session, monkeypatch):
+        async def _noop_run_sync_job(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr("app.api.connectors._run_sync_job", _noop_run_sync_job)
+        connector = Connector(
+            id=uuid4(),
+            connector_type="gdrive",
+            status="connected",
+            credentials_json=json.dumps({"access_token": "google-token"}),
+            config_json="{}",
+        )
+        db_session.add(connector)
+        await db_session.flush()
+        await db_session.commit()
+
+        first = await client.post(f"/api/connectors/{connector.id}/sync")
+        second = await client.post(f"/api/connectors/{connector.id}/sync")
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        first_data = first.json()
+        second_data = second.json()
+        assert first_data["job_id"] == second_data["job_id"]
+        assert first_data["deduplicated"] is False
+        assert second_data["deduplicated"] is True
+        assert second_data["status"] == "pending"
+
+        jobs_resp = await client.get(f"/api/connectors/{connector.id}/sync-jobs")
+        assert jobs_resp.status_code == 200
+        jobs = jobs_resp.json()
+        assert [job["job_id"] for job in jobs].count(first_data["job_id"]) == 1
 
     async def test_slack_direct_connect_returns_400(self, client):
         response = await client.post(

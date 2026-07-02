@@ -31,6 +31,11 @@ def _force_local_providers(monkeypatch):
     monkeypatch.setattr("app.processing.embedder.settings.embedding_model", None)
     monkeypatch.setattr("app.processing.extractor.settings.litellm_api_key", None)
     monkeypatch.setattr("app.processing.extractor.settings.extraction_model", None)
+    monkeypatch.setattr("app.config.settings.encryption_key", None, raising=False)
+    monkeypatch.setattr("app.config.settings.server_api_key", None, raising=False)
+    monkeypatch.setattr("app.config.settings.api_rate_limit_per_minute", 0, raising=False)
+    from app.services.auth import reset_api_rate_limits
+    reset_api_rate_limits()
     monkeypatch.setattr("app.services.ingest.build_default_embedder", lambda: HashingEmbedder())
     monkeypatch.setattr("app.services.query.build_default_embedder", lambda: HashingEmbedder())
 

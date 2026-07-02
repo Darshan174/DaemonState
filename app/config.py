@@ -8,9 +8,17 @@ class Settings(BaseSettings):
     extraction_model: str | None = None
     embedding_model: str | None = None
     embedding_dimension: int | None = None
+    pgvector_index_dimension: int | None = None
+    pgvector_candidate_limit: int = 200
+    api_rate_limit_per_minute: int = 0
+    sync_worker_lease_seconds: int = 300
+    sync_worker_retry_base_seconds: int = 30
+    sync_worker_retry_max_seconds: int = 900
+    sync_worker_poll_interval_seconds: float = 2.0
     litellm_api_key: str | None = None
     enable_local_embedder: bool = False
     data_dir: str = "./data"
+    server_api_key: str | None = None
     google_client_id: str | None = None
     google_client_secret: str | None = None
     google_redirect_uri: str | None = None
@@ -19,6 +27,7 @@ class Settings(BaseSettings):
     slack_redirect_uri: str | None = None
     slack_managed_install_url: str | None = None
     encryption_key: str | None = None
+    previous_encryption_keys: str | None = None
     zoom_client_id: str | None = None
     zoom_client_secret: str | None = None
     zoom_redirect_uri: str | None = None

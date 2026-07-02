@@ -12,6 +12,11 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_db_session
 from app.models import Component, Model, Relationship, SourceDocument
+from app.services.workspace_scope import (
+    filter_components_for_workspace,
+    filter_source_documents_for_workspace,
+    workspace_connector_types,
+)
 
 router = APIRouter()
 
@@ -30,6 +35,8 @@ class ModelListItem(BaseModel):
 
 class ComponentItem(BaseModel):
     id: UUID
+    entity_id: UUID | None = None
+    identity_key: str | None = None
     name: str
     value: str
     fact_type: str
@@ -95,11 +102,21 @@ async def list_models(
 ) -> list[dict[str, Any]]:
     models = list(await session.scalars(select(Model).order_by(Model.name)))
 
-    counts_result = await session.execute(
-        select(Component.model_id, func.count(Component.id).label("cnt"))
-        .group_by(Component.model_id)
-    )
-    counts: dict[UUID, int] = {row.model_id: row.cnt for row in counts_result}
+    if workspace_id:
+        workspace_id_str, connector_types = await _model_workspace_scope(session, workspace_id)
+        components = list(await session.scalars(
+            select(Component).options(selectinload(Component.source_document))
+        ))
+        components = filter_components_for_workspace(components, workspace_id_str, connector_types)
+        counts: dict[UUID, int] = {}
+        for component in components:
+            counts[component.model_id] = counts.get(component.model_id, 0) + 1
+    else:
+        counts_result = await session.execute(
+            select(Component.model_id, func.count(Component.id).label("cnt"))
+            .group_by(Component.model_id)
+        )
+        counts = {row.model_id: row.cnt for row in counts_result}
 
     return [
         {
@@ -116,17 +133,23 @@ async def list_models(
 @router.get("/models/{model_id}", response_model=ModelDetail)
 async def get_model(
     model_id: UUID,
+    workspace_id: str | None = None,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     model = await session.scalar(
         select(Model)
-        .options(selectinload(Model.components))
+        .options(selectinload(Model.components).selectinload(Component.source_document))
         .where(Model.id == model_id)
     )
     if model is None:
         raise HTTPException(status_code=404, detail="Model not found")
 
-    last = max((c.created_at for c in model.components), default=model.created_at)
+    components = list(model.components)
+    if workspace_id:
+        workspace_id_str, connector_types = await _model_workspace_scope(session, workspace_id)
+        components = filter_components_for_workspace(components, workspace_id_str, connector_types)
+
+    last = max((c.created_at for c in components), default=model.created_at)
     return {
         "id": model.id,
         "name": model.name,
@@ -136,6 +159,8 @@ async def get_model(
         "components": [
             {
                 "id": c.id,
+                "entity_id": c.entity_id,
+                "identity_key": c.identity_key,
                 "name": c.name,
                 "value": c.value,
                 "fact_type": c.fact_type,
@@ -144,7 +169,7 @@ async def get_model(
                 "status": c.status,
                 "created_at": c.created_at,
             }
-            for c in model.components
+            for c in components
             if c.status in ("active", "needs_review")
         ],
     }
@@ -153,16 +178,24 @@ async def get_model(
 @router.get("/models/{model_id}/relationships", response_model=list[RelationshipItem])
 async def get_model_relationships(
     model_id: UUID,
+    workspace_id: str | None = None,
     session: AsyncSession = Depends(get_db_session),
 ) -> list[dict]:
     model = await session.get(Model, model_id)
     if model is None:
         raise HTTPException(status_code=404, detail="Model not found")
 
-    comp_ids_result = await session.scalars(
-        select(Component.id).where(Component.model_id == model_id)
-    )
-    comp_ids = list(comp_ids_result)
+    components = list(await session.scalars(
+        select(Component)
+        .options(selectinload(Component.source_document))
+        .where(Component.model_id == model_id)
+    ))
+    if workspace_id:
+        workspace_id_str, connector_types = await _model_workspace_scope(session, workspace_id)
+        components = filter_components_for_workspace(components, workspace_id_str, connector_types)
+    comp_ids = [component.id for component in components]
+    if not comp_ids:
+        return []
 
     rels = list(await session.scalars(
         select(Relationship).where(
@@ -220,18 +253,28 @@ async def list_source_documents(
     if cursor:
         stmt = stmt.where(SourceDocument.id < UUID(cursor))
 
-    total_stmt = select(func.count(SourceDocument.id))
-    if connector_type and connector_type != "all":
-        total_stmt = total_stmt.where(SourceDocument.source_type == connector_type)
-    if processed is True:
-        total_stmt = total_stmt.where(SourceDocument.processed_at.is_not(None))
-    elif processed is False:
-        total_stmt = total_stmt.where(SourceDocument.processed_at.is_(None))
+    if workspace_id:
+        try:
+            workspace_id_str, connector_types = await workspace_connector_types(session, workspace_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid workspace_id")
+        docs = list(await session.scalars(stmt))
+        docs = filter_source_documents_for_workspace(docs, workspace_id_str, connector_types)
+        total = len(docs)
+        docs = docs[:limit + 1]
+    else:
+        total_stmt = select(func.count(SourceDocument.id))
+        if connector_type and connector_type != "all":
+            total_stmt = total_stmt.where(SourceDocument.source_type == connector_type)
+        if processed is True:
+            total_stmt = total_stmt.where(SourceDocument.processed_at.is_not(None))
+        elif processed is False:
+            total_stmt = total_stmt.where(SourceDocument.processed_at.is_(None))
 
-    total = await session.scalar(total_stmt) or 0
+        total = await session.scalar(total_stmt) or 0
 
-    stmt = stmt.limit(limit + 1)
-    docs = list(await session.scalars(stmt))
+        stmt = stmt.limit(limit + 1)
+        docs = list(await session.scalars(stmt))
     has_more = len(docs) > limit
     docs = docs[:limit]
 
@@ -256,3 +299,13 @@ async def list_source_documents(
         has_more=has_more,
         next_cursor=next_cursor,
     )
+
+
+async def _model_workspace_scope(
+    session: AsyncSession,
+    workspace_id: str,
+) -> tuple[str, set[str]]:
+    try:
+        return await workspace_connector_types(session, workspace_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid workspace_id")

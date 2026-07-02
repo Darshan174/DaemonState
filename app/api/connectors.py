@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 import secrets
-from datetime import datetime
+from datetime import timedelta
 from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -16,6 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database import get_db_session
 from app.models import Connector, SourceDocument, SyncJob, Workspace
+from app.services.credentials import clear_credentials, dump_credentials, load_credentials
+from app.services.redaction import redact_sensitive, redact_sensitive_text
+from app.time import utc_now
 
 router = APIRouter()
 DEFAULT_WORKSPACE_ID = UUID("00000000-0000-0000-0000-000000000000")
@@ -123,6 +126,9 @@ CONNECTOR_CATALOG: dict[str, dict[str, Any]] = {
 
 GOOGLE_CONNECTORS = {"gdrive", "gmail"}
 AI_SESSION_CONNECTORS = {"codex", "claude", "opencode"}
+CONNECTOR_SYNC_JOB_TYPE = "connector_sync"
+ACTIVE_SYNC_JOB_STATUSES = ("pending", "retrying", "running")
+DEAD_LETTER_SYNC_JOB_STATUS = "dead_letter"
 DISCONNECT_CONFIG_KEYS = {
     "account_id",
     "auth_mode",
@@ -349,7 +355,7 @@ async def _get_or_create_connector(
 
 
 def _connector_to_dict(connector: Connector) -> dict[str, Any]:
-    config = json.loads(connector.config_json or "{}")
+    config = redact_sensitive(_loads_json_dict(connector.config_json))
     updated_at = connector.__dict__.get("updated_at")
     created_at = connector.__dict__.get("created_at")
     last_sync_at = connector.__dict__.get("last_sync_at")
@@ -401,7 +407,7 @@ def _catalog_connector_entry(
         "provider": catalog["provider"],
         "provider_label": catalog.get("provider_label"),
         "is_configured": configured,
-        "config": _loads_json_dict(connector.config_json) if connector else {},
+        "config": redact_sensitive(_loads_json_dict(connector.config_json)) if connector else {},
         "message": message,
     }
 
@@ -414,6 +420,15 @@ def _loads_json_dict(value: str | None) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _coerce_workspace_uuid(value: object) -> UUID | None:
+    if value in (None, ""):
+        return None
+    try:
+        return value if isinstance(value, UUID) else UUID(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
 async def _revoke_slack_token(access_token: str) -> dict[str, Any] | None:
@@ -658,7 +673,7 @@ async def slack_callback(
 
         connector = await _get_or_create_connector(ws.id, "slack", session)
         connector.status = "connected"
-        connector.credentials_json = json.dumps({"access_token": access_token})
+        connector.credentials_json = dump_credentials({"access_token": access_token})
         config = json.loads(connector.config_json or "{}")
         config.update({
             "team_name": team_name or "",
@@ -702,7 +717,7 @@ async def slack_callback(
     team = data.get("team", {})
     connector = await _get_or_create_connector(ws.id, "slack", session)
     connector.status = "connected"
-    connector.credentials_json = json.dumps({"access_token": access_token})
+    connector.credentials_json = dump_credentials({"access_token": access_token})
     config = json.loads(connector.config_json or "{}")
     config.update({
         "team_name": team.get("name", ""),
@@ -773,7 +788,7 @@ async def zoom_callback(
 
     connector = await _get_or_create_connector(ws.id, "zoom", session)
     connector.status = "connected"
-    connector.credentials_json = json.dumps({
+    connector.credentials_json = dump_credentials({
         "access_token": data["access_token"],
         "refresh_token": data.get("refresh_token", ""),
     })
@@ -879,7 +894,7 @@ async def google_callback(
 
     connector = await _get_or_create_connector(ws.id, connector_type, session)
     connector.status = "connected"
-    connector.credentials_json = json.dumps({
+    connector.credentials_json = dump_credentials({
         "access_token": data["access_token"],
         "refresh_token": data.get("refresh_token", ""),
         "expires_in": data.get("expires_in"),
@@ -918,7 +933,7 @@ async def github_connect(
     ws = await _get_workspace(workspace_id, session)
     connector = await _get_or_create_connector(ws.id, "github", session)
     connector.status = "connected"
-    connector.credentials_json = json.dumps({"access_token": token})
+    connector.credentials_json = dump_credentials({"access_token": token})
     config = json.loads(connector.config_json or "{}")
     config.update({"auth_mode": "manual_token", "repositories": repositories})
     connector.config_json = json.dumps(config)
@@ -982,12 +997,17 @@ async def import_ai_context_documents(
             continue
         source_type, tool = _ai_context_source_type(item.get("tool"))
         metadata = dict(item.get("metadata") or {})
+        workspace_id = item.get("workspace_id") or payload.get("workspace_id")
+        if workspace_id:
+            metadata.setdefault("workspace_id", str(workspace_id))
+        workspace_uuid = _coerce_workspace_uuid(metadata.get("workspace_id"))
         for key in ("session_type", "session_id", "started_at", "ended_at"):
             if item.get(key) is not None:
                 metadata[key] = item[key]
         metadata["tool"] = tool
         metadata["ingested_via"] = "ai_context_import"
         doc = SourceDocument(
+            workspace_id=workspace_uuid,
             source_type=source_type,
             external_id=item.get("external_id") or f"ai-context:{secrets.token_urlsafe(12)}",
             content=content,
@@ -1095,6 +1115,7 @@ async def _ingest_ai_session_content(
     unprocessed_docs = list(await session.scalars(
         sa_select(SourceDocument)
         .where(SourceDocument.external_id == external_id)
+        .where(SourceDocument.workspace_id == ws.id)
         .where(SourceDocument.processed_at.is_(None))
     ))
     ingestor = IngestionService(session)
@@ -1116,7 +1137,7 @@ async def _ingest_ai_session_content(
     config["items_synced"] = config.get("items_synced", 0) + ingest_result.get("documents_persisted", 0)
     connector.config_json = json.dumps(config)
     connector.status = "connected"
-    connector.last_sync_at = datetime.utcnow()
+    connector.last_sync_at = utc_now()
     await session.commit()
     await session.refresh(connector)
 
@@ -1132,7 +1153,6 @@ async def _ingest_ai_session_content(
 @router.post("/connectors/{connector_id}/sync")
 async def sync_connector(
     connector_id: str,
-    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     try:
@@ -1145,25 +1165,43 @@ async def sync_connector(
     if connector.status not in ("connected", "error"):
         raise HTTPException(status_code=422, detail="Connector is not connected")
 
-    job = SyncJob(connector_id=cid, status="pending")
+    idempotency_key = _sync_job_idempotency_key(connector)
+    active_job = await _active_sync_job(session, connector, idempotency_key)
+    if active_job is not None:
+        return {
+            **_job_to_dict(active_job),
+            "connector_id": str(cid),
+            "deduplicated": True,
+            "message": f"Sync already queued for {connector.connector_type}.",
+        }
+
+    job = SyncJob(
+        workspace_id=connector.workspace_id,
+        connector_id=cid,
+        job_type=CONNECTOR_SYNC_JOB_TYPE,
+        idempotency_key=idempotency_key,
+        status="pending",
+        max_attempts=3,
+        queued_at=utc_now(),
+        available_at=utc_now(),
+    )
     if connector.connector_type in {"discord", "zoom", "wispr_flow"}:
         job.status = "failed"
         job.error_type = "unsupported_connector"
         job.error_message = f"{CONNECTOR_CATALOG.get(connector.connector_type, {}).get('name', connector.connector_type)} is not supported yet."
-        job.completed_at = datetime.utcnow()
+        job.completed_at = utc_now()
     session.add(job)
     await session.commit()
     await session.refresh(job)
 
-    if job.status == "pending" and connector.connector_type not in {"local", "ai_context"}:
-        background_tasks.add_task(_run_sync_job, str(job.id), str(cid), settings.database_url)
     return {
-        "job_id": str(job.id),
+        **_job_to_dict(job),
         "connector_id": str(cid),
-        "status": job.status,
-        "error_type": job.error_type,
-        "error_message": job.error_message,
-        "message": f"Sync queued for {connector.connector_type}.",
+        "deduplicated": False,
+        "message": (
+            f"Sync queued for {connector.connector_type}. "
+            "Run `ctxe worker sync --watch` to drain connector jobs."
+        ),
     }
 
 
@@ -1221,12 +1259,12 @@ async def disconnect_connector(
     connector = await session.get(Connector, cid)
     if not connector:
         raise HTTPException(status_code=404, detail="Connector not found")
-    credentials = _loads_json_dict(connector.credentials_json)
+    credentials = load_credentials(connector.credentials_json)
     revoke_result = None
     if connector.connector_type == "slack":
         revoke_result = await _revoke_slack_token(str(credentials.get("access_token") or ""))
     connector.status = "disconnected"
-    connector.credentials_json = "{}"
+    connector.credentials_json = clear_credentials()
     config = _loads_json_dict(connector.config_json)
     for key in DISCONNECT_CONFIG_KEYS:
         config.pop(key, None)
@@ -1246,18 +1284,52 @@ def _job_to_dict(job: SyncJob) -> dict:
     created_at = d.get("created_at")
     started_at = d.get("started_at")
     completed_at = d.get("completed_at")
+    queued_at = d.get("queued_at")
+    available_at = d.get("available_at")
+    lease_expires_at = d.get("lease_expires_at")
+    dead_lettered_at = d.get("dead_lettered_at")
     return {
         "id": str(job.id),
         "job_id": str(job.id),
+        "workspace_id": str(job.workspace_id) if job.workspace_id else None,
         "connector_id": str(job.connector_id),
+        "job_type": getattr(job, "job_type", None) or CONNECTOR_SYNC_JOB_TYPE,
+        "idempotency_key": getattr(job, "idempotency_key", None),
         "status": job.status,
+        "attempt_count": int(getattr(job, "attempt_count", 0) or 0),
+        "max_attempts": int(getattr(job, "max_attempts", 3) or 3),
         "error_type": d.get("error_type"),
-        "error_message": d.get("error_message"),
-        "result_metadata": json.loads(d.get("result_metadata_json") or "{}"),
+        "error_message": redact_sensitive_text(d.get("error_message")),
+        "result_metadata": redact_sensitive(_loads_json_dict(d.get("result_metadata_json"))),
+        "queued_at": queued_at.isoformat() if queued_at else None,
+        "available_at": available_at.isoformat() if available_at else None,
+        "lease_expires_at": lease_expires_at.isoformat() if lease_expires_at else None,
+        "locked_by": d.get("locked_by"),
+        "dead_lettered_at": dead_lettered_at.isoformat() if dead_lettered_at else None,
         "started_at": started_at.isoformat() if started_at else None,
         "completed_at": completed_at.isoformat() if completed_at else None,
         "created_at": created_at.isoformat() if created_at else None,
     }
+
+
+def _sync_job_idempotency_key(connector: Connector) -> str:
+    return f"{CONNECTOR_SYNC_JOB_TYPE}:{connector.workspace_id}:{connector.id}"
+
+
+async def _active_sync_job(
+    session: AsyncSession,
+    connector: Connector,
+    idempotency_key: str,
+) -> SyncJob | None:
+    return await session.scalar(
+        select(SyncJob)
+        .where(SyncJob.connector_id == connector.id)
+        .where(SyncJob.job_type == CONNECTOR_SYNC_JOB_TYPE)
+        .where(SyncJob.idempotency_key == idempotency_key)
+        .where(SyncJob.status.in_(ACTIVE_SYNC_JOB_STATUSES))
+        .order_by(SyncJob.created_at.desc())
+        .limit(1)
+    )
 
 
 def _sync_result_with_skip_counts(sync_result: dict[str, Any]) -> dict[str, Any]:
@@ -1290,8 +1362,17 @@ def _oauth_close_html(success: bool, message: str) -> Response:
     return Response(content=html, media_type="text/html")
 
 
-async def _run_sync_job(job_id: str, connector_id: str, database_url: str) -> None:
-    """Background task: mark job running → sync source documents → extract → mark completed."""
+async def _run_sync_job(
+    job_id: str,
+    connector_id: str,
+    database_url: str,
+    *,
+    worker_id: str | None = None,
+    lease_seconds: int | None = None,
+    retry_base_seconds: int | None = None,
+    retry_max_seconds: int | None = None,
+) -> None:
+    """Worker executor: sync source documents, extract them, and finish or retry the job."""
     from app.database import _ensure_sqlite_parent_dir, _make_async_url
     from app.sync.slack import sync_slack
     from app.extract.basic import extract_from_source_documents
@@ -1309,8 +1390,22 @@ async def _run_sync_job(job_id: str, connector_id: str, database_url: str) -> No
             await engine.dispose()
             return
 
+        now = utc_now()
+        lease_seconds = max(1, lease_seconds or settings.sync_worker_lease_seconds)
+        already_claimed = job.status == "running" and bool(job.locked_by)
         job.status = "running"
-        job.started_at = datetime.utcnow()
+        job.workspace_id = connector.workspace_id
+        job.job_type = job.job_type or CONNECTOR_SYNC_JOB_TYPE
+        job.idempotency_key = job.idempotency_key or _sync_job_idempotency_key(connector)
+        if not already_claimed:
+            job.attempt_count = int(job.attempt_count or 0) + 1
+        job.started_at = job.started_at or now
+        job.available_at = None
+        job.lease_expires_at = now + timedelta(seconds=lease_seconds)
+        job.locked_by = worker_id or job.locked_by or "inline-sync-worker"
+        job.dead_lettered_at = None
+        job.error_type = None
+        job.error_message = None
         await session.commit()
 
         try:
@@ -1319,23 +1414,43 @@ async def _run_sync_job(job_id: str, connector_id: str, database_url: str) -> No
 
             if connector.connector_type == "slack":
                 sync_result = await sync_slack(connector, session)
-                extract_result = await extract_from_source_documents("slack", session)
+                extract_result = await extract_from_source_documents(
+                    "slack",
+                    session,
+                    workspace_id=connector.workspace_id,
+                )
             elif connector.connector_type == "github":
                 from app.sync.github import sync_github
                 sync_result = await sync_github(connector, session)
-                extract_result = await extract_from_source_documents("github", session)
+                extract_result = await extract_from_source_documents(
+                    "github",
+                    session,
+                    workspace_id=connector.workspace_id,
+                )
             elif connector.connector_type == "gmail":
                 from app.sync.google import sync_gmail
                 sync_result = await sync_gmail(connector, session)
-                extract_result = await extract_from_source_documents("gmail", session)
+                extract_result = await extract_from_source_documents(
+                    "gmail",
+                    session,
+                    workspace_id=connector.workspace_id,
+                )
             elif connector.connector_type == "gdrive":
                 from app.sync.google import sync_gdrive
                 sync_result = await sync_gdrive(connector, session)
-                extract_result = await extract_from_source_documents("gdrive", session)
+                extract_result = await extract_from_source_documents(
+                    "gdrive",
+                    session,
+                    workspace_id=connector.workspace_id,
+                )
             elif connector.connector_type in AI_SESSION_CONNECTORS:
                 # AI session connectors ingest inline; sync just re-runs extraction
                 sync_result = {"documents_fetched": 0, "documents_persisted": 0}
-                extract_result = await extract_from_source_documents(connector.connector_type, session)
+                extract_result = await extract_from_source_documents(
+                    connector.connector_type,
+                    session,
+                    workspace_id=connector.workspace_id,
+                )
             else:
                 # Generic stub for connectors not yet implemented
                 sync_result = {"documents_fetched": 0, "documents_persisted": 0}
@@ -1347,7 +1462,11 @@ async def _run_sync_job(job_id: str, connector_id: str, database_url: str) -> No
                 **extract_result,
             }
             job.status = "completed"
-            job.completed_at = datetime.utcnow()
+            job.completed_at = utc_now()
+            job.available_at = None
+            job.lease_expires_at = None
+            job.locked_by = None
+            job.dead_lettered_at = None
             job.result_metadata_json = json.dumps(result_metadata)
 
             config = json.loads(connector.config_json or "{}")
@@ -1360,15 +1479,46 @@ async def _run_sync_job(job_id: str, connector_id: str, database_url: str) -> No
                 + extract_result.get("documents_processed", 0)
             )
             connector.config_json = json.dumps(config)
-            connector.last_sync_at = datetime.utcnow()
+            connector.last_sync_at = utc_now()
             await session.commit()
 
         except Exception as exc:
             import traceback
-            job.status = "failed"
+            now = utc_now()
+            attempt_count = int(job.attempt_count or 0)
+            max_attempts = int(job.max_attempts or 3)
+            if attempt_count < max_attempts:
+                job.status = "retrying"
+                job.available_at = now + timedelta(
+                    seconds=_sync_retry_delay_seconds(
+                        attempt_count,
+                        base_seconds=retry_base_seconds,
+                        max_seconds=retry_max_seconds,
+                    )
+                )
+                job.completed_at = None
+                job.dead_lettered_at = None
+            else:
+                job.status = DEAD_LETTER_SYNC_JOB_STATUS
+                job.available_at = None
+                job.completed_at = now
+                job.dead_lettered_at = now
+            job.lease_expires_at = None
+            job.locked_by = None
             job.error_type = type(exc).__name__
             job.error_message = f"{exc}\n{traceback.format_exc()}"
-            job.completed_at = datetime.utcnow()
             await session.commit()
 
     await engine.dispose()
+
+
+def _sync_retry_delay_seconds(
+    attempt_count: int,
+    *,
+    base_seconds: int | None = None,
+    max_seconds: int | None = None,
+) -> int:
+    base = max(1, base_seconds or settings.sync_worker_retry_base_seconds)
+    cap = max(base, max_seconds or settings.sync_worker_retry_max_seconds)
+    delay = base * (2 ** max(0, attempt_count - 1))
+    return min(delay, cap)

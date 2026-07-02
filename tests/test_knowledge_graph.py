@@ -357,7 +357,6 @@ Unresolved question: What about backwards compatibility?
         facts = extract_agent_session(content, {"tool": "codex"})
         blocker_facts = [f for f in facts if f.fact_type == "blocker"]
         risk_facts = [f for f in facts if f.fact_type == "risk"]
-        assert any(f.value == "Need AWS credentials" for f in blocker_facts)
         assert any(f.value == "Need AWS credentials" and f.temporal == "current" for f in blocker_facts)
         assert any(f.value == "Data migration may fail on large tables" for f in risk_facts)
         assert any(f.value == "What about backwards compatibility?" for f in risk_facts)

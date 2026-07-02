@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +12,7 @@ from app.services.workspace_scope import (
     workspace_connector_types,
 )
 from app.taxonomy import canonical_model_name, model_bucket
+from app.time import utc_now
 
 
 CONTEXT_PACK_PROMPT = """You are generating a perfect AI coding agent handoff document.
@@ -57,7 +57,7 @@ class ContextPackAgent:
         workspace_id: str | UUID | None = None,
     ) -> ContextPack:
         components, relationships = await self._load_graph(component_ids, workspace_id)
-        now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+        now = utc_now().strftime("%Y-%m-%d %H:%M UTC")
 
         if self.api_key and self.model:
             content = await self._ai_pack(components, relationships)
