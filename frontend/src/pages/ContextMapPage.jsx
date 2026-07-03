@@ -19,9 +19,9 @@ const LegacyGraphView = lazy(() => import("./GraphView"));
 
 export default function ContextMapPage() {
   const [searchParams] = useSearchParams();
-  const showLegacyGraph = searchParams.get("legacy") === "1" || searchParams.get("graph") === "explore";
+  const showDigest = searchParams.get("digest") === "1";
 
-  if (showLegacyGraph) {
+  if (!showDigest) {
     return (
       <Suspense fallback={<PageLoading label="Loading graph..." />}>
         <LegacyGraphView />
@@ -108,7 +108,7 @@ function ContextDigestSurface() {
               Sources
             </Link>
             <Link
-              to="/app/graph?graph=explore"
+              to="/app/graph"
               className="inline-flex h-9 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-xs font-bold text-slate-600 transition hover:bg-slate-50 dark:border-neutral-800 dark:bg-black dark:text-neutral-300 dark:hover:bg-neutral-900"
             >
               <GitBranch className="h-3.5 w-3.5" />

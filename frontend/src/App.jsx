@@ -25,7 +25,7 @@ const AgentsView   = lazy(() => import("./pages/AgentsView"));
 
 const NAV_ITEMS = [
   { to: "/app",             label: "Dashboard", icon: LayoutDashboard, end: true },
-  { to: "/app/graph",       label: "Context", icon: GitBranch },
+  { to: "/app/graph",       label: "Graph", icon: GitBranch },
   { to: "/app/query",       label: "Ask", icon: Search },
   { to: "/app/sources",     label: "Sources", icon: Database },
   { to: "/app/connectors",  label: "Connectors", icon: Cable },
