@@ -46,6 +46,9 @@ class Workspace(Base):
     facts: Mapped[list["Fact"]] = orm_relationship(back_populates="workspace")
     mentions: Mapped[list["Mention"]] = orm_relationship(back_populates="workspace")
     components: Mapped[list["Component"]] = orm_relationship(back_populates="workspace")
+    unresolved_relationships: Mapped[list["UnresolvedRelationship"]] = orm_relationship(
+        back_populates="workspace"
+    )
 
 
 class Connector(Base):
@@ -331,6 +334,10 @@ class Component(Base):
         back_populates="target_component",
         foreign_keys="Relationship.target_component_id",
     )
+    unresolved_relationships: Mapped[list["UnresolvedRelationship"]] = orm_relationship(
+        back_populates="source_component",
+        foreign_keys="UnresolvedRelationship.source_component_id",
+    )
     superseded_by_component: Mapped["Component | None"] = orm_relationship(
         remote_side="Component.id",
         foreign_keys=[superseded_by_id],
@@ -457,3 +464,59 @@ class Relationship(Base):
         back_populates="incoming_relationships",
         foreign_keys=[target_component_id],
     )
+
+
+class UnresolvedRelationship(Base):
+    __tablename__ = "unresolved_relationships"
+    __table_args__ = (
+        Index("ix_unresolved_relationships_workspace_status", "workspace_id", "status"),
+        Index("ix_unresolved_relationships_source_status", "source_component_id", "status"),
+        Index("ix_unresolved_relationships_source_document", "source_document_id"),
+        Index("ix_unresolved_relationships_target_identity", "target_identity_key"),
+        Index(
+            "ix_unresolved_relationships_source_target_type",
+            "source_component_id",
+            "target_identity_key",
+            "relationship_type",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("workspaces.id"), nullable=True, index=True
+    )
+    source_component_id: Mapped[UUID] = mapped_column(
+        ForeignKey("components.id"), nullable=False, index=True
+    )
+    source_document_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("source_documents.id"), nullable=True, index=True
+    )
+    target_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    target_identity_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    relationship_type: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="related_to"
+    )
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.7)
+    evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    origin: Mapped[str] = mapped_column(String(20), nullable=False, default="proposed")
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="unresolved")
+    resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_relationship_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("relationships.id"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    workspace: Mapped["Workspace | None"] = orm_relationship(
+        back_populates="unresolved_relationships"
+    )
+    source_component: Mapped["Component"] = orm_relationship(
+        back_populates="unresolved_relationships",
+        foreign_keys=[source_component_id],
+    )
+    source_document: Mapped["SourceDocument | None"] = orm_relationship()
+    resolved_relationship: Mapped["Relationship | None"] = orm_relationship()

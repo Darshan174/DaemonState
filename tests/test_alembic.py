@@ -25,6 +25,7 @@ def test_alembic_upgrade_bootstraps_current_sqlite_schema(tmp_path):
             "facts",
             "mentions",
             "relationships",
+            "unresolved_relationships",
             "retrieval_events",
             "alembic_version",
         } <= tables

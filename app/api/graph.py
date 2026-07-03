@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db_session
-from app.models import Component, Model, Relationship, SourceDocument
+from app.models import Component, Model, Relationship, SourceDocument, UnresolvedRelationship
 from app.services.workspace_scope import (
     filter_components_for_workspace,
     filter_source_documents_for_workspace,
@@ -79,16 +79,37 @@ class RelationshipRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class UnresolvedRelationshipRead(BaseModel):
+    id: UUID
+    source_component_id: UUID
+    source_component_name: str | None = None
+    source_document_id: UUID | None = None
+    target_name: str
+    target_identity_key: str | None = None
+    relationship_type: str
+    confidence: float = 0.7
+    evidence: str | None = None
+    status: str = "unresolved"
+    origin: str = "proposed"
+    display_label: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
 class GraphResponse(BaseModel):
     models: list[ModelRead]
     components: list[ComponentRead]
     relationships: list[RelationshipRead]
+    unresolved_relationships: list[UnresolvedRelationshipRead] = []
 
 
 class SourceKnowledgeDiff(BaseModel):
     source: dict
     components: list[ComponentRead]
     relationships: list[RelationshipRead]
+    unresolved_relationships: list[UnresolvedRelationshipRead] = []
 
 
 @router.get("/graph", response_model=GraphResponse)
@@ -153,6 +174,15 @@ async def get_graph(
         rel_stmt = rel_stmt.where(Relationship.origin == relationship_origin)
 
     relationships = list(await session.scalars(rel_stmt))
+    unresolved_stmt = (
+        select(UnresolvedRelationship)
+        .options(selectinload(UnresolvedRelationship.source_component))
+        .where(UnresolvedRelationship.source_component_id.in_(comp_ids))
+        .where(UnresolvedRelationship.status == "unresolved")
+    )
+    if relationship_origin:
+        unresolved_stmt = unresolved_stmt.where(UnresolvedRelationship.origin == relationship_origin)
+    unresolved_relationships = list(await session.scalars(unresolved_stmt))
 
     model_counts: dict[UUID, int] = {}
     for c in components:
@@ -166,6 +196,9 @@ async def get_graph(
         ) for m in models],
         components=[_component_read(c, relationship_counts.get(c.id, 0)) for c in components],
         relationships=[_relationship_read(r) for r in relationships],
+        unresolved_relationships=[
+            _unresolved_relationship_read(r) for r in unresolved_relationships
+        ],
     )
 
 
@@ -197,6 +230,12 @@ async def get_source_knowledge_diff(
             Relationship.source_component_id.in_(comp_ids),
         )
     ))
+    unresolved_relationships = list(await session.scalars(
+        select(UnresolvedRelationship)
+        .options(selectinload(UnresolvedRelationship.source_component))
+        .where(UnresolvedRelationship.source_component_id.in_(comp_ids))
+        .where(UnresolvedRelationship.status == "unresolved")
+    ))
 
     return SourceKnowledgeDiff(
         source={
@@ -211,6 +250,9 @@ async def get_source_knowledge_diff(
         },
         components=[_component_read(c, _relationship_counts(relationships).get(c.id, 0)) for c in components],
         relationships=[_relationship_read(r) for r in relationships],
+        unresolved_relationships=[
+            _unresolved_relationship_read(r) for r in unresolved_relationships
+        ],
     )
 
 
@@ -462,6 +504,12 @@ async def get_graph_slice(
         Relationship.target_component_id.in_(comp_ids),
     )
     relationships = list(await session.scalars(rel_stmt))
+    unresolved_relationships = list(await session.scalars(
+        select(UnresolvedRelationship)
+        .options(selectinload(UnresolvedRelationship.source_component))
+        .where(UnresolvedRelationship.source_component_id.in_(comp_ids))
+        .where(UnresolvedRelationship.status == "unresolved")
+    ))
 
     model_ids_in_result = {c.model_id for c in components}
     model_stmt = select(Model).where(Model.id.in_(model_ids_in_result)).order_by(Model.name)
@@ -554,6 +602,9 @@ async def get_graph_slice(
             status=r.status,
             origin=_resolve_origin(r),
         ) for r in relationships],
+        unresolved_relationships=[
+            _unresolved_relationship_read(r) for r in unresolved_relationships
+        ],
     )
 
 
@@ -843,6 +894,7 @@ class SourceDiffResponse(BaseModel):
     components_added: list[DiffComponentItem]
     components_updated: list[DiffComponentItem]
     relationships_added: list[DiffRelationshipItem]
+    unresolved_relationships: list[UnresolvedRelationshipRead] = []
     models_affected: list[str]
     proposed_edges: list[DiffRelationshipItem]
     deterministic_edges: list[DiffRelationshipItem]
@@ -873,6 +925,12 @@ async def get_source_diff(
         | Relationship.target_component_id.in_(comp_ids)
     )
     relationships = list(await session.scalars(rel_stmt))
+    unresolved_relationships = list(await session.scalars(
+        select(UnresolvedRelationship)
+        .options(selectinload(UnresolvedRelationship.source_component))
+        .where(UnresolvedRelationship.source_document_id == source_id)
+        .where(UnresolvedRelationship.status == "unresolved")
+    ))
 
     comp_name_map: dict[UUID, str] = {c.id: c.name for c in components}
     for r in relationships:
@@ -957,6 +1015,9 @@ async def get_source_diff(
         components_added=components_added,
         components_updated=components_updated,
         relationships_added=relationships_added,
+        unresolved_relationships=[
+            _unresolved_relationship_read(r) for r in unresolved_relationships
+        ],
         models_affected=models_affected,
         proposed_edges=proposed_edges,
         deterministic_edges=deterministic_edges,
@@ -1142,6 +1203,27 @@ def _relationship_read(r: Relationship) -> RelationshipRead:
         source_component_name=source_component.name if source_component else None,
         target_component_name=target_component.name if target_component else None,
         created_at=r.created_at,
+    )
+
+
+def _unresolved_relationship_read(r: UnresolvedRelationship) -> UnresolvedRelationshipRead:
+    origin = getattr(r, "origin", "proposed") or "proposed"
+    source_component = r.__dict__.get("source_component")
+    return UnresolvedRelationshipRead(
+        id=r.id,
+        source_component_id=r.source_component_id,
+        source_component_name=source_component.name if source_component else None,
+        source_document_id=r.source_document_id,
+        target_name=r.target_name,
+        target_identity_key=r.target_identity_key,
+        relationship_type=r.relationship_type,
+        confidence=r.confidence,
+        evidence=r.evidence,
+        status=r.status,
+        origin=origin,
+        display_label=relationship_display_label(r.relationship_type, origin),
+        created_at=r.created_at,
+        updated_at=r.updated_at,
     )
 
 

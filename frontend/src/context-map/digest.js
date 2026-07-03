@@ -77,17 +77,17 @@ export function cardsById(cards = []) {
 }
 
 export function buildSessionKnowledgeMap(digest, workspaceName = "selected workspace") {
-  const cards = [...(digest?.cards || [])].sort(
-    (a, b) => (b.attention_score || 0) - (a.attention_score || 0),
-  );
+  const cards = [...(digest?.cards || [])]
+    .filter(hasUsefulCard)
+    .sort((a, b) => (b.attention_score || 0) - (a.attention_score || 0));
 
   const groups = {
-    aiSessions: cards.filter(isAiSession).slice(0, 5),
-    decisions: cards.filter((card) => card.type === "decision").slice(0, 7),
-    prs: cards.filter(isPullRequest).slice(0, 7),
-    blockers: cards.filter(isBlocker).slice(0, 6),
-    brokenDocs: cards.filter(isBrokenDoc).slice(0, 5),
-    issues: cards.filter(isIssue).slice(0, 7),
+    aiSessions: cards.filter(isAiSession).filter(hasUsefulDisplayText).slice(0, 5),
+    decisions: cards.filter((card) => card.type === "decision").filter(hasUsefulDisplayText).slice(0, 7),
+    prs: cards.filter(isPullRequest).filter(hasUsefulDisplayText).slice(0, 7),
+    blockers: cards.filter(isBlocker).filter(hasUsefulDisplayText).slice(0, 6),
+    brokenDocs: cards.filter(isBrokenDoc).filter(hasUsefulDisplayText).slice(0, 5),
+    issues: cards.filter(isIssue).filter(hasUsefulDisplayText).slice(0, 7),
   };
 
   return {
@@ -97,18 +97,25 @@ export function buildSessionKnowledgeMap(digest, workspaceName = "selected works
 }
 
 export function preciseLine(value, maxWords = 9) {
-  const cleaned = String(value || "")
-    .replace(/https?:\/\/\S+/g, "")
-    .replace(/[*_`#>\[\]()]/g, " ")
-    .replace(/\b(decision|blocker|risk|task|issue|summary|context)\s*:\s*/gi, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  const cleaned = cleanDisplayText(value).replace(/https?:\/\/\S+/g, "").trim();
   if (!cleaned) return "Not captured yet";
 
   const firstThought = cleaned.split(/[.!?\n]/).find(Boolean)?.trim() || cleaned;
   const words = firstThought.split(/\s+/).filter(Boolean);
   if (words.length <= maxWords) return firstThought;
   return `${words.slice(0, maxWords).join(" ")}...`;
+}
+
+export function cardDisplayLine(card, intent = "summary", maxWords = 9) {
+  const candidates = displayCandidates(card, intent);
+  const selected = candidates.map(cleanDisplayText).find((candidate) => isUsefulText(candidate)) || card?.title || card?.summary;
+  return preciseLine(selected, maxWords);
+}
+
+export function cardDisplayText(card, intent = "summary") {
+  const candidates = displayCandidates(card, intent);
+  const selected = candidates.map(cleanDisplayText).find((candidate) => isUsefulText(candidate)) || "";
+  return selected || "Not captured yet";
 }
 
 export function primarySourceUrl(card) {
@@ -273,20 +280,19 @@ function isIssue(card) {
 
 function isBlocker(card) {
   const text = searchableText(card);
+  const hasBlockerSignal = /\b(blocked|blocker|blocking|cannot proceed|approval needed|schema approval|conflict|failing|failed|error|broken)\b/i.test(text);
   return (
     card.type === "blocker" ||
-    card.status === "blocked" ||
-    card.status === "conflict" ||
-    /\b(blocked|blocker|blocking|cannot proceed|approval needed|schema approval)\b/i.test(text)
+    ((card.status === "blocked" || card.status === "conflict") && hasBlockerSignal && !isInstructionNoise(card)) ||
+    (hasBlockerSignal && /\b(pr|pull request|issue|ci|test|schema|docs?|migration|auth|api)\b/i.test(text) && !isInstructionNoise(card))
   );
 }
 
 function isBrokenDoc(card) {
   const text = searchableText(card);
-  return (
-    /\b(broken docs?|stale docs?|docs? drift|devrel|readme|runbook|guide|oauth flow|documentation)\b/i.test(text) ||
-    (card.type === "file" && /\b(md|markdown|docs?|readme|runbook|guide)\b/i.test(text))
-  );
+  const hasDocSignal = /\b(docs?|documentation|readme|runbook|guide|markdown|devrel)\b/i.test(text);
+  const hasProblemSignal = /\b(broken|stale|drift|outdated|out of date|missing|incorrect|invalid|failing|failed|mismatch|unlinked|needs review)\b/i.test(text);
+  return hasDocSignal && hasProblemSignal && !isInstructionNoise(card);
 }
 
 function searchableText(card) {
@@ -309,6 +315,93 @@ function searchableText(card) {
     .join(" ");
 }
 
+function displayCandidates(card, intent) {
+  const sourceLabels = (card?.provenance || []).map((source) => source.source_label);
+  const excerpts = (card?.provenance || []).map((source) => source.excerpt);
+  const base = [card?.title, card?.next_action, card?.summary, ...sourceLabels, ...excerpts];
+
+  if (intent === "blocker") {
+    return [
+      textWithKeywords(base, /\b(blocked|blocker|blocking|failed|failing|error|conflict|broken|schema|ci|test|approval)\b/i),
+      card?.summary,
+      card?.title,
+      card?.next_action,
+      ...sourceLabels,
+    ].filter(Boolean);
+  }
+
+  if (intent === "decision") {
+    return [card?.summary, card?.title, card?.next_action, ...excerpts, ...sourceLabels].filter(Boolean);
+  }
+
+  if (intent === "docs") {
+    return [
+      textWithKeywords(base, /\b(docs?|documentation|readme|runbook|guide|devrel|stale|broken)\b/i),
+      card?.summary,
+      card?.title,
+      card?.next_action,
+      ...excerpts,
+      ...sourceLabels,
+    ].filter(Boolean);
+  }
+
+  return base.filter(Boolean);
+}
+
+function textWithKeywords(values, pattern) {
+  return values.find((value) => pattern.test(String(value || "")));
+}
+
+function hasUsefulCard(card) {
+  return !isInstructionNoise(card) && hasUsefulDisplayText(card);
+}
+
+function hasUsefulDisplayText(card) {
+  return ["summary", "decision", "blocker", "docs"].some((intent) =>
+    displayCandidates(card, intent).map(cleanDisplayText).some((candidate) => isUsefulText(candidate)),
+  );
+}
+
+function isUsefulText(value) {
+  const text = cleanDisplayText(value);
+  if (!text || text.length < 8) return false;
+  if (/^[a-z],\s/i.test(text)) return false;
+  if (/^[a-z]\s/i.test(text)) return false;
+  if (/[A-Za-z0-9+/]{140,}={0,2}/.test(text)) return false;
+  if (/data:image\/|base64|internal_chat_message_metadata|function_call_output|session_meta/i.test(text)) return false;
+  if (text.split(/\s+/).length < 2) return false;
+  const letters = (text.match(/[a-z]/gi) || []).length;
+  if (letters < 8) return false;
+  const punctuation = (text.match(/[/.\\{}[\]<>_=+:;|]/g) || []).length;
+  if (text.length > 0 && punctuation / text.length > 0.34 && text.split(/\s+/).length <= 5) return false;
+  return !noisePattern().test(text);
+}
+
+function isInstructionNoise(card) {
+  const text = searchableText(card);
+  return noisePattern().test(text) || /data:image\/|base64|[A-Za-z0-9+/]{180,}={0,2}/i.test(text);
+}
+
+function noisePattern() {
+  return /\b(ask the user directly|concise plain-text question|readers don.t mistake|vitest does not accept|file references|sandbox|permissions instructions|developer instructions|base_instructions|must browse|request escalation|prefix_rule|do not revert unrelated|working with the user|knowledge cutoff|final answer instructions|turn_aborted|tool_call|function_call|function_call_output|internal_chat_message_metadata|local_images|session_meta)\b/i;
+}
+
+export function cleanDisplayText(value) {
+  return String(value || "")
+    .replace(/\s+From:\s+[^<\n]*<[^>]+>[\s\S]*$/i, " ")
+    .replace(/\s+Reply to this email[\s\S]*$/i, " ")
+    .replace(/data:image\/[a-z0-9.+-]+;base64,\S+/gi, " ")
+    .replace(/[A-Za-z0-9+/]{140,}={0,2}/g, " ")
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/[*_`#>\[\](){}"]/g, " ")
+    .replace(/\b(decision|blocker|risk|task|issue|summary|context)\s*:\s*/gi, "")
+    .replace(/\s*[-\u2013\u2014]\s*/g, " - ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^[./\\\s:;-]+/, "")
+    .replace(/[./\\\s:;-]+$/, "");
+}
+
 function buildNextAgentPrompt({ groups, workspaceName, health }) {
   const lines = [
     `Continue work on Context Engine for ${workspaceName}.`,
@@ -316,12 +409,12 @@ function buildNextAgentPrompt({ groups, workspaceName, health }) {
     "Goal: use the session knowledge map as the source of truth for the next focused change.",
     "",
     "Current context:",
-    ...promptItems("AI sessions", groups.aiSessions, (card) => `${preciseLine(card.title, 7)} - ${preciseLine(card.summary, 14)}`),
-    ...promptItems("Decisions", groups.decisions, (card) => preciseLine(card.summary || card.title, 14)),
-    ...promptItems("PRs", groups.prs, (card) => `${pullRequestLabel(card)} - ${primarySourceUrl(card) || "link missing"} - ${preciseLine(card.summary || card.title, 12)}`),
-    ...promptItems("Blockers", groups.blockers, (card) => preciseLine(card.summary || card.title, 12)),
-    ...promptItems("Broken docs", groups.brokenDocs, (card) => `${preciseLine(card.title, 7)} - ${preciseLine(card.summary, 12)}`),
-    ...promptItems("Issues", groups.issues, (card) => `${issueLabel(card)} - ${primarySourceUrl(card) || "link missing"} - ${preciseLine(card.summary || card.title, 12)}`),
+    ...promptItems("AI sessions", groups.aiSessions, (card) => `${cardDisplayLine(card, "title", 7)} - ${cardDisplayLine(card, "summary", 14)}`),
+    ...promptItems("Decisions", groups.decisions, (card) => cardDisplayLine(card, "decision", 14)),
+    ...promptItems("PRs", groups.prs, (card) => `${pullRequestLabel(card)} - ${primarySourceUrl(card) || "link missing"} - ${cardDisplayLine(card, "summary", 12)}`),
+    ...promptItems("Blockers", groups.blockers, (card) => cardDisplayLine(card, "blocker", 12)),
+    ...promptItems("Broken docs", groups.brokenDocs, (card) => cardDisplayLine(card, "docs", 12)),
+    ...promptItems("Issues", groups.issues, (card) => `${issueLabel(card)} - ${primarySourceUrl(card) || "link missing"} - ${cardDisplayLine(card, "summary", 12)}`),
     "",
     "Instructions:",
     "1. Start by checking git status and the active branch. Do not revert unrelated local changes.",

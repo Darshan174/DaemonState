@@ -738,6 +738,36 @@ class TestMCPProvenance:
         assert len(data) > 0
         assert "source_type" in data[0], "MCP search must include source_type provenance"
 
+    async def test_search_nodes_uses_configured_embedder_factory(self, db_session, monkeypatch):
+        """MCP search_nodes must not hardcode the test hashing embedder."""
+        model = Model(id=uuid4(), name="Feature")
+        doc = SourceDocument(id=uuid4(), source_type="local", external_id="mcp-embedder",
+                             content="Feature: semantic search.", metadata_json="{}")
+        comp = Component(id=uuid4(), model_id=model.id, source_document_id=doc.id,
+                         name="Semantic search", value="Semantic search feature",
+                         fact_type="feature", confidence=0.85, status="active",
+                         embedding=json.dumps([1.0]))
+        db_session.add_all([model, doc, comp])
+        await db_session.flush()
+
+        class FakeEmbedder:
+            async def embed_text(self, text):
+                return [1.0]
+
+        mcp_server = self._patch_mcp_session(monkeypatch, db_session)
+        called = {"value": False}
+
+        def fake_factory():
+            called["value"] = True
+            return FakeEmbedder()
+
+        monkeypatch.setattr(mcp_server, "build_default_embedder", fake_factory)
+        result = await mcp_server._search_nodes("semantic search", limit=1)
+        data = json.loads(result[0].text)
+
+        assert called["value"] is True
+        assert data[0]["id"] == str(comp.id)
+
     async def test_expand_graph_includes_edges(self, db_session, monkeypatch):
         """MCP expand_graph returns edges between components."""
         model = Model(id=uuid4(), name="Test")

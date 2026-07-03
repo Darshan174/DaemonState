@@ -6,7 +6,7 @@ from uuid import UUID
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Component, Model, Relationship, SourceDocument
+from app.models import Component, Model, Relationship, SourceDocument, UnresolvedRelationship
 from app.processing.embedder import BaseEmbedder, build_default_embedder
 from app.processing.extractor import (
     ExtractedFact,
@@ -310,12 +310,21 @@ class IngestionService:
                 ).order_by(Component.confidence.desc()).limit(1)
             )
 
-        if target is None:
-            return
-
         rel_type = canonical_relationship_type(rel.relationship_type)
 
         if rel_type == "related_to" and confidence < 0.7:
+            return
+
+        if target is None:
+            await self._record_unresolved_relationship(
+                source=source,
+                target_name=target_name,
+                target_identity_key=target_identity_key,
+                relationship_type=rel_type,
+                confidence=confidence,
+                evidence=getattr(rel, "evidence", None),
+                origin=origin,
+            )
             return
 
         exists = await self.session.scalar(
@@ -343,6 +352,49 @@ class IngestionService:
             confidence=confidence,
             evidence=evidence,
             origin=resolved_origin,
+        ))
+        await self.session.flush()
+
+    async def _record_unresolved_relationship(
+        self,
+        *,
+        source: Component,
+        target_name: str,
+        target_identity_key: str | None,
+        relationship_type: str,
+        confidence: float,
+        evidence: str | None,
+        origin: str,
+    ) -> None:
+        resolved_origin = canonical_origin(origin)
+        existing = await self.session.scalar(
+            select(UnresolvedRelationship).where(
+                UnresolvedRelationship.source_component_id == source.id,
+                UnresolvedRelationship.target_identity_key == target_identity_key,
+                UnresolvedRelationship.target_name == target_name,
+                UnresolvedRelationship.relationship_type == relationship_type,
+                UnresolvedRelationship.status == "unresolved",
+            )
+        )
+        if existing is not None:
+            existing.confidence = max(existing.confidence, confidence)
+            if evidence and not existing.evidence:
+                existing.evidence = evidence
+            if resolved_origin != "proposed":
+                existing.origin = resolved_origin
+            return
+
+        self.session.add(UnresolvedRelationship(
+            workspace_id=_coerce_workspace_uuid(getattr(source, "workspace_id", None)),
+            source_component_id=source.id,
+            source_document_id=getattr(source, "source_document_id", None),
+            target_name=target_name,
+            target_identity_key=target_identity_key,
+            relationship_type=relationship_type,
+            confidence=confidence,
+            evidence=evidence,
+            origin=resolved_origin,
+            status="unresolved",
         ))
         await self.session.flush()
 

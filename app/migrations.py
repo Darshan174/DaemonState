@@ -23,6 +23,7 @@ async def run_migrations(conn: AsyncConnection) -> None:
     await _migrate_relationships_confidence_evidence(conn)
     await _migrate_components_provenance_excerpt(conn)
     await _migrate_relationships_origin(conn)
+    await _migrate_unresolved_relationships_schema(conn)
     await _migrate_retrieval_events_schema(conn)
     await _migrate_pgvector_search_schema(conn)
     await _migrate_postgres_text_search_schema(conn)
@@ -1071,6 +1072,37 @@ async def _migrate_relationships_origin(conn: AsyncConnection) -> None:
         ))
 
 
+async def _migrate_unresolved_relationships_schema(conn: AsyncConnection) -> None:
+    if not await _table_exists(conn, "components"):
+        return
+
+    dt_type = _datetime_column_type(conn)
+    await conn.execute(text(f"""
+        CREATE TABLE IF NOT EXISTS unresolved_relationships (
+            id CHAR(32) NOT NULL,
+            workspace_id CHAR(32),
+            source_component_id CHAR(32) NOT NULL,
+            source_document_id CHAR(32),
+            target_name VARCHAR(255) NOT NULL,
+            target_identity_key VARCHAR(255),
+            relationship_type VARCHAR(50) NOT NULL DEFAULT 'related_to',
+            confidence FLOAT NOT NULL DEFAULT 0.7,
+            evidence TEXT,
+            origin VARCHAR(20) NOT NULL DEFAULT 'proposed',
+            status VARCHAR(50) NOT NULL DEFAULT 'unresolved',
+            resolution_note TEXT,
+            resolved_relationship_id CHAR(32),
+            created_at {dt_type} DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            updated_at {dt_type} DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            PRIMARY KEY (id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces (id),
+            FOREIGN KEY(source_component_id) REFERENCES components (id),
+            FOREIGN KEY(source_document_id) REFERENCES source_documents (id),
+            FOREIGN KEY(resolved_relationship_id) REFERENCES relationships (id)
+        )
+    """))
+
+
 async def _migrate_retrieval_events_schema(conn: AsyncConnection) -> None:
     await conn.execute(text("""
         CREATE TABLE IF NOT EXISTS retrieval_events (
@@ -1362,6 +1394,31 @@ async def _migrate_query_and_sync_indexes(conn: AsyncConnection) -> None:
             "relationships",
             "ix_relationships_source_target_type",
             ("source_component_id", "target_component_id", "relationship_type"),
+        ),
+        (
+            "unresolved_relationships",
+            "ix_unresolved_relationships_workspace_status",
+            ("workspace_id", "status"),
+        ),
+        (
+            "unresolved_relationships",
+            "ix_unresolved_relationships_source_status",
+            ("source_component_id", "status"),
+        ),
+        (
+            "unresolved_relationships",
+            "ix_unresolved_relationships_source_document",
+            ("source_document_id",),
+        ),
+        (
+            "unresolved_relationships",
+            "ix_unresolved_relationships_target_identity",
+            ("target_identity_key",),
+        ),
+        (
+            "unresolved_relationships",
+            "ix_unresolved_relationships_source_target_type",
+            ("source_component_id", "target_identity_key", "relationship_type"),
         ),
         (
             "retrieval_events",

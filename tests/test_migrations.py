@@ -452,6 +452,8 @@ class TestQueryAndSyncIndexMigration:
                 source_indexes = await _index_names(conn, "source_documents")
                 component_indexes = await _index_names(conn, "components")
                 relationship_indexes = await _index_names(conn, "relationships")
+                unresolved_relationship_indexes = await _index_names(conn, "unresolved_relationships")
+                unresolved_relationship_columns = await _table_columns(conn, "unresolved_relationships")
                 retrieval_event_columns = await _table_columns(conn, "retrieval_events")
                 retrieval_event_indexes = await _index_names(conn, "retrieval_events")
                 sync_job_indexes = await _index_names(conn, "sync_jobs")
@@ -474,6 +476,25 @@ class TestQueryAndSyncIndexMigration:
                 "ix_relationships_source_status",
                 "ix_relationships_target_status",
                 "ix_relationships_source_target_type",
+            }
+            expected_unresolved_relationship_columns = {
+                "source_component_id",
+                "source_document_id",
+                "target_name",
+                "target_identity_key",
+                "relationship_type",
+                "confidence",
+                "evidence",
+                "origin",
+                "status",
+                "resolved_relationship_id",
+            }
+            expected_unresolved_relationship_indexes = {
+                "ix_unresolved_relationships_workspace_status",
+                "ix_unresolved_relationships_source_status",
+                "ix_unresolved_relationships_source_document",
+                "ix_unresolved_relationships_target_identity",
+                "ix_unresolved_relationships_source_target_type",
             }
             expected_retrieval_event_columns = {
                 "workspace_id",
@@ -511,6 +532,8 @@ class TestQueryAndSyncIndexMigration:
             assert expected_source_indexes <= set(source_indexes)
             assert expected_component_indexes <= set(component_indexes)
             assert expected_relationship_indexes <= set(relationship_indexes)
+            assert expected_unresolved_relationship_columns <= set(unresolved_relationship_columns)
+            assert expected_unresolved_relationship_indexes <= set(unresolved_relationship_indexes)
             assert expected_retrieval_event_columns <= set(retrieval_event_columns)
             assert expected_retrieval_event_indexes <= set(retrieval_event_indexes)
             assert expected_sync_job_indexes <= set(sync_job_indexes)
@@ -521,6 +544,7 @@ class TestQueryAndSyncIndexMigration:
                 expected_source_indexes
                 | expected_component_indexes
                 | expected_relationship_indexes
+                | expected_unresolved_relationship_indexes
                 | expected_retrieval_event_indexes
                 | expected_sync_job_indexes
                 | expected_entity_alias_indexes
@@ -531,6 +555,7 @@ class TestQueryAndSyncIndexMigration:
                     source_indexes
                     + component_indexes
                     + relationship_indexes
+                    + unresolved_relationship_indexes
                     + retrieval_event_indexes
                     + sync_job_indexes
                     + entity_alias_indexes

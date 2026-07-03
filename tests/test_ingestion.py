@@ -15,6 +15,7 @@ from app.models import (
     Model,
     Relationship,
     SourceDocument,
+    UnresolvedRelationship,
     Workspace,
 )
 from app.processing.extractor import ExtractedFact, ExtractedRelationship
@@ -336,6 +337,82 @@ class TestCrossModelRelationships:
         )).all()
         assert len(rels) == 1
         assert rels[0].target_component_id == pro.id
+
+    async def test_unresolved_relationship_is_persisted_when_target_cannot_resolve(self, db_session):
+        model = Model(id=uuid4(), name="Feature")
+        doc = SourceDocument(
+            id=uuid4(), source_type="local", external_id="missing-target",
+            content="Checkout depends on Payments API.", metadata_json="{}",
+        )
+        source = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="Checkout", value="Checkout work is blocked by Payments API",
+            fact_type="feature", confidence=0.85, status="active",
+        )
+        db_session.add_all([model, doc, source])
+        await db_session.flush()
+
+        svc = IngestionService(db_session)
+        await svc._create_relationship(source, ExtractedRelationship(
+            target_name="Payments API",
+            relationship_type="depends_on",
+            confidence=0.82,
+            evidence="Checkout depends on Payments API.",
+        ))
+
+        relationships = (await db_session.scalars(
+            select(Relationship).where(Relationship.source_component_id == source.id)
+        )).all()
+        unresolved = (await db_session.scalars(
+            select(UnresolvedRelationship).where(
+                UnresolvedRelationship.source_component_id == source.id
+            )
+        )).all()
+
+        assert relationships == []
+        assert len(unresolved) == 1
+        assert unresolved[0].target_name == "Payments API"
+        assert unresolved[0].target_identity_key == "component:payments-api"
+        assert unresolved[0].relationship_type == "depends_on"
+        assert unresolved[0].status == "unresolved"
+        assert unresolved[0].evidence == "Checkout depends on Payments API."
+
+    async def test_unresolved_relationships_are_deduped(self, db_session):
+        model = Model(id=uuid4(), name="Feature")
+        doc = SourceDocument(
+            id=uuid4(), source_type="local", external_id="missing-target-dedupe",
+            content="Checkout depends on Payments API.", metadata_json="{}",
+        )
+        source = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="Checkout", value="Checkout work is blocked by Payments API",
+            fact_type="feature", confidence=0.85, status="active",
+        )
+        db_session.add_all([model, doc, source])
+        await db_session.flush()
+
+        svc = IngestionService(db_session)
+        rel = ExtractedRelationship(
+            target_name="Payments API",
+            relationship_type="depends_on",
+            confidence=0.7,
+        )
+        await svc._create_relationship(source, rel)
+        await svc._create_relationship(source, ExtractedRelationship(
+            target_name="Payments API",
+            relationship_type="depends_on",
+            confidence=0.9,
+            evidence="Second pass had stronger evidence.",
+        ))
+
+        unresolved = (await db_session.scalars(
+            select(UnresolvedRelationship).where(
+                UnresolvedRelationship.source_component_id == source.id
+            )
+        )).all()
+        assert len(unresolved) == 1
+        assert unresolved[0].confidence == 0.9
+        assert unresolved[0].evidence == "Second pass had stronger evidence."
 
 
 class TestConfidenceThreshold:
