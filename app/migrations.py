@@ -837,10 +837,12 @@ async def _insert_fact_if_missing(
     await conn.execute(text("""
         INSERT INTO facts (
             id, workspace_id, entity_id, component_id, source_document_id,
-            claim, fact_type, confidence, status, provenance, excerpt
+            claim, fact_type, confidence, status, provenance, excerpt,
+            extractor_version
         ) VALUES (
             :id, :workspace_id, :entity_id, :component_id, :source_document_id,
-            :claim, :fact_type, :confidence, :status, :provenance, :excerpt
+            :claim, :fact_type, :confidence, :status, :provenance, :excerpt,
+            :extractor_version
         )
     """), {
         "id": uuid4().hex,
@@ -854,6 +856,7 @@ async def _insert_fact_if_missing(
         "status": str(status or "active")[:50],
         "provenance": provenance,
         "excerpt": excerpt,
+        "extractor_version": "extractor.v1",
     })
 
 
