@@ -13,6 +13,7 @@ from app.models import (
     Relationship,
     RetrievalEvent,
     SourceDocument,
+    UnresolvedRelationship,
     Workspace,
 )
 from app.processing.embedder import HashingEmbedder
@@ -46,6 +47,44 @@ class TestGraphProvenance:
         comp = data["components"][0]
         assert comp["source_type"] == "slack"
         assert comp["source_document_id"] is not None
+
+    async def test_graph_exposes_unresolved_relationships_separately(self, client, db_session):
+        model = Model(id=uuid4(), name="Feature")
+        doc = SourceDocument(
+            id=uuid4(), source_type="local", external_id="graph-unresolved",
+            content="Checkout depends on Payments API.", metadata_json="{}",
+        )
+        component = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="Checkout", value="Checkout work is blocked by Payments API",
+            fact_type="feature", confidence=0.8, status="active",
+        )
+        gap = UnresolvedRelationship(
+            id=uuid4(),
+            source_component_id=component.id,
+            source_document_id=doc.id,
+            target_name="Payments API",
+            target_identity_key="component:payments-api",
+            relationship_type="depends_on",
+            confidence=0.82,
+            evidence="Checkout depends on Payments API.",
+            origin="extracted",
+        )
+        db_session.add_all([model, doc, component, gap])
+        await db_session.flush()
+
+        resp = await client.get("/api/graph")
+        assert resp.status_code == 200
+        data = resp.json()
+        unresolved = [
+            item for item in data["unresolved_relationships"]
+            if item["id"] == str(gap.id)
+        ]
+        assert len(unresolved) == 1
+        assert unresolved[0]["source_component_name"] == "Checkout"
+        assert unresolved[0]["target_name"] == "Payments API"
+        assert unresolved[0]["relationship_type"] == "depends_on"
+        assert all(edge["id"] != str(gap.id) for edge in data["relationships"])
 
     async def test_legacy_source_detail_returns_components(self, client, db_session):
         model = Model(id=uuid4(), name="Email")

@@ -22,7 +22,7 @@ from sqlalchemy.orm import selectinload
 
 from app.database import AsyncSessionLocal
 from app.models import Component, Model, Relationship, SourceDocument
-from app.processing.embedder import HashingEmbedder, cosine_similarity
+from app.processing.embedder import build_default_embedder, cosine_similarity
 from app.services.query import QueryService
 
 logger = logging.getLogger("context-engine.mcp")
@@ -183,7 +183,7 @@ async def _query_context(
 ) -> list[TextContent]:
     try:
         async with AsyncSessionLocal() as session:
-            svc = QueryService(session, embedder=HashingEmbedder())
+            svc = QueryService(session)
             result = await svc.query(
                 query,
                 top_k=top_k,
@@ -281,7 +281,7 @@ async def _query_context(
 
 async def _search_nodes(query: str, limit: int = 10) -> list[TextContent]:
     try:
-        embedder = HashingEmbedder()
+        embedder = build_default_embedder()
         query_vec = await embedder.embed_text(query)
 
         async with AsyncSessionLocal() as session:
