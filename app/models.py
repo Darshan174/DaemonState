@@ -64,7 +64,9 @@ class Connector(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     workspace_id: Mapped[UUID] = mapped_column(
-        ForeignKey("workspaces.id"), nullable=False, index=True,
+        ForeignKey("workspaces.id"),
+        nullable=False,
+        index=True,
         default=UUID("00000000-0000-0000-0000-000000000000"),
     )
     connector_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
@@ -117,9 +119,7 @@ class SyncJob(Base):
     connector_id: Mapped[UUID] = mapped_column(
         ForeignKey("connectors.id"), nullable=False, index=True
     )
-    job_type: Mapped[str] = mapped_column(
-        String(50), nullable=False, default="connector_sync"
-    )
+    job_type: Mapped[str] = mapped_column(String(50), nullable=False, default="connector_sync")
     idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -127,9 +127,7 @@ class SyncJob(Base):
     error_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     result_metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
-    queued_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), nullable=False
-    )
+    queued_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
     available_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     locked_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -205,7 +203,9 @@ class SourceDocument(Base):
 
     workspace: Mapped["Workspace | None"] = orm_relationship(back_populates="source_documents")
     components: Mapped[list["Component"]] = orm_relationship(back_populates="source_document")
-    evidence_spans: Mapped[list["EvidenceSpan"]] = orm_relationship(back_populates="source_document")
+    evidence_spans: Mapped[list["EvidenceSpan"]] = orm_relationship(
+        back_populates="source_document"
+    )
 
 
 class EvidenceSpan(Base):
@@ -229,9 +229,13 @@ class EvidenceSpan(Base):
     text_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     evidence_type: Mapped[str] = mapped_column(String(50), nullable=False, default="extracted_fact")
     authority_weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
-    trust_zone: Mapped[str] = mapped_column(String(50), nullable=False, default="untrusted_external")
+    trust_zone: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="untrusted_external"
+    )
     prompt_injection_risk_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    extraction_method: Mapped[str] = mapped_column(String(50), nullable=False, default="deterministic")
+    extraction_method: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="deterministic"
+    )
     review_status: Mapped[str] = mapped_column(String(50), nullable=False, default="verified")
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
@@ -239,7 +243,9 @@ class EvidenceSpan(Base):
 
     workspace: Mapped["Workspace | None"] = orm_relationship(back_populates="evidence_spans")
     source_document: Mapped["SourceDocument"] = orm_relationship(back_populates="evidence_spans")
-    claim_revisions: Mapped[list["ClaimRevision"]] = orm_relationship(back_populates="evidence_span")
+    claim_revisions: Mapped[list["ClaimRevision"]] = orm_relationship(
+        back_populates="evidence_span"
+    )
 
 
 class Model(Base):
@@ -344,18 +350,12 @@ class Component(Base):
     identity_key: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     value: Mapped[str] = mapped_column(Text, nullable=False)
-    fact_type: Mapped[str] = mapped_column(
-        String(50), nullable=False, default="fact"
-    )
-    temporal: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="unknown"
-    )
+    fact_type: Mapped[str] = mapped_column(String(50), nullable=False, default="fact")
+    temporal: Mapped[str] = mapped_column(String(20), nullable=False, default="unknown")
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
     authority_weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
     embedding: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(
-        String(50), nullable=False, default="active"
-    )
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="active")
     valid_from: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
@@ -489,10 +489,7 @@ class Fact(Base):
     provenance: Mapped[str | None] = mapped_column(Text, nullable=True)
     excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
     extractor_version: Mapped[str] = mapped_column(
-        String(50),
-        nullable=False,
-        default="extractor.v1",
-        server_default="extractor.v1",
+        String(50), nullable=False, default="extractor.v1"
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
@@ -510,7 +507,9 @@ class Fact(Base):
 class Mention(Base):
     __tablename__ = "mentions"
     __table_args__ = (
-        UniqueConstraint("component_id", "normalized_mention", name="uq_mentions_component_normalized"),
+        UniqueConstraint(
+            "component_id", "normalized_mention", name="uq_mentions_component_normalized"
+        ),
         Index("ix_mentions_workspace_normalized", "workspace_id", "normalized_mention"),
         Index("ix_mentions_entity", "entity_id"),
         Index("ix_mentions_source_document", "source_document_id"),
@@ -565,9 +564,7 @@ class Relationship(Base):
     target_component_id: Mapped[UUID] = mapped_column(
         ForeignKey("components.id"), nullable=False, index=True
     )
-    relationship_type: Mapped[str] = mapped_column(
-        String(50), nullable=False, default="related_to"
-    )
+    relationship_type: Mapped[str] = mapped_column(String(50), nullable=False, default="related_to")
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.7)
     evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="active")
@@ -613,9 +610,7 @@ class UnresolvedRelationship(Base):
     )
     target_name: Mapped[str] = mapped_column(String(255), nullable=False)
     target_identity_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    relationship_type: Mapped[str] = mapped_column(
-        String(50), nullable=False, default="related_to"
-    )
+    relationship_type: Mapped[str] = mapped_column(String(50), nullable=False, default="related_to")
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.7)
     evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
     origin: Mapped[str] = mapped_column(String(20), nullable=False, default="proposed")
@@ -647,6 +642,13 @@ class ContextPack(Base):
     __table_args__ = (
         Index("ix_context_packs_workspace_created", "workspace_id", "created_at"),
         Index("ix_context_packs_target_model", "target_model"),
+        Index(
+            "ix_context_packs_workspace_target_created",
+            "workspace_id",
+            "target_model",
+            "created_at",
+        ),
+        Index("ix_context_packs_idempotency_key", "idempotency_key"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -655,11 +657,14 @@ class ContextPack(Base):
     )
     objective: Mapped[str] = mapped_column(Text, nullable=False)
     target_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    model_profile: Mapped[str | None] = mapped_column(String(100), nullable=True)
     token_budget: Mapped[int | None] = mapped_column(Integer, nullable=True)
     pack_version: Mapped[str] = mapped_column(String(50), nullable=False, default="context_pack.v2")
     health_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     markdown: Mapped[str] = mapped_column(Text, nullable=False, default="")
     manifest: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    repo_state_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
@@ -673,13 +678,19 @@ class ContextPackItem(Base):
     __tablename__ = "context_pack_items"
     __table_args__ = (
         Index("ix_context_pack_items_pack", "context_pack_id"),
+        Index("ix_context_pack_items_claim", "claim_id"),
         Index("ix_context_pack_items_component", "component_id"),
         Index("ix_context_pack_items_evidence", "evidence_span_id"),
+        Index("ix_context_pack_items_source_document", "source_document_id"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     context_pack_id: Mapped[UUID] = mapped_column(
         ForeignKey("context_packs.id"), nullable=False, index=True
+    )
+    item_type: Mapped[str] = mapped_column(String(50), nullable=False, default="component")
+    claim_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("claims.id"), nullable=True, index=True
     )
     component_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("components.id"), nullable=True, index=True
@@ -687,13 +698,21 @@ class ContextPackItem(Base):
     evidence_span_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("evidence_spans.id"), nullable=True, index=True
     )
+    source_document_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("source_documents.id"), nullable=True, index=True
+    )
     score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     inclusion_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     token_cost: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
 
     context_pack: Mapped["ContextPack"] = orm_relationship(back_populates="items")
+    claim: Mapped["Claim | None"] = orm_relationship()
     component: Mapped["Component | None"] = orm_relationship()
     evidence_span: Mapped["EvidenceSpan | None"] = orm_relationship()
+    source_document: Mapped["SourceDocument | None"] = orm_relationship()
 
 
 class AgentRun(Base):
@@ -811,7 +830,9 @@ class CodeSymbol(Base):
 class CodeEdge(Base):
     __tablename__ = "code_edges"
     __table_args__ = (
-        Index("ix_code_edges_source_target_type", "source_symbol_id", "target_symbol_id", "edge_type"),
+        Index(
+            "ix_code_edges_source_target_type", "source_symbol_id", "target_symbol_id", "edge_type"
+        ),
         Index("ix_code_edges_target", "target_symbol_id"),
     )
 

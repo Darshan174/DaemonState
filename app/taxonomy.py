@@ -70,7 +70,16 @@ VALID_FACT_TYPES = {
 
 VALID_TEMPORAL_STATES = {"current", "past", "future", "unknown"}
 
-VALID_COMPONENT_STATUSES = {"active", "needs_review", "proposed", "stale", "deprecated"}
+VALID_COMPONENT_STATUSES = {
+    "active",
+    "needs_review",
+    "proposed",
+    "stale",
+    "deprecated",
+    "superseded",
+    "rejected",
+    "resolved",
+}
 
 VALID_TRUST_ZONES = {
     "trusted_system",
@@ -92,27 +101,48 @@ VALID_CLAIM_STATUSES = {
 }
 
 VALID_CLAIM_OPERATIONS = {
+    "create",
     "assert",
     "confirm",
     "update",
     "supersede",
     "contradict",
+    "reject",
+    "mark_stale",
+    "verify",
     "retract",
     "resolve",
 }
 
-VALID_RELATIONSHIP_ORIGINS = {"deterministic", "extracted", "ai_proposed", "human_verified", "proposed"}
+VALID_RELATIONSHIP_ORIGINS = {
+    "deterministic",
+    "extracted",
+    "ai_proposed",
+    "human_verified",
+    "proposed",
+}
 
 GITHUB_SOURCE_TYPES = {"github", "github_issue", "github_pr"}
 
 AGENT_SESSION_SOURCE_TYPES = {
-    "agent_session", "codex", "claude", "opencode",
-    "ai_context", "ai_context_codex", "ai_context_claude_code", "ai_context_opencode",
+    "agent_session",
+    "codex",
+    "claude",
+    "opencode",
+    "ai_context",
+    "ai_context_codex",
+    "ai_context_claude_code",
+    "ai_context_opencode",
 }
 
 AI_CONTEXT_COMPAT_TYPES = {
-    "ai_context", "ai_context_codex", "ai_context_claude_code", "ai_context_opencode",
-    "codex", "claude", "opencode",
+    "ai_context",
+    "ai_context_codex",
+    "ai_context_claude_code",
+    "ai_context_opencode",
+    "codex",
+    "claude",
+    "opencode",
 }
 
 _MODEL_ALIASES = {
@@ -255,7 +285,11 @@ def resolve_github_item_type(source_type: str | None, metadata: dict | None = No
             or "/pull/" in source_url
         ):
             return "github_pr"
-        if item_type == "issue" or "issue" in meta_source_type or metadata.get("issue_number") is not None:
+        if (
+            item_type == "issue"
+            or "issue" in meta_source_type
+            or metadata.get("issue_number") is not None
+        ):
             return "github_issue"
     if raw_source_type == "github":
         return "github_issue"
@@ -315,12 +349,25 @@ def default_trust_zone_for_source(source_type: str | None, metadata: dict | None
         if meta.get("verified_by_human") or meta.get("human_authored"):
             return "trusted_human"
         return "semi_trusted_tool"
-    if raw in {"slack", "discord", "gmail", "gdrive", "drive", "web", "browser_upload", "upload", "notion", "zoom"}:
+    if raw in {
+        "slack",
+        "discord",
+        "gmail",
+        "gdrive",
+        "drive",
+        "web",
+        "browser_upload",
+        "upload",
+        "notion",
+        "zoom",
+    }:
         return "untrusted_external"
     return "untrusted_external"
 
 
-def canonical_trust_zone(value: str | None, source_type: str | None = None, metadata: dict | None = None) -> str:
+def canonical_trust_zone(
+    value: str | None, source_type: str | None = None, metadata: dict | None = None
+) -> str:
     raw = (value or "").strip().lower()
     return raw if raw in VALID_TRUST_ZONES else default_trust_zone_for_source(source_type, metadata)
 
