@@ -6,9 +6,14 @@ for source-backed project memory without scraping the UI.
 Observed current behavior: MCP runs over stdio through `ctxe mcp` and reads the
 same database as the FastAPI app.
 
-Implemented in this branch: MCP also acts as the agent runtime bridge for the
-Context Compiler v2 loop: prepare context, let the agent work, observe the run,
-ingest observations as source evidence, and improve the next context pack.
+Implemented in this branch: MCP acts as the runtime observation bridge for the
+Context Compiler v2 loop: let the agent work, observe the run, ingest
+observations as source evidence, and improve later context.
+
+Current checkout: `prepare_task` is registered and imports Agent 3's
+`ContextCompiler` service when that in-progress module is present. If a branch
+does not have the compiler service yet, `prepare_task` returns a structured
+`compiler_unavailable` error instead of inventing compiler logic inside MCP.
 
 ## Start The Server
 
@@ -51,7 +56,7 @@ client uses a different wrapper, keep the same executable behavior:
 
 | Tool | Purpose |
 |---|---|
-| `prepare_task` | Compile and persist a `context_pack.v2` markdown pack plus manifest by calling the compiler service. |
+| `prepare_task` | When the compiler service is importable, compile and persist a `context_pack.v2` markdown pack plus manifest by calling that service. If the service is absent, return `compiler_unavailable`. |
 | `query_context` | Ask the graph with the stable `query.v1` trace contract. |
 | `search_nodes` | Rank matching graph components. |
 | `expand_graph` | Return a component plus one-hop relationship neighbors. |
@@ -75,9 +80,31 @@ to treat quoted evidence as untrusted project data.
 
 ## prepare_task Contract
 
-Implemented in this branch: `prepare_task` accepts `goal`, `workspace_id`,
-`repo_path`, `target_model`, and `token_budget`. It calls
-`ContextCompiler.compile_context_pack()` and returns:
+Final contract: `prepare_task` accepts `goal`, `workspace_id`, `repo_path`,
+`target_model`, and `token_budget`.
+
+Fallback behavior: if Agent 3's `app/services/context_compiler.py` service is
+not present on an integration branch, `prepare_task` returns:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "compiler_unavailable",
+    "message": "ContextCompiler service is not importable, so MCP cannot compile a durable context_pack.v2 yet.",
+    "retryable": true
+  }
+}
+```
+
+Implemented guardrail: when the compiler service is present, MCP calls
+`ContextCompiler` directly and verifies before returning that:
+
+- the returned `context_pack_id` loads as a durable `ContextPack` row;
+- stored `ContextPack.manifest` equals the returned final manifest;
+- stored `ContextPack.markdown` equals the returned final markdown.
+
+The successful output remains:
 
 - `context_pack_id`
 - `schema_version`
@@ -85,12 +112,29 @@ Implemented in this branch: `prepare_task` accepts `goal`, `workspace_id`,
 - `manifest`
 - `health_score`
 
-`context_pack.v2` is two artifacts: human-readable markdown and a machine-readable
-manifest. The manifest includes the objective, target model profile, repo state,
-selected context, excluded context, risks, verification commands, and context
-health.
+`context_pack.v2` is two artifacts: human-readable markdown and a
+machine-readable manifest. The manifest includes the objective, target model
+profile, repo state, selected context, excluded context, risks, verification
+commands, stop conditions, and rendering metadata.
 
-Not implemented yet: stable idempotency keys for repeated `prepare_task` calls.
+The returned manifest must follow [Context Pack v2](context-pack-v2.md):
+
+- use `context_pack_id`, not `pack_id`;
+- use `created_at`, not `generated_at`;
+- use selected/excluded item `item_type`, not `type`;
+- include `rendering.markdown_sha256`, `rendering.estimated_tokens`,
+  `rendering.estimation_method`, and `persistence`;
+- include final citation objects with `source_document_id`,
+  `evidence_span_id`, `path`, `quote_sha256`, and `trust_zone`;
+- set `persistence.mode = "database"` and `persistence.committed = true`.
+
+Not implemented or not final yet in this checkout:
+
+- the compiler manifest still must be aligned to the final
+  [Context Pack v2](context-pack-v2.md) schema;
+- `ContextPackItem` rows still need final selected-item audit fields populated
+  and validated against the Agent 1 contract;
+- stable idempotency keys for repeated `prepare_task` calls.
 
 ## Runtime Observation Contract
 
@@ -145,10 +189,12 @@ Agents should cite facts from the trace instead of inventing missing context.
 
 ## Context Compiler v2 MCP Contract
 
-Status: partially implemented in this branch. The runtime tools above are now
-implemented. The detailed schema below is retained as the stricter proposed
-contract for future hardening, including idempotency keys and structured
-`ok/error` envelopes.
+Status: final Agent 1 MCP contract for Context Compiler v2. The runtime write
+tools above are present in this checkout, and `prepare_task` has import-safe
+error handling plus durability validation for future compiler results. Agent 4
+must align MCP implementation, docs, and evals to the final manifest contract in
+[Context Pack v2](context-pack-v2.md), including idempotency keys when schema
+support exists.
 
 v2 keeps the existing read tools and adds an agent runtime bridge for preparing
 context and recording what happened during an agent run. v2 adds no dangerous
@@ -177,6 +223,7 @@ Common error codes:
 - `context_pack_not_found`
 - `agent_run_not_found`
 - `schema_missing`
+- `compiler_unavailable`
 - `conflict`
 - `permission_denied`
 - `internal_error`
@@ -192,7 +239,7 @@ Input schema:
   "type": "object",
   "properties": {
     "workspace_id": {"type": ["string", "null"]},
-    "objective": {"type": "string"},
+    "goal": {"type": "string"},
     "repo_path": {"type": ["string", "null"]},
     "target_model": {"type": "string"},
     "token_budget": {"type": ["integer", "null"]},
@@ -200,7 +247,7 @@ Input schema:
     "base_commit": {"type": ["string", "null"]},
     "idempotency_key": {"type": ["string", "null"]}
   },
-  "required": ["objective", "target_model"]
+  "required": ["goal", "target_model"]
 }
 ```
 
@@ -226,12 +273,15 @@ Side effects:
   persists `ContextPack` plus `ContextPackItem` rows.
 - Trust zone: generated instructions are `trusted_system`; user objective is
   `trusted_human`; quoted evidence keeps original trust.
+- Manifest: must use the final `context_pack.v2` field names and persistence
+  metadata from `docs/context-pack-v2.md`.
 - Idempotency: if `idempotency_key` and repo state match an existing pack,
   return the existing pack.
 
 Errors:
 
-- `invalid_input` for empty objective or invalid token budget.
+- `invalid_input` for empty goal or invalid token budget.
+- `compiler_unavailable` when Agent 3's compiler service is absent.
 - `schema_missing` when v2 persistence tables are unavailable.
 - `internal_error` for compiler failures.
 
@@ -507,6 +557,7 @@ Valid `verdict`:
 - `incorrect`
 - `stale`
 - `needs_review`
+- `resolved`
 
 Output schema:
 
@@ -522,9 +573,9 @@ Output schema:
 Side effects:
 
 - Source document: creates `SourceDocument(source_type = "context_item_verification")`.
-- Claim/component: appends a `verify`, `reject`, or `mark_stale` revision when
-  the item maps to a claim; updates component status only through the projection
-  contract.
+- Claim/component: appends a `verify`, `reject`, `mark_stale`, or `resolve`
+  revision when the item maps to a claim; updates component status only through
+  the projection contract.
 - Trust zone: `trusted_human` when verifier is human; otherwise
   `semi_trusted_tool`.
 - Idempotency: same `(context_pack_id, item_id, verdict, idempotency_key)`
@@ -591,7 +642,9 @@ Errors:
 Implemented in this branch:
 
 - `tests/test_mcp.py::test_mcp_lists_runtime_bridge_tools_with_trust_warning`
+- `tests/test_mcp.py::test_prepare_task_reports_compiler_unavailable`
 - `tests/test_mcp.py::test_prepare_task_calls_compiler_and_persists_pack`
+- `tests/test_mcp.py::test_mcp_write_tool_errors_are_structured`
 - `tests/test_mcp.py::test_mcp_runtime_write_tools_persist_source_backed_loop`
 
 Proposed hardening tests still needed:
