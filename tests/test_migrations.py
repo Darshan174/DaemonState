@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
 from uuid import UUID
@@ -759,6 +760,116 @@ class TestWorkspaceOwnershipMigration:
                 assert entity_row[0] == UUID(workspace_id).hex
                 assert entity_row[1] == "component:ship"
                 assert entity_row[2] == "Ship"
+        finally:
+            await engine.dispose()
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+class TestEvidenceLedgerMigration:
+    async def test_migration_adds_source_ledger_claim_and_runtime_tables(self):
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(_create_legacy_schema)
+
+            async with engine.begin() as conn:
+                await conn.execute(text(
+                    "INSERT INTO source_documents "
+                    "(id, source_type, external_id, content, metadata) "
+                    "VALUES "
+                    "('40000000-0000-0000-0000-000000000001', "
+                    "'local', 'ledger-doc', 'Decision: Keep raw evidence.', "
+                    "'{\"created_at\":\"2026-01-02T03:04:05+00:00\"}')"
+                ))
+                await conn.execute(text(
+                    "INSERT INTO models (id, name) VALUES "
+                    "('40000000-0000-0000-0000-000000000002', 'Decision')"
+                ))
+                await conn.execute(text(
+                    "INSERT INTO components "
+                    "(id, model_id, source_document_id, name, value, fact_type, confidence, status) "
+                    "VALUES "
+                    "('40000000-0000-0000-0000-000000000003', "
+                    "'40000000-0000-0000-0000-000000000002', "
+                    "'40000000-0000-0000-0000-000000000001', "
+                    "'Keep raw evidence', 'Keep raw evidence.', 'decision', 0.9, 'active')"
+                ))
+
+            async with engine.begin() as conn:
+                await run_migrations(conn)
+            async with engine.begin() as conn:
+                await run_migrations(conn)
+
+            async with engine.connect() as conn:
+                source_columns = await _table_columns(conn, "source_documents")
+                component_columns = await _table_columns(conn, "components")
+                evidence_columns = await _table_columns(conn, "evidence_spans")
+                claim_columns = await _table_columns(conn, "claims")
+                revision_columns = await _table_columns(conn, "claim_revisions")
+                runtime_tables = {
+                    name: await _table_columns(conn, name)
+                    for name in (
+                        "context_packs",
+                        "context_pack_items",
+                        "agent_runs",
+                        "run_observations",
+                        "code_files",
+                        "code_symbols",
+                        "code_edges",
+                        "repo_events",
+                    )
+                }
+
+                assert {"content_sha256", "trust_zone", "source_created_at"} <= set(source_columns)
+                assert "claim_id" in component_columns
+                assert {
+                    "source_document_id",
+                    "start_char",
+                    "end_char",
+                    "text",
+                    "text_sha256",
+                    "prompt_injection_risk_score",
+                    "review_status",
+                } <= set(evidence_columns)
+                assert {
+                    "identity_key",
+                    "claim_type",
+                    "status",
+                    "current_revision_id",
+                } <= set(claim_columns)
+                assert {
+                    "claim_id",
+                    "evidence_span_id",
+                    "operation",
+                    "status_after",
+                    "supersedes_claim_id",
+                    "contradicts_claim_id",
+                    "created_by",
+                } <= set(revision_columns)
+                for columns in runtime_tables.values():
+                    assert columns
+
+                row = (await conn.execute(text(
+                    "SELECT content, content_sha256, trust_zone, source_created_at "
+                    "FROM source_documents "
+                    "WHERE id = '40000000-0000-0000-0000-000000000001'"
+                ))).fetchone()
+                assert row is not None
+                assert row[0] == "Decision: Keep raw evidence."
+                assert row[1] == hashlib.sha256(row[0].encode("utf-8")).hexdigest()
+                assert row[2] == "trusted_repo"
+                assert row[3] is not None
+
+                evidence_indexes = await _index_names(conn, "evidence_spans")
+                claim_indexes = await _index_names(conn, "claims")
+                assert evidence_indexes.count("ix_evidence_spans_workspace_document") == 1
+                assert claim_indexes.count("ix_claims_workspace_identity") == 1
         finally:
             await engine.dispose()
             try:
