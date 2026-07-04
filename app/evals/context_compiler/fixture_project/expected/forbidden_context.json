@@ -8,7 +8,7 @@
     {
       "id": "stale-zoom-connected-claim",
       "must_exclude_terms": ["Zoom is connected"],
-      "reason": "stale_or_superseded"
+      "reason": "stale"
     }
   ]
 }

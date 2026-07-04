@@ -43,13 +43,17 @@ project sources; then turn that activity into a source-backed view of:
 - what agents decided or attempted;
 - where code, issues, and documentation disagree;
 - what the next human or agent should do;
-- a clean `context_pack.v2` markdown packet plus manifest for the next agent run.
+- a focused handoff for the next agent run.
 
-Implemented in this branch, the v2 loop is:
+The v2 direction is:
 
 ```text
 prepare context -> agent works -> observe result -> ingest result -> improve next context
 ```
+
+Current checkout note: the v2 compiler, `POST /api/context/prepare`,
+`ctxe prepare`, and MCP runtime bridge are present. The compiler contract is
+still being hardened against the final `context_pack.v2` manifest schema.
 
 The project graph is the primary navigation surface. Users can explore
 relationships between sessions, decisions, tasks, risks, issues, PRs, and
@@ -600,7 +604,7 @@ MCP tools:
 
 | Tool | Purpose |
 |---|---|
-| `prepare_task` | Compile `context_pack.v2` markdown plus manifest through the compiler service |
+| `prepare_task` | Compile and persist `context_pack.v2` through the compiler service; returns `compiler_unavailable` only if the service is absent on an integration branch |
 | `query_context` | Ask the graph with the same `query.v1` facts-used trace returned by `/api/query` |
 | `search_nodes` | Rank matching graph components |
 | `expand_graph` | Return a component plus 1-hop relationship neighbors with evidence |

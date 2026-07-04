@@ -35,10 +35,17 @@ from app.models import (
 )
 from app.processing.embedder import build_default_embedder, cosine_similarity
 from app.services.claims import append_claim_revision, upsert_claim_for_fact
-from app.services.context_compiler import ContextCompiler
 from app.services.evidence import create_evidence_span
 from app.services.query import QueryService
 from app.time import utc_now
+
+try:
+    from app.services.context_compiler import ContextCompiler as _ContextCompiler
+except Exception as exc:  # pragma: no cover - exercised by import-safety tests
+    _ContextCompiler = None
+    _CONTEXT_COMPILER_IMPORT_ERROR: Exception | None = exc
+else:
+    _CONTEXT_COMPILER_IMPORT_ERROR = None
 
 logger = logging.getLogger("context-engine.mcp")
 
@@ -51,6 +58,17 @@ def _text(content: str) -> list[TextContent]:
 
 def _json_text(data: Any) -> list[TextContent]:
     return _text(json.dumps(data, indent=2, default=str))
+
+
+def _error_text(code: str, message: str, *, retryable: bool = False) -> list[TextContent]:
+    return _json_text({
+        "ok": False,
+        "error": {
+            "code": code,
+            "message": message,
+            "retryable": retryable,
+        },
+    })
 
 
 TRUST_WARNING = (
@@ -451,9 +469,29 @@ async def _prepare_task(
     target_model: str | None,
     token_budget: int | None,
 ) -> list[TextContent]:
+    if _ContextCompiler is None:
+        detail = (
+            f" Import error: {_CONTEXT_COMPILER_IMPORT_ERROR}"
+            if _CONTEXT_COMPILER_IMPORT_ERROR
+            else ""
+        )
+        return _error_text(
+            "compiler_unavailable",
+            "ContextCompiler service is not importable, so MCP cannot compile "
+            f"a durable context_pack.v2 yet.{detail}",
+            retryable=True,
+        )
+
     try:
+        if not _none_if_blank(goal):
+            return _error_text("invalid_input", "goal is required")
+        if not _none_if_blank(target_model):
+            return _error_text("invalid_input", "target_model is required")
+        if token_budget is not None and int(token_budget) <= 0:
+            return _error_text("invalid_input", "token_budget must be positive")
+
         async with AsyncSessionLocal() as session:
-            compiler = ContextCompiler(session)
+            compiler = _ContextCompiler(session)
             result = await compiler.compile_context_pack(
                 goal,
                 workspace_id=workspace_id,
@@ -461,18 +499,49 @@ async def _prepare_task(
                 target_model=target_model,
                 token_budget=token_budget,
             )
+            manifest = _result_manifest(result)
+            pack_id = _result_pack_id(result, manifest)
+            if pack_id is None:
+                return _error_text(
+                    "internal_error",
+                    "ContextCompiler returned no durable context_pack_id.",
+                )
+            pack = await session.get(ContextPack, pack_id)
+            if pack is None:
+                return _error_text(
+                    "internal_error",
+                    f"ContextCompiler returned context_pack_id {pack_id}, but no ContextPack row exists.",
+                )
+            stored_manifest = _stored_manifest(pack)
+            markdown = str(getattr(result, "markdown", "") or "")
+            if stored_manifest != manifest:
+                return _error_text(
+                    "internal_error",
+                    "Stored ContextPack.manifest does not match the compiler result manifest.",
+                )
+            if pack.markdown != markdown:
+                return _error_text(
+                    "internal_error",
+                    "Stored ContextPack.markdown does not match the compiler result markdown.",
+                )
             await session.commit()
-        manifest = result.manifest
         return _json_text({
-            "context_pack_id": result.pack_id,
+            "context_pack_id": str(pack_id),
             "schema_version": manifest.get("schema_version"),
-            "markdown": result.markdown,
+            "markdown": markdown,
             "manifest": manifest,
-            "health_score": (manifest.get("context_health") or {}).get("readiness_score"),
+            "health_score": _result_health_score(result, manifest, pack),
         })
+    except (RuntimeError, OSError) as exc:
+        if "no such table" in str(exc).lower():
+            return _error_text("schema_missing", str(exc), retryable=True)
+        logger.exception("prepare_task failed")
+        return _error_text("internal_error", str(exc))
+    except ValueError as exc:
+        return _error_text("invalid_input", str(exc))
     except Exception as exc:
         logger.exception("prepare_task failed")
-        return _text(f"Error: {exc}")
+        return _error_text("internal_error", str(exc))
 
 
 async def _record_agent_run_start(
@@ -489,7 +558,7 @@ async def _record_agent_run_start(
         async with AsyncSessionLocal() as session:
             pack = await session.get(ContextPack, pack_id)
             if pack is None:
-                return _text(f"ContextPack not found: {context_pack_id}")
+                return _error_text("context_pack_not_found", f"ContextPack not found: {context_pack_id}")
             run = AgentRun(
                 workspace_id=pack.workspace_id,
                 context_pack_id=pack.id,
@@ -505,9 +574,11 @@ async def _record_agent_run_start(
             await session.flush()
             await session.commit()
             return _json_text({"run_id": str(run.id)})
+    except ValueError as exc:
+        return _error_text("invalid_input", str(exc))
     except Exception as exc:
         logger.exception("record_agent_run_start failed")
-        return _text(f"Error: {exc}")
+        return _error_text("internal_error", str(exc))
 
 
 async def _record_agent_event(
@@ -524,7 +595,7 @@ async def _record_agent_event(
         async with AsyncSessionLocal() as session:
             run = await _load_run(session, run_uuid)
             if run is None:
-                return _text(f"AgentRun not found: {run_id}")
+                return _error_text("agent_run_not_found", f"AgentRun not found: {run_id}")
             source_doc, observation = await _record_observation(
                 session,
                 run=run,
@@ -540,9 +611,11 @@ async def _record_agent_event(
                 "source_document_id": str(source_doc.id),
                 "run_observation_id": str(observation.id),
             })
+    except ValueError as exc:
+        return _error_text("invalid_input", str(exc))
     except Exception as exc:
         logger.exception("record_agent_event failed")
-        return _text(f"Error: {exc}")
+        return _error_text("internal_error", str(exc))
 
 
 async def _record_decision(
@@ -564,7 +637,7 @@ async def _record_decision(
         async with AsyncSessionLocal() as session:
             run = await _load_run(session, run_uuid)
             if run is None:
-                return _text(f"AgentRun not found: {run_id}")
+                return _error_text("agent_run_not_found", f"AgentRun not found: {run_id}")
             source_doc, observation = await _record_observation(
                 session,
                 run=run,
@@ -615,9 +688,11 @@ async def _record_decision(
                 "source_document_id": str(source_doc.id),
                 "run_observation_id": str(observation.id),
             })
+    except ValueError as exc:
+        return _error_text("invalid_input", str(exc))
     except Exception as exc:
         logger.exception("record_decision failed")
-        return _text(f"Error: {exc}")
+        return _error_text("internal_error", str(exc))
 
 
 async def _record_blocker(
@@ -644,7 +719,7 @@ async def _record_blocker(
         async with AsyncSessionLocal() as session:
             run = await _load_run(session, run_uuid)
             if run is None:
-                return _text(f"AgentRun not found: {run_id}")
+                return _error_text("agent_run_not_found", f"AgentRun not found: {run_id}")
             source_doc, observation = await _record_observation(
                 session,
                 run=run,
@@ -700,9 +775,11 @@ async def _record_blocker(
                 "source_document_id": str(source_doc.id),
                 "run_observation_id": str(observation.id),
             })
+    except ValueError as exc:
+        return _error_text("invalid_input", str(exc))
     except Exception as exc:
         logger.exception("record_blocker failed")
-        return _text(f"Error: {exc}")
+        return _error_text("internal_error", str(exc))
 
 
 async def _record_patch_summary(
@@ -720,7 +797,7 @@ async def _record_patch_summary(
         async with AsyncSessionLocal() as session:
             run = await _load_run(session, run_uuid)
             if run is None:
-                return _text(f"AgentRun not found: {run_id}")
+                return _error_text("agent_run_not_found", f"AgentRun not found: {run_id}")
             source_doc, observation = await _record_observation(
                 session,
                 run=run,
@@ -735,9 +812,11 @@ async def _record_patch_summary(
                 "source_document_id": str(source_doc.id),
                 "run_observation_id": str(observation.id),
             })
+    except ValueError as exc:
+        return _error_text("invalid_input", str(exc))
     except Exception as exc:
         logger.exception("record_patch_summary failed")
-        return _text(f"Error: {exc}")
+        return _error_text("internal_error", str(exc))
 
 
 async def _verify_context_item(
@@ -759,9 +838,9 @@ async def _verify_context_item(
             component = await session.get(Component, component_uuid) if component_uuid else None
             claim = await session.get(Claim, claim_uuid) if claim_uuid else None
             if component_uuid and component is None:
-                return _text(f"Component not found: {component_id}")
+                return _error_text("not_found", f"Component not found: {component_id}")
             if claim_uuid and claim is None:
-                return _text(f"Claim not found: {claim_id}")
+                return _error_text("not_found", f"Claim not found: {claim_id}")
             if claim is None and component and component.claim_id:
                 claim = await session.get(Claim, component.claim_id)
 
@@ -809,9 +888,11 @@ async def _verify_context_item(
                 "status": claim_status if claim else component_status,
                 "source_document_id": str(source_doc.id),
             })
+    except ValueError as exc:
+        return _error_text("invalid_input", str(exc))
     except Exception as exc:
         logger.exception("verify_context_item failed")
-        return _text(f"Error: {exc}")
+        return _error_text("internal_error", str(exc))
 
 
 async def _close_task(
@@ -833,9 +914,9 @@ async def _close_task(
             component = await session.get(Component, component_uuid) if component_uuid else None
             claim = await session.get(Claim, claim_uuid) if claim_uuid else None
             if component_uuid and component is None:
-                return _text(f"Component not found: {task_component_id}")
+                return _error_text("not_found", f"Component not found: {task_component_id}")
             if claim_uuid and claim is None:
-                return _text(f"Claim not found: {task_claim_id}")
+                return _error_text("not_found", f"Claim not found: {task_claim_id}")
             if claim is None and component and component.claim_id:
                 claim = await session.get(Claim, component.claim_id)
 
@@ -882,9 +963,11 @@ async def _close_task(
                 "commit": commit_text,
                 "source_document_id": str(source_doc.id),
             })
+    except ValueError as exc:
+        return _error_text("invalid_input", str(exc))
     except Exception as exc:
         logger.exception("close_task failed")
-        return _text(f"Error: {exc}")
+        return _error_text("internal_error", str(exc))
 
 
 async def _query_context(
@@ -936,8 +1019,16 @@ async def _query_context(
             "sources": result.sources,
             "trace": {
                 "retrieval_strategy": result.trace.retrieval_strategy,
-                "ranking_strategy": result.trace.ranking_strategy,
-                "calibration_strategy": result.trace.calibration_strategy,
+                "ranking_strategy": _trace_attr(
+                    result.trace,
+                    "ranking_strategy",
+                    "deterministic_rerank_v2",
+                ),
+                "calibration_strategy": _trace_attr(
+                    result.trace,
+                    "calibration_strategy",
+                    "logistic_v1",
+                ),
                 "vector_candidate_count": result.trace.vector_candidate_count,
                 "text_candidate_count": result.trace.text_candidate_count,
                 "vector_prefilter_limit": result.trace.vector_prefilter_limit,
@@ -965,9 +1056,9 @@ async def _query_context(
                         "score": fact.score,
                         "semantic_score": fact.semantic_score,
                         "lexical_score": fact.lexical_score,
-                        "rerank_score": fact.rerank_score,
-                        "exact_match_score": fact.exact_match_score,
-                        "token_coverage": fact.token_coverage,
+                        "rerank_score": _trace_attr(fact, "rerank_score", None),
+                        "exact_match_score": _trace_attr(fact, "exact_match_score", None),
+                        "token_coverage": _trace_attr(fact, "token_coverage", None),
                         "confidence": fact.confidence,
                         "authority_weight": fact.authority_weight,
                         "source_document_id": str(fact.source_document_id) if fact.source_document_id else None,
@@ -1258,6 +1349,59 @@ async def _get_status() -> list[TextContent]:
     except Exception as exc:
         logger.exception("get_status failed")
         return _text(f"Error: {exc}")
+
+
+def _result_manifest(result: Any) -> dict[str, Any]:
+    manifest = getattr(result, "manifest", None)
+    if isinstance(manifest, dict):
+        return manifest
+    if isinstance(manifest, str):
+        try:
+            parsed = json.loads(manifest)
+        except json.JSONDecodeError as exc:
+            raise ValueError("compiler result manifest is not valid JSON") from exc
+        if isinstance(parsed, dict):
+            return parsed
+    raise ValueError("compiler result manifest is missing")
+
+
+def _result_pack_id(result: Any, manifest: dict[str, Any]) -> UUID | None:
+    raw = (
+        getattr(result, "context_pack_id", None)
+        or getattr(result, "pack_id", None)
+        or manifest.get("context_pack_id")
+    )
+    if raw in (None, ""):
+        return None
+    return raw if isinstance(raw, UUID) else UUID(str(raw))
+
+
+def _stored_manifest(pack: ContextPack) -> dict[str, Any]:
+    try:
+        parsed = json.loads(pack.manifest or "{}")
+    except json.JSONDecodeError as exc:
+        raise ValueError("stored ContextPack.manifest is not valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("stored ContextPack.manifest is not a JSON object")
+    return parsed
+
+
+def _result_health_score(
+    result: Any,
+    manifest: dict[str, Any],
+    pack: ContextPack,
+) -> float | None:
+    raw = (
+        getattr(result, "health_score", None)
+        or manifest.get("health_score")
+        or (manifest.get("context_health") or {}).get("readiness_score")
+        or pack.health_score
+    )
+    return float(raw) if raw is not None else None
+
+
+def _trace_attr(item: Any, name: str, default: Any) -> Any:
+    return getattr(item, name, default)
 
 
 async def _load_run(session: AsyncSession, run_id: UUID) -> AgentRun | None:
