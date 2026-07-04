@@ -216,3 +216,33 @@ def test_cli_credentials_rotate_invokes_database_rotation(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "credentials rotated:" in output
     assert "updated=1" in output
+
+
+def test_cli_prepare_writes_markdown_output(tmp_path, capsys):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("def prepare_context():\n    return True\n", encoding="utf-8")
+    out = tmp_path / "AGENT_CONTEXT.md"
+    manifest_out = tmp_path / "manifest.json"
+
+    assert cli_main.main([
+        "prepare",
+        "finish app.py",
+        "--repo",
+        str(repo),
+        "--target-model",
+        "qwen2.5-coder-7b",
+        "--budget",
+        "2000",
+        "--out",
+        str(out),
+        "--manifest-out",
+        str(manifest_out),
+    ]) == 0
+
+    assert "Wrote context pack:" in capsys.readouterr().out
+    markdown = out.read_text(encoding="utf-8")
+    manifest = manifest_out.read_text(encoding="utf-8")
+    assert "## Objective" in markdown
+    assert "## Verification Commands" in markdown
+    assert '"schema_version": "context_pack.v2"' in manifest

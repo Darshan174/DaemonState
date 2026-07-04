@@ -19,6 +19,8 @@ from app.services.identity import (
     identity_key_for_component_name,
     record_component_evidence,
 )
+from app.services.claims import upsert_claim_for_fact
+from app.services.evidence import ensure_source_document_ledger_fields
 from app.taxonomy import (
     canonical_model_name,
     canonical_origin,
@@ -58,6 +60,7 @@ class IngestionService:
         doc = await self.session.get(SourceDocument, doc_id)
         if doc is None or doc.processed_at is not None:
             return 0
+        await ensure_source_document_ledger_fields(doc)
 
         metadata = _parse_metadata(doc.metadata_json)
         doc_workspace_id = _coerce_workspace_uuid(
@@ -74,9 +77,11 @@ class IngestionService:
         if doc.source_url:
             metadata.setdefault("source_url", doc.source_url)
         facts = self._extract_source_facts(doc, metadata)
+        extraction_method = "deterministic" if facts else "fallback"
         if not facts:
             facts_list = await self._extractor.extract(doc.content, metadata)
             facts = facts_list
+            extraction_method = "llm_or_regex"
             self.last_extraction_error = getattr(self._extractor, "last_error", None)
             self.last_extraction_warnings = list(getattr(self._extractor, "last_warnings", []) or [])
             self.last_extraction_report = getattr(self._extractor, "last_report", None)
@@ -92,7 +97,12 @@ class IngestionService:
         components = []
         for fact in facts:
             model = await self._get_or_create_model(fact.model_name)
-            component = await self._upsert_component(model, doc, fact)
+            component = await self._upsert_component(
+                model,
+                doc,
+                fact,
+                extraction_method=extraction_method,
+            )
             await record_component_evidence(
                 self.session,
                 component=component,
@@ -140,9 +150,32 @@ class IngestionService:
             await self.session.flush()
         return model
 
-    async def _upsert_component(self, model: Model, doc: SourceDocument, fact: ExtractedFact) -> Component:
+    async def _upsert_component(
+        self,
+        model: Model,
+        doc: SourceDocument,
+        fact: ExtractedFact,
+        extraction_method: str = "legacy",
+    ) -> Component:
         workspace_id = _coerce_workspace_uuid(getattr(doc, "workspace_id", None))
         identity_key = identity_key_for_component_name(fact.name)
+        status = "needs_review" if fact.confidence < 0.6 else "active"
+        temporal = getattr(fact, "temporal_hint", getattr(fact, "temporal", "current"))
+        if temporal == "future":
+            status = "proposed"
+        elif temporal == "past":
+            status = "needs_review"
+
+        claim_result = await upsert_claim_for_fact(
+            self.session,
+            source_document=doc,
+            fact=fact,
+            component_status=status,
+            extraction_method=extraction_method,
+        )
+        if extraction_method != "legacy" and not claim_result.evidence_is_exact:
+            status = "needs_review"
+
         existing_stmt = select(Component).where(
             Component.model_id == model.id,
             Component.value == fact.value,
@@ -175,6 +208,10 @@ class IngestionService:
                 existing.identity_key = identity_key
             if entity and not existing.entity_id:
                 existing.entity_id = entity.id
+            if not existing.claim_id:
+                existing.claim_id = claim_result.claim.id
+            if extraction_method != "legacy" and not claim_result.evidence_is_exact:
+                existing.status = "needs_review"
             if fact.temporal and fact.temporal != "unknown":
                 existing.temporal = fact.temporal
             provenance = getattr(fact, "provenance", None)
@@ -185,16 +222,10 @@ class IngestionService:
                 existing.excerpt = excerpt
             return existing
 
-        status = "needs_review" if fact.confidence < 0.6 else "active"
-        temporal = getattr(fact, "temporal_hint", getattr(fact, "temporal", "current"))
-        if temporal == "future":
-            status = "proposed"
-        elif temporal == "past":
-            status = "needs_review"
-
         component = Component(
             workspace_id=workspace_id,
             entity_id=entity.id if entity else None,
+            claim_id=claim_result.claim.id,
             model_id=model.id,
             source_document_id=doc.id,
             identity_key=identity_key,

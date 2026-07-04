@@ -36,6 +36,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
     graph_parser.add_argument("--json", action="store_true", dest="json_output")
     graph_parser.set_defaults(func=run_graph)
 
+    prepare_parser = subparsers.add_parser("prepare", help="Compile a Context Pack v2 for an agent task.")
+    prepare_parser.add_argument("goal", help="Goal or task objective to prepare context for")
+    prepare_parser.add_argument("--repo", default=".", help="Repository path to inspect")
+    prepare_parser.add_argument("--target-model", default=None)
+    prepare_parser.add_argument("--budget", type=int, default=None, help="Context token budget")
+    prepare_parser.add_argument("--workspace-id", default=None)
+    prepare_parser.add_argument("--out", default=None, help="Write markdown context pack to this path")
+    prepare_parser.add_argument("--manifest-out", default=None, help="Write manifest JSON to this path")
+    prepare_parser.add_argument("--json", action="store_true", dest="json_output")
+    prepare_parser.set_defaults(func=run_prepare)
+
+    repo_parser = subparsers.add_parser("repo", help="Inspect or index a local repository.")
+    repo_subparsers = repo_parser.add_subparsers(dest="repo_command", required=True)
+    repo_index_parser = repo_subparsers.add_parser("index", help="Build a lightweight local repo index.")
+    repo_index_parser.add_argument("path", nargs="?", default=".")
+    repo_index_parser.add_argument("--json", action="store_true", dest="json_output")
+    repo_index_parser.set_defaults(func=run_repo)
+
     eval_parser = subparsers.add_parser("eval", help="Run local quality evals.")
     eval_parser.add_argument("suite", choices=["extraction"], help="Eval suite to run")
     eval_parser.add_argument("--json", action="store_true", dest="json_output")
@@ -189,6 +207,67 @@ def run_graph(args: argparse.Namespace) -> int:
         print(f"Models: {len(models)}, Components: {len(components)}, Relationships: {len(relationships)}")
         for m in models:
             print(f"  {m['name']} ({m.get('component_count', 0)} components)")
+    return 0
+
+
+def run_prepare(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from app.services.context_compiler import ContextCompiler
+
+    async def _run():
+        compiler = ContextCompiler()
+        return await compiler.compile_context_pack(
+            args.goal,
+            workspace_id=args.workspace_id,
+            repo_path=args.repo,
+            target_model=args.target_model,
+            token_budget=args.budget,
+        )
+
+    result = asyncio.run(_run())
+    if args.out:
+        Path(args.out).expanduser().write_text(result.markdown, encoding="utf-8")
+    if args.manifest_out:
+        Path(args.manifest_out).expanduser().write_text(
+            json.dumps(result.manifest, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    if args.json_output:
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    elif args.out:
+        print(f"Wrote context pack: {args.out}")
+        if args.manifest_out:
+            print(f"Wrote manifest: {args.manifest_out}")
+    else:
+        print(result.markdown)
+    return 0
+
+
+def run_repo(args: argparse.Namespace) -> int:
+    from app.services.repo_indexer import RepoIndexer
+
+    if args.repo_command != "index":
+        print(f"Unknown repo command: {args.repo_command}", file=sys.stderr)
+        return 1
+
+    index = RepoIndexer().index(args.path)
+    data = index.to_dict()
+    data["persistence"] = {
+        "available": False,
+        "reason": "Repo intelligence persistence tables are unavailable in this checkout.",
+    }
+    if args.json_output:
+        print(json.dumps(data, indent=2, sort_keys=True))
+    else:
+        print(
+            "repo index: "
+            f"files={len(index.files)} "
+            f"symbols={len(index.symbols)} "
+            f"tests={len(index.test_files)} "
+            f"manifests={len(index.package_manifests)}"
+        )
     return 0
 
 
