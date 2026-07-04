@@ -72,6 +72,35 @@ VALID_TEMPORAL_STATES = {"current", "past", "future", "unknown"}
 
 VALID_COMPONENT_STATUSES = {"active", "needs_review", "proposed", "stale", "deprecated"}
 
+VALID_TRUST_ZONES = {
+    "trusted_system",
+    "trusted_human",
+    "trusted_repo",
+    "semi_trusted_tool",
+    "untrusted_external",
+    "hostile_test",
+}
+
+VALID_CLAIM_STATUSES = {
+    "active",
+    "proposed",
+    "needs_review",
+    "superseded",
+    "rejected",
+    "stale",
+    "resolved",
+}
+
+VALID_CLAIM_OPERATIONS = {
+    "assert",
+    "confirm",
+    "update",
+    "supersede",
+    "contradict",
+    "retract",
+    "resolve",
+}
+
 VALID_RELATIONSHIP_ORIGINS = {"deterministic", "extracted", "ai_proposed", "human_verified", "proposed"}
 
 GITHUB_SOURCE_TYPES = {"github", "github_issue", "github_pr"}
@@ -265,6 +294,35 @@ def canonical_origin(value: str | None) -> str:
     if raw in ("source", "text"):
         return "extracted"
     return "proposed"
+
+
+def default_trust_zone_for_source(source_type: str | None, metadata: dict | None = None) -> str:
+    """Conservative source trust defaults used before human review."""
+    raw = (source_type or "").strip().lower()
+    meta = metadata or {}
+    meta_zone = str(meta.get("trust_zone") or "").strip().lower()
+    if meta_zone in VALID_TRUST_ZONES:
+        return meta_zone
+    if raw in {"hostile_test", "adversarial", "adversarial_test"} or meta.get("hostile_test"):
+        return "hostile_test"
+    if raw in {"local", "local_folder", "repo", "code", "filesystem"}:
+        return "trusted_repo"
+    if raw in {"paste", "manual", "user_note", "user"}:
+        return "trusted_human"
+    if raw in GITHUB_SOURCE_TYPES:
+        return "semi_trusted_tool"
+    if raw in AGENT_SESSION_SOURCE_TYPES or raw.startswith("ai_context"):
+        if meta.get("verified_by_human") or meta.get("human_authored"):
+            return "trusted_human"
+        return "semi_trusted_tool"
+    if raw in {"slack", "discord", "gmail", "gdrive", "drive", "web", "browser_upload", "upload", "notion", "zoom"}:
+        return "untrusted_external"
+    return "untrusted_external"
+
+
+def canonical_trust_zone(value: str | None, source_type: str | None = None, metadata: dict | None = None) -> str:
+    raw = (value or "").strip().lower()
+    return raw if raw in VALID_TRUST_ZONES else default_trust_zone_for_source(source_type, metadata)
 
 
 def relationship_display_label(relationship_type: str, origin: str | None = None) -> str:

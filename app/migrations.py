@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -8,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.services.identity import identity_key_for_component_name, normalize_identity_text
 from app.services.vector_search import pgvector_index_dimension
+from app.taxonomy import default_trust_zone_for_source
 
 
 async def run_migrations(conn: AsyncConnection) -> None:
@@ -23,6 +26,7 @@ async def run_migrations(conn: AsyncConnection) -> None:
     await _migrate_relationships_confidence_evidence(conn)
     await _migrate_components_provenance_excerpt(conn)
     await _migrate_relationships_origin(conn)
+    await _migrate_evidence_ledger_and_claim_graph(conn)
     await _migrate_unresolved_relationships_schema(conn)
     await _migrate_retrieval_events_schema(conn)
     await _migrate_pgvector_search_schema(conn)
@@ -160,6 +164,24 @@ def _loads_json_dict(raw: object) -> dict:
     except (json.JSONDecodeError, TypeError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _source_created_at_from_metadata(metadata: dict) -> datetime | None:
+    for key in ("source_created_at", "created_at", "timestamp", "ts"):
+        value = metadata.get(key)
+        if isinstance(value, datetime):
+            return value
+        if not isinstance(value, str) or not value.strip():
+            continue
+        try:
+            return datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            continue
+    return None
 
 
 async def _migrate_connectors_workspace_schema(conn: AsyncConnection) -> None:
@@ -1072,6 +1094,259 @@ async def _migrate_relationships_origin(conn: AsyncConnection) -> None:
         ))
 
 
+async def _migrate_evidence_ledger_and_claim_graph(conn: AsyncConnection) -> None:
+    """Add v2 source hashes, evidence spans, claims, and runtime persistence tables."""
+    dt_type = _datetime_column_type(conn)
+
+    source_columns = await _get_table_columns(conn, "source_documents")
+    if source_columns:
+        if "content_sha256" not in source_columns:
+            await conn.execute(text("ALTER TABLE source_documents ADD COLUMN content_sha256 VARCHAR(64)"))
+        if "trust_zone" not in source_columns:
+            await conn.execute(text("ALTER TABLE source_documents ADD COLUMN trust_zone VARCHAR(50)"))
+        if "source_created_at" not in source_columns:
+            await conn.execute(text(f"ALTER TABLE source_documents ADD COLUMN source_created_at {dt_type}"))
+        await _backfill_source_document_ledger_columns(conn)
+
+    component_columns = await _get_table_columns(conn, "components")
+    if component_columns and "claim_id" not in component_columns:
+        await conn.execute(text("ALTER TABLE components ADD COLUMN claim_id CHAR(32)"))
+
+    if not source_columns:
+        return
+
+    await conn.execute(text(f"""
+        CREATE TABLE IF NOT EXISTS evidence_spans (
+            id CHAR(32) NOT NULL,
+            workspace_id CHAR(32),
+            source_document_id CHAR(32) NOT NULL,
+            start_char INTEGER,
+            end_char INTEGER,
+            text TEXT,
+            text_sha256 VARCHAR(64) NOT NULL,
+            evidence_type VARCHAR(50) NOT NULL DEFAULT 'extracted_fact',
+            authority_weight FLOAT NOT NULL DEFAULT 0.5,
+            trust_zone VARCHAR(50) NOT NULL DEFAULT 'untrusted_external',
+            prompt_injection_risk_score FLOAT NOT NULL DEFAULT 0.0,
+            extraction_method VARCHAR(50) NOT NULL DEFAULT 'deterministic',
+            review_status VARCHAR(50) NOT NULL DEFAULT 'verified',
+            created_at {dt_type} DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            PRIMARY KEY (id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces (id),
+            FOREIGN KEY(source_document_id) REFERENCES source_documents (id)
+        )
+    """))
+    await conn.execute(text(f"""
+        CREATE TABLE IF NOT EXISTS claims (
+            id CHAR(32) NOT NULL,
+            workspace_id CHAR(32),
+            identity_key VARCHAR(255) NOT NULL,
+            claim_type VARCHAR(50) NOT NULL DEFAULT 'fact',
+            status VARCHAR(50) NOT NULL DEFAULT 'needs_review',
+            temporal VARCHAR(20) NOT NULL DEFAULT 'unknown',
+            confidence FLOAT NOT NULL DEFAULT 0.5,
+            authority_weight FLOAT NOT NULL DEFAULT 0.5,
+            current_revision_id CHAR(32),
+            created_at {dt_type} DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            updated_at {dt_type} DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            PRIMARY KEY (id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces (id)
+        )
+    """))
+    await conn.execute(text(f"""
+        CREATE TABLE IF NOT EXISTS claim_revisions (
+            id CHAR(32) NOT NULL,
+            claim_id CHAR(32) NOT NULL,
+            evidence_span_id CHAR(32) NOT NULL,
+            value TEXT NOT NULL,
+            operation VARCHAR(50) NOT NULL DEFAULT 'create',
+            confidence_delta FLOAT NOT NULL DEFAULT 0.0,
+            status_after VARCHAR(50) NOT NULL DEFAULT 'needs_review',
+            supersedes_claim_id CHAR(32),
+            contradicts_claim_id CHAR(32),
+            created_by VARCHAR(255),
+            created_at {dt_type} DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            PRIMARY KEY (id),
+            FOREIGN KEY(claim_id) REFERENCES claims (id),
+            FOREIGN KEY(evidence_span_id) REFERENCES evidence_spans (id)
+        )
+    """))
+    await conn.execute(text(f"""
+        CREATE TABLE IF NOT EXISTS context_packs (
+            id CHAR(32) NOT NULL,
+            workspace_id CHAR(32),
+            objective TEXT NOT NULL,
+            target_model VARCHAR(255),
+            token_budget INTEGER,
+            pack_version VARCHAR(50) NOT NULL DEFAULT 'context_pack.v2',
+            health_score FLOAT,
+            markdown TEXT NOT NULL DEFAULT '',
+            manifest TEXT NOT NULL DEFAULT '{{}}',
+            created_at {dt_type} DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            PRIMARY KEY (id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces (id)
+        )
+    """))
+    await conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS context_pack_items (
+            id CHAR(32) NOT NULL,
+            context_pack_id CHAR(32) NOT NULL,
+            component_id CHAR(32),
+            evidence_span_id CHAR(32),
+            score FLOAT NOT NULL DEFAULT 0.0,
+            inclusion_reason TEXT,
+            token_cost INTEGER,
+            PRIMARY KEY (id),
+            FOREIGN KEY(context_pack_id) REFERENCES context_packs (id),
+            FOREIGN KEY(component_id) REFERENCES components (id),
+            FOREIGN KEY(evidence_span_id) REFERENCES evidence_spans (id)
+        )
+    """))
+    await conn.execute(text(f"""
+        CREATE TABLE IF NOT EXISTS agent_runs (
+            id CHAR(32) NOT NULL,
+            workspace_id CHAR(32),
+            context_pack_id CHAR(32),
+            tool VARCHAR(100),
+            model VARCHAR(255),
+            objective TEXT,
+            branch VARCHAR(255),
+            base_commit VARCHAR(100),
+            head_commit VARCHAR(100),
+            started_at {dt_type},
+            ended_at {dt_type},
+            status VARCHAR(50) NOT NULL DEFAULT 'running',
+            PRIMARY KEY (id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces (id),
+            FOREIGN KEY(context_pack_id) REFERENCES context_packs (id)
+        )
+    """))
+    await conn.execute(text(f"""
+        CREATE TABLE IF NOT EXISTS run_observations (
+            id CHAR(32) NOT NULL,
+            agent_run_id CHAR(32) NOT NULL,
+            source_document_id CHAR(32),
+            event_type VARCHAR(50) NOT NULL,
+            content TEXT,
+            files_json TEXT NOT NULL DEFAULT '[]',
+            command TEXT,
+            exit_code INTEGER,
+            created_at {dt_type} DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            PRIMARY KEY (id),
+            FOREIGN KEY(agent_run_id) REFERENCES agent_runs (id),
+            FOREIGN KEY(source_document_id) REFERENCES source_documents (id)
+        )
+    """))
+    await conn.execute(text(f"""
+        CREATE TABLE IF NOT EXISTS code_files (
+            id CHAR(32) NOT NULL,
+            workspace_id CHAR(32),
+            repo_root TEXT,
+            path TEXT NOT NULL,
+            language VARCHAR(50),
+            sha256 VARCHAR(64),
+            last_commit VARCHAR(100),
+            size INTEGER,
+            updated_at {dt_type} DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            PRIMARY KEY (id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces (id)
+        )
+    """))
+    await conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS code_symbols (
+            id CHAR(32) NOT NULL,
+            code_file_id CHAR(32) NOT NULL,
+            symbol_type VARCHAR(50) NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            qualified_name VARCHAR(512),
+            start_line INTEGER,
+            end_line INTEGER,
+            docstring TEXT,
+            signature TEXT,
+            PRIMARY KEY (id),
+            FOREIGN KEY(code_file_id) REFERENCES code_files (id)
+        )
+    """))
+    await conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS code_edges (
+            id CHAR(32) NOT NULL,
+            source_symbol_id CHAR(32) NOT NULL,
+            target_symbol_id CHAR(32) NOT NULL,
+            edge_type VARCHAR(50) NOT NULL DEFAULT 'references',
+            PRIMARY KEY (id),
+            FOREIGN KEY(source_symbol_id) REFERENCES code_symbols (id),
+            FOREIGN KEY(target_symbol_id) REFERENCES code_symbols (id)
+        )
+    """))
+    await conn.execute(text(f"""
+        CREATE TABLE IF NOT EXISTS repo_events (
+            id CHAR(32) NOT NULL,
+            workspace_id CHAR(32),
+            commit_sha VARCHAR(100),
+            branch VARCHAR(255),
+            author VARCHAR(255),
+            message TEXT,
+            changed_files_json TEXT NOT NULL DEFAULT '[]',
+            created_at {dt_type} DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            PRIMARY KEY (id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces (id)
+        )
+    """))
+
+    evidence_columns = await _get_table_columns(conn, "evidence_spans")
+    if evidence_columns:
+        if "text" not in evidence_columns:
+            await conn.execute(text("ALTER TABLE evidence_spans ADD COLUMN text TEXT"))
+        if "review_status" not in evidence_columns:
+            await conn.execute(text(
+                "ALTER TABLE evidence_spans ADD COLUMN review_status VARCHAR(50) NOT NULL DEFAULT 'verified'"
+            ))
+
+    revision_columns = await _get_table_columns(conn, "claim_revisions")
+    if revision_columns:
+        if "status_after" not in revision_columns:
+            await conn.execute(text(
+                "ALTER TABLE claim_revisions ADD COLUMN status_after VARCHAR(50) NOT NULL DEFAULT 'needs_review'"
+            ))
+        if "supersedes_claim_id" not in revision_columns:
+            await conn.execute(text("ALTER TABLE claim_revisions ADD COLUMN supersedes_claim_id CHAR(32)"))
+        if "contradicts_claim_id" not in revision_columns:
+            await conn.execute(text("ALTER TABLE claim_revisions ADD COLUMN contradicts_claim_id CHAR(32)"))
+        if "created_by" not in revision_columns:
+            await conn.execute(text("ALTER TABLE claim_revisions ADD COLUMN created_by VARCHAR(255)"))
+
+
+async def _backfill_source_document_ledger_columns(conn: AsyncConnection) -> None:
+    columns = await _get_table_columns(conn, "source_documents")
+    if not {"id", "content", "source_type"} <= columns:
+        return
+    metadata_expr = "metadata" if "metadata" in columns else "'{}'"
+    result = await conn.execute(text(f"""
+        SELECT id, content, source_type, {metadata_expr} AS metadata, content_sha256, trust_zone, source_created_at
+        FROM source_documents
+        WHERE content_sha256 IS NULL
+           OR content_sha256 = ''
+           OR trust_zone IS NULL
+           OR trust_zone = ''
+           OR source_created_at IS NULL
+    """))
+    for row in result.fetchall():
+        metadata = _loads_json_dict(row[3])
+        params = {
+            "id": row[0],
+            "content_sha256": row[4] or _sha256_text(str(row[1] or "")),
+            "trust_zone": row[5] or default_trust_zone_for_source(str(row[2] or ""), metadata),
+            "source_created_at": row[6] or _source_created_at_from_metadata(metadata),
+        }
+        await conn.execute(text("""
+            UPDATE source_documents
+            SET content_sha256 = :content_sha256,
+                trust_zone = :trust_zone,
+                source_created_at = COALESCE(source_created_at, :source_created_at)
+            WHERE id = :id
+        """), params)
+
+
 async def _migrate_unresolved_relationships_schema(conn: AsyncConnection) -> None:
     if not await _table_exists(conn, "components"):
         return
@@ -1328,8 +1603,11 @@ async def _migrate_query_and_sync_indexes(conn: AsyncConnection) -> None:
         ),
         ("source_documents", "ix_source_documents_processed_at", ("processed_at",)),
         ("source_documents", "ix_source_documents_ingested_at", ("ingested_at",)),
+        ("source_documents", "ix_source_documents_content_sha256", ("content_sha256",)),
+        ("source_documents", "ix_source_documents_trust_zone", ("trust_zone",)),
         ("components", "ix_components_workspace_id", ("workspace_id",)),
         ("components", "ix_components_entity_id", ("entity_id",)),
+        ("components", "ix_components_claim_id", ("claim_id",)),
         ("components", "ix_components_identity_key", ("identity_key",)),
         (
             "components",
@@ -1420,6 +1698,53 @@ async def _migrate_query_and_sync_indexes(conn: AsyncConnection) -> None:
             "ix_unresolved_relationships_source_target_type",
             ("source_component_id", "target_identity_key", "relationship_type"),
         ),
+        (
+            "evidence_spans",
+            "ix_evidence_spans_workspace_document",
+            ("workspace_id", "source_document_id"),
+        ),
+        (
+            "evidence_spans",
+            "ix_evidence_spans_source_range",
+            ("source_document_id", "start_char", "end_char"),
+        ),
+        ("evidence_spans", "ix_evidence_spans_text_sha256", ("text_sha256",)),
+        (
+            "evidence_spans",
+            "ix_evidence_spans_trust_risk",
+            ("trust_zone", "prompt_injection_risk_score"),
+        ),
+        ("claims", "ix_claims_workspace_identity", ("workspace_id", "identity_key")),
+        ("claims", "ix_claims_workspace_status", ("workspace_id", "status")),
+        ("claims", "ix_claims_type_status", ("claim_type", "status")),
+        ("claims", "ix_claims_current_revision_id", ("current_revision_id",)),
+        ("claim_revisions", "ix_claim_revisions_claim_created", ("claim_id", "created_at")),
+        ("claim_revisions", "ix_claim_revisions_evidence_span", ("evidence_span_id",)),
+        ("claim_revisions", "ix_claim_revisions_supersedes_claim_id", ("supersedes_claim_id",)),
+        ("claim_revisions", "ix_claim_revisions_contradicts_claim_id", ("contradicts_claim_id",)),
+        ("context_packs", "ix_context_packs_workspace_created", ("workspace_id", "created_at")),
+        ("context_packs", "ix_context_packs_target_model", ("target_model",)),
+        ("context_pack_items", "ix_context_pack_items_pack", ("context_pack_id",)),
+        ("context_pack_items", "ix_context_pack_items_component", ("component_id",)),
+        ("context_pack_items", "ix_context_pack_items_evidence", ("evidence_span_id",)),
+        ("agent_runs", "ix_agent_runs_workspace_started", ("workspace_id", "started_at")),
+        ("agent_runs", "ix_agent_runs_context_pack", ("context_pack_id",)),
+        ("agent_runs", "ix_agent_runs_status", ("status",)),
+        ("run_observations", "ix_run_observations_agent_run_created", ("agent_run_id", "created_at")),
+        ("run_observations", "ix_run_observations_source_document", ("source_document_id",)),
+        ("run_observations", "ix_run_observations_event_type", ("event_type",)),
+        ("code_files", "ix_code_files_workspace_path", ("workspace_id", "path")),
+        ("code_files", "ix_code_files_sha256", ("sha256",)),
+        ("code_symbols", "ix_code_symbols_file", ("code_file_id",)),
+        ("code_symbols", "ix_code_symbols_qualified_name", ("qualified_name",)),
+        (
+            "code_edges",
+            "ix_code_edges_source_target_type",
+            ("source_symbol_id", "target_symbol_id", "edge_type"),
+        ),
+        ("code_edges", "ix_code_edges_target", ("target_symbol_id",)),
+        ("repo_events", "ix_repo_events_workspace_commit", ("workspace_id", "commit_sha")),
+        ("repo_events", "ix_repo_events_workspace_created", ("workspace_id", "created_at")),
         (
             "retrieval_events",
             "ix_retrieval_events_workspace_created",
