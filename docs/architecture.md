@@ -1,9 +1,9 @@
 # Architecture
 
-Context Engine is a self-hosted state-of-work service for AI-native builders.
+Context Engine is a self-hosted context compiler for AI-native builders.
 Its job is to reconstruct the current project state from AI coding sessions,
-code-host activity, conversations, and documents, then prepare trustworthy
-context for the next human or agent action.
+code-host activity, conversations, documents, and repo state, then prepare
+trustworthy context for the next human or agent action.
 
 The graph is implementation infrastructure. The product output is a project
 brief: what happened, what matters, what is blocked, what drifted, and what to
@@ -12,6 +12,16 @@ do next.
 The core contract is source-backed: every extracted fact starts as a raw
 `SourceDocument`, and graph nodes keep enough provenance for users and agents to
 audit where a claim came from.
+
+Implemented in this branch, the v2 runtime loop is:
+
+```text
+prepare context -> agent works -> observe result -> ingest result -> improve next context
+```
+
+`context_pack.v2` is both markdown for an agent/human and a manifest for
+auditing selected context, excluded context, risks, verification commands, and
+health.
 
 ## Runtime Shape
 
@@ -28,20 +38,22 @@ FastAPI app
 Services
   - ingestion and extraction
   - query and retrieval trace
-  - context pack generation
+  - context pack generation and v2 compiler
+  - agent run observation bridge
   - connector sync/import jobs
         |
         v
-SQLite by default, PostgreSQL optional
+SQLite for bare-metal dev, PostgreSQL/pgvector by default in Docker Compose
 ```
 
-The app is intentionally deployable as one process. SQLite is the default path
-for local and small-team installs; PostgreSQL is available for larger or hosted
-deployments.
+The app is intentionally deployable as one process for bare-metal development.
+SQLite remains the zero-setup local path; Docker Compose and production
+deployments use PostgreSQL with pgvector so indexed vector and full-text search
+are available.
 
 ## Data Model
 
-The persistent graph has seven main tables:
+Observed legacy graph tables:
 
 | Table | Purpose |
 |---|---|
@@ -53,9 +65,21 @@ The persistent graph has seven main tables:
 | `components` | Atomic extracted facts with status, temporal state, confidence, and provenance. |
 | `relationships` | Typed edges with confidence, origin, status, and evidence. |
 
-`SourceDocument` currently stores workspace scope in metadata rather than a
-direct foreign key. Use `app/services/workspace_scope.py` for workspace filtering
-instead of hand-rolled metadata checks.
+Observed current behavior: `SourceDocument`, `Component`, and related v2 tables
+have direct nullable `workspace_id` columns. Some legacy rows may still carry
+workspace hints in metadata, so shared workspace-scope helpers remain the safest
+path for mixed data.
+
+Implemented in this branch, v2 adds source-backed runtime and compiler tables:
+
+- `evidence_spans`, `claims`, and `claim_revisions`;
+- `context_packs` and `context_pack_items`;
+- `agent_runs` and `run_observations`;
+- `code_files`, `code_symbols`, `code_edges`, and `repo_events`.
+
+Trust zones separate generated instructions from source evidence. Slack, email,
+Drive, web, uploads, and agent-observation text are treated as evidence, not as
+instructions to execute.
 
 ## Ingestion Flow
 
@@ -84,11 +108,15 @@ instead of hand-rolled metadata checks.
 
 `POST /api/query` returns a stable `query.v1` response with retrieval knobs:
 `top_k`, `min_confidence`, and optional `hybrid`. The response includes
-`trace.facts_used` and relationship expansion evidence.
+`trace.facts_used`, relationship expansion evidence, and deterministic reranker
+features such as exact-match score and query-token coverage. When no embedding
+provider is configured, retrieval is explicitly lexical-only rather than
+non-semantic hash-vector ranking.
 
-Context packs are generated from either the full graph or a selected component
-plus one-hop neighbors. MCP exposes the same query trace through `query_context`
-for AI-agent consumers.
+Observed legacy context packs can still be generated from either the full graph
+or a selected component plus one-hop neighbors. Implemented in this branch,
+`POST /api/context/prepare` and MCP `prepare_task` call the v2 compiler service
+to produce `context_pack.v2` markdown plus manifest.
 
 The intended high-level outputs are:
 

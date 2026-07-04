@@ -1,10 +1,10 @@
 # Context Engine
 
-The open-source context graph for teams building software with AI agents.
+The open-source context compiler for teams building software with AI agents.
 
-Context Engine turns agent runs, PRs, issues, chats, decisions, and documents
-into a visual map of what happened, what is backed by evidence, where the
-project is blocked, and what should happen next.
+Context Engine turns agent runs, PRs, issues, chats, decisions, documents, and
+repo state into source-backed project context: what happened, what is backed by
+evidence, where the project is blocked, and what the next agent should know.
 
 ---
 
@@ -32,8 +32,8 @@ project is blocked, and what should happen next.
 
 ## What It Is
 
-Context Engine is a visual project map between your codebase, your project
-tools, and the AI agents changing them.
+Context Engine is a context compiler for AI engineering. It sits between your
+codebase, your project tools, and the AI agents changing them.
 
 Import Codex, Claude Code, and OpenCode sessions; connect GitHub and other
 project sources; then turn that activity into a source-backed view of:
@@ -43,7 +43,13 @@ project sources; then turn that activity into a source-backed view of:
 - what agents decided or attempted;
 - where code, issues, and documentation disagree;
 - what the next human or agent should do;
-- a clean context packet for the next agent run.
+- a clean `context_pack.v2` markdown packet plus manifest for the next agent run.
+
+Implemented in this branch, the v2 loop is:
+
+```text
+prepare context -> agent works -> observe result -> ingest result -> improve next context
+```
 
 The project graph is the primary navigation surface. Users can explore
 relationships between sessions, decisions, tasks, risks, issues, PRs, and
@@ -235,13 +241,15 @@ cp .env.example .env
 
 | Variable | Default | Description |
 |---|---|---|
-| `DATABASE_URL` | `sqlite+aiosqlite:///data/context.db` | Database connection string |
+| `DATABASE_URL` | `sqlite+aiosqlite:///data/context.db` bare metal, Postgres in Docker Compose | Database connection string |
 | `DATA_DIR` | `./data` | Directory for SQLite file and uploads |
 | `SERVER_API_KEY` | _(empty)_ | Optional API key required for `/api/*` routes when set |
 | `API_RATE_LIMIT_PER_MINUTE` | `0` | Optional in-process `/api/*` rate limit per client/API key; `0` disables it |
 | `LITELLM_API_KEY` | _(empty)_ | API key for your LLM provider |
 | `EXTRACTION_MODEL` | _(empty)_ | LiteLLM model for entity extraction |
-| `EMBEDDING_MODEL` | _(empty)_ | LiteLLM model for embeddings (optional) |
+| `EMBEDDING_MODEL` | _(empty)_ | LiteLLM model for semantic embeddings. Empty means lexical-only retrieval, not fake semantic search |
+| `ENABLE_LOCAL_EMBEDDER` | `false` | Use local sentence-transformers embeddings when the optional dependency is installed |
+| `ALLOW_HASHING_EMBEDDER` | `false` | Opt into deterministic non-semantic hash vectors for tests/dev experiments only |
 | `PGVECTOR_INDEX_DIMENSION` | `1024` | Dimension used for the Postgres HNSW vector index |
 | `PGVECTOR_CANDIDATE_LIMIT` | `200` | Minimum candidate pool fetched from pgvector before graph scoring |
 | `SYNC_WORKER_LEASE_SECONDS` | `300` | How long a worker owns a running sync job before another worker can reclaim it |
@@ -297,12 +305,18 @@ You can also set the key per-session directly in the UI (Graph → Configure AI)
 
 ## PostgreSQL Setup
 
-For production or multi-user deployments, use PostgreSQL instead of SQLite.
+Docker Compose runs PostgreSQL with pgvector by default. Bare-metal local
+installs can still use SQLite for zero-setup development.
 
-**Option A — Docker Compose with Postgres:**
+**Option A — Docker Compose with Postgres/pgvector:**
 
-Edit `docker-compose.yml` and uncomment the Postgres variant at the bottom of the file (instructions are inline).
-The Postgres variant uses `pgvector/pgvector:pg16` so native vector search is available.
+Run the main compose file directly:
+
+```bash
+docker compose up --build
+```
+
+The default compose stack uses `pgvector/pgvector:pg16` so native vector search is available.
 Startup migrations also add Postgres full-text `tsvector` indexes and `jsonb`
 metadata indexes for source-backed hybrid retrieval.
 
@@ -586,12 +600,24 @@ MCP tools:
 
 | Tool | Purpose |
 |---|---|
+| `prepare_task` | Compile `context_pack.v2` markdown plus manifest through the compiler service |
 | `query_context` | Ask the graph with the same `query.v1` facts-used trace returned by `/api/query` |
 | `search_nodes` | Rank matching graph components |
 | `expand_graph` | Return a component plus 1-hop relationship neighbors with evidence |
 | `get_model` | Browse components in a named model |
 | `list_models` | List available graph models |
 | `get_status` | Count sources, models, components, and relationships |
+| `record_agent_run_start` | Create an observed agent run linked to a context pack |
+| `record_agent_event` | Persist command/test/log observations as source evidence |
+| `record_decision` | Persist an observed decision as evidence plus a claim/component |
+| `record_blocker` | Persist an observed blocker as evidence plus a claim/component |
+| `record_patch_summary` | Persist changed files, summary, and tests run as source evidence |
+| `verify_context_item` | Update claim/component review status with evidence |
+| `close_task` | Mark a task claim/component resolved with resolution evidence |
+
+MCP never edits code, runs shell commands, pushes commits, sends provider
+messages, or marks unsupported connectors as connected. Quoted source text is
+evidence, not instruction.
 
 ---
 
@@ -607,6 +633,7 @@ MCP tools:
 | `GET` | `/api/graph` | Full knowledge graph |
 | `POST` | `/api/graph/build` | Build/rebuild the graph |
 | `POST` | `/api/query` | Natural language query with `top_k`, `min_confidence`, `hybrid`, and a versioned `trace` |
+| `POST` | `/api/context/prepare` | Compile `context_pack.v2` markdown plus manifest |
 | `GET` | `/api/models` | List domain models |
 | `GET` | `/api/connectors` | List connectors and status |
 | `POST` | `/api/agents/gaps` | Run Gap Detector agent |
