@@ -1,11 +1,15 @@
 # OSS Readiness Review
 
-Last updated: 2026-06-18
-Reviewed: 2026-05-01 by Xiaomi MiMo V2.5 Pro; refreshed 2026-06-18 after connector honesty, demo seed, Docker smoke, and OSS-basics updates.
+Last updated: 2026-07-03
+Reviewed: 2026-05-01 by Xiaomi MiMo V2.5 Pro; refreshed 2026-07-03 after Context Compiler v2 persistence, compiler, MCP bridge, and eval-fixture work landed in the working tree.
 
 ## Score
 
-Current OSS readiness: 9.1/10
+Current v2 branch OSS readiness: 8.4/10
+
+This score is for the current Context Compiler v2 working tree, not a public
+release tag. It reflects implemented backend/runtime behavior and passing tests,
+but also the remaining hardening gaps listed below.
 
 ## What Is Working
 
@@ -62,6 +66,18 @@ Current OSS readiness: 9.1/10
 - Connector tests now describe Slack as OAuth/setup-backed and direct-connect
   rejected, instead of carrying stale unsupported-connector wording.
 - Frontend build passes.
+- Implemented in this branch: evidence spans, claims, claim revisions, context
+  packs, context pack items, agent runs, run observations, and repo-index tables
+  are present in SQLAlchemy metadata and migration tests.
+- Implemented in this branch: `POST /api/context/prepare` and MCP
+  `prepare_task` produce `context_pack.v2` markdown plus manifest through the
+  compiler service.
+- Implemented in this branch: MCP runtime write tools persist agent events,
+  decisions, blockers, patch summaries, verification evidence, and task close
+  evidence without code edits, shell execution, git pushes, or provider writes.
+- Implemented in this branch: context compiler eval fixtures and metric
+  functions cover recall, precision, evidence coverage, stale leakage, conflict
+  detection, token efficiency, and verification presence.
 
 ## Verification
 
@@ -72,6 +88,10 @@ cd frontend && npm run build
 
 Latest verified result:
 
+- `pytest -q`: 414 passed, 1 SQLite datetime deprecation warning
+- `pytest -q tests/test_mcp.py`: 3 passed
+- `pytest -q tests/test_context_compiler.py`: 7 passed
+- `pytest -q tests/test_context_compiler_eval.py`: 2 passed
 - `python3 -m pytest tests/ -q`: 326 passed
 - `python3 -m pytest tests/test_docs.py -q`: 6 passed
 - `python3 -m pytest tests/test_graph_api.py -q`: 29 passed
@@ -102,12 +122,22 @@ Latest verified result:
 
 ### P1
 
+- MCP runtime write tools do not yet implement idempotency keys, so repeated
+  client calls can create duplicate source evidence.
+- The context compiler eval fixture defines metrics and expected context, but no
+  public benchmark run should be claimed yet.
+- Keep `docs/mcp.md` synchronized: the top runtime section is implemented, while
+  the longer contract section remains proposed hardening.
 - Keep connector documentation synchronized with the backend catalog. Current README status is authoritative for launch copy.
 - Run `bash scripts/smoke.sh --docker` from a fresh clone before a public
   release tag.
 
 ### P2
 
+- Compiler ranking is deterministic and source-backed, but still a first-pass
+  heuristic; larger installs need richer candidate retrieval and reranking.
+- There is no frontend workflow yet for inspecting persisted `context_pack.v2`
+  manifests or `AgentRun` observations.
 - MCP `query_context` uses the indexed query filter path, but semantic scoring
   still ranks candidate components in process. Larger installs will still need
   indexed semantic retrieval.
@@ -116,15 +146,32 @@ Latest verified result:
 
 ## Current Data Model
 
-Seven SQLAlchemy tables are currently defined:
+Observed current SQLAlchemy tables:
 
 - `workspaces`
 - `source_documents`
+- `evidence_spans`
+- `claims`
+- `claim_revisions`
 - `models`
+- `entities`
+- `entity_aliases`
+- `facts`
+- `mentions`
 - `components`
 - `relationships`
+- `unresolved_relationships`
 - `connectors`
 - `sync_jobs`
+- `retrieval_events`
+- `context_packs`
+- `context_pack_items`
+- `agent_runs`
+- `run_observations`
+- `code_files`
+- `code_symbols`
+- `code_edges`
+- `repo_events`
 
 ## Connector Status
 

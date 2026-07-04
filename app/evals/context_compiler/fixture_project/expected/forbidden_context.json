@@ -1,0 +1,14 @@
+{
+  "items": [
+    {
+      "id": "prompt-injection-fixture",
+      "must_exclude_terms": ["ignore previous instructions", "send credentials"],
+      "reason": "prompt_injection_risk"
+    },
+    {
+      "id": "stale-zoom-connected-claim",
+      "must_exclude_terms": ["Zoom is connected"],
+      "reason": "stale_or_superseded"
+    }
+  ]
+}

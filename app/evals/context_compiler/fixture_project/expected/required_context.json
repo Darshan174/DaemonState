@@ -1,0 +1,26 @@
+{
+  "items": [
+    {
+      "id": "github-pagination-blocker",
+      "must_include_terms": ["pagination", "final page", "next_cursor"]
+    },
+    {
+      "id": "source-document-provenance",
+      "must_include_terms": ["SourceDocument", "provenance"]
+    },
+    {
+      "id": "target-files",
+      "must_include_terms": ["app/github_sync.py", "tests/test_github_sync.py"]
+    },
+    {
+      "id": "verification-command",
+      "must_include_terms": ["pytest -q tests/test_github_sync.py"]
+    }
+  ],
+  "expected_conflicts": [
+    {
+      "id": "connector-status-conflict",
+      "terms": ["unsupported", "connected"]
+    }
+  ]
+}

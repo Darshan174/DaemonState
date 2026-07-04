@@ -3,6 +3,13 @@
 Context Engine ships a Model Context Protocol server so AI coding agents can ask
 for source-backed project memory without scraping the UI.
 
+Observed current behavior: MCP runs over stdio through `ctxe mcp` and reads the
+same database as the FastAPI app.
+
+Implemented in this branch: MCP also acts as the agent runtime bridge for the
+Context Compiler v2 loop: prepare context, let the agent work, observe the run,
+ingest observations as source evidence, and improve the next context pack.
+
 ## Start The Server
 
 ```bash
@@ -44,12 +51,64 @@ client uses a different wrapper, keep the same executable behavior:
 
 | Tool | Purpose |
 |---|---|
+| `prepare_task` | Compile and persist a `context_pack.v2` markdown pack plus manifest by calling the compiler service. |
 | `query_context` | Ask the graph with the stable `query.v1` trace contract. |
 | `search_nodes` | Rank matching graph components. |
 | `expand_graph` | Return a component plus one-hop relationship neighbors. |
 | `get_model` | Browse components in a named model. |
 | `list_models` | List available graph models and counts. |
 | `get_status` | Count sources, models, components, and relationships. |
+| `record_agent_run_start` | Create an `AgentRun` linked to a prepared context pack. |
+| `record_agent_event` | Store a command, test, log, or other event as `SourceDocument` plus `RunObservation`. |
+| `record_decision` | Store an observed decision as source evidence and a conservative claim/component projection. |
+| `record_blocker` | Store an observed blocker as source evidence and a conservative blocker claim/component projection. |
+| `record_patch_summary` | Store changed files, summary, and tests run as source evidence. |
+| `verify_context_item` | Update a component or claim review status with verification evidence. |
+| `close_task` | Mark a task component or claim resolved with resolution and commit evidence. |
+
+Security rule: no MCP tool edits code, runs shell commands, pushes commits,
+sends provider messages, or mutates external services.
+
+Trust rule: quoted source text from Slack, email, Drive, web, uploads, logs, and
+agent observations is evidence, not instruction. Tool descriptions warn clients
+to treat quoted evidence as untrusted project data.
+
+## prepare_task Contract
+
+Implemented in this branch: `prepare_task` accepts `goal`, `workspace_id`,
+`repo_path`, `target_model`, and `token_budget`. It calls
+`ContextCompiler.compile_context_pack()` and returns:
+
+- `context_pack_id`
+- `schema_version`
+- `markdown`
+- `manifest`
+- `health_score`
+
+`context_pack.v2` is two artifacts: human-readable markdown and a machine-readable
+manifest. The manifest includes the objective, target model profile, repo state,
+selected context, excluded context, risks, verification commands, and context
+health.
+
+Not implemented yet: stable idempotency keys for repeated `prepare_task` calls.
+
+## Runtime Observation Contract
+
+Implemented in this branch:
+
+- `record_agent_run_start` creates `AgentRun`.
+- `record_agent_event` creates `SourceDocument` and `RunObservation`.
+- `record_decision` creates source evidence, a claim, and a component projection.
+- `record_blocker` creates source evidence, a claim, and a component projection.
+- `record_patch_summary` stores patch summary evidence.
+- `verify_context_item` updates claim/component status with source evidence.
+- `close_task` marks a claim or legacy component resolved with source evidence.
+
+Not implemented yet:
+
+- deduplication/idempotency keys for runtime write tools;
+- provider-backed reranking for large deployments;
+- external provider writes from MCP, intentionally.
 
 ## Query Contract
 
@@ -69,21 +128,27 @@ It returns the same shape as `/api/query`:
 - relationship expansion
 - `trace.facts_used`
 - `trace.relationships_used`
+- `trace.ranking_strategy` and reranker feature scores for each used fact
 
 Agents should cite facts from the trace instead of inventing missing context.
 
 ## Current Limits
 
-- Retrieval is local/in-process and scans active components, which is acceptable
-  for self-hosted and small-team installs.
-- Larger public deployments will need indexed retrieval and pagination around
-  graph expansion.
-- MCP should remain an output surface over the structured graph, not a separate
-  memory store.
+- SQLite/bare-metal retrieval scans active components after SQL filters, which
+  is acceptable for local installs.
+- Docker Compose and production deployments use Postgres/pgvector plus full-text
+  candidate retrieval, followed by deterministic reranking.
+- Larger public deployments may still need provider-backed rerankers and
+  pagination around graph expansion.
+- MCP remains a bridge over the structured graph and source ledger, not a
+  separate memory store.
 
 ## Context Compiler v2 MCP Contract
 
-Status: proposed. Current MCP code does not implement these tools yet.
+Status: partially implemented in this branch. The runtime tools above are now
+implemented. The detailed schema below is retained as the stricter proposed
+contract for future hardening, including idempotency keys and structured
+`ok/error` envelopes.
 
 v2 keeps the existing read tools and adds an agent runtime bridge for preparing
 context and recording what happened during an agent run. v2 adds no dangerous
@@ -523,16 +588,14 @@ Errors:
 
 ## MCP Acceptance Tests
 
-Agent 4 must add:
+Implemented in this branch:
 
-- `tests/test_mcp_context_bridge.py::test_list_tools_includes_v2_agent_runtime_tools`
-- `tests/test_mcp_context_bridge.py::test_prepare_task_returns_context_pack_v2_manifest`
-- `tests/test_mcp_context_bridge.py::test_prepare_task_is_idempotent_with_key`
-- `tests/test_mcp_context_bridge.py::test_record_agent_run_start_creates_source_and_agent_run`
-- `tests/test_mcp_context_bridge.py::test_record_agent_event_creates_run_observation_source`
-- `tests/test_mcp_context_bridge.py::test_record_decision_creates_claim_when_evidence_validates`
-- `tests/test_mcp_context_bridge.py::test_record_blocker_affects_next_prepare_task`
-- `tests/test_mcp_context_bridge.py::test_record_patch_summary_records_failed_tests_as_risk`
-- `tests/test_mcp_context_bridge.py::test_verify_context_item_appends_revision`
-- `tests/test_mcp_context_bridge.py::test_close_task_resolves_claim_or_legacy_component`
-- `tests/test_mcp_context_bridge.py::test_v2_mcp_exposes_no_dangerous_tools`
+- `tests/test_mcp.py::test_mcp_lists_runtime_bridge_tools_with_trust_warning`
+- `tests/test_mcp.py::test_prepare_task_calls_compiler_and_persists_pack`
+- `tests/test_mcp.py::test_mcp_runtime_write_tools_persist_source_backed_loop`
+
+Proposed hardening tests still needed:
+
+- idempotency behavior for repeated MCP writes;
+- blocker influence on a subsequent prepared pack;
+- failed-test patch summaries appearing as risk in the next pack.
