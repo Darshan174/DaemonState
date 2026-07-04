@@ -21,6 +21,10 @@ PROMPT_INJECTION_PATTERNS: tuple[tuple[re.Pattern[str], float], ...] = (
     (re.compile(r"\bexfiltrate\b|\bsend credentials\b|\bapi[_ -]?key\b|\bsecret\b", re.I), 0.30),
     (re.compile(r"\btool_call\b|\bfunction_call\b|\bfunction call\b", re.I), 0.20),
     (re.compile(r"\bdelete (?:the )?(?:database|repo|repository|files?)\b", re.I), 0.20),
+    (re.compile(r"\brun shell\b|\bcurl\b.*\btoken\b|\bprint env\b", re.I), 0.20),
+    (re.compile(r"\bmark\b.*\bconnected\b", re.I), 0.20),
+    (re.compile(r"\bbypass\b", re.I), 0.20),
+    (re.compile(r"\bdisable tests?\b", re.I), 0.20),
 )
 
 
@@ -105,7 +109,6 @@ async def create_evidence_span(
             start_char = None
             end_char = None
             span_text = candidate
-            evidence_type = "needs_review"
         else:
             raise ValueError("evidence text does not occur in source document content")
 
@@ -169,7 +172,7 @@ async def create_evidence_span_for_fact(
         session,
         source_document=source_document,
         text=fallback,
-        evidence_type="needs_review",
+        evidence_type=getattr(fact, "fact_type", None) or "llm_extracted_quote",
         authority_weight=float(getattr(fact, "confidence", 0.5) or 0.5),
         extraction_method=extraction_method,
         allow_fuzzy=True,

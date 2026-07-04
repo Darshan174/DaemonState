@@ -39,7 +39,9 @@ async def _migrate_workspace_ownership_columns(conn: AsyncConnection) -> None:
     source_columns = await _get_table_columns(conn, "source_documents")
     if source_columns:
         if "workspace_id" not in source_columns:
-            await conn.execute(text("ALTER TABLE source_documents ADD COLUMN workspace_id CHAR(32)"))
+            await conn.execute(
+                text("ALTER TABLE source_documents ADD COLUMN workspace_id CHAR(32)")
+            )
         if {"id", "source_type", "metadata"} <= source_columns:
             await _backfill_source_document_workspace_ids(conn)
 
@@ -49,8 +51,12 @@ async def _migrate_workspace_ownership_columns(conn: AsyncConnection) -> None:
             await conn.execute(text("ALTER TABLE components ADD COLUMN workspace_id CHAR(32)"))
             component_columns = await _get_table_columns(conn, "components")
         updated_source_columns = await _get_table_columns(conn, "source_documents")
-        if {"source_document_id", "workspace_id"} <= component_columns and "workspace_id" in updated_source_columns:
-            await conn.execute(text("""
+        if {
+            "source_document_id",
+            "workspace_id",
+        } <= component_columns and "workspace_id" in updated_source_columns:
+            await conn.execute(
+                text("""
                 UPDATE components
                 SET workspace_id = (
                     SELECT source_documents.workspace_id
@@ -65,16 +71,19 @@ async def _migrate_workspace_ownership_columns(conn: AsyncConnection) -> None:
                     WHERE source_documents.id = components.source_document_id
                       AND source_documents.workspace_id IS NOT NULL
                   )
-            """))
+            """)
+            )
 
 
 async def _backfill_source_document_workspace_ids(conn: AsyncConnection) -> None:
     connector_workspaces = await _connector_workspaces_by_type(conn)
-    result = await conn.execute(text("""
+    result = await conn.execute(
+        text("""
         SELECT id, source_type, metadata, workspace_id
         FROM source_documents
         WHERE workspace_id IS NULL
-    """))
+    """)
+    )
     rows = result.fetchall()
 
     for row in rows:
@@ -98,11 +107,13 @@ async def _connector_workspaces_by_type(conn: AsyncConnection) -> dict[str, set[
     if not {"connector_type", "workspace_id"} <= columns:
         return {}
 
-    result = await conn.execute(text("""
+    result = await conn.execute(
+        text("""
         SELECT connector_type, workspace_id
         FROM connectors
         WHERE workspace_id IS NOT NULL
-    """))
+    """)
+    )
     workspaces: dict[str, set[str]] = {}
     for connector_type, workspace_id in result.fetchall():
         normalized = _workspace_storage_id(workspace_id)
@@ -133,15 +144,17 @@ def _connector_candidates_for_source_type(source_type: str) -> set[str]:
     if normalized in {"gmail", "gdrive", "slack"}:
         candidates.add(normalized)
     if normalized == "agent_session" or normalized.startswith("ai_context"):
-        candidates.update({
-            "ai_context",
-            "codex",
-            "claude",
-            "opencode",
-            "ai_context_codex",
-            "ai_context_claude_code",
-            "ai_context_opencode",
-        })
+        candidates.update(
+            {
+                "ai_context",
+                "codex",
+                "claude",
+                "opencode",
+                "ai_context_codex",
+                "ai_context_claude_code",
+                "ai_context_opencode",
+            }
+        )
     return {candidate for candidate in candidates if candidate}
 
 
@@ -200,15 +213,21 @@ async def _migrate_connectors_workspace_schema(conn: AsyncConnection) -> None:
         )
 
     if "config_json" not in columns:
-        await conn.execute(text("ALTER TABLE connectors ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'"))
+        await conn.execute(
+            text("ALTER TABLE connectors ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'")
+        )
         if "config" in columns:
-            await conn.execute(text(
-                "UPDATE connectors SET config_json = config "
-                "WHERE config IS NOT NULL AND config != ''"
-            ))
+            await conn.execute(
+                text(
+                    "UPDATE connectors SET config_json = config "
+                    "WHERE config IS NOT NULL AND config != ''"
+                )
+            )
 
     if "credentials_json" not in columns:
-        await conn.execute(text("ALTER TABLE connectors ADD COLUMN credentials_json TEXT NOT NULL DEFAULT '{}'"))
+        await conn.execute(
+            text("ALTER TABLE connectors ADD COLUMN credentials_json TEXT NOT NULL DEFAULT '{}'")
+        )
 
     updated_columns = await _get_table_columns(conn, "connectors")
     legacy_columns = {"config", "credentials", "items_synced"}
@@ -224,7 +243,9 @@ async def _rebuild_connectors_table(
     """Remove obsolete connector columns whose legacy constraints break inserts."""
     exprs = {
         "id": "id" if "id" in columns else "lower(hex(randomblob(16)))",
-        "workspace_id": "workspace_id" if "workspace_id" in columns else f"'{default_workspace_id}'",
+        "workspace_id": "workspace_id"
+        if "workspace_id" in columns
+        else f"'{default_workspace_id}'",
         "connector_type": "connector_type" if "connector_type" in columns else "'unknown'",
         "status": "status" if "status" in columns else "'disconnected'",
         "config_json": (
@@ -244,7 +265,8 @@ async def _rebuild_connectors_table(
         "updated_at": "updated_at" if "updated_at" in columns else "CURRENT_TIMESTAMP",
     }
 
-    await conn.execute(text("""
+    await conn.execute(
+        text("""
         CREATE TABLE connectors_new (
             id CHAR(32) NOT NULL,
             workspace_id CHAR(32) NOT NULL,
@@ -258,8 +280,10 @@ async def _rebuild_connectors_table(
             PRIMARY KEY (id),
             FOREIGN KEY(workspace_id) REFERENCES workspaces (id)
         )
-    """))
-    await conn.execute(text(f"""
+    """)
+    )
+    await conn.execute(
+        text(f"""
         INSERT INTO connectors_new (
             id, workspace_id, connector_type, status, config_json,
             credentials_json, last_sync_at, created_at, updated_at
@@ -275,15 +299,18 @@ async def _rebuild_connectors_table(
             {exprs["created_at"]},
             {exprs["updated_at"]}
         FROM connectors
-    """))
+    """)
+    )
     await conn.execute(text("DROP TABLE connectors"))
     await conn.execute(text("ALTER TABLE connectors_new RENAME TO connectors"))
-    await conn.execute(text(
-        "CREATE INDEX IF NOT EXISTS ix_connectors_workspace_id ON connectors (workspace_id)"
-    ))
-    await conn.execute(text(
-        "CREATE INDEX IF NOT EXISTS ix_connectors_connector_type ON connectors (connector_type)"
-    ))
+    await conn.execute(
+        text("CREATE INDEX IF NOT EXISTS ix_connectors_workspace_id ON connectors (workspace_id)")
+    )
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_connectors_connector_type ON connectors (connector_type)"
+        )
+    )
 
 
 async def _migrate_sync_jobs_result_metadata(conn: AsyncConnection) -> None:
@@ -293,14 +320,16 @@ async def _migrate_sync_jobs_result_metadata(conn: AsyncConnection) -> None:
         return
 
     if "result_metadata_json" not in columns:
-        await conn.execute(text(
-            "ALTER TABLE sync_jobs ADD COLUMN result_metadata_json TEXT NOT NULL DEFAULT '{}'"
-        ))
+        await conn.execute(
+            text("ALTER TABLE sync_jobs ADD COLUMN result_metadata_json TEXT NOT NULL DEFAULT '{}'")
+        )
         if "result_metadata" in columns:
-            await conn.execute(text(
-                "UPDATE sync_jobs SET result_metadata_json = result_metadata "
-                "WHERE result_metadata IS NOT NULL AND result_metadata != ''"
-            ))
+            await conn.execute(
+                text(
+                    "UPDATE sync_jobs SET result_metadata_json = result_metadata "
+                    "WHERE result_metadata IS NOT NULL AND result_metadata != ''"
+                )
+            )
         columns = await _get_table_columns(conn, "sync_jobs")
 
     if "result_metadata" in columns:
@@ -317,45 +346,41 @@ async def _migrate_sync_jobs_durable_schema(conn: AsyncConnection) -> None:
     if "workspace_id" not in columns:
         await conn.execute(text("ALTER TABLE sync_jobs ADD COLUMN workspace_id CHAR(32)"))
     if "job_type" not in columns:
-        await conn.execute(text(
-            "ALTER TABLE sync_jobs ADD COLUMN job_type VARCHAR(50) NOT NULL DEFAULT 'connector_sync'"
-        ))
+        await conn.execute(
+            text(
+                "ALTER TABLE sync_jobs ADD COLUMN job_type VARCHAR(50) NOT NULL DEFAULT 'connector_sync'"
+            )
+        )
     if "idempotency_key" not in columns:
         await conn.execute(text("ALTER TABLE sync_jobs ADD COLUMN idempotency_key VARCHAR(255)"))
     if "attempt_count" not in columns:
-        await conn.execute(text(
-            "ALTER TABLE sync_jobs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0"
-        ))
+        await conn.execute(
+            text("ALTER TABLE sync_jobs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0")
+        )
     if "max_attempts" not in columns:
-        await conn.execute(text(
-            "ALTER TABLE sync_jobs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3"
-        ))
+        await conn.execute(
+            text("ALTER TABLE sync_jobs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3")
+        )
     if "queued_at" not in columns:
-        await conn.execute(text(
-            f"ALTER TABLE sync_jobs ADD COLUMN queued_at {datetime_type}"
-        ))
+        await conn.execute(text(f"ALTER TABLE sync_jobs ADD COLUMN queued_at {datetime_type}"))
     if "available_at" not in columns:
-        await conn.execute(text(
-            f"ALTER TABLE sync_jobs ADD COLUMN available_at {datetime_type}"
-        ))
+        await conn.execute(text(f"ALTER TABLE sync_jobs ADD COLUMN available_at {datetime_type}"))
     if "lease_expires_at" not in columns:
-        await conn.execute(text(
-            f"ALTER TABLE sync_jobs ADD COLUMN lease_expires_at {datetime_type}"
-        ))
+        await conn.execute(
+            text(f"ALTER TABLE sync_jobs ADD COLUMN lease_expires_at {datetime_type}")
+        )
     if "locked_by" not in columns:
         await conn.execute(text("ALTER TABLE sync_jobs ADD COLUMN locked_by VARCHAR(255)"))
     if "dead_lettered_at" not in columns:
-        await conn.execute(text(
-            f"ALTER TABLE sync_jobs ADD COLUMN dead_lettered_at {datetime_type}"
-        ))
+        await conn.execute(
+            text(f"ALTER TABLE sync_jobs ADD COLUMN dead_lettered_at {datetime_type}")
+        )
 
     updated_columns = await _get_table_columns(conn, "sync_jobs")
     connector_columns = await _get_table_columns(conn, "connectors")
-    if (
-        {"workspace_id", "connector_id"} <= updated_columns
-        and "workspace_id" in connector_columns
-    ):
-        await conn.execute(text("""
+    if {"workspace_id", "connector_id"} <= updated_columns and "workspace_id" in connector_columns:
+        await conn.execute(
+            text("""
             UPDATE sync_jobs
             SET workspace_id = (
                 SELECT connectors.workspace_id
@@ -370,29 +395,36 @@ async def _migrate_sync_jobs_durable_schema(conn: AsyncConnection) -> None:
                 WHERE connectors.id = sync_jobs.connector_id
                   AND connectors.workspace_id IS NOT NULL
               )
-        """))
+        """)
+        )
 
     if {"idempotency_key", "job_type", "connector_id"} <= updated_columns:
-        await conn.execute(text("""
+        await conn.execute(
+            text("""
             UPDATE sync_jobs
             SET idempotency_key = job_type || ':' || connector_id
             WHERE idempotency_key IS NULL
               AND connector_id IS NOT NULL
-        """))
+        """)
+        )
 
     if {"queued_at", "created_at"} <= updated_columns:
-        await conn.execute(text("""
+        await conn.execute(
+            text("""
             UPDATE sync_jobs
             SET queued_at = created_at
             WHERE queued_at IS NULL
-        """))
+        """)
+        )
     if {"available_at", "created_at", "status"} <= updated_columns:
-        await conn.execute(text("""
+        await conn.execute(
+            text("""
             UPDATE sync_jobs
             SET available_at = created_at
             WHERE available_at IS NULL
               AND status IN ('pending', 'retrying')
-        """))
+        """)
+        )
 
 
 async def _rebuild_sync_jobs_table(conn: AsyncConnection, columns: set[str]) -> None:
@@ -416,7 +448,8 @@ async def _rebuild_sync_jobs_table(conn: AsyncConnection, columns: set[str]) -> 
         ),
         "created_at": "created_at" if "created_at" in columns else "CURRENT_TIMESTAMP",
         "queued_at": (
-            "queued_at" if "queued_at" in columns
+            "queued_at"
+            if "queued_at" in columns
             else ("created_at" if "created_at" in columns else "CURRENT_TIMESTAMP")
         ),
         "available_at": "available_at" if "available_at" in columns else "NULL",
@@ -427,7 +460,8 @@ async def _rebuild_sync_jobs_table(conn: AsyncConnection, columns: set[str]) -> 
         "completed_at": "completed_at" if "completed_at" in columns else "NULL",
     }
 
-    await conn.execute(text("""
+    await conn.execute(
+        text("""
         CREATE TABLE sync_jobs_new (
             id CHAR(32) NOT NULL,
             workspace_id CHAR(32),
@@ -452,8 +486,10 @@ async def _rebuild_sync_jobs_table(conn: AsyncConnection, columns: set[str]) -> 
             FOREIGN KEY(workspace_id) REFERENCES workspaces (id),
             FOREIGN KEY(connector_id) REFERENCES connectors (id)
         )
-    """))
-    await conn.execute(text(f"""
+    """)
+    )
+    await conn.execute(
+        text(f"""
         INSERT INTO sync_jobs_new (
             id, workspace_id, connector_id, job_type, idempotency_key,
             status, attempt_count, max_attempts, error_type, error_message,
@@ -481,27 +517,38 @@ async def _rebuild_sync_jobs_table(conn: AsyncConnection, columns: set[str]) -> 
             {exprs["started_at"]},
             {exprs["completed_at"]}
         FROM sync_jobs
-    """))
+    """)
+    )
     await conn.execute(text("DROP TABLE sync_jobs"))
     await conn.execute(text("ALTER TABLE sync_jobs_new RENAME TO sync_jobs"))
-    await conn.execute(text(
-        "CREATE INDEX IF NOT EXISTS ix_sync_jobs_connector_id ON sync_jobs (connector_id)"
-    ))
-    await conn.execute(text(
-        "CREATE INDEX IF NOT EXISTS ix_sync_jobs_workspace_status ON sync_jobs (workspace_id, status)"
-    ))
-    await conn.execute(text(
-        "CREATE INDEX IF NOT EXISTS ix_sync_jobs_idempotency_key ON sync_jobs (idempotency_key)"
-    ))
-    await conn.execute(text(
-        "CREATE INDEX IF NOT EXISTS ix_sync_jobs_job_type_status ON sync_jobs (job_type, status)"
-    ))
-    await conn.execute(text(
-        "CREATE INDEX IF NOT EXISTS ix_sync_jobs_queue_due ON sync_jobs (job_type, status, available_at)"
-    ))
-    await conn.execute(text(
-        "CREATE INDEX IF NOT EXISTS ix_sync_jobs_lease_expires_at ON sync_jobs (lease_expires_at)"
-    ))
+    await conn.execute(
+        text("CREATE INDEX IF NOT EXISTS ix_sync_jobs_connector_id ON sync_jobs (connector_id)")
+    )
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_sync_jobs_workspace_status ON sync_jobs (workspace_id, status)"
+        )
+    )
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_sync_jobs_idempotency_key ON sync_jobs (idempotency_key)"
+        )
+    )
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_sync_jobs_job_type_status ON sync_jobs (job_type, status)"
+        )
+    )
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_sync_jobs_queue_due ON sync_jobs (job_type, status, available_at)"
+        )
+    )
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_sync_jobs_lease_expires_at ON sync_jobs (lease_expires_at)"
+        )
+    )
 
 
 async def _migrate_components_temporal(conn: AsyncConnection) -> None:
@@ -510,9 +557,9 @@ async def _migrate_components_temporal(conn: AsyncConnection) -> None:
     if not columns or "temporal" in columns:
         return
 
-    await conn.execute(text(
-        "ALTER TABLE components ADD COLUMN temporal VARCHAR(20) NOT NULL DEFAULT 'unknown'"
-    ))
+    await conn.execute(
+        text("ALTER TABLE components ADD COLUMN temporal VARCHAR(20) NOT NULL DEFAULT 'unknown'")
+    )
 
 
 async def _migrate_component_identity_keys(conn: AsyncConnection) -> None:
@@ -528,11 +575,13 @@ async def _migrate_component_identity_keys(conn: AsyncConnection) -> None:
     if "name" not in columns or "identity_key" not in columns:
         return
 
-    result = await conn.execute(text("""
+    result = await conn.execute(
+        text("""
         SELECT id, name
         FROM components
         WHERE identity_key IS NULL OR identity_key = ''
-    """))
+    """)
+    )
     for component_id, name in result.fetchall():
         identity_key = identity_key_for_component_name(name)
         if not identity_key:
@@ -545,7 +594,8 @@ async def _migrate_component_identity_keys(conn: AsyncConnection) -> None:
 
 async def _migrate_entities_schema(conn: AsyncConnection) -> None:
     """Create first-class entities and attach existing components by identity key."""
-    await conn.execute(text("""
+    await conn.execute(
+        text("""
         CREATE TABLE IF NOT EXISTS entities (
             id CHAR(32) NOT NULL,
             workspace_id CHAR(32),
@@ -558,25 +608,33 @@ async def _migrate_entities_schema(conn: AsyncConnection) -> None:
             FOREIGN KEY(workspace_id) REFERENCES workspaces (id),
             FOREIGN KEY(model_id) REFERENCES models (id)
         )
-    """))
+    """)
+    )
 
     component_columns = await _get_table_columns(conn, "components")
     if component_columns and "entity_id" not in component_columns:
         await conn.execute(text("ALTER TABLE components ADD COLUMN entity_id CHAR(32)"))
         component_columns = await _get_table_columns(conn, "components")
 
-    if not component_columns or not {"entity_id", "identity_key", "name", "model_id"} <= component_columns:
+    if (
+        not component_columns
+        or not {"entity_id", "identity_key", "name", "model_id"} <= component_columns
+    ):
         return
 
     workspace_expr = "workspace_id" if "workspace_id" in component_columns else "NULL"
     order_expr = "created_at" if "created_at" in component_columns else "id"
-    component_rows = (await conn.execute(text(f"""
+    component_rows = (
+        await conn.execute(
+            text(f"""
         SELECT {workspace_expr} AS workspace_id, identity_key, model_id, name
         FROM components
         WHERE identity_key IS NOT NULL
           AND identity_key != ''
         ORDER BY identity_key, {order_expr}
-    """))).fetchall()
+    """)
+        )
+    ).fetchall()
 
     rows_by_identity: dict[tuple[object, str], object] = {}
     for row in component_rows:
@@ -587,53 +645,65 @@ async def _migrate_entities_schema(conn: AsyncConnection) -> None:
         entity_id = await _entity_id_for_identity(conn, workspace_id, identity_key)
         if entity_id is None:
             entity_id = uuid4().hex
-            await conn.execute(text("""
+            await conn.execute(
+                text("""
                 INSERT INTO entities (
                     id, workspace_id, model_id, identity_key, canonical_name
                 ) VALUES (
                     :id, :workspace_id, :model_id, :identity_key, :canonical_name
                 )
-            """), {
-                "id": entity_id,
-                "workspace_id": workspace_id,
-                "model_id": model_id,
-                "identity_key": identity_key,
-                "canonical_name": _canonical_entity_name(canonical_name, identity_key),
-            })
+            """),
+                {
+                    "id": entity_id,
+                    "workspace_id": workspace_id,
+                    "model_id": model_id,
+                    "identity_key": identity_key,
+                    "canonical_name": _canonical_entity_name(canonical_name, identity_key),
+                },
+            )
 
         if "workspace_id" in component_columns and workspace_id not in (None, ""):
-            await conn.execute(text("""
+            await conn.execute(
+                text("""
                 UPDATE components
                 SET entity_id = :entity_id
                 WHERE entity_id IS NULL
                   AND identity_key = :identity_key
                   AND workspace_id = :workspace_id
-            """), {
-                "entity_id": entity_id,
-                "identity_key": identity_key,
-                "workspace_id": workspace_id,
-            })
+            """),
+                {
+                    "entity_id": entity_id,
+                    "identity_key": identity_key,
+                    "workspace_id": workspace_id,
+                },
+            )
         elif "workspace_id" in component_columns:
-            await conn.execute(text("""
+            await conn.execute(
+                text("""
                 UPDATE components
                 SET entity_id = :entity_id
                 WHERE entity_id IS NULL
                   AND identity_key = :identity_key
                   AND (workspace_id IS NULL OR workspace_id = '')
-            """), {
-                "entity_id": entity_id,
-                "identity_key": identity_key,
-            })
+            """),
+                {
+                    "entity_id": entity_id,
+                    "identity_key": identity_key,
+                },
+            )
         else:
-            await conn.execute(text("""
+            await conn.execute(
+                text("""
                 UPDATE components
                 SET entity_id = :entity_id
                 WHERE entity_id IS NULL
                   AND identity_key = :identity_key
-            """), {
-                "entity_id": entity_id,
-                "identity_key": identity_key,
-            })
+            """),
+                {
+                    "entity_id": entity_id,
+                    "identity_key": identity_key,
+                },
+            )
 
 
 async def _entity_id_for_identity(
@@ -642,24 +712,30 @@ async def _entity_id_for_identity(
     identity_key: str,
 ) -> str | None:
     if workspace_id in (None, ""):
-        return await conn.scalar(text("""
+        return await conn.scalar(
+            text("""
             SELECT id FROM entities
             WHERE identity_key = :identity_key
               AND (workspace_id IS NULL OR workspace_id = '')
             ORDER BY created_at
             LIMIT 1
-        """), {"identity_key": identity_key})
+        """),
+            {"identity_key": identity_key},
+        )
 
-    return await conn.scalar(text("""
+    return await conn.scalar(
+        text("""
         SELECT id FROM entities
         WHERE identity_key = :identity_key
           AND workspace_id = :workspace_id
         ORDER BY created_at
         LIMIT 1
-    """), {
-        "identity_key": identity_key,
-        "workspace_id": workspace_id,
-    })
+    """),
+        {
+            "identity_key": identity_key,
+            "workspace_id": workspace_id,
+        },
+    )
 
 
 def _canonical_entity_name(value: object, identity_key: str) -> str:
@@ -672,7 +748,8 @@ def _canonical_entity_name(value: object, identity_key: str) -> str:
 async def _migrate_fact_identity_schema(conn: AsyncConnection) -> None:
     """Create alias, fact, and mention tables and backfill from components."""
     datetime_type = _datetime_column_type(conn)
-    await conn.execute(text(f"""
+    await conn.execute(
+        text(f"""
         CREATE TABLE IF NOT EXISTS entity_aliases (
             id CHAR(32) NOT NULL,
             workspace_id CHAR(32),
@@ -688,8 +765,10 @@ async def _migrate_fact_identity_schema(conn: AsyncConnection) -> None:
             FOREIGN KEY(source_document_id) REFERENCES source_documents (id),
             UNIQUE(entity_id, normalized_alias)
         )
-    """))
-    await conn.execute(text(f"""
+    """)
+    )
+    await conn.execute(
+        text(f"""
         CREATE TABLE IF NOT EXISTS facts (
             id CHAR(32) NOT NULL,
             workspace_id CHAR(32),
@@ -712,8 +791,10 @@ async def _migrate_fact_identity_schema(conn: AsyncConnection) -> None:
             FOREIGN KEY(source_document_id) REFERENCES source_documents (id),
             UNIQUE(component_id)
         )
-    """))
-    await conn.execute(text(f"""
+    """)
+    )
+    await conn.execute(
+        text(f"""
         CREATE TABLE IF NOT EXISTS mentions (
             id CHAR(32) NOT NULL,
             workspace_id CHAR(32),
@@ -733,10 +814,14 @@ async def _migrate_fact_identity_schema(conn: AsyncConnection) -> None:
             FOREIGN KEY(component_id) REFERENCES components (id),
             UNIQUE(component_id, normalized_mention)
         )
-    """))
+    """)
+    )
 
     component_columns = await _get_table_columns(conn, "components")
-    if not component_columns or not {"id", "name", "value", "source_document_id"} <= component_columns:
+    if (
+        not component_columns
+        or not {"id", "name", "value", "source_document_id"} <= component_columns
+    ):
         return
 
     workspace_expr = "workspace_id" if "workspace_id" in component_columns else "NULL"
@@ -746,13 +831,15 @@ async def _migrate_fact_identity_schema(conn: AsyncConnection) -> None:
     status_expr = "status" if "status" in component_columns else "'active'"
     provenance_expr = "provenance" if "provenance" in component_columns else "NULL"
     excerpt_expr = "excerpt" if "excerpt" in component_columns else "NULL"
-    result = await conn.execute(text(f"""
+    result = await conn.execute(
+        text(f"""
         SELECT id, {workspace_expr} AS workspace_id, {entity_expr} AS entity_id,
                source_document_id, name, value, {fact_type_expr} AS fact_type,
                {confidence_expr} AS confidence, {status_expr} AS status,
                {provenance_expr} AS provenance, {excerpt_expr} AS excerpt
         FROM components
-    """))
+    """)
+    )
     rows = result.fetchall()
     for row in rows:
         component_id = row[0]
@@ -809,15 +896,19 @@ async def _insert_entity_alias_if_missing(
     normalized_alias: str,
     confidence: object,
 ) -> None:
-    exists = await conn.scalar(text("""
+    exists = await conn.scalar(
+        text("""
         SELECT 1 FROM entity_aliases
         WHERE entity_id = :entity_id
           AND normalized_alias = :normalized_alias
         LIMIT 1
-    """), {"entity_id": entity_id, "normalized_alias": normalized_alias})
+    """),
+        {"entity_id": entity_id, "normalized_alias": normalized_alias},
+    )
     if exists:
         return
-    await conn.execute(text("""
+    await conn.execute(
+        text("""
         INSERT INTO entity_aliases (
             id, workspace_id, entity_id, source_document_id,
             alias, normalized_alias, confidence
@@ -825,15 +916,17 @@ async def _insert_entity_alias_if_missing(
             :id, :workspace_id, :entity_id, :source_document_id,
             :alias, :normalized_alias, :confidence
         )
-    """), {
-        "id": uuid4().hex,
-        "workspace_id": workspace_id,
-        "entity_id": entity_id,
-        "source_document_id": source_document_id,
-        "alias": alias[:255] or normalized_alias[:255],
-        "normalized_alias": normalized_alias[:255],
-        "confidence": _safe_confidence(confidence, 1.0),
-    })
+    """),
+        {
+            "id": uuid4().hex,
+            "workspace_id": workspace_id,
+            "entity_id": entity_id,
+            "source_document_id": source_document_id,
+            "alias": alias[:255] or normalized_alias[:255],
+            "normalized_alias": normalized_alias[:255],
+            "confidence": _safe_confidence(confidence, 1.0),
+        },
+    )
 
 
 async def _insert_fact_if_missing(
@@ -850,37 +943,40 @@ async def _insert_fact_if_missing(
     provenance: object,
     excerpt: object,
 ) -> None:
-    exists = await conn.scalar(text("""
+    exists = await conn.scalar(
+        text("""
         SELECT 1 FROM facts
         WHERE component_id = :component_id
         LIMIT 1
-    """), {"component_id": component_id})
+    """),
+        {"component_id": component_id},
+    )
     if exists:
         return
-    await conn.execute(text("""
+    await conn.execute(
+        text("""
         INSERT INTO facts (
             id, workspace_id, entity_id, component_id, source_document_id,
-            claim, fact_type, confidence, status, provenance, excerpt,
-            extractor_version
+            claim, fact_type, confidence, status, provenance, excerpt
         ) VALUES (
             :id, :workspace_id, :entity_id, :component_id, :source_document_id,
-            :claim, :fact_type, :confidence, :status, :provenance, :excerpt,
-            :extractor_version
+            :claim, :fact_type, :confidence, :status, :provenance, :excerpt
         )
-    """), {
-        "id": uuid4().hex,
-        "workspace_id": workspace_id,
-        "entity_id": entity_id,
-        "component_id": component_id,
-        "source_document_id": source_document_id,
-        "claim": claim,
-        "fact_type": str(fact_type or "fact")[:50],
-        "confidence": _safe_confidence(confidence, 0.5),
-        "status": str(status or "active")[:50],
-        "provenance": provenance,
-        "excerpt": excerpt,
-        "extractor_version": "extractor.v1",
-    })
+    """),
+        {
+            "id": uuid4().hex,
+            "workspace_id": workspace_id,
+            "entity_id": entity_id,
+            "component_id": component_id,
+            "source_document_id": source_document_id,
+            "claim": claim,
+            "fact_type": str(fact_type or "fact")[:50],
+            "confidence": _safe_confidence(confidence, 0.5),
+            "status": str(status or "active")[:50],
+            "provenance": provenance,
+            "excerpt": excerpt,
+        },
+    )
 
 
 async def _insert_mention_if_missing(
@@ -894,18 +990,22 @@ async def _insert_mention_if_missing(
     normalized_mention: str,
     confidence: object,
 ) -> None:
-    exists = await conn.scalar(text("""
+    exists = await conn.scalar(
+        text("""
         SELECT 1 FROM mentions
         WHERE component_id = :component_id
           AND normalized_mention = :normalized_mention
         LIMIT 1
-    """), {
-        "component_id": component_id,
-        "normalized_mention": normalized_mention,
-    })
+    """),
+        {
+            "component_id": component_id,
+            "normalized_mention": normalized_mention,
+        },
+    )
     if exists:
         return
-    await conn.execute(text("""
+    await conn.execute(
+        text("""
         INSERT INTO mentions (
             id, workspace_id, entity_id, source_document_id, component_id,
             mention_text, normalized_mention, confidence
@@ -913,16 +1013,18 @@ async def _insert_mention_if_missing(
             :id, :workspace_id, :entity_id, :source_document_id, :component_id,
             :mention_text, :normalized_mention, :confidence
         )
-    """), {
-        "id": uuid4().hex,
-        "workspace_id": workspace_id,
-        "entity_id": entity_id,
-        "source_document_id": source_document_id,
-        "component_id": component_id,
-        "mention_text": (mention_text or normalized_mention)[:255],
-        "normalized_mention": normalized_mention[:255],
-        "confidence": _safe_confidence(confidence, 0.8),
-    })
+    """),
+        {
+            "id": uuid4().hex,
+            "workspace_id": workspace_id,
+            "entity_id": entity_id,
+            "source_document_id": source_document_id,
+            "component_id": component_id,
+            "mention_text": (mention_text or normalized_mention)[:255],
+            "normalized_mention": normalized_mention[:255],
+            "confidence": _safe_confidence(confidence, 0.8),
+        },
+    )
 
 
 def _safe_confidence(value: object, default: float) -> float:
@@ -986,37 +1088,42 @@ async def _migrate_relationships_confidence_evidence(conn: AsyncConnection) -> N
         return
 
     if "confidence" not in columns:
-        await conn.execute(text(
-            "ALTER TABLE relationships ADD COLUMN confidence FLOAT NOT NULL DEFAULT 0.7"
-        ))
-        await conn.execute(text(
-            "UPDATE relationships SET confidence = 0.7 WHERE confidence IS NULL"
-        ))
+        await conn.execute(
+            text("ALTER TABLE relationships ADD COLUMN confidence FLOAT NOT NULL DEFAULT 0.7")
+        )
+        await conn.execute(
+            text("UPDATE relationships SET confidence = 0.7 WHERE confidence IS NULL")
+        )
 
     if "evidence" not in columns:
-        await conn.execute(text(
-            "ALTER TABLE relationships ADD COLUMN evidence TEXT"
-        ))
-        await conn.execute(text(
-            "UPDATE relationships SET evidence = 'backfill: schema migration' "
-            "WHERE evidence IS NULL"
-        ))
+        await conn.execute(text("ALTER TABLE relationships ADD COLUMN evidence TEXT"))
+        await conn.execute(
+            text(
+                "UPDATE relationships SET evidence = 'backfill: schema migration' "
+                "WHERE evidence IS NULL"
+            )
+        )
 
     if "status" not in columns:
-        await conn.execute(text(
-            "ALTER TABLE relationships ADD COLUMN status VARCHAR(50) NOT NULL DEFAULT 'active'"
-        ))
+        await conn.execute(
+            text(
+                "ALTER TABLE relationships ADD COLUMN status VARCHAR(50) NOT NULL DEFAULT 'active'"
+            )
+        )
 
 
 async def _get_table_columns(conn: AsyncConnection, table_name: str) -> set[str]:
     if conn.dialect.name == "postgresql":
         try:
-            result = await conn.execute(text("""
+            result = await conn.execute(
+                text("""
                 SELECT column_name
                 FROM information_schema.columns
                 WHERE table_schema = current_schema()
                   AND table_name = :table_name
-            """), {"table_name": table_name})
+            """),
+                {"table_name": table_name},
+            )
             return {str(row[0]) for row in result.fetchall()}
         except Exception:
             return set()
@@ -1037,9 +1144,7 @@ async def _ensure_default_workspace(conn: AsyncConnection) -> str:
     if not await _table_exists(conn, "workspaces"):
         return ""
 
-    workspace_id = await conn.scalar(text(
-        "SELECT id FROM workspaces ORDER BY created_at LIMIT 1"
-    ))
+    workspace_id = await conn.scalar(text("SELECT id FROM workspaces ORDER BY created_at LIMIT 1"))
     if workspace_id:
         return str(workspace_id)
 
@@ -1054,14 +1159,17 @@ async def _ensure_default_workspace(conn: AsyncConnection) -> str:
 async def _table_exists(conn: AsyncConnection, table_name: str) -> bool:
     if conn.dialect.name == "postgresql":
         try:
-            result = await conn.execute(text("""
+            result = await conn.execute(
+                text("""
                 SELECT EXISTS (
                     SELECT 1
                     FROM information_schema.tables
                     WHERE table_schema = current_schema()
                       AND table_name = :table_name
                 )
-            """), {"table_name": table_name})
+            """),
+                {"table_name": table_name},
+            )
             return bool(result.scalar())
         except Exception:
             return False
@@ -1076,14 +1184,10 @@ async def _migrate_components_provenance_excerpt(conn: AsyncConnection) -> None:
         return
 
     if "provenance" not in columns:
-        await conn.execute(text(
-            "ALTER TABLE components ADD COLUMN provenance TEXT"
-        ))
+        await conn.execute(text("ALTER TABLE components ADD COLUMN provenance TEXT"))
 
     if "excerpt" not in columns:
-        await conn.execute(text(
-            "ALTER TABLE components ADD COLUMN excerpt TEXT"
-        ))
+        await conn.execute(text("ALTER TABLE components ADD COLUMN excerpt TEXT"))
 
 
 async def _migrate_relationships_origin(conn: AsyncConnection) -> None:
@@ -1092,9 +1196,11 @@ async def _migrate_relationships_origin(conn: AsyncConnection) -> None:
         return
 
     if "origin" not in columns:
-        await conn.execute(text(
-            "ALTER TABLE relationships ADD COLUMN origin VARCHAR(20) NOT NULL DEFAULT 'proposed'"
-        ))
+        await conn.execute(
+            text(
+                "ALTER TABLE relationships ADD COLUMN origin VARCHAR(20) NOT NULL DEFAULT 'proposed'"
+            )
+        )
 
 
 async def _migrate_evidence_ledger_and_claim_graph(conn: AsyncConnection) -> None:
@@ -1104,11 +1210,17 @@ async def _migrate_evidence_ledger_and_claim_graph(conn: AsyncConnection) -> Non
     source_columns = await _get_table_columns(conn, "source_documents")
     if source_columns:
         if "content_sha256" not in source_columns:
-            await conn.execute(text("ALTER TABLE source_documents ADD COLUMN content_sha256 VARCHAR(64)"))
+            await conn.execute(
+                text("ALTER TABLE source_documents ADD COLUMN content_sha256 VARCHAR(64)")
+            )
         if "trust_zone" not in source_columns:
-            await conn.execute(text("ALTER TABLE source_documents ADD COLUMN trust_zone VARCHAR(50)"))
+            await conn.execute(
+                text("ALTER TABLE source_documents ADD COLUMN trust_zone VARCHAR(50)")
+            )
         if "source_created_at" not in source_columns:
-            await conn.execute(text(f"ALTER TABLE source_documents ADD COLUMN source_created_at {dt_type}"))
+            await conn.execute(
+                text(f"ALTER TABLE source_documents ADD COLUMN source_created_at {dt_type}")
+            )
         await _backfill_source_document_ledger_columns(conn)
 
     component_columns = await _get_table_columns(conn, "components")
@@ -1118,7 +1230,8 @@ async def _migrate_evidence_ledger_and_claim_graph(conn: AsyncConnection) -> Non
     if not source_columns:
         return
 
-    await conn.execute(text(f"""
+    await conn.execute(
+        text(f"""
         CREATE TABLE IF NOT EXISTS evidence_spans (
             id CHAR(32) NOT NULL,
             workspace_id CHAR(32),
@@ -1138,8 +1251,10 @@ async def _migrate_evidence_ledger_and_claim_graph(conn: AsyncConnection) -> Non
             FOREIGN KEY(workspace_id) REFERENCES workspaces (id),
             FOREIGN KEY(source_document_id) REFERENCES source_documents (id)
         )
-    """))
-    await conn.execute(text(f"""
+    """)
+    )
+    await conn.execute(
+        text(f"""
         CREATE TABLE IF NOT EXISTS claims (
             id CHAR(32) NOT NULL,
             workspace_id CHAR(32),
@@ -1155,8 +1270,10 @@ async def _migrate_evidence_ledger_and_claim_graph(conn: AsyncConnection) -> Non
             PRIMARY KEY (id),
             FOREIGN KEY(workspace_id) REFERENCES workspaces (id)
         )
-    """))
-    await conn.execute(text(f"""
+    """)
+    )
+    await conn.execute(
+        text(f"""
         CREATE TABLE IF NOT EXISTS claim_revisions (
             id CHAR(32) NOT NULL,
             claim_id CHAR(32) NOT NULL,
@@ -1173,39 +1290,54 @@ async def _migrate_evidence_ledger_and_claim_graph(conn: AsyncConnection) -> Non
             FOREIGN KEY(claim_id) REFERENCES claims (id),
             FOREIGN KEY(evidence_span_id) REFERENCES evidence_spans (id)
         )
-    """))
-    await conn.execute(text(f"""
+    """)
+    )
+    await conn.execute(
+        text(f"""
         CREATE TABLE IF NOT EXISTS context_packs (
             id CHAR(32) NOT NULL,
             workspace_id CHAR(32),
             objective TEXT NOT NULL,
             target_model VARCHAR(255),
+            model_profile VARCHAR(100),
             token_budget INTEGER,
             pack_version VARCHAR(50) NOT NULL DEFAULT 'context_pack.v2',
             health_score FLOAT,
             markdown TEXT NOT NULL DEFAULT '',
             manifest TEXT NOT NULL DEFAULT '{{}}',
+            repo_state_json TEXT NOT NULL DEFAULT '{{}}',
+            idempotency_key VARCHAR(255),
             created_at {dt_type} DEFAULT CURRENT_TIMESTAMP NOT NULL,
             PRIMARY KEY (id),
             FOREIGN KEY(workspace_id) REFERENCES workspaces (id)
         )
-    """))
-    await conn.execute(text("""
+    """)
+    )
+    await conn.execute(
+        text(f"""
         CREATE TABLE IF NOT EXISTS context_pack_items (
             id CHAR(32) NOT NULL,
             context_pack_id CHAR(32) NOT NULL,
+            item_type VARCHAR(50) NOT NULL DEFAULT 'component',
+            claim_id CHAR(32),
             component_id CHAR(32),
             evidence_span_id CHAR(32),
+            source_document_id CHAR(32),
             score FLOAT NOT NULL DEFAULT 0.0,
             inclusion_reason TEXT,
             token_cost INTEGER,
+            created_at {dt_type} DEFAULT CURRENT_TIMESTAMP NOT NULL,
             PRIMARY KEY (id),
             FOREIGN KEY(context_pack_id) REFERENCES context_packs (id),
+            FOREIGN KEY(claim_id) REFERENCES claims (id),
             FOREIGN KEY(component_id) REFERENCES components (id),
-            FOREIGN KEY(evidence_span_id) REFERENCES evidence_spans (id)
+            FOREIGN KEY(evidence_span_id) REFERENCES evidence_spans (id),
+            FOREIGN KEY(source_document_id) REFERENCES source_documents (id)
         )
-    """))
-    await conn.execute(text(f"""
+    """)
+    )
+    await conn.execute(
+        text(f"""
         CREATE TABLE IF NOT EXISTS agent_runs (
             id CHAR(32) NOT NULL,
             workspace_id CHAR(32),
@@ -1223,8 +1355,10 @@ async def _migrate_evidence_ledger_and_claim_graph(conn: AsyncConnection) -> Non
             FOREIGN KEY(workspace_id) REFERENCES workspaces (id),
             FOREIGN KEY(context_pack_id) REFERENCES context_packs (id)
         )
-    """))
-    await conn.execute(text(f"""
+    """)
+    )
+    await conn.execute(
+        text(f"""
         CREATE TABLE IF NOT EXISTS run_observations (
             id CHAR(32) NOT NULL,
             agent_run_id CHAR(32) NOT NULL,
@@ -1239,8 +1373,10 @@ async def _migrate_evidence_ledger_and_claim_graph(conn: AsyncConnection) -> Non
             FOREIGN KEY(agent_run_id) REFERENCES agent_runs (id),
             FOREIGN KEY(source_document_id) REFERENCES source_documents (id)
         )
-    """))
-    await conn.execute(text(f"""
+    """)
+    )
+    await conn.execute(
+        text(f"""
         CREATE TABLE IF NOT EXISTS code_files (
             id CHAR(32) NOT NULL,
             workspace_id CHAR(32),
@@ -1254,8 +1390,10 @@ async def _migrate_evidence_ledger_and_claim_graph(conn: AsyncConnection) -> Non
             PRIMARY KEY (id),
             FOREIGN KEY(workspace_id) REFERENCES workspaces (id)
         )
-    """))
-    await conn.execute(text("""
+    """)
+    )
+    await conn.execute(
+        text("""
         CREATE TABLE IF NOT EXISTS code_symbols (
             id CHAR(32) NOT NULL,
             code_file_id CHAR(32) NOT NULL,
@@ -1269,8 +1407,10 @@ async def _migrate_evidence_ledger_and_claim_graph(conn: AsyncConnection) -> Non
             PRIMARY KEY (id),
             FOREIGN KEY(code_file_id) REFERENCES code_files (id)
         )
-    """))
-    await conn.execute(text("""
+    """)
+    )
+    await conn.execute(
+        text("""
         CREATE TABLE IF NOT EXISTS code_edges (
             id CHAR(32) NOT NULL,
             source_symbol_id CHAR(32) NOT NULL,
@@ -1280,8 +1420,10 @@ async def _migrate_evidence_ledger_and_claim_graph(conn: AsyncConnection) -> Non
             FOREIGN KEY(source_symbol_id) REFERENCES code_symbols (id),
             FOREIGN KEY(target_symbol_id) REFERENCES code_symbols (id)
         )
-    """))
-    await conn.execute(text(f"""
+    """)
+    )
+    await conn.execute(
+        text(f"""
         CREATE TABLE IF NOT EXISTS repo_events (
             id CHAR(32) NOT NULL,
             workspace_id CHAR(32),
@@ -1294,29 +1436,81 @@ async def _migrate_evidence_ledger_and_claim_graph(conn: AsyncConnection) -> Non
             PRIMARY KEY (id),
             FOREIGN KEY(workspace_id) REFERENCES workspaces (id)
         )
-    """))
+    """)
+    )
 
     evidence_columns = await _get_table_columns(conn, "evidence_spans")
     if evidence_columns:
         if "text" not in evidence_columns:
             await conn.execute(text("ALTER TABLE evidence_spans ADD COLUMN text TEXT"))
         if "review_status" not in evidence_columns:
-            await conn.execute(text(
-                "ALTER TABLE evidence_spans ADD COLUMN review_status VARCHAR(50) NOT NULL DEFAULT 'verified'"
-            ))
+            await conn.execute(
+                text(
+                    "ALTER TABLE evidence_spans ADD COLUMN review_status VARCHAR(50) NOT NULL DEFAULT 'verified'"
+                )
+            )
 
     revision_columns = await _get_table_columns(conn, "claim_revisions")
     if revision_columns:
         if "status_after" not in revision_columns:
-            await conn.execute(text(
-                "ALTER TABLE claim_revisions ADD COLUMN status_after VARCHAR(50) NOT NULL DEFAULT 'needs_review'"
-            ))
+            await conn.execute(
+                text(
+                    "ALTER TABLE claim_revisions ADD COLUMN status_after VARCHAR(50) NOT NULL DEFAULT 'needs_review'"
+                )
+            )
         if "supersedes_claim_id" not in revision_columns:
-            await conn.execute(text("ALTER TABLE claim_revisions ADD COLUMN supersedes_claim_id CHAR(32)"))
+            await conn.execute(
+                text("ALTER TABLE claim_revisions ADD COLUMN supersedes_claim_id CHAR(32)")
+            )
         if "contradicts_claim_id" not in revision_columns:
-            await conn.execute(text("ALTER TABLE claim_revisions ADD COLUMN contradicts_claim_id CHAR(32)"))
+            await conn.execute(
+                text("ALTER TABLE claim_revisions ADD COLUMN contradicts_claim_id CHAR(32)")
+            )
         if "created_by" not in revision_columns:
-            await conn.execute(text("ALTER TABLE claim_revisions ADD COLUMN created_by VARCHAR(255)"))
+            await conn.execute(
+                text("ALTER TABLE claim_revisions ADD COLUMN created_by VARCHAR(255)")
+            )
+
+    context_pack_columns = await _get_table_columns(conn, "context_packs")
+    if context_pack_columns:
+        if "model_profile" not in context_pack_columns:
+            await conn.execute(
+                text("ALTER TABLE context_packs ADD COLUMN model_profile VARCHAR(100)")
+            )
+        if "repo_state_json" not in context_pack_columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE context_packs ADD COLUMN repo_state_json TEXT NOT NULL DEFAULT '{}'"
+                )
+            )
+        if "idempotency_key" not in context_pack_columns:
+            await conn.execute(
+                text("ALTER TABLE context_packs ADD COLUMN idempotency_key VARCHAR(255)")
+            )
+
+    item_columns = await _get_table_columns(conn, "context_pack_items")
+    if item_columns:
+        if "item_type" not in item_columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE context_pack_items ADD COLUMN item_type VARCHAR(50) NOT NULL DEFAULT 'component'"
+                )
+            )
+        if "claim_id" not in item_columns:
+            await conn.execute(text("ALTER TABLE context_pack_items ADD COLUMN claim_id CHAR(32)"))
+        if "source_document_id" not in item_columns:
+            await conn.execute(
+                text("ALTER TABLE context_pack_items ADD COLUMN source_document_id CHAR(32)")
+            )
+        if "created_at" not in item_columns:
+            await conn.execute(
+                text(f"ALTER TABLE context_pack_items ADD COLUMN created_at {dt_type}")
+            )
+            await conn.execute(
+                text(
+                    "UPDATE context_pack_items SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL"
+                )
+            )
 
 
 async def _backfill_source_document_ledger_columns(conn: AsyncConnection) -> None:
@@ -1324,7 +1518,8 @@ async def _backfill_source_document_ledger_columns(conn: AsyncConnection) -> Non
     if not {"id", "content", "source_type"} <= columns:
         return
     metadata_expr = "metadata" if "metadata" in columns else "'{}'"
-    result = await conn.execute(text(f"""
+    result = await conn.execute(
+        text(f"""
         SELECT id, content, source_type, {metadata_expr} AS metadata, content_sha256, trust_zone, source_created_at
         FROM source_documents
         WHERE content_sha256 IS NULL
@@ -1332,7 +1527,8 @@ async def _backfill_source_document_ledger_columns(conn: AsyncConnection) -> Non
            OR trust_zone IS NULL
            OR trust_zone = ''
            OR source_created_at IS NULL
-    """))
+    """)
+    )
     for row in result.fetchall():
         metadata = _loads_json_dict(row[3])
         params = {
@@ -1341,13 +1537,16 @@ async def _backfill_source_document_ledger_columns(conn: AsyncConnection) -> Non
             "trust_zone": row[5] or default_trust_zone_for_source(str(row[2] or ""), metadata),
             "source_created_at": row[6] or _source_created_at_from_metadata(metadata),
         }
-        await conn.execute(text("""
+        await conn.execute(
+            text("""
             UPDATE source_documents
             SET content_sha256 = :content_sha256,
                 trust_zone = :trust_zone,
                 source_created_at = COALESCE(source_created_at, :source_created_at)
             WHERE id = :id
-        """), params)
+        """),
+            params,
+        )
 
 
 async def _migrate_unresolved_relationships_schema(conn: AsyncConnection) -> None:
@@ -1355,7 +1554,8 @@ async def _migrate_unresolved_relationships_schema(conn: AsyncConnection) -> Non
         return
 
     dt_type = _datetime_column_type(conn)
-    await conn.execute(text(f"""
+    await conn.execute(
+        text(f"""
         CREATE TABLE IF NOT EXISTS unresolved_relationships (
             id CHAR(32) NOT NULL,
             workspace_id CHAR(32),
@@ -1378,11 +1578,13 @@ async def _migrate_unresolved_relationships_schema(conn: AsyncConnection) -> Non
             FOREIGN KEY(source_document_id) REFERENCES source_documents (id),
             FOREIGN KEY(resolved_relationship_id) REFERENCES relationships (id)
         )
-    """))
+    """)
+    )
 
 
 async def _migrate_retrieval_events_schema(conn: AsyncConnection) -> None:
-    await conn.execute(text("""
+    await conn.execute(
+        text("""
         CREATE TABLE IF NOT EXISTS retrieval_events (
             id CHAR(32) NOT NULL,
             workspace_id CHAR(32),
@@ -1400,7 +1602,8 @@ async def _migrate_retrieval_events_schema(conn: AsyncConnection) -> None:
             PRIMARY KEY (id),
             FOREIGN KEY(workspace_id) REFERENCES workspaces (id)
         )
-    """))
+    """)
+    )
 
 
 async def _migrate_pgvector_search_schema(conn: AsyncConnection) -> None:
@@ -1423,7 +1626,8 @@ async def _migrate_pgvector_search_schema(conn: AsyncConnection) -> None:
     if "embedding_vector" not in columns:
         await conn.execute(text("ALTER TABLE components ADD COLUMN embedding_vector vector"))
 
-    await conn.execute(text("""
+    await conn.execute(
+        text("""
         CREATE OR REPLACE FUNCTION ce_try_vector(raw text) RETURNS vector AS $$
         BEGIN
             IF raw IS NULL OR btrim(raw) = '' THEN
@@ -1434,15 +1638,19 @@ async def _migrate_pgvector_search_schema(conn: AsyncConnection) -> None:
             RETURN NULL;
         END;
         $$ LANGUAGE plpgsql IMMUTABLE
-    """))
-    await conn.execute(text("""
+    """)
+    )
+    await conn.execute(
+        text("""
         UPDATE components
         SET embedding_vector = ce_try_vector(embedding)
         WHERE embedding_vector IS NULL
           AND embedding IS NOT NULL
           AND embedding != ''
-    """))
-    await conn.execute(text("""
+    """)
+    )
+    await conn.execute(
+        text("""
         CREATE OR REPLACE FUNCTION ce_sync_component_embedding_vector()
         RETURNS trigger AS $$
         BEGIN
@@ -1450,25 +1658,32 @@ async def _migrate_pgvector_search_schema(conn: AsyncConnection) -> None:
             RETURN NEW;
         END;
         $$ LANGUAGE plpgsql
-    """))
-    await conn.execute(text("""
+    """)
+    )
+    await conn.execute(
+        text("""
         DROP TRIGGER IF EXISTS trg_components_embedding_vector ON components
-    """))
-    await conn.execute(text("""
+    """)
+    )
+    await conn.execute(
+        text("""
         CREATE TRIGGER trg_components_embedding_vector
         BEFORE INSERT OR UPDATE OF embedding ON components
         FOR EACH ROW
         EXECUTE FUNCTION ce_sync_component_embedding_vector()
-    """))
+    """)
+    )
 
     dimension = pgvector_index_dimension()
-    await conn.execute(text(f"""
+    await conn.execute(
+        text(f"""
         CREATE INDEX IF NOT EXISTS ix_components_embedding_vector_hnsw
         ON components
         USING hnsw ((embedding_vector::vector({dimension})) vector_cosine_ops)
         WHERE embedding_vector IS NOT NULL
           AND vector_dims(embedding_vector) = {dimension}
-    """))
+    """)
+    )
 
 
 async def _migrate_postgres_text_search_schema(conn: AsyncConnection) -> None:
@@ -1483,7 +1698,8 @@ async def _migrate_postgres_text_search_schema(conn: AsyncConnection) -> None:
         if "search_tsv" not in source_columns:
             await conn.execute(text("ALTER TABLE source_documents ADD COLUMN search_tsv tsvector"))
 
-        await conn.execute(text("""
+        await conn.execute(
+            text("""
             CREATE OR REPLACE FUNCTION ce_try_jsonb(raw text) RETURNS jsonb AS $$
             BEGIN
                 IF raw IS NULL OR btrim(raw) = '' THEN
@@ -1494,8 +1710,10 @@ async def _migrate_postgres_text_search_schema(conn: AsyncConnection) -> None:
                 RETURN '{}'::jsonb;
             END;
             $$ LANGUAGE plpgsql IMMUTABLE
-        """))
-        await conn.execute(text("""
+        """)
+        )
+        await conn.execute(
+            text("""
             CREATE OR REPLACE FUNCTION ce_sync_source_document_search()
             RETURNS trigger AS $$
             BEGIN
@@ -1508,8 +1726,10 @@ async def _migrate_postgres_text_search_schema(conn: AsyncConnection) -> None:
                 RETURN NEW;
             END;
             $$ LANGUAGE plpgsql
-        """))
-        await conn.execute(text("""
+        """)
+        )
+        await conn.execute(
+            text("""
             UPDATE source_documents
             SET metadata_jsonb = ce_try_jsonb(metadata),
                 search_tsv =
@@ -1518,30 +1738,40 @@ async def _migrate_postgres_text_search_schema(conn: AsyncConnection) -> None:
                     setweight(to_tsvector('english', coalesce(author, '')), 'C') ||
                     setweight(to_tsvector('english', coalesce(content, '')), 'D')
             WHERE metadata_jsonb IS NULL OR search_tsv IS NULL
-        """))
-        await conn.execute(text("DROP TRIGGER IF EXISTS trg_source_documents_search ON source_documents"))
-        await conn.execute(text("""
+        """)
+        )
+        await conn.execute(
+            text("DROP TRIGGER IF EXISTS trg_source_documents_search ON source_documents")
+        )
+        await conn.execute(
+            text("""
             CREATE TRIGGER trg_source_documents_search
             BEFORE INSERT OR UPDATE OF metadata, content, external_id, source_type, author
             ON source_documents
             FOR EACH ROW
             EXECUTE FUNCTION ce_sync_source_document_search()
-        """))
-        await conn.execute(text("""
+        """)
+        )
+        await conn.execute(
+            text("""
             CREATE INDEX IF NOT EXISTS ix_source_documents_metadata_jsonb_gin
             ON source_documents USING gin (metadata_jsonb)
-        """))
-        await conn.execute(text("""
+        """)
+        )
+        await conn.execute(
+            text("""
             CREATE INDEX IF NOT EXISTS ix_source_documents_search_tsv_gin
             ON source_documents USING gin (search_tsv)
-        """))
+        """)
+        )
 
     component_columns = await _get_table_columns(conn, "components")
     if component_columns:
         if "search_tsv" not in component_columns:
             await conn.execute(text("ALTER TABLE components ADD COLUMN search_tsv tsvector"))
 
-        await conn.execute(text("""
+        await conn.execute(
+            text("""
             CREATE OR REPLACE FUNCTION ce_sync_component_search()
             RETURNS trigger AS $$
             BEGIN
@@ -1554,8 +1784,10 @@ async def _migrate_postgres_text_search_schema(conn: AsyncConnection) -> None:
                 RETURN NEW;
             END;
             $$ LANGUAGE plpgsql
-        """))
-        await conn.execute(text("""
+        """)
+        )
+        await conn.execute(
+            text("""
             UPDATE components
             SET search_tsv =
                 setweight(to_tsvector('english', coalesce(name, '')), 'A') ||
@@ -1564,28 +1796,35 @@ async def _migrate_postgres_text_search_schema(conn: AsyncConnection) -> None:
                 setweight(to_tsvector('english', coalesce(temporal, '')), 'C') ||
                 setweight(to_tsvector('english', coalesce(value, '')), 'D')
             WHERE search_tsv IS NULL
-        """))
+        """)
+        )
         await conn.execute(text("DROP TRIGGER IF EXISTS trg_components_search ON components"))
-        await conn.execute(text("""
+        await conn.execute(
+            text("""
             CREATE TRIGGER trg_components_search
             BEFORE INSERT OR UPDATE OF name, value, fact_type, status, temporal
             ON components
             FOR EACH ROW
             EXECUTE FUNCTION ce_sync_component_search()
-        """))
-        await conn.execute(text("""
+        """)
+        )
+        await conn.execute(
+            text("""
             CREATE INDEX IF NOT EXISTS ix_components_search_tsv_gin
             ON components USING gin (search_tsv)
-        """))
+        """)
+        )
 
 
 async def _pgvector_extension_available(conn: AsyncConnection) -> bool:
     try:
-        result = await conn.execute(text("""
+        result = await conn.execute(
+            text("""
             SELECT EXISTS (
                 SELECT 1 FROM pg_available_extensions WHERE name = 'vector'
             )
-        """))
+        """)
+        )
         return bool(result.scalar())
     except Exception:
         return False
@@ -1727,13 +1966,29 @@ async def _migrate_query_and_sync_indexes(conn: AsyncConnection) -> None:
         ("claim_revisions", "ix_claim_revisions_contradicts_claim_id", ("contradicts_claim_id",)),
         ("context_packs", "ix_context_packs_workspace_created", ("workspace_id", "created_at")),
         ("context_packs", "ix_context_packs_target_model", ("target_model",)),
+        (
+            "context_packs",
+            "ix_context_packs_workspace_target_created",
+            ("workspace_id", "target_model", "created_at"),
+        ),
+        ("context_packs", "ix_context_packs_idempotency_key", ("idempotency_key",)),
         ("context_pack_items", "ix_context_pack_items_pack", ("context_pack_id",)),
+        ("context_pack_items", "ix_context_pack_items_claim", ("claim_id",)),
         ("context_pack_items", "ix_context_pack_items_component", ("component_id",)),
         ("context_pack_items", "ix_context_pack_items_evidence", ("evidence_span_id",)),
+        (
+            "context_pack_items",
+            "ix_context_pack_items_source_document",
+            ("source_document_id",),
+        ),
         ("agent_runs", "ix_agent_runs_workspace_started", ("workspace_id", "started_at")),
         ("agent_runs", "ix_agent_runs_context_pack", ("context_pack_id",)),
         ("agent_runs", "ix_agent_runs_status", ("status",)),
-        ("run_observations", "ix_run_observations_agent_run_created", ("agent_run_id", "created_at")),
+        (
+            "run_observations",
+            "ix_run_observations_agent_run_created",
+            ("agent_run_id", "created_at"),
+        ),
         ("run_observations", "ix_run_observations_source_document", ("source_document_id",)),
         ("run_observations", "ix_run_observations_event_type", ("event_type",)),
         ("code_files", "ix_code_files_workspace_path", ("workspace_id", "path")),
@@ -1771,6 +2026,6 @@ async def _create_index_if_columns_exist(
         return
 
     quoted_columns = ", ".join(column_names)
-    await conn.execute(text(
-        f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} ({quoted_columns})"
-    ))
+    await conn.execute(
+        text(f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} ({quoted_columns})")
+    )

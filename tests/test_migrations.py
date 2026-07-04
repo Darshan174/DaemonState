@@ -1,17 +1,38 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import tempfile
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.orm import selectinload
 
 from app.migrations import run_migrations
-from app.models import Connector, SyncJob
+from app.models import (
+    AgentRun,
+    Base,
+    Claim,
+    ClaimRevision,
+    CodeEdge,
+    CodeFile,
+    CodeSymbol,
+    Component,
+    Connector,
+    ContextPack,
+    ContextPackItem,
+    EvidenceSpan,
+    Model,
+    RepoEvent,
+    RunObservation,
+    SourceDocument,
+    SyncJob,
+    Workspace,
+)
 
 
 class TestRelationshipConfidenceEvidenceMigration:
@@ -39,43 +60,53 @@ class TestRelationshipConfidenceEvidenceMigration:
         engine, _ = legacy_engine
 
         async with engine.connect() as conn:
-            await conn.execute(text(
-                "INSERT INTO source_documents "
-                "(id, source_type, external_id, content, metadata) "
-                "VALUES "
-                "('00000000-0000-0000-0000-000000000001', 'local', 'doc1', 'test', '{}')"
-            ))
-            await conn.execute(text(
-                "INSERT INTO models (id, name) VALUES "
-                "('00000000-0000-0000-0000-000000000002', 'TestModel')"
-            ))
-            await conn.execute(text(
-                "INSERT INTO components "
-                "(id, model_id, source_document_id, name, value, fact_type, confidence, status) "
-                "VALUES "
-                "('00000000-0000-0000-0000-000000000003', "
-                "'00000000-0000-0000-0000-000000000002', "
-                "'00000000-0000-0000-0000-000000000001', "
-                "'A', 'Component A', 'fact', 0.8, 'active')"
-            ))
-            await conn.execute(text(
-                "INSERT INTO components "
-                "(id, model_id, source_document_id, name, value, fact_type, confidence, status) "
-                "VALUES "
-                "('00000000-0000-0000-0000-000000000004', "
-                "'00000000-0000-0000-0000-000000000002', "
-                "'00000000-0000-0000-0000-000000000001', "
-                "'B', 'Component B', 'fact', 0.8, 'active')"
-            ))
-            await conn.execute(text(
-                "INSERT INTO relationships "
-                "(id, source_component_id, target_component_id, relationship_type) "
-                "VALUES "
-                "('00000000-0000-0000-0000-000000000005', "
-                "'00000000-0000-0000-0000-000000000003', "
-                "'00000000-0000-0000-0000-000000000004', "
-                "'depends_on')"
-            ))
+            await conn.execute(
+                text(
+                    "INSERT INTO source_documents "
+                    "(id, source_type, external_id, content, metadata) "
+                    "VALUES "
+                    "('00000000-0000-0000-0000-000000000001', 'local', 'doc1', 'test', '{}')"
+                )
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO models (id, name) VALUES "
+                    "('00000000-0000-0000-0000-000000000002', 'TestModel')"
+                )
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO components "
+                    "(id, model_id, source_document_id, name, value, fact_type, confidence, status) "
+                    "VALUES "
+                    "('00000000-0000-0000-0000-000000000003', "
+                    "'00000000-0000-0000-0000-000000000002', "
+                    "'00000000-0000-0000-0000-000000000001', "
+                    "'A', 'Component A', 'fact', 0.8, 'active')"
+                )
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO components "
+                    "(id, model_id, source_document_id, name, value, fact_type, confidence, status) "
+                    "VALUES "
+                    "('00000000-0000-0000-0000-000000000004', "
+                    "'00000000-0000-0000-0000-000000000002', "
+                    "'00000000-0000-0000-0000-000000000001', "
+                    "'B', 'Component B', 'fact', 0.8, 'active')"
+                )
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO relationships "
+                    "(id, source_component_id, target_component_id, relationship_type) "
+                    "VALUES "
+                    "('00000000-0000-0000-0000-000000000005', "
+                    "'00000000-0000-0000-0000-000000000003', "
+                    "'00000000-0000-0000-0000-000000000004', "
+                    "'depends_on')"
+                )
+            )
             await conn.commit()
 
         async with engine.begin() as conn:
@@ -89,10 +120,12 @@ class TestRelationshipConfidenceEvidenceMigration:
             assert "status" in columns
 
         async with engine.connect() as conn:
-            result = await conn.execute(text(
-                "SELECT confidence, evidence, status FROM relationships "
-                "WHERE id = '00000000-0000-0000-0000-000000000005'"
-            ))
+            result = await conn.execute(
+                text(
+                    "SELECT confidence, evidence, status FROM relationships "
+                    "WHERE id = '00000000-0000-0000-0000-000000000005'"
+                )
+            )
             row = result.fetchone()
             assert row is not None
             assert float(row[0]) == 0.7
@@ -103,42 +136,52 @@ class TestRelationshipConfidenceEvidenceMigration:
         engine, _ = legacy_engine
 
         async with engine.connect() as conn:
-            await conn.execute(text(
-                "INSERT INTO source_documents "
-                "(id, source_type, external_id, content, metadata) "
-                "VALUES ('10000000-0000-0000-0000-000000000001', 'local', 'doc2', 'test', '{}')"
-            ))
-            await conn.execute(text(
-                "INSERT INTO models (id, name) VALUES "
-                "('10000000-0000-0000-0000-000000000002', 'Model2')"
-            ))
-            await conn.execute(text(
-                "INSERT INTO components "
-                "(id, model_id, source_document_id, name, value, fact_type, confidence, status) "
-                "VALUES "
-                "('10000000-0000-0000-0000-000000000003', "
-                "'10000000-0000-0000-0000-000000000002', "
-                "'10000000-0000-0000-0000-000000000001', "
-                "'X', 'X', 'fact', 0.8, 'active')"
-            ))
-            await conn.execute(text(
-                "INSERT INTO components "
-                "(id, model_id, source_document_id, name, value, fact_type, confidence, status) "
-                "VALUES "
-                "('10000000-0000-0000-0000-000000000004', "
-                "'10000000-0000-0000-0000-000000000002', "
-                "'10000000-0000-0000-0000-000000000001', "
-                "'Y', 'Y', 'fact', 0.8, 'active')"
-            ))
-            await conn.execute(text(
-                "INSERT INTO relationships "
-                "(id, source_component_id, target_component_id, relationship_type) "
-                "VALUES "
-                "('10000000-0000-0000-0000-000000000005', "
-                "'10000000-0000-0000-0000-000000000003', "
-                "'10000000-0000-0000-0000-000000000004', "
-                "'enables')"
-            ))
+            await conn.execute(
+                text(
+                    "INSERT INTO source_documents "
+                    "(id, source_type, external_id, content, metadata) "
+                    "VALUES ('10000000-0000-0000-0000-000000000001', 'local', 'doc2', 'test', '{}')"
+                )
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO models (id, name) VALUES "
+                    "('10000000-0000-0000-0000-000000000002', 'Model2')"
+                )
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO components "
+                    "(id, model_id, source_document_id, name, value, fact_type, confidence, status) "
+                    "VALUES "
+                    "('10000000-0000-0000-0000-000000000003', "
+                    "'10000000-0000-0000-0000-000000000002', "
+                    "'10000000-0000-0000-0000-000000000001', "
+                    "'X', 'X', 'fact', 0.8, 'active')"
+                )
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO components "
+                    "(id, model_id, source_document_id, name, value, fact_type, confidence, status) "
+                    "VALUES "
+                    "('10000000-0000-0000-0000-000000000004', "
+                    "'10000000-0000-0000-0000-000000000002', "
+                    "'10000000-0000-0000-0000-000000000001', "
+                    "'Y', 'Y', 'fact', 0.8, 'active')"
+                )
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO relationships "
+                    "(id, source_component_id, target_component_id, relationship_type) "
+                    "VALUES "
+                    "('10000000-0000-0000-0000-000000000005', "
+                    "'10000000-0000-0000-0000-000000000003', "
+                    "'10000000-0000-0000-0000-000000000004', "
+                    "'enables')"
+                )
+            )
             await conn.commit()
 
         async with engine.begin() as conn:
@@ -147,10 +190,12 @@ class TestRelationshipConfidenceEvidenceMigration:
             await run_migrations(conn)
 
         async with engine.connect() as conn:
-            result = await conn.execute(text(
-                "SELECT confidence, evidence FROM relationships "
-                "WHERE id = '10000000-0000-0000-0000-000000000005'"
-            ))
+            result = await conn.execute(
+                text(
+                    "SELECT confidence, evidence FROM relationships "
+                    "WHERE id = '10000000-0000-0000-0000-000000000005'"
+                )
+            )
             row = result.fetchone()
             assert row is not None
             assert float(row[0]) == 0.7
@@ -160,63 +205,77 @@ class TestRelationshipConfidenceEvidenceMigration:
         engine, _ = legacy_engine
 
         async with engine.connect() as conn:
-            await conn.execute(text(
-                "INSERT INTO source_documents "
-                "(id, source_type, external_id, content, metadata) "
-                "VALUES ('20000000-0000-0000-0000-000000000001', 'local', 'doc3', 'test', '{}')"
-            ))
-            await conn.execute(text(
-                "INSERT INTO models (id, name) VALUES "
-                "('20000000-0000-0000-0000-000000000002', 'Model3')"
-            ))
-            await conn.execute(text(
-                "INSERT INTO components "
-                "(id, model_id, source_document_id, name, value, fact_type, confidence, status) "
-                "VALUES "
-                "('20000000-0000-0000-0000-000000000003', "
-                "'20000000-0000-0000-0000-000000000002', "
-                "'20000000-0000-0000-0000-000000000001', "
-                "'Z', 'Z', 'fact', 0.8, 'active')"
-            ))
-            await conn.execute(text(
-                "INSERT INTO components "
-                "(id, model_id, source_document_id, name, value, fact_type, confidence, status) "
-                "VALUES "
-                "('20000000-0000-0000-0000-000000000004', "
-                "'20000000-0000-0000-0000-000000000002', "
-                "'20000000-0000-0000-0000-000000000001', "
-                "'W', 'W', 'fact', 0.8, 'active')"
-            ))
-            await conn.execute(text(
-                "INSERT INTO relationships "
-                "(id, source_component_id, target_component_id, relationship_type) "
-                "VALUES "
-                "('20000000-0000-0000-0000-000000000005', "
-                "'20000000-0000-0000-0000-000000000003', "
-                "'20000000-0000-0000-0000-000000000004', "
-                "'blocked_by')"
-            ))
+            await conn.execute(
+                text(
+                    "INSERT INTO source_documents "
+                    "(id, source_type, external_id, content, metadata) "
+                    "VALUES ('20000000-0000-0000-0000-000000000001', 'local', 'doc3', 'test', '{}')"
+                )
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO models (id, name) VALUES "
+                    "('20000000-0000-0000-0000-000000000002', 'Model3')"
+                )
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO components "
+                    "(id, model_id, source_document_id, name, value, fact_type, confidence, status) "
+                    "VALUES "
+                    "('20000000-0000-0000-0000-000000000003', "
+                    "'20000000-0000-0000-0000-000000000002', "
+                    "'20000000-0000-0000-0000-000000000001', "
+                    "'Z', 'Z', 'fact', 0.8, 'active')"
+                )
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO components "
+                    "(id, model_id, source_document_id, name, value, fact_type, confidence, status) "
+                    "VALUES "
+                    "('20000000-0000-0000-0000-000000000004', "
+                    "'20000000-0000-0000-0000-000000000002', "
+                    "'20000000-0000-0000-0000-000000000001', "
+                    "'W', 'W', 'fact', 0.8, 'active')"
+                )
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO relationships "
+                    "(id, source_component_id, target_component_id, relationship_type) "
+                    "VALUES "
+                    "('20000000-0000-0000-0000-000000000005', "
+                    "'20000000-0000-0000-0000-000000000003', "
+                    "'20000000-0000-0000-0000-000000000004', "
+                    "'blocked_by')"
+                )
+            )
             await conn.commit()
 
         async with engine.begin() as conn:
             await run_migrations(conn)
 
         async with engine.connect() as conn:
-            await conn.execute(text(
-                "UPDATE relationships SET confidence = 0.95, "
-                "evidence = 'custom evidence text' "
-                "WHERE id = '20000000-0000-0000-0000-000000000005'"
-            ))
+            await conn.execute(
+                text(
+                    "UPDATE relationships SET confidence = 0.95, "
+                    "evidence = 'custom evidence text' "
+                    "WHERE id = '20000000-0000-0000-0000-000000000005'"
+                )
+            )
             await conn.commit()
 
         async with engine.begin() as conn:
             await run_migrations(conn)
 
         async with engine.connect() as conn:
-            result = await conn.execute(text(
-                "SELECT confidence, evidence FROM relationships "
-                "WHERE id = '20000000-0000-0000-0000-000000000005'"
-            ))
+            result = await conn.execute(
+                text(
+                    "SELECT confidence, evidence FROM relationships "
+                    "WHERE id = '20000000-0000-0000-0000-000000000005'"
+                )
+            )
             row = result.fetchone()
             assert row is not None
             assert float(row[0]) == 0.95
@@ -252,15 +311,18 @@ class TestConnectorWorkspaceMigration:
 
         try:
             async with engine.begin() as conn:
-                await conn.execute(text("""
+                await conn.execute(
+                    text("""
                     CREATE TABLE workspaces (
                         id TEXT PRIMARY KEY,
                         name TEXT NOT NULL,
                         slug TEXT NOT NULL UNIQUE,
                         created_at TEXT NOT NULL DEFAULT (datetime('now'))
                     )
-                """))
-                await conn.execute(text("""
+                """)
+                )
+                await conn.execute(
+                    text("""
                     CREATE TABLE connectors (
                         id TEXT PRIMARY KEY,
                         connector_type TEXT NOT NULL,
@@ -271,15 +333,18 @@ class TestConnectorWorkspaceMigration:
                         created_at TEXT NOT NULL DEFAULT (datetime('now')),
                         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
                     )
-                """))
-                await conn.execute(text("""
+                """)
+                )
+                await conn.execute(
+                    text("""
                     INSERT INTO connectors (
                         id, connector_type, status, config, credentials, items_synced
                     ) VALUES (
                         'legacy-github', 'github', 'connected',
                         '{"repositories":["owner/repo"]}', '{"access_token":"old"}', 7
                     )
-                """))
+                """)
+                )
 
             async with engine.begin() as conn:
                 await run_migrations(conn)
@@ -294,21 +359,27 @@ class TestConnectorWorkspaceMigration:
                 assert "credentials" not in columns
                 assert "items_synced" not in columns
 
-                row = (await conn.execute(text("""
+                row = (
+                    await conn.execute(
+                        text("""
                     SELECT workspace_id, config_json, credentials_json
                     FROM connectors WHERE id = 'legacy-github'
-                """))).fetchone()
+                """)
+                    )
+                ).fetchone()
                 assert row is not None
                 assert row[0]
                 assert "owner/repo" in row[1]
                 assert "old" in row[2]
 
             async with AsyncSession(engine, expire_on_commit=False) as session:
-                session.add(Connector(
-                    workspace_id=UUID("00000000-0000-0000-0000-000000000000"),
-                    connector_type="zoom",
-                    status="connected",
-                ))
+                session.add(
+                    Connector(
+                        workspace_id=UUID("00000000-0000-0000-0000-000000000000"),
+                        connector_type="zoom",
+                        status="connected",
+                    )
+                )
                 await session.commit()
         finally:
             await engine.dispose()
@@ -328,15 +399,18 @@ class TestSyncJobMigration:
 
         try:
             async with engine.begin() as conn:
-                await conn.execute(text("""
+                await conn.execute(
+                    text("""
                     CREATE TABLE workspaces (
                         id TEXT PRIMARY KEY,
                         name TEXT NOT NULL,
                         slug TEXT NOT NULL UNIQUE,
                         created_at TEXT NOT NULL DEFAULT (datetime('now'))
                     )
-                """))
-                await conn.execute(text("""
+                """)
+                )
+                await conn.execute(
+                    text("""
                     CREATE TABLE connectors (
                         id TEXT PRIMARY KEY,
                         workspace_id TEXT NOT NULL,
@@ -347,8 +421,10 @@ class TestSyncJobMigration:
                         created_at TEXT NOT NULL DEFAULT (datetime('now')),
                         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
                     )
-                """))
-                await conn.execute(text("""
+                """)
+                )
+                await conn.execute(
+                    text("""
                     CREATE TABLE sync_jobs (
                         id TEXT PRIMARY KEY,
                         connector_id TEXT NOT NULL,
@@ -361,16 +437,20 @@ class TestSyncJobMigration:
                         started_at TEXT,
                         completed_at TEXT
                     )
-                """))
-                await conn.execute(text("""
+                """)
+                )
+                await conn.execute(
+                    text("""
                     INSERT INTO connectors (
                         id, workspace_id, connector_type, status, config_json, credentials_json
                     ) VALUES (
                         '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000000',
                         'github', 'connected', '{}', '{}'
                     )
-                """))
-                await conn.execute(text("""
+                """)
+                )
+                await conn.execute(
+                    text("""
                     INSERT INTO sync_jobs (
                         id, connector_id, status, result_metadata
                     ) VALUES (
@@ -379,7 +459,9 @@ class TestSyncJobMigration:
                         'completed',
                         :metadata
                     )
-                """), {"metadata": '{"documents_fetched":1}'})
+                """),
+                    {"metadata": '{"documents_fetched":1}'},
+                )
 
             async with engine.begin() as conn:
                 await run_migrations(conn)
@@ -400,12 +482,16 @@ class TestSyncJobMigration:
                 assert "locked_by" in columns
                 assert "dead_lettered_at" in columns
 
-                row = (await conn.execute(text("""
+                row = (
+                    await conn.execute(
+                        text("""
                     SELECT workspace_id, job_type, idempotency_key, attempt_count,
                            max_attempts, result_metadata_json, queued_at
                     FROM sync_jobs
                     WHERE id = '00000000-0000-0000-0000-000000000002'
-                """))).fetchone()
+                """)
+                    )
+                ).fetchone()
                 assert row is not None
                 assert row[0] == "00000000-0000-0000-0000-000000000000"
                 assert row[1] == "connector_sync"
@@ -416,92 +502,16 @@ class TestSyncJobMigration:
                 assert row[6] is not None
 
             async with AsyncSession(engine, expire_on_commit=False) as session:
-                session.add(SyncJob(
-                    workspace_id=UUID("00000000-0000-0000-0000-000000000000"),
-                    connector_id=UUID("00000000-0000-0000-0000-000000000001"),
-                    job_type="connector_sync",
-                    idempotency_key="connector_sync:00000000-0000-0000-0000-000000000001",
-                    status="pending",
-                ))
-                await session.commit()
-        finally:
-            await engine.dispose()
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
-
-
-class TestFactIdentityMigration:
-    """Prove fact backfills work against tables created without DB defaults."""
-
-    async def test_backfill_sets_extractor_version_without_database_default(self):
-        fd, path = tempfile.mkstemp(suffix=".db")
-        os.close(fd)
-        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
-
-        try:
-            async with engine.begin() as conn:
-                await conn.run_sync(_create_legacy_schema)
-
-            async with engine.begin() as conn:
-                await conn.execute(text("""
-                    CREATE TABLE facts (
-                        id TEXT PRIMARY KEY,
-                        workspace_id TEXT,
-                        entity_id TEXT,
-                        component_id TEXT NOT NULL UNIQUE,
-                        source_document_id TEXT NOT NULL,
-                        claim TEXT NOT NULL,
-                        fact_type TEXT NOT NULL DEFAULT 'fact',
-                        confidence REAL NOT NULL DEFAULT 0.5,
-                        status TEXT NOT NULL DEFAULT 'active',
-                        provenance TEXT,
-                        excerpt TEXT,
-                        extractor_version TEXT NOT NULL,
-                        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                session.add(
+                    SyncJob(
+                        workspace_id=UUID("00000000-0000-0000-0000-000000000000"),
+                        connector_id=UUID("00000000-0000-0000-0000-000000000001"),
+                        job_type="connector_sync",
+                        idempotency_key="connector_sync:00000000-0000-0000-0000-000000000001",
+                        status="pending",
                     )
-                """))
-                await conn.execute(text(
-                    "INSERT INTO source_documents "
-                    "(id, source_type, external_id, content, metadata) "
-                    "VALUES "
-                    "('40000000-0000-0000-0000-000000000001', 'github_issue', "
-                    "'issue-11', 'Issue #11: Codex/fix graph review: closed', '{}')"
-                ))
-                await conn.execute(text(
-                    "INSERT INTO models (id, name) VALUES "
-                    "('40000000-0000-0000-0000-000000000002', 'Issue')"
-                ))
-                await conn.execute(text(
-                    "INSERT INTO components "
-                    "(id, model_id, source_document_id, name, value, fact_type, confidence, status) "
-                    "VALUES "
-                    "('40000000-0000-0000-0000-000000000003', "
-                    "'40000000-0000-0000-0000-000000000002', "
-                    "'40000000-0000-0000-0000-000000000001', "
-                    "'Issue #11', 'Codex/fix graph review: closed', 'issue', 0.95, 'active')"
-                ))
-
-            async with engine.begin() as conn:
-                await run_migrations(conn)
-            async with engine.begin() as conn:
-                await run_migrations(conn)
-
-            async with engine.connect() as conn:
-                rows = (await conn.execute(text("""
-                    SELECT claim, fact_type, confidence, extractor_version
-                    FROM facts
-                    WHERE component_id = '40000000-0000-0000-0000-000000000003'
-                """))).fetchall()
-
-            assert rows == [(
-                "Issue #11: Codex/fix graph review: closed",
-                "issue",
-                0.95,
-                "extractor.v1",
-            )]
+                )
+                await session.commit()
         finally:
             await engine.dispose()
             try:
@@ -531,8 +541,12 @@ class TestQueryAndSyncIndexMigration:
                 source_indexes = await _index_names(conn, "source_documents")
                 component_indexes = await _index_names(conn, "components")
                 relationship_indexes = await _index_names(conn, "relationships")
-                unresolved_relationship_indexes = await _index_names(conn, "unresolved_relationships")
-                unresolved_relationship_columns = await _table_columns(conn, "unresolved_relationships")
+                unresolved_relationship_indexes = await _index_names(
+                    conn, "unresolved_relationships"
+                )
+                unresolved_relationship_columns = await _table_columns(
+                    conn, "unresolved_relationships"
+                )
                 retrieval_event_columns = await _table_columns(conn, "retrieval_events")
                 retrieval_event_indexes = await _index_names(conn, "retrieval_events")
                 sync_job_indexes = await _index_names(conn, "sync_jobs")
@@ -656,12 +670,14 @@ class TestQueryAndSyncIndexMigration:
 
         try:
             async with engine.begin() as conn:
-                await conn.execute(text("""
+                await conn.execute(
+                    text("""
                     CREATE TABLE source_documents (
                         id TEXT PRIMARY KEY,
                         external_id TEXT NOT NULL
                     )
-                """))
+                """)
+                )
 
             async with engine.begin() as conn:
                 await run_migrations(conn)
@@ -695,26 +711,33 @@ class TestWorkspaceOwnershipMigration:
                 await conn.run_sync(_create_legacy_schema)
 
             async with engine.begin() as conn:
-                await conn.execute(text(
-                    "INSERT INTO source_documents "
-                    "(id, source_type, external_id, content, metadata) "
-                    "VALUES "
-                    "('30000000-0000-0000-0000-000000000001', "
-                    "'slack', 'slack:C1:1', 'Decision: Ship it.', :metadata)"
-                ), {"metadata": f'{{"workspace_id":"{workspace_id}"}}'})
-                await conn.execute(text(
-                    "INSERT INTO models (id, name) VALUES "
-                    "('30000000-0000-0000-0000-000000000002', 'Decision')"
-                ))
-                await conn.execute(text(
-                    "INSERT INTO components "
-                    "(id, model_id, source_document_id, name, value, fact_type, confidence, status) "
-                    "VALUES "
-                    "('30000000-0000-0000-0000-000000000003', "
-                    "'30000000-0000-0000-0000-000000000002', "
-                    "'30000000-0000-0000-0000-000000000001', "
-                    "'Ship', 'Ship it.', 'decision', 0.8, 'active')"
-                ))
+                await conn.execute(
+                    text(
+                        "INSERT INTO source_documents "
+                        "(id, source_type, external_id, content, metadata) "
+                        "VALUES "
+                        "('30000000-0000-0000-0000-000000000001', "
+                        "'slack', 'slack:C1:1', 'Decision: Ship it.', :metadata)"
+                    ),
+                    {"metadata": f'{{"workspace_id":"{workspace_id}"}}'},
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO models (id, name) VALUES "
+                        "('30000000-0000-0000-0000-000000000002', 'Decision')"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO components "
+                        "(id, model_id, source_document_id, name, value, fact_type, confidence, status) "
+                        "VALUES "
+                        "('30000000-0000-0000-0000-000000000003', "
+                        "'30000000-0000-0000-0000-000000000002', "
+                        "'30000000-0000-0000-0000-000000000001', "
+                        "'Ship', 'Ship it.', 'decision', 0.8, 'active')"
+                    )
+                )
 
             async with engine.begin() as conn:
                 await run_migrations(conn)
@@ -723,13 +746,20 @@ class TestWorkspaceOwnershipMigration:
 
             async with engine.connect() as conn:
                 source_columns = {
-                    row[1] for row in (await conn.execute(text("PRAGMA table_info(source_documents)"))).fetchall()
+                    row[1]
+                    for row in (
+                        await conn.execute(text("PRAGMA table_info(source_documents)"))
+                    ).fetchall()
                 }
                 component_columns = {
-                    row[1] for row in (await conn.execute(text("PRAGMA table_info(components)"))).fetchall()
+                    row[1]
+                    for row in (
+                        await conn.execute(text("PRAGMA table_info(components)"))
+                    ).fetchall()
                 }
                 entity_columns = {
-                    row[1] for row in (await conn.execute(text("PRAGMA table_info(entities)"))).fetchall()
+                    row[1]
+                    for row in (await conn.execute(text("PRAGMA table_info(entities)"))).fetchall()
                 }
                 assert "workspace_id" in source_columns
                 assert "workspace_id" in component_columns
@@ -737,14 +767,22 @@ class TestWorkspaceOwnershipMigration:
                 assert "entity_id" in component_columns
                 assert {"id", "workspace_id", "identity_key", "canonical_name"} <= entity_columns
 
-                source_row = (await conn.execute(text(
-                    "SELECT workspace_id FROM source_documents "
-                    "WHERE id = '30000000-0000-0000-0000-000000000001'"
-                ))).fetchone()
-                component_row = (await conn.execute(text(
-                    "SELECT workspace_id, identity_key, entity_id FROM components "
-                    "WHERE id = '30000000-0000-0000-0000-000000000003'"
-                ))).fetchone()
+                source_row = (
+                    await conn.execute(
+                        text(
+                            "SELECT workspace_id FROM source_documents "
+                            "WHERE id = '30000000-0000-0000-0000-000000000001'"
+                        )
+                    )
+                ).fetchone()
+                component_row = (
+                    await conn.execute(
+                        text(
+                            "SELECT workspace_id, identity_key, entity_id FROM components "
+                            "WHERE id = '30000000-0000-0000-0000-000000000003'"
+                        )
+                    )
+                ).fetchone()
                 assert source_row is not None
                 assert component_row is not None
                 assert source_row[0] == UUID(workspace_id).hex
@@ -752,10 +790,15 @@ class TestWorkspaceOwnershipMigration:
                 assert component_row[1] == "component:ship"
                 assert component_row[2]
 
-                entity_row = (await conn.execute(text(
-                    "SELECT workspace_id, identity_key, canonical_name FROM entities "
-                    "WHERE id = :entity_id"
-                ), {"entity_id": component_row[2]})).fetchone()
+                entity_row = (
+                    await conn.execute(
+                        text(
+                            "SELECT workspace_id, identity_key, canonical_name FROM entities "
+                            "WHERE id = :entity_id"
+                        ),
+                        {"entity_id": component_row[2]},
+                    )
+                ).fetchone()
                 assert entity_row is not None
                 assert entity_row[0] == UUID(workspace_id).hex
                 assert entity_row[1] == "component:ship"
@@ -779,27 +822,33 @@ class TestEvidenceLedgerMigration:
                 await conn.run_sync(_create_legacy_schema)
 
             async with engine.begin() as conn:
-                await conn.execute(text(
-                    "INSERT INTO source_documents "
-                    "(id, source_type, external_id, content, metadata) "
-                    "VALUES "
-                    "('40000000-0000-0000-0000-000000000001', "
-                    "'local', 'ledger-doc', 'Decision: Keep raw evidence.', "
-                    "'{\"created_at\":\"2026-01-02T03:04:05+00:00\"}')"
-                ))
-                await conn.execute(text(
-                    "INSERT INTO models (id, name) VALUES "
-                    "('40000000-0000-0000-0000-000000000002', 'Decision')"
-                ))
-                await conn.execute(text(
-                    "INSERT INTO components "
-                    "(id, model_id, source_document_id, name, value, fact_type, confidence, status) "
-                    "VALUES "
-                    "('40000000-0000-0000-0000-000000000003', "
-                    "'40000000-0000-0000-0000-000000000002', "
-                    "'40000000-0000-0000-0000-000000000001', "
-                    "'Keep raw evidence', 'Keep raw evidence.', 'decision', 0.9, 'active')"
-                ))
+                await conn.execute(
+                    text(
+                        "INSERT INTO source_documents "
+                        "(id, source_type, external_id, content, metadata) "
+                        "VALUES "
+                        "('40000000-0000-0000-0000-000000000001', "
+                        "'local', 'ledger-doc', 'Decision: Keep raw evidence.', "
+                        '\'{"created_at":"2026-01-02T03:04:05+00:00"}\')'
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO models (id, name) VALUES "
+                        "('40000000-0000-0000-0000-000000000002', 'Decision')"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO components "
+                        "(id, model_id, source_document_id, name, value, fact_type, confidence, status) "
+                        "VALUES "
+                        "('40000000-0000-0000-0000-000000000003', "
+                        "'40000000-0000-0000-0000-000000000002', "
+                        "'40000000-0000-0000-0000-000000000001', "
+                        "'Keep raw evidence', 'Keep raw evidence.', 'decision', 0.9, 'active')"
+                    )
+                )
 
             async with engine.begin() as conn:
                 await run_migrations(conn)
@@ -852,14 +901,37 @@ class TestEvidenceLedgerMigration:
                     "contradicts_claim_id",
                     "created_by",
                 } <= set(revision_columns)
+                assert {
+                    "model_profile",
+                    "repo_state_json",
+                    "idempotency_key",
+                    "markdown",
+                    "manifest",
+                    "health_score",
+                } <= set(runtime_tables["context_packs"])
+                assert {
+                    "item_type",
+                    "claim_id",
+                    "component_id",
+                    "evidence_span_id",
+                    "source_document_id",
+                    "score",
+                    "inclusion_reason",
+                    "token_cost",
+                    "created_at",
+                } <= set(runtime_tables["context_pack_items"])
                 for columns in runtime_tables.values():
                     assert columns
 
-                row = (await conn.execute(text(
-                    "SELECT content, content_sha256, trust_zone, source_created_at "
-                    "FROM source_documents "
-                    "WHERE id = '40000000-0000-0000-0000-000000000001'"
-                ))).fetchone()
+                row = (
+                    await conn.execute(
+                        text(
+                            "SELECT content, content_sha256, trust_zone, source_created_at "
+                            "FROM source_documents "
+                            "WHERE id = '40000000-0000-0000-0000-000000000001'"
+                        )
+                    )
+                ).fetchone()
                 assert row is not None
                 assert row[0] == "Decision: Keep raw evidence."
                 assert row[1] == hashlib.sha256(row[0].encode("utf-8")).hexdigest()
@@ -868,8 +940,300 @@ class TestEvidenceLedgerMigration:
 
                 evidence_indexes = await _index_names(conn, "evidence_spans")
                 claim_indexes = await _index_names(conn, "claims")
+                pack_indexes = await _index_names(conn, "context_packs")
+                item_indexes = await _index_names(conn, "context_pack_items")
                 assert evidence_indexes.count("ix_evidence_spans_workspace_document") == 1
                 assert claim_indexes.count("ix_claims_workspace_identity") == 1
+                assert pack_indexes.count("ix_context_packs_workspace_target_created") == 1
+                assert item_indexes.count("ix_context_pack_items_claim") == 1
+                assert item_indexes.count("ix_context_pack_items_source_document") == 1
+        finally:
+            await engine.dispose()
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    async def test_runtime_tables_round_trip_final_context_pack_contract(self):
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+                await run_migrations(conn)
+
+            workspace_id = uuid4()
+            source_id = uuid4()
+            evidence_id = uuid4()
+            claim_id = uuid4()
+            component_id = uuid4()
+            pack_id = uuid4()
+            run_id = uuid4()
+            code_file_id = uuid4()
+            symbol_a_id = uuid4()
+            symbol_b_id = uuid4()
+            manifest = {
+                "schema_version": "context_pack.v2",
+                "context_pack_id": str(pack_id),
+                "selected_context": [{"id": "claim:launch", "claim_id": str(claim_id)}],
+                "rendering": {"markdown_sha256": "abc123", "estimated_tokens": 128},
+            }
+            repo_state = {
+                "branch": "agent/2-evidence-ledger-claim-graph",
+                "head_commit": "def456",
+                "dirty": True,
+            }
+
+            async with AsyncSession(engine, expire_on_commit=False) as session:
+                workspace = Workspace(
+                    id=workspace_id,
+                    name="Runtime Round Trip",
+                    slug=f"runtime-{workspace_id.hex}",
+                )
+                source = SourceDocument(
+                    id=source_id,
+                    workspace_id=workspace_id,
+                    source_type="local",
+                    external_id="runtime-source",
+                    content="Decision: persist final context packs.",
+                    metadata_json="{}",
+                )
+                evidence = EvidenceSpan(
+                    id=evidence_id,
+                    workspace_id=workspace_id,
+                    source_document_id=source_id,
+                    start_char=10,
+                    end_char=38,
+                    text="persist final context packs.",
+                    text_sha256=hashlib.sha256(
+                        "persist final context packs.".encode("utf-8")
+                    ).hexdigest(),
+                    evidence_type="source_quote",
+                    authority_weight=0.9,
+                    trust_zone="trusted_repo",
+                    extraction_method="deterministic",
+                    review_status="verified",
+                )
+                claim = Claim(
+                    id=claim_id,
+                    workspace_id=workspace_id,
+                    identity_key="component:persist-final-context-packs",
+                    claim_type="decision",
+                    status="active",
+                    temporal="current",
+                    confidence=0.94,
+                    authority_weight=0.9,
+                )
+                revision = ClaimRevision(
+                    id=uuid4(),
+                    claim_id=claim_id,
+                    evidence_span_id=evidence_id,
+                    value="Persist final context packs.",
+                    operation="create",
+                    confidence_delta=0.94,
+                    status_after="active",
+                    created_by="unit:test",
+                )
+                claim.current_revision_id = revision.id
+                model = Model(id=uuid4(), name="Decision")
+                component = Component(
+                    id=component_id,
+                    workspace_id=workspace_id,
+                    model_id=model.id,
+                    source_document_id=source_id,
+                    claim_id=claim_id,
+                    identity_key="component:persist-final-context-packs",
+                    name="Persist final context packs",
+                    value="Persist final context packs.",
+                    fact_type="decision",
+                    confidence=0.94,
+                    authority_weight=0.9,
+                    status="active",
+                    provenance='{"source":"unit"}',
+                    excerpt="persist final context packs.",
+                )
+                pack = ContextPack(
+                    id=pack_id,
+                    workspace_id=workspace_id,
+                    objective="finish runtime persistence",
+                    target_model="qwen2.5-coder-7b",
+                    model_profile="small_coder_model",
+                    token_budget=12000,
+                    pack_version="context_pack.v2",
+                    health_score=0.82,
+                    markdown="# Objective\n\nFinish runtime persistence.",
+                    manifest=json.dumps(manifest, sort_keys=True),
+                    repo_state_json=json.dumps(repo_state, sort_keys=True),
+                    idempotency_key="round-trip-key",
+                )
+                items = [
+                    ContextPackItem(
+                        id=uuid4(),
+                        context_pack_id=pack_id,
+                        item_type="claim",
+                        claim_id=claim_id,
+                        component_id=component_id,
+                        evidence_span_id=evidence_id,
+                        source_document_id=source_id,
+                        score=0.94,
+                        inclusion_reason="non_negotiable_runtime_persistence",
+                        token_cost=48,
+                    ),
+                    ContextPackItem(
+                        id=uuid4(),
+                        context_pack_id=pack_id,
+                        item_type="verification",
+                        score=0.76,
+                        inclusion_reason="required_test_command",
+                        token_cost=16,
+                    ),
+                ]
+                run = AgentRun(
+                    id=run_id,
+                    workspace_id=workspace_id,
+                    context_pack_id=pack_id,
+                    tool="codex",
+                    model="qwen2.5-coder-7b",
+                    objective="finish runtime persistence",
+                    branch="agent/2-evidence-ledger-claim-graph",
+                    base_commit="abc123",
+                    head_commit="def456",
+                    status="completed",
+                )
+                observation = RunObservation(
+                    id=uuid4(),
+                    agent_run_id=run_id,
+                    source_document_id=source_id,
+                    event_type="test",
+                    content="pytest passed",
+                    files_json=json.dumps(["tests/test_migrations.py"]),
+                    command="pytest -q tests/test_migrations.py",
+                    exit_code=0,
+                )
+                code_file = CodeFile(
+                    id=code_file_id,
+                    workspace_id=workspace_id,
+                    repo_root="/repo",
+                    path="app/models.py",
+                    language="python",
+                    sha256="f" * 64,
+                    last_commit="def456",
+                    size=1234,
+                )
+                symbol_a = CodeSymbol(
+                    id=symbol_a_id,
+                    code_file_id=code_file_id,
+                    symbol_type="class",
+                    name="ContextPack",
+                    qualified_name="app.models.ContextPack",
+                    start_line=1,
+                    end_line=10,
+                )
+                symbol_b = CodeSymbol(
+                    id=symbol_b_id,
+                    code_file_id=code_file_id,
+                    symbol_type="class",
+                    name="ContextPackItem",
+                    qualified_name="app.models.ContextPackItem",
+                    start_line=11,
+                    end_line=20,
+                )
+                code_edge = CodeEdge(
+                    id=uuid4(),
+                    source_symbol_id=symbol_b_id,
+                    target_symbol_id=symbol_a_id,
+                    edge_type="references",
+                )
+                repo_event = RepoEvent(
+                    id=uuid4(),
+                    workspace_id=workspace_id,
+                    commit_sha="def456",
+                    branch="agent/2-evidence-ledger-claim-graph",
+                    author="unit",
+                    message="runtime persistence",
+                    changed_files_json=json.dumps(["app/models.py"]),
+                )
+                session.add_all(
+                    [
+                        workspace,
+                        source,
+                        evidence,
+                        claim,
+                        revision,
+                        model,
+                        component,
+                        pack,
+                        *items,
+                        run,
+                        observation,
+                        code_file,
+                        symbol_a,
+                        symbol_b,
+                        code_edge,
+                        repo_event,
+                    ]
+                )
+                await session.commit()
+
+            async with AsyncSession(engine, expire_on_commit=False) as session:
+                pack = await session.scalar(
+                    select(ContextPack)
+                    .options(selectinload(ContextPack.items), selectinload(ContextPack.agent_runs))
+                    .where(ContextPack.id == pack_id)
+                )
+                stored_items = (
+                    await session.scalars(
+                        select(ContextPackItem)
+                        .where(ContextPackItem.context_pack_id == pack_id)
+                        .order_by(ContextPackItem.item_type)
+                    )
+                ).all()
+                run = await session.scalar(
+                    select(AgentRun)
+                    .options(selectinload(AgentRun.observations))
+                    .where(AgentRun.id == run_id)
+                )
+                code_file = await session.scalar(
+                    select(CodeFile)
+                    .options(selectinload(CodeFile.symbols))
+                    .where(CodeFile.id == code_file_id)
+                )
+                edge = await session.get(CodeEdge, code_edge.id)
+                repo_event = await session.get(RepoEvent, repo_event.id)
+
+                assert pack is not None
+                assert pack.markdown == "# Objective\n\nFinish runtime persistence."
+                assert json.loads(pack.manifest) == manifest
+                assert json.loads(pack.repo_state_json) == repo_state
+                assert pack.model_profile == "small_coder_model"
+                assert pack.idempotency_key == "round-trip-key"
+                assert pack.health_score == 0.82
+                claim_item = next(item for item in stored_items if item.item_type == "claim")
+                assert claim_item.claim_id == claim_id
+                assert claim_item.component_id == component_id
+                assert claim_item.evidence_span_id == evidence_id
+                assert claim_item.source_document_id == source_id
+                assert claim_item.score == 0.94
+                assert claim_item.inclusion_reason == "non_negotiable_runtime_persistence"
+                assert claim_item.token_cost == 48
+                assert claim_item.created_at is not None
+                verification_item = next(
+                    item for item in stored_items if item.item_type == "verification"
+                )
+                assert verification_item.score == 0.76
+                assert run is not None
+                assert run.context_pack_id == pack_id
+                assert run.observations[0].content == "pytest passed"
+                assert run.observations[0].exit_code == 0
+                assert code_file is not None
+                assert [symbol.name for symbol in code_file.symbols] == [
+                    "ContextPack",
+                    "ContextPackItem",
+                ]
+                assert edge.edge_type == "references"
+                assert json.loads(repo_event.changed_files_json) == ["app/models.py"]
         finally:
             await engine.dispose()
             try:
@@ -880,7 +1244,8 @@ class TestEvidenceLedgerMigration:
 
 def _create_legacy_schema(connection):
     """Create the schema WITHOUT confidence and evidence on relationships."""
-    connection.execute(text("""
+    connection.execute(
+        text("""
         CREATE TABLE IF NOT EXISTS source_documents (
             id TEXT PRIMARY KEY,
             source_type TEXT NOT NULL,
@@ -892,16 +1257,20 @@ def _create_legacy_schema(connection):
             ingested_at TEXT NOT NULL DEFAULT (datetime('now')),
             processed_at TEXT
         )
-    """))
-    connection.execute(text("""
+    """)
+    )
+    connection.execute(
+        text("""
         CREATE TABLE IF NOT EXISTS models (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL UNIQUE,
             description TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
-    """))
-    connection.execute(text("""
+    """)
+    )
+    connection.execute(
+        text("""
         CREATE TABLE IF NOT EXISTS components (
             id TEXT PRIMARY KEY,
             model_id TEXT NOT NULL REFERENCES models(id),
@@ -918,8 +1287,10 @@ def _create_legacy_schema(connection):
             superseded_by_id TEXT REFERENCES components(id),
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
-    """))
-    connection.execute(text("""
+    """)
+    )
+    connection.execute(
+        text("""
         CREATE TABLE IF NOT EXISTS relationships (
             id TEXT PRIMARY KEY,
             source_component_id TEXT NOT NULL REFERENCES components(id),
@@ -927,8 +1298,10 @@ def _create_legacy_schema(connection):
             relationship_type TEXT NOT NULL DEFAULT 'related_to',
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
-    """))
-    connection.execute(text("""
+    """)
+    )
+    connection.execute(
+        text("""
         CREATE TABLE IF NOT EXISTS sync_jobs (
             id TEXT PRIMARY KEY,
             workspace_id TEXT,
@@ -945,7 +1318,8 @@ def _create_legacy_schema(connection):
             started_at TEXT,
             completed_at TEXT
         )
-    """))
+    """)
+    )
     connection.commit()
 
 
