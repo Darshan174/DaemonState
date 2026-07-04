@@ -13,15 +13,21 @@ The core contract is source-backed: every extracted fact starts as a raw
 `SourceDocument`, and graph nodes keep enough provenance for users and agents to
 audit where a claim came from.
 
-Implemented in this branch, the v2 runtime loop is:
+The intended v2 runtime loop is:
 
 ```text
 prepare context -> agent works -> observe result -> ingest result -> improve next context
 ```
 
-`context_pack.v2` is both markdown for an agent/human and a manifest for
-auditing selected context, excluded context, risks, verification commands, and
-health.
+Observed current behavior in this checkout: the v2 runtime persistence tables,
+compiler service, `POST /api/context/prepare`, CLI prepare path, and MCP
+observation write tools are present. MCP `prepare_task` calls the compiler
+service when importable and reports `compiler_unavailable` only on integration
+branches where the service is absent.
+
+`context_pack.v2` is the compiler artifact: markdown for an agent/human plus a
+manifest for auditing selected context, excluded context, risks, verification
+commands, stop conditions, and rendering metadata.
 
 ## Runtime Shape
 
@@ -38,7 +44,8 @@ FastAPI app
 Services
   - ingestion and extraction
   - query and retrieval trace
-  - context pack generation and v2 compiler
+  - legacy context pack generation
+  - v2 compiler service, when Agent 3 lands
   - agent run observation bridge
   - connector sync/import jobs
         |
@@ -114,9 +121,9 @@ provider is configured, retrieval is explicitly lexical-only rather than
 non-semantic hash-vector ranking.
 
 Observed legacy context packs can still be generated from either the full graph
-or a selected component plus one-hop neighbors. Implemented in this branch,
-`POST /api/context/prepare` and MCP `prepare_task` call the v2 compiler service
-to produce `context_pack.v2` markdown plus manifest.
+or a selected component plus one-hop neighbors. The v2 path is available through
+`POST /api/context/prepare`, `ctxe prepare`, and MCP `prepare_task`, with
+remaining hardening focused on final manifest consistency and idempotency.
 
 The intended high-level outputs are:
 

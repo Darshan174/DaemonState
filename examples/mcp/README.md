@@ -4,9 +4,11 @@ Use these snippets to connect Context Engine to an MCP-capable coding agent.
 Both examples launch the same server: `ctxe mcp`.
 
 Implemented in this branch: the MCP server can prepare a `context_pack.v2`,
-record an agent run, and write run observations back as source evidence. The
-runtime bridge does not edit files, run shell commands, push commits, or send
-messages to external providers.
+record an agent run, and write run observations back as source evidence.
+`prepare_task` calls the compiler service when it is importable and returns
+`compiler_unavailable` only on integration branches where that service is
+absent. The runtime bridge does not edit files, run shell commands, push
+commits, or send messages to external providers.
 
 ## Installed CLI
 
