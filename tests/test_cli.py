@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from app.cli import main as cli_main
 
 
@@ -92,6 +94,55 @@ def test_cli_query_uses_context_engine_api_key_env(monkeypatch):
             "server-secret",
         )
     ]
+
+
+def test_cli_prepare_file_output_only_writes_markdown_and_manifest(tmp_path, capsys):
+    (tmp_path / "app.py").write_text("def handler():\n    return True\n", encoding="utf-8")
+    out = tmp_path / "AGENT_CONTEXT.md"
+    manifest_out = tmp_path / "manifest.json"
+
+    assert cli_main.main([
+        "prepare",
+        "fix app.py and add tests",
+        "--repo",
+        str(tmp_path),
+        "--target-model",
+        "qwen2.5-coder-7b",
+        "--budget",
+        "2500",
+        "--out",
+        str(out),
+        "--manifest-out",
+        str(manifest_out),
+        "--file-output-only",
+        "--json",
+    ]) == 0
+
+    assert out.read_text(encoding="utf-8").startswith("# Objective\n")
+    manifest = json.loads(manifest_out.read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == "context_pack.v2"
+    assert manifest["context_pack_id"] is None
+    assert manifest["persistence"]["available"] is False
+    assert manifest["persistence"]["mode"] == "file_output_only"
+    data = json.loads(capsys.readouterr().out)
+    assert data["context_pack_id"] is None
+    assert data["markdown_path"] == str(out)
+
+
+def test_cli_repo_index_no_persist_reports_counts(tmp_path, capsys):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "server.js").write_text(
+        "import express from 'express';\n"
+        "app.get('/health', () => true);\n",
+        encoding="utf-8",
+    )
+
+    assert cli_main.main(["repo", "index", str(tmp_path), "--no-persist"]) == 0
+
+    output = capsys.readouterr().out
+    assert "repo index:" in output
+    assert "files=1" in output
+    assert "persistence=False" in output
 
 
 def test_cli_eval_extraction_runs_local_corpus(capsys):
@@ -216,33 +267,3 @@ def test_cli_credentials_rotate_invokes_database_rotation(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "credentials rotated:" in output
     assert "updated=1" in output
-
-
-def test_cli_prepare_writes_markdown_output(tmp_path, capsys):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / "app.py").write_text("def prepare_context():\n    return True\n", encoding="utf-8")
-    out = tmp_path / "AGENT_CONTEXT.md"
-    manifest_out = tmp_path / "manifest.json"
-
-    assert cli_main.main([
-        "prepare",
-        "finish app.py",
-        "--repo",
-        str(repo),
-        "--target-model",
-        "qwen2.5-coder-7b",
-        "--budget",
-        "2000",
-        "--out",
-        str(out),
-        "--manifest-out",
-        str(manifest_out),
-    ]) == 0
-
-    assert "Wrote context pack:" in capsys.readouterr().out
-    markdown = out.read_text(encoding="utf-8")
-    manifest = manifest_out.read_text(encoding="utf-8")
-    assert "## Objective" in markdown
-    assert "## Verification Commands" in markdown
-    assert '"schema_version": "context_pack.v2"' in manifest

@@ -1,68 +1,53 @@
 from __future__ import annotations
 
-from app.services.repo_indexer import RepoIndexer, inspect_repo_state
+from app.services.repo_indexer import RepoIndexer
 
 
-def test_python_repo_symbol_indexing(tmp_path):
-    package = tmp_path / "app"
-    package.mkdir()
-    (package / "service.py").write_text(
-        '''import os
-from pathlib import Path
-
-class ContextCompiler:
-    """Compile context."""
-
-    def compile(self, goal):
-        return goal
-
-def parse_goal(goal):
-    return goal.split()
-''',
+async def test_indexes_python_files_symbols_and_routes(tmp_path):
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    (app_dir / "api.py").write_text(
+        "from fastapi import APIRouter\n"
+        "router = APIRouter()\n\n"
+        "class Worker:\n"
+        "    pass\n\n"
+        "@router.post('/items')\n"
+        "async def create_item(payload):\n"
+        "    return payload\n",
         encoding="utf-8",
     )
     (tmp_path / "tests").mkdir()
-    (tmp_path / "tests" / "test_service.py").write_text("def test_ok():\n    assert True\n")
-    (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\n")
-
-    index = RepoIndexer().index(tmp_path)
-
-    symbols = {(symbol.symbol_type, symbol.qualified_name) for symbol in index.symbols}
-    assert ("class", "ContextCompiler") in symbols
-    assert ("method", "ContextCompiler.compile") in symbols
-    assert ("function", "parse_goal") in symbols
-    assert any(item["module"] == "os" for item in index.imports)
-    assert "tests/test_service.py" in index.test_files
-    assert "pyproject.toml" in index.package_manifests
-
-
-def test_typescript_file_indexing_smoke(tmp_path):
-    src = tmp_path / "frontend" / "src"
-    src.mkdir(parents=True)
-    (src / "ContextPanel.tsx").write_text(
-        """import React from 'react';
-
-export function ContextPanel() {
-  return <section />;
-}
-
-const useContextPack = () => fetch('/api/context/prepare');
-""",
-        encoding="utf-8",
-    )
-    (tmp_path / "frontend" / "package.json").write_text(
-        '{"scripts":{"test":"vitest run","build":"vite build"},"dependencies":{"react":"latest"}}',
+    (tmp_path / "tests" / "test_api.py").write_text(
+        "def test_create_item():\n    assert True\n",
         encoding="utf-8",
     )
 
-    state = inspect_repo_state(tmp_path)
-    symbol_names = {
-        symbol["qualified_name"]
-        for symbol in state["index"]["symbols"]
-    }
+    frame = await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
 
-    assert "ContextPanel" in symbol_names
-    assert "useContextPack" in symbol_names
-    assert "frontend/package.json" in state["package_manifests"]
-    assert "cd frontend && npm test" in state["likely_test_commands"]
-    assert "cd frontend && npm run build" in state["likely_test_commands"]
+    api_file = next(item for item in frame.indexed_files if item.path == "app/api.py")
+    names = {symbol.name for symbol in api_file.symbols}
+    assert {"Worker", "create_item", "POST /items"} <= names
+    assert "fastapi.APIRouter" in api_file.imports
+    assert "tests/test_api.py" in frame.test_files
+    assert frame.persistence_available is False
+
+
+async def test_indexes_typescript_imports_components_and_routes(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "server.tsx").write_text(
+        "import React from 'react';\n"
+        "app.get('/health', () => true);\n"
+        "export const StatusPanel = () => <div />;\n"
+        "function helper() { return true; }\n",
+        encoding="utf-8",
+    )
+
+    frame = await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
+
+    indexed = next(item for item in frame.indexed_files if item.path == "src/server.tsx")
+    assert "react" in indexed.imports
+    assert "GET /health" in indexed.route_hints
+    symbols = {(symbol.symbol_type, symbol.name) for symbol in indexed.symbols}
+    assert ("component", "StatusPanel") in symbols
+    assert ("function", "helper") in symbols
