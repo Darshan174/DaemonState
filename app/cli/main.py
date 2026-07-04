@@ -30,29 +30,37 @@ def build_arg_parser() -> argparse.ArgumentParser:
     query_parser.add_argument("--json", action="store_true", dest="json_output")
     query_parser.set_defaults(func=run_query)
 
+    prepare_parser = subparsers.add_parser("prepare", help="Compile a context_pack.v2 for a coding task.")
+    prepare_parser.add_argument("objective", help="Coding-agent objective")
+    prepare_parser.add_argument("--repo", default=".", help="Repository path to inspect")
+    prepare_parser.add_argument("--target-model", default="general-coder", help="Target coding model name")
+    prepare_parser.add_argument("--budget", type=int, default=None, help="Context token budget")
+    prepare_parser.add_argument("--workspace-id", default=None)
+    prepare_parser.add_argument("--out", default=None, help="Write markdown context pack to this path")
+    prepare_parser.add_argument("--manifest-out", default=None, help="Write manifest JSON to this path")
+    prepare_parser.add_argument(
+        "--file-output-only",
+        action="store_true",
+        help="Do not persist; manifest marks persistence.available=false",
+    )
+    prepare_parser.add_argument("--json", action="store_true", dest="json_output")
+    prepare_parser.set_defaults(func=run_prepare)
+
     graph_parser = subparsers.add_parser("graph", help="Get knowledge graph.")
     graph_parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     graph_parser.add_argument("--api-key", default=None, help="API key for protected servers")
     graph_parser.add_argument("--json", action="store_true", dest="json_output")
     graph_parser.set_defaults(func=run_graph)
 
-    prepare_parser = subparsers.add_parser("prepare", help="Compile a Context Pack v2 for an agent task.")
-    prepare_parser.add_argument("goal", help="Goal or task objective to prepare context for")
-    prepare_parser.add_argument("--repo", default=".", help="Repository path to inspect")
-    prepare_parser.add_argument("--target-model", default=None)
-    prepare_parser.add_argument("--budget", type=int, default=None, help="Context token budget")
-    prepare_parser.add_argument("--workspace-id", default=None)
-    prepare_parser.add_argument("--out", default=None, help="Write markdown context pack to this path")
-    prepare_parser.add_argument("--manifest-out", default=None, help="Write manifest JSON to this path")
-    prepare_parser.add_argument("--json", action="store_true", dest="json_output")
-    prepare_parser.set_defaults(func=run_prepare)
-
     repo_parser = subparsers.add_parser("repo", help="Inspect or index a local repository.")
     repo_subparsers = repo_parser.add_subparsers(dest="repo_command", required=True)
-    repo_index_parser = repo_subparsers.add_parser("index", help="Build a lightweight local repo index.")
+    repo_index_parser = repo_subparsers.add_parser("index", help="Index repo files and symbols.")
     repo_index_parser.add_argument("path", nargs="?", default=".")
+    repo_index_parser.add_argument("--workspace-id", default=None)
+    repo_index_parser.add_argument("--no-persist", action="store_true")
     repo_index_parser.add_argument("--json", action="store_true", dest="json_output")
     repo_index_parser.set_defaults(func=run_repo)
+
 
     eval_parser = subparsers.add_parser("eval", help="Run local quality evals.")
     eval_parser.add_argument("suite", choices=["extraction"], help="Eval suite to run")
@@ -191,6 +199,126 @@ def run_query(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_prepare(args: argparse.Namespace) -> int:
+    import asyncio
+
+    try:
+        result = asyncio.run(_compile_prepare(args))
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    markdown_path = None
+    manifest_path = None
+    if args.out:
+        markdown_path = str(Path(args.out).expanduser())
+        Path(markdown_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(markdown_path).write_text(result.markdown, encoding="utf-8")
+    if args.manifest_out:
+        manifest_path = str(Path(args.manifest_out).expanduser())
+        Path(manifest_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(manifest_path).write_text(
+            json.dumps(result.manifest, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    payload = {
+        "context_pack_id": result.context_pack_id,
+        "schema_version": result.schema_version,
+        "health_score": result.health_score,
+        "markdown_path": markdown_path,
+        "manifest_path": manifest_path,
+        "persistence": result.manifest.get("persistence"),
+        "manifest": result.manifest,
+    }
+    if args.json_output:
+        print(json.dumps(payload, indent=2))
+    else:
+        if markdown_path:
+            print(f"wrote markdown: {markdown_path}")
+        else:
+            print(result.markdown)
+        if manifest_path:
+            print(f"wrote manifest: {manifest_path}")
+        if result.context_pack_id:
+            print(f"context_pack_id: {result.context_pack_id}")
+        else:
+            print("context_pack_id: null (file-output-only)")
+    return 0
+
+
+async def _compile_prepare(args: argparse.Namespace):
+    from app.database import AsyncSessionLocal
+    from app.services.context_compiler import ContextCompiler
+
+    if args.file_output_only:
+        compiler = ContextCompiler(None)
+        return await compiler.compile_context_pack(
+            args.objective,
+            workspace_id=args.workspace_id,
+            repo_path=args.repo,
+            target_model=args.target_model,
+            token_budget=args.budget,
+            persist=False,
+        )
+
+    async with AsyncSessionLocal() as session:
+        compiler = ContextCompiler(session)
+        result = await compiler.compile_context_pack(
+            args.objective,
+            workspace_id=args.workspace_id,
+            repo_path=args.repo,
+            target_model=args.target_model,
+            token_budget=args.budget,
+            persist=True,
+        )
+        await session.commit()
+        return result
+
+
+def run_repo(args: argparse.Namespace) -> int:
+    import asyncio
+
+    try:
+        frame = asyncio.run(_index_repo(args))
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    data = frame.to_manifest()
+    data["indexed_file_count"] = len(frame.indexed_files)
+    data["indexed_symbol_count"] = sum(len(item.symbols) for item in frame.indexed_files)
+    if args.json_output:
+        print(json.dumps(data, indent=2))
+    else:
+        print(
+            "repo index: "
+            f"files={data['indexed_file_count']} "
+            f"symbols={data['indexed_symbol_count']} "
+            f"persistence={data['persistence']['available']}"
+        )
+    return 0
+
+
+async def _index_repo(args: argparse.Namespace):
+    from app.database import AsyncSessionLocal
+    from app.services.repo_indexer import RepoIndexer
+
+    if args.no_persist:
+        return await RepoIndexer(None).inspect_repo(
+            args.path,
+            workspace_id=args.workspace_id,
+            persist=False,
+        )
+    async with AsyncSessionLocal() as session:
+        frame = await RepoIndexer(session).inspect_repo(
+            args.path,
+            workspace_id=args.workspace_id,
+            persist=True,
+        )
+        await session.commit()
+        return frame
+
+
 def run_graph(args: argparse.Namespace) -> int:
     try:
         resp = api_request(args.base_url, "GET", "/api/graph", api_key=_api_key(args))
@@ -207,67 +335,6 @@ def run_graph(args: argparse.Namespace) -> int:
         print(f"Models: {len(models)}, Components: {len(components)}, Relationships: {len(relationships)}")
         for m in models:
             print(f"  {m['name']} ({m.get('component_count', 0)} components)")
-    return 0
-
-
-def run_prepare(args: argparse.Namespace) -> int:
-    import asyncio
-
-    from app.services.context_compiler import ContextCompiler
-
-    async def _run():
-        compiler = ContextCompiler()
-        return await compiler.compile_context_pack(
-            args.goal,
-            workspace_id=args.workspace_id,
-            repo_path=args.repo,
-            target_model=args.target_model,
-            token_budget=args.budget,
-        )
-
-    result = asyncio.run(_run())
-    if args.out:
-        Path(args.out).expanduser().write_text(result.markdown, encoding="utf-8")
-    if args.manifest_out:
-        Path(args.manifest_out).expanduser().write_text(
-            json.dumps(result.manifest, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
-
-    if args.json_output:
-        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
-    elif args.out:
-        print(f"Wrote context pack: {args.out}")
-        if args.manifest_out:
-            print(f"Wrote manifest: {args.manifest_out}")
-    else:
-        print(result.markdown)
-    return 0
-
-
-def run_repo(args: argparse.Namespace) -> int:
-    from app.services.repo_indexer import RepoIndexer
-
-    if args.repo_command != "index":
-        print(f"Unknown repo command: {args.repo_command}", file=sys.stderr)
-        return 1
-
-    index = RepoIndexer().index(args.path)
-    data = index.to_dict()
-    data["persistence"] = {
-        "available": False,
-        "reason": "Repo intelligence persistence tables are unavailable in this checkout.",
-    }
-    if args.json_output:
-        print(json.dumps(data, indent=2, sort_keys=True))
-    else:
-        print(
-            "repo index: "
-            f"files={len(index.files)} "
-            f"symbols={len(index.symbols)} "
-            f"tests={len(index.test_files)} "
-            f"manifests={len(index.package_manifests)}"
-        )
     return 0
 
 
