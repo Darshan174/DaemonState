@@ -6,6 +6,7 @@
 .env.*.local
 .env.production
 .env.staging
+.env.example
 *.pem
 *.key
 *.crt
@@ -109,3 +110,10 @@ TASK_PLAN.md
 project.md
 AGENTS.ms
 .agent-runs
+!.agent-runs/
+.agent-runs/*
+!.agent-runs/agent-*-task.md
+SECURITY.md
+project.md
+instructions.md
+AGENTS.md
