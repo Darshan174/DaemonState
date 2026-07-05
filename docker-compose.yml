@@ -1,18 +1,38 @@
 services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: context_engine
+      POSTGRES_USER: ce
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-contextengine}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ce -d context_engine"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
-  # ── SQLite mode (default — no external dependencies) ─────────────────────────
   app:
     build: .
     ports:
       - "${PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
     volumes:
-      - ce_data:/data
+      - ce_uploads:/data
     environment:
-      DATABASE_URL: sqlite+aiosqlite:////data/context.db
+      DATABASE_URL: postgresql://ce:${POSTGRES_PASSWORD:-contextengine}@db:5432/context_engine
       DATA_DIR: /data
       LITELLM_API_KEY: ${LITELLM_API_KEY:-}
       EXTRACTION_MODEL: ${EXTRACTION_MODEL:-}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      ENABLE_LOCAL_EMBEDDER: ${ENABLE_LOCAL_EMBEDDER:-false}
+      ALLOW_HASHING_EMBEDDER: ${ALLOW_HASHING_EMBEDDER:-false}
+      PGVECTOR_INDEX_DIMENSION: ${PGVECTOR_INDEX_DIMENSION:-1024}
+      PGVECTOR_CANDIDATE_LIMIT: ${PGVECTOR_CANDIDATE_LIMIT:-200}
       SERVER_API_KEY: ${SERVER_API_KEY:-}
       API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-0}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
@@ -33,16 +53,20 @@ services:
     build: .
     command: ["ctxe", "worker", "sync", "--watch"]
     depends_on:
-      app:
-        condition: service_started
+      db:
+        condition: service_healthy
     volumes:
-      - ce_data:/data
+      - ce_uploads:/data
     environment:
-      DATABASE_URL: sqlite+aiosqlite:////data/context.db
+      DATABASE_URL: postgresql://ce:${POSTGRES_PASSWORD:-contextengine}@db:5432/context_engine
       DATA_DIR: /data
       LITELLM_API_KEY: ${LITELLM_API_KEY:-}
       EXTRACTION_MODEL: ${EXTRACTION_MODEL:-}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      ENABLE_LOCAL_EMBEDDER: ${ENABLE_LOCAL_EMBEDDER:-false}
+      ALLOW_HASHING_EMBEDDER: ${ALLOW_HASHING_EMBEDDER:-false}
+      PGVECTOR_INDEX_DIMENSION: ${PGVECTOR_INDEX_DIMENSION:-1024}
+      PGVECTOR_CANDIDATE_LIMIT: ${PGVECTOR_CANDIDATE_LIMIT:-200}
       SERVER_API_KEY: ${SERVER_API_KEY:-}
       API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-0}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
@@ -54,81 +78,5 @@ services:
     restart: unless-stopped
 
 volumes:
-  ce_data:
-
-# ──────────────────────────────────────────────────────────────────────────────
-# POSTGRES VARIANT
-# To run with PostgreSQL instead of SQLite, comment out the `app` and `worker`
-# services above and uncomment the three services below:
-#
-# services:
-#   db:
-#     image: pgvector/pgvector:pg16
-#     environment:
-#       POSTGRES_DB: context_engine
-#       POSTGRES_USER: ce
-#       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
-#     volumes:
-#       - pg_data:/var/lib/postgresql/data
-#     restart: unless-stopped
-#     healthcheck:
-#       test: ["CMD-SHELL", "pg_isready -U ce -d context_engine"]
-#       interval: 10s
-#       retries: 5
-#
-#   app:
-#     build: .
-#     ports:
-#       - "${PORT:-8000}:8000"
-#     depends_on:
-#       db:
-#         condition: service_healthy
-#     environment:
-#       DATABASE_URL: postgresql://ce:${POSTGRES_PASSWORD:-changeme}@db:5432/context_engine
-#       DATA_DIR: /data
-#       LITELLM_API_KEY: ${LITELLM_API_KEY:-}
-#       EXTRACTION_MODEL: ${EXTRACTION_MODEL:-}
-#       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
-#       PGVECTOR_INDEX_DIMENSION: ${PGVECTOR_INDEX_DIMENSION:-1024}
-#       PGVECTOR_CANDIDATE_LIMIT: ${PGVECTOR_CANDIDATE_LIMIT:-200}
-#       SERVER_API_KEY: ${SERVER_API_KEY:-}
-#       API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-0}
-#       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
-#       PREVIOUS_ENCRYPTION_KEYS: ${PREVIOUS_ENCRYPTION_KEYS:-}
-#       SYNC_WORKER_LEASE_SECONDS: ${SYNC_WORKER_LEASE_SECONDS:-300}
-#       SYNC_WORKER_RETRY_BASE_SECONDS: ${SYNC_WORKER_RETRY_BASE_SECONDS:-30}
-#       SYNC_WORKER_RETRY_MAX_SECONDS: ${SYNC_WORKER_RETRY_MAX_SECONDS:-900}
-#       SYNC_WORKER_POLL_INTERVAL_SECONDS: ${SYNC_WORKER_POLL_INTERVAL_SECONDS:-2}
-#     volumes:
-#       - ce_uploads:/data
-#     restart: unless-stopped
-#
-#   worker:
-#     build: .
-#     command: ["ctxe", "worker", "sync", "--watch"]
-#     depends_on:
-#       db:
-#         condition: service_healthy
-#     environment:
-#       DATABASE_URL: postgresql://ce:${POSTGRES_PASSWORD:-changeme}@db:5432/context_engine
-#       DATA_DIR: /data
-#       LITELLM_API_KEY: ${LITELLM_API_KEY:-}
-#       EXTRACTION_MODEL: ${EXTRACTION_MODEL:-}
-#       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
-#       PGVECTOR_INDEX_DIMENSION: ${PGVECTOR_INDEX_DIMENSION:-1024}
-#       PGVECTOR_CANDIDATE_LIMIT: ${PGVECTOR_CANDIDATE_LIMIT:-200}
-#       SERVER_API_KEY: ${SERVER_API_KEY:-}
-#       API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-0}
-#       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
-#       PREVIOUS_ENCRYPTION_KEYS: ${PREVIOUS_ENCRYPTION_KEYS:-}
-#       SYNC_WORKER_LEASE_SECONDS: ${SYNC_WORKER_LEASE_SECONDS:-300}
-#       SYNC_WORKER_RETRY_BASE_SECONDS: ${SYNC_WORKER_RETRY_BASE_SECONDS:-30}
-#       SYNC_WORKER_RETRY_MAX_SECONDS: ${SYNC_WORKER_RETRY_MAX_SECONDS:-900}
-#       SYNC_WORKER_POLL_INTERVAL_SECONDS: ${SYNC_WORKER_POLL_INTERVAL_SECONDS:-2}
-#     volumes:
-#       - ce_uploads:/data
-#     restart: unless-stopped
-#
-# volumes:
-#   pg_data:
-#   ce_uploads:
+  pg_data:
+  ce_uploads:

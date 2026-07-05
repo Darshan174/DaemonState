@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     embedding_dimension: int | None = None
     pgvector_index_dimension: int | None = None
     pgvector_candidate_limit: int = 200
+    allow_hashing_embedder: bool = False
     api_rate_limit_per_minute: int = 0
     sync_worker_lease_seconds: int = 300
     sync_worker_retry_base_seconds: int = 30

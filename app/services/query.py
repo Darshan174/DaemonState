@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models import Component, Relationship, RetrievalEvent, SourceDocument
 from app.processing.embedder import BaseEmbedder, build_default_embedder, cosine_similarity
+from app.services.reranker import RerankFeatures, score_component
 from app.services.workspace_scope import (
     filter_components_for_workspace,
     normalize_workspace_id,
@@ -59,6 +60,9 @@ class QueryTraceFact:
     score: float
     semantic_score: float
     lexical_score: float
+    rerank_score: float
+    exact_match_score: float
+    token_coverage: float
     confidence: float
     authority_weight: float
     source_document_id: UUID | None
@@ -80,6 +84,8 @@ class QueryTraceRelationship:
 @dataclass
 class QueryTrace:
     retrieval_strategy: str
+    ranking_strategy: str
+    calibration_strategy: str
     vector_candidate_count: int
     text_candidate_count: int
     vector_prefilter_limit: int | None
@@ -220,7 +226,7 @@ class QueryService:
             )
         scoped_component_count = len(components)
 
-        scored: list[tuple[float, float, float, Component]] = []
+        scored: list[tuple[float, RerankFeatures, Component]] = []
         for c in components:
             c_embedding = _parse_embedding(c.embedding)
             sem = vector_scores_by_id.get(c.id)
@@ -229,13 +235,18 @@ class QueryService:
             lexical = text_scores_by_id.get(c.id)
             if lexical is None:
                 lexical = _lexical_score(question, c) if hybrid else 0.0
-            score = sem * 2.0 + lexical + c.confidence * 0.5 + c.authority_weight * 0.3
-            scored.append((score, sem, lexical, c))
+            features = score_component(
+                question,
+                c,
+                semantic_score=sem,
+                lexical_score=lexical,
+            )
+            scored.append((features.final_score, features, c))
 
         scored.sort(key=lambda x: x[0], reverse=True)
         entity_group_count = len({
             _component_entity_group_key(c)
-            for _, _, _, c in scored
+            for _, _, c in scored
         })
         entity_duplicate_count = max(0, len(scored) - entity_group_count)
         top = _diversify_scored_by_entity(scored, top_k)
@@ -243,6 +254,8 @@ class QueryService:
         if not top:
             empty_trace = QueryTrace(
                 retrieval_strategy=retrieval_strategy,
+                ranking_strategy="deterministic_rerank_v2",
+                calibration_strategy="logistic_v1",
                 vector_candidate_count=len(vector_ids),
                 text_candidate_count=len(text_ids),
                 vector_prefilter_limit=(
@@ -279,7 +292,7 @@ class QueryService:
 
         related_ids = set()
         relationships_used: list[Relationship] = []
-        for _, _, _, c in top:
+        for _, _, c in top:
             for rel in c.outgoing_relationships:
                 if rel.status == "rejected":
                     continue
@@ -316,7 +329,7 @@ class QueryService:
             relationship_by_component_id.setdefault(rel.target_component_id, rel)
 
         facts_used: list[QueryTraceFact] = []
-        for rank, (score, sem, lexical, c) in enumerate(top, start=1):
+        for rank, (score, features, c) in enumerate(top, start=1):
             top_component_ids.add(c.id)
             src_label = None
             src_id = None
@@ -360,8 +373,11 @@ class QueryService:
                 name=c.name,
                 value=c.value,
                 score=round(score, 4),
-                semantic_score=round(sem, 4),
-                lexical_score=round(lexical, 4),
+                semantic_score=round(features.semantic_score, 4),
+                lexical_score=round(features.lexical_score, 4),
+                rerank_score=round(features.raw_score, 4),
+                exact_match_score=round(features.exact_match_score, 4),
+                token_coverage=round(features.token_coverage, 4),
                 confidence=c.confidence,
                 authority_weight=c.authority_weight,
                 source_document_id=src_id,
@@ -418,10 +434,10 @@ class QueryService:
                     "author": doc.author,
                 })
 
-        avg_conf = sum(c.confidence for _, _, _, c in top) / len(top)
+        avg_conf = sum(c.confidence for _, _, c in top) / len(top)
 
         # Try LLM-based answer synthesis
-        answer = await self._generate_answer(question, [(score, c) for score, _, _, c in top])
+        answer = await self._generate_answer(question, [(score, c) for score, _, c in top])
 
         trace_relationships = [
             QueryTraceRelationship(
@@ -437,6 +453,8 @@ class QueryService:
         ]
         trace = QueryTrace(
             retrieval_strategy=retrieval_strategy,
+            ranking_strategy="deterministic_rerank_v2",
+            calibration_strategy="logistic_v1",
             vector_candidate_count=len(vector_ids),
             text_candidate_count=len(text_ids),
             vector_prefilter_limit=(
@@ -592,6 +610,8 @@ def _event_workspace_id(workspace_id: str | UUID | None) -> UUID | None:
 def _query_trace_to_dict(trace: QueryTrace) -> dict:
     return {
         "retrieval_strategy": trace.retrieval_strategy,
+        "ranking_strategy": trace.ranking_strategy,
+        "calibration_strategy": trace.calibration_strategy,
         "vector_candidate_count": trace.vector_candidate_count,
         "text_candidate_count": trace.text_candidate_count,
         "vector_prefilter_limit": trace.vector_prefilter_limit,
@@ -619,6 +639,9 @@ def _query_trace_to_dict(trace: QueryTrace) -> dict:
                 "score": fact.score,
                 "semantic_score": fact.semantic_score,
                 "lexical_score": fact.lexical_score,
+                "rerank_score": fact.rerank_score,
+                "exact_match_score": fact.exact_match_score,
+                "token_coverage": fact.token_coverage,
                 "confidence": fact.confidence,
                 "authority_weight": fact.authority_weight,
                 "source_document_id": (
@@ -688,15 +711,15 @@ def _lexical_score(question: str, component: Component) -> float:
 
 
 def _diversify_scored_by_entity(
-    scored: list[tuple[float, float, float, Component]],
+    scored: list[tuple[float, RerankFeatures, Component]],
     limit: int,
-) -> list[tuple[float, float, float, Component]]:
-    selected: list[tuple[float, float, float, Component]] = []
-    deferred: list[tuple[float, float, float, Component]] = []
+) -> list[tuple[float, RerankFeatures, Component]]:
+    selected: list[tuple[float, RerankFeatures, Component]] = []
+    deferred: list[tuple[float, RerankFeatures, Component]] = []
     seen_groups: set[tuple[str, str]] = set()
 
     for item in scored:
-        group_key = _component_entity_group_key(item[3])
+        group_key = _component_entity_group_key(item[2])
         if group_key in seen_groups:
             deferred.append(item)
             continue

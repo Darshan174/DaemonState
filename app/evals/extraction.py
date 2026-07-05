@@ -76,7 +76,7 @@ class ExtractionEvalReport:
         }
 
 
-DEFAULT_EXTRACTION_EVAL_CASES: tuple[ExtractionEvalCase, ...] = (
+CORE_EXTRACTION_EVAL_CASES: tuple[ExtractionEvalCase, ...] = (
     ExtractionEvalCase(
         id="local-decision-postgres",
         source_type="local",
@@ -146,6 +146,122 @@ DEFAULT_EXTRACTION_EVAL_CASES: tuple[ExtractionEvalCase, ...] = (
         expected_terms=("idempotent", "duplicate sync jobs", "stale worker jobs"),
         expected_relationship_types=("generated_by_agent",),
     ),
+)
+
+
+def _generated_realistic_eval_cases() -> tuple[ExtractionEvalCase, ...]:
+    topics = (
+        "auth callback", "billing sync", "context pack", "graph inspector",
+        "agent handoff", "Slack import", "GitHub review", "Google Drive import",
+        "Gmail thread", "connector status", "rate limit", "workspace scope",
+        "source provenance", "relationship evidence", "demo seed",
+        "MCP query", "retrieval trace", "embedding config", "sync worker",
+        "dead letter job", "OAuth setup", "frontend guardrail", "graph minimap",
+        "stale decision", "risk digest",
+    )
+    cases: list[ExtractionEvalCase] = []
+
+    for idx, topic in enumerate(topics, start=1):
+        cases.append(ExtractionEvalCase(
+            id=f"local-mixed-{idx:02d}",
+            source_type="local",
+            content=(
+                f"Decision: Keep {topic} source-backed before release.\n"
+                f"Task: Add {topic} regression tests.\n"
+                f"Risk: {topic} can drift without source evidence."
+            ),
+            metadata={"source_type": "local", "external_id": f"eval:local:{idx}"},
+            expected_fact_types=("decision", "task", "blocker"),
+            expected_terms=(topic, "source-backed", "regression tests"),
+        ))
+
+    for idx, topic in enumerate(topics[:20], start=1):
+        cases.append(ExtractionEvalCase(
+            id=f"github-issue-{idx:02d}",
+            source_type="github_issue",
+            content=json.dumps({
+                "title": f"{topic.title()} blocks launch",
+                "body": f"Blocker: {topic} fails without source evidence.",
+                "state": "open",
+                "number": 100 + idx,
+                "labels": [{"name": "bug"}],
+                "html_url": f"https://github.com/acme/context-engine/issues/{100 + idx}",
+            }),
+            metadata={"source_type": "github_issue", "repository": "acme/context-engine"},
+            expected_fact_types=("issue", "blocker"),
+            expected_terms=(topic, "source evidence"),
+            expected_relationship_types=("part_of",),
+        ))
+
+    for idx, topic in enumerate(topics[:20], start=1):
+        issue_num = 100 + idx
+        cases.append(ExtractionEvalCase(
+            id=f"github-pr-{idx:02d}",
+            source_type="github_pr",
+            content=json.dumps({
+                "title": f"Fix {topic}",
+                "body": (
+                    f"Fixes #{issue_num}\n"
+                    f"Task: verify {topic} smoke coverage."
+                ),
+                "state": "open",
+                "number": 200 + idx,
+                "html_url": f"https://github.com/acme/context-engine/pull/{200 + idx}",
+                "changed_files": [{"filename": f"app/{topic.replace(' ', '_')}.py"}],
+            }),
+            metadata={"source_type": "github_pr", "repository": "acme/context-engine"},
+            expected_fact_types=("pr", "changed_file", "task"),
+            expected_terms=(topic, "smoke coverage"),
+            expected_relationship_types=("fixes", "solves", "touches_file", "part_of"),
+        ))
+
+    for idx, topic in enumerate(topics[:20], start=1):
+        cases.append(ExtractionEvalCase(
+            id=f"agent-session-{idx:02d}",
+            source_type="agent_session",
+            content=(
+                f"# {topic.title()} session\n"
+                f"Decision: keep {topic} scoped to source evidence.\n"
+                f"Task: add {topic} context pack test.\n"
+                f"Risk: {topic} handoff is stale."
+            ),
+            metadata={
+                "source_type": "agent_session",
+                "connector_type": "codex",
+                "session_id": f"eval-session-{idx}",
+                "tool": "codex",
+            },
+            expected_fact_types=("session_root", "decision", "task", "risk"),
+            expected_terms=(topic, "source evidence", "context pack test"),
+            expected_relationship_types=("generated_by_agent",),
+        ))
+
+    for idx, topic in enumerate(topics[:15], start=1):
+        cases.append(ExtractionEvalCase(
+            id=f"slack-thread-{idx:02d}",
+            source_type="slack",
+            content=(
+                f"Decision: Ship {topic} only with visible provenance.\n"
+                f"Task: confirm {topic} owner before merge.\n"
+                f"Risk: {topic} has an unresolved review question."
+            ),
+            metadata={
+                "source_type": "slack",
+                "external_id": f"slack:C{idx}:100.{idx}",
+                "channel_name": "engineering",
+                "author_name": "Darshan",
+                "user_id": f"U{idx}",
+                "ts": f"100.{idx}",
+            },
+            expected_fact_types=("decision", "task", "blocker"),
+            expected_terms=(topic, "visible provenance", "unresolved review"),
+        ))
+
+    return tuple(cases)
+
+
+DEFAULT_EXTRACTION_EVAL_CASES: tuple[ExtractionEvalCase, ...] = (
+    CORE_EXTRACTION_EVAL_CASES + _generated_realistic_eval_cases()
 )
 
 

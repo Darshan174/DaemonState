@@ -816,6 +816,74 @@ class TestWorkspaceScopedGraphEndpoints:
             "Text-ranked blocker"
         }
 
+    async def test_query_reranker_prefers_exact_evidence_over_vector_only_match(
+        self,
+        client,
+        db_session,
+        monkeypatch,
+    ):
+        embedder = HashingEmbedder()
+        model = Model(id=uuid4(), name="Risk")
+        doc = SourceDocument(
+            id=uuid4(),
+            source_type="slack",
+            external_id="query-rerank-exact",
+            content="Launch blocker discussion.",
+            metadata_json="{}",
+        )
+        vector_only = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="Deployment note", value="Indexed vector similarity selected this unrelated note",
+            fact_type="fact", confidence=0.95, status="active",
+            provenance="slack:C1:1", excerpt="Deployment note",
+            embedding=json.dumps(await embedder.embed_text("semantic-only deployment note")),
+        )
+        exact_evidence = Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id,
+            name="Launch blocker exact evidence",
+            value="Launch blocker requires fixing the OAuth callback before release.",
+            fact_type="blocker", confidence=0.72, status="active",
+            provenance="slack:C1:2", excerpt="Launch blocker requires fixing the OAuth callback",
+            embedding=json.dumps(await embedder.embed_text("launch blocker exact evidence")),
+        )
+        db_session.add_all([model, doc, vector_only, exact_evidence])
+        await db_session.flush()
+
+        async def fake_vector_search(*args, **kwargs):
+            return VectorSearchResult(
+                enabled=True,
+                matches=[
+                    VectorSearchMatch(component_id=vector_only.id, semantic_score=0.99),
+                    VectorSearchMatch(component_id=exact_evidence.id, semantic_score=0.20),
+                ],
+            )
+
+        async def fake_text_search(*args, **kwargs):
+            return TextSearchResult(
+                enabled=True,
+                matches=[
+                    TextSearchMatch(component_id=exact_evidence.id, lexical_score=1.4),
+                ],
+            )
+
+        monkeypatch.setattr("app.services.query.search_component_vectors", fake_vector_search)
+        monkeypatch.setattr("app.services.query.search_component_text", fake_text_search)
+
+        resp = await client.post("/api/query", json={
+            "question": "launch blocker",
+            "top_k": 1,
+            "hybrid": True,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["trace"]["retrieval_strategy"] == "postgres_hybrid"
+        assert data["trace"]["ranking_strategy"] == "deterministic_rerank_v2"
+        assert data["trace"]["calibration_strategy"] == "logistic_v1"
+        assert data["trace"]["facts_used"][0]["name"] == "Launch blocker exact evidence"
+        assert data["trace"]["facts_used"][0]["exact_match_score"] == 1.0
+        assert data["trace"]["facts_used"][0]["token_coverage"] == 1.0
+
     async def test_query_diversifies_top_matches_by_entity(self, client, db_session):
         embedder = HashingEmbedder()
         model = Model(id=uuid4(), name="Risk")
