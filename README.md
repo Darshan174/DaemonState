@@ -210,8 +210,6 @@ bash scripts/setup.sh
 bash scripts/start.sh
 ```
 
-Open **http://localhost:8000**
-
 `scripts/setup.sh` creates a local `.venv`, installs backend development
 dependencies there, installs frontend dependencies with `npm ci`, and builds the
 frontend bundle. `scripts/start.sh`, `scripts/dev.sh`, and `scripts/smoke.sh`
