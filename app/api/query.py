@@ -57,6 +57,9 @@ class QueryTraceFactRead(BaseModel):
     score: float
     semantic_score: float
     lexical_score: float
+    rerank_score: float
+    exact_match_score: float
+    token_coverage: float
     confidence: float
     authority_weight: float
     source_document_id: str | None = None
@@ -76,6 +79,8 @@ class QueryTraceRelationshipRead(BaseModel):
 
 class QueryTraceRead(BaseModel):
     retrieval_strategy: str
+    ranking_strategy: str
+    calibration_strategy: str
     vector_candidate_count: int
     text_candidate_count: int
     vector_prefilter_limit: int | None = None
@@ -148,6 +153,8 @@ async def query_context(
         sources=result.sources,
         trace=QueryTraceRead(
             retrieval_strategy=result.trace.retrieval_strategy,
+            ranking_strategy=result.trace.ranking_strategy,
+            calibration_strategy=result.trace.calibration_strategy,
             vector_candidate_count=result.trace.vector_candidate_count,
             text_candidate_count=result.trace.text_candidate_count,
             vector_prefilter_limit=result.trace.vector_prefilter_limit,
@@ -175,6 +182,9 @@ async def query_context(
                     score=f.score,
                     semantic_score=f.semantic_score,
                     lexical_score=f.lexical_score,
+                    rerank_score=f.rerank_score,
+                    exact_match_score=f.exact_match_score,
+                    token_coverage=f.token_coverage,
                     confidence=f.confidence,
                     authority_weight=f.authority_weight,
                     source_document_id=str(f.source_document_id) if f.source_document_id else None,

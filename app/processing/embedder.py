@@ -3,6 +3,7 @@
 Provides two embedders:
   - HashingEmbedder — deterministic, no external deps (dev/test only)
   - LocalEmbedder — offline sentence-transformers (optional, semantic)
+  - LexicalOnlyEmbedder — explicit no-semantic-vector mode
 """
 
 from __future__ import annotations
@@ -61,6 +62,24 @@ class HashingEmbedder(BaseEmbedder):
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
         return [await self.embed_text(t) for t in texts]
+
+
+class LexicalOnlyEmbedder(BaseEmbedder):
+    """Explicit fallback when no semantic embedder is configured.
+
+    This returns zero vectors so retrieval does not pretend token hashes are
+    semantic similarity. QueryService will still rank with lexical and metadata
+    features in this mode.
+    """
+
+    def __init__(self, dimension: int = 1024) -> None:
+        self.dimension = dimension
+
+    async def embed_text(self, text: str) -> list[float]:
+        return [0.0] * self.dimension
+
+    async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        return [[0.0] * self.dimension for _ in texts]
 
 
 class LocalEmbedder(BaseEmbedder):
@@ -145,7 +164,8 @@ def build_default_embedder() -> BaseEmbedder:
     Resolution order:
     1. ``EMBEDDING_MODEL`` set → LiteLLMEmbedder
     2. ``ENABLE_LOCAL_EMBEDDER=true`` → LocalEmbedder (offline semantic)
-    3. Fallback → HashingEmbedder (test-only, non-semantic)
+    3. ``ALLOW_HASHING_EMBEDDER=true`` → HashingEmbedder (tests/dev only)
+    4. Fallback → LexicalOnlyEmbedder (no semantic ranking)
     """
     if settings.embedding_model:
         return LiteLLMEmbedder(
@@ -160,7 +180,10 @@ def build_default_embedder() -> BaseEmbedder:
         except ImportError:
             pass
 
-    return HashingEmbedder()
+    if settings.allow_hashing_embedder:
+        return HashingEmbedder(dimension=settings.embedding_dimension or 1024)
+
+    return LexicalOnlyEmbedder(dimension=settings.embedding_dimension or 1024)
 
 
 def cosine_similarity(lhs: list[float] | None, rhs: list[float] | None) -> float:
