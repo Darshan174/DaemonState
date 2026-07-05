@@ -30,6 +30,7 @@ platform.
 ## Contents
 
 - [Status](#status)
+- [Session References](#session-references)
 - [Why It Exists](#why-it-exists)
 - [What It Compiles](#what-it-compiles)
 - [Technical Commitments](#technical-commitments)
@@ -53,6 +54,17 @@ are coming soon.
 
 The README is intentionally describing the technical shape of the project, not
 pretending the onboarding path is finished.
+
+## Session References
+
+This README update is grounded in the current codebase plus the maintainer
+session references below:
+
+- `019f23d0-0140-7291-aab1-5db5180e26f1`
+- `019f2818-a451-7461-ab81-911ae5acf5d1`
+
+The sessions are design and direction references. The source code and tests are
+the authority for what is implemented now.
 
 ## Why It Exists
 
@@ -167,7 +179,7 @@ Observed in this checkout:
 | Backend | FastAPI app with async SQLAlchemy models, startup migrations, API routers, static frontend serving, and health checks. |
 | Source ingestion | Direct source APIs, bulk ingest, uploads, local file import, AI session import, demo seed, and provider sync paths create `SourceDocument` rows. |
 | Extraction | Deterministic GitHub and AI-session extractors, LiteLLM extraction when configured, and regex fallback when no model is available. |
-| Evidence ledger | `content_sha256`, trust zones, `EvidenceSpan`, prompt-injection scoring, `Claim`, and `ClaimRevision` are present in the v2 working tree. |
+| Evidence ledger | `content_sha256`, trust zones, `EvidenceSpan`, prompt-injection scoring, `Claim`, and `ClaimRevision` are present in the current codebase. |
 | Graph | `Model`, `Component`, `Relationship`, `UnresolvedRelationship`, provenance, confidence, authority weight, temporal state, and review status are exposed through graph APIs. |
 | Query | `POST /api/query` returns `query.v1` with lexical/vector candidate retrieval, deterministic reranking, entity diversification, facts-used traces, and relationship expansion. |
 | Retrieval | Postgres/pgvector and text-search paths exist for indexed retrieval; unconfigured installs fall back to lexical-only behavior instead of pretending hash vectors are semantic search. |
@@ -181,20 +193,19 @@ to claim general availability.
 
 ## Product Tour
 
-The main UI is the project graph and digest surface: sources feed evidence,
-evidence supports claims, and claims assemble into models such as decisions,
-risks, work, repo state, connectors, and agent sessions.
+The current app is a working developer surface, not a marketing shell. The main
+views are Dashboard, Graph, Ask, Sources, Connectors, and Changes.
 
-Clicking into a node exposes provenance, source evidence, confidence,
-relationships, status, and review state so a developer can understand why the
-system believes something.
+The graph and digest surface show how sources feed evidence, evidence supports
+claims, and claims assemble into models such as decisions, risks, work, repo
+state, connectors, and agent sessions.
 
-![Board graph with relationship inspector](docs/assets/board-inspector-demo.jpg)
+The inspector surfaces provenance, source evidence, confidence, relationships,
+status, and review state so a developer can understand why the system believes
+something.
 
 The Ask surface returns source-backed answers with a visible facts-used trace
 instead of a black-box response.
-
-![Ask UI with facts-used trace](docs/assets/query-trace-demo.jpg)
 
 For the current seeded walkthrough, see [Demo Walkthrough](docs/demo.md).
 
