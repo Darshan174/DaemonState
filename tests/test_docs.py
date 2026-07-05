@@ -17,12 +17,17 @@ BOARD_DEMO_IMAGE = Path("docs/assets/board-inspector-demo.jpg")
 QUERY_DEMO_IMAGE = Path("docs/assets/query-trace-demo.jpg")
 
 
-def test_readme_quickstart_uses_real_copy_paste_clone_url():
+def test_readme_marks_setup_and_deployment_as_coming_soon():
     text = README.read_text(encoding="utf-8")
 
     assert "github.com/your-org/context-engine.git" not in text
-    assert "git clone https://github.com/Darshan174/Context-Engine.git context-engine" in text
-    assert text.count("git clone https://github.com/Darshan174/Context-Engine.git context-engine") == 2
+    assert "## Setup\n\nComing soon." in text
+    assert "## Deployment\n\nComing soon." in text
+    assert "## Contributing\n\nComing soon." in text
+    assert "git clone https://github.com/Darshan174/Context-Engine.git context-engine" not in text
+    assert "docker compose up --build" not in text
+    assert "bash scripts/setup.sh" not in text
+    assert "fly launch" not in text
 
 
 def test_pyproject_exposes_oss_metadata():
@@ -103,9 +108,8 @@ def test_doctor_script_is_documented_and_read_only():
     script = DOCTOR_SCRIPT.read_text(encoding="utf-8")
     smoke = SMOKE_SCRIPT.read_text(encoding="utf-8")
 
-    assert "bash scripts/doctor.sh --docker" in readme
-    assert "bash scripts/doctor.sh --bare-metal" in readme
-    assert "bash scripts/doctor.sh" in readme
+    assert "public setup path will" in readme
+    assert "Coming soon." in readme
     assert "bash scripts/doctor.sh --docker" in demo_doc
 
     assert "Usage:" in script
