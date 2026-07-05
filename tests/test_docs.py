@@ -60,13 +60,16 @@ def test_dockerfile_copies_license_before_package_install():
     assert "LICENSE" in lines[copy_line_number]
 
 
-def test_readme_links_real_demo_assets_and_walkthrough():
+def test_readme_uses_session_references_without_embedded_images():
     readme = README.read_text(encoding="utf-8")
     demo_doc = DEMO_DOC.read_text(encoding="utf-8")
 
     assert "[Product Tour](#product-tour)" in readme
-    assert "docs/assets/board-inspector-demo.jpg" in readme
-    assert "docs/assets/query-trace-demo.jpg" in readme
+    assert "019f23d0-0140-7291-aab1-5db5180e26f1" in readme
+    assert "019f2818-a451-7461-ab81-911ae5acf5d1" in readme
+    assert "![" not in readme
+    assert "docs/assets/board-inspector-demo.jpg" not in readme
+    assert "docs/assets/query-trace-demo.jpg" not in readme
     assert "[Demo Walkthrough](docs/demo.md)" in readme
     assert BOARD_DEMO_IMAGE.is_file()
     assert BOARD_DEMO_IMAGE.stat().st_size > 10_000
