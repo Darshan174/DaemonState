@@ -24,7 +24,7 @@ from app.models import (
 )
 from app.services.model_profiles import ModelCapabilityProfile, profile_for_target_model
 from app.services.repo_indexer import RepoFrame, RepoIndexer
-from app.taxonomy import canonical_trust_zone, default_trust_zone_for_source
+from app.taxonomy import canonical_trust_zone
 from app.time import utc_now
 
 
