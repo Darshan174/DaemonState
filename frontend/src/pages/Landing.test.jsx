@@ -1,5 +1,4 @@
 import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
@@ -17,37 +16,38 @@ function renderLanding() {
 }
 
 describe("Landing", () => {
-  it("presents a compact project context directory", () => {
+  it("presents implemented product surfaces without fake indexed activity", () => {
     renderLanding();
 
     expect(
-      screen.getByRole("heading", { name: "The project memory graph for AI builders" }),
+      screen.getByRole("heading", { name: "Project memory graph for AI builders" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "Search project context" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Add context/ })).toBeInTheDocument();
-    expect(screen.getByText("Recently indexed")).toBeInTheDocument();
-    expect(screen.getByText("Auth refactor")).toBeInTheDocument();
-    expect(screen.getByText("PR #184")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: /search/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Show dashboard/ })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Add context/ })).not.toBeInTheDocument();
+    expect(screen.getByText("What exists today")).toBeInTheDocument();
+    expect(screen.getByText("Source-first ingestion")).toBeInTheDocument();
+    expect(screen.getByText("Knowledge graph")).toBeInTheDocument();
+    expect(screen.getByText("Grounded Ask")).toBeInTheDocument();
+    expect(screen.getByText("Connector guardrails")).toBeInTheDocument();
     expect(screen.getByText("For AI agents")).toBeInTheDocument();
-    expect(screen.getByText("Give every coding agent the same project memory.")).toBeInTheDocument();
-    expect(screen.getByText("$ ctxe mcp")).toBeInTheDocument();
-    expect(screen.getByText("Move from memory to work.")).toBeInTheDocument();
+    expect(screen.getByText("Every run should start with the same source-backed project memory.")).toBeInTheDocument();
+    expect(screen.getByText("Prepare the next run")).toBeInTheDocument();
+    expect(screen.getByText("Record what happened")).toBeInTheDocument();
+    expect(screen.getByText("Unsupported stays unsupported")).toBeInTheDocument();
+    expect(screen.getByTestId("source-active-block")).toBeInTheDocument();
+    expect(screen.queryByText("Recently indexed")).not.toBeInTheDocument();
+    expect(screen.queryByText("Auth refactor")).not.toBeInTheDocument();
+    expect(screen.queryByText("PR #184")).not.toBeInTheDocument();
+    expect(screen.queryByText("$ ctxe mcp")).not.toBeInTheDocument();
     expect(screen.getAllByText("Google Drive").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Gmail").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Codex").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Claude").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("OpenCode").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("GitHub").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Slack").length).toBeGreaterThan(0);
     expect(screen.queryByText("Zoom")).not.toBeInTheDocument();
     expect(screen.queryByText("Notion")).not.toBeInTheDocument();
-  });
-
-  it("filters recent context from the search field", async () => {
-    const user = userEvent.setup();
-    renderLanding();
-
-    await user.type(screen.getByRole("textbox", { name: "Search project context" }), "schema");
-
-    expect(screen.getByText("Matching context")).toBeInTheDocument();
-    expect(screen.getByText("Schema approval")).toBeInTheDocument();
-    expect(screen.queryByText("Auth refactor")).not.toBeInTheDocument();
   });
 });
