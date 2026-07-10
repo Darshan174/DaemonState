@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   AlertTriangle,
@@ -22,7 +22,6 @@ import {
 import {
   buildSessionKnowledgeMap,
   cardDisplayLine,
-  formatTimeAgo,
   HEALTH_META,
   issueLabel,
   primarySourceUrl,
@@ -70,6 +69,8 @@ export default function DigestBoard({
   buildResult = null,
   buildError = null,
   onSelectCard,
+  showLayoutGuides = false,
+  showDraftHandoff = false,
 }) {
   const boardRef = useRef(null);
   const boardPointersRef = useRef(new Map());
@@ -79,6 +80,7 @@ export default function DigestBoard({
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
   const [pan, setPan] = useState(DEFAULT_PAN);
   const [positions, setPositions] = useState(DEFAULT_POSITIONS);
+  const [measuredSizes, setMeasuredSizes] = useState({});
   const map = useMemo(
     () => buildSessionKnowledgeMap(digest, workspaceName),
     [digest, workspaceName],
@@ -113,7 +115,7 @@ export default function DigestBoard({
     );
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const board = boardRef.current;
     if (!board) return undefined;
 
@@ -326,7 +328,13 @@ export default function DigestBoard({
           transformOrigin: "0 0",
         }}
       >
-        <ComponentLines positions={positions} sessionCount={aiSessions.length} />
+        {showLayoutGuides ? (
+          <ComponentLines
+            measuredSizes={measuredSizes}
+            positions={positions}
+            sessionCount={aiSessions.length}
+          />
+        ) : null}
 
         {aiSessions.map((card, index) => (
           <DraggableFrame
@@ -335,6 +343,7 @@ export default function DigestBoard({
             position={positions[`session-${index}`]}
             size={NODE_SIZE.session}
             zoom={zoom}
+            onMeasure={setMeasuredSizes}
             onMove={moveNode}
           >
             <MapNode
@@ -348,7 +357,7 @@ export default function DigestBoard({
           </DraggableFrame>
         ))}
 
-        <DraggableFrame nodeId="decisions" position={positions.decisions} size={NODE_SIZE.wide} zoom={zoom} onMove={moveNode}>
+        <DraggableFrame nodeId="decisions" position={positions.decisions} size={NODE_SIZE.wide} zoom={zoom} onMeasure={setMeasuredSizes} onMove={moveNode}>
           <PanelNode
             icon={Lightbulb}
             iconClassName="text-orange-600"
@@ -360,7 +369,7 @@ export default function DigestBoard({
           />
         </DraggableFrame>
 
-        <DraggableFrame nodeId="prs" position={positions.prs} size={NODE_SIZE.panel} zoom={zoom} onMove={moveNode}>
+        <DraggableFrame nodeId="prs" position={positions.prs} size={NODE_SIZE.panel} zoom={zoom} onMeasure={setMeasuredSizes} onMove={moveNode}>
           <PanelNode
             icon={GitPullRequest}
             iconClassName="text-blue-600"
@@ -379,7 +388,7 @@ export default function DigestBoard({
           />
         </DraggableFrame>
 
-        <DraggableFrame nodeId="blockers" position={positions.blockers} size={NODE_SIZE.panel} zoom={zoom} onMove={moveNode}>
+        <DraggableFrame nodeId="blockers" position={positions.blockers} size={NODE_SIZE.panel} zoom={zoom} onMeasure={setMeasuredSizes} onMove={moveNode}>
           <PanelNode
             icon={AlertTriangle}
             iconClassName="text-red-600"
@@ -391,7 +400,7 @@ export default function DigestBoard({
           />
         </DraggableFrame>
 
-        <DraggableFrame nodeId="issues" position={positions.issues} size={NODE_SIZE.panel} zoom={zoom} onMove={moveNode}>
+        <DraggableFrame nodeId="issues" position={positions.issues} size={NODE_SIZE.panel} zoom={zoom} onMeasure={setMeasuredSizes} onMove={moveNode}>
           <PanelNode
             icon={CircleDot}
             iconClassName="text-slate-600 dark:text-neutral-300"
@@ -409,7 +418,7 @@ export default function DigestBoard({
           />
         </DraggableFrame>
 
-        <DraggableFrame nodeId="docs" position={positions.docs} size={NODE_SIZE.panel} zoom={zoom} onMove={moveNode}>
+        <DraggableFrame nodeId="docs" position={positions.docs} size={NODE_SIZE.panel} zoom={zoom} onMeasure={setMeasuredSizes} onMove={moveNode}>
           <PanelNode
             icon={FileWarning}
             iconClassName="text-red-600"
@@ -421,56 +430,68 @@ export default function DigestBoard({
           />
         </DraggableFrame>
 
-        <DraggableFrame nodeId="task" position={positions.task} size={NODE_SIZE.task} zoom={zoom} onMove={moveNode}>
-          <NextAgentTask
-            prompt={map.nextAgentPrompt}
-            copied={copiedPrompt}
-            onCopy={copyPrompt}
-          />
-        </DraggableFrame>
+        {showDraftHandoff ? (
+          <DraggableFrame nodeId="task" position={positions.task} size={NODE_SIZE.task} zoom={zoom} onMeasure={setMeasuredSizes} onMove={moveNode}>
+            <NextAgentTask
+              prompt={map.nextAgentPrompt}
+              copied={copiedPrompt}
+              onCopy={copyPrompt}
+            />
+          </DraggableFrame>
+        ) : null}
       </div>
     </section>
   );
 }
 
-function ComponentLines({ positions, sessionCount }) {
+function ComponentLines({ positions, measuredSizes, sessionCount }) {
+  const sessionSizes = Array.from({ length: sessionCount }, (_, index) =>
+    nodeSize(measuredSizes, `session-${index}`, NODE_SIZE.session),
+  );
+  const decisionsSize = nodeSize(measuredSizes, "decisions", NODE_SIZE.wide);
+  const prsSize = nodeSize(measuredSizes, "prs", NODE_SIZE.panel);
+  const blockersSize = nodeSize(measuredSizes, "blockers", NODE_SIZE.panel);
+  const issuesSize = nodeSize(measuredSizes, "issues", NODE_SIZE.panel);
+  const docsSize = nodeSize(measuredSizes, "docs", NODE_SIZE.panel);
+  const taskSize = nodeSize(measuredSizes, "task", NODE_SIZE.task);
+
   const decisionTargets = Array.from({ length: sessionCount }, (_, index) => {
-    const spacing = NODE_SIZE.wide.height / (sessionCount + 1);
-    return sidePoint(positions.decisions, NODE_SIZE.wide, "left", spacing * (index + 1) - NODE_SIZE.wide.height / 2);
+    const spacing = decisionsSize.height / (sessionCount + 1);
+    return sidePoint(positions.decisions, decisionsSize, "left", spacing * (index + 1) - decisionsSize.height / 2);
   });
 
   const lines = [
     ...Array.from({ length: sessionCount }, (_, index) => ({
-      from: sidePoint(positions[`session-${index}`], NODE_SIZE.session, "right"),
+      from: sidePoint(positions[`session-${index}`], sessionSizes[index], "right"),
       to: decisionTargets[index],
     })),
     {
-      from: sidePoint(positions.decisions, NODE_SIZE.wide, "right", -42),
-      to: sidePoint(positions.prs, NODE_SIZE.panel, "left", -42),
+      from: sidePoint(positions.decisions, decisionsSize, "right", -42),
+      to: sidePoint(positions.prs, prsSize, "left", -42),
     },
     {
-      from: sidePoint(positions.decisions, NODE_SIZE.wide, "bottom"),
-      to: sidePoint(positions.blockers, NODE_SIZE.panel, "top"),
+      from: sidePoint(positions.decisions, decisionsSize, "bottom"),
+      to: sidePoint(positions.blockers, blockersSize, "top"),
     },
     {
-      from: sidePoint(positions.prs, NODE_SIZE.panel, "right", -40),
-      to: sidePoint(positions.issues, NODE_SIZE.panel, "left", -40),
+      from: sidePoint(positions.prs, prsSize, "right", -40),
+      to: sidePoint(positions.issues, issuesSize, "left", -40),
     },
     {
-      from: sidePoint(positions.prs, NODE_SIZE.panel, "bottom"),
-      to: sidePoint(positions.docs, NODE_SIZE.panel, "top"),
+      from: sidePoint(positions.prs, prsSize, "bottom"),
+      to: sidePoint(positions.docs, docsSize, "top"),
     },
     {
-      from: sidePoint(positions.blockers, NODE_SIZE.panel, "right", 36),
-      to: sidePoint(positions.docs, NODE_SIZE.panel, "left", 36),
+      from: sidePoint(positions.blockers, blockersSize, "right", 36),
+      to: sidePoint(positions.docs, docsSize, "left", 36),
     },
     {
-      from: sidePoint(positions.docs, NODE_SIZE.panel, "right", 34),
-      to: sidePoint(positions.task, NODE_SIZE.task, "left", 18),
+      from: sidePoint(positions.docs, docsSize, "right", 34),
+      to: sidePoint(positions.task, taskSize, "left", 18),
     },
     {
-      from: sidePoint(positions.issues, NODE_SIZE.panel, "bottom"),
-      to: sidePoint(positions.task, NODE_SIZE.task, "top"),
+      from: sidePoint(positions.issues, issuesSize, "bottom"),
+      to: sidePoint(positions.task, taskSize, "top"),
     },
   ];
 
@@ -489,14 +510,32 @@ function ComponentLines({ positions, sessionCount }) {
   );
 }
 
+function nodeSize(measuredSizes, nodeId, fallback) {
+  const measured = measuredSizes[nodeId];
+  return measured?.width > 0 && measured?.height > 0 ? measured : fallback;
+}
+
 function ComponentLine({ from, to }) {
-  const midX = Math.round((from.x + to.x) / 2);
-  const path = `M ${from.x} ${from.y} H ${midX} V ${to.y} H ${to.x}`;
+  const fromOutside = connectorEndpoint(from, to, 18);
+  const toOutside = connectorEndpoint(to, from, 18);
+  const midX = Math.round((fromOutside.x + toOutside.x) / 2);
+  const dashedPath = `M ${fromOutside.x} ${fromOutside.y} H ${midX} V ${toOutside.y} H ${toOutside.x}`;
+  const fromStub = `M ${from.x} ${from.y} L ${fromOutside.x} ${fromOutside.y}`;
+  const toStub = `M ${toOutside.x} ${toOutside.y} L ${to.x} ${to.y}`;
 
   return (
     <g data-component-line>
       <path
-        d={path}
+        data-anchor-stub="from"
+        d={fromStub}
+        fill="none"
+        stroke="rgba(37,99,235,0.42)"
+        strokeWidth="2.25"
+        strokeLinecap="round"
+      />
+      <path
+        data-endpoint-inset="18"
+        d={dashedPath}
         fill="none"
         stroke="rgba(37,99,235,0.42)"
         strokeWidth="2.25"
@@ -504,10 +543,33 @@ function ComponentLine({ from, to }) {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-      <circle cx={from.x} cy={from.y} r="4.5" fill="rgba(37,99,235,0.62)" />
-      <circle cx={to.x} cy={to.y} r="4.5" fill="rgba(37,99,235,0.62)" />
+      <path
+        data-anchor-stub="to"
+        d={toStub}
+        fill="none"
+        stroke="rgba(37,99,235,0.42)"
+        strokeWidth="2.25"
+        strokeLinecap="round"
+      />
     </g>
   );
+}
+
+function connectorEndpoint(point, oppositePoint, distance) {
+  const dx = oppositePoint.x - point.x;
+  const dy = oppositePoint.y - point.y;
+
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    return {
+      x: Math.round(point.x + Math.sign(dx || 1) * distance),
+      y: point.y,
+    };
+  }
+
+  return {
+    x: point.x,
+    y: Math.round(point.y + Math.sign(dy || 1) * distance),
+  };
 }
 
 function sidePoint(position, size, side, offset = 0) {
@@ -560,6 +622,7 @@ function BoardBrand({
   buildError,
 }) {
   const healthMeta = HEALTH_META[health?.status] || HEALTH_META.empty;
+  const generatedLabel = formatDigestTimestamp(generatedAt);
 
   return (
     <div
@@ -575,7 +638,7 @@ function BoardBrand({
             </span>
           </span>
           <span className="mt-0.5 block truncate text-[11px] font-semibold leading-4 text-slate-500 dark:text-neutral-400">
-            Last built: {formatTimeAgo(generatedAt)}
+            {generatedLabel ? `Generated ${generatedLabel}` : "No build timestamp yet"}
           </span>
         </span>
         <span className="flex shrink-0 flex-wrap items-center gap-2">
@@ -615,8 +678,56 @@ function BoardBrand({
   );
 }
 
-function DraggableFrame({ nodeId, position, size, zoom, onMove, children }) {
+function formatDigestTimestamp(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function DraggableFrame({ nodeId, position, size, zoom, onMeasure, onMove, children }) {
   const dragRef = useRef(null);
+  const frameRef = useRef(null);
+
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!frame || !onMeasure) return undefined;
+
+    const measuredNode = frame.firstElementChild || frame;
+    const measure = () => {
+      const rect = measuredNode.getBoundingClientRect();
+      const nextSize = {
+        width: Math.round(rect.width / zoom),
+        height: Math.round(rect.height / zoom),
+      };
+
+      if (nextSize.width <= 0 || nextSize.height <= 0) return;
+
+      onMeasure((current) => {
+        const previous = current[nodeId];
+        if (previous?.width === nextSize.width && previous?.height === nextSize.height) {
+          return current;
+        }
+        return {
+          ...current,
+          [nodeId]: nextSize,
+        };
+      });
+    };
+
+    measure();
+
+    if (typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(measuredNode);
+    return () => observer.disconnect();
+  }, [nodeId, onMeasure, zoom]);
 
   const startDrag = (event) => {
     if (event.button !== 0 || event.target?.closest?.("[data-no-drag]")) return;
@@ -652,7 +763,9 @@ function DraggableFrame({ nodeId, position, size, zoom, onMove, children }) {
 
   return (
     <div
+      ref={frameRef}
       data-board-node
+      data-node-id={nodeId}
       className="absolute z-10 cursor-grab touch-none active:cursor-grabbing"
       style={{ left: position.x, top: position.y, width: size.width, minHeight: size.height }}
       onPointerDown={startDrag}

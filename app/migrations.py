@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.services.identity import identity_key_for_component_name, normalize_identity_text
 from app.services.vector_search import pgvector_index_dimension
+from app.source_identity import canonical_source_identity_sha256
 from app.taxonomy import default_trust_zone_for_source
 
 
@@ -1221,7 +1222,23 @@ async def _migrate_evidence_ledger_and_claim_graph(conn: AsyncConnection) -> Non
             await conn.execute(
                 text(f"ALTER TABLE source_documents ADD COLUMN source_created_at {dt_type}")
             )
+        if "source_identity_sha256" not in source_columns:
+            await conn.execute(
+                text("ALTER TABLE source_documents ADD COLUMN source_identity_sha256 VARCHAR(64)")
+            )
+        if "revision_number" not in source_columns:
+            await conn.execute(
+                text("ALTER TABLE source_documents ADD COLUMN revision_number INTEGER NOT NULL DEFAULT 1")
+            )
+        if "supersedes_source_document_id" not in source_columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE source_documents "
+                    "ADD COLUMN supersedes_source_document_id CHAR(32)"
+                )
+            )
         await _backfill_source_document_ledger_columns(conn)
+        await _backfill_source_document_revisions(conn)
 
     component_columns = await _get_table_columns(conn, "components")
     if component_columns and "claim_id" not in component_columns:
@@ -1549,6 +1566,94 @@ async def _backfill_source_document_ledger_columns(conn: AsyncConnection) -> Non
         )
 
 
+async def _backfill_source_document_revisions(conn: AsyncConnection) -> None:
+    """Deterministically chain legacy rows without deleting or rewriting content."""
+    columns = await _get_table_columns(conn, "source_documents")
+    required = {
+        "id",
+        "workspace_id",
+        "source_type",
+        "external_id",
+        "content",
+        "content_sha256",
+        "source_identity_sha256",
+        "revision_number",
+        "supersedes_source_document_id",
+    }
+    if not required <= columns:
+        return
+
+    ingested_expr = "ingested_at" if "ingested_at" in columns else "NULL"
+    result = await conn.execute(
+        text(f"""
+        SELECT id, workspace_id, source_type, external_id, {ingested_expr} AS ingested_at,
+               content, content_sha256, source_identity_sha256, revision_number,
+               supersedes_source_document_id
+        FROM source_documents
+        ORDER BY ingested_at, id
+    """)
+    )
+    grouped: dict[str, list[object]] = {}
+    for row in result.fetchall():
+        identity_sha256 = canonical_source_identity_sha256(
+            row[1], str(row[2] or ""), str(row[3] or "")
+        )
+        grouped.setdefault(identity_sha256, []).append(row)
+
+    for identity_sha256, rows in grouped.items():
+        revision_order = sorted(rows, key=lambda row: (int(row[8] or 0), str(row[0])))
+        valid_chain = (
+            all(row[7] == identity_sha256 for row in revision_order)
+            and [row[8] for row in revision_order] == list(range(1, len(rows) + 1))
+            and all(
+                (
+                    row[9] is None
+                    if index == 0
+                    else str(row[9]) == str(revision_order[index - 1][0])
+                )
+                for index, row in enumerate(revision_order)
+            )
+        )
+        if valid_chain:
+            rows = revision_order
+        else:
+            rows.sort(key=lambda row: (str(row[4] or ""), str(row[0])))
+        previous_id: object | None = None
+        for revision, row in enumerate(rows, start=1):
+            content_sha256 = _sha256_text(str(row[5] or ""))
+            if (
+                row[6] != content_sha256
+                or row[7] != identity_sha256
+                or row[8] != revision
+                or row[9] != previous_id
+            ):
+                await conn.execute(
+                    text("""
+                    UPDATE source_documents
+                    SET content_sha256 = :content_sha256,
+                        source_identity_sha256 = :source_identity_sha256,
+                        revision_number = :revision_number,
+                        supersedes_source_document_id = :supersedes_source_document_id
+                    WHERE id = :id
+                """),
+                    {
+                        "id": row[0],
+                        "content_sha256": content_sha256,
+                        "source_identity_sha256": identity_sha256,
+                        "revision_number": revision,
+                        "supersedes_source_document_id": previous_id,
+                    },
+                )
+            previous_id = row[0]
+
+    await conn.execute(
+        text("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_source_documents_identity_revision
+        ON source_documents (source_identity_sha256, revision_number)
+    """)
+    )
+
+
 async def _migrate_unresolved_relationships_schema(conn: AsyncConnection) -> None:
     if not await _table_exists(conn, "components"):
         return
@@ -1847,6 +1952,16 @@ async def _migrate_query_and_sync_indexes(conn: AsyncConnection) -> None:
         ("source_documents", "ix_source_documents_ingested_at", ("ingested_at",)),
         ("source_documents", "ix_source_documents_content_sha256", ("content_sha256",)),
         ("source_documents", "ix_source_documents_trust_zone", ("trust_zone",)),
+        (
+            "source_documents",
+            "ix_source_documents_workspace_source_external_revision",
+            ("workspace_id", "source_type", "external_id", "revision_number"),
+        ),
+        (
+            "source_documents",
+            "ix_source_documents_supersedes_source_document_id",
+            ("supersedes_source_document_id",),
+        ),
         ("components", "ix_components_workspace_id", ("workspace_id",)),
         ("components", "ix_components_entity_id", ("entity_id",)),
         ("components", "ix_components_claim_id", ("claim_id",)),

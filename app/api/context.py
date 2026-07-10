@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db_session
 from app.services.context_compiler import (
+    ContextBudgetExceededError,
     ContextCompiler,
     ContextPersistenceError,
     InvalidGoalError,
@@ -59,6 +60,16 @@ async def prepare_context(
             persist=True,
         )
         await session.commit()
+    except ContextBudgetExceededError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "context_budget_too_small",
+                "message": str(exc),
+                "minimum_required_tokens": exc.minimum_required_tokens,
+            },
+        ) from exc
     except (InvalidGoalError, InvalidRepoPathError, ValueError) as exc:
         await session.rollback()
         raise HTTPException(

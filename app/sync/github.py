@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
-from uuid import uuid4
 
 import httpx
-from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Connector, SourceDocument
+from app.models import Connector
 from app.services.credentials import load_credentials
+from app.services.source_revisions import ingest_source_document_revision
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +35,7 @@ async def sync_github(connector: Connector, session: AsyncSession) -> dict:
 
     docs_fetched = 0
     docs_persisted = 0
+    documents_revised = 0
     duplicates_skipped = 0
     errors: list[str] = []
 
@@ -71,19 +71,6 @@ async def sync_github(connector: Connector, session: AsyncSession) -> dict:
                     number = item.get("number")
                     external_id = f"github:{repo}:{item_type}:{number}"
 
-                    existing = await session.scalar(
-                        select(SourceDocument).where(
-                            SourceDocument.external_id == external_id,
-                            or_(
-                                SourceDocument.workspace_id == connector.workspace_id,
-                                SourceDocument.workspace_id.is_(None),
-                            ),
-                        )
-                    )
-                    if existing:
-                        duplicates_skipped += 1
-                        continue
-
                     title = item.get("title", "")
                     body = (item.get("body") or "").strip()
                     state = item.get("state", "open")
@@ -107,15 +94,15 @@ async def sync_github(connector: Connector, session: AsyncSession) -> dict:
                         f"{body[:4000]}"
                     )
 
-                    doc = SourceDocument(
-                        id=uuid4(),
+                    result = await ingest_source_document_revision(
+                        session,
                         workspace_id=connector.workspace_id,
                         source_type="github",
                         external_id=external_id,
                         content=content,
                         author=author,
                         source_url=url,
-                        metadata_json=json.dumps({
+                        metadata_json={
                             "workspace_id": str(connector.workspace_id),
                             "item_type": item_type,
                             "repo_full_name": repo,
@@ -127,10 +114,13 @@ async def sync_github(connector: Connector, session: AsyncSession) -> dict:
                             "assignees": assignees,
                             "created_at": created_at,
                             "source_type": f"github_{item_type}",
-                        }),
+                        },
                     )
-                    session.add(doc)
-                    docs_persisted += 1
+                    if result.created:
+                        docs_persisted += 1
+                        documents_revised += int(result.revised)
+                    else:
+                        duplicates_skipped += 1
 
                 await session.commit()
 
@@ -145,6 +135,7 @@ async def sync_github(connector: Connector, session: AsyncSession) -> dict:
         "documents_persisted": docs_persisted,
         "documents_skipped": duplicates_skipped,
         "duplicates_skipped": duplicates_skipped,
+        "documents_revised": documents_revised,
         "repos_synced": len(repositories),
         "errors": errors,
     }

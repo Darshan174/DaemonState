@@ -4,31 +4,35 @@ import hashlib
 import json
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models import (
     Component,
+    ClaimRevision,
     ContextPack,
     ContextPackItem,
+    EvidenceSpan,
     Relationship,
     SourceDocument,
     UnresolvedRelationship,
 )
 from app.services.model_profiles import ModelCapabilityProfile, profile_for_target_model
-from app.services.repo_indexer import RepoFrame, RepoIndexer
+from app.services.repo_indexer import RANKING_VERSION, RepoFrame, RepoIndexer
 from app.taxonomy import canonical_trust_zone
 from app.time import utc_now
 
 
 SCHEMA_VERSION = "context_pack.v2"
+COMPILER_VERSION = "context_compiler.v3"
+EVIDENCE_CONTRACT_VERSION = "exact_evidence_span.v1"
 TOKEN_ESTIMATION_METHOD = "chars_div_4.v1"
 PROMPT_INJECTION_PATTERNS = (
     "ignore previous instructions",
@@ -62,6 +66,16 @@ class ContextPersistenceError(RuntimeError):
     pass
 
 
+class ContextBudgetExceededError(ContextCompilerError):
+    def __init__(self, minimum_required_tokens: int, budget_tokens: int) -> None:
+        self.minimum_required_tokens = int(minimum_required_tokens)
+        self.budget_tokens = int(budget_tokens)
+        super().__init__(
+            "minimum required context cannot fit the rendered token budget: "
+            f"required={self.minimum_required_tokens}, budget={self.budget_tokens}"
+        )
+
+
 @dataclass(frozen=True)
 class GoalFrame:
     objective: str
@@ -91,12 +105,23 @@ class ContextCandidate:
     component_id: str | None = None
     evidence_span_id: str | None = None
     source_document_id: str | None = None
+    evidence_revision_id: str | None = None
+    evidence_text_sha256: str | None = None
+    source_revision_id: str | None = None
+    source_revision_number: int | None = None
+    source_content_sha256: str | None = None
     citations: list[dict[str, Any]] = field(default_factory=list)
     files: list[str] = field(default_factory=list)
+    file_refs: list[dict[str, Any]] = field(default_factory=list)
     relationships: list[dict[str, Any]] = field(default_factory=list)
     conflict_state: str = "none"
     identity_key: str | None = None
     mandatory: bool = False
+    lane: str = "decisions_and_invariants"
+    rank_features: dict[str, Any] = field(default_factory=dict)
+    provenance_verified: bool | None = None
+    truth_state: str = "unknown"
+    rank: int = 0
 
     def to_manifest_item(self) -> dict[str, Any]:
         return {
@@ -117,10 +142,25 @@ class ContextCandidate:
             "component_id": self.component_id,
             "evidence_span_id": self.evidence_span_id,
             "source_document_id": self.source_document_id,
+            "evidence_revision_id": self.evidence_revision_id,
+            "claim_revision_id": self.evidence_revision_id,
+            "evidence_text_sha256": self.evidence_text_sha256,
+            "source_revision_id": self.source_revision_id,
+            "source_revision_number": self.source_revision_number,
+            "source_content_sha256": self.source_content_sha256,
             "citations": self.citations,
             "files": self.files,
+            "file_refs": self.file_refs,
             "relationships": self.relationships,
             "conflict_state": self.conflict_state,
+            "lane": self.lane,
+            "mandatory": self.mandatory,
+            "rank_features": self.rank_features,
+            "score_breakdown": self.rank_features,
+            "rank": self.rank,
+            "truth_state": self.truth_state,
+            "selection_decision": "selected",
+            "provenance_verified": self.provenance_verified,
         }
 
 
@@ -135,6 +175,17 @@ class ExcludedContextCandidate:
     trust_zone: str
     status: str
     citation: dict[str, Any] | None = None
+    lane: str = "decisions_and_invariants"
+    mandatory: bool = False
+    token_cost: int = 0
+    rank_features: dict[str, Any] = field(default_factory=dict)
+    claim_id: str | None = None
+    evidence_span_id: str | None = None
+    evidence_revision_id: str | None = None
+    source_document_id: str | None = None
+    source_revision_number: int | None = None
+    file_refs: list[dict[str, Any]] = field(default_factory=list)
+    truth_state: str = "unknown"
 
     def to_manifest_item(self) -> dict[str, Any]:
         return {
@@ -147,6 +198,19 @@ class ExcludedContextCandidate:
             "trust_zone": self.trust_zone,
             "status": self.status,
             "citation": self.citation,
+            "lane": self.lane,
+            "mandatory": self.mandatory,
+            "token_cost": self.token_cost,
+            "rank_features": self.rank_features,
+            "claim_id": self.claim_id,
+            "evidence_span_id": self.evidence_span_id,
+            "evidence_revision_id": self.evidence_revision_id,
+            "claim_revision_id": self.evidence_revision_id,
+            "source_document_id": self.source_document_id,
+            "source_revision_number": self.source_revision_number,
+            "file_refs": self.file_refs,
+            "selection_decision": "excluded",
+            "truth_state": self.truth_state,
         }
 
 
@@ -210,38 +274,81 @@ class ContextCompiler:
         self._score_candidates(candidates, goal_frame, repo_state)
         selected, excluded = self._select_candidates(candidates, effective_budget, profile)
         selected, excluded = _assign_citation_ids(selected, excluded, profile)
-        health = _context_health(selected, excluded, candidates, repo_state, task_frame)
 
         pack_id = str(uuid4()) if persist or compatibility_mode is False else None
         created_at = utc_now().isoformat(timespec="seconds") + "Z"
-        manifest = self._build_manifest(
-            context_pack_id=pack_id,
-            created_at=created_at,
-            workspace_id=workspace_uuid,
+        while True:
+            health = _context_health(selected, excluded, candidates, repo_state, task_frame)
+            manifest = self._build_manifest(
+                context_pack_id=pack_id,
+                created_at=created_at,
+                workspace_id=workspace_uuid,
+                goal_frame=goal_frame,
+                target_model=target_model,
+                profile=profile,
+                token_budget=effective_budget,
+                repo_state=repo_state,
+                selected=selected,
+                excluded=excluded,
+                task_frame=task_frame,
+                health=health,
+                persistence_available=bool(persist),
+                persistence_reason=None if persist else "file_output_only",
+            )
+            markdown = render_context_pack_markdown(manifest, profile)
+            rendered_tokens = estimate_tokens(markdown)
+            if rendered_tokens <= effective_budget:
+                break
+            removable = sorted(
+                (candidate for candidate in selected if not candidate.mandatory),
+                key=lambda candidate: (
+                    candidate.score,
+                    -candidate.token_cost,
+                    candidate.lane,
+                    candidate.id,
+                ),
+            )
+            if not removable:
+                raise ContextBudgetExceededError(rendered_tokens, effective_budget)
+            removed = removable[0]
+            selected.remove(removed)
+            excluded.append(_exclude(
+                removed,
+                "out_of_budget",
+                "Removed after measuring the final markdown so the artifact fits the requested budget.",
+            ))
+            selected, excluded = _assign_citation_ids(selected, excluded, profile)
+
+        manifest["rendering"] = {
+            "markdown_sha256": _sha256_text(markdown),
+            "estimated_tokens": rendered_tokens,
+            "budget_tokens": effective_budget,
+            "within_budget": True,
+            "estimation_method": TOKEN_ESTIMATION_METHOD,
+        }
+        manifest["lockfile"] = _build_lockfile(
             goal_frame=goal_frame,
-            target_model=target_model,
+            workspace_id=workspace_uuid,
             profile=profile,
-            token_budget=effective_budget,
+            target_model=target_model,
             repo_state=repo_state,
             selected=selected,
             excluded=excluded,
-            task_frame=task_frame,
-            health=health,
-            persistence_available=bool(persist),
-            persistence_reason=None if persist else "file_output_only",
+            rendered_tokens=rendered_tokens,
+            token_budget=effective_budget,
         )
-        markdown = render_context_pack_markdown(manifest, profile)
-        manifest["rendering"] = {
-            "markdown_sha256": _sha256_text(markdown),
-            "estimated_tokens": estimate_tokens(markdown),
+        manifest["input_fingerprint"] = manifest["lockfile"]["replay_key"]
+        selected_item_tokens = sum(item.token_cost for item in selected)
+        manifest["token_accounting"] = {
+            "budget": effective_budget,
+            "fixed_section_tokens": max(0, rendered_tokens - selected_item_tokens),
+            "selected_item_tokens": selected_item_tokens,
+            "rendered_tokens": rendered_tokens,
+            "remaining_tokens": effective_budget - rendered_tokens,
             "estimation_method": TOKEN_ESTIMATION_METHOD,
+            "within_budget": True,
         }
-        markdown = render_context_pack_markdown(manifest, profile)
-        manifest["rendering"] = {
-            "markdown_sha256": _sha256_text(markdown),
-            "estimated_tokens": estimate_tokens(markdown),
-            "estimation_method": TOKEN_ESTIMATION_METHOD,
-        }
+        manifest["uncertainties"] = _manifest_uncertainties(excluded, health)
 
         if persist:
             if self.session is None:
@@ -264,9 +371,12 @@ class ContextCompiler:
                         objective=goal_frame.objective,
                         target_model=target_model,
                         token_budget=effective_budget,
+                        model_profile=profile.name,
                         health_score=health["readiness_score"],
                         markdown=markdown,
                         manifest=manifest,
+                        repo_state=repo_state,
+                        idempotency_key=manifest["lockfile"]["replay_key"],
                         selected=selected,
                     )
                 except SQLAlchemyError as exc:
@@ -335,32 +445,103 @@ class ContextCompiler:
             .options(
                 selectinload(Component.model),
                 selectinload(Component.source_document),
+                selectinload(Component.claim),
                 selectinload(Component.outgoing_relationships).selectinload(Relationship.target_component),
                 selectinload(Component.incoming_relationships).selectinload(Relationship.source_component),
             )
-            .where(Component.status.in_(["active", "needs_review", "proposed", "stale", "superseded"]))
-            .order_by(Component.created_at.desc())
-            .limit(350)
+            .where(Component.status.in_([
+                "active",
+                "contested",
+                "needs_review",
+                "proposed",
+                "stale",
+                "superseded",
+            ]))
+            .order_by(Component.identity_key, Component.id)
         )
         if workspace_id is not None:
-            stmt = stmt.where(or_(Component.workspace_id == workspace_id, Component.workspace_id.is_(None)))
+            stmt = stmt.where(Component.workspace_id == workspace_id)
+        else:
+            stmt = stmt.where(Component.workspace_id.is_(None))
         try:
             components = list(await self.session.scalars(stmt))
         except SQLAlchemyError:
             return []
 
+        revision_ids = {
+            component.claim.current_revision_id
+            for component in components
+            if component.claim is not None and component.claim.current_revision_id is not None
+        }
+        revisions_by_id: dict[UUID, ClaimRevision] = {}
+        if revision_ids:
+            revision_stmt = (
+                select(ClaimRevision)
+                .options(
+                    selectinload(ClaimRevision.evidence_span).selectinload(
+                        EvidenceSpan.source_document
+                    )
+                )
+                .where(ClaimRevision.id.in_(revision_ids))
+                .order_by(ClaimRevision.id)
+            )
+            try:
+                revisions_by_id = {
+                    revision.id: revision
+                    for revision in await self.session.scalars(revision_stmt)
+                }
+            except SQLAlchemyError:
+                revisions_by_id = {}
+
+        superseded_document_ids: set[UUID] = set()
+        supersedes_column = getattr(SourceDocument, "supersedes_source_document_id", None)
+        if supersedes_column is not None:
+            try:
+                superseded_document_ids = {
+                    document_id
+                    for document_id in await self.session.scalars(
+                        select(supersedes_column).where(supersedes_column.is_not(None))
+                    )
+                    if document_id is not None
+                }
+            except SQLAlchemyError:
+                superseded_document_ids = set()
+
         candidates: list[ContextCandidate] = []
         for component in components:
-            doc = component.source_document
+            claim = component.claim
+            revision = (
+                revisions_by_id.get(claim.current_revision_id)
+                if claim is not None and claim.current_revision_id is not None
+                else None
+            )
+            evidence = revision.evidence_span if revision is not None else None
+            evidence_verified, evidence_reason = _validate_evidence_span(evidence)
+            doc = evidence.source_document if evidence is not None else component.source_document
             trust_zone = _source_trust_zone(doc)
-            quote = _first_non_empty(component.excerpt, component.value, doc.content if doc else None)
+            summary = revision.value if revision is not None else component.value
+            quote = _first_non_empty(
+                evidence.text if evidence is not None else None,
+                component.excerpt,
+                summary,
+            )
             quote = _cap_text(quote or "", profile.max_evidence_quote_chars)
-            prompt_risk = _prompt_injection_risk(" ".join([component.value or "", component.excerpt or "", quote]))
+            prompt_risk = max(
+                _prompt_injection_risk(" ".join([summary or "", component.excerpt or "", quote])),
+                float(evidence.prompt_injection_risk_score or 0.0) if evidence is not None else 0.0,
+            )
             item_type = _item_type_for_component(component)
             relationships = _relationship_summaries(component)
             conflict_state = (
                 "unresolved"
-                if any(rel.get("relationship_type") in {"contradicts", "conflicts_with"} for rel in relationships)
+                if (
+                    (claim is not None and claim.status == "contested")
+                    or (revision is not None and revision.contradicts_claim_id is not None)
+                    or any(
+                        rel.get("relationship_type") in {"contradicts", "conflicts_with"}
+                        for rel in relationships
+                    )
+                )
                 else "none"
             )
             files = _extract_file_paths(" ".join([
@@ -372,38 +553,86 @@ class ContextCompiler:
             citation = {
                 "citation_id": "",
                 "source_document_id": str(doc.id) if doc else None,
-                "evidence_span_id": None,
+                "evidence_span_id": str(evidence.id) if evidence is not None else None,
+                "evidence_revision_id": str(revision.id) if revision is not None else None,
                 "source_type": doc.source_type if doc else "legacy_component",
                 "source_url": doc.source_url if doc and doc.source_url else (component.provenance or None),
                 "quote": quote or "Legacy component selected without exact evidence span.",
                 "trust_zone": trust_zone,
+                "start_char": evidence.start_char if evidence is not None else None,
+                "end_char": evidence.end_char if evidence is not None else None,
+                "text_sha256": evidence.text_sha256 if evidence is not None else None,
+                "source_content_sha256": _source_content_sha256(doc),
+                "source_revision_id": _source_revision_identity(doc),
+                "source_revision_number": _source_revision_number(doc),
+                "review_status": evidence.review_status if evidence is not None else None,
+                "validated": evidence_verified,
+                "validation_reason": evidence_reason,
             }
-            inclusion_reason = (
-                "legacy_component_without_evidence"
-                if doc is None else "source_backed_component"
+            if revision is not None and evidence_verified:
+                inclusion_reason = "current_verified_claim_revision"
+            elif revision is not None:
+                inclusion_reason = f"current_claim_{evidence_reason}"
+            elif doc is not None:
+                inclusion_reason = "source_backed_component_without_evidence_span"
+            else:
+                inclusion_reason = "legacy_component_without_evidence"
+            status = claim.status if claim is not None else component.status
+            if revision is not None and not evidence_verified:
+                status = "needs_review"
+            elif doc is not None and doc.id in superseded_document_ids:
+                status = "stale"
+            truth_state = _derive_truth_state(
+                claim_status=claim.status if claim is not None else None,
+                has_current_revision=revision is not None,
+                evidence_verified=evidence_verified,
+                source_is_superseded=bool(doc is not None and doc.id in superseded_document_ids),
+                conflict_state=conflict_state,
             )
             candidates.append(ContextCandidate(
                 id=f"component:{component.id}",
                 item_type=item_type,
                 title=component.name,
-                summary=_cap_text(component.value, 900),
-                status=component.status,
-                temporal=component.temporal or "unknown",
-                token_cost=estimate_tokens(f"{component.name}\n{component.value}\n{quote}"),
+                summary=_cap_text(summary, 900),
+                status=status,
+                temporal=(claim.temporal if claim is not None else component.temporal) or "unknown",
+                token_cost=estimate_tokens(f"{component.name}\n{summary}\n{quote}"),
                 inclusion_reason=inclusion_reason,
                 trust_zone=trust_zone,
-                confidence=float(component.confidence or 0.0),
-                authority_weight=float(component.authority_weight or 0.0),
+                confidence=float(claim.confidence if claim is not None else component.confidence or 0.0),
+                authority_weight=float(
+                    evidence.authority_weight
+                    if evidence is not None
+                    else (claim.authority_weight if claim is not None else component.authority_weight or 0.0)
+                ),
                 prompt_injection_risk_score=prompt_risk,
-                claim_id=str(component.claim_id) if component.claim_id else None,
+                claim_id=str(claim.id) if claim is not None else None,
                 component_id=str(component.id),
+                evidence_span_id=str(evidence.id) if evidence is not None else None,
                 source_document_id=str(doc.id) if doc else None,
+                evidence_revision_id=str(revision.id) if revision is not None else None,
+                evidence_text_sha256=evidence.text_sha256 if evidence is not None else None,
+                source_revision_id=_source_revision_identity(doc),
+                source_revision_number=_source_revision_number(doc),
+                source_content_sha256=_source_content_sha256(doc),
                 citations=[citation],
                 files=files,
                 relationships=relationships,
                 conflict_state=conflict_state,
                 identity_key=component.identity_key or str(component.entity_id or component.id),
-                mandatory=(item_type == "blocker" and component.status == "active"),
+                mandatory=(
+                    item_type == "blocker"
+                    and truth_state == "current"
+                    and status == "active"
+                ),
+                lane=_lane_for_item(item_type, status, summary),
+                rank_features={
+                    "evidence_verified": evidence_verified,
+                    "evidence_validation_reason": evidence_reason,
+                    "current_claim_revision": revision is not None,
+                },
+                provenance_verified=evidence_verified if revision is not None else False,
+                truth_state=truth_state,
             ))
         return candidates
 
@@ -419,10 +648,9 @@ class ContextCompiler:
             .limit(100)
         )
         if workspace_id is not None:
-            stmt = stmt.where(or_(
-                UnresolvedRelationship.workspace_id == workspace_id,
-                UnresolvedRelationship.workspace_id.is_(None),
-            ))
+            stmt = stmt.where(UnresolvedRelationship.workspace_id == workspace_id)
+        else:
+            stmt = stmt.where(UnresolvedRelationship.workspace_id.is_(None))
         try:
             unresolved = list(await self.session.scalars(stmt))
         except SQLAlchemyError:
@@ -463,6 +691,10 @@ class ContextCompiler:
                 conflict_state="unresolved",
                 identity_key=rel.target_identity_key or rel.target_name,
                 mandatory=rel.relationship_type in {"blocks", "blocked_by"},
+                lane="blockers_and_questions",
+                rank_features={"relationship_unresolved": True},
+                provenance_verified=False,
+                truth_state="needs_review",
             ))
         return candidates
 
@@ -476,6 +708,20 @@ class ContextCompiler:
         selected_file_tokens = set(_tokenize(" ".join(sorted(relevant_paths))))
         for candidate in candidates:
             candidate.score = score_candidate(candidate, goal_frame, relevant_paths, selected_file_tokens)
+            candidate.rank_features = {
+                **candidate.rank_features,
+                "objective_token_coverage": _coverage(
+                    goal_frame.keywords,
+                    set(_tokenize(" ".join([
+                        candidate.title,
+                        candidate.summary,
+                        " ".join(candidate.files),
+                    ]))),
+                ),
+                "relevant_file_overlap": bool(relevant_paths & set(candidate.files)),
+                "final_score": candidate.score,
+                "ranking_version": RANKING_VERSION,
+            }
 
     def _select_candidates(
         self,
@@ -486,12 +732,23 @@ class ContextCompiler:
         selected: list[ContextCandidate] = []
         excluded: list[ExcludedContextCandidate] = []
         selected_identity_keys: set[str] = set()
-        used_tokens = 700
+        used_tokens = 0
+
+        lane_priority = {
+            "instructions": 0,
+            "code_and_tests": 1,
+            "decisions_and_invariants": 2,
+            "blockers_and_questions": 3,
+            "prior_failures": 4,
+            "verification": 5,
+            "exclusions": 6,
+        }
 
         ordered = sorted(
             candidates,
             key=lambda item: (
                 not item.mandatory,
+                lane_priority.get(item.lane, 99),
                 -item.score,
                 item.item_type,
                 item.title.lower(),
@@ -500,7 +757,7 @@ class ContextCompiler:
         )
         for candidate in ordered:
             exclusion = _exclusion_for(candidate)
-            if exclusion and not candidate.mandatory:
+            if exclusion:
                 excluded.append(exclusion)
                 continue
             if candidate.prompt_injection_risk_score >= 0.90:
@@ -520,11 +777,7 @@ class ContextCompiler:
             if candidate.identity_key:
                 selected_identity_keys.add(candidate.identity_key)
 
-        if not any(item.item_type == "verification" for item in selected):
-            verification = next((item for item in ordered if item.item_type == "verification"), None)
-            if verification and verification not in selected:
-                selected.append(verification)
-        return selected, excluded[:80]
+        return selected, excluded
 
     def _build_manifest(
         self,
@@ -546,6 +799,13 @@ class ContextCompiler:
     ) -> dict[str, Any]:
         return {
             "schema_version": SCHEMA_VERSION,
+            "compiler": {
+                "name": "ContextCompiler",
+                "version": COMPILER_VERSION,
+                "ranking_version": RANKING_VERSION,
+                "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
+                "token_estimation_method": TOKEN_ESTIMATION_METHOD,
+            },
             "context_pack_id": context_pack_id,
             "objective": goal_frame.objective,
             "created_at": created_at,
@@ -554,10 +814,14 @@ class ContextCompiler:
                 "name": target_model or "default",
                 "profile": profile.name,
                 "context_budget_tokens": token_budget,
+                "capability": asdict(profile),
+                "capabilities": asdict(profile),
             },
             "repo_state": repo_state,
             "selected_context": [item.to_manifest_item() for item in selected],
             "excluded_context": [item.to_manifest_item() for item in excluded],
+            "retrieval_lanes": _retrieval_lane_manifest(selected, excluded),
+            "uncertainties": _manifest_uncertainties(excluded, health),
             "risks": task_frame["risks"],
             "verification": {
                 "commands": task_frame["verification_commands"],
@@ -566,6 +830,16 @@ class ContextCompiler:
             "stop_conditions": task_frame["stop_conditions"],
             "implementation_plan": task_frame["implementation_plan"],
             "context_health": health,
+            "input_fingerprint": "",
+            "token_accounting": {
+                "budget": token_budget,
+                "fixed_section_tokens": 0,
+                "selected_item_tokens": sum(item.token_cost for item in selected),
+                "rendered_tokens": 0,
+                "remaining_tokens": token_budget,
+                "estimation_method": TOKEN_ESTIMATION_METHOD,
+                "within_budget": False,
+            },
             "persistence": {
                 "available": persistence_available,
                 "mode": "database" if persistence_available else "file_output_only",
@@ -574,6 +848,8 @@ class ContextCompiler:
             "rendering": {
                 "markdown_sha256": "",
                 "estimated_tokens": 0,
+                "budget_tokens": token_budget,
+                "within_budget": False,
                 "estimation_method": TOKEN_ESTIMATION_METHOD,
             },
         }
@@ -586,9 +862,12 @@ class ContextCompiler:
         objective: str,
         target_model: str | None,
         token_budget: int,
+        model_profile: str,
         health_score: float,
         markdown: str,
         manifest: dict[str, Any],
+        repo_state: dict[str, Any],
+        idempotency_key: str,
         selected: list[ContextCandidate],
     ) -> None:
         manifest_json = json.dumps(manifest, sort_keys=True, separators=(",", ":"))
@@ -597,19 +876,25 @@ class ContextCompiler:
             workspace_id=workspace_id,
             objective=objective,
             target_model=target_model,
+            model_profile=model_profile,
             token_budget=token_budget,
             pack_version=SCHEMA_VERSION,
             health_score=health_score,
             markdown=markdown,
             manifest=manifest_json,
+            repo_state_json=json.dumps(repo_state, sort_keys=True, separators=(",", ":")),
+            idempotency_key=idempotency_key,
         )
         self.session.add(pack)
         await self.session.flush()
         for candidate in selected:
             self.session.add(ContextPackItem(
                 context_pack_id=pack.id,
+                item_type=candidate.item_type,
+                claim_id=_uuid_or_none(candidate.claim_id),
                 component_id=_uuid_or_none(candidate.component_id),
                 evidence_span_id=_uuid_or_none(candidate.evidence_span_id),
+                source_document_id=_uuid_or_none(candidate.source_document_id),
                 score=round(float(candidate.score), 6),
                 inclusion_reason=candidate.inclusion_reason,
                 token_cost=int(candidate.token_cost),
@@ -694,7 +979,7 @@ def infer_task_frame(
     if test_files:
         commands.append({
             "id": f"V{command_index}",
-            "command": f"python3 -m pytest {' '.join(test_files[:6])} -q",
+            "command": f"python3 -m pytest -q {' '.join(test_files[:6])}",
             "cwd": repo_frame.repo_path,
             "purpose": "Run focused tests for the selected implementation surface.",
             "required": True,
@@ -831,15 +1116,21 @@ def score_candidate(
     stale_penalty = 1.0 if candidate.status in {"stale", "superseded", "deprecated"} else 0.0
     contradiction_penalty = 1.0 if candidate.conflict_state == "unresolved" else 0.0
     prompt_penalty = _clamp01(candidate.prompt_injection_risk_score)
+    provenance_quality = 1.0 if candidate.provenance_verified is True else 0.0
+    file_rank = _clamp01(
+        float(candidate.rank_features.get("file_ranking_score") or 0.0) / 4.0
+    )
     score = (
-        0.24 * goal_similarity
-        + 0.18 * code_relevance
+        0.22 * goal_similarity
+        + 0.16 * code_relevance
+        + 0.14 * file_rank
         + 0.14 * graph_centrality
-        + 0.12 * confidence
-        + 0.10 * authority
+        + 0.10 * confidence
+        + 0.08 * authority
         + 0.08 * recency
-        + 0.08 * priority
-        + 0.06 * human_verified
+        + 0.06 * priority
+        + 0.04 * human_verified
+        + 0.08 * provenance_quality
         - 0.20 * stale_penalty
         - 0.25 * contradiction_penalty
         - 0.15 * prompt_penalty
@@ -875,10 +1166,24 @@ def render_context_pack_markdown(
         "## Relevant Files",
         "",
     ]
-    relevant_files = repo_state.get("relevant_files") or []
+    selected_file_paths = {
+        path
+        for item in selected
+        if item.get("lane") == "code_and_tests"
+        for path in item.get("files") or []
+    }
+    relevant_files = [
+        item
+        for item in repo_state.get("relevant_files") or []
+        if item.get("path") in selected_file_paths
+    ]
     if relevant_files:
         for item in relevant_files[:20]:
-            sections.append(f"- `{item['path']}` - {item.get('reason') or 'selected by repo indexer'}.")
+            digest = str(item.get("sha256") or "unknown")[:12]
+            sections.append(
+                f"- `{item['path']}` - {item.get('reason') or 'selected by repo indexer'} "
+                f"(sha256 `{digest}`)."
+            )
     else:
         sections.append("- No relevant files were inferred.")
 
@@ -900,6 +1205,28 @@ def render_context_pack_markdown(
             sections.append(f"- {item['title']}: {item['summary']} {_citation_refs(item)}")
     else:
         sections.append("- No blocker is selected as active for this task.")
+    uncertain_blockers = [
+        item
+        for item in manifest.get("uncertainties") or []
+        if item.get("item_type") in {"blocker", "risk"}
+    ]
+    for item in uncertain_blockers:
+        sections.append(
+            f"- [{item.get('truth_state') or 'unknown'}] {item['title']}: "
+            f"{item['reason_detail']} (not an execution instruction)"
+        )
+
+    sections.extend(["", "## Prior Failures And Open Questions", ""])
+    open_items = [
+        item for item in selected
+        if item.get("lane") in {"prior_failures", "blockers_and_questions"}
+        and item.get("item_type") not in {"blocker", "risk"}
+    ]
+    if open_items:
+        for item in open_items[:8]:
+            sections.append(f"- {item['title']}: {item['summary']} {_citation_refs(item)}")
+    else:
+        sections.append("- No prior failure or open question was selected.")
 
     sections.extend(["", "## Implementation Plan", ""])
     for index, step in enumerate(manifest.get("implementation_plan", []), start=1):
@@ -921,7 +1248,7 @@ def render_context_pack_markdown(
 
     sections.extend(["", "## Excluded Stale Or Conflicting Context", ""])
     if excluded:
-        for item in excluded[:20]:
+        for item in excluded:
             sections.append(f"- Excluded `{item['id']}`: {item['reason']} - {item['reason_detail']}")
     else:
         sections.append("- No stale or conflicting context was excluded.")
@@ -962,6 +1289,10 @@ def _core_candidates(
                 "trust_zone": "trusted_human",
             }],
             mandatory=True,
+            lane="instructions",
+            rank_features={"source": "direct_user_objective"},
+            provenance_verified=True,
+            truth_state="current",
         ),
         ContextCandidate(
             id="repo_state:current",
@@ -987,6 +1318,10 @@ def _core_candidates(
                 "trust_zone": "trusted_repo",
             }],
             mandatory=True,
+            lane="instructions",
+            rank_features={"source": "deterministic_repo_state"},
+            provenance_verified=True,
+            truth_state="current",
         ),
     ]
     for constraint in goal_frame.constraints:
@@ -1010,6 +1345,10 @@ def _core_candidates(
                 "trust_zone": "trusted_human",
             }],
             mandatory=True,
+            lane="decisions_and_invariants",
+            rank_features={"source": "task_contract"},
+            provenance_verified=True,
+            truth_state="current",
         ))
     for command in task_frame["verification_commands"]:
         candidates.append(ContextCandidate(
@@ -1034,6 +1373,10 @@ def _core_candidates(
             }],
             files=_extract_file_paths(command["command"]),
             mandatory=True,
+            lane="verification",
+            rank_features={"source": "deterministic_verification_inference"},
+            provenance_verified=True,
+            truth_state="current",
         ))
     return candidates
 
@@ -1044,7 +1387,7 @@ def _repo_candidates(
     profile: ModelCapabilityProfile,
 ) -> list[ContextCandidate]:
     candidates = []
-    for item in repo_state.get("relevant_files", []):
+    for index, item in enumerate(repo_state.get("relevant_files", [])):
         path = item["path"]
         quote = f"Repo file selected by deterministic indexer: {path}"
         candidates.append(ContextCandidate(
@@ -1067,7 +1410,29 @@ def _repo_candidates(
                 "trust_zone": "trusted_repo",
             }],
             files=[path],
-            mandatory=True,
+            file_refs=[
+                {
+                    "path": path,
+                    "sha256": item.get("sha256"),
+                    "start_line": line_range.get("start_line") if line_range else None,
+                    "end_line": line_range.get("end_line") if line_range else None,
+                }
+                for line_range in (item.get("line_ranges") or [None])
+            ],
+            mandatory=(
+                item.get("reason") == "explicit_goal_file_hint"
+                or (index == 0 and not item.get("is_test"))
+            ),
+            lane="code_and_tests",
+            rank_features={
+                "file_ranking_score": float(item.get("ranking_score") or 0.0),
+                "file_ranking_reason": item.get("reason"),
+                "matched_terms": item.get("matched_terms") or [],
+                "is_test": bool(item.get("is_test")),
+                "ranking_version": item.get("ranking_version") or RANKING_VERSION,
+            },
+            provenance_verified=bool(item.get("sha256")),
+            truth_state="current" if item.get("sha256") else "unknown",
         ))
     for changed in repo_state.get("changed_files", [])[:12]:
         path = changed.get("path")
@@ -1093,6 +1458,16 @@ def _repo_candidates(
                 "trust_zone": "trusted_repo",
             }],
             files=[path],
+            file_refs=[{
+                "path": path,
+                "sha256": changed.get("sha256"),
+                "start_line": None,
+                "end_line": None,
+            }],
+            lane="prior_failures",
+            rank_features={"git_status": changed.get("status")},
+            provenance_verified=bool(changed.get("sha256")),
+            truth_state="current" if changed.get("sha256") else "unknown",
         ))
     return candidates
 
@@ -1126,18 +1501,126 @@ def _context_health(
         1 for item in repo_state.get("relevant_files", [])
         if item.get("exists") is False
     )
-    readiness = (
-        100
-        - unresolved_blockers * 20
-        - unresolved_conflicts * 25
-        - stale_high_authority * 15
-        - missing_verification * 10
-        - low_confidence_core * 10
-        - missing_files * 10
+    relevance_candidates = [
+        item for item in selected
+        if item.lane in {
+            "code_and_tests",
+            "decisions_and_invariants",
+            "blockers_and_questions",
+            "prior_failures",
+        }
+    ]
+    relevance_values = [
+        max(
+            float(item.rank_features.get("objective_token_coverage") or 0.0),
+            1.0
+            if (
+                item.rank_features.get("relevant_file_overlap")
+                and float(item.rank_features.get("file_ranking_score") or 0.0) > 0.1
+            )
+            else 0.0,
+        )
+        for item in relevance_candidates
+    ]
+    relevance_known = any(value > 0 for value in relevance_values)
+    relevance_score = (
+        round(100 * sum(relevance_values) / len(relevance_values), 2)
+        if relevance_values
+        else 0.0
     )
-    readiness = max(0, min(100, readiness))
+
+    provenance_candidates = [
+        item for item in selected
+        if item.lane not in {"instructions", "verification"}
+    ]
+    verified_provenance = sum(
+        1 for item in provenance_candidates if item.provenance_verified is True
+    )
+    provenance_known = bool(provenance_candidates)
+    provenance_score = (
+        round(100 * verified_provenance / len(provenance_candidates), 2)
+        if provenance_candidates
+        else 0.0
+    )
+
+    selected_lanes = {item.lane for item in selected}
+    required_lanes = {"instructions", "code_and_tests", "verification"}
+    candidate_lanes = {item.lane for item in all_candidates}
+    required_lanes.update(candidate_lanes & {"blockers_and_questions", "prior_failures"})
+    covered_lanes = required_lanes & selected_lanes
+    completeness_score = round(100 * len(covered_lanes) / len(required_lanes), 2)
+
+    base_readiness = (
+        0.30 * relevance_score
+        + 0.25 * provenance_score
+        + 0.25 * completeness_score
+        + 20.0
+    )
+    penalty = (
+        unresolved_blockers * 20
+        + unresolved_conflicts * 25
+        + missing_verification * 10
+        + low_confidence_core * 10
+        + missing_files * 10
+    )
+    readiness = max(0, min(100, round(base_readiness - penalty, 2)))
+    unknown_signals = []
+    if not relevance_known:
+        unknown_signals.append("objective_relevance")
+        readiness = min(readiness, 85.0)
+    if not provenance_known:
+        unknown_signals.append("project_provenance")
+        readiness = min(readiness, 90.0)
+    if not repo_state.get("head_commit"):
+        unknown_signals.append("repo_commit_state")
+        readiness = min(readiness, 95.0)
+    reasons = [
+        *[f"unknown:{signal}" for signal in unknown_signals],
+        *([f"active_blockers:{unresolved_blockers}"] if unresolved_blockers else []),
+        *([f"unresolved_contradictions:{unresolved_conflicts}"] if unresolved_conflicts else []),
+        *([f"missing_repo_files:{missing_files}"] if missing_files else []),
+    ]
     return {
         "readiness_score": readiness,
+        "relevance": {"score": relevance_score, "known": relevance_known},
+        "provenance_coverage": {
+            "score": provenance_score,
+            "verified_items": verified_provenance,
+            "measured_items": len(provenance_candidates),
+        },
+        "required_context_coverage": {
+            "score": completeness_score,
+            "required_lanes": sorted(required_lanes),
+            "covered_lanes": sorted(covered_lanes),
+        },
+        "blocker_state": {
+            "active_count": unresolved_blockers,
+            "clear": unresolved_blockers == 0,
+        },
+        "contradiction_state": {
+            "unresolved_count": unresolved_conflicts,
+            "clear": unresolved_conflicts == 0,
+        },
+        "unknown_signal_count": len(unknown_signals),
+        "reasons": reasons,
+        "dimensions": {
+            "objective_relevance": {
+                "score": relevance_score,
+                "known": relevance_known,
+            },
+            "provenance": {
+                "score": provenance_score,
+                "known": provenance_known,
+                "verified_items": verified_provenance,
+                "measured_items": len(provenance_candidates),
+            },
+            "lane_completeness": {
+                "score": completeness_score,
+                "required_lanes": sorted(required_lanes),
+                "covered_lanes": sorted(covered_lanes),
+            },
+        },
+        "unknown_signals": unknown_signals,
         "unresolved_blockers": unresolved_blockers,
         "unresolved_conflicts": unresolved_conflicts,
         "stale_high_authority_claims": stale_high_authority,
@@ -1154,7 +1637,8 @@ def _assign_citation_ids(
     profile: ModelCapabilityProfile,
 ) -> tuple[list[ContextCandidate], list[ExcludedContextCandidate]]:
     citation_index = 1
-    for candidate in selected:
+    for rank, candidate in enumerate(selected, start=1):
+        candidate.rank = rank
         if not candidate.citations:
             candidate.citations = [{
                 "citation_id": "",
@@ -1170,6 +1654,14 @@ def _assign_citation_ids(
         for citation in candidate.citations:
             citation["citation_id"] = f"E{citation_index}"
             citation["quote"] = _cap_text(citation.get("quote") or "", profile.max_evidence_quote_chars)
+            citation.setdefault("source_document_id", candidate.source_document_id)
+            citation.setdefault("source_revision_number", candidate.source_revision_number)
+            citation.setdefault("source_content_sha256", candidate.source_content_sha256)
+            citation.setdefault("evidence_span_id", candidate.evidence_span_id)
+            citation.setdefault("start_char", None)
+            citation.setdefault("end_char", None)
+            citation.setdefault("text_sha256", candidate.evidence_text_sha256)
+            citation.setdefault("review_status", None)
             citation_index += 1
     return selected, excluded
 
@@ -1178,6 +1670,8 @@ def _relationship_summaries(component: Component) -> list[dict[str, Any]]:
     relationships = []
     for rel in [*component.outgoing_relationships, *component.incoming_relationships]:
         if rel.status == "rejected":
+            continue
+        if rel.origin != "deterministic" or not rel.evidence:
             continue
         target = None
         if rel.source_component_id == component.id and rel.target_component:
@@ -1188,6 +1682,8 @@ def _relationship_summaries(component: Component) -> list[dict[str, Any]]:
             "relationship_type": rel.relationship_type,
             "target_title": target,
             "evidence": _cap_text(rel.evidence or "", 300),
+            "deterministic_rule": _cap_text(rel.evidence or "", 300),
+            "origin": rel.origin,
         })
     return relationships[:20]
 
@@ -1214,8 +1710,30 @@ def _item_type_for_component(component: Component) -> str:
 def _exclusion_for(candidate: ContextCandidate) -> ExcludedContextCandidate | None:
     if candidate.prompt_injection_risk_score >= 0.70:
         return _exclude(candidate, "prompt_injection_risk", "Prompt-injection-like evidence is quoted only and excluded from instructions.")
-    if candidate.status in {"stale", "superseded", "deprecated"}:
-        return _exclude(candidate, "stale", "Candidate is stale, superseded, or deprecated.")
+    if candidate.status == "stale":
+        return _exclude(candidate, "stale", "Candidate is stale.")
+    if candidate.status == "superseded":
+        return _exclude(candidate, "superseded", "Candidate is superseded.")
+    if candidate.status == "deprecated":
+        return _exclude(candidate, "historical", "Candidate is deprecated historical context.")
+    if candidate.truth_state in {"historical", "superseded", "rejected", "resolved"}:
+        return _exclude(
+            candidate,
+            candidate.truth_state,
+            f"Candidate truth state is {candidate.truth_state}; only current truth is selected.",
+        )
+    if candidate.truth_state == "unknown" and candidate.component_id is not None:
+        return _exclude(
+            candidate,
+            "unknown_provenance",
+            "Durable graph facts require a current claim revision and exact verified evidence.",
+        )
+    if candidate.status in {"needs_review", "contested"}:
+        return _exclude(
+            candidate,
+            "needs_review" if candidate.status == "needs_review" else "contested",
+            "Candidate is not current verified truth and remains available only for inspection.",
+        )
     if candidate.status == "rejected":
         return _exclude(candidate, "superseded", "Candidate was rejected in the graph.")
     if candidate.conflict_state == "unresolved":
@@ -1234,12 +1752,7 @@ def _exclusion_for(candidate: ContextCandidate) -> ExcludedContextCandidate | No
 def _exclude(candidate: ContextCandidate, reason: str, detail: str) -> ExcludedContextCandidate:
     citation = None
     if candidate.citations:
-        first = candidate.citations[0]
-        citation = {
-            "source_document_id": first.get("source_document_id"),
-            "evidence_span_id": first.get("evidence_span_id"),
-            "quote": first.get("quote"),
-        }
+        citation = dict(candidate.citations[0])
     return ExcludedContextCandidate(
         id=candidate.id,
         item_type=candidate.item_type,
@@ -1250,6 +1763,17 @@ def _exclude(candidate: ContextCandidate, reason: str, detail: str) -> ExcludedC
         trust_zone=candidate.trust_zone,
         status=candidate.status,
         citation=citation,
+        lane=candidate.lane,
+        mandatory=candidate.mandatory,
+        token_cost=candidate.token_cost,
+        rank_features=candidate.rank_features,
+        claim_id=candidate.claim_id,
+        evidence_span_id=candidate.evidence_span_id,
+        evidence_revision_id=candidate.evidence_revision_id,
+        source_document_id=candidate.source_document_id,
+        source_revision_number=candidate.source_revision_number,
+        file_refs=candidate.file_refs,
+        truth_state=candidate.truth_state,
     )
 
 
@@ -1285,6 +1809,309 @@ def _dedupe_candidates(candidates: list[ContextCandidate]) -> list[ContextCandid
     return deduped
 
 
+def _retrieval_lane_manifest(
+    selected: list[ContextCandidate],
+    excluded: list[ExcludedContextCandidate],
+) -> dict[str, Any]:
+    descriptions = {
+        "instructions": "Direct objective, repository state, and task instructions.",
+        "code_and_tests": "Objective-ranked implementation and test files bound to hashes.",
+        "decisions_and_invariants": "Current decisions, constraints, and durable project facts.",
+        "blockers_and_questions": "Active blockers, risks, and unresolved questions.",
+        "prior_failures": "Dirty worktree context and previously observed failure surfaces.",
+        "verification": "Commands and acceptance checks inferred from the repository.",
+        "exclusions": "Candidates omitted with an exact auditable reason.",
+    }
+    lanes: dict[str, Any] = {}
+    for lane, description in descriptions.items():
+        if lane == "exclusions":
+            lanes[lane] = {
+                "description": description,
+                "candidate_ids": [item.id for item in excluded],
+                "reasons": [
+                    {"id": item.id, "reason": item.reason}
+                    for item in excluded
+                ],
+            }
+            continue
+        lanes[lane] = {
+            "description": description,
+            "selected_ids": [item.id for item in selected if item.lane == lane],
+            "excluded_ids": [item.id for item in excluded if item.lane == lane],
+        }
+    return lanes
+
+
+def _build_lockfile(
+    *,
+    goal_frame: GoalFrame,
+    workspace_id: UUID | None,
+    profile: ModelCapabilityProfile,
+    target_model: str | None,
+    repo_state: dict[str, Any],
+    selected: list[ContextCandidate],
+    excluded: list[ExcludedContextCandidate],
+    rendered_tokens: int,
+    token_budget: int,
+) -> dict[str, Any]:
+    repo_snapshot = {
+        "repo_path": repo_state.get("repo_path"),
+        "branch": repo_state.get("branch"),
+        "base_commit": repo_state.get("base_commit"),
+        "head_commit": repo_state.get("head_commit"),
+        "dirty": bool(repo_state.get("dirty")),
+        "changed_files": [
+            {
+                "path": item.get("path"),
+                "status": item.get("status"),
+                "sha256": item.get("sha256"),
+            }
+            for item in repo_state.get("changed_files") or []
+        ],
+        "selected_files": sorted(
+            (
+                {
+                    "path": ref.get("path"),
+                    "sha256": ref.get("sha256"),
+                    "start_line": ref.get("start_line"),
+                    "end_line": ref.get("end_line"),
+                }
+                for item in selected
+                for ref in item.file_refs
+            ),
+            key=lambda ref: (str(ref.get("path")), str(ref.get("sha256"))),
+        ),
+    }
+    evidence_snapshot = sorted(
+        (
+            {
+                "candidate_id": item.id,
+                "claim_id": item.claim_id,
+                "evidence_revision_id": item.evidence_revision_id,
+                "evidence_span_id": item.evidence_span_id,
+                "evidence_text_sha256": item.evidence_text_sha256,
+                "source_document_id": item.source_document_id,
+                "source_revision_id": item.source_revision_id,
+                "source_revision_number": item.source_revision_number,
+                "source_content_sha256": item.source_content_sha256,
+            }
+            for item in selected
+            if item.claim_id or item.evidence_span_id or item.source_document_id
+        ),
+        key=lambda item: item["candidate_id"],
+    )
+    excluded_evidence_snapshot = [
+        {
+            "candidate_id": item.id,
+            "claim_id": item.claim_id,
+            "evidence_revision_id": item.evidence_revision_id,
+            "evidence_span_id": item.evidence_span_id,
+            "evidence_text_sha256": (item.citation or {}).get("text_sha256"),
+            "source_document_id": item.source_document_id,
+            "source_revision_id": (item.citation or {}).get("source_revision_id"),
+            "source_revision_number": item.source_revision_number,
+            "source_content_sha256": (item.citation or {}).get("source_content_sha256"),
+        }
+        for item in excluded
+        if item.claim_id or item.evidence_span_id or item.source_document_id
+    ]
+    evidence_snapshot = sorted(
+        [*evidence_snapshot, *excluded_evidence_snapshot],
+        key=lambda item: item["candidate_id"],
+    )
+    selection = {
+        "selected": [
+            {
+                "id": item.id,
+                "lane": item.lane,
+                "reason": item.inclusion_reason,
+                "score": round(float(item.score), 6),
+                "token_cost": int(item.token_cost),
+            }
+            for item in selected
+        ],
+        "excluded": [
+            {
+                "id": item.id,
+                "lane": item.lane,
+                "reason": item.reason,
+                "reason_detail": item.reason_detail,
+                "score": round(float(item.score), 6),
+                "token_cost": int(item.token_cost),
+            }
+            for item in excluded
+        ],
+    }
+    replay_inputs = {
+        "compiler_version": COMPILER_VERSION,
+        "ranking_version": RANKING_VERSION,
+        "objective": goal_frame.objective,
+        "workspace_id": str(workspace_id) if workspace_id else None,
+        "target_model": target_model or "default",
+        "capability": asdict(profile),
+        "token_budget": token_budget,
+        "repo": repo_snapshot,
+        "evidence": evidence_snapshot,
+        "selection": selection,
+    }
+    replay_key = _sha256_text(json.dumps(
+        replay_inputs,
+        sort_keys=True,
+        separators=(",", ":"),
+    ))
+    return {
+        "version": "context_lock.v1",
+        "compiler_version": COMPILER_VERSION,
+        "ranking_version": RANKING_VERSION,
+        "target_model_capability": asdict(profile),
+        "repo": repo_snapshot,
+        "evidence_revisions": evidence_snapshot,
+        "token_accounting": {
+            "budget_tokens": token_budget,
+            "rendered_tokens": rendered_tokens,
+            "selected_candidate_tokens": sum(item.token_cost for item in selected),
+            "within_budget": rendered_tokens <= token_budget,
+            "estimation_method": TOKEN_ESTIMATION_METHOD,
+        },
+        "selection": selection,
+        "replay_key": replay_key,
+    }
+
+
+def _validate_evidence_span(evidence: EvidenceSpan | None) -> tuple[bool, str]:
+    if evidence is None:
+        return False, "missing_evidence_span"
+    if evidence.review_status != "verified":
+        return False, f"evidence_{evidence.review_status or 'unreviewed'}"
+    doc = evidence.source_document
+    if doc is None:
+        return False, "missing_source_document"
+    start = evidence.start_char
+    end = evidence.end_char
+    if start is None or end is None or start < 0 or end <= start or end > len(doc.content):
+        return False, "invalid_evidence_range"
+    source_text = doc.content[start:end]
+    if evidence.text is None or source_text != evidence.text:
+        return False, "evidence_text_mismatch"
+    if _sha256_text(source_text) != evidence.text_sha256:
+        return False, "evidence_hash_mismatch"
+    declared_source_hash = getattr(doc, "content_sha256", None)
+    if declared_source_hash and declared_source_hash != _sha256_text(doc.content):
+        return False, "source_hash_mismatch"
+    return True, "verified_exact_span"
+
+
+def _source_content_sha256(doc: SourceDocument | None) -> str | None:
+    if doc is None:
+        return None
+    return _sha256_text(doc.content)
+
+
+def _source_revision_identity(doc: SourceDocument | None) -> str | None:
+    if doc is None:
+        return None
+    revision_number = getattr(doc, "revision_number", None)
+    if revision_number not in (None, ""):
+        source_identity = getattr(doc, "source_identity_sha256", None) or doc.external_id
+        return f"{source_identity}:r{revision_number}:{doc.id}"
+    for field_name in ("revision_id", "source_revision"):
+        value = getattr(doc, field_name, None)
+        if value not in (None, ""):
+            return str(value)
+    metadata = _loads_json_dict(doc.metadata_json)
+    for key in ("revision_id", "revision", "revision_number", "source_revision"):
+        value = metadata.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return f"{doc.external_id}:{_source_content_sha256(doc)}"
+
+
+def _source_revision_number(doc: SourceDocument | None) -> int | None:
+    if doc is None:
+        return None
+    value = getattr(doc, "revision_number", None)
+    if value is None:
+        value = _loads_json_dict(doc.metadata_json).get("revision_number")
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _derive_truth_state(
+    *,
+    claim_status: str | None,
+    has_current_revision: bool,
+    evidence_verified: bool,
+    source_is_superseded: bool,
+    conflict_state: str,
+) -> str:
+    normalized_status = str(claim_status or "").lower()
+    if normalized_status in {"rejected", "superseded", "resolved"}:
+        return normalized_status
+    if normalized_status == "contested" or conflict_state == "unresolved":
+        return "contested"
+    if normalized_status == "stale" or source_is_superseded:
+        return "stale"
+    if not has_current_revision:
+        return "unknown"
+    if not evidence_verified:
+        return "needs_review"
+    if normalized_status == "active":
+        return "current"
+    return "needs_review"
+
+
+def _manifest_uncertainties(
+    excluded: list[ExcludedContextCandidate],
+    health: dict[str, Any],
+) -> list[dict[str, Any]]:
+    visible_reasons = {
+        "contested",
+        "contradiction_unresolved",
+        "needs_review",
+        "unknown_provenance",
+    }
+    uncertainties = [
+        {
+            "id": item.id,
+            "item_type": item.item_type,
+            "title": item.title,
+            "truth_state": item.truth_state,
+            "reason": item.reason,
+            "reason_detail": item.reason_detail,
+            "citation": item.citation,
+        }
+        for item in excluded
+        if item.reason in visible_reasons
+    ]
+    uncertainties.extend(
+        {
+            "id": f"unknown:{signal}",
+            "title": f"Unknown {signal.replace('_', ' ')}",
+            "truth_state": "unknown",
+            "reason": "unknown_signal",
+            "reason_detail": "Context health could not establish this signal.",
+            "citation": None,
+        }
+        for signal in health.get("unknown_signals") or []
+    )
+    return uncertainties
+
+
+def _lane_for_item(item_type: str, status: str, text: str) -> str:
+    lowered = f"{item_type} {status} {text}".lower()
+    if item_type in {"blocker", "risk", "relationship"} or "question" in lowered:
+        return "blockers_and_questions"
+    if item_type == "verification":
+        return "verification"
+    if item_type == "file":
+        return "code_and_tests"
+    if "failure" in lowered or "failed" in lowered or "regression" in lowered:
+        return "prior_failures"
+    return "decisions_and_invariants"
+
+
 def _relevant_test_files(
     relevant_paths: list[str],
     test_files: list[str],
@@ -1311,7 +2138,11 @@ def _extract_file_paths(text: str) -> list[str]:
 
 
 def _tokenize(value: str) -> list[str]:
-    return re.findall(r"[a-z0-9][a-z0-9_-]{1,}", str(value or "").lower())
+    return [
+        token
+        for token in re.findall(r"[a-z0-9]+", str(value or "").lower())
+        if len(token) > 1
+    ]
 
 
 def _coverage(query_tokens: set[str], haystack_tokens: set[str]) -> float:

@@ -10,10 +10,10 @@ Implemented in this branch: MCP acts as the runtime observation bridge for the
 Context Compiler v2 loop: let the agent work, observe the run, ingest
 observations as source evidence, and improve later context.
 
-Current checkout: `prepare_task` is registered and imports Agent 3's
-`ContextCompiler` service when that in-progress module is present. If a branch
-does not have the compiler service yet, `prepare_task` returns a structured
-`compiler_unavailable` error instead of inventing compiler logic inside MCP.
+Current checkout: `prepare_task` is registered and calls the shared
+`ContextCompiler` service. Its import guard still returns a structured
+`compiler_unavailable` error if a partial integration checkout omits that
+service instead of inventing compiler logic inside MCP.
 
 ## Start The Server
 
@@ -64,6 +64,7 @@ client uses a different wrapper, keep the same executable behavior:
 | `list_models` | List available graph models and counts. |
 | `get_status` | Count sources, models, components, and relationships. |
 | `record_agent_run_start` | Create an `AgentRun` linked to a prepared context pack. |
+| `record_agent_run_finish` | Finish a linked run and preserve the supplied repository outcome and verification results as append-only source evidence. |
 | `record_agent_event` | Store a command, test, log, or other event as `SourceDocument` plus `RunObservation`. |
 | `record_decision` | Store an observed decision as source evidence and a conservative claim/component projection. |
 | `record_blocker` | Store an observed blocker as source evidence and a conservative blocker claim/component projection. |
@@ -117,30 +118,36 @@ machine-readable manifest. The manifest includes the objective, target model
 profile, repo state, selected context, excluded context, risks, verification
 commands, stop conditions, and rendering metadata.
 
-The returned manifest must follow [Context Pack v2](context-pack-v2.md):
+The returned manifest follows the implemented `context_pack.v2` contract:
 
 - use `context_pack_id`, not `pack_id`;
 - use `created_at`, not `generated_at`;
 - use selected/excluded item `item_type`, not `type`;
 - include `rendering.markdown_sha256`, `rendering.estimated_tokens`,
   `rendering.estimation_method`, and `persistence`;
-- include final citation objects with `source_document_id`,
-  `evidence_span_id`, `path`, `quote_sha256`, and `trust_zone`;
-- set `persistence.mode = "database"` and `persistence.committed = true`.
+- include exact citation audit fields such as `source_document_id`,
+  `source_revision_number`, `source_content_sha256`, `evidence_span_id`,
+  source ranges, `text_sha256`, and `trust_zone`;
+- set `persistence.mode = "database"` for durable HTTP/MCP output;
+- persist applicable `ContextPackItem` claim, component, evidence-span, and
+  source-document identifiers.
 
-Not implemented or not final yet in this checkout:
+The broader [Context Pack v2 design reference](context-pack-v2.md) contains
+additional historical hardening proposals. For current behavior, the compiler
+manifest and its focused tests are authoritative.
 
-- the compiler manifest still must be aligned to the final
-  [Context Pack v2](context-pack-v2.md) schema;
-- `ContextPackItem` rows still need final selected-item audit fields populated
-  and validated against the Agent 1 contract;
-- stable idempotency keys for repeated `prepare_task` calls.
+Not implemented yet: a repeated `prepare_task` call does not reuse an existing
+pack row, even though the deterministic replay key is persisted as the pack's
+idempotency key.
 
 ## Runtime Observation Contract
 
 Implemented in this branch:
 
 - `record_agent_run_start` creates `AgentRun`.
+- `record_agent_run_finish` writes terminal run state plus an append-only
+  `agent_run_outcome` source and linked `RunObservation`; this is observational
+  evidence, not proof that the pack caused the result.
 - `record_agent_event` creates `SourceDocument` and `RunObservation`.
 - `record_decision` creates source evidence, a claim, and a component projection.
 - `record_blocker` creates source evidence, a claim, and a component projection.

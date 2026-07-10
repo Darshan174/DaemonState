@@ -37,6 +37,7 @@ from app.processing.embedder import build_default_embedder, cosine_similarity
 from app.services.claims import append_claim_revision, upsert_claim_for_fact
 from app.services.evidence import create_evidence_span
 from app.services.query import QueryService
+from app.services.source_revisions import ingest_source_document_revision
 from app.time import utc_now
 
 try:
@@ -249,6 +250,52 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="record_agent_run_finish",
+            description=(
+                "Finish an agent run and preserve its repository outcome and "
+                "verification results as append-only source evidence. This "
+                "tool records supplied observations only; it does not run "
+                "commands, inspect git, or modify the repository."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "run_id": {"type": "string", "description": "AgentRun UUID."},
+                    "status": {
+                        "type": "string",
+                        "enum": ["completed", "failed", "blocked", "cancelled"],
+                        "description": "Terminal run status.",
+                    },
+                    "head_commit": {
+                        "type": "string",
+                        "description": "Observed repository commit at run finish.",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Observed outcome summary.",
+                    },
+                    "changed_files": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Files reported as changed by the run.",
+                    },
+                    "verification_results": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                        "description": "Observed test/check results; no commands are executed.",
+                    },
+                },
+                "required": [
+                    "run_id",
+                    "status",
+                    "head_commit",
+                    "summary",
+                    "changed_files",
+                    "verification_results",
+                ],
+            },
+        ),
+        Tool(
             name="record_agent_event",
             description=(
                 "Record a command, test, log, or other agent-run event as "
@@ -397,6 +444,15 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             base_commit=arguments.get("base_commit"),
             objective=arguments.get("objective"),
             context_pack_id=arguments.get("context_pack_id"),
+        )
+    elif name == "record_agent_run_finish":
+        return await _record_agent_run_finish(
+            run_id=arguments.get("run_id"),
+            status=arguments.get("status"),
+            head_commit=arguments.get("head_commit"),
+            summary=arguments.get("summary"),
+            changed_files=arguments.get("changed_files"),
+            verification_results=arguments.get("verification_results"),
         )
     elif name == "record_agent_event":
         return await _record_agent_event(
@@ -578,6 +634,108 @@ async def _record_agent_run_start(
         return _error_text("invalid_input", str(exc))
     except Exception as exc:
         logger.exception("record_agent_run_start failed")
+        return _error_text("internal_error", str(exc))
+
+
+async def _record_agent_run_finish(
+    *,
+    run_id: str | None,
+    status: str | None,
+    head_commit: str | None,
+    summary: str | None,
+    changed_files: Any,
+    verification_results: Any,
+) -> list[TextContent]:
+    try:
+        run_uuid = _required_uuid(run_id, "run_id")
+        terminal_status = _required_text(status, "status").lower()
+        allowed_statuses = {"completed", "failed", "blocked", "cancelled"}
+        if terminal_status not in allowed_statuses:
+            raise ValueError(
+                "status must be one of completed, failed, blocked, or cancelled"
+            )
+        head = _required_text(head_commit, "head_commit")
+        outcome_summary = _required_text(summary, "summary")
+        changed = _string_list(changed_files)
+        verification = _verification_result_list(verification_results)
+
+        async with AsyncSessionLocal() as session:
+            run = await _load_run(session, run_uuid)
+            if run is None:
+                return _error_text("agent_run_not_found", f"AgentRun not found: {run_id}")
+            if run.status != "running" or run.ended_at is not None:
+                return _error_text(
+                    "agent_run_already_finished",
+                    f"AgentRun {run_id} is already terminal with status {run.status}.",
+                )
+            if run.context_pack_id is None:
+                return _error_text(
+                    "context_pack_not_found",
+                    f"AgentRun {run_id} is not linked to a ContextPack.",
+                )
+            pack = await session.get(ContextPack, run.context_pack_id)
+            if pack is None:
+                return _error_text(
+                    "context_pack_not_found",
+                    f"ContextPack not found: {run.context_pack_id}",
+                )
+
+            content = _run_outcome_content(
+                status=terminal_status,
+                head_commit=head,
+                summary=outcome_summary,
+                changed_files=changed,
+                verification_results=verification,
+            )
+            revision = await ingest_source_document_revision(
+                session,
+                workspace_id=run.workspace_id,
+                source_type="agent_run_outcome",
+                external_id=f"agent_run_outcome:{run.id}",
+                content=content,
+                author=run.tool or "mcp-agent",
+                metadata_json={
+                    "run_id": str(run.id),
+                    "context_pack_id": str(pack.id),
+                    "status": terminal_status,
+                    "base_commit": run.base_commit,
+                    "head_commit": head,
+                    "changed_files": changed,
+                    "verification_results": verification,
+                    "trust_zone": "semi_trusted_tool",
+                    "ingested_via": "mcp_runtime_bridge",
+                },
+                trust_zone="semi_trusted_tool",
+            )
+            source_doc = revision.document
+            observation = RunObservation(
+                id=uuid4(),
+                agent_run_id=run.id,
+                source_document_id=source_doc.id,
+                event_type="outcome",
+                content=outcome_summary,
+                files_json=json.dumps(changed, sort_keys=True),
+            )
+            session.add(observation)
+
+            run.head_commit = head
+            run.ended_at = utc_now()
+            run.status = terminal_status
+            await session.flush()
+            await session.commit()
+            return _json_text({
+                "run_id": str(run.id),
+                "context_pack_id": str(pack.id),
+                "status": run.status,
+                "base_commit": run.base_commit,
+                "head_commit": run.head_commit,
+                "outcome_source_document_id": str(source_doc.id),
+                "run_observation_id": str(observation.id),
+            })
+    except ValueError as exc:
+        return _error_text("invalid_input", str(exc))
+    except Exception as exc:
+        logger.exception("record_agent_run_finish failed")
         return _error_text("internal_error", str(exc))
 
 
@@ -1561,6 +1719,31 @@ def _patch_summary_content(summary: str, changed_files: list[str], tests_run: li
     return "\n".join(lines)
 
 
+def _run_outcome_content(
+    *,
+    status: str,
+    head_commit: str,
+    summary: str,
+    changed_files: list[str],
+    verification_results: list[dict[str, Any]],
+) -> str:
+    lines = [
+        f"Run outcome: {status}",
+        f"Head commit: {head_commit}",
+        f"Summary: {summary}",
+    ]
+    if changed_files:
+        lines.append("Changed files:")
+        lines.extend(f"- {path}" for path in changed_files)
+    if verification_results:
+        lines.append("Verification results:")
+        lines.extend(
+            f"- {json.dumps(result, sort_keys=True, separators=(',', ':'))}"
+            for result in verification_results
+        )
+    return "\n".join(lines)
+
+
 def _provenance(
     run: AgentRun,
     source_doc: SourceDocument,
@@ -1603,6 +1786,23 @@ def _required_text(value: str | None, field: str) -> str:
     if not text:
         raise ValueError(f"{field} is required")
     return text
+
+
+def _verification_result_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise ValueError("verification_results must be a list of objects")
+    results: list[dict[str, Any]] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ValueError(f"verification_results[{index}] must be an object")
+        try:
+            json.dumps(item, sort_keys=True)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"verification_results[{index}] must be JSON serializable"
+            ) from exc
+        results.append(dict(item))
+    return results
 
 
 def _none_if_blank(value: str | None) -> str | None:

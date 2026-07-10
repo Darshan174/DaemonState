@@ -53,6 +53,24 @@ MANIFEST_NAMES = {
     "docker-compose.yaml",
 }
 ENV_FILE_RE = re.compile(r"(^|/)\.env($|[.\-])|\.env\.example$|config\.(?:py|js|ts|json|ya?ml)$")
+RANKING_VERSION = "objective_file_rank.v2"
+_GENERIC_GOAL_TERMS = {
+    "add",
+    "change",
+    "code",
+    "complete",
+    "finish",
+    "fix",
+    "implement",
+    "make",
+    "repo",
+    "run",
+    "test",
+    "tests",
+    "the",
+    "update",
+    "verify",
+}
 
 
 @dataclass(frozen=True)
@@ -101,40 +119,53 @@ class RepoFrame:
 
     def relevant_files_for_goal(self, keywords: set[str], file_hints: list[str]) -> list[dict[str, Any]]:
         hinted = {hint.strip("./") for hint in file_hints}
-        scored: list[tuple[float, str, str]] = []
+        normalized_keywords = set(_tokenize(" ".join(sorted(keywords))))
+        retrieval_terms = normalized_keywords - _GENERIC_GOAL_TERMS
+        requires_tests = bool({"test", "tests", "pytest", "verify"} & normalized_keywords)
+        changed_paths = {item["path"] for item in self.changed_files}
+        scored: list[tuple[float, str, str, list[str], list[dict[str, int]]]] = []
         for indexed in self.indexed_files:
-            haystack = " ".join(
-                [
-                    indexed.path,
-                    indexed.language or "",
-                    " ".join(indexed.imports),
-                    " ".join(indexed.route_hints),
-                    " ".join(symbol.name for symbol in indexed.symbols[:50]),
-                ]
-            ).lower()
             path_tokens = set(_tokenize(indexed.path))
+            symbol_tokens = set(_tokenize(" ".join(symbol.name for symbol in indexed.symbols[:100])))
+            import_tokens = set(_tokenize(" ".join(indexed.imports)))
+            route_tokens = set(_tokenize(" ".join(indexed.route_hints)))
+            matched_path = sorted(retrieval_terms & path_tokens)
+            matched_symbols = sorted(retrieval_terms & symbol_tokens)
+            matched_support = sorted(retrieval_terms & (import_tokens | route_tokens))
+            matched_terms = sorted(set(matched_path + matched_symbols + matched_support))
             score = 0.0
             if indexed.path in hinted or Path(indexed.path).name in hinted:
-                score += 1.0
-            if keywords:
-                score += len(keywords & set(_tokenize(haystack))) / max(len(keywords), 1)
-            if indexed.is_test and {"test", "tests", "pytest", "verify"} & keywords:
-                score += 0.35
-            if "api" in keywords and "/api/" in f"/{indexed.path}":
+                score += 5.0
+            score += 1.20 * len(matched_path)
+            score += 0.80 * len(matched_symbols)
+            score += 0.35 * len(matched_support)
+            if matched_terms and not indexed.is_test:
+                # Core implementation should beat a test file that only repeats
+                # the same broad nouns from the objective.
+                score += 0.75
+            if indexed.is_test and requires_tests and matched_terms:
                 score += 0.30
-            if "cli" in keywords and "/cli/" in f"/{indexed.path}":
-                score += 0.30
-            if "connector" in keywords and "connector" in path_tokens:
-                score += 0.30
-            if "github" in keywords and "github" in path_tokens:
-                score += 0.30
-            if "context" in keywords and "context" in path_tokens:
+            if "api" in retrieval_terms and "/api/" in f"/{indexed.path}":
+                score += 0.40
+            if "cli" in retrieval_terms and "/cli/" in f"/{indexed.path}":
+                score += 0.40
+            if indexed.path in changed_paths:
                 score += 0.20
-            if indexed.path in {item["path"] for item in self.changed_files}:
-                score += 0.15
             if score <= 0:
                 continue
-            scored.append((round(score, 6), indexed.path, _file_reason(indexed, keywords)))
+            line_ranges = _matching_symbol_ranges(indexed, retrieval_terms)
+            reason = (
+                "explicit_goal_file_hint"
+                if indexed.path in hinted or Path(indexed.path).name in hinted
+                else _file_reason(indexed, normalized_keywords)
+            )
+            scored.append((
+                round(score, 6),
+                indexed.path,
+                reason,
+                matched_terms,
+                line_ranges,
+            ))
 
         scored.sort(key=lambda item: (-item[0], item[1]))
         top = scored[:16]
@@ -144,21 +175,31 @@ class RepoFrame:
                 *self.test_files[:4],
                 *self.manifest_files[:3],
             ]
-            top = [(0.1, path, "repo_state_fallback") for path in dict.fromkeys(fallback_paths)]
+            top = [
+                (0.1, path, "repo_state_fallback", [], [])
+                for path in dict.fromkeys(fallback_paths)
+            ]
 
         indexed_by_path = {item.path: item for item in self.indexed_files}
         return [
             {
                 "path": path,
                 "reason": reason,
+                "ranking_score": score,
+                "ranking_version": RANKING_VERSION,
+                "matched_terms": matched_terms,
+                "line_ranges": line_ranges,
+                "lane": "code_and_tests",
                 "exists": path in indexed_by_path or (Path(self.repo_path) / path).exists(),
                 "sha256": indexed_by_path[path].sha256 if path in indexed_by_path else _sha256_file(Path(self.repo_path) / path),
+                "is_test": indexed_by_path[path].is_test if path in indexed_by_path else _is_test_file(path, ""),
             }
-            for _, path, reason in top
+            for score, path, reason, matched_terms, line_ranges in top
         ]
 
     def to_manifest(self, keywords: set[str] | None = None, file_hints: list[str] | None = None) -> dict[str, Any]:
-        return {
+        relevant_files = self.relevant_files_for_goal(keywords or set(), file_hints or [])
+        manifest = {
             "repo_path": self.repo_path,
             "branch": self.branch,
             "base_commit": self.base_commit,
@@ -166,16 +207,39 @@ class RepoFrame:
             "dirty": self.dirty,
             "changed_files": self.changed_files,
             "untracked_files": self.untracked_files,
-            "relevant_files": self.relevant_files_for_goal(keywords or set(), file_hints or []),
+            "relevant_files": relevant_files,
             "test_files": self.test_files,
             "manifest_files": self.manifest_files,
             "env_files": self.env_files,
             "last_indexed_at": self.last_indexed_at,
+            "ranking_version": RANKING_VERSION,
             "persistence": {
                 "available": self.persistence_available,
                 "reason": self.persistence_reason,
             },
         }
+        fingerprint_state = {
+            key: manifest[key]
+            for key in (
+                "repo_path",
+                "branch",
+                "base_commit",
+                "head_commit",
+                "dirty",
+                "changed_files",
+                "untracked_files",
+                "relevant_files",
+                "test_files",
+                "manifest_files",
+                "env_files",
+            )
+        }
+        manifest["state_fingerprint"] = hashlib.sha256(json.dumps(
+            fingerprint_state,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        return manifest
 
 
 class RepoIndexer:
@@ -620,7 +684,10 @@ def _git(root: Path, *args: str) -> str:
         return ""
     if proc.returncode != 0:
         return ""
-    return proc.stdout.strip()
+    # Porcelain status uses the first two columns for staged/unstaged state.
+    # Preserve a leading space on the first row or ` M app.py` becomes
+    # `M app.py` and the path parser silently drops its first character.
+    return proc.stdout.rstrip()
 
 
 def _package_manifests(root: Path, indexed_files: list[IndexedFile]) -> dict[str, dict[str, Any]]:
@@ -707,7 +774,28 @@ def _sha256_file(path: Path) -> str | None:
 
 
 def _tokenize(value: str) -> list[str]:
-    return re.findall(r"[a-z0-9][a-z0-9_-]{1,}", str(value or "").lower())
+    return [
+        token
+        for token in re.findall(r"[a-z0-9]+", str(value or "").lower())
+        if len(token) > 1
+    ]
+
+
+def _matching_symbol_ranges(
+    indexed: IndexedFile,
+    retrieval_terms: set[str],
+) -> list[dict[str, int]]:
+    ranges: list[dict[str, int]] = []
+    for symbol in indexed.symbols:
+        if not retrieval_terms & set(_tokenize(symbol.name)):
+            continue
+        if symbol.start_line is None:
+            continue
+        ranges.append({
+            "start_line": int(symbol.start_line),
+            "end_line": int(symbol.end_line or symbol.start_line),
+        })
+    return ranges[:12]
 
 
 def _file_reason(indexed: IndexedFile, keywords: set[str]) -> str:

@@ -1,7 +1,7 @@
 # OSS Readiness Review
 
-Last updated: 2026-07-04
-Reviewed: 2026-05-01 by Xiaomi MiMo V2.5 Pro; refreshed 2026-07-04 for the Agent 4 MCP/eval/docs pass.
+Last updated: 2026-07-10
+Reviewed: 2026-05-01 by Xiaomi MiMo V2.5 Pro; refreshed 2026-07-10 for the immediate context-compiler strengthening pass.
 
 ## Score
 
@@ -81,6 +81,12 @@ still calling out final hardening gaps below.
   cover recall, precision, evidence coverage against final citation fields,
   stale leakage, conflict detection, token efficiency, and verification-command
   presence on fixtures.
+- Implemented in this branch: `/app` is the objective-first prepare flow and
+  exposes the persisted `context_pack.v2` markdown, selected context, citations,
+  exclusions, health reasons, definition of done, and verification commands.
+- Implemented in this branch: source objects use workspace-scoped append-only
+  revisions, and MCP `record_agent_run_finish` links an exact pack to terminal
+  repository and verification observations without claiming causal lift.
 
 ## Verification
 
@@ -123,8 +129,8 @@ Not verified in this pass:
 
 - Compiler ranking is deterministic and source-backed, but still a first-pass
   heuristic; larger installs need richer candidate retrieval and reranking.
-- There is no frontend workflow yet for inspecting persisted `context_pack.v2`
-  manifests or `AgentRun` observations.
+- The frontend inspects persisted `context_pack.v2` output, but does not yet
+  provide a separate browser for historical `AgentRun` observations.
 - MCP `query_context` uses the indexed query filter path, but semantic scoring
   still ranks candidate components in process. Larger installs will still need
   indexed semantic retrieval.

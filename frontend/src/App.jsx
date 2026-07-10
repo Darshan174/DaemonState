@@ -7,13 +7,14 @@ import { useWorkspaces } from "./api/hooks";
 import {
   Activity,
   Cable,
-  CircleDot,
   Database,
   GitBranch,
   LayoutDashboard,
+  PackageCheck,
   Search,
 } from "lucide-react";
 
+const PrepareContextPage = lazy(() => import("./pages/PrepareContextPage"));
 const ContextMapPage = lazy(() => import("./pages/ContextMapPage"));
 const QueryView    = lazy(() => import("./pages/QueryView"));
 const SourceManager = lazy(() => import("./pages/SourceManager"));
@@ -24,7 +25,8 @@ const Changes      = lazy(() => import("./pages/Changes"));
 const AgentsView   = lazy(() => import("./pages/AgentsView"));
 
 const NAV_ITEMS = [
-  { to: "/app",             label: "Dashboard", icon: LayoutDashboard, end: true },
+  { to: "/app",             label: "Prepare", icon: PackageCheck, end: true },
+  { to: "/app/dashboard",   label: "Dashboard", icon: LayoutDashboard },
   { to: "/app/graph",       label: "Graph", icon: GitBranch },
   { to: "/app/query",       label: "Ask", icon: Search },
   { to: "/app/sources",     label: "Sources", icon: Database },
@@ -71,7 +73,7 @@ function AdminShell() {
             </span>
             <span className="hidden sm:block">
               <span className="block text-sm font-bold leading-tight text-slate-950 dark:text-white">Context Engine</span>
-              <span className="block text-[11px] leading-tight text-slate-500 dark:text-neutral-500">Project memory graph</span>
+              <span className="block text-[11px] leading-tight text-slate-500 dark:text-neutral-500">Source-backed execution context</span>
             </span>
           </Link>
 
@@ -102,10 +104,6 @@ function AdminShell() {
 
           <div className="flex min-w-0 shrink-0 items-center justify-end gap-2">
             {showWorkspaceSwitcher ? <WorkspaceSwitcher /> : null}
-            <div className="hidden items-center gap-1.5 rounded-lg border border-slate-200/80 bg-white/70 px-2.5 py-1.5 text-[11px] font-bold text-slate-500 dark:border-white/[0.08] dark:bg-white/[0.045] dark:text-neutral-400 md:flex">
-              <CircleDot className="h-3 w-3 text-emerald-500" />
-              Live
-            </div>
             <ThemeToggle />
           </div>
         </div>
@@ -117,12 +115,12 @@ function AdminShell() {
         ) : null}
         <Suspense fallback={<PageLoader />}>
           <Routes>
-            <Route index                                  element={<Dashboard />} />
-            <Route path="dashboard"                       element={<Navigate to="/app" replace />} />
+            <Route index                                  element={<PrepareContextPage />} />
+            <Route path="dashboard"                       element={<Dashboard />} />
             <Route path="graph"                           element={<ContextMapPage />} />
             <Route path="query"                           element={<QueryView />} />
             <Route path="sources"                         element={<SourceManager />} />
-            <Route path="agents"                          element={<Navigate to="/app/graph" replace />} />
+            <Route path="agents"                          element={<Navigate to="/app" replace />} />
             <Route path="connectors"                      element={<Connectors />} />
             <Route path="connectors/:connectorType/runs"  element={<Connectors />} />
             <Route path="changes"                         element={<Changes />} />

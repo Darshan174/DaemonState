@@ -36,6 +36,12 @@ export function useBuildContext(workspaceId) {
   });
 }
 
+export function usePrepareContext() {
+  return useMutation({
+    mutationFn: (payload) => api.post("/context/prepare", payload),
+  });
+}
+
 function getAiSettings() {
   try {
     return JSON.parse(localStorage.getItem("ce_ai_settings") || "{}");

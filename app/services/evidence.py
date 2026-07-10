@@ -61,8 +61,7 @@ def score_prompt_injection_risk(text: str) -> float:
 
 
 async def ensure_source_document_ledger_fields(doc: SourceDocument) -> None:
-    if doc.content and not doc.content_sha256:
-        doc.content_sha256 = sha256_text(doc.content)
+    doc.content_sha256 = sha256_text(doc.content or "")
     metadata = metadata_dict(doc.metadata_json)
     if not doc.trust_zone:
         doc.trust_zone = default_trust_zone_for_source(doc.source_type, metadata)
@@ -148,7 +147,6 @@ async def create_evidence_span_for_fact(
     candidates = [
         getattr(fact, "excerpt", None),
         getattr(fact, "value", None),
-        getattr(fact, "name", None),
     ]
     for candidate in candidates:
         text = _clean_candidate_text(candidate)
