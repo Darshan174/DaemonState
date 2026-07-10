@@ -95,16 +95,17 @@ pytest -q
 cd frontend && npm run build
 ```
 
-Latest verified result from this Agent 4 pass:
+Latest verified result from the 2026-07-10 integration pass:
 
-- `pytest -q`: 412 passed, 1 SQLite datetime deprecation warning.
-- `pytest -q tests/test_mcp.py tests/test_context_compiler_eval.py tests/test_docs.py`: 13 passed.
-- `pytest -q tests/test_mcp.py tests/test_cli.py`: 13 passed.
+- `pytest -q`: 447 passed, 1 SQLite datetime deprecation warning.
+- `cd frontend && npm test -- --run`: 14 files, 63 tests passed.
+- `cd frontend && npm run build`: passed.
 
 Not verified in this pass:
 
-- Frontend tests/build.
 - Docker smoke.
+- PostgreSQL-specific concurrency and migration integration; SQLite regression
+  coverage and dialect-specific migration SQL are present.
 
 ## Remaining Launch Blockers
 

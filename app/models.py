@@ -19,6 +19,7 @@ from sqlalchemy import (
     event,
     func,
     inspect,
+    text,
 )
 from sqlalchemy.orm import (
     DeclarativeBase,
@@ -112,6 +113,13 @@ class SyncJob(Base):
         Index("ix_sync_jobs_job_type_status", "job_type", "status"),
         Index("ix_sync_jobs_queue_due", "job_type", "status", "available_at"),
         Index("ix_sync_jobs_lease_expires_at", "lease_expires_at"),
+        Index(
+            "uq_sync_jobs_active_idempotency_key",
+            "idempotency_key",
+            unique=True,
+            sqlite_where=text("idempotency_key IS NOT NULL AND status IN ('pending','running')"),
+            postgresql_where=text("idempotency_key IS NOT NULL AND status IN ('pending','running')"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -197,6 +205,13 @@ class SourceDocument(Base):
         Index(
             "ix_source_documents_supersedes_source_document_id",
             "supersedes_source_document_id",
+        ),
+        Index(
+            "uq_source_documents_superseded_once",
+            "supersedes_source_document_id",
+            unique=True,
+            sqlite_where=text("supersedes_source_document_id IS NOT NULL"),
+            postgresql_where=text("supersedes_source_document_id IS NOT NULL"),
         ),
     )
 
@@ -672,7 +687,7 @@ class ContextPack(Base):
             "target_model",
             "created_at",
         ),
-        Index("ix_context_packs_idempotency_key", "idempotency_key"),
+        Index("uq_context_packs_idempotency_key", "idempotency_key", unique=True),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -775,6 +790,13 @@ class RunObservation(Base):
         Index("ix_run_observations_agent_run_created", "agent_run_id", "created_at"),
         Index("ix_run_observations_source_document", "source_document_id"),
         Index("ix_run_observations_event_type", "event_type"),
+        Index(
+            "uq_run_observations_terminal_outcome",
+            "agent_run_id",
+            unique=True,
+            sqlite_where=text("event_type = 'outcome'"),
+            postgresql_where=text("event_type = 'outcome'"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)

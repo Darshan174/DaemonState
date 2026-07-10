@@ -19,6 +19,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -660,7 +661,9 @@ async def _record_agent_run_finish(
         verification = _verification_result_list(verification_results)
 
         async with AsyncSessionLocal() as session:
-            run = await _load_run(session, run_uuid)
+            run = await session.scalar(
+                select(AgentRun).where(AgentRun.id == run_uuid).with_for_update()
+            )
             if run is None:
                 return _error_text("agent_run_not_found", f"AgentRun not found: {run_id}")
             if run.status != "running" or run.ended_at is not None:
@@ -721,8 +724,15 @@ async def _record_agent_run_finish(
             run.head_commit = head
             run.ended_at = utc_now()
             run.status = terminal_status
-            await session.flush()
-            await session.commit()
+            try:
+                await session.flush()
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                return _error_text(
+                    "agent_run_already_finished",
+                    f"AgentRun {run_id} already has a terminal outcome.",
+                )
             return _json_text({
                 "run_id": str(run.id),
                 "context_pack_id": str(pack.id),

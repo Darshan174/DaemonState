@@ -1207,6 +1207,7 @@ async def _migrate_relationships_origin(conn: AsyncConnection) -> None:
 async def _migrate_evidence_ledger_and_claim_graph(conn: AsyncConnection) -> None:
     """Add v2 source hashes, evidence spans, claims, and runtime persistence tables."""
     dt_type = _datetime_column_type(conn)
+    uuid_type = "UUID" if conn.dialect.name == "postgresql" else "CHAR(32)"
 
     source_columns = await _get_table_columns(conn, "source_documents")
     if source_columns:
@@ -1234,7 +1235,7 @@ async def _migrate_evidence_ledger_and_claim_graph(conn: AsyncConnection) -> Non
             await conn.execute(
                 text(
                     "ALTER TABLE source_documents "
-                    "ADD COLUMN supersedes_source_document_id CHAR(32)"
+                    f"ADD COLUMN supersedes_source_document_id {uuid_type}"
                 )
             )
         await _backfill_source_document_ledger_columns(conn)
@@ -2128,6 +2129,86 @@ async def _migrate_query_and_sync_indexes(conn: AsyncConnection) -> None:
 
     for table_name, index_name, column_names in index_specs:
         await _create_index_if_columns_exist(conn, table_name, index_name, column_names)
+
+    sync_columns = await _get_table_columns(conn, "sync_jobs")
+    if {"idempotency_key", "status"} <= sync_columns:
+        await conn.execute(text("""
+            UPDATE sync_jobs AS candidate
+            SET status = 'failed'
+            WHERE candidate.idempotency_key IS NOT NULL
+              AND candidate.status IN ('pending', 'running')
+              AND EXISTS (
+                  SELECT 1 FROM sync_jobs AS winner
+                  WHERE winner.idempotency_key = candidate.idempotency_key
+                    AND winner.status IN ('pending', 'running')
+                    AND (
+                        winner.created_at < candidate.created_at
+                        OR (
+                            winner.created_at = candidate.created_at
+                            AND CAST(winner.id AS TEXT) < CAST(candidate.id AS TEXT)
+                        )
+                    )
+              )
+        """))
+        await conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_jobs_active_idempotency_key
+            ON sync_jobs (idempotency_key)
+            WHERE idempotency_key IS NOT NULL AND status IN ('pending', 'running')
+        """))
+    pack_columns = await _get_table_columns(conn, "context_packs")
+    if "idempotency_key" in pack_columns:
+        await conn.execute(text("""
+            UPDATE context_packs AS candidate
+            SET idempotency_key = NULL
+            WHERE candidate.idempotency_key IS NOT NULL
+              AND EXISTS (
+                  SELECT 1 FROM context_packs AS winner
+                  WHERE winner.idempotency_key = candidate.idempotency_key
+                    AND (
+                        winner.created_at < candidate.created_at
+                        OR (
+                            winner.created_at = candidate.created_at
+                            AND CAST(winner.id AS TEXT) < CAST(candidate.id AS TEXT)
+                        )
+                    )
+              )
+        """))
+        await conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_context_packs_idempotency_key
+            ON context_packs (idempotency_key)
+            WHERE idempotency_key IS NOT NULL
+        """))
+    observation_columns = await _get_table_columns(conn, "run_observations")
+    if {"agent_run_id", "event_type"} <= observation_columns:
+        await conn.execute(text("""
+            UPDATE run_observations AS candidate
+            SET event_type = 'outcome_duplicate_legacy'
+            WHERE candidate.event_type = 'outcome'
+              AND EXISTS (
+                  SELECT 1 FROM run_observations AS winner
+                  WHERE winner.agent_run_id = candidate.agent_run_id
+                    AND winner.event_type = 'outcome'
+                    AND (
+                        winner.created_at < candidate.created_at
+                        OR (
+                            winner.created_at = candidate.created_at
+                            AND CAST(winner.id AS TEXT) < CAST(candidate.id AS TEXT)
+                        )
+                    )
+              )
+        """))
+        await conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_run_observations_terminal_outcome
+            ON run_observations (agent_run_id)
+            WHERE event_type = 'outcome'
+        """))
+    source_columns = await _get_table_columns(conn, "source_documents")
+    if "supersedes_source_document_id" in source_columns:
+        await conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_source_documents_superseded_once
+            ON source_documents (supersedes_source_document_id)
+            WHERE supersedes_source_document_id IS NOT NULL
+        """))
 
 
 async def _create_index_if_columns_exist(

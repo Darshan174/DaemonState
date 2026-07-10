@@ -53,6 +53,14 @@ export default function PrepareContextPage() {
     if (errorMessage) errorRef.current?.focus();
   }, [errorMessage]);
 
+  if (workspacesQuery.isLoading || workspacesQuery.isPending) {
+    return <WorkspaceQueryState loading />;
+  }
+
+  if (workspacesQuery.isError) {
+    return <WorkspaceQueryState error={workspacesQuery.error} onRetry={workspacesQuery.refetch} />;
+  }
+
   function submit(event) {
     event.preventDefault();
     const normalizedObjective = objective.trim();
@@ -252,8 +260,33 @@ function EmptyResult() {
   );
 }
 
+function WorkspaceQueryState({ loading = false, error, onRetry }) {
+  return (
+    <section
+      aria-busy={loading || undefined}
+      className="app-page relative z-10 mx-auto max-w-3xl rounded-xl border border-slate-200/80 bg-white px-6 py-12 text-center dark:border-white/[0.08] dark:bg-black/55"
+    >
+      {loading ? <Loader2 className="mx-auto h-7 w-7 animate-spin text-brand-500" /> : <AlertTriangle className="mx-auto h-7 w-7 text-red-500" />}
+      <h1 className="mt-4 text-xl font-semibold text-slate-950 dark:text-white">
+        {loading ? "Loading workspace evidence…" : "Workspace evidence is unavailable"}
+      </h1>
+      <p role={error ? "alert" : undefined} className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-500 dark:text-neutral-400">
+        {loading
+          ? "Context preparation will unlock after workspace discovery completes."
+          : `${formatPrepareError(error) || "The workspace list could not be loaded."} Repository-only compilation is disabled until this check succeeds.`}
+      </p>
+      {!loading ? (
+        <button type="button" onClick={() => onRetry?.()} className="mt-5 inline-flex h-10 items-center gap-2 rounded-lg bg-brand-600 px-4 text-sm font-bold text-white">
+          <RefreshCw className="h-4 w-4" /> Retry workspace discovery
+        </button>
+      ) : null}
+    </section>
+  );
+}
+
 function ContextPackResult({ result }) {
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState("");
   const resultHeadingRef = useRef(null);
   const manifest = result.manifest || {};
   const selected = result.selected_context?.length
@@ -272,7 +305,12 @@ function ContextPackResult({ result }) {
   }, []);
 
   async function copyMarkdown() {
-    await copyText(result.markdown || "");
+    setCopyError("");
+    const succeeded = await copyText(result.markdown || "");
+    if (!succeeded) {
+      setCopyError("Copy failed. Select the compiler markdown below and copy it manually.");
+      return;
+    }
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1600);
   }
@@ -306,6 +344,7 @@ function ContextPackResult({ result }) {
             {copied ? "Copied" : "Copy compiler markdown"}
           </button>
         </div>
+        {copyError ? <p role="alert" className="mt-3 text-sm font-semibold text-red-700 dark:text-red-300">{copyError}</p> : null}
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -361,6 +400,9 @@ function ContextPackResult({ result }) {
                   <div key={command.id || index} className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-white/[0.08] dark:bg-white/[0.035]">
                     <code className="block overflow-x-auto whitespace-pre-wrap text-xs font-semibold text-slate-800 dark:text-neutral-200">{command.command || command}</code>
                     {command.purpose ? <p className="mt-2 text-[11px] leading-5 text-slate-500 dark:text-neutral-400">{command.purpose}</p> : null}
+                    {command.cwd ? <p className="mt-2 font-mono text-[11px] text-slate-500 dark:text-neutral-400">cwd: {command.cwd}</p> : null}
+                    {command.expected ? <p className="mt-1 text-[11px] leading-5 text-slate-500 dark:text-neutral-400">Expected: {command.expected}</p> : null}
+                    {typeof command.required === "boolean" ? <p className="mt-1 text-[10px] font-black uppercase tracking-wide text-slate-400">{command.required ? "Required" : "Optional"}</p> : null}
                   </div>
                 ))}
               </div>
@@ -377,6 +419,7 @@ function ContextPackResult({ result }) {
                     <p className="text-sm font-semibold text-slate-800 dark:text-neutral-200">{item.title}</p>
                     <p className="mt-1 text-[11px] font-bold uppercase tracking-wide text-amber-600 dark:text-amber-400">{humanize(item.reason)}</p>
                     {item.reason_detail ? <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-neutral-400">{item.reason_detail}</p> : null}
+                    {item.citation ? <CitationBlock citation={item.citation} /> : null}
                   </div>
                 ))}
               </div>
@@ -428,17 +471,21 @@ function ContextItem({ item }) {
       <div className="border-t border-slate-200 px-3.5 py-3 dark:border-white/[0.08]">
         <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Why selected</p>
         <p className="mt-1 text-xs leading-5 text-slate-600 dark:text-neutral-300">{humanize(item.inclusion_reason) || "Goal relevant"}</p>
-        {citations.map((citation, index) => (
-          <div key={citation.citation_id || index} className="mt-3 rounded-md border border-indigo-100 bg-indigo-50/60 p-3 dark:border-indigo-900/40 dark:bg-indigo-950/20">
-            <p className="text-[10px] font-black uppercase tracking-wide text-indigo-600 dark:text-indigo-300">
-              {citation.citation_id || `Citation ${index + 1}`} · rev {citation.source_revision_number ?? "unknown"}
-              {citation.start_char != null ? ` · chars ${citation.start_char}-${citation.end_char}` : ""}
-            </p>
-            <p className="mt-1.5 text-xs leading-5 text-slate-700 dark:text-neutral-300">{citation.quote || "Citation metadata only."}</p>
-          </div>
-        ))}
+        {citations.map((citation, index) => <CitationBlock key={citation.citation_id || index} citation={citation} index={index} />)}
       </div>
     </details>
+  );
+}
+
+function CitationBlock({ citation, index = 0 }) {
+  return (
+    <div className="mt-3 rounded-md border border-indigo-100 bg-indigo-50/60 p-3 dark:border-indigo-900/40 dark:bg-indigo-950/20">
+      <p className="text-[10px] font-black uppercase tracking-wide text-indigo-600 dark:text-indigo-300">
+        {citation.citation_id || `Citation ${index + 1}`} · rev {citation.source_revision_number ?? "unknown"}
+        {citation.start_char != null ? ` · chars ${citation.start_char}-${citation.end_char}` : ""}
+      </p>
+      <p className="mt-1.5 text-xs leading-5 text-slate-700 dark:text-neutral-300">{citation.quote || "Citation metadata only."}</p>
+    </div>
   );
 }
 
@@ -490,10 +537,10 @@ export function formatPrepareError(error) {
   if (detail && typeof detail === "object") {
     return detail.message || detail.code || "The context compiler rejected the request.";
   }
-  if (typeof detail === "string") return detail;
   if (error.status >= 500 || error instanceof TypeError) {
     return "The context compiler is unavailable. Your form values are preserved; retry when the service is ready.";
   }
+  if (typeof detail === "string" && detail.trim()) return detail;
   return error.message || "The context pack could not be compiled.";
 }
 
@@ -517,7 +564,7 @@ async function copyText(value) {
   if (navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(value);
-      return;
+      return true;
     } catch {
       // Fall through when browser permissions block the async clipboard API.
     }
@@ -528,7 +575,12 @@ async function copyText(value) {
   textArea.style.position = "fixed";
   textArea.style.left = "-9999px";
   document.body.appendChild(textArea);
-  textArea.select();
-  document.execCommand("copy");
-  document.body.removeChild(textArea);
+  try {
+    textArea.select();
+    return Boolean(document.execCommand?.("copy"));
+  } catch {
+    return false;
+  } finally {
+    document.body.removeChild(textArea);
+  }
 }
