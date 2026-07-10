@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
 from app.models import SourceDocument
+from app.processing.extractor import ExtractedFact, Extractor
+from app.services.claims import upsert_claim_for_fact
 from app.services.evidence import (
     create_evidence_span,
     locate_exact_span,
@@ -61,6 +64,28 @@ async def test_source_document_source_created_at_parsed_from_metadata(db_session
     assert doc.trust_zone == "semi_trusted_tool"
     assert doc.source_created_at is not None
     assert doc.source_created_at.replace(tzinfo=None) == datetime(2026, 1, 2, 3, 4, 5)
+
+
+async def test_persisted_source_content_mutation_is_rejected(db_session):
+    doc = SourceDocument(
+        id=uuid4(),
+        source_type="local",
+        external_id="legacy-mutation",
+        content="old content",
+        metadata_json="{}",
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    original_hash = doc.content_sha256
+
+    with pytest.raises(ValueError, match="content is immutable"):
+        async with db_session.begin_nested():
+            doc.content = "new content"
+            await db_session.flush()
+
+    await db_session.refresh(doc)
+    assert doc.content == "old content"
+    assert doc.content_sha256 == original_hash == sha256_text("old content")
 
 
 async def test_evidence_span_range_and_hash_validation(db_session):
@@ -138,6 +163,84 @@ async def test_fuzzy_evidence_span_is_explicit_needs_review(db_session):
     assert result.span.evidence_type == "llm_extracted_quote"
     assert result.span.review_status == "needs_review"
     assert result.span.trust_zone == "untrusted_external"
+
+
+async def test_absent_llm_claim_cannot_become_verified_truth(db_session, monkeypatch):
+    doc = SourceDocument(
+        id=uuid4(),
+        source_type="local",
+        external_id="adversarial-llm-fact",
+        content="Decision: keep source-backed citations.",
+        metadata_json="{}",
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    extractor = Extractor(api_key="test-key", model="test-model")
+
+    async def fake_llm_extract(_content):
+        return [
+            ExtractedFact(
+                model_name="Metric",
+                name="Fabricated revenue claim",
+                value="Revenue is definitely $1 million ARR.",
+                fact_type="metric",
+                confidence=0.99,
+                excerpt=None,
+            )
+        ]
+
+    monkeypatch.setattr(extractor, "_llm_extract", fake_llm_extract)
+    fact = (await extractor.extract(doc.content))[0]
+    result = await upsert_claim_for_fact(
+        db_session,
+        source_document=doc,
+        fact=fact,
+        component_status="active",
+        extraction_method="llm",
+    )
+
+    assert fact.excerpt is None
+    assert result.evidence_is_exact is False
+    assert result.evidence.start_char is None
+    assert result.evidence.end_char is None
+    assert result.evidence.review_status == "needs_review"
+    assert result.claim.status == "needs_review"
+
+
+async def test_exact_llm_fact_can_be_verified(db_session):
+    content = "Decision: keep source-backed citations."
+    doc = SourceDocument(
+        id=uuid4(),
+        source_type="local",
+        external_id="exact-llm-fact",
+        content=content,
+        metadata_json="{}",
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    fact = SimpleNamespace(
+        model_name="Decision",
+        name="Source-backed citation decision",
+        value="keep source-backed citations.",
+        fact_type="decision",
+        confidence=0.95,
+        temporal="current",
+        excerpt="keep source-backed citations.",
+    )
+
+    result = await upsert_claim_for_fact(
+        db_session,
+        source_document=doc,
+        fact=fact,
+        component_status="active",
+        extraction_method="llm",
+    )
+
+    assert result.evidence_is_exact is True
+    assert result.evidence.review_status == "verified"
+    assert content[result.evidence.start_char : result.evidence.end_char] == result.evidence.text
+    assert result.evidence.text_sha256 == sha256_text(result.evidence.text)
+    assert result.claim.status == "active"
 
 
 def test_prompt_injection_risk_scoring():

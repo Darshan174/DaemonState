@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 import base64
-import json
 import logging
 from html import unescape
 from re import sub
-from uuid import uuid4
 
 import httpx
-from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.connectors import _get_env, _get_google_client_id
-from app.models import Connector, SourceDocument
+from app.models import Connector
 from app.services.credentials import dump_credentials, load_credentials
+from app.services.evidence import metadata_dict
+from app.services.source_revisions import (
+    get_current_source_document,
+    ingest_source_document_revision,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,7 @@ async def sync_gmail(connector: Connector, session: AsyncSession) -> dict:
     token = await _access_token(connector, session)
     docs_fetched = 0
     docs_persisted = 0
+    documents_revised = 0
     duplicates_skipped = 0
     empty_skipped = 0
     errors: list[str] = []
@@ -68,29 +71,27 @@ async def sync_gmail(connector: Connector, session: AsyncSession) -> dict:
 
             docs_fetched += 1
             external_id = f"gmail:{message_id}"
-            if await _document_exists(external_id, connector, session):
-                duplicates_skipped += 1
-                continue
-
             metadata = _gmail_metadata(message, connector)
             content = _gmail_content(message, metadata)
             if not content.strip():
                 empty_skipped += 1
                 continue
 
-            session.add(
-                SourceDocument(
-                    id=uuid4(),
-                    workspace_id=connector.workspace_id,
-                    source_type="gmail",
-                    external_id=external_id,
-                    content=content,
-                    author=metadata.get("from"),
-                    source_url=f"https://mail.google.com/mail/u/0/#all/{message_id}",
-                    metadata_json=json.dumps(metadata),
-                )
+            result = await ingest_source_document_revision(
+                session,
+                workspace_id=connector.workspace_id,
+                source_type="gmail",
+                external_id=external_id,
+                content=content,
+                author=str(metadata.get("from") or "") or None,
+                source_url=f"https://mail.google.com/mail/u/0/#all/{message_id}",
+                metadata_json=metadata,
             )
-            docs_persisted += 1
+            if result.created:
+                docs_persisted += 1
+                documents_revised += int(result.revised)
+            else:
+                duplicates_skipped += 1
 
         await session.commit()
 
@@ -100,6 +101,7 @@ async def sync_gmail(connector: Connector, session: AsyncSession) -> dict:
         "documents_persisted": docs_persisted,
         "documents_skipped": duplicates_skipped + empty_skipped,
         "duplicates_skipped": duplicates_skipped,
+        "documents_revised": documents_revised,
         "empty_skipped": empty_skipped,
         "errors": errors,
     }
@@ -109,6 +111,7 @@ async def sync_gdrive(connector: Connector, session: AsyncSession) -> dict:
     token = await _access_token(connector, session)
     docs_fetched = 0
     docs_persisted = 0
+    documents_revised = 0
     duplicates_skipped = 0
     empty_skipped = 0
     errors: list[str] = []
@@ -145,7 +148,15 @@ async def sync_gdrive(connector: Connector, session: AsyncSession) -> dict:
                 continue
             docs_fetched += 1
             external_id = f"gdrive:{file_id}"
-            if await _document_exists(external_id, connector, session):
+            current = await get_current_source_document(
+                session,
+                workspace_id=connector.workspace_id,
+                source_type="gdrive",
+                external_id=external_id,
+            )
+            current_metadata = metadata_dict(current.metadata_json) if current else {}
+            modified_time = item.get("modifiedTime")
+            if current and modified_time and current_metadata.get("modified_time") == modified_time:
                 duplicates_skipped += 1
                 continue
 
@@ -173,19 +184,21 @@ async def sync_gdrive(connector: Connector, session: AsyncSession) -> dict:
                 "owner_email": owner.get("emailAddress"),
                 "web_view_link": item.get("webViewLink"),
             }
-            session.add(
-                SourceDocument(
-                    id=uuid4(),
-                    workspace_id=connector.workspace_id,
-                    source_type="gdrive",
-                    external_id=external_id,
-                    content=f"[Drive File] {item.get('name', 'Untitled')}\n\n{text[:20000]}",
-                    author=metadata.get("owner"),
-                    source_url=item.get("webViewLink"),
-                    metadata_json=json.dumps(metadata),
-                )
+            result = await ingest_source_document_revision(
+                session,
+                workspace_id=connector.workspace_id,
+                source_type="gdrive",
+                external_id=external_id,
+                content=f"[Drive File] {item.get('name', 'Untitled')}\n\n{text[:20000]}",
+                author=str(metadata.get("owner") or "") or None,
+                source_url=str(item.get("webViewLink") or "") or None,
+                metadata_json=metadata,
             )
-            docs_persisted += 1
+            if result.created:
+                docs_persisted += 1
+                documents_revised += int(result.revised)
+            else:
+                duplicates_skipped += 1
 
         await session.commit()
 
@@ -195,6 +208,7 @@ async def sync_gdrive(connector: Connector, session: AsyncSession) -> dict:
         "documents_persisted": docs_persisted,
         "documents_skipped": duplicates_skipped + empty_skipped,
         "duplicates_skipped": duplicates_skipped,
+        "documents_revised": documents_revised,
         "empty_skipped": empty_skipped,
         "errors": errors,
     }
@@ -246,19 +260,6 @@ async def _refresh_access_token(connector: Connector, session: AsyncSession) -> 
 
 def _credentials(connector: Connector) -> dict[str, object]:
     return load_credentials(connector.credentials_json)
-
-
-async def _document_exists(external_id: str, connector: Connector, session: AsyncSession) -> bool:
-    existing = await session.scalar(
-        select(SourceDocument).where(
-            SourceDocument.external_id == external_id,
-            or_(
-                SourceDocument.workspace_id == connector.workspace_id,
-                SourceDocument.workspace_id.is_(None),
-            ),
-        )
-    )
-    return existing is not None
 
 
 def _raise_google_error(response: httpx.Response, operation: str) -> None:

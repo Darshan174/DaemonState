@@ -179,6 +179,7 @@ async def test_mcp_lists_runtime_bridge_tools_with_trust_warning():
     required = {
         "prepare_task",
         "record_agent_run_start",
+        "record_agent_run_finish",
         "record_agent_event",
         "record_decision",
         "record_blocker",
@@ -424,6 +425,18 @@ async def test_mcp_write_tool_errors_are_structured(db_session, monkeypatch):
     assert missing_run_data["ok"] is False
     assert missing_run_data["error"]["code"] == "agent_run_not_found"
 
+    invalid_finish = await mcp_server._record_agent_run_finish(
+        run_id=str(uuid4()),
+        status="running",
+        head_commit="abc123",
+        summary="This is not a terminal status.",
+        changed_files=[],
+        verification_results=[],
+    )
+    invalid_finish_data = json.loads(invalid_finish[0].text)
+    assert invalid_finish_data["ok"] is False
+    assert invalid_finish_data["error"]["code"] == "invalid_input"
+
 
 async def test_mcp_runtime_write_tools_persist_source_backed_loop(
     db_session,
@@ -502,6 +515,59 @@ async def test_mcp_runtime_write_tools_persist_source_backed_loop(
     )
     patch = json.loads(patch_result[0].text)
     assert patch["source_document_id"]
+
+    finish_result = await mcp_server._record_agent_run_finish(
+        run_id=run_id,
+        status="completed",
+        head_commit="def456",
+        summary="Runtime bridge finished with focused tests passing.",
+        changed_files=["app/mcp/server.py", "tests/test_mcp.py"],
+        verification_results=[{
+            "command": "pytest -q tests/test_mcp.py",
+            "exit_code": 0,
+            "status": "passed",
+        }],
+    )
+    finished = json.loads(finish_result[0].text)
+    assert finished["context_pack_id"] == str(pack.id)
+    assert finished["base_commit"] == "abc123"
+    assert finished["head_commit"] == "def456"
+    assert finished["status"] == "completed"
+    finished_run = await db_session.get(mcp_server.AgentRun, UUID(run_id))
+    assert finished_run.context_pack_id == pack.id
+    assert finished_run.tool == "codex"
+    assert finished_run.model == "qwen2.5-coder-7b"
+    assert finished_run.objective == "finish runtime bridge"
+    assert finished_run.started_at is not None
+    assert finished_run.ended_at is not None
+    outcome_doc = await db_session.get(
+        SourceDocument,
+        UUID(finished["outcome_source_document_id"]),
+    )
+    assert outcome_doc is not None
+    assert outcome_doc.source_type == "agent_run_outcome"
+    assert outcome_doc.revision_number == 1
+    assert "pytest -q tests/test_mcp.py" in outcome_doc.content
+    assert outcome_doc.content_sha256
+    outcome_observation = await db_session.get(
+        mcp_server.RunObservation,
+        UUID(finished["run_observation_id"]),
+    )
+    assert outcome_observation.agent_run_id == finished_run.id
+    assert outcome_observation.source_document_id == outcome_doc.id
+    assert outcome_observation.event_type == "outcome"
+
+    duplicate_finish = await mcp_server._record_agent_run_finish(
+        run_id=run_id,
+        status="completed",
+        head_commit="def456",
+        summary="Duplicate finish should not create evidence.",
+        changed_files=[],
+        verification_results=[],
+    )
+    duplicate_data = json.loads(duplicate_finish[0].text)
+    assert duplicate_data["ok"] is False
+    assert duplicate_data["error"]["code"] == "agent_run_already_finished"
 
     verify_result = await mcp_server._verify_context_item(
         component_id=decision["component_id"],

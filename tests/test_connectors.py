@@ -20,6 +20,7 @@ from app.main import app
 from app.migrations import run_migrations
 from app.models import Base, Component, Connector, Model, SourceDocument, SyncJob, Workspace
 from app.processing.embedder import HashingEmbedder
+from app.services.source_revisions import ingest_source_document_revision
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
@@ -99,6 +100,22 @@ async def client(db_session):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
     app.dependency_overrides.clear()
+
+
+async def _assert_changed_source_revision(db_session, first, expected_content):
+    revisions = list(await db_session.scalars(
+        select(SourceDocument)
+        .where(
+            SourceDocument.source_identity_sha256
+            == first.document.source_identity_sha256
+        )
+        .order_by(SourceDocument.revision_number)
+    ))
+    assert [revision.revision_number for revision in revisions] == [1, 2]
+    assert revisions[1].supersedes_source_document_id == revisions[0].id
+    assert revisions[0].content == first.document.content
+    assert revisions[1].content == expected_content
+    return revisions
 
 
 class TestConnectorCatalog:
@@ -1064,6 +1081,7 @@ class TestProcessingSummary:
             Connector(id=uuid4(), workspace_id=ws_b.id, connector_type="slack", status="connected"),
             SourceDocument(
                 id=uuid4(),
+                workspace_id=ws_a.id,
                 source_type="slack",
                 external_id="slack:workspace-a",
                 content="Workspace A message",
@@ -1071,6 +1089,7 @@ class TestProcessingSummary:
             ),
             SourceDocument(
                 id=uuid4(),
+                workspace_id=ws_b.id,
                 source_type="slack",
                 external_id="slack:workspace-b",
                 content="Workspace B message",
@@ -1277,6 +1296,7 @@ class TestProviderSyncReporting:
             connector,
             SourceDocument(
                 id=uuid4(),
+                workspace_id=DEFAULT_WORKSPACE_ID,
                 source_type="slack",
                 external_id="slack:C123:1.0",
                 content="Already imported",
@@ -1586,9 +1606,13 @@ class TestProviderSyncReporting:
             connector,
             SourceDocument(
                 id=uuid4(),
+                workspace_id=DEFAULT_WORKSPACE_ID,
                 source_type="github",
                 external_id="github:acme/project:issue:7",
-                content="Already imported issue",
+                content=(
+                    "[Issue] #7: Already imported issue\n\n"
+                    "State: open\nLabels: none\n\nExisting body"
+                ),
                 metadata_json="{}",
             ),
         ])
@@ -1600,6 +1624,136 @@ class TestProviderSyncReporting:
         assert result["documents_persisted"] == 0
         assert result["documents_skipped"] == 1
         assert result["duplicates_skipped"] == 1
+
+    async def test_github_sync_appends_changed_issue_revision(self, db_session, monkeypatch):
+        from app.sync import github
+
+        class FakeGitHubClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+            async def get(self, url, headers=None, params=None):
+                request = httpx.Request("GET", url)
+                if url.endswith("/issues"):
+                    return httpx.Response(
+                        200,
+                        request=request,
+                        json=[{
+                            "number": 7,
+                            "title": "Pagination regression",
+                            "body": "The final page now drops when the cursor is null.",
+                            "state": "closed",
+                            "labels": [{"name": "bug"}],
+                            "user": {"login": "octocat"},
+                            "html_url": "https://github.com/acme/project/issues/7",
+                            "created_at": "2026-05-07T10:00:00Z",
+                            "assignees": [],
+                        }],
+                    )
+                if url.endswith("/pulls"):
+                    return httpx.Response(200, request=request, json=[])
+                raise AssertionError(f"unexpected URL {url}")
+
+        monkeypatch.setattr(github.httpx, "AsyncClient", FakeGitHubClient)
+        connector = Connector(
+            id=uuid4(),
+            connector_type="github",
+            status="connected",
+            credentials_json=json.dumps({"access_token": "github-token"}),
+            config_json=json.dumps({"repositories": ["acme/project"]}),
+        )
+        db_session.add(connector)
+        await db_session.flush()
+        first = await ingest_source_document_revision(
+            db_session,
+            workspace_id=connector.workspace_id,
+            source_type="github",
+            external_id="github:acme/project:issue:7",
+            content=(
+                "[Issue] #7: Pagination regression\n\n"
+                "State: open\nLabels: none\n\nThe old page behavior."
+            ),
+        )
+
+        result = await github.sync_github(connector, db_session)
+
+        expected = (
+            "[Issue] #7: Pagination regression\n\n"
+            "State: closed\nLabels: bug\n\n"
+            "The final page now drops when the cursor is null."
+        )
+        await _assert_changed_source_revision(db_session, first, expected)
+        assert result["documents_fetched"] == 1
+        assert result["documents_persisted"] == 1
+        assert result["documents_revised"] == 1
+        assert result["documents_skipped"] == 0
+
+    async def test_slack_sync_appends_changed_message_revision(self, db_session, monkeypatch):
+        from app.sync import slack
+
+        class FakeSlackClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+            async def request(self, method, url, **kwargs):
+                if url.endswith("/conversations.list"):
+                    return httpx.Response(200, json={
+                        "ok": True,
+                        "channels": [{"id": "C123", "name": "engineering", "is_member": True}],
+                    })
+                if url.endswith("/conversations.history"):
+                    return httpx.Response(200, json={
+                        "ok": True,
+                        "messages": [{"ts": "1.0", "text": "Decision: keep both revisions.", "user": "U1"}],
+                    })
+                if url.endswith("/chat.getPermalink"):
+                    return httpx.Response(200, json={
+                        "ok": True,
+                        "permalink": "https://acme.slack.com/archives/C123/p10",
+                    })
+                raise AssertionError(f"unexpected URL {url}")
+
+        monkeypatch.setattr(slack.httpx, "AsyncClient", FakeSlackClient)
+        connector = Connector(
+            id=uuid4(),
+            connector_type="slack",
+            status="connected",
+            credentials_json=json.dumps({"access_token": "slack-token"}),
+            config_json="{}",
+        )
+        db_session.add(connector)
+        await db_session.flush()
+        first = await ingest_source_document_revision(
+            db_session,
+            workspace_id=connector.workspace_id,
+            source_type="slack",
+            external_id="slack:C123:1.0",
+            content="Decision: keep the first revision.",
+        )
+
+        result = await slack.sync_slack(connector, db_session)
+
+        await _assert_changed_source_revision(
+            db_session,
+            first,
+            "Decision: keep both revisions.",
+        )
+        assert result["documents_fetched"] == 1
+        assert result["documents_persisted"] == 1
+        assert result["documents_revised"] == 1
+        assert result["documents_skipped"] == 0
 
 
 class TestGoogleSync:
@@ -1724,6 +1878,142 @@ class TestGoogleSync:
         metadata = json.loads(doc.metadata_json)
         assert metadata["name"] == "Roadmap"
 
+    async def test_sync_gmail_appends_changed_message_revision(self, db_session, monkeypatch):
+        from app.sync import google
+
+        body = base64.urlsafe_b64encode(
+            b"Decision: preserve the revised Gmail evidence."
+        ).decode().rstrip("=")
+
+        class FakeGoogleClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+            async def get(self, url, headers=None, params=None):
+                if url.endswith("/users/me/messages"):
+                    return httpx.Response(200, json={"messages": [{"id": "msg-revised"}]})
+                if url.endswith("/users/me/messages/msg-revised"):
+                    return httpx.Response(200, json={
+                        "id": "msg-revised",
+                        "threadId": "thread-revised",
+                        "snippet": "Revised decision",
+                        "labelIds": ["INBOX"],
+                        "payload": {
+                            "mimeType": "text/plain",
+                            "headers": [
+                                {"name": "Subject", "value": "Evidence revision"},
+                                {"name": "From", "value": "pm@example.com"},
+                                {"name": "To", "value": "team@example.com"},
+                                {"name": "Date", "value": "Thu, 7 May 2026 10:00:00 +0000"},
+                            ],
+                            "body": {"data": body},
+                        },
+                    })
+                raise AssertionError(f"unexpected URL {url}")
+
+        monkeypatch.setattr(google.httpx, "AsyncClient", FakeGoogleClient)
+        connector = Connector(
+            id=uuid4(),
+            connector_type="gmail",
+            status="connected",
+            credentials_json=json.dumps({"access_token": "google-token"}),
+            config_json="{}",
+        )
+        db_session.add(connector)
+        await db_session.flush()
+        first = await ingest_source_document_revision(
+            db_session,
+            workspace_id=connector.workspace_id,
+            source_type="gmail",
+            external_id="gmail:msg-revised",
+            content=(
+                "[Gmail] Evidence revision\n"
+                "From: pm@example.com\nTo: team@example.com\n"
+                "Date: Thu, 7 May 2026 10:00:00 +0000\n\n"
+                "Decision: preserve the first Gmail evidence."
+            ),
+        )
+
+        result = await google.sync_gmail(connector, db_session)
+
+        expected = (
+            "[Gmail] Evidence revision\n"
+            "From: pm@example.com\nTo: team@example.com\n"
+            "Date: Thu, 7 May 2026 10:00:00 +0000\n\n"
+            "Decision: preserve the revised Gmail evidence."
+        )
+        await _assert_changed_source_revision(db_session, first, expected)
+        assert result["documents_fetched"] == 1
+        assert result["documents_persisted"] == 1
+        assert result["documents_revised"] == 1
+        assert result["documents_skipped"] == 0
+
+    async def test_sync_gdrive_appends_changed_file_revision(self, db_session, monkeypatch):
+        from app.sync import google
+
+        class FakeGoogleClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+            async def get(self, url, headers=None, params=None):
+                if url.endswith("/drive/v3/files"):
+                    return httpx.Response(200, json={
+                        "files": [{
+                            "id": "file-revised",
+                            "name": "Roadmap",
+                            "mimeType": "application/vnd.google-apps.document",
+                            "webViewLink": "https://docs.google.com/document/d/file-revised",
+                            "modifiedTime": "2026-05-08T10:00:00Z",
+                            "owners": [{"displayName": "PM", "emailAddress": "pm@example.com"}],
+                        }],
+                    })
+                if url.endswith("/drive/v3/files/file-revised/export"):
+                    return httpx.Response(200, text="Action item: preserve the revised Drive evidence.")
+                raise AssertionError(f"unexpected URL {url}")
+
+        monkeypatch.setattr(google.httpx, "AsyncClient", FakeGoogleClient)
+        connector = Connector(
+            id=uuid4(),
+            connector_type="gdrive",
+            status="connected",
+            credentials_json=json.dumps({"access_token": "google-token"}),
+            config_json="{}",
+        )
+        db_session.add(connector)
+        await db_session.flush()
+        first = await ingest_source_document_revision(
+            db_session,
+            workspace_id=connector.workspace_id,
+            source_type="gdrive",
+            external_id="gdrive:file-revised",
+            content="[Drive File] Roadmap\n\nAction item: preserve the first Drive evidence.",
+            metadata_json={"modified_time": "2026-05-07T10:00:00Z"},
+        )
+
+        result = await google.sync_gdrive(connector, db_session)
+
+        await _assert_changed_source_revision(
+            db_session,
+            first,
+            "[Drive File] Roadmap\n\nAction item: preserve the revised Drive evidence.",
+        )
+        assert result["documents_fetched"] == 1
+        assert result["documents_persisted"] == 1
+        assert result["documents_revised"] == 1
+        assert result["documents_skipped"] == 0
+
     async def test_sync_gmail_reports_duplicate_skips(self, db_session, monkeypatch):
         from app.sync import google
 
@@ -1764,9 +2054,13 @@ class TestGoogleSync:
             connector,
             SourceDocument(
                 id=uuid4(),
+                workspace_id=DEFAULT_WORKSPACE_ID,
                 source_type="gmail",
                 external_id="gmail:msg-1",
-                content="Already imported message",
+                content=(
+                    "[Gmail] (no subject)\nFrom: unknown\nTo: unknown\n"
+                    "Date: unknown\n\nDuplicate snippet"
+                ),
                 metadata_json="{}",
             ),
         ])
@@ -1802,6 +2096,7 @@ class TestGoogleSync:
                                     "id": "file-1",
                                     "name": "Roadmap",
                                     "mimeType": "application/vnd.google-apps.document",
+                                    "modifiedTime": "2026-05-07T10:00:00Z",
                                 }
                             ]
                         },
@@ -1820,10 +2115,11 @@ class TestGoogleSync:
             connector,
             SourceDocument(
                 id=uuid4(),
+                workspace_id=DEFAULT_WORKSPACE_ID,
                 source_type="gdrive",
                 external_id="gdrive:file-1",
                 content="Already imported file",
-                metadata_json="{}",
+                metadata_json=json.dumps({"modified_time": "2026-05-07T10:00:00Z"}),
             ),
         ])
         await db_session.flush()

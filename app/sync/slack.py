@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-import json
 import logging
 import asyncio
-from uuid import uuid4
 
 import httpx
-from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Connector, SourceDocument
+from app.models import Connector
 from app.services.credentials import load_credentials
+from app.services.source_revisions import ingest_source_document_revision
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +28,7 @@ async def sync_slack(connector: Connector, session: AsyncSession) -> dict:
 
     docs_fetched = 0
     docs_persisted = 0
+    documents_revised = 0
     duplicates_skipped = 0
     empty_skipped = 0
     filtered_skipped = 0
@@ -134,6 +133,9 @@ async def sync_slack(connector: Connector, session: AsyncSession) -> dict:
                 )
                 if result == "persisted":
                     docs_persisted += 1
+                elif result == "revised":
+                    docs_persisted += 1
+                    documents_revised += 1
                 elif result == "persisted_without_permalink":
                     docs_persisted += 1
                     permalink_errors += 1
@@ -181,6 +183,9 @@ async def sync_slack(connector: Connector, session: AsyncSession) -> dict:
                     )
                     if result == "persisted":
                         docs_persisted += 1
+                    elif result == "revised":
+                        docs_persisted += 1
+                        documents_revised += 1
                     elif result == "persisted_without_permalink":
                         docs_persisted += 1
                         permalink_errors += 1
@@ -202,6 +207,7 @@ async def sync_slack(connector: Connector, session: AsyncSession) -> dict:
         "documents_persisted": docs_persisted,
         "documents_skipped": duplicates_skipped + empty_skipped + filtered_skipped,
         "duplicates_skipped": duplicates_skipped,
+        "documents_revised": documents_revised,
         "empty_skipped": empty_skipped,
         "filtered_skipped": filtered_skipped,
         "channels_synced": channels_synced,
@@ -237,18 +243,6 @@ async def _persist_slack_message(
     ts = msg["ts"]
     external_id = f"slack:{channel_id}:{ts}"
 
-    existing = await session.scalar(
-        select(SourceDocument).where(
-            SourceDocument.external_id == external_id,
-            or_(
-                SourceDocument.workspace_id == connector.workspace_id,
-                SourceDocument.workspace_id.is_(None),
-            ),
-        )
-    )
-    if existing:
-        return "duplicate"
-
     permalink = await _slack_permalink(http, headers, channel_id, ts)
     permalink_failed = permalink is None
     author_name = _slack_author_name(msg)
@@ -267,17 +261,20 @@ async def _persist_slack_message(
         "reply_count": msg.get("reply_count", 0),
         "permalink": permalink,
     }
-    doc = SourceDocument(
-        id=uuid4(),
+    result = await ingest_source_document_revision(
+        session,
         workspace_id=connector.workspace_id,
         source_type="slack",
         external_id=external_id,
         content=text,
         author=author_name or msg.get("user", ""),
         source_url=permalink,
-        metadata_json=json.dumps({k: v for k, v in metadata.items() if v is not None}),
+        metadata_json={k: v for k, v in metadata.items() if v is not None},
     )
-    session.add(doc)
+    if result.unchanged:
+        return "duplicate"
+    if result.revised:
+        return "revised"
     return "persisted_without_permalink" if permalink_failed else "persisted"
 
 

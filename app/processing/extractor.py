@@ -304,7 +304,6 @@ def _attach_source_provenance(
     if not facts:
         return facts
 
-    snippet = _content_snippet(content)
     provenance = _fallback_provenance(metadata, {
         "title": metadata.get("title") or metadata.get("name") or metadata.get("subject"),
         "author": metadata.get("author") or metadata.get("from"),
@@ -313,8 +312,11 @@ def _attach_source_provenance(
     for fact in facts:
         if not fact.provenance:
             fact.provenance = provenance
-        if not fact.excerpt and snippet:
-            fact.excerpt = _truncate(snippet, 280)
+        # A generic source snippet is not evidence for an unrelated LLM claim.
+        # Only synthesize an excerpt when the fact value itself occurs exactly.
+        value = str(fact.value or "").strip()
+        if not fact.excerpt and value and value in content:
+            fact.excerpt = _truncate(value, 500)
     return facts
 
 
@@ -416,7 +418,7 @@ def evaluate_extraction_quality(facts: list[ExtractedFact]) -> ExtractionQuality
             report.low_confidence_count += 1
         if not fact.provenance:
             report.missing_provenance_count += 1
-        if not fact.excerpt:
+        if not fact.excerpt and not _is_metadata_structural_fact(fact):
             report.missing_excerpt_count += 1
 
         dedupe_key = (
@@ -434,6 +436,19 @@ def evaluate_extraction_quality(facts: list[ExtractedFact]) -> ExtractionQuality
             1 for rel in fact.relationships if not rel.evidence
         )
     return report
+
+
+def _is_metadata_structural_fact(fact: ExtractedFact) -> bool:
+    """Recognize explicit metadata hubs without pretending they have a text quote."""
+    if fact.model_name != "Message" or fact.fact_type != "fact":
+        return False
+    if not fact.name.startswith("Slack channel ") or not fact.provenance:
+        return False
+    try:
+        provenance = json.loads(fact.provenance)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return bool(provenance.get("channel_id") or provenance.get("channel_name"))
 
 
 def _source_fallback_fact(content: str, metadata: dict[str, Any]) -> ExtractedFact | None:

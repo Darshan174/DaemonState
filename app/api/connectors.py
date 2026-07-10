@@ -18,6 +18,7 @@ from app.database import get_db_session
 from app.models import Connector, SourceDocument, SyncJob, Workspace
 from app.services.credentials import clear_credentials, dump_credentials, load_credentials
 from app.services.redaction import redact_sensitive, redact_sensitive_text
+from app.services.source_revisions import ingest_source_document_revision
 from app.time import utc_now
 
 router = APIRouter()
@@ -990,7 +991,10 @@ async def import_ai_context_documents(
     if not documents:
         raise HTTPException(status_code=422, detail="documents must not be empty")
 
-    created_ids: list[str] = []
+    document_ids: list[str] = []
+    created_count = 0
+    revised_count = 0
+    unchanged_count = 0
     for item in documents:
         content = str(item.get("content", "")).strip()
         if not content:
@@ -1006,23 +1010,31 @@ async def import_ai_context_documents(
                 metadata[key] = item[key]
         metadata["tool"] = tool
         metadata["ingested_via"] = "ai_context_import"
-        doc = SourceDocument(
+        result = await ingest_source_document_revision(
+            session,
             workspace_id=workspace_uuid,
             source_type=source_type,
             external_id=item.get("external_id") or f"ai-context:{secrets.token_urlsafe(12)}",
             content=content,
             author=item.get("author"),
             source_url=item.get("source_url"),
-            metadata_json=json.dumps(metadata),
+            metadata_json=metadata,
         )
-        session.add(doc)
-        await session.flush()
-        created_ids.append(str(doc.id))
+        document_ids.append(str(result.document.id))
+        created_count += int(result.created)
+        revised_count += int(result.revised)
+        unchanged_count += int(result.unchanged)
 
-    if not created_ids:
+    if not document_ids:
         raise HTTPException(status_code=422, detail="documents must contain content")
     await session.commit()
-    return {"created": len(created_ids), "document_ids": created_ids, "source_type": "ai_context"}
+    return {
+        "created": created_count,
+        "revised": revised_count,
+        "unchanged": unchanged_count,
+        "document_ids": document_ids,
+        "source_type": "ai_context",
+    }
 
 
 class AISessionIngestRequest(BaseModel):

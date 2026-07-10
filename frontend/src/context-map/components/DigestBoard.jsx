@@ -69,6 +69,8 @@ export default function DigestBoard({
   buildResult = null,
   buildError = null,
   onSelectCard,
+  showLayoutGuides = false,
+  showDraftHandoff = false,
 }) {
   const boardRef = useRef(null);
   const boardPointersRef = useRef(new Map());
@@ -326,11 +328,13 @@ export default function DigestBoard({
           transformOrigin: "0 0",
         }}
       >
-        <ComponentLines
-          measuredSizes={measuredSizes}
-          positions={positions}
-          sessionCount={aiSessions.length}
-        />
+        {showLayoutGuides ? (
+          <ComponentLines
+            measuredSizes={measuredSizes}
+            positions={positions}
+            sessionCount={aiSessions.length}
+          />
+        ) : null}
 
         {aiSessions.map((card, index) => (
           <DraggableFrame
@@ -426,13 +430,15 @@ export default function DigestBoard({
           />
         </DraggableFrame>
 
-        <DraggableFrame nodeId="task" position={positions.task} size={NODE_SIZE.task} zoom={zoom} onMeasure={setMeasuredSizes} onMove={moveNode}>
-          <NextAgentTask
-            prompt={map.nextAgentPrompt}
-            copied={copiedPrompt}
-            onCopy={copyPrompt}
-          />
-        </DraggableFrame>
+        {showDraftHandoff ? (
+          <DraggableFrame nodeId="task" position={positions.task} size={NODE_SIZE.task} zoom={zoom} onMeasure={setMeasuredSizes} onMove={moveNode}>
+            <NextAgentTask
+              prompt={map.nextAgentPrompt}
+              copied={copiedPrompt}
+              onCopy={copyPrompt}
+            />
+          </DraggableFrame>
+        ) : null}
       </div>
     </section>
   );

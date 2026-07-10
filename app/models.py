@@ -18,6 +18,7 @@ from sqlalchemy import (
     UniqueConstraint,
     event,
     func,
+    inspect,
 )
 from sqlalchemy.orm import (
     DeclarativeBase,
@@ -27,6 +28,7 @@ from sqlalchemy.orm import (
 )
 
 from app.taxonomy import default_trust_zone_for_source
+from app.source_identity import canonical_source_identity_sha256
 
 
 class Base(DeclarativeBase):
@@ -179,6 +181,23 @@ class SourceDocument(Base):
         Index("ix_source_documents_source_type_external_id", "source_type", "external_id"),
         Index("ix_source_documents_processed_at", "processed_at"),
         Index("ix_source_documents_ingested_at", "ingested_at"),
+        Index(
+            "uq_source_documents_identity_revision",
+            "source_identity_sha256",
+            "revision_number",
+            unique=True,
+        ),
+        Index(
+            "ix_source_documents_workspace_source_external_revision",
+            "workspace_id",
+            "source_type",
+            "external_id",
+            "revision_number",
+        ),
+        Index(
+            "ix_source_documents_supersedes_source_document_id",
+            "supersedes_source_document_id",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -189,6 +208,11 @@ class SourceDocument(Base):
     external_id: Mapped[str] = mapped_column(String(255), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    source_identity_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    revision_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    supersedes_source_document_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("source_documents.id"), nullable=True
+    )
     trust_zone: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     source_created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     author: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -879,8 +903,24 @@ class RepoEvent(Base):
 @event.listens_for(SourceDocument, "before_insert")
 @event.listens_for(SourceDocument, "before_update")
 def _populate_source_document_ledger_fields(mapper, connection, target: SourceDocument) -> None:
-    if target.content and not target.content_sha256:
-        target.content_sha256 = _sha256_text(target.content)
+    state = inspect(target)
+    expected_content_sha256 = _sha256_text(target.content or "")
+    if state.persistent and state.attrs.content.history.has_changes():
+        raise ValueError(
+            "SourceDocument content is immutable; append a source revision instead"
+        )
+    if (
+        state.persistent
+        and target.content_sha256
+        and target.content_sha256 != expected_content_sha256
+    ):
+        raise ValueError("SourceDocument content_sha256 does not match stored content")
+    target.content_sha256 = expected_content_sha256
+    target.source_identity_sha256 = canonical_source_identity_sha256(
+        target.workspace_id,
+        target.source_type,
+        target.external_id,
+    )
     metadata = _metadata_dict(target.metadata_json)
     if not target.trust_zone:
         target.trust_zone = default_trust_zone_for_source(target.source_type, metadata)

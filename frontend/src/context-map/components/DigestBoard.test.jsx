@@ -50,7 +50,12 @@ describe("DigestBoard", () => {
   it("renders connector lines without white glow underlays", () => {
     const { container } = render(
       <MemoryRouter>
-        <DigestBoard digest={digest} workspaceName="Test workspace" generatedAt={digest.generated_at} />
+        <DigestBoard
+          digest={digest}
+          workspaceName="Test workspace"
+          generatedAt={digest.generated_at}
+          showLayoutGuides
+        />
       </MemoryRouter>,
     );
 
@@ -77,6 +82,17 @@ describe("DigestBoard", () => {
       });
       expect(group.querySelector("circle")).toBeNull();
     });
+  });
+
+  it("does not present layout guides or a parallel handoff as evidence by default", () => {
+    const { container } = render(
+      <MemoryRouter>
+        <DigestBoard digest={digest} workspaceName="Test workspace" generatedAt={digest.generated_at} />
+      </MemoryRouter>,
+    );
+
+    expect(container.querySelectorAll("[data-component-line]")).toHaveLength(0);
+    expect(screen.queryByTestId("next-agent-task")).not.toBeInTheDocument();
   });
 
   it("shows exact digest timestamps without relative last-built copy", () => {

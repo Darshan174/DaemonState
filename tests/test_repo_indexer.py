@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from app.services.repo_indexer import RepoIndexer
 
 
@@ -51,3 +53,51 @@ async def test_indexes_typescript_imports_components_and_routes(tmp_path):
     symbols = {(symbol.symbol_type, symbol.name) for symbol in indexed.symbols}
     assert ("component", "StatusPanel") in symbols
     assert ("function", "helper") in symbols
+
+
+async def test_objective_ranking_prefers_core_code_over_generic_test_tokens(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "github_sync.py").write_text(
+        "def fetch_github_pagination(next_cursor):\n"
+        "    return next_cursor\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_connector.py").write_text(
+        "def test_connector_update():\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+
+    frame = await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
+    relevant = frame.relevant_files_for_goal(
+        {"finish", "github", "connector", "pagination", "tests"},
+        [],
+    )
+
+    assert relevant[0]["path"] == "app/github_sync.py"
+    assert relevant[0]["ranking_score"] > next(
+        item["ranking_score"]
+        for item in relevant
+        if item["path"] == "tests/test_connector.py"
+    )
+    assert relevant[0]["matched_terms"] == ["github", "pagination"]
+    assert relevant[0]["line_ranges"] == [{"start_line": 1, "end_line": 2}]
+    assert relevant[0]["sha256"]
+
+
+def test_git_output_preserves_leading_porcelain_status_column(monkeypatch, tmp_path):
+    from app.services import repo_indexer
+
+    monkeypatch.setattr(
+        repo_indexer.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=" M app/api/connectors.py\n?? new_file.py\n",
+        ),
+    )
+
+    output = repo_indexer._git(tmp_path, "status", "--short")
+
+    assert output.splitlines()[0] == " M app/api/connectors.py"

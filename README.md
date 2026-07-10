@@ -179,13 +179,13 @@ Observed in this checkout:
 | Backend | FastAPI app with async SQLAlchemy models, startup migrations, API routers, static frontend serving, and health checks. |
 | Source ingestion | Direct source APIs, bulk ingest, uploads, local file import, AI session import, demo seed, and provider sync paths create `SourceDocument` rows. |
 | Extraction | Deterministic GitHub and AI-session extractors, LiteLLM extraction when configured, and regex fallback when no model is available. |
-| Evidence ledger | `content_sha256`, trust zones, `EvidenceSpan`, prompt-injection scoring, `Claim`, and `ClaimRevision` are present in the current codebase. |
+| Evidence ledger | `content_sha256`, workspace-scoped source identity, append-only source revisions, trust zones, exact `EvidenceSpan` validation, prompt-injection scoring, `Claim`, and `ClaimRevision` are present in the current codebase. |
 | Graph | `Model`, `Component`, `Relationship`, `UnresolvedRelationship`, provenance, confidence, authority weight, temporal state, and review status are exposed through graph APIs. |
 | Query | `POST /api/query` returns `query.v1` with lexical/vector candidate retrieval, deterministic reranking, entity diversification, facts-used traces, and relationship expansion. |
 | Retrieval | Postgres/pgvector and text-search paths exist for indexed retrieval; unconfigured installs fall back to lexical-only behavior instead of pretending hash vectors are semantic search. |
-| Context compiler | `ContextCompiler`, model profiles, repo indexing, `POST /api/context/prepare`, `ctxe prepare`, `ContextPack`, and `ContextPackItem` are implemented in the active tree. The v2 manifest is still being hardened before public release. |
-| MCP | `ctxe mcp` exposes graph read tools, `prepare_task`, and runtime observation write tools for agent runs, decisions, blockers, patch summaries, verification, and task closure. |
-| Frontend | React app with Dashboard, Graph, Ask, Sources, Connectors, Changes, workspace switching, digest cards, graph inspection, connector status, and source review flows. |
+| Context compiler | `ContextCompiler`, model profiles, objective-conditioned repo indexing, rendered-budget enforcement, the replay lockfile, `POST /api/context/prepare`, `ctxe prepare`, `ContextPack`, and `ContextPackItem` are implemented in the active tree. |
+| MCP | `ctxe mcp` exposes graph read tools, `prepare_task`, run start/finish outcome capture, and runtime observation write tools for decisions, blockers, patch summaries, verification, and task closure. |
+| Frontend | React app with an objective-first Prepare surface at `/app`, plus Dashboard, Graph, Ask, Sources, Connectors, Changes, workspace switching, digest inspection, connector status, and source review flows. |
 | Tests | Backend pytest coverage, frontend Vitest coverage, migration tests, connector honesty tests, query/reranker tests, context compiler tests, MCP tests, extraction evals, and smoke scripts are present. |
 
 This is enough to show the project has a real technical spine. It is not enough
@@ -193,8 +193,9 @@ to claim general availability.
 
 ## Product Tour
 
-The current app is a working developer surface, not a marketing shell. The main
-views are Dashboard, Graph, Ask, Sources, Connectors, and Changes.
+The current app is a working developer surface, not a marketing shell. Prepare
+is the default view at `/app`; Dashboard, Graph, Ask, Sources, Connectors, and
+Changes remain supporting inspection surfaces.
 
 The graph and digest surface show how sources feed evidence, evidence supports
 claims, and claims assemble into models such as decisions, risks, work, repo
@@ -220,7 +221,7 @@ Important API families:
 
 | Surface | Purpose |
 |---|---|
-| `/api/sources` | Create, upload, list, inspect, reprocess, and delete source documents. |
+| `/api/sources` | Create, bulk ingest, upload, list, inspect, and reprocess source documents. |
 | `/api/graph` | Read models, components, relationships, unresolved edges, stats, and source diffs. |
 | `/api/query` | Ask grounded project-state questions with `query.v1` traces. |
 | `/api/context/prepare` | Compile and persist a `context_pack.v2` for a coding-agent objective. |
@@ -253,6 +254,7 @@ Read tools:
 Runtime observation tools:
 
 - `record_agent_run_start`
+- `record_agent_run_finish`
 - `record_agent_event`
 - `record_decision`
 - `record_blocker`

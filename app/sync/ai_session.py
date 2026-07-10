@@ -3,12 +3,11 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import SourceDocument
+from app.services.source_revisions import ingest_source_document_revision
 from app.time import utc_now
 
 
@@ -80,13 +79,6 @@ async def ingest_ai_session(
     external_id = f"{connector_type}:session:{session_id}"
     workspace_uuid = _coerce_workspace_uuid(workspace_id)
 
-    existing_stmt = select(SourceDocument).where(SourceDocument.external_id == external_id)
-    if workspace_uuid:
-        existing_stmt = existing_stmt.where(SourceDocument.workspace_id == workspace_uuid)
-    else:
-        existing_stmt = existing_stmt.where(SourceDocument.workspace_id.is_(None))
-    existing = await session.scalar(existing_stmt)
-
     now = utc_now()
     metadata = {
         "session_id": session_id,
@@ -101,25 +93,23 @@ async def ingest_ai_session(
         metadata.update({k: v for k, v in metadata_extra.items() if v not in (None, "", [])})
     meta = json.dumps(metadata)
 
-    if existing:
-        existing.workspace_id = workspace_uuid
-        existing.content = full_text
-        existing.metadata_json = meta
-        existing.processed_at = None
-        await session.commit()
-        return {"documents_fetched": len(messages), "documents_persisted": 0, "documents_updated": 1}
-
-    doc = SourceDocument(
-        id=uuid4(),
+    result = await ingest_source_document_revision(
+        session,
         workspace_id=workspace_uuid,
         source_type="agent_session",
         external_id=external_id,
         content=full_text,
         metadata_json=meta,
     )
-    session.add(doc)
     await session.commit()
-    return {"documents_fetched": len(messages), "documents_persisted": 1}
+    return {
+        "documents_fetched": len(messages),
+        "documents_persisted": int(result.created),
+        "documents_skipped": int(result.unchanged),
+        "unchanged": int(result.unchanged),
+        "documents_updated": int(result.revised),
+        "document_id": str(result.document.id),
+    }
 
 
 def _coerce_workspace_uuid(value: object) -> UUID | None:

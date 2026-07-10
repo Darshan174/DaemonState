@@ -14,6 +14,7 @@ from sqlalchemy.orm import selectinload
 from app.database import get_db_session
 from app.models import Component, SourceDocument
 from app.services.ingest import IngestionService
+from app.services.source_revisions import ingest_source_document_revision
 from app.services.workspace_scope import (
     source_matches_workspace,
     workspace_connector_types,
@@ -44,6 +45,9 @@ class SourceRead(BaseModel):
     external_id: str
     author: str | None
     source_url: str | None
+    source_identity_sha256: str
+    revision_number: int
+    supersedes_source_document_id: UUID | None
     ingested_at: datetime
     processed_at: datetime | None
 
@@ -94,26 +98,27 @@ async def create_source(
     workspace_id = payload.workspace_id or _metadata_workspace_uuid(metadata)
     if workspace_id:
         metadata.setdefault("workspace_id", str(workspace_id))
-    doc = SourceDocument(
+    result = await ingest_source_document_revision(
+        session,
         workspace_id=workspace_id,
         source_type=payload.source_type,
         external_id=payload.external_id,
         content=payload.content,
         author=payload.author,
         source_url=payload.url,
-        metadata_json=json.dumps(metadata),
+        metadata_json=metadata,
     )
-    session.add(doc)
-    await session.flush()
+    doc = result.document
 
-    if sync:
+    if sync and result.created:
         svc = IngestionService(session)
         await svc.process_document(doc.id)
         await session.commit()
     else:
         await session.commit()
         from app.config import settings
-        background_tasks.add_task(_run_ingestion, doc.id, settings.database_url)
+        if result.created:
+            background_tasks.add_task(_run_ingestion, doc.id, settings.database_url)
 
     return doc
 
@@ -126,36 +131,42 @@ async def create_sources_bulk(
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     doc_ids = []
+    created_ids = []
     for item in payload.documents:
         metadata = dict(item.metadata)
         workspace_id = item.workspace_id or _metadata_workspace_uuid(metadata)
         if workspace_id:
             metadata.setdefault("workspace_id", str(workspace_id))
-        doc = SourceDocument(
+        result = await ingest_source_document_revision(
+            session,
             workspace_id=workspace_id,
             source_type=item.source_type,
             external_id=item.external_id,
             content=item.content,
             author=item.author,
             source_url=item.url,
-            metadata_json=json.dumps(metadata),
+            metadata_json=metadata,
         )
-        session.add(doc)
-        await session.flush()
-        doc_ids.append(doc.id)
+        doc_ids.append(result.document.id)
+        if result.created:
+            created_ids.append(result.document.id)
 
     if sync:
         svc = IngestionService(session)
-        for doc_id in doc_ids:
+        for doc_id in created_ids:
             await svc.process_document(doc_id)
         await session.commit()
     else:
         await session.commit()
         from app.config import settings
-        for doc_id in doc_ids:
+        for doc_id in created_ids:
             background_tasks.add_task(_run_ingestion, doc_id, settings.database_url)
 
-    return {"created": len(doc_ids), "document_ids": [str(d) for d in doc_ids]}
+    return {
+        "created": len(created_ids),
+        "unchanged": len(doc_ids) - len(created_ids),
+        "document_ids": [str(d) for d in doc_ids],
+    }
 
 
 @router.post("/sources/upload", response_model=SourceRead, status_code=201)
@@ -169,19 +180,20 @@ async def upload_source(
     metadata = {"filename": file.filename}
     if workspace_id:
         metadata["workspace_id"] = str(workspace_id)
-    doc = SourceDocument(
+    result = await ingest_source_document_revision(
+        session,
         workspace_id=workspace_id,
         source_type="local",
         external_id=file.filename or "upload",
         content=content,
-        metadata_json=json.dumps(metadata),
+        metadata_json=metadata,
     )
-    session.add(doc)
-    await session.flush()
+    doc = result.document
     await session.commit()
 
     from app.config import settings
-    background_tasks.add_task(_run_ingestion, doc.id, settings.database_url)
+    if result.created:
+        background_tasks.add_task(_run_ingestion, doc.id, settings.database_url)
     return SourceRead(
         id=doc.id,
         workspace_id=doc.workspace_id,
@@ -189,6 +201,9 @@ async def upload_source(
         external_id=doc.external_id,
         author=doc.author,
         source_url=doc.source_url,
+        source_identity_sha256=doc.source_identity_sha256,
+        revision_number=doc.revision_number,
+        supersedes_source_document_id=doc.supersedes_source_document_id,
         ingested_at=doc.ingested_at,
         processed_at=doc.processed_at,
     )
@@ -253,6 +268,9 @@ async def get_source(
         "external_id": doc.external_id,
         "author": doc.author,
         "source_url": doc.source_url,
+        "source_identity_sha256": doc.source_identity_sha256,
+        "revision_number": doc.revision_number,
+        "supersedes_source_document_id": doc.supersedes_source_document_id,
         "ingested_at": doc.ingested_at,
         "processed_at": doc.processed_at,
         "content": doc.content,

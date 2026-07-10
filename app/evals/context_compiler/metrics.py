@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import math
 from pathlib import Path
 from typing import Any
 
@@ -13,22 +15,67 @@ CONTEXT_COMPILER_METRICS = (
     "conflict_detection_rate",
     "token_efficiency",
     "verification_success",
+    "citation_validity",
+    "stale_leakage",
+    "rendered_budget_compliance",
+    "retrieval_relevance",
 )
 
 FINAL_MANIFEST_KEYS = {
     "schema_version",
+    "compiler",
     "context_pack_id",
     "objective",
     "created_at",
+    "workspace_id",
+    "input_fingerprint",
     "target_model",
     "repo_state",
     "selected_context",
     "excluded_context",
     "risks",
+    "uncertainties",
+    "implementation_plan",
     "verification",
     "stop_conditions",
+    "token_accounting",
+    "context_health",
+    "persistence",
     "rendering",
+    "lockfile",
 }
+
+
+async def evaluate_compiler_fixture(
+    compiler: Any,
+    *,
+    fixture_root: str | Path | None = None,
+    objective: str = "finish GitHub connector pagination and add tests",
+    token_budget: int = 4000,
+    source_documents: dict[str, str] | None = None,
+) -> tuple[Any, dict[str, float]]:
+    """Invoke the real compiler and score its emitted artifact.
+
+    This is intentionally an evidence-producing seam, not a claim that one
+    model performs better than another.
+    """
+    fixture = load_fixture_project(fixture_root)
+    required, forbidden = load_fixture_expectations(fixture_root)
+    result = await compiler.compile_context_pack(
+        objective,
+        repo_path=str(fixture["repo_root"]),
+        target_model="qwen2.5-coder-7b",
+        token_budget=token_budget,
+        persist=False,
+    )
+    metrics = evaluate_context_pack_manifest(
+        result.manifest,
+        required,
+        forbidden,
+        markdown=result.markdown,
+        source_documents=source_documents,
+    )
+    return result, metrics
 
 
 def load_fixture_expectations(
@@ -62,6 +109,9 @@ def evaluate_context_pack_manifest(
     manifest: dict[str, Any],
     required_context: dict[str, Any],
     forbidden_context: dict[str, Any],
+    *,
+    markdown: str | None = None,
+    source_documents: dict[str, str] | None = None,
 ) -> dict[str, float]:
     selected = list(manifest.get("selected_context") or [])
     excluded = list(manifest.get("excluded_context") or [])
@@ -106,6 +156,26 @@ def evaluate_context_pack_manifest(
         _acceptance_criterion_has_contract_shape(item)
         for item in verification.get("acceptance_criteria") or []
     )
+    citations = [
+        citation
+        for item in selected
+        for citation in item.get("citations") or []
+        if isinstance(citation, dict)
+    ]
+    valid_citations = sum(
+        1
+        for citation in citations
+        if _citation_is_valid(citation, manifest, source_documents)
+    )
+    rendering = manifest.get("rendering") or {}
+    rendered_tokens = int(rendering.get("estimated_tokens") or 0)
+    if markdown is not None:
+        rendered_tokens = max(1, math.ceil(len(markdown) / 4))
+    rendered_budget_ok = bool(
+        budget
+        and rendered_tokens <= budget
+        and (markdown is None or rendering.get("markdown_sha256") == _sha256(markdown))
+    )
 
     return {
         "context_recall": _ratio(required_hits, len(required_items)),
@@ -115,7 +185,71 @@ def evaluate_context_pack_manifest(
         "conflict_detection_rate": _ratio(conflict_hits + forbidden_excluded, len(expected_conflicts) + len(forbidden_items)),
         "token_efficiency": 1.0 if not budget or used_tokens <= budget else round(budget / used_tokens, 4),
         "verification_success": 1.0 if has_commands and has_acceptance else 0.0,
+        "citation_validity": _ratio(valid_citations, len(citations)),
+        "stale_leakage": _ratio(stale_selected + forbidden_selected, selected_count),
+        "rendered_budget_compliance": 1.0 if rendered_budget_ok else 0.0,
+        "retrieval_relevance": _ratio(required_hits, len(required_items)),
     }
+
+
+def _citation_is_valid(
+    citation: dict[str, Any],
+    manifest: dict[str, Any],
+    source_documents: dict[str, str] | None,
+) -> bool:
+    source_type = str(citation.get("source_type") or "")
+    quote = str(citation.get("quote") or "")
+    if not citation.get("citation_id") or not quote:
+        return False
+    evidence_span_id = citation.get("evidence_span_id")
+    if evidence_span_id:
+        if citation.get("validated") is not True:
+            return False
+        source_id = str(citation.get("source_document_id") or "")
+        if source_documents is None:
+            return bool(
+                source_id
+                and citation.get("start_char") is not None
+                and citation.get("end_char") is not None
+                and citation.get("text_sha256")
+            )
+        content = source_documents.get(source_id)
+        if content is None:
+            return False
+        start = citation.get("start_char")
+        end = citation.get("end_char")
+        if not isinstance(start, int) or not isinstance(end, int):
+            return False
+        if start < 0 or end <= start or end > len(content):
+            return False
+        exact = content[start:end]
+        normalized_exact = " ".join(exact.split())
+        normalized_quote = " ".join(quote.split())
+        quote_matches = (
+            normalized_exact == normalized_quote
+            or (
+                normalized_quote.endswith("...")
+                and normalized_exact.startswith(normalized_quote[:-3].rstrip())
+            )
+        )
+        return quote_matches and _sha256(exact) == citation.get("text_sha256")
+    if source_type == "repo_file":
+        path = str(citation.get("source_url") or "")
+        file_ref = next(
+            (
+                ref
+                for item in manifest.get("selected_context") or []
+                for ref in item.get("file_refs") or []
+                if ref.get("path") == path
+            ),
+            None,
+        )
+        if not file_ref or not file_ref.get("sha256"):
+            return False
+        repo_root = Path(str((manifest.get("repo_state") or {}).get("repo_path") or ""))
+        file_path = repo_root / path
+        return file_path.is_file() and _sha256_bytes(file_path.read_bytes()) == file_ref["sha256"]
+    return source_type in {"repo_index", "repo_state", "task_contract", "user_task"}
 
 
 def _item_text(item: dict[str, Any]) -> str:
@@ -212,14 +346,32 @@ def _acceptance_criterion_has_contract_shape(item: Any) -> bool:
 def _load_files(root: Path) -> dict[str, str]:
     if not root.exists():
         return {}
-    return {
-        str(path.relative_to(root)): path.read_text(encoding="utf-8")
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
+    loaded: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if not path.is_file() or any(
+            part == "__pycache__" or part.startswith(".") for part in relative.parts
+        ):
+            continue
+        try:
+            loaded[str(relative)] = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            # Eval fixtures model source context. Generated bytecode and other
+            # binary artifacts are not candidate context and must not make the
+            # fixture dependent on local tooling state.
+            continue
+    return loaded
 
 
 def _ratio(numerator: int, denominator: int) -> float:
     if denominator <= 0:
         return 1.0
     return round(numerator / denominator, 4)
+
+
+def _sha256(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
