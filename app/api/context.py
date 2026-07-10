@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -36,7 +36,7 @@ class ContextPrepareRequest(BaseModel):
 
 class ContextPrepareResponse(BaseModel):
     context_pack_id: str
-    schema_version: str
+    schema_version: Literal["context_pack.v2"]
     markdown: str
     manifest: dict[str, Any]
     health_score: float

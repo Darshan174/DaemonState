@@ -6,10 +6,11 @@ import PrepareContextPage, { formatPrepareError } from "./PrepareContextPage";
 
 const mocks = vi.hoisted(() => ({
   workspaces: [{ id: "11111111-1111-1111-1111-111111111111", name: "Context Engine" }],
+  workspaceState: {},
 }));
 
 vi.mock("../api/hooks", () => ({
-  useWorkspaces: () => ({ data: mocks.workspaces, isLoading: false }),
+  useWorkspaces: () => ({ data: mocks.workspaces, isLoading: false, isError: false, ...mocks.workspaceState }),
 }));
 
 vi.mock("../context/WorkspaceContext", () => ({
@@ -34,6 +35,7 @@ const successPayload = {
   health_score: 82,
   markdown: "# Objective\nFix provenance",
   manifest: {
+    schema_version: "context_pack.v2",
     objective: "Fix provenance",
     selected_context: [{
       id: "claim-1",
@@ -45,10 +47,16 @@ const successPayload = {
       inclusion_reason: "verified_current_claim",
       citations: [{ citation_id: "E1", source_revision_number: 2, start_char: 10, end_char: 32, quote: "Source history is append-only." }],
     }],
-    excluded_context: [{ id: "old-1", title: "Old mutable-source rule", reason: "historical", reason_detail: "Superseded by revision 2." }],
+    excluded_context: [{
+      id: "old-1",
+      title: "Old mutable-source rule",
+      reason: "historical",
+      reason_detail: "Superseded by revision 2.",
+      citation: { citation_id: "E-old", source_revision_number: 1, quote: "Sources may be mutated in place." },
+    }],
     verification: {
       acceptance_criteria: [{ id: "AC1", text: "Changed content creates a new revision." }],
-      commands: [{ id: "V1", command: "pytest -q tests/test_evidence_ledger.py", purpose: "Verify evidence integrity." }],
+      commands: [{ id: "V1", command: "pytest -q tests/test_evidence_ledger.py", purpose: "Verify evidence integrity.", cwd: "/workspace/context-engine", expected: "exit_code == 0", required: true }],
     },
     context_health: { readiness_score: 82, reasons: [{ code: "unknown_signal", message: "One source lacks an exact span." }] },
     token_accounting: { rendered_tokens: 2400 },
@@ -64,6 +72,7 @@ successPayload.excluded_context = successPayload.manifest.excluded_context;
 describe("PrepareContextPage", () => {
   beforeEach(() => {
     mocks.workspaces = [{ id: "11111111-1111-1111-1111-111111111111", name: "Context Engine" }];
+    mocks.workspaceState = {};
     const values = new Map();
     Object.defineProperty(globalThis, "localStorage", {
       configurable: true,
@@ -96,6 +105,25 @@ describe("PrepareContextPage", () => {
 
     expect(screen.getByText("Repository only")).toBeInTheDocument();
     expect(screen.getByText("No context pack compiled yet")).toBeInTheDocument();
+  });
+
+  it("blocks repository-only compilation until workspace discovery succeeds", () => {
+    mocks.workspaceState = { data: undefined, isLoading: true };
+    renderPage();
+
+    expect(screen.getByRole("heading", { name: "Loading workspace evidence…" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Compile context pack" })).not.toBeInTheDocument();
+  });
+
+  it("surfaces workspace discovery failures and retries without compiling", () => {
+    const refetch = vi.fn();
+    mocks.workspaceState = { data: undefined, isError: true, error: { status: 503 }, refetch };
+    renderPage();
+
+    expect(screen.getByRole("alert")).toHaveTextContent("context compiler is unavailable");
+    expect(screen.getByText(/Repository-only compilation is disabled/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry workspace discovery" }));
+    expect(refetch).toHaveBeenCalledOnce();
   });
 
   it("shows an honest submitting state", async () => {
@@ -137,10 +165,70 @@ describe("PrepareContextPage", () => {
     expect(screen.getByText("Old mutable-source rule")).toBeInTheDocument();
     expect(screen.getByText("Changed content creates a new revision.")).toBeInTheDocument();
     expect(screen.getByText("pytest -q tests/test_evidence_ledger.py")).toBeInTheDocument();
+    expect(screen.getByText("cwd: /workspace/context-engine")).toBeInTheDocument();
+    expect(screen.getByText("Expected: exit_code == 0")).toBeInTheDocument();
+    expect(screen.getByText("Required")).toBeInTheDocument();
+    expect(screen.getByText("Sources may be mutated in place.")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Fix provenance" })).toHaveFocus();
 
     fireEvent.click(screen.getByRole("button", { name: "Copy compiler markdown" }));
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith("# Objective\nFix provenance"));
+  });
+
+  it("rejects malformed or inconsistent context pack responses", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ ...successPayload, schema_version: "context_packet.v1" }),
+    });
+    renderPage();
+    fireEvent.change(screen.getByLabelText("Objective"), { target: { value: "Reject stale contracts" } });
+    fireEvent.change(screen.getByLabelText("Repository path"), { target: { value: "/workspace/context-engine" } });
+    fireEvent.click(screen.getByRole("button", { name: "Compile context pack" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("invalid context_pack.v2 response");
+    expect(screen.queryByText("Context pack ready")).not.toBeInTheDocument();
+  });
+
+  it("reports clipboard failure instead of claiming success", async () => {
+    navigator.clipboard.writeText.mockRejectedValue(new Error("denied"));
+    document.execCommand = vi.fn().mockReturnValue(false);
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => successPayload });
+    renderPage();
+    fireEvent.change(screen.getByLabelText("Objective"), { target: { value: "Copy exact output" } });
+    fireEvent.change(screen.getByLabelText("Repository path"), { target: { value: "/workspace/context-engine" } });
+    fireEvent.click(screen.getByRole("button", { name: "Compile context pack" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Copy compiler markdown" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Copy failed");
+    expect(screen.getByRole("button", { name: "Copy compiler markdown" })).toBeInTheDocument();
+  });
+
+  it("shows a useful error for an empty non-JSON server failure", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: "",
+      json: async () => { throw new Error("not json"); },
+    });
+    renderPage();
+    fireEvent.change(screen.getByLabelText("Objective"), { target: { value: "Handle server failure" } });
+    fireEvent.change(screen.getByLabelText("Repository path"), { target: { value: "/workspace/context-engine" } });
+    fireEvent.click(screen.getByRole("button", { name: "Compile context pack" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("context compiler is unavailable");
+  });
+
+  it("rejects a token budget below the compiler minimum without issuing a request", () => {
+    global.fetch = vi.fn();
+    renderPage();
+    fireEvent.change(screen.getByLabelText("Objective"), { target: { value: "Respect the budget" } });
+    fireEvent.change(screen.getByLabelText("Repository path"), { target: { value: "/workspace/context-engine" } });
+    fireEvent.change(screen.getByLabelText("Token budget"), { target: { value: "299" } });
+    fireEvent.click(screen.getByRole("button", { name: "Compile context pack" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent("at least 300");
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it("keeps values and displays a typed compiler error", async () => {

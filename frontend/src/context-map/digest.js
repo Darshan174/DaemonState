@@ -136,17 +136,6 @@ export function issueLabel(card) {
   return number ? `Issue #${number}` : preciseLine(card?.title, 5);
 }
 
-export function relatedCards(card, cards = [], links = []) {
-  if (!card) return [];
-  const byId = cardsById(cards);
-  const relatedIds = new Set();
-  links.forEach((link) => {
-    if (link.source_card_id === card.id) relatedIds.add(link.target_card_id);
-    if (link.target_card_id === card.id) relatedIds.add(link.source_card_id);
-  });
-  return Array.from(relatedIds).map((id) => byId.get(id)).filter(Boolean);
-}
-
 export function cardRelationships(card, cards = [], links = []) {
   if (!card) return [];
   const byId = cardsById(cards);
@@ -157,105 +146,6 @@ export function cardRelationships(card, cards = [], links = []) {
       otherCard: byId.get(link.source_card_id === card.id ? link.target_card_id : link.source_card_id),
       direction: link.source_card_id === card.id ? "out" : "in",
     }));
-}
-
-export function estimateTokens(cards = []) {
-  const words = cards.reduce((total, card) => {
-    const text = [card.title, card.summary, card.why_it_matters, card.next_action]
-      .filter(Boolean)
-      .join(" ");
-    return total + text.split(/\s+/).filter(Boolean).length;
-  }, 0);
-  return Math.max(120, Math.round(words * 1.35));
-}
-
-export function buildAgentPacket({ selectedCard, includedCards, excludedCards = [] }) {
-  const cards = includedCards.filter(Boolean);
-  return {
-    schema: "context_packet.v1",
-    goal: selectedCard?.title || "Selected context handoff",
-    current_state: cards.filter((card) => card.temporal === "current").map(packetItem),
-    decisions: cards.filter((card) => card.type === "decision").map(packetItem),
-    blockers: cards.filter((card) => card.type === "blocker" || card.status === "blocked").map(packetItem),
-    tasks: cards.filter((card) => card.type === "task").map(packetItem),
-    files: cards.filter((card) => card.type === "file").map(packetItem),
-    prior_agent_attempts: cards.filter((card) => card.type === "agent_session").map(packetItem),
-    missing_context: missingContext(cards),
-    source_citations: cards.flatMap((card) =>
-      (card.provenance || []).map((source) => ({
-        card_id: card.id,
-        source_type: source.source_type,
-        source_label: source.source_label,
-        source_url: source.source_url || null,
-      })),
-    ),
-    excluded: excludedCards.map((card) => ({ id: card.id, title: card.title })),
-  };
-}
-
-export function packetMarkdown(packet) {
-  const lines = [
-    `# ${packet.goal}`,
-    "",
-    "## Current State",
-    ...markdownItems(packet.current_state),
-    "",
-    "## Decisions",
-    ...markdownItems(packet.decisions),
-    "",
-    "## Blockers",
-    ...markdownItems(packet.blockers),
-    "",
-    "## Tasks",
-    ...markdownItems(packet.tasks),
-    "",
-    "## Files",
-    ...markdownItems(packet.files),
-    "",
-    "## Prior Agent Attempts",
-    ...markdownItems(packet.prior_agent_attempts),
-    "",
-    "## Missing Context",
-    ...(packet.missing_context.length ? packet.missing_context.map((item) => `- ${item}`) : ["- None flagged"]),
-    "",
-    "## Source Citations",
-    ...(packet.source_citations.length
-      ? packet.source_citations.map((source) => `- ${source.source_label} (${source.source_type})${source.source_url ? `: ${source.source_url}` : ""}`)
-      : ["- None"]),
-  ];
-  return lines.join("\n");
-}
-
-function packetItem(card) {
-  return {
-    id: card.id,
-    title: card.title,
-    summary: card.summary,
-    status: card.status,
-    confidence: card.confidence,
-    why_included: card.why_it_matters,
-    next_action: card.next_action,
-  };
-}
-
-function markdownItems(items) {
-  return items.length
-    ? items.map((item) => `- **${item.title}**: ${item.summary}`)
-    : ["- None"];
-}
-
-function missingContext(cards) {
-  const missing = [];
-  if (cards.some((card) => card.status === "needs_review" || card.confidence < 0.7)) {
-    missing.push("Verify low-confidence or proposed context before execution.");
-  }
-  if (cards.some((card) => card.status === "conflict")) {
-    missing.push("Resolve conflicting evidence before handing off to an agent.");
-  }
-  if (cards.some((card) => card.status === "blocked")) {
-    missing.push("Confirm owner, reproduction steps, or acceptance criteria for blockers.");
-  }
-  return missing;
 }
 
 function isAiSession(card) {

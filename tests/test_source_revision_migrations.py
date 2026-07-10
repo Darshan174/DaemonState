@@ -74,8 +74,13 @@ async def test_source_revision_migration_is_repeatable_and_preserves_legacy_rows
         unique_revision_indexes = [
             row for row in indexes if row[1] == "uq_source_documents_identity_revision"
         ]
+        unique_predecessor_indexes = [
+            row for row in indexes if row[1] == "uq_source_documents_superseded_once"
+        ]
         assert len(unique_revision_indexes) == 1
         assert unique_revision_indexes[0][2] == 1
+        assert len(unique_predecessor_indexes) == 1
+        assert unique_predecessor_indexes[0][2] == 1
     finally:
         await engine.dispose()
         try:

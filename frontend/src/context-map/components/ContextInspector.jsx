@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { ExternalLink, GitBranch, ShieldCheck, X } from "lucide-react";
-import AgentPackBuilder from "./AgentPackBuilder";
 import {
   STATUS_META,
   TONE_CLASSES,
@@ -8,7 +7,7 @@ import {
   confidenceLabel,
 } from "../digest";
 
-const TABS = ["Summary", "Evidence", "Relationships", "Agent Pack"];
+const TABS = ["Summary", "Evidence", "Relationships"];
 
 export default function ContextInspector({ card, cards = [], links = [], onClose }) {
   const [tab, setTab] = useState("Summary");
@@ -60,7 +59,7 @@ export default function ContextInspector({ card, cards = [], links = [], onClose
       </div>
 
       <div className="border-b border-slate-200 px-3 py-2 dark:border-neutral-800">
-        <div className="grid grid-cols-4 gap-1 rounded-lg bg-slate-100 p-1 dark:bg-black">
+        <div className="grid grid-cols-3 gap-1 rounded-lg bg-slate-100 p-1 dark:bg-black">
           {TABS.map((item) => (
             <button
               key={item}
@@ -82,7 +81,6 @@ export default function ContextInspector({ card, cards = [], links = [], onClose
         {tab === "Summary" && <SummaryTab card={card} />}
         {tab === "Evidence" && <EvidenceTab card={card} />}
         {tab === "Relationships" && <RelationshipsTab relationships={relationships} />}
-        {tab === "Agent Pack" && <AgentPackBuilder card={card} cards={cards} links={links} />}
       </div>
     </aside>
   );

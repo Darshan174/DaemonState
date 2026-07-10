@@ -290,6 +290,8 @@ async def _link_claim_components(
         return
     if source_component.id == target_component.id:
         return
+    if source_component.workspace_id != target_component.workspace_id:
+        return
     exists = await session.scalar(
         select(Relationship).where(
             Relationship.source_component_id == source_component.id,

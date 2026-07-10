@@ -136,9 +136,9 @@ The broader [Context Pack v2 design reference](context-pack-v2.md) contains
 additional historical hardening proposals. For current behavior, the compiler
 manifest and its focused tests are authoritative.
 
-Not implemented yet: a repeated `prepare_task` call does not reuse an existing
-pack row, even though the deterministic replay key is persisted as the pack's
-idempotency key.
+Repeated `prepare_task` calls with the same deterministic replay key reuse the
+existing durable pack row. The replay key has a database uniqueness constraint;
+the stored manifest and markdown are returned unchanged.
 
 ## Runtime Observation Contract
 

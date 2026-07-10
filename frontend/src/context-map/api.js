@@ -38,8 +38,35 @@ export function useBuildContext(workspaceId) {
 
 export function usePrepareContext() {
   return useMutation({
-    mutationFn: (payload) => api.post("/context/prepare", payload),
+    mutationFn: async (payload) => {
+      const result = await api.post("/context/prepare", payload);
+      validateContextPackResponse(result);
+      return result;
+    },
   });
+}
+
+export function validateContextPackResponse(result) {
+  const manifest = result?.manifest;
+  if (
+    !result
+    || result.schema_version !== "context_pack.v2"
+    || manifest?.schema_version !== "context_pack.v2"
+    || !result.context_pack_id
+    || typeof result.markdown !== "string"
+    || !Array.isArray(result.selected_context)
+    || !Array.isArray(result.excluded_context)
+    || !Array.isArray(manifest.selected_context)
+    || !Array.isArray(manifest.excluded_context)
+  ) {
+    throw new Error("The compiler returned an invalid context_pack.v2 response.");
+  }
+  if (
+    JSON.stringify(result.selected_context) !== JSON.stringify(manifest.selected_context)
+    || JSON.stringify(result.excluded_context) !== JSON.stringify(manifest.excluded_context)
+  ) {
+    throw new Error("The compiler returned inconsistent context-pack audit data.");
+  }
 }
 
 function getAiSettings() {
