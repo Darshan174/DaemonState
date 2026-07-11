@@ -256,17 +256,6 @@ export function relevanceLabel(card) {
   return "Relevance unverified";
 }
 
-export function relatedCards(card, cards = [], links = []) {
-  if (!card) return [];
-  const byId = cardsById(cards);
-  const relatedIds = new Set();
-  links.forEach((link) => {
-    if (link.source_card_id === card.id) relatedIds.add(link.target_card_id);
-    if (link.target_card_id === card.id) relatedIds.add(link.source_card_id);
-  });
-  return Array.from(relatedIds).map((id) => byId.get(id)).filter(Boolean);
-}
-
 export function cardRelationships(card, cards = [], links = []) {
   if (!card) return [];
   const byId = cardsById(cards);

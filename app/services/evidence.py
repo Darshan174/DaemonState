@@ -61,7 +61,10 @@ def score_prompt_injection_risk(text: str) -> float:
 
 
 async def ensure_source_document_ledger_fields(doc: SourceDocument) -> None:
-    doc.content_sha256 = sha256_text(doc.content or "")
+    expected_hash = sha256_text(doc.content or "")
+    if doc.content_sha256 and doc.content_sha256 != expected_hash:
+        raise ValueError("source document content hash does not match stored content")
+    doc.content_sha256 = expected_hash
     metadata = metadata_dict(doc.metadata_json)
     if not doc.trust_zone:
         doc.trust_zone = default_trust_zone_for_source(doc.source_type, metadata)

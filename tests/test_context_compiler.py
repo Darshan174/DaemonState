@@ -16,6 +16,7 @@ from app.models import (
     ContextPackItem,
     EvidenceSpan,
     Model,
+    Relationship,
     SourceDocument,
     Workspace,
 )
@@ -184,6 +185,107 @@ async def test_prompt_injection_risk_is_excluded(db_session, tmp_path):
     assert all(item["component_id"] != str(component.id) for item in result.manifest["selected_context"])
 
 
+async def test_compiler_drops_cross_workspace_relationship_targets(db_session, tmp_path):
+    (tmp_path / "app.py").write_text("def handler():\n    return True\n")
+    workspace_a = Workspace(id=uuid4(), name="Workspace A", slug=f"a-{uuid4()}")
+    workspace_b = Workspace(id=uuid4(), name="Workspace B", slug=f"b-{uuid4()}")
+    model = Model(id=uuid4(), name="Decision")
+    doc_a = SourceDocument(
+        id=uuid4(), workspace_id=workspace_a.id, source_type="local", external_id="a",
+        content="Decision: keep workspace evidence isolated.", metadata_json="{}",
+    )
+    doc_b = SourceDocument(
+        id=uuid4(), workspace_id=workspace_b.id, source_type="local", external_id="b",
+        content="WORKSPACE_B_SECRET", metadata_json="{}",
+    )
+    component_a = Component(
+        id=uuid4(), workspace_id=workspace_a.id, model_id=model.id,
+        source_document_id=doc_a.id, name="Isolation decision", value=doc_a.content,
+        fact_type="decision", status="active",
+    )
+    component_b = Component(
+        id=uuid4(), workspace_id=workspace_b.id, model_id=model.id,
+        source_document_id=doc_b.id, name="WORKSPACE_B_SECRET", value=doc_b.content,
+        fact_type="decision", status="active",
+    )
+    relationship = Relationship(
+        id=uuid4(), source_component_id=component_a.id, target_component_id=component_b.id,
+        relationship_type="depends_on", origin="deterministic", status="active",
+        evidence="cross tenant edge evidence",
+    )
+    db_session.add_all([
+        workspace_a, workspace_b, model, doc_a, doc_b, component_a, component_b, relationship,
+    ])
+    await db_session.flush()
+
+    result = await ContextCompiler(db_session).compile_context_pack(
+        "review the isolation decision in app.py",
+        workspace_id=workspace_a.id,
+        repo_path=str(tmp_path),
+        token_budget=3000,
+    )
+
+    assert "WORKSPACE_B_SECRET" not in json.dumps(result.manifest)
+
+
+async def test_explicit_contradiction_excludes_both_verified_claim_sides(db_session, tmp_path):
+    (tmp_path / "app.py").write_text("FEATURE_FLAG = True\n")
+    model = Model(id=uuid4(), name="Decision")
+    docs = [
+        SourceDocument(id=uuid4(), source_type="local", external_id="flag-on", content="Decision: feature flag must stay on.", metadata_json="{}"),
+        SourceDocument(id=uuid4(), source_type="local", external_id="flag-off", content="Decision: feature flag must stay off.", metadata_json="{}"),
+    ]
+    evidence = [
+        EvidenceSpan(
+            id=uuid4(), source_document_id=doc.id, start_char=0, end_char=len(doc.content),
+            text=doc.content, text_sha256=hashlib.sha256(doc.content.encode()).hexdigest(),
+            review_status="verified", trust_zone="trusted_human",
+        )
+        for doc in docs
+    ]
+    claims = [
+        Claim(id=uuid4(), identity_key="decision:flag:on", claim_type="decision", status="active", temporal="current"),
+        Claim(id=uuid4(), identity_key="decision:flag:off", claim_type="decision", status="active", temporal="current"),
+    ]
+    db_session.add_all([model, *docs, *evidence, *claims])
+    await db_session.flush()
+    revisions = [
+        ClaimRevision(
+            id=uuid4(), claim_id=claims[0].id, evidence_span_id=evidence[0].id,
+            value=docs[0].content, status_after="active", contradicts_claim_id=claims[1].id,
+        ),
+        ClaimRevision(
+            id=uuid4(), claim_id=claims[1].id, evidence_span_id=evidence[1].id,
+            value=docs[1].content, status_after="active",
+        ),
+    ]
+    db_session.add_all(revisions)
+    await db_session.flush()
+    for claim, revision in zip(claims, revisions, strict=True):
+        claim.current_revision_id = revision.id
+    components = [
+        Component(
+            id=uuid4(), model_id=model.id, source_document_id=doc.id, claim_id=claim.id,
+            identity_key=claim.identity_key, name=f"Feature flag decision {index}", value=doc.content,
+            fact_type="decision", status="active", confidence=0.95,
+        )
+        for index, (doc, claim) in enumerate(zip(docs, claims, strict=True), start=1)
+    ]
+    db_session.add_all(components)
+    await db_session.flush()
+
+    result = await ContextCompiler(db_session).compile_context_pack(
+        "resolve the feature flag contradiction in app.py",
+        repo_path=str(tmp_path),
+        token_budget=3500,
+    )
+
+    selected_ids = {item.get("component_id") for item in result.manifest["selected_context"]}
+    excluded = {item.get("claim_id"): item for item in result.manifest["excluded_context"]}
+    assert all(str(component.id) not in selected_ids for component in components)
+    assert all(excluded[str(claim.id)]["reason"] == "contradiction_unresolved" for claim in claims)
+
+
 async def test_api_prepare_commits_pack_manifest_markdown_and_items(client, db_session, tmp_path):
     (tmp_path / "app.py").write_text("def handler():\n    return True\n")
     (tmp_path / "tests").mkdir()
@@ -217,6 +319,28 @@ async def test_api_prepare_commits_pack_manifest_markdown_and_items(client, db_s
         assert len(items) == len(data["manifest"]["selected_context"])
     finally:
         await fresh.close()
+
+
+async def test_identical_persisted_compile_reuses_context_pack(db_session, tmp_path):
+    (tmp_path / "app.py").write_text("def handler():\n    return True\n")
+    compiler = ContextCompiler(db_session)
+
+    first = await compiler.compile_context_pack(
+        "fix app.py and verify the handler",
+        repo_path=str(tmp_path),
+        token_budget=3000,
+    )
+    second = await compiler.compile_context_pack(
+        "fix app.py and verify the handler",
+        repo_path=str(tmp_path),
+        token_budget=3000,
+    )
+
+    assert second.context_pack_id == first.context_pack_id
+    assert second.manifest == first.manifest
+    assert second.markdown == first.markdown
+    packs = list(await db_session.scalars(select(ContextPack)))
+    assert len(packs) == 1
 
 
 async def test_current_verified_claim_revision_populates_exact_evidence_audit(

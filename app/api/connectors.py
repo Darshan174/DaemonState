@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -1203,7 +1204,22 @@ async def sync_connector(
         job.error_message = f"{CONNECTOR_CATALOG.get(connector.connector_type, {}).get('name', connector.connector_type)} is not supported yet."
         job.completed_at = utc_now()
     session.add(job)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        connector = await session.get(Connector, cid)
+        if connector is None:
+            raise HTTPException(status_code=404, detail="Connector not found")
+        active_job = await _active_sync_job(session, connector, idempotency_key)
+        if active_job is None:
+            raise
+        return {
+            **_job_to_dict(active_job),
+            "connector_id": str(cid),
+            "deduplicated": True,
+            "message": f"Sync already queued for {connector.connector_type}.",
+        }
     await session.refresh(job)
 
     return {

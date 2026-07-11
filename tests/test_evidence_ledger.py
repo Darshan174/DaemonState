@@ -137,6 +137,27 @@ async def test_evidence_span_range_and_hash_validation(db_session):
         )
 
 
+async def test_stale_source_hash_cannot_be_repaired_into_verified_evidence(db_session):
+    content = "Decision: preserve the original source hash."
+    doc = SourceDocument(
+        id=uuid4(),
+        source_type="local",
+        external_id="stale-hash",
+        content=content,
+        metadata_json="{}",
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    doc.content_sha256 = sha256_text("different stored content")
+
+    with pytest.raises(ValueError, match="content hash does not match"):
+        await create_evidence_span(
+            db_session,
+            source_document=doc,
+            text="preserve the original source hash",
+        )
+
+
 async def test_fuzzy_evidence_span_is_explicit_needs_review(db_session):
     doc = SourceDocument(
         id=uuid4(),

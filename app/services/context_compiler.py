@@ -10,7 +10,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -365,7 +365,7 @@ class ContextCompiler:
                 manifest["context_pack_id"] = None
             else:
                 try:
-                    await self._persist_pack(
+                    persisted_pack = await self._persist_pack(
                         pack_id=UUID(str(pack_id)),
                         workspace_id=workspace_uuid,
                         objective=goal_frame.objective,
@@ -379,6 +379,17 @@ class ContextCompiler:
                         idempotency_key=manifest["lockfile"]["replay_key"],
                         selected=selected,
                     )
+                    if str(persisted_pack.id) != str(pack_id):
+                        stored_manifest = json.loads(persisted_pack.manifest)
+                        return CompiledContextPack(
+                            context_pack_id=str(persisted_pack.id),
+                            schema_version=SCHEMA_VERSION,
+                            markdown=persisted_pack.markdown,
+                            manifest=stored_manifest,
+                            selected_items=list(stored_manifest.get("selected_context") or []),
+                            excluded_items=list(stored_manifest.get("excluded_context") or []),
+                            health_score=float(persisted_pack.health_score or 0.0),
+                        )
                 except SQLAlchemyError as exc:
                     raise ContextPersistenceError(
                         f"context pack persistence failed: {exc.__class__.__name__}"
@@ -493,6 +504,12 @@ class ContextCompiler:
             except SQLAlchemyError:
                 revisions_by_id = {}
 
+        contradicted_claim_ids = {
+            revision.contradicts_claim_id
+            for revision in revisions_by_id.values()
+            if revision.contradicts_claim_id is not None
+        }
+
         superseded_document_ids: set[UUID] = set()
         supersedes_column = getattr(SourceDocument, "supersedes_source_document_id", None)
         if supersedes_column is not None:
@@ -518,6 +535,8 @@ class ContextCompiler:
             evidence = revision.evidence_span if revision is not None else None
             evidence_verified, evidence_reason = _validate_evidence_span(evidence)
             doc = evidence.source_document if evidence is not None else component.source_document
+            if doc is not None and doc.workspace_id != workspace_id:
+                continue
             trust_zone = _source_trust_zone(doc)
             summary = revision.value if revision is not None else component.value
             quote = _first_non_empty(
@@ -531,12 +550,13 @@ class ContextCompiler:
                 float(evidence.prompt_injection_risk_score or 0.0) if evidence is not None else 0.0,
             )
             item_type = _item_type_for_component(component)
-            relationships = _relationship_summaries(component)
+            relationships = _relationship_summaries(component, workspace_id)
             conflict_state = (
                 "unresolved"
                 if (
                     (claim is not None and claim.status == "contested")
                     or (revision is not None and revision.contradicts_claim_id is not None)
+                    or (claim is not None and claim.id in contradicted_claim_ids)
                     or any(
                         rel.get("relationship_type") in {"contradicts", "conflicts_with"}
                         for rel in relationships
@@ -869,7 +889,15 @@ class ContextCompiler:
         repo_state: dict[str, Any],
         idempotency_key: str,
         selected: list[ContextCandidate],
-    ) -> None:
+    ) -> ContextPack:
+        existing = await self.session.scalar(
+            select(ContextPack)
+            .where(ContextPack.idempotency_key == idempotency_key)
+            .order_by(ContextPack.created_at, ContextPack.id)
+            .limit(1)
+        )
+        if existing is not None:
+            return existing
         manifest_json = json.dumps(manifest, sort_keys=True, separators=(",", ":"))
         pack = ContextPack(
             id=pack_id,
@@ -885,21 +913,31 @@ class ContextCompiler:
             repo_state_json=json.dumps(repo_state, sort_keys=True, separators=(",", ":")),
             idempotency_key=idempotency_key,
         )
-        self.session.add(pack)
-        await self.session.flush()
-        for candidate in selected:
-            self.session.add(ContextPackItem(
-                context_pack_id=pack.id,
-                item_type=candidate.item_type,
-                claim_id=_uuid_or_none(candidate.claim_id),
-                component_id=_uuid_or_none(candidate.component_id),
-                evidence_span_id=_uuid_or_none(candidate.evidence_span_id),
-                source_document_id=_uuid_or_none(candidate.source_document_id),
-                score=round(float(candidate.score), 6),
-                inclusion_reason=candidate.inclusion_reason,
-                token_cost=int(candidate.token_cost),
-            ))
-        await self.session.flush()
+        try:
+            async with self.session.begin_nested():
+                self.session.add(pack)
+                await self.session.flush()
+                for candidate in selected:
+                    self.session.add(ContextPackItem(
+                        context_pack_id=pack.id,
+                        item_type=candidate.item_type,
+                        claim_id=_uuid_or_none(candidate.claim_id),
+                        component_id=_uuid_or_none(candidate.component_id),
+                        evidence_span_id=_uuid_or_none(candidate.evidence_span_id),
+                        source_document_id=_uuid_or_none(candidate.source_document_id),
+                        score=round(float(candidate.score), 6),
+                        inclusion_reason=candidate.inclusion_reason,
+                        token_cost=int(candidate.token_cost),
+                    ))
+                await self.session.flush()
+        except IntegrityError:
+            existing = await self.session.scalar(
+                select(ContextPack).where(ContextPack.idempotency_key == idempotency_key)
+            )
+            if existing is None:
+                raise
+            return existing
+        return pack
 
 
 async def compile_context_pack(
@@ -1666,12 +1704,24 @@ def _assign_citation_ids(
     return selected, excluded
 
 
-def _relationship_summaries(component: Component) -> list[dict[str, Any]]:
+def _relationship_summaries(
+    component: Component,
+    workspace_id: UUID | None,
+) -> list[dict[str, Any]]:
     relationships = []
     for rel in [*component.outgoing_relationships, *component.incoming_relationships]:
         if rel.status == "rejected":
             continue
         if rel.origin != "deterministic" or not rel.evidence:
+            continue
+        source = rel.source_component
+        target_component = rel.target_component
+        if (
+            source is None
+            or target_component is None
+            or source.workspace_id != workspace_id
+            or target_component.workspace_id != workspace_id
+        ):
             continue
         target = None
         if rel.source_component_id == component.id and rel.target_component:
