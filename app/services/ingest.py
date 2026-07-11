@@ -52,13 +52,25 @@ class IngestionService:
         self.last_extraction_error: str | None = None
         self.last_extraction_warnings: list[str] = []
         self.last_extraction_report: ExtractionQualityReport | None = None
+        self.last_projection_report = {
+            "created": 0,
+            "reused": 0,
+            "superseded": 0,
+            "relationships_superseded": 0,
+        }
 
-    async def process_document(self, doc_id: UUID) -> int:
+    async def process_document(self, doc_id: UUID, *, force: bool = False) -> int:
         self.last_extraction_error = None
         self.last_extraction_warnings = []
         self.last_extraction_report = None
         doc = await self.session.get(SourceDocument, doc_id)
-        if doc is None or doc.processed_at is not None:
+        self.last_projection_report = {
+            "created": 0,
+            "reused": 0,
+            "superseded": 0,
+            "relationships_superseded": 0,
+        }
+        if doc is None or (doc.processed_at is not None and not force):
             return 0
         await ensure_source_document_ledger_fields(doc)
 
@@ -90,6 +102,7 @@ class IngestionService:
         if self.last_extraction_report is None:
             self.last_extraction_report = evaluate_extraction_quality(facts or [])
         if not facts:
+            await self._reconcile_source_projection(doc, [])
             doc.processed_at = utc_now()
             await self.session.flush()
             return 0
@@ -123,6 +136,11 @@ class IngestionService:
             for rel in fact.relationships:
                 origin = _determine_origin(doc.source_type, rel)
                 await self._create_relationship(component, rel, origin)
+
+        await self._reconcile_source_projection(
+            doc,
+            [component for component, _ in components],
+        )
 
         doc.processed_at = utc_now()
         await self.session.flush()
@@ -178,6 +196,7 @@ class IngestionService:
 
         existing_stmt = select(Component).where(
             Component.model_id == model.id,
+            Component.source_document_id == doc.id,
             Component.value == fact.value,
             Component.status.in_(["active", "needs_review", "proposed"]),
         )
@@ -201,6 +220,7 @@ class IngestionService:
             canonical_name=fact.name,
         )
         if existing is not None:
+            self.last_projection_report["reused"] += 1
             existing.confidence = max(existing.confidence, fact.confidence)
             if workspace_id and not existing.workspace_id:
                 existing.workspace_id = workspace_id
@@ -240,7 +260,67 @@ class IngestionService:
         )
         self.session.add(component)
         await self.session.flush()
+        self.last_projection_report["created"] += 1
         return component
+
+    async def _reconcile_source_projection(
+        self,
+        doc: SourceDocument,
+        current_components: list[Component],
+    ) -> None:
+        """Retire derived rows no longer produced by the current source revision."""
+        active_statuses = ("active", "needs_review", "proposed", "stale")
+        source_rows = list(await self.session.scalars(
+            select(SourceDocument.id).where(
+                SourceDocument.source_identity_sha256 == doc.source_identity_sha256
+            )
+        ))
+        if not source_rows:
+            return
+
+        current_ids = {component.id for component in current_components}
+        obsolete = list(await self.session.scalars(
+            select(Component).where(
+                Component.source_document_id.in_(source_rows),
+                Component.status.in_(active_statuses),
+            )
+        ))
+        obsolete = [component for component in obsolete if component.id not in current_ids]
+        if not obsolete:
+            return
+
+        replacements: dict[tuple[str, str | None], Component] = {}
+        replacements_by_fact_type: dict[str, list[Component]] = {}
+        for component in current_components:
+            replacements[(component.fact_type, component.identity_key)] = component
+            replacements_by_fact_type.setdefault(component.fact_type, []).append(component)
+
+        now = utc_now()
+        obsolete_ids: set[UUID] = set()
+        for component in obsolete:
+            replacement = replacements.get((component.fact_type, component.identity_key))
+            if replacement is None and len(replacements_by_fact_type.get(component.fact_type, [])) == 1:
+                replacement = replacements_by_fact_type[component.fact_type][0]
+            component.status = "superseded"
+            component.valid_to = now
+            component.superseded_by_id = replacement.id if replacement else None
+            obsolete_ids.add(component.id)
+
+        relationships = list(await self.session.scalars(
+            select(Relationship).where(
+                or_(
+                    Relationship.source_component_id.in_(obsolete_ids),
+                    Relationship.target_component_id.in_(obsolete_ids),
+                ),
+                Relationship.status != "superseded",
+            )
+        ))
+        for relationship in relationships:
+            relationship.status = "superseded"
+
+        self.last_projection_report["superseded"] += len(obsolete)
+        self.last_projection_report["relationships_superseded"] += len(relationships)
+        await self.session.flush()
 
     async def _create_relationship(self, source: Component, rel, origin: str = "proposed") -> None:
         confidence = min(max(float(getattr(rel, "confidence", 0.7)), 0.0), 1.0)

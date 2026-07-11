@@ -48,15 +48,13 @@ export default function ThemeToggle() {
       onClick={handleToggle}
       aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
       data-theme={resolvedTheme}
-      className="relative flex h-9 w-9 items-center justify-center rounded-lg
-        border border-slate-200/80 dark:border-white/[0.08]
-        bg-white/80 dark:bg-white/[0.045]
-        text-slate-500 dark:text-neutral-400
-        shadow-sm
-        hover:bg-white dark:hover:bg-white/[0.08]
-        hover:text-slate-950 dark:hover:text-neutral-200
+      className="relative flex h-9 w-9 items-center justify-center rounded-md
+        border border-[#d9d9d0] dark:border-[#292925]
+        bg-[#fbfbf6] dark:bg-[#141411]
+        text-[#68685f] dark:text-[#b3b3a9]
+        hover:border-[#68685f] hover:text-[#171713] dark:hover:border-[#77776e] dark:hover:text-[#f4f4ec]
         transition-all duration-300 ease-in-out
-        focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-black"
+        focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-300 focus-visible:ring-offset-2 focus-visible:ring-offset-[#f7f7f2] dark:focus-visible:ring-offset-[#0d0d0b]"
     >
       <svg
         className={`absolute w-[18px] h-[18px] transition-all duration-500 ease-[cubic-bezier(0.34,1.56,0.64,1)] ${

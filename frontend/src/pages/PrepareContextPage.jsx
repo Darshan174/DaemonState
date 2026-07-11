@@ -96,12 +96,12 @@ export default function PrepareContextPage() {
 
   return (
     <div className="app-page relative z-10 mx-auto max-w-6xl pb-14">
-      <section className="overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-[0_22px_70px_rgba(15,23,42,0.08)] dark:border-white/[0.08] dark:bg-black/55">
+      <section className="overflow-hidden rounded-md border border-[#d9d9d0] bg-[#fbfbf6] dark:border-[#292925] dark:bg-[#141411]">
         <div className="grid gap-0 lg:grid-cols-[0.92fr_1.08fr]">
-          <div className="relative overflow-hidden border-b border-slate-200/80 bg-slate-950 px-6 py-8 text-white dark:border-white/[0.08] lg:border-b-0 lg:border-r lg:px-8 lg:py-10">
-            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_10%,rgba(99,102,241,0.28),transparent_36%),radial-gradient(circle_at_90%_85%,rgba(20,184,166,0.20),transparent_34%)]" />
+          <div className="relative overflow-hidden border-b border-[#292925] bg-[#171713] px-6 py-8 text-white lg:border-b-0 lg:border-r lg:px-8 lg:py-10 dark:bg-[#0d0d0b]">
+            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_10%,rgba(217,255,104,0.16),transparent_34%),radial-gradient(circle_at_90%_85%,rgba(255,255,255,0.055),transparent_32%)]" />
             <div className="relative">
-              <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.06] px-3 py-1 text-[11px] font-bold uppercase tracking-[0.18em] text-indigo-200">
+              <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.06] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#d9ff68]">
                 <Sparkles className="h-3.5 w-3.5" />
                 Prepare next run
               </span>
@@ -120,7 +120,7 @@ export default function PrepareContextPage() {
                   ["Verify", "Review citations, exclusions, health reasons, and exact tests."],
                 ].map(([title, detail], index) => (
                   <li key={title} className="flex gap-3">
-                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-white/15 bg-white/[0.07] text-xs font-black text-indigo-200">
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-white/15 bg-white/[0.07] text-xs font-black text-[#d9ff68]">
                       {index + 1}
                     </span>
                     <span>
@@ -139,7 +139,7 @@ export default function PrepareContextPage() {
                 <p className="eyebrow">Execution brief</p>
                 <h2 className="mt-2 text-2xl font-semibold text-slate-950 dark:text-white">What should happen next?</h2>
               </div>
-              <span className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11px] font-bold text-slate-500 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-neutral-400">
+              <span className="rounded-md border border-[#d9d9d0] bg-[#f2f2eb] px-2.5 py-1.5 text-[11px] font-semibold text-[#68685f] dark:border-[#292925] dark:bg-[#1b1b18] dark:text-[#b3b3a9]">
                 {activeWorkspace?.name || "Repository only"}
               </span>
             </div>
@@ -212,7 +212,7 @@ export default function PrepareContextPage() {
             <button
               type="submit"
               disabled={prepare.isPending}
-              className="mt-6 inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-brand-600 px-5 text-sm font-bold text-white shadow-[0_14px_34px_rgba(79,70,229,0.28)] transition hover:bg-brand-500 disabled:cursor-wait disabled:opacity-65"
+              className="mt-6 inline-flex h-11 w-full items-center justify-center gap-2 rounded-md bg-[#171713] px-5 text-sm font-semibold text-white transition hover:bg-[#36362f] disabled:cursor-wait disabled:opacity-65 dark:bg-[#d9ff68] dark:text-[#171713] dark:hover:bg-[#e8ff9c]"
             >
               {prepare.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
               {prepare.isPending ? "Compiling source-backed context…" : prepare.data ? "Compile again" : "Compile context pack"}
@@ -242,16 +242,39 @@ function Field({ label, hint, children }) {
 
 function EmptyResult() {
   return (
-    <section className="mt-6 rounded-xl border border-dashed border-slate-300 bg-white/60 px-6 py-10 text-center dark:border-white/[0.1] dark:bg-white/[0.025]">
-      <PackageCheck className="mx-auto h-9 w-9 text-slate-300 dark:text-neutral-700" />
-      <h2 className="mt-3 text-base font-bold text-slate-800 dark:text-neutral-200">No context pack compiled yet</h2>
-      <p className="mx-auto mt-1 max-w-xl text-sm leading-6 text-slate-500 dark:text-neutral-400">
+    <section className="mt-6 rounded-md border border-dashed border-[#bdbdb4] bg-[#fbfbf6]/65 px-6 py-10 text-center dark:border-[#3a3a34] dark:bg-[#141411]/65">
+      <PackageCheck className="mx-auto h-9 w-9 text-[#a2a298] dark:text-[#57574f]" />
+      <h2 className="mt-3 text-base font-semibold text-[#171713] dark:text-[#f4f4ec]">No context pack compiled yet</h2>
+      <p className="mx-auto mt-1 max-w-xl text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
         The result will show selected evidence, citations, exclusions, definition of done, and verification commands before you hand it to an agent.
       </p>
     </section>
   );
 }
 
+function WorkspaceQueryState({ loading = false, error, onRetry }) {
+  return (
+    <section
+      aria-busy={loading || undefined}
+      className="app-page relative z-10 mx-auto max-w-3xl rounded-md border border-[#d9d9d0] bg-[#fbfbf6] px-6 py-12 text-center dark:border-[#292925] dark:bg-[#141411]"
+    >
+      {loading ? <Loader2 className="mx-auto h-7 w-7 animate-spin text-brand-500" /> : <AlertTriangle className="mx-auto h-7 w-7 text-red-500" />}
+      <h1 className="mt-4 text-xl font-semibold text-slate-950 dark:text-white">
+        {loading ? "Loading workspace evidence…" : "Workspace evidence is unavailable"}
+      </h1>
+      <p role={error ? "alert" : undefined} className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-500 dark:text-neutral-400">
+        {loading
+          ? "Context preparation will unlock after workspace discovery completes."
+          : `${formatPrepareError(error) || "The workspace list could not be loaded."} Repository-only compilation is disabled until this check succeeds.`}
+      </p>
+      {!loading ? (
+        <button type="button" onClick={() => onRetry?.()} className="mt-5 inline-flex h-10 items-center gap-2 rounded-md bg-[#171713] px-4 text-sm font-semibold text-white dark:bg-[#d9ff68] dark:text-[#171713]">
+          <RefreshCw className="h-4 w-4" /> Retry workspace discovery
+        </button>
+      ) : null}
+    </section>
+  );
+}
 function ContextPackResult({ result }) {
   const [copied, setCopied] = useState(false);
   const resultHeadingRef = useRef(null);
@@ -279,7 +302,7 @@ function ContextPackResult({ result }) {
 
   return (
     <section aria-live="polite" className="mt-6 space-y-5">
-      <div className="rounded-xl border border-emerald-200 bg-emerald-50/80 p-5 dark:border-emerald-900/50 dark:bg-emerald-950/20">
+      <div className="rounded-md border border-emerald-200 bg-emerald-50/80 p-5 dark:border-emerald-900/50 dark:bg-emerald-950/20">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-start gap-3">
             <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-600 text-white shadow-sm">
@@ -300,7 +323,7 @@ function ContextPackResult({ result }) {
           <button
             type="button"
             onClick={copyMarkdown}
-            className="inline-flex h-10 items-center gap-2 rounded-lg border border-emerald-300 bg-white px-4 text-xs font-bold text-emerald-800 transition hover:bg-emerald-100 dark:border-emerald-800 dark:bg-black dark:text-emerald-300"
+            className="inline-flex h-10 items-center gap-2 rounded-md border border-emerald-300 bg-white px-4 text-xs font-semibold text-emerald-800 transition hover:bg-emerald-100 dark:border-emerald-800 dark:bg-black dark:text-emerald-300"
           >
             {copied ? <Check className="h-4 w-4" /> : <Clipboard className="h-4 w-4" />}
             {copied ? "Copied" : "Copy compiler markdown"}
@@ -390,7 +413,7 @@ function ContextPackResult({ result }) {
 
 function Metric({ label, value, icon: Icon }) {
   return (
-    <div className="rounded-xl border border-slate-200/80 bg-white p-4 dark:border-white/[0.08] dark:bg-black/45">
+    <div className="rounded-md border border-[#d9d9d0] bg-[#fbfbf6] p-4 dark:border-[#292925] dark:bg-[#141411]">
       <div className="flex items-center justify-between">
         <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">{label}</p>
         <Icon className="h-4 w-4 text-brand-500" />
@@ -402,7 +425,7 @@ function Metric({ label, value, icon: Icon }) {
 
 function Panel({ title, icon: Icon, children }) {
   return (
-    <section className="rounded-xl border border-slate-200/80 bg-white p-5 dark:border-white/[0.08] dark:bg-black/45">
+    <section className="rounded-md border border-[#d9d9d0] bg-[#fbfbf6] p-5 dark:border-[#292925] dark:bg-[#141411]">
       <div className="mb-4 flex items-center gap-2">
         <Icon className="h-4 w-4 text-brand-500" />
         <h3 className="text-sm font-bold text-slate-950 dark:text-white">{title}</h3>
@@ -442,6 +465,17 @@ function ContextItem({ item }) {
   );
 }
 
+function CitationBlock({ citation, index = 0 }) {
+  return (
+    <div className="mt-3 rounded-md border border-brand-200 bg-brand-50/80 p-3 dark:border-[#4d5326] dark:bg-[#242418]">
+      <p className="text-[10px] font-black uppercase tracking-wide text-brand-700 dark:text-brand-300">
+        {citation.citation_id || `Citation ${index + 1}`} · rev {citation.source_revision_number ?? "unknown"}
+        {citation.start_char != null ? ` · chars ${citation.start_char}-${citation.end_char}` : ""}
+      </p>
+      <p className="mt-1.5 text-xs leading-5 text-slate-700 dark:text-neutral-300">{citation.quote || "Citation metadata only."}</p>
+    </div>
+  );
+}
 function SimpleList({ items = [], empty }) {
   if (!items.length) return <EmptyLine>{empty}</EmptyLine>;
   return (

@@ -16,38 +16,26 @@ function renderLanding() {
 }
 
 describe("Landing", () => {
-  it("presents implemented product surfaces without fake indexed activity", () => {
+  it("presents a restrained source-backed product story without fake activity", () => {
     renderLanding();
 
     expect(
-      screen.getByRole("heading", { name: "Project memory graph for AI builders" }),
+      screen.getByRole("heading", { name: "Your next coding agent shouldn’t start from zero." }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: /search/i })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Show dashboard/ })).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /Add context/ })).not.toBeInTheDocument();
-    expect(screen.getByText("What exists today")).toBeInTheDocument();
-    expect(screen.getByText("Source-first ingestion")).toBeInTheDocument();
-    expect(screen.getByText("Knowledge graph")).toBeInTheDocument();
-    expect(screen.getByText("Grounded Ask")).toBeInTheDocument();
-    expect(screen.getByText("Connector guardrails")).toBeInTheDocument();
-    expect(screen.getByText("For AI agents")).toBeInTheDocument();
-    expect(screen.getByText("Every run should start with the same source-backed project memory.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Prepare a run/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /View on GitHub/ })).toBeInTheDocument();
+    expect(screen.getAllByText("context_pack.v2")).toHaveLength(2);
+    expect(screen.getByText("Continuity, without another pile of notes.")).toBeInTheDocument();
+    expect(screen.getByText("Keep the source")).toBeInTheDocument();
+    expect(screen.getByText("Track what changed")).toBeInTheDocument();
     expect(screen.getByText("Prepare the next run")).toBeInTheDocument();
-    expect(screen.getByText("Record what happened")).toBeInTheDocument();
-    expect(screen.getByText("Unsupported stays unsupported")).toBeInTheDocument();
-    expect(screen.getByTestId("source-active-block")).toBeInTheDocument();
+    expect(screen.getByText("Unsupported providers stay visibly unsupported.", { exact: false })).toBeInTheDocument();
     expect(screen.queryByText("Recently indexed")).not.toBeInTheDocument();
     expect(screen.queryByText("Auth refactor")).not.toBeInTheDocument();
     expect(screen.queryByText("PR #184")).not.toBeInTheDocument();
     expect(screen.queryByText("$ ctxe mcp")).not.toBeInTheDocument();
-    expect(screen.getAllByText("Google Drive").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Gmail").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Codex").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Claude").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("OpenCode").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("GitHub").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Slack").length).toBeGreaterThan(0);
-    expect(screen.queryByText("Zoom")).not.toBeInTheDocument();
-    expect(screen.queryByText("Notion")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Trusted by/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/10,000/i)).not.toBeInTheDocument();
   });
 });

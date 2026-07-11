@@ -47,6 +47,16 @@ export const TONE_CLASSES = {
   violet: "border-violet-200 bg-violet-50 text-violet-800 dark:border-violet-900/60 dark:bg-violet-950/35 dark:text-violet-200",
 };
 
+const GRAPH_LANES = [
+  { id: "sessions", label: "AI sessions", description: "Imported coding sessions in this workspace" },
+  { id: "decisions", label: "Decisions", description: "Recorded choices and claims that guide the work" },
+  { id: "prs", label: "Pull requests", description: "Observed pull requests from imported provider snapshots" },
+  { id: "issues", label: "Issues & blockers", description: "Explicit issues, blockers, and risks" },
+  { id: "documents", label: "Broken docs", description: "Explicit document findings; absence is not a verified pass" },
+  { id: "next_tasks", label: "Next agent tasks", description: "Explicit tasks recorded for the next run" },
+  { id: "other", label: "Other evidence", description: "Supporting records without a named overview category" },
+];
+
 export function cardIcon(card) {
   return TYPE_META[card?.type]?.icon || HelpCircle;
 }
@@ -82,12 +92,12 @@ export function buildSessionKnowledgeMap(digest, workspaceName = "selected works
     .sort((a, b) => (b.attention_score || 0) - (a.attention_score || 0));
 
   const groups = {
-    aiSessions: cards.filter(isAiSession).filter(hasUsefulDisplayText).slice(0, 5),
-    decisions: cards.filter((card) => card.type === "decision").filter(hasUsefulDisplayText).slice(0, 7),
-    prs: cards.filter(isPullRequest).filter(hasUsefulDisplayText).slice(0, 7),
-    blockers: cards.filter(isBlocker).filter(hasUsefulDisplayText).slice(0, 6),
-    brokenDocs: cards.filter(isBrokenDoc).filter(hasUsefulDisplayText).slice(0, 5),
-    issues: cards.filter(isIssue).filter(hasUsefulDisplayText).slice(0, 7),
+    aiSessions: uniqueBySource(cards.filter((card) => ["agent_session", "session"].includes(card.category))),
+    decisions: cards.filter((card) => card.category === "decision").filter(hasUsefulDisplayText),
+    prs: cards.filter((card) => card.category === "pull_request"),
+    blockers: cards.filter((card) => card.category === "blocker").filter(hasUsefulDisplayText),
+    brokenDocs: cards.filter((card) => card.category === "document_finding").filter(hasUsefulDisplayText),
+    issues: cards.filter((card) => card.category === "issue"),
   };
 
   return {
@@ -123,17 +133,127 @@ export function primarySourceUrl(card) {
 }
 
 export function pullRequestLabel(card) {
-  const text = searchableText(card);
-  const url = primarySourceUrl(card) || "";
-  const number = url.match(/\/pull\/(\d+)/i)?.[1] || text.match(/\bpr\s*#?(\d+)\b/i)?.[1];
-  return number ? `PR #${number}` : preciseLine(card?.title, 5);
+  const number = card?.remote_item?.number;
+  const repository = card?.remote_item?.repository || card?.remote_item?.repo_full_name;
+  if (number && repository) return `${repository} · PR #${number}`;
+  return number ? `PR #${number}` : "Unidentified pull request";
 }
 
 export function issueLabel(card) {
-  const text = searchableText(card);
-  const url = primarySourceUrl(card) || "";
-  const number = url.match(/\/issues\/(\d+)/i)?.[1] || text.match(/\bissue\s*#?(\d+)\b/i)?.[1];
-  return number ? `Issue #${number}` : preciseLine(card?.title, 5);
+  const number = card?.remote_item?.number;
+  const repository = card?.remote_item?.repository || card?.remote_item?.repo_full_name;
+  if (number && repository) return `${repository} · Issue #${number}`;
+  return number ? `Issue #${number}` : "Unidentified issue";
+}
+
+export function observedRemoteState(card) {
+  const state = card?.remote_item?.observed_status
+    || card?.remote_item?.provider_state
+    || card?.freshness?.observed_status
+    || card?.source_snapshot?.provider_state
+    || "unknown";
+  if (state === "merged") return "Merged in imported snapshot";
+  if (state === "closed") return "Closed in imported snapshot";
+  if (state === "draft") return "Draft in imported snapshot";
+  if (state === "open") return "Open in imported snapshot";
+  return "Provider state unknown";
+}
+
+export function sessionIdentity(card) {
+  const session = card?.session || {};
+  const tool = toolName(session.tool);
+  const id = session.session_id ? String(session.session_id) : "unknown ID";
+  const shortId = id.length > 14 ? `…${id.slice(-12)}` : id;
+  const topic = sessionTopic(card);
+  return {
+    title: topic || `${tool} session`,
+    tool,
+    shortId,
+    source: `${tool} · ${shortId}`,
+    context: [session.branch, session.repository || session.cwd].filter(Boolean).join(" · ") || "Repository context unknown",
+    detail: [
+      Number.isFinite(Number(session.message_count)) ? `${Number(session.message_count)} messages` : null,
+      session.started_at ? formatTimeAgo(session.started_at) : null,
+    ].filter(Boolean).join(" · ") || "Session timing unknown",
+  };
+}
+
+export function sessionTopic(card) {
+  const session = card?.session || {};
+  const candidates = [
+    session.topic,
+    session.title,
+    card?.summary,
+    card?.title,
+    ...(card?.provenance || []).map((source) => source.excerpt),
+  ];
+  for (const candidate of candidates) {
+    const topic = cleanSessionTopic(candidate, session);
+    if (topic) return topic;
+  }
+  return null;
+}
+
+function cleanSessionTopic(value, session) {
+  if (!value) return null;
+  const id = String(session?.session_id || "");
+  const shortId = id.slice(-12).toLowerCase();
+  let text = String(value);
+  const userBlocks = text
+    .split(/^\[USER\]\s*/m)
+    .slice(1)
+    .map((block) => block.split(/^\[[A-Z_]+\]\s*/m)[0]);
+  if (userBlocks.length) {
+    text = userBlocks.find((block) => !isSessionBootstrapNoise(block)) || "";
+  }
+  if (!text || isSessionBootstrapNoise(text)) return null;
+  text = text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/(?:\/[\w. -]+){2,}/g, " ")
+    .replace(/\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/gi, " ")
+    .split(/\n/)
+    .map((line) => line.replace(/^[#>*\-\d.)\s]+/, "").trim())
+    .filter((line) => line && !/^files mentioned|^image #/i.test(line))
+    .join(" ")
+    .split(/[.!?,;]/, 1)[0]
+    .trim();
+  const generic = /^(?:ai|codex|claude(?: code)?|opencode)?\s*session(?:\s*[·:#-]\s*[\w-]+)?$/i;
+  if (!text || generic.test(text) || (shortId && text.toLowerCase().includes(shortId))) return null;
+  const prefixes = /^(?:agent session:\s*|session:\s*|\/goal\s+|now\s+|please\s+|can you\s+|could you\s+|would you\s+|i (?:now )?want you to\s+|i need you to\s+|help me(?: to)?\s+|go ahead and\s+|work on\s+)/i;
+  let previous;
+  while (text && text !== previous) {
+    previous = text;
+    text = text.replace(prefixes, "").trim();
+  }
+  text = text.replace(/\ba\s+oss\b/i, "an OSS").replace(/\boss\s+sucess\b/i, "OSS success");
+  const words = text.split(/\s+/).filter(Boolean).slice(0, 7);
+  const shortened = words.join(" ").slice(0, 56).trim();
+  return shortened ? shortened[0].toUpperCase() + shortened.slice(1) : null;
+}
+
+function isSessionBootstrapNoise(value) {
+  const text = String(value || "").toLowerCase();
+  return [
+    "request_user_input availability",
+    "<apps_instructions>",
+    "<collaboration_mode>",
+    "<environment_context>",
+    "<permissions instructions>",
+    "<plugins_instructions>",
+    "<skills_instructions>",
+    "available skills",
+    "filesystem sandboxing",
+    "you are codex",
+  ].some((marker) => text.includes(marker));
+}
+
+export function relevanceLabel(card) {
+  const status = card?.workspace_relevance?.status || "unknown";
+  if (status === "relevant") return "Workspace relevant";
+  if (status === "not_relevant") return "Different repository";
+  return "Relevance unverified";
 }
 
 export function relatedCards(card, cards = [], links = []) {
@@ -159,140 +279,76 @@ export function cardRelationships(card, cards = [], links = []) {
     }));
 }
 
-export function estimateTokens(cards = []) {
-  const words = cards.reduce((total, card) => {
-    const text = [card.title, card.summary, card.why_it_matters, card.next_action]
-      .filter(Boolean)
-      .join(" ");
-    return total + text.split(/\s+/).filter(Boolean).length;
-  }, 0);
-  return Math.max(120, Math.round(words * 1.35));
-}
+export function buildEvidenceGraph(digest, { limitPerLane = 6 } = {}) {
+  const allCards = [...(digest?.cards || [])]
+    .filter((card) => card?.id && hasUsefulCard(card));
+  const cardIds = new Set(allCards.map((card) => card.id));
+  const factualLinks = (digest?.links || []).filter((link) => (
+    cardIds.has(link?.source_card_id)
+    && cardIds.has(link?.target_card_id)
+    && link?.source_card_id !== link?.target_card_id
+  ));
+  const lanes = GRAPH_LANES.map((lane) => ({ ...lane, cards: [] }));
 
-export function buildAgentPacket({ selectedCard, includedCards, excludedCards = [] }) {
-  const cards = includedCards.filter(Boolean);
-  return {
-    schema: "context_packet.v1",
-    goal: selectedCard?.title || "Selected context handoff",
-    current_state: cards.filter((card) => card.temporal === "current").map(packetItem),
-    decisions: cards.filter((card) => card.type === "decision").map(packetItem),
-    blockers: cards.filter((card) => card.type === "blocker" || card.status === "blocked").map(packetItem),
-    tasks: cards.filter((card) => card.type === "task").map(packetItem),
-    files: cards.filter((card) => card.type === "file").map(packetItem),
-    prior_agent_attempts: cards.filter((card) => card.type === "agent_session").map(packetItem),
-    missing_context: missingContext(cards),
-    source_citations: cards.flatMap((card) =>
-      (card.provenance || []).map((source) => ({
-        card_id: card.id,
-        source_type: source.source_type,
-        source_label: source.source_label,
-        source_url: source.source_url || null,
-      })),
-    ),
-    excluded: excludedCards.map((card) => ({ id: card.id, title: card.title })),
-  };
-}
+  allCards.forEach((card) => {
+    const laneId = graphLaneForCard(card);
+    lanes.find((lane) => lane.id === laneId).cards.push(card);
+  });
+  lanes.forEach((lane) => {
+    lane.totalCount = lane.cards.length;
+    lane.cards = lane.cards
+      .sort((a, b) => (b.attention_score || 0) - (a.attention_score || 0))
+      .slice(0, limitPerLane);
+  });
+  const cards = lanes.flatMap((lane) => lane.cards);
+  const visibleIds = new Set(cards.map((card) => card.id));
 
-export function packetMarkdown(packet) {
-  const lines = [
-    `# ${packet.goal}`,
-    "",
-    "## Current State",
-    ...markdownItems(packet.current_state),
-    "",
-    "## Decisions",
-    ...markdownItems(packet.decisions),
-    "",
-    "## Blockers",
-    ...markdownItems(packet.blockers),
-    "",
-    "## Tasks",
-    ...markdownItems(packet.tasks),
-    "",
-    "## Files",
-    ...markdownItems(packet.files),
-    "",
-    "## Prior Agent Attempts",
-    ...markdownItems(packet.prior_agent_attempts),
-    "",
-    "## Missing Context",
-    ...(packet.missing_context.length ? packet.missing_context.map((item) => `- ${item}`) : ["- None flagged"]),
-    "",
-    "## Source Citations",
-    ...(packet.source_citations.length
-      ? packet.source_citations.map((source) => `- ${source.source_label} (${source.source_type})${source.source_url ? `: ${source.source_url}` : ""}`)
-      : ["- None"]),
-  ];
-  return lines.join("\n");
-}
-
-function packetItem(card) {
-  return {
+  const nodes = lanes.flatMap((lane) => lane.cards.map((card, index) => ({
     id: card.id,
-    title: card.title,
-    summary: card.summary,
-    status: card.status,
-    confidence: card.confidence,
-    why_included: card.why_it_matters,
-    next_action: card.next_action,
+    card,
+    laneId: lane.id,
+    laneLabel: lane.label,
+    position: {
+      x: 0,
+      y: index,
+    },
+  })));
+
+  return {
+    nodes,
+    edges: factualLinks.filter((link) => visibleIds.has(link.source_card_id) && visibleIds.has(link.target_card_id)),
+    lanes,
+    hiddenCardCount: Math.max(0, allCards.length - cards.length),
   };
 }
 
-function markdownItems(items) {
-  return items.length
-    ? items.map((item) => `- **${item.title}**: ${item.summary}`)
-    : ["- None"];
+export function graphLaneForCard(card) {
+  const category = card?.category;
+  if (["agent_session", "session"].includes(category)) return "sessions";
+  if (category === "decision") return "decisions";
+  if (category === "pull_request") return "prs";
+  if (["issue", "blocker"].includes(category)) return "issues";
+  if (category === "document_finding") return "documents";
+  if (category === "task") return "next_tasks";
+  return "other";
 }
 
-function missingContext(cards) {
-  const missing = [];
-  if (cards.some((card) => card.status === "needs_review" || card.confidence < 0.7)) {
-    missing.push("Verify low-confidence or proposed context before execution.");
-  }
-  if (cards.some((card) => card.status === "conflict")) {
-    missing.push("Resolve conflicting evidence before handing off to an agent.");
-  }
-  if (cards.some((card) => card.status === "blocked")) {
-    missing.push("Confirm owner, reproduction steps, or acceptance criteria for blockers.");
-  }
-  return missing;
+function uniqueBySource(cards) {
+  const seen = new Set();
+  return cards.filter((card) => {
+    const key = card?.session?.session_id || card?.provenance?.[0]?.source_document_id || card?.source_ids?.[0] || card.id;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
-function isAiSession(card) {
-  const text = searchableText(card);
-  return (
-    card.type === "agent_session" ||
-    /\b(ai session|agent session|codex|claude|opencode|cursor)\b/i.test(text)
-  );
-}
-
-function isPullRequest(card) {
-  const text = searchableText(card);
-  const url = primarySourceUrl(card) || "";
-  return /\/pull\/\d+/i.test(url) || /\b(pr|pull request)\s*#?\d*\b/i.test(text);
-}
-
-function isIssue(card) {
-  const text = searchableText(card);
-  const url = primarySourceUrl(card) || "";
-  return !isPullRequest(card) && (/\/issues\/\d+/i.test(url) || /\bissue\s*#?\d*\b/i.test(text));
-}
-
-function isBlocker(card) {
-  const text = searchableText(card);
-  const hasBlockerSignal = /\b(blocked|blocker|blocking|cannot proceed|approval needed|schema approval|conflict|failing|failed|error|broken)\b/i.test(text);
-  return (
-    card.type === "blocker" ||
-    ((card.status === "blocked" || card.status === "conflict") && hasBlockerSignal && !isInstructionNoise(card)) ||
-    (hasBlockerSignal && /\b(pr|pull request|issue|ci|test|schema|docs?|migration|auth|api)\b/i.test(text) && !isInstructionNoise(card))
-  );
-}
-
-function isBrokenDoc(card) {
-  const text = searchableText(card);
-  const hasDocSignal = /\b(docs?|documentation|readme|runbook|guide|markdown|devrel)\b/i.test(text);
-  const hasProblemSignal = /\b(broken|stale|drift|outdated|out of date|missing|incorrect|invalid|failing|failed|mismatch|unlinked|needs review)\b/i.test(text);
-  return hasDocSignal && hasProblemSignal && !isInstructionNoise(card);
+function toolName(value) {
+  const normalized = String(value || "").toLowerCase();
+  if (normalized === "claude_code" || normalized === "claude") return "Claude Code";
+  if (normalized === "opencode") return "OpenCode";
+  if (normalized === "codex") return "Codex";
+  return value ? String(value) : "AI";
 }
 
 function searchableText(card) {

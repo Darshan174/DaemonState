@@ -80,6 +80,7 @@ export default function Connectors() {
   const [aiSessionImportMode, setAISessionImportMode] = useState("local");
   const [aiSessionId, setAISessionId] = useState("");
   const [aiSessionContent, setAISessionContent] = useState("");
+  const [connectorFilter, setConnectorFilter] = useState("all");
   const ingestAISessionMut = useIngestAISession();
   const importAISessionByIdMut = useImportAISessionById();
 
@@ -89,6 +90,28 @@ export default function Connectors() {
   );
 
   const list = data ?? [];
+  const connectorCounts = useMemo(() => ({
+    connected: list.filter((item) => item.status === "connected" || item.status === "error").length,
+    available: list.filter((item) => item.availability === "available" && item.status === "disconnected" && !["codex", "claude", "opencode"].includes(item.type)).length,
+    sessions: list.filter((item) => ["codex", "claude", "opencode"].includes(item.type)).length,
+    comingSoon: list.filter((item) => item.availability === "coming_soon").length,
+  }), [list]);
+  const visibleConnectors = useMemo(() => {
+    const matches = list.filter((item) => {
+      if (connectorFilter === "connected") return item.status === "connected" || item.status === "error";
+      if (connectorFilter === "available") return item.availability === "available" && item.status === "disconnected" && !["codex", "claude", "opencode"].includes(item.type);
+      if (connectorFilter === "sessions") return ["codex", "claude", "opencode"].includes(item.type);
+      if (connectorFilter === "coming-soon") return item.availability === "coming_soon";
+      return true;
+    });
+    const rank = (item) => {
+      if (item.status === "connected" || item.status === "error") return 0;
+      if (["codex", "claude", "opencode"].includes(item.type)) return 2;
+      if (item.availability === "coming_soon") return 3;
+      return 1;
+    };
+    return [...matches].sort((a, b) => rank(a) - rank(b));
+  }, [connectorFilter, list]);
   const slackConnector = list.find((item) => item.type === "slack") ?? null;
   useEffect(() => {
     if (slackConnector?.redirectUri) {
@@ -293,12 +316,40 @@ export default function Connectors() {
         <div>
           <p className="eyebrow">Data plane</p>
           <div className="flex items-center gap-3">
-            <h2 className="mt-1 text-3xl font-semibold text-slate-950 dark:text-white">Connectors</h2>
+            <h2 className="mt-2 text-3xl font-semibold text-slate-950 dark:text-white">Connectors</h2>
             {isMock && <MockBadge />}
           </div>
-          <p className="mt-1.5 text-sm text-slate-500 dark:text-neutral-400">
-            Connect your sources. Each connector fetches raw messages and documents, then extracts structured facts into the knowledge graph.
+          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-500 dark:text-neutral-400">
+            Bring project evidence into the workspace. Availability and connection state come directly from the backend catalog.
           </p>
+        </div>
+      </div>
+
+      <div className="panel overflow-hidden">
+        <div className="grid grid-cols-2 sm:grid-cols-4">
+          <ConnectorStat label="Connected" value={connectorCounts.connected} />
+          <ConnectorStat label="Ready to connect" value={connectorCounts.available} bordered />
+          <ConnectorStat label="Agent imports" value={connectorCounts.sessions} bordered />
+          <ConnectorStat label="Coming soon" value={connectorCounts.comingSoon} bordered />
+        </div>
+        <div className="flex gap-2 overflow-x-auto border-t border-[#e1e1d8] px-3 py-3 no-scrollbar dark:border-[#292925]" aria-label="Filter connectors">
+          {[
+            ["all", "All", list.length],
+            ["connected", "Connected", connectorCounts.connected],
+            ["available", "Available", connectorCounts.available],
+            ["sessions", "Agent sessions", connectorCounts.sessions],
+            ["coming-soon", "Coming soon", connectorCounts.comingSoon],
+          ].map(([value, label, count]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setConnectorFilter(value)}
+              aria-pressed={connectorFilter === value}
+              className={`whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${connectorFilter === value ? "bg-[#171713] text-white dark:bg-[#d9ff68] dark:text-[#171713]" : "text-[#68685f] hover:bg-[#f2f2eb] dark:text-[#a2a298] dark:hover:bg-[#1f1f1b]"}`}
+            >
+              {label} <span className="ml-1 tabular-nums opacity-65">{count}</span>
+            </button>
+          ))}
         </div>
       </div>
 
@@ -332,9 +383,14 @@ export default function Connectors() {
 
       {list.length === 0 ? (
         <StatusView query={{ data: list, isLoading: false, isError: false }} empty="No connectors configured." />
+      ) : visibleConnectors.length === 0 ? (
+        <div className="panel px-6 py-14 text-center">
+          <p className="text-sm font-semibold text-[#4f4f48] dark:text-[#d0d0c7]">No connectors in this state.</p>
+          <button type="button" onClick={() => setConnectorFilter("all")} className="mt-2 text-xs font-semibold text-brand-700 dark:text-brand-400">Show all connectors</button>
+        </div>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2">
-          {list.map((connector) => (
+        <div className="grid items-start gap-4 xl:grid-cols-2">
+          {visibleConnectors.map((connector) => (
             <ConnectorCard
               key={connector.type}
               connector={connector}
@@ -397,6 +453,15 @@ function QuickPathStep({ title, description, to, action }) {
       <Link to={to} className="mt-4 inline-flex text-xs font-medium text-brand-700 dark:text-brand-400 hover:text-brand-800 dark:text-brand-300">
         {action}
       </Link>
+    </div>
+  );
+}
+
+function ConnectorStat({ label, value, bordered = false }) {
+  return (
+    <div className={`${bordered ? "border-l border-[#e1e1d8] dark:border-[#292925]" : ""} px-4 py-3.5`}>
+      <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#8a8a80] dark:text-[#77776e]">{label}</p>
+      <p className="mt-1 text-xl font-semibold tabular-nums text-[#171713] dark:text-[#f4f4ec]">{value}</p>
     </div>
   );
 }
@@ -675,7 +740,7 @@ function ConnectorCard({
   }, [latestSyncJob, name, onSyncJobSettled]);
 
   return (
-    <div className="panel rounded-xl [border-radius:0.5rem] flex flex-col gap-4 p-5 transition-all hover:border-slate-300 dark:hover:border-white/[0.16]">
+    <div className={`panel rounded-xl [border-radius:0.5rem] flex flex-col gap-4 p-5 transition-colors hover:border-[#8a8a80] dark:hover:border-[#57574f] ${availability === "coming_soon" ? "opacity-70" : ""}`}>
       <div className="flex items-center gap-3">
         <ConnectorIconBadge type={type} color={color} name={name} />
         <div className="flex-1 min-w-0">
@@ -698,7 +763,7 @@ function ConnectorCard({
         </span>
       </div>
 
-      <div className="panel-subtle p-3">
+      {(hasOperationalConnection || Number(itemsSynced || 0) > 0) ? <div className="panel-subtle p-3">
         <div className="grid grid-cols-2 text-xs text-gray-500 gap-y-1">
           <span>Last sync</span>
           <span className="text-right text-gray-700 dark:text-gray-400">{lastSync}</span>
@@ -855,7 +920,15 @@ function ConnectorCard({
             Ready — run a sync to start pulling data.
           </p>
         )}
-      </div>
+      </div> : (
+        <div className="border-y border-[#e1e1d8] py-3 text-xs leading-relaxed text-[#77776e] dark:border-[#292925] dark:text-[#929289]">
+          {availability === "coming_soon"
+            ? "Listed for product visibility; setup and sync are not available yet."
+            : isAISession
+              ? "Import a local agent session by ID or paste exported session content."
+              : "Connect this provider to begin preserving raw source documents."}
+        </div>
+      )}
 
       {isGitHub && githubFormOpen && (
         <form onSubmit={handleGitHubConnect} className="panel-subtle space-y-3 p-3">

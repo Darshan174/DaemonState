@@ -8,7 +8,7 @@ import { useWorkspaceSelection, resolveWorkspaceId } from "../context/WorkspaceC
  * Dropdown workspace switcher for the top bar.
  * Persists selection to localStorage and invalidates workspace-scoped queries on change.
  */
-export default function WorkspaceSwitcher() {
+export default function WorkspaceSwitcher({ variant = "header" }) {
   const { data: workspaces, isLoading, isError } = useWorkspaces();
   const { selectedId, setSelectedId } = useWorkspaceSelection();
   const qc = useQueryClient();
@@ -46,14 +46,15 @@ export default function WorkspaceSwitcher() {
   };
 
   return (
-    <div className="flex items-center gap-2">
-      <label className="hidden text-xs font-semibold text-slate-500 dark:text-neutral-500 sm:inline">
+    <div className={variant === "sidebar" ? "space-y-2" : "flex min-w-0 items-center gap-2"}>
+      <label className={variant === "sidebar" ? "block px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#8a8a80] dark:text-[#77776e]" : "hidden text-xs font-semibold text-slate-500 dark:text-neutral-500 xl:inline"}>
         Workspace
       </label>
       <select
         value={resolved || ""}
         onChange={handleChange}
-        className="max-w-[220px] truncate rounded-lg border border-slate-200/80 bg-white/80 px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500/40 dark:border-white/[0.08] dark:bg-white/[0.045] dark:text-neutral-200"
+        aria-label="Workspace"
+        className={`${variant === "sidebar" ? "w-full" : "max-w-[150px] sm:max-w-[200px]"} truncate rounded-md border border-[#d9d9d0] bg-[#fbfbf6] px-3 py-2 text-xs font-semibold text-[#4f4f48] transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500/40 dark:border-[#35352f] dark:bg-[#141411] dark:text-[#d0d0c7]`}
       >
         {!resolved && workspaces.length > 1 ? (
           <option value="" disabled>

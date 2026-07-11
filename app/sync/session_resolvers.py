@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
+from app.services.session_summary import derive_session_topic
 
 
 class SessionResolutionError(Exception):
@@ -93,6 +94,12 @@ def _read_codex_rollout(path: Path, session_id: str) -> ResolvedSession | None:
     content = _format_turns(messages)
     if not content:
         raise SessionResolutionError(f"Codex session {session_id} had no readable message content.")
+    metadata["title"] = derive_session_topic(
+        content,
+        explicit_title=_codex_index_title(root, session_id),
+        tool="codex",
+        session_id=session_id,
+    )
     return ResolvedSession("codex", session_id, content, metadata)
 
 
@@ -171,6 +178,12 @@ def _read_claude_jsonl(path: Path, session_id: str) -> ResolvedSession | None:
     content = _format_turns(messages)
     if not content:
         raise SessionResolutionError(f"Claude session {session_id} had no readable message content.")
+    metadata["title"] = derive_session_topic(
+        content,
+        explicit_title=metadata.get("title"),
+        tool="claude_code",
+        session_id=session_id,
+    )
     return ResolvedSession("claude", session_id, content, metadata)
 
 
@@ -229,7 +242,12 @@ def _resolve_opencode_session(session_id: str) -> ResolvedSession:
     metadata = {
         "tool": "opencode",
         "session_id": session_id,
-        "title": session_row["title"],
+        "title": derive_session_topic(
+            content,
+            explicit_title=session_row["title"],
+            tool="opencode",
+            session_id=session_id,
+        ),
         "source_path": str(db_path),
         "cwd": session_row["directory"],
         "model": session_row["model"],

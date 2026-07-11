@@ -34,11 +34,23 @@ def _parse_session_content(content: str) -> list[dict[str, str]]:
     turns: list[dict[str, str]] = []
     current_role: str | None = None
     current_lines: list[str] = []
+    bracket_role_re = re.compile(
+        r"^\[(?P<role>USER|HUMAN|YOU|ASSISTANT|CLAUDE|CODEX|AI|OPENCODE|GPT)\]\s*(?P<rest>.*)$",
+        re.IGNORECASE,
+    )
     role_re = re.compile(
         r"^(?:\*\*)?(?P<human>Human|User|You)|(?P<ai>Assistant|Claude|Codex|AI|opencode|GPT)(?:\*\*)?:\s*(?P<rest>.*)",
         re.IGNORECASE,
     )
     for line in content.split("\n"):
+        bracket_match = bracket_role_re.match(line.strip())
+        if bracket_match:
+            if current_role and current_lines:
+                turns.append({"role": current_role, "content": "\n".join(current_lines).strip()})
+            raw_role = bracket_match.group("role").lower()
+            current_role = "user" if raw_role in {"user", "human", "you"} else "assistant"
+            current_lines = [bracket_match.group("rest") or ""]
+            continue
         m = role_re.match(line)
         if m:
             if current_role and current_lines:

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { Upload, FileText, FileCode, FileJson, X, ChevronRight, ChevronDown, CheckCircle, Clock, Layers, MessageSquare, HardDrive, Bot, Video, FolderOpen, Clipboard, AlertTriangle } from "lucide-react";
+import { Upload, FileText, FileCode, FileJson, X, ChevronRight, ChevronDown, CheckCircle, Clock, Layers, MessageSquare, HardDrive, Bot, Video, FolderOpen, Clipboard, AlertTriangle, Search } from "lucide-react";
 import { api } from "../api/client";
 
 function GitHubIcon({ className }) {
@@ -148,6 +148,8 @@ export default function SourceManager() {
   const [loadingComponents, setLoadingComponents] = useState(false);
   const [expandedGroupId, setExpandedGroupId] = useState(null);
   const [dragOver, setDragOver] = useState(false);
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [sourceQuery, setSourceQuery] = useState("");
   const fileInputRef = useRef(null);
 
   const fetchSources = useCallback(async () => {
@@ -179,6 +181,30 @@ export default function SourceManager() {
       .map((group) => ({ ...group, items: buckets[group.id] }))
       .filter((group) => group.items.length > 0);
   }, [sources]);
+
+  const visibleGroups = useMemo(() => {
+    const needle = sourceQuery.trim().toLowerCase();
+    if (!needle) return groupedSources;
+    return groupedSources
+      .map((group) => ({
+        ...group,
+        items: group.items.filter((source) => {
+          const haystack = [
+            source.external_id,
+            source.author,
+            source.content_preview,
+            typeMeta(source).label,
+          ].filter(Boolean).join(" ").toLowerCase();
+          return haystack.includes(needle);
+        }),
+      }))
+      .filter((group) => group.items.length > 0);
+  }, [groupedSources, sourceQuery]);
+
+  const pendingCount = useMemo(
+    () => sources.filter((source) => !source.processed_at).length,
+    [sources],
+  );
 
   function toggleGroup(groupId) {
     setExpandedGroupId((current) => (current === groupId ? null : groupId));
@@ -281,26 +307,29 @@ export default function SourceManager() {
   }
 
   return (
-    <div className="relative z-10 mx-auto flex min-h-full max-w-6xl gap-5">
+    <div className="relative z-10 mx-auto flex min-h-full max-w-6xl flex-col gap-5 xl:flex-row">
       <div className="flex min-w-0 flex-1 flex-col gap-4">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
           <div>
             <p className="eyebrow">Ingestion</p>
-            <h1 className="mt-1 text-2xl font-semibold text-slate-950 dark:text-white">Source Manager</h1>
-            <p className="mt-1 text-sm text-slate-500 dark:text-neutral-400">
-              {sources.length > 0
-                ? `${sources.length} document${sources.length !== 1 ? "s" : ""} ingested across ${groupedSources.length} source${groupedSources.length !== 1 ? "s" : ""}`
-                : "Upload source documents to get started"}
-            </p>
+            <h1 className="mt-2 text-3xl font-semibold text-slate-950 dark:text-white">Sources</h1>
+            <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-500 dark:text-neutral-400">Inspect the raw evidence behind graph claims and context packs.</p>
           </div>
           <button
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => setUploadOpen((current) => !current)}
+            aria-expanded={uploadOpen}
             className="btn-primary"
           >
             <Upload className="w-4 h-4" />
-            Upload
+            {uploadOpen ? "Close import" : "Import files"}
           </button>
           <input ref={fileInputRef} type="file" multiple accept=".md,.txt,.json,.csv,.html,.htm,.pdf" className="hidden" onChange={(e) => handleFiles(e.target.files)} />
+        </div>
+
+        <div className="grid grid-cols-3 overflow-hidden rounded-md border border-[#d9d9d0] bg-[#fbfbf6] dark:border-[#292925] dark:bg-[#141411]">
+          <SourceStat label="Evidence items" value={`${sources.length} total`} />
+          <SourceStat label="Source types" value={`${groupedSources.length} types`} bordered />
+          <SourceStat label="Processing" value={`${pendingCount} pending`} bordered />
         </div>
 
         {/* Errors */}
@@ -310,13 +339,13 @@ export default function SourceManager() {
           </div>
         )}
 
-        {/* Drop zone */}
-        <div
+        {/* File import is progressive disclosure, not permanent page chrome. */}
+        {uploadOpen && <div
           onDrop={(e) => { e.preventDefault(); setDragOver(false); handleFiles(e.dataTransfer.files); }}
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
           onClick={() => fileInputRef.current?.click()}
-          className={`cursor-pointer rounded-lg border border-dashed p-8 text-center transition-all ${
+          className={`cursor-pointer rounded-md border border-dashed p-7 text-center transition-all ${
             dragOver
               ? "scale-[1.01] border-brand-500 bg-brand-500/10"
               : "border-slate-200/90 bg-white/55 hover:border-brand-400/60 hover:bg-white/80 dark:border-white/[0.08] dark:bg-white/[0.025] dark:hover:border-brand-500/60 dark:hover:bg-white/[0.045]"
@@ -338,10 +367,27 @@ export default function SourceManager() {
               <p className="text-xs text-slate-400 mt-1">MD · TXT · JSON · CSV · HTML · PDF</p>
             </>
           )}
-        </div>
+        </div>}
 
         {/* Grouped source list */}
-        <div className="space-y-3 pb-8">
+        <div className="panel overflow-hidden">
+          <div className="flex flex-col gap-3 border-b border-[#e1e1d8] p-4 dark:border-[#292925] sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-sm font-semibold text-[#171713] dark:text-[#f4f4ec]">Evidence library</h2>
+              <p className="mt-0.5 text-xs text-[#77776e] dark:text-[#929289]">Open a source type, then select a document to inspect its extracted components.</p>
+            </div>
+            <label className="relative block sm:w-64">
+              <span className="sr-only">Search sources</span>
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8a8a80]" />
+              <input
+                value={sourceQuery}
+                onChange={(event) => setSourceQuery(event.target.value)}
+                placeholder="Search sources"
+                className="input h-9 py-2 pl-9"
+              />
+            </label>
+          </div>
+          <div className="divide-y divide-[#e1e1d8] dark:divide-[#292925]">
           {sources.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-center">
               <div className="w-14 h-14 rounded-2xl bg-slate-100 dark:bg-black flex items-center justify-center mb-4">
@@ -350,20 +396,21 @@ export default function SourceManager() {
               <p className="text-sm font-semibold text-slate-500 dark:text-neutral-400">No sources yet</p>
               <p className="text-xs text-slate-400 mt-1">Upload files or sync a connector to populate your knowledge graph</p>
             </div>
+          ) : visibleGroups.length === 0 ? (
+            <div className="px-5 py-12 text-center">
+              <p className="text-sm font-semibold text-[#4f4f48] dark:text-[#d0d0c7]">No sources match “{sourceQuery}”</p>
+              <button type="button" onClick={() => setSourceQuery("")} className="mt-2 text-xs font-semibold text-brand-700 dark:text-brand-400">Clear search</button>
+            </div>
           ) : (
-            groupedSources.map((group) => {
+            visibleGroups.map((group) => {
               const GroupIcon = group.icon;
               const isExpanded = expandedGroupId === group.id;
               return (
-                <div key={group.id} className={`rounded-lg transition-colors ${isExpanded ? "bg-slate-50/80 dark:bg-white/[0.025]" : ""}`}>
+                <div key={group.id} className={isExpanded ? "bg-[#f7f7f2] dark:bg-[#10100e]" : ""}>
                   <button
                     onClick={() => toggleGroup(group.id)}
                     aria-expanded={isExpanded}
-                    className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 transition-all ${
-                      isExpanded
-                        ? "border-brand-400/50 bg-white/[0.86] shadow-sm shadow-brand-600/5 dark:bg-white/[0.045]"
-                        : "border-transparent hover:border-slate-200 hover:bg-white/70 dark:hover:border-white/[0.08] dark:hover:bg-white/[0.035]"
-                    }`}
+                    className="flex w-full items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-[#f2f2eb] dark:hover:bg-[#1b1b18]"
                   >
                     <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${group.chip}`}>
                       <GroupIcon className="w-4 h-4" />
@@ -372,10 +419,11 @@ export default function SourceManager() {
                     <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-black text-slate-500 dark:text-neutral-300">
                       {group.items.length}
                     </span>
-                    <ChevronDown className={`w-4 h-4 ml-auto text-slate-400 transition-transform duration-200 ${isExpanded ? "rotate-0" : "-rotate-90"}`} />
+                    <span className="ml-auto text-xs font-medium text-[#8a8a80]">{isExpanded ? "Hide" : "Browse"}</span>
+                    <ChevronDown className={`h-4 w-4 text-slate-400 transition-transform duration-200 ${isExpanded ? "rotate-0" : "-rotate-90"}`} />
                   </button>
                   {isExpanded && (
-                    <div className="space-y-1.5 mt-2">
+                    <div className="space-y-1.5 border-t border-[#e1e1d8] px-3 py-3 dark:border-[#292925]">
                       {group.items.map((source) => renderSourceRow(source))}
                     </div>
                   )}
@@ -383,12 +431,13 @@ export default function SourceManager() {
               );
             })
           )}
+          </div>
         </div>
       </div>
 
       {/* Right panel — detail */}
       {selectedSource && (
-        <div className="panel flex w-80 shrink-0 self-start flex-col overflow-hidden">
+        <div className="panel flex w-full shrink-0 self-start flex-col overflow-hidden xl:sticky xl:top-0 xl:w-80">
           <div className="flex items-center justify-between border-b border-slate-200/80 px-5 py-4 dark:border-white/[0.08]">
             <div className="flex items-center gap-2.5 min-w-0">
               <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${typeMeta(selectedSource).color}`}>
@@ -458,6 +507,15 @@ export default function SourceManager() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function SourceStat({ label, value, bordered = false }) {
+  return (
+    <div className={`${bordered ? "border-l border-[#d9d9d0] dark:border-[#292925]" : ""} px-4 py-3.5`}>
+      <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#8a8a80] dark:text-[#77776e]">{label}</p>
+      <p className="mt-1 text-xl font-semibold tabular-nums text-[#171713] dark:text-[#f4f4ec]">{value}</p>
     </div>
   );
 }
