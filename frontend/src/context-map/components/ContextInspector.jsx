@@ -1,17 +1,41 @@
-import { useState } from "react";
-import { ExternalLink, GitBranch, ShieldCheck, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ExternalLink, FileText, GitBranch, Loader2, ShieldCheck, X } from "lucide-react";
+import { api } from "../../api/client";
 import {
   STATUS_META,
   TONE_CLASSES,
   cardRelationships,
   confidenceLabel,
+  sessionIdentity,
 } from "../digest";
 
 const TABS = ["Summary", "Evidence", "Relationships"];
 
-export default function ContextInspector({ card, cards = [], links = [], onClose }) {
+export default function ContextInspector({ card, cards = [], links = [], workspaceId, onClose }) {
   const [tab, setTab] = useState("Summary");
+  const [sourceDetail, setSourceDetail] = useState(null);
+  const [sourceLoading, setSourceLoading] = useState(false);
+  const [sourceError, setSourceError] = useState(null);
   const relationships = cardRelationships(card, cards, links);
+
+  useEffect(() => {
+    setTab("Summary");
+    setSourceDetail(null);
+    setSourceError(null);
+  }, [card?.id]);
+
+  useEffect(() => {
+    if (tab !== "Evidence" || sourceDetail || sourceLoading || sourceError) return;
+    const sourceId = card?.provenance?.[0]?.source_document_id || card?.source_ids?.[0];
+    if (!sourceId) return;
+    setSourceLoading(true);
+    const params = new URLSearchParams();
+    if (workspaceId) params.set("workspace_id", workspaceId);
+    api.get(`/sources/${sourceId}${params.size ? `?${params}` : ""}`)
+      .then(setSourceDetail)
+      .catch((error) => setSourceError(error?.message || "Source content is unavailable."))
+      .finally(() => setSourceLoading(false));
+  }, [tab, card, workspaceId, sourceDetail, sourceLoading, sourceError]);
 
   if (!card) {
     return (
@@ -24,21 +48,22 @@ export default function ContextInspector({ card, cards = [], links = [], onClose
   }
 
   const status = STATUS_META[card.status] || STATUS_META.active;
+  const inspectorTitle = card.session ? sessionIdentity(card).title : card.title;
 
   return (
-    <aside className="flex min-h-0 w-full shrink-0 flex-col border-t border-slate-200 bg-white dark:border-neutral-800 dark:bg-[#07080a] lg:w-[390px] lg:border-l lg:border-t-0">
+    <aside className="flex min-h-0 w-full shrink-0 flex-col border-l border-slate-200 bg-white dark:border-neutral-800 dark:bg-[#07080a]">
       <div className="border-b border-slate-200 p-4 dark:border-neutral-800">
         <div className="mb-3 flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-[11px] font-bold uppercase text-slate-400">Inspector</p>
             <h2 className="mt-1 line-clamp-2 text-base font-black text-slate-950 dark:text-white">
-              {card.title}
+              {inspectorTitle}
             </h2>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-black dark:hover:text-white lg:hidden"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-black dark:hover:text-white"
             aria-label="Close inspector"
           >
             <X className="h-4 w-4" />
@@ -79,7 +104,7 @@ export default function ContextInspector({ card, cards = [], links = [], onClose
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {tab === "Summary" && <SummaryTab card={card} />}
-        {tab === "Evidence" && <EvidenceTab card={card} />}
+        {tab === "Evidence" && <EvidenceTab card={card} sourceDetail={sourceDetail} loading={sourceLoading} error={sourceError} />}
         {tab === "Relationships" && <RelationshipsTab relationships={relationships} />}
       </div>
     </aside>
@@ -98,6 +123,11 @@ function SummaryTab({ card }) {
       <InspectorBlock label="Suggested next action">
         <p>{card.next_action}</p>
       </InspectorBlock>
+      {card.session ? <SessionFacts session={card.session} relevance={card.workspace_relevance} /> : null}
+      {card.remote_item ? <RemoteFacts remote={card.remote_item} freshness={card.freshness || card.source_snapshot} /> : null}
+      <InspectorBlock label="Why this card is here">
+        <p>{card.classification?.reason || "Included as source-backed supporting evidence."}</p>
+      </InspectorBlock>
       <div className="grid grid-cols-2 gap-2">
         <Metric label="Attention" value={card.attention_score} />
         <Metric label="Authority" value={confidenceLabel(card.authority_weight)} />
@@ -106,7 +136,7 @@ function SummaryTab({ card }) {
   );
 }
 
-function EvidenceTab({ card }) {
+function EvidenceTab({ card, sourceDetail, loading, error }) {
   const provenance = card.provenance || [];
   return (
     <div className="space-y-3">
@@ -120,6 +150,9 @@ function EvidenceTab({ card }) {
               <p className="text-[10px] font-bold uppercase text-slate-400">{source.source_type}</p>
               <p className="mt-0.5 truncate text-xs font-bold text-slate-900 dark:text-white">
                 {source.source_label}
+              </p>
+              <p className="mt-1 text-[10px] font-semibold text-slate-400">
+                Revision {source.revision_number || card.source_snapshot?.revision_number || "unknown"} · {source.verification_status || card.evidence?.verification_status || "verification unknown"}
               </p>
             </div>
             {source.source_url ? (
@@ -143,8 +176,72 @@ function EvidenceTab({ card }) {
           )}
         </div>
       ))}
+      <section className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-neutral-800 dark:bg-black">
+        <div className="mb-2 flex items-center gap-2">
+          <FileText className="h-3.5 w-3.5 text-slate-400" />
+          <p className="text-[10px] font-bold uppercase text-slate-400">Imported source content</p>
+        </div>
+        {loading ? (
+          <p className="flex items-center gap-2 text-xs font-semibold text-slate-500"><Loader2 className="h-3.5 w-3.5 animate-spin" />Loading source…</p>
+        ) : error ? (
+          <p className="text-xs font-semibold text-red-600 dark:text-red-400">{error}</p>
+        ) : sourceDetail?.content ? (
+          <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md bg-white p-3 font-mono text-[11px] leading-5 text-slate-700 dark:bg-neutral-950 dark:text-neutral-300">{sourceDetail.content}</pre>
+        ) : (
+          <p className="text-xs font-semibold text-slate-400">No source content is available for this card.</p>
+        )}
+      </section>
     </div>
   );
+}
+
+function SessionFacts({ session, relevance }) {
+  const facts = [
+    ["Session ID", session.session_id],
+    ["Tool", session.tool],
+    ["Model", session.model],
+    ["Started", formatDate(session.started_at)],
+    ["Ended", formatDate(session.ended_at)],
+    ["Messages", session.message_count],
+    ["Branch", session.branch],
+    ["Repository / cwd", session.repository || session.cwd],
+    ["Workspace relevance", relevance?.status || "unknown"],
+  ];
+  return <FactGrid label="Imported session" facts={facts} />;
+}
+
+function RemoteFacts({ remote, freshness }) {
+  const facts = [
+    ["Repository", remote.repository || remote.repo_full_name],
+    ["Number", remote.number],
+    ["Observed state", remote.observed_status || remote.provider_state || freshness?.observed_status || freshness?.provider_state],
+    ["Provider updated", formatDate(remote.provider_updated_at || freshness?.provider_updated_at)],
+    ["Last successful sync", formatDate(freshness?.last_successful_sync_at)],
+    ["Freshness", freshness?.status || freshness?.freshness || "unknown"],
+  ];
+  return <FactGrid label="Provider snapshot" facts={facts} />;
+}
+
+function FactGrid({ label, facts }) {
+  return (
+    <section>
+      <p className="mb-2 text-[10px] font-bold uppercase text-slate-400">{label}</p>
+      <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-slate-200 bg-slate-200 dark:border-neutral-800 dark:bg-neutral-800">
+        {facts.map(([name, value]) => (
+          <div key={name} className="bg-white p-2 dark:bg-black">
+            <dt className="text-[9px] font-bold uppercase text-slate-400">{name}</dt>
+            <dd className="mt-1 break-words text-xs font-semibold text-slate-700 dark:text-neutral-300">{value ?? "Unknown"}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
+function formatDate(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
 }
 
 function RelationshipsTab({ relationships }) {

@@ -6,7 +6,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Component, Connector, SourceDocument
+from app.models import Component, Connector, SourceDocument, Workspace
 
 
 LEGACY_UNSCOPED_SOURCE_TYPES = {"local", "local_folder", "browser_upload", "paste"}
@@ -26,6 +26,21 @@ async def workspace_connector_types(
         select(Connector.connector_type).where(Connector.workspace_id == workspace_uuid)
     ))
     return workspace_id_str, connector_types
+
+
+async def workspace_scope_exists(
+    session: AsyncSession,
+    workspace_id: str | UUID,
+) -> bool:
+    """Recognize persisted workspaces and explicit legacy workspace assignments."""
+    workspace_id_str, workspace_uuid = normalize_workspace_id(workspace_id)
+    if await session.get(Workspace, workspace_uuid) is not None:
+        return True
+    documents = list(await session.scalars(select(SourceDocument)))
+    return any(
+        source_explicitly_matches_workspace(document, workspace_id_str)
+        for document in documents
+    )
 
 
 def metadata_dict(doc: SourceDocument) -> dict:
@@ -84,6 +99,53 @@ def filter_source_documents_for_workspace(
         doc for doc in docs
         if source_matches_workspace(doc, workspace_id, connector_types)
     ]
+
+
+def source_explicitly_matches_workspace(
+    doc: SourceDocument,
+    workspace_id: str,
+) -> bool:
+    """Return True only for an explicit document or legacy metadata assignment.
+
+    Graph projections must never pull an unassigned row into a workspace merely
+    because that workspace happens to have a connector of the same type.
+    """
+    explicit_workspace_id = getattr(doc, "workspace_id", None)
+    if explicit_workspace_id:
+        return workspace_ids_equal(explicit_workspace_id, workspace_id)
+    metadata_workspace_id = metadata_dict(doc).get("workspace_id")
+    return bool(
+        metadata_workspace_id
+        and workspace_ids_equal(metadata_workspace_id, workspace_id)
+    )
+
+
+def filter_explicit_source_documents_for_workspace(
+    docs: list[SourceDocument],
+    workspace_id: str,
+) -> list[SourceDocument]:
+    return [
+        doc for doc in docs
+        if source_explicitly_matches_workspace(doc, workspace_id)
+    ]
+
+
+def current_source_documents(
+    docs: list[SourceDocument],
+) -> tuple[list[SourceDocument], int]:
+    """Select the highest immutable revision for each source identity."""
+    current_by_identity: dict[str, SourceDocument] = {}
+    for doc in docs:
+        identity = str(getattr(doc, "source_identity_sha256", None) or doc.id)
+        existing = current_by_identity.get(identity)
+        if existing is None or (
+            int(getattr(doc, "revision_number", 1) or 1), str(doc.id)
+        ) > (
+            int(getattr(existing, "revision_number", 1) or 1), str(existing.id)
+        ):
+            current_by_identity[identity] = doc
+    current = list(current_by_identity.values())
+    return current, max(0, len(docs) - len(current))
 
 
 def filter_components_for_workspace(

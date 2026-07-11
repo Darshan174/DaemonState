@@ -80,7 +80,7 @@ export default function QueryView() {
     <div className="relative z-10 mx-auto flex max-w-3xl flex-col gap-6">
       <div className={hasResult ? "hidden" : ""}>
         <div className="mb-4 flex items-center gap-2">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-600 shadow-[0_14px_32px_rgba(79,70,229,0.26)]">
+          <div className="flex h-9 w-9 items-center justify-center rounded-md bg-[#171713] dark:bg-[#d9ff68]">
             <Sparkles className="w-4 h-4 text-white" />
           </div>
           <div>
@@ -96,8 +96,8 @@ export default function QueryView() {
       <form onSubmit={handleSubmit}>
         <div className={`relative flex items-center rounded-lg border transition-all ${
           hasResult
-            ? "border-slate-200/80 bg-white/85 shadow-sm dark:border-white/[0.09] dark:bg-white/[0.045]"
-            : "border-slate-200/80 bg-white/90 shadow-[0_24px_70px_rgba(15,23,42,0.10)] dark:border-white/[0.09] dark:bg-neutral-950/90 dark:shadow-[0_24px_80px_rgba(0,0,0,0.42)]"
+            ? "border-[#d9d9d0] bg-[#fbfbf6] dark:border-[#292925] dark:bg-[#141411]"
+            : "border-[#bdbdb4] bg-[#fbfbf6] shadow-[0_16px_42px_rgba(23,23,19,0.06)] dark:border-[#3a3a34] dark:bg-[#141411] dark:shadow-none"
         }`}>
           <Search className="absolute left-4 h-4 w-4 shrink-0 text-slate-400" />
           <input

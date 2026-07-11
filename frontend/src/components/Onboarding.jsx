@@ -97,7 +97,7 @@ export default function Onboarding({ onComplete }) {
     const isSuccess = demoStatus?.status === "success";
 
     return (
-      <div className="flex flex-col items-center justify-center py-12 text-center">
+      <div className="panel flex flex-col items-center justify-center px-6 py-14 text-center">
         <div
           className={`w-16 h-16 rounded-full flex items-center justify-center mb-6 ${
             isError
@@ -127,7 +127,7 @@ export default function Onboarding({ onComplete }) {
             <button
               type="button"
               onClick={handleRunDemo}
-              className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-brand-500/20 transition-colors hover:bg-brand-500"
+              className="btn-primary"
             >
               Try again
               <ArrowRight className="w-4 h-4" />
@@ -135,7 +135,7 @@ export default function Onboarding({ onComplete }) {
             <button
               type="button"
               onClick={() => setStep("choice")}
-              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 transition-colors hover:bg-slate-50 dark:border-neutral-800 dark:bg-black dark:text-neutral-200 dark:hover:bg-black"
+              className="pill-control inline-flex items-center gap-2 px-4 py-2.5 text-sm font-bold"
             >
               Back to options
             </button>
@@ -147,7 +147,7 @@ export default function Onboarding({ onComplete }) {
 
   if (step === "import") {
     return (
-      <div className="py-6">
+      <div className="panel p-5 sm:p-7">
         <button 
           onClick={() => setStep("choice")}
           className="mb-6 flex items-center gap-2 text-sm font-medium text-slate-500 hover:text-slate-800 dark:text-neutral-300 transition-colors"
@@ -156,12 +156,13 @@ export default function Onboarding({ onComplete }) {
           Back to options
         </button>
 
-        <h2 className="text-xl font-bold text-slate-900 dark:text-neutral-200 mb-2">Import your context</h2>
-        <p className="text-slate-500 mb-8">Upload Markdown, text, JSON, CSV, or HTML files to ground your workspace truth.</p>
+        <p className="eyebrow">Local evidence</p>
+        <h2 className="mb-2 mt-2 text-2xl font-semibold text-slate-900 dark:text-neutral-200">Import your context</h2>
+        <p className="mb-8 text-sm text-slate-500">Upload Markdown, text, JSON, CSV, or HTML files to ground your workspace truth.</p>
 
         <div className="space-y-6">
           <div 
-            className="border-2 border-dashed border-slate-200 dark:border-neutral-800/50 rounded-2xl p-10 flex flex-col items-center justify-center bg-slate-50/50 hover:bg-slate-50 dark:bg-black transition-colors cursor-pointer group"
+            className="group flex cursor-pointer flex-col items-center justify-center rounded-md border border-dashed border-[#d9d9d0] bg-[#f7f7f2] p-10 transition-colors hover:border-brand-500 dark:border-[#35352f] dark:bg-[#10100e]"
             onClick={() => document.getElementById('file-upload').click()}
           >
             <input 
@@ -172,7 +173,7 @@ export default function Onboarding({ onComplete }) {
               className="hidden" 
               onChange={handleFileUpload}
             />
-            <div className="w-12 h-12 rounded-full bg-white dark:bg-black shadow-sm flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+            <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-md border border-[#d9d9d0] bg-[#fbfbf6] dark:border-[#35352f] dark:bg-[#141411]">
               <UploadCloud className="w-6 h-6 text-brand-600 dark:text-brand-400" />
             </div>
             <p className="text-sm font-bold text-slate-900 dark:text-neutral-200">Click to select files</p>
@@ -183,7 +184,7 @@ export default function Onboarding({ onComplete }) {
             <div className="space-y-2">
               <p className="text-xs font-bold uppercase tracking-widest text-slate-400 mb-2">Selected Files ({files.length})</p>
               {files.map((file, i) => (
-                <div key={i} className="flex items-center justify-between p-3 bg-white dark:bg-black border border-slate-200 dark:border-neutral-800/50 rounded-xl">
+                <div key={i} className="panel-subtle flex items-center justify-between p-3">
                   <div className="flex items-center gap-3">
                     <FileText className="w-4 h-4 text-slate-400" />
                     <span className="text-sm font-medium text-slate-700 dark:text-neutral-400 truncate max-w-[200px]">{file.name}</span>
@@ -197,7 +198,7 @@ export default function Onboarding({ onComplete }) {
               <button
                 onClick={processFiles}
                 disabled={importStatus?.status === 'uploading'}
-                className="w-full mt-4 py-3 bg-brand-600 text-white rounded-xl font-bold shadow-lg shadow-brand-600/20 hover:bg-brand-500 transition-all flex items-center justify-center gap-2"
+                className="btn-primary mt-4 flex w-full justify-center py-3"
               >
                 {importStatus?.status === 'uploading' ? (
                   <>
@@ -232,14 +233,14 @@ export default function Onboarding({ onComplete }) {
   }
 
   return (
-    <div className="py-6">
-      <div className="mb-10">
+    <div>
+      <div className="mb-8">
         <p className="eyebrow">First run</p>
-        <h2 className="mt-2 text-3xl font-semibold text-slate-950 dark:text-neutral-100">Welcome to Context Engine</h2>
-        <p className="text-slate-500 mt-2">Get started by seeding your workspace with initial truth.</p>
+        <h2 className="mt-2 text-3xl font-semibold text-slate-950 dark:text-neutral-100">Add the first evidence</h2>
+        <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-500">Choose the fastest path into a useful workspace. You can connect more sources at any time.</p>
       </div>
 
-      <div className="grid gap-4">
+      <div className="grid items-stretch gap-4 lg:grid-cols-3">
         <OnboardingCard 
           icon={<PlayCircle className="w-6 h-6 text-emerald-600 dark:text-emerald-400" />}
           title="Run Demo Workspace"
@@ -247,6 +248,7 @@ export default function Onboarding({ onComplete }) {
           action="Start demo"
           onClick={handleRunDemo}
           color="emerald"
+          recommended
         />
 
         <OnboardingCard 
@@ -271,7 +273,7 @@ export default function Onboarding({ onComplete }) {
   );
 }
 
-function OnboardingCard({ icon, title, description, action, onClick, to, color }) {
+function OnboardingCard({ icon, title, description, action, onClick, to, color, recommended = false }) {
   const iconBackground = {
     emerald: "bg-emerald-50 dark:bg-emerald-950/40",
     brand: "bg-brand-50 dark:bg-brand-900/30",
@@ -279,25 +281,26 @@ function OnboardingCard({ icon, title, description, action, onClick, to, color }
   }[color] ?? "bg-slate-50 dark:bg-black";
 
   const CardContent = (
-    <div className="panel group flex flex-col justify-between gap-6 p-6 transition-all hover:border-brand-400/50 md:flex-row md:items-center">
-      <div className="flex items-start gap-5">
-        <div className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-lg ${iconBackground} transition-transform group-hover:scale-105`}>
+    <div className="panel group flex h-full flex-col justify-between gap-7 p-5 transition-colors hover:border-[#8a8a80] dark:hover:border-[#57574f]">
+      <div>
+        <div className="mb-5 flex items-center justify-between gap-3">
+          <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-md ${iconBackground}`}>
           {icon}
+          </div>
+          {recommended ? <span className="rounded-sm bg-[#d9ff68] px-2 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-[#171713]">Recommended</span> : null}
         </div>
-        <div>
-          <h3 className="text-lg font-semibold text-slate-950 dark:text-neutral-200">{title}</h3>
-          <p className="mt-1 text-sm text-slate-500 max-w-md">{description}</p>
-        </div>
+        <h3 className="text-base font-semibold text-slate-950 dark:text-neutral-200">{title}</h3>
+        <p className="mt-2 text-sm leading-relaxed text-slate-500">{description}</p>
       </div>
       {to ? (
-        <Link to={to} className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-6 py-2.5 text-sm font-bold text-white transition-colors hover:bg-slate-800 dark:bg-white dark:text-slate-950 dark:hover:bg-neutral-200">
+        <Link to={to} className="pill-control inline-flex items-center justify-between gap-2 px-3 py-2.5 text-sm font-bold">
           {action}
           <ArrowRight className="w-4 h-4" />
         </Link>
       ) : (
         <button 
           onClick={onClick}
-          className="flex items-center gap-2 rounded-lg bg-slate-900 px-6 py-2.5 text-sm font-bold text-white transition-colors hover:bg-slate-800 dark:bg-white dark:text-slate-950 dark:hover:bg-neutral-200"
+          className="pill-control flex items-center justify-between gap-2 px-3 py-2.5 text-sm font-bold"
         >
           {action}
           <ArrowRight className="w-4 h-4" />

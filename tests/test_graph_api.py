@@ -210,7 +210,7 @@ class TestGraphProvenance:
         assert slack["source_metadata_summary"]["reply_count"] == 0
         assert slack["source_metadata_summary"]["permalink"] == "https://slack.example/C123/p10"
 
-    async def test_workspace_graph_includes_legacy_connector_documents(self, client, db_session):
+    async def test_workspace_graph_excludes_unassigned_legacy_connector_documents(self, client, db_session):
         workspace_id = uuid4()
         workspace = Workspace(id=workspace_id, name="Research Radar", slug=f"research-{workspace_id.hex[:8]}")
         connector = Connector(
@@ -236,7 +236,7 @@ class TestGraphProvenance:
         resp = await client.get("/api/graph", params={"workspace_id": str(workspace_id)})
         assert resp.status_code == 200
         data = resp.json()
-        assert any(c["id"] == str(component.id) for c in data["components"])
+        assert not any(c["id"] == str(component.id) for c in data["components"])
 
     async def test_relationship_read_includes_confidence(self, client, db_session):
         model = Model(id=uuid4(), name="Test")
@@ -1087,15 +1087,17 @@ class TestContextDigestEndpoint:
         assert resp.status_code == 200
         data = resp.json()
 
-        assert data["health"]["blocker_count"] >= 1
+        # Legacy rows without an EvidenceSpan remain visible as supporting
+        # evidence, but are not promoted into the factual blocker panel.
+        assert data["health"]["blocker_count"] == 0
         assert data["health"]["agent_ready_score"] < 100
-        assert data["cards"][0]["title"] == "Blocker: OAuth callback missing"
-        assert data["cards"][0]["status"] == "blocked"
-        assert data["cards"][0]["attention_score"] > data["cards"][1]["attention_score"]
-        assert data["cards"][0]["provenance"][0]["source_label"] == "PR #18 OAuth callback"
-        assert data["cards"][0]["provenance"][0]["source_url"] == "https://github.example/acme/repo/pull/18"
+        blocker_card = next(card for card in data["cards"] if card["title"] == "Blocker: OAuth callback missing")
+        assert blocker_card["status"] == "needs_review"
+        assert blocker_card["category"] == "supporting_evidence"
+        assert blocker_card["provenance"][0]["source_label"] == "PR #18 OAuth callback"
+        assert blocker_card["provenance"][0]["source_url"] == "https://github.example/acme/repo/pull/18"
         assert any(cluster["id"] == "needs_attention" for cluster in data["clusters"])
-        assert any(link["relationship_id"] == str(rel.id) for link in data["links"])
+        assert not any(link["relationship_id"] == str(rel.id) for link in data["links"])
 
     async def test_context_digest_supports_workspace_id(self, client, db_session):
         ws1 = "00000000-0000-0000-0000-000000000061"

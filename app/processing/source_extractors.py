@@ -20,6 +20,7 @@ class GitHubIssueData:
     comments: list[str] = field(default_factory=list)
     html_url: str | None = None
     created_at: str | None = None
+    updated_at: str | None = None
     closed_at: str | None = None
     user: str | None = None
 
@@ -39,7 +40,10 @@ class GitHubPRData:
     linked_issues: list[int] = field(default_factory=list)
     html_url: str | None = None
     created_at: str | None = None
+    updated_at: str | None = None
+    closed_at: str | None = None
     merged_at: str | None = None
+    draft: bool = False
     user: str | None = None
 
 
@@ -75,6 +79,14 @@ def extract_github_issue(doc_content: str, doc_metadata: dict[str, Any] | None =
 
 
 def _extract_single_github_issue(data: dict, doc_metadata: dict[str, Any] | None = None) -> list[ExtractedFact]:
+    authoritative = doc_metadata or {}
+    data = {**data, **{
+        key: value for key, value in authoritative.items()
+        if key in {
+            "title", "body", "state", "number", "labels", "assignees",
+            "created_at", "updated_at", "closed_at",
+        } and value is not None
+    }}
     issue = GitHubIssueData(
         title=data.get("title", ""),
         body=data.get("body", "") or "",
@@ -86,6 +98,7 @@ def _extract_single_github_issue(data: dict, doc_metadata: dict[str, Any] | None
         comments=data.get("comments", []),
         html_url=data.get("html_url"),
         created_at=data.get("created_at"),
+        updated_at=data.get("updated_at"),
         closed_at=data.get("closed_at"),
         user=data.get("user", {}).get("login") if isinstance(data.get("user"), dict) else data.get("user"),
     )
@@ -93,11 +106,24 @@ def _extract_single_github_issue(data: dict, doc_metadata: dict[str, Any] | None
 
 
 def _extract_github_issue_text(content: str, doc_metadata: dict[str, Any] | None = None) -> list[ExtractedFact]:
+    meta = doc_metadata or {}
     title_match = re.search(r"(?:^|\n)#\s*(.+?)(?:\n|$)", content)
     title = title_match.group(1).strip() if title_match else content[:120].strip()
 
-    state = "closed" if re.search(r"\b(closed|resolved|fixed)\b", content, re.IGNORECASE) else "open"
-    issue = GitHubIssueData(title=title, body=content, state=state)
+    state = str(meta.get("state") or ("closed" if re.search(r"\b(closed|resolved|fixed)\b", content, re.IGNORECASE) else "open"))
+    issue = GitHubIssueData(
+        title=str(meta.get("title") or title),
+        body=content,
+        state=state,
+        number=_safe_int(meta.get("number")),
+        labels=meta.get("labels", []),
+        assignees=meta.get("assignees", []),
+        html_url=meta.get("html_url") or meta.get("source_url"),
+        created_at=meta.get("created_at"),
+        updated_at=meta.get("updated_at"),
+        closed_at=meta.get("closed_at"),
+        user=meta.get("author"),
+    )
     return _build_github_issue_facts(issue, doc_metadata)
 
 
@@ -108,7 +134,7 @@ def _build_github_issue_facts(issue: GitHubIssueData, doc_metadata: dict[str, An
     issue_name = f"Issue #{issue.number}: {issue.title}" if issue.number else f"Issue: {issue.title}"
     issue_value = issue.body[:500] if issue.body else issue.title
 
-    provenance = json.dumps({"source_type": "github_issue", "number": issue.number, "url": issue.html_url, "state": issue.state})
+    provenance = json.dumps({"source_type": "github_issue", "number": issue.number, "url": issue.html_url, "state": issue.state, "updated_at": issue.updated_at, "closed_at": issue.closed_at})
 
     facts.append(ExtractedFact(
         model_name="Issue",
@@ -187,6 +213,7 @@ def _extract_issue_body_facts(issue: GitHubIssueData, provenance: str) -> list[E
     content = issue.body
     if not content:
         return facts
+    issue_temporal = "past" if issue.state == "closed" or issue.closed_at else "current"
 
     for m in re.finditer(r"(?:decision|decided|we chose|we will use)\s*:?\s*(.+?)(?:\n|$)", content, re.IGNORECASE):
         text = m.group(1).strip()
@@ -194,7 +221,7 @@ def _extract_issue_body_facts(issue: GitHubIssueData, provenance: str) -> list[E
             facts.append(ExtractedFact(
                 model_name="Decision", name=f"Decision: {text[:120]}",
                 value=text, fact_type="decision", confidence=0.82,
-                temporal="current", temporal_hint="current",
+                temporal=issue_temporal, temporal_hint=issue_temporal,
                 provenance=provenance, excerpt=text[:300],
             ))
 
@@ -204,7 +231,7 @@ def _extract_issue_body_facts(issue: GitHubIssueData, provenance: str) -> list[E
             facts.append(ExtractedFact(
                 model_name="Task", name=f"Task: {text[:120]}",
                 value=text, fact_type="task", confidence=0.78,
-                temporal="current", temporal_hint="current",
+                temporal=issue_temporal, temporal_hint=issue_temporal,
                 provenance=provenance, excerpt=text[:300],
             ))
 
@@ -214,7 +241,7 @@ def _extract_issue_body_facts(issue: GitHubIssueData, provenance: str) -> list[E
             facts.append(ExtractedFact(
                 model_name="Risk", name=f"Risk: {text[:120]}",
                 value=text, fact_type="blocker", confidence=0.85,
-                temporal="current", temporal_hint="current",
+                temporal=issue_temporal, temporal_hint=issue_temporal,
                 provenance=provenance, excerpt=text[:300],
             ))
 
@@ -237,6 +264,14 @@ def extract_github_pr(doc_content: str, doc_metadata: dict[str, Any] | None = No
 
 
 def _extract_single_github_pr(data: dict, doc_metadata: dict[str, Any] | None = None) -> list[ExtractedFact]:
+    authoritative = doc_metadata or {}
+    data = {**data, **{
+        key: value for key, value in authoritative.items()
+        if key in {
+            "title", "body", "state", "number", "merged", "draft", "labels",
+            "assignees", "created_at", "updated_at", "closed_at", "merged_at",
+        } and value is not None
+    }}
     changed_files_raw = data.get("changed_files", [])
     if isinstance(changed_files_raw, list) and changed_files_raw and isinstance(changed_files_raw[0], dict):
         changed_files = [f.get("filename", "") for f in changed_files_raw if f.get("filename")]
@@ -265,18 +300,37 @@ def _extract_single_github_pr(data: dict, doc_metadata: dict[str, Any] | None = 
         linked_issues=linked_issues,
         html_url=data.get("html_url"),
         created_at=data.get("created_at"),
+        updated_at=data.get("updated_at"),
+        closed_at=data.get("closed_at"),
         merged_at=data.get("merged_at"),
+        draft=bool(data.get("draft", False)),
         user=data.get("user", {}).get("login") if isinstance(data.get("user"), dict) else data.get("user"),
     )
     return _build_github_pr_facts(pr, doc_metadata)
 
 
 def _extract_github_pr_text(content: str, doc_metadata: dict[str, Any] | None = None) -> list[ExtractedFact]:
+    meta = doc_metadata or {}
     title_match = re.search(r"(?:^|\n)#\s*(.+?)(?:\n|$)", content)
     title = title_match.group(1).strip() if title_match else content[:120].strip()
 
-    merged = bool(re.search(r"\b(merged|merged into)\b", content, re.IGNORECASE))
-    pr = GitHubPRData(title=title, body=content, merged=merged)
+    merged = bool(meta.get("merged", re.search(r"\b(merged|merged into)\b", content, re.IGNORECASE)))
+    pr = GitHubPRData(
+        title=str(meta.get("title") or title),
+        body=content,
+        state=str(meta.get("state") or "open"),
+        number=_safe_int(meta.get("number")),
+        merged=merged,
+        labels=meta.get("labels", []),
+        assignees=meta.get("assignees", []),
+        html_url=meta.get("html_url") or meta.get("source_url"),
+        created_at=meta.get("created_at"),
+        updated_at=meta.get("updated_at"),
+        closed_at=meta.get("closed_at"),
+        merged_at=meta.get("merged_at"),
+        draft=bool(meta.get("draft", False)),
+        user=meta.get("author"),
+    )
     pr.linked_issues = [int(m.group(1)) for m in re.finditer(r"#(\d+)", content)]
     return _build_github_pr_facts(pr, doc_metadata)
 
@@ -294,6 +348,10 @@ def _build_github_pr_facts(pr: GitHubPRData, doc_metadata: dict[str, Any] | None
         "url": pr.html_url,
         "state": pr.state,
         "merged": pr.merged,
+        "draft": pr.draft,
+        "updated_at": pr.updated_at,
+        "closed_at": pr.closed_at,
+        "merged_at": pr.merged_at,
     })
 
     facts.append(ExtractedFact(
@@ -407,6 +465,13 @@ def _build_github_pr_facts(pr: GitHubPRData, doc_metadata: dict[str, Any] | None
         facts.extend(body_facts)
 
     return facts
+
+
+def _safe_int(value: object) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _extract_pr_body_facts(pr: GitHubPRData, provenance: str) -> list[ExtractedFact]:

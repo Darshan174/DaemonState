@@ -68,6 +68,11 @@ async def sync_github(connector: Connector, session: AsyncSession) -> dict:
 
                 docs_fetched += len(items)
                 for item in items:
+                    # GitHub's /issues endpoint includes pull requests. Those
+                    # are ingested only from /pulls so one provider object has
+                    # one truthful item type and source identity.
+                    if item_type == "issue" and item.get("pull_request"):
+                        continue
                     number = item.get("number")
                     external_id = f"github:{repo}:{item_type}:{number}"
 
@@ -79,6 +84,10 @@ async def sync_github(connector: Connector, session: AsyncSession) -> dict:
                     author = (item.get("user") or {}).get("login", "")
                     url = item.get("html_url", "")
                     created_at = item.get("created_at")
+                    updated_at = item.get("updated_at")
+                    closed_at = item.get("closed_at")
+                    merged_at = item.get("merged_at")
+                    draft = bool(item.get("draft", False))
                     assignees = [a.get("login", "") for a in item.get("assignees", [])]
 
                     label_str = ", ".join(labels) if labels else "none"
@@ -93,6 +102,8 @@ async def sync_github(connector: Connector, session: AsyncSession) -> dict:
                         f"{assignee_note}\n\n"
                         f"{body[:4000]}"
                     )
+                    if updated_at:
+                        content += f"\n\nProvider updated at: {updated_at}"
 
                     result = await ingest_source_document_revision(
                         session,
@@ -109,10 +120,14 @@ async def sync_github(connector: Connector, session: AsyncSession) -> dict:
                             "number": number,
                             "title": title,
                             "state": state,
+                            "draft": draft,
                             "merged": merged,
                             "labels": labels,
                             "assignees": assignees,
                             "created_at": created_at,
+                            "updated_at": updated_at,
+                            "closed_at": closed_at,
+                            "merged_at": merged_at,
                             "source_type": f"github_{item_type}",
                         },
                     )

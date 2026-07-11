@@ -64,7 +64,7 @@ export default function Changes() {
       </div>
 
       {/* Filter bar */}
-      <div className="flex w-fit items-center gap-1.5 rounded-lg border border-slate-200/80 bg-slate-100/80 p-1.5 shadow-inner shadow-black/[0.03] dark:border-white/[0.08] dark:bg-white/[0.035]">
+      <div className="flex w-fit items-center gap-1.5 rounded-md border border-[#d9d9d0] bg-[#fbfbf6] p-1.5 dark:border-[#292925] dark:bg-[#141411]">
         {FILTERS.map((f) => {
           const active = type === f.key;
           return (
@@ -77,8 +77,8 @@ export default function Changes() {
               }}
               className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
                 active
-                  ? "bg-white text-slate-900 shadow-sm dark:bg-white/[0.1] dark:text-white"
-                  : "text-slate-500 dark:text-neutral-400 hover:text-slate-700 dark:hover:text-slate-300"
+                  ? "bg-[#171713] text-white dark:bg-[#d9ff68] dark:text-[#171713]"
+                  : "text-[#68685f] hover:text-[#171713] dark:text-[#a2a298] dark:hover:text-[#f4f4ec]"
               }`}
             >
               {f.label}
@@ -98,7 +98,7 @@ export default function Changes() {
       ) : (
         <div className="relative">
           {/* Vertical line */}
-          <div className="absolute bottom-3 left-[19px] top-3 w-px bg-slate-200 dark:bg-white/[0.08]" />
+          <div className="absolute bottom-3 left-[19px] top-3 w-px bg-[#d9d9d0] dark:bg-[#292925]" />
           <div className="space-y-3">
             {filtered.map((item) => <ChangeCard key={item.id} item={item} />)}
           </div>

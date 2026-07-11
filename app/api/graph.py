@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -13,9 +14,12 @@ from sqlalchemy.orm import selectinload
 from app.database import get_db_session
 from app.models import Component, Model, Relationship, SourceDocument, UnresolvedRelationship
 from app.services.workspace_scope import (
+    current_source_documents,
+    filter_explicit_source_documents_for_workspace,
     filter_components_for_workspace,
     filter_source_documents_for_workspace,
     workspace_connector_types,
+    workspace_scope_exists,
 )
 from app.taxonomy import (
     relationship_display_label,
@@ -153,7 +157,18 @@ async def get_graph(
             workspace_id_str, connector_types = await workspace_connector_types(session, workspace_id)
         except ValueError:
             raise HTTPException(status_code=422, detail="Invalid workspace_id")
-        components = filter_components_for_workspace(components, workspace_id_str, connector_types)
+        if not await workspace_scope_exists(session, workspace_id_str):
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        scoped_documents = filter_explicit_source_documents_for_workspace(
+            list(await session.scalars(select(SourceDocument))),
+            workspace_id_str,
+        )
+        current_documents, _ = current_source_documents(scoped_documents)
+        current_source_ids = {document.id for document in current_documents}
+        components = [
+            component for component in components
+            if component.source_document_id in current_source_ids
+        ]
     if confidence_min is not None:
         components = [c for c in components if c.confidence >= confidence_min]
 
@@ -168,7 +183,7 @@ async def get_graph(
             Relationship.source_component_id.in_(comp_ids),
             Relationship.target_component_id.in_(comp_ids),
         )
-        .where(Relationship.status != "rejected")
+        .where(Relationship.status.not_in(["rejected", "superseded"]))
     )
     if relationship_origin:
         rel_stmt = rel_stmt.where(Relationship.origin == relationship_origin)
@@ -188,6 +203,9 @@ async def get_graph(
     for c in components:
         model_counts[c.model_id] = model_counts.get(c.model_id, 0) + 1
     relationship_counts = _relationship_counts(relationships)
+    if workspace_id:
+        represented_model_ids = {component.model_id for component in components}
+        models = [model for model in models if model.id in represented_model_ids]
 
     return GraphResponse(
         models=[ModelRead(
@@ -351,16 +369,25 @@ async def get_stats(
 
 
 class BuildRequest(BaseModel):
-    limit: int = 100
+    workspace_id: UUID
+    mode: Literal["incremental", "rebuild"] = "incremental"
+    limit: int = Field(default=100, ge=1, le=500)
     api_key: str | None = None
     model: str | None = None
-    workspace_id: str | None = None
 
 
 class BuildResult(BaseModel):
+    workspace_id: str
+    mode: Literal["incremental", "rebuild"]
     started_at: str
     finished_at: str
     llm_extraction: bool
+    remote_sources_refreshed: bool
+    source_refresh: bool
+    documents: dict
+    components: dict
+    relationships: dict
+    warnings: list[dict]
     docs_processed: int
     docs_pending_before: int
     components_created: int
@@ -371,7 +398,7 @@ class BuildResult(BaseModel):
 
 @router.post("/graph/build", response_model=BuildResult)
 async def build_graph(
-    body: BuildRequest = BuildRequest(),
+    body: BuildRequest,
     session: AsyncSession = Depends(get_db_session),
 ) -> BuildResult:
     from app.agents.graph_builder import GraphBuilderAgent
@@ -381,10 +408,13 @@ async def build_graph(
             limit=body.limit,
             api_key=body.api_key,
             model=body.model,
-            workspace_id=body.workspace_id,
+            workspace_id=str(body.workspace_id),
+            mode=body.mode,
         )
     except ValueError:
         raise HTTPException(status_code=422, detail="Invalid workspace_id")
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Workspace not found")
     return BuildResult(**result)
 
 

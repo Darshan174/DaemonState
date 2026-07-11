@@ -21,9 +21,9 @@ export function useBuildContext(workspaceId) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: () => {
+    mutationFn: ({ mode = "incremental" } = {}) => {
       const saved = getAiSettings();
-      const body = { limit: 100, workspace_id: workspaceId };
+      const body = { limit: 100, workspace_id: workspaceId, mode };
       if (saved.api_key) body.api_key = saved.api_key;
       if (saved.model) body.model = saved.model;
       return api.post("/graph/build", body);

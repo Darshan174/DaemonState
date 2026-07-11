@@ -79,7 +79,7 @@ export default function Dashboard() {
         <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
           <Link
             to="/app/query"
-            className="group relative inline-flex items-center gap-2 overflow-hidden rounded-lg bg-brand-600 px-5 py-3 text-sm font-bold text-white shadow-[0_18px_42px_rgba(79,70,229,0.32)] transition-all hover:bg-brand-500 dark:shadow-[0_0_0_1px_rgba(255,255,255,0.08)]"
+            className="group relative inline-flex items-center gap-2 overflow-hidden rounded-md bg-[#171713] px-5 py-3 text-sm font-semibold text-white transition-all hover:bg-[#36362f] dark:bg-[#d9ff68] dark:text-[#171713] dark:hover:bg-[#e8ff9c]"
           >
             <div className="absolute inset-0 flex h-full w-full justify-center [transform:skew(-12deg)_translateX(-100%)] group-hover:duration-1000 group-hover:[transform:skew(-12deg)_translateX(100%)]">
               <div className="relative h-full w-8 bg-white/20" />
@@ -182,9 +182,9 @@ export default function Dashboard() {
           initial={{ opacity: 0, x: 20 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.5, delay: 0.2 }}
-          className="relative overflow-hidden rounded-lg border border-white/[0.09] bg-[#07080a] p-6 text-white shadow-[0_24px_80px_rgba(0,0,0,0.42)]"
+          className="relative overflow-hidden rounded-md border border-[#292925] bg-[#171713] p-6 text-white dark:bg-[#0d0d0b]"
         >
-          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_right,rgba(255,255,255,0.045)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.045)_1px,transparent_1px)] bg-[size:32px_32px]" />
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_84%_12%,rgba(217,255,104,0.13),transparent_28%)]" />
           <div className="relative z-10 mb-6">
             <p className="text-[11px] font-bold uppercase tracking-wider text-white/42">Health</p>
             <h3 className="mt-1 text-lg font-semibold">Workspace Health</h3>
@@ -270,11 +270,11 @@ function FounderCard({ icon, title, description, to, cta, alert }) {
     <motion.div whileHover={{ y: -4, scale: 1.01 }} transition={{ duration: 0.2 }}>
       <Link
         to={to}
-        className={`group relative flex h-full flex-col overflow-hidden rounded-lg border p-6 backdrop-blur-xl transition-all ${alert ? 'border-amber-300/70 bg-amber-50/75 dark:border-amber-500/35 dark:bg-amber-500/10' : 'border-slate-200/80 bg-white/[0.82] shadow-[0_16px_48px_rgba(15,23,42,0.06)] hover:border-slate-300 dark:border-white/[0.09] dark:bg-neutral-950/90 dark:shadow-[0_24px_80px_rgba(0,0,0,0.34)] dark:hover:border-white/[0.16]'}`}
+        className={`group relative flex h-full flex-col overflow-hidden rounded-md border p-6 transition-all ${alert ? 'border-amber-300/70 bg-amber-50/75 dark:border-amber-500/35 dark:bg-amber-500/10' : 'border-[#d9d9d0] bg-[#fbfbf6] hover:border-[#68685f] dark:border-[#292925] dark:bg-[#141411] dark:hover:border-[#57574f]'}`}
       >
         <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/70 to-transparent opacity-0 transition-opacity group-hover:opacity-100 dark:via-white/30" />
         <div className="relative z-10 flex-col flex h-full">
-          <div className={`mb-5 flex h-12 w-12 items-center justify-center rounded-lg ${alert ? 'bg-amber-100 dark:bg-amber-900/40' : 'border border-brand-500/20 bg-brand-500/10'} transition-transform duration-300 group-hover:scale-105`}>
+          <div className={`mb-5 flex h-12 w-12 items-center justify-center rounded-md ${alert ? 'bg-amber-100 dark:bg-amber-900/40' : 'border border-brand-300 bg-brand-100 dark:border-brand-500 dark:bg-[#292925]'} transition-transform duration-300 group-hover:scale-105`}>
             {icon}
           </div>
           <h3 className="text-lg font-semibold text-slate-950 dark:text-white">{title}</h3>

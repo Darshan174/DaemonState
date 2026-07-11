@@ -197,13 +197,15 @@ The current app is a working developer surface, not a marketing shell. Prepare
 is the default view at `/app`; Dashboard, Graph, Ask, Sources, Connectors, and
 Changes remain supporting inspection surfaces.
 
-The graph and digest surface show how sources feed evidence, evidence supports
-claims, and claims assemble into models such as decisions, risks, work, repo
-state, connectors, and agent sessions.
+The Graph route is a selected-workspace projection over imported source
+revisions. It separates provider refresh from incremental graph updates and
+explicit rebuilds, shows provider state as a timestamped observation, and does
+not invent a workspace objective when none was supplied.
 
-The inspector surfaces provenance, source evidence, confidence, relationships,
-status, and review state so a developer can understand why the system believes
-something.
+Typed PR, issue, session, decision, and blocker cards open an inspector with
+source evidence, classification, snapshot/revision metadata, confidence,
+relationships, and imported source content. Unsupported or unverified
+categories remain visibly empty instead of being filled from title keywords.
 
 The Ask surface returns source-backed answers with a visible facts-used trace
 instead of a black-box response.

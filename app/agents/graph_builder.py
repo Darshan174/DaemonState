@@ -12,9 +12,10 @@ from app.models import Component, Relationship, SourceDocument
 from app.agents.semantic_linker import SemanticRelationshipLinker
 from app.services.ingest import IngestionService
 from app.services.workspace_scope import (
-    filter_components_for_workspace,
-    filter_source_documents_for_workspace,
+    current_source_documents,
+    filter_explicit_source_documents_for_workspace,
     workspace_connector_types,
+    workspace_scope_exists,
 )
 from app.time import utc_now
 
@@ -61,8 +62,14 @@ class GraphBuilderAgent:
         api_key: str | None = None,
         model: str | None = None,
         workspace_id: str | None = None,
+        mode: str = "incremental",
     ) -> dict:
         started_at = utc_now()
+
+        if not workspace_id:
+            raise ValueError("workspace_id is required")
+        if mode not in {"incremental", "rebuild"}:
+            raise ValueError("mode must be incremental or rebuild")
 
         extractor = None
         if api_key or model:
@@ -72,26 +79,33 @@ class GraphBuilderAgent:
         else:
             ingestor = self._ingestor
 
-        workspace_scope: tuple[str, set[str]] | None = None
-        pending_stmt = (
-            select(SourceDocument)
-            .where(SourceDocument.processed_at.is_(None))
-            .order_by(SourceDocument.ingested_at.desc())
+        workspace_scope = await workspace_connector_types(self.session, workspace_id)
+        if not await workspace_scope_exists(self.session, workspace_scope[0]):
+            raise LookupError("Workspace not found")
+        workspace_documents = filter_explicit_source_documents_for_workspace(
+            list(await self.session.scalars(
+                select(SourceDocument).order_by(SourceDocument.ingested_at.desc())
+            )),
+            workspace_scope[0],
         )
-        if workspace_id:
-            workspace_scope = await workspace_connector_types(self.session, workspace_id)
-            pending_candidates = list(await self.session.scalars(pending_stmt))
-            pending = filter_source_documents_for_workspace(
-                pending_candidates,
-                workspace_scope[0],
-                workspace_scope[1],
-            )[:limit]
-        else:
-            pending = list(await self.session.scalars(pending_stmt.limit(limit)))
+        current_documents, historical_skipped = current_source_documents(workspace_documents)
+        current_documents.sort(
+            key=lambda doc: (doc.ingested_at, str(doc.id)),
+            reverse=True,
+        )
+        pending_before = sum(1 for doc in current_documents if doc.processed_at is None)
+        eligible = current_documents if mode == "rebuild" else [
+            doc for doc in current_documents if doc.processed_at is None
+        ]
+        documents_to_process = eligible[:limit]
 
         docs_processed = 0
+        docs_reprocessed = 0
         components_created = 0
-        errors: list[dict] = []
+        components_reused = 0
+        components_superseded = 0
+        relationship_projection_superseded = 0
+        warnings: list[dict] = []
         extraction_quality = {
             "fact_count": 0,
             "relationship_count": 0,
@@ -103,11 +117,20 @@ class GraphBuilderAgent:
             "contract_warning_count": 0,
         }
 
-        for doc in pending:
+        for doc in documents_to_process:
+            was_processed = doc.processed_at is not None
             try:
-                n = await ingestor.process_document(doc.id)
-                components_created += n
+                async with self.session.begin_nested():
+                    await ingestor.process_document(doc.id, force=(mode == "rebuild"))
+                projection = getattr(ingestor, "last_projection_report", {}) or {}
+                components_created += int(projection.get("created", 0) or 0)
+                components_reused += int(projection.get("reused", 0) or 0)
+                components_superseded += int(projection.get("superseded", 0) or 0)
+                relationship_projection_superseded += int(
+                    projection.get("relationships_superseded", 0) or 0
+                )
                 docs_processed += 1
+                docs_reprocessed += int(was_processed)
                 _merge_extraction_quality(
                     extraction_quality,
                     getattr(ingestor, "last_extraction_report", None),
@@ -117,24 +140,33 @@ class GraphBuilderAgent:
                 )
                 if extraction_warnings:
                     extraction_quality["contract_warning_count"] += len(extraction_warnings)
-                    errors.append({
-                        "doc_id": str(doc.id),
-                        "warning": "extraction_contract_warnings",
-                        "warnings": extraction_warnings[:10],
+                    warnings.append({
+                        "code": "extraction_contract_warnings",
+                        "source_document_id": str(doc.id),
+                        "message": "; ".join(extraction_warnings[:10]),
                     })
                 extraction_error = getattr(ingestor, "last_extraction_error", None)
                 if extraction_error:
-                    errors.append({
-                        "doc_id": str(doc.id),
-                        "warning": "llm_extraction_failed_regex_fallback",
-                        "error": extraction_error,
+                    warnings.append({
+                        "code": "llm_extraction_failed_regex_fallback",
+                        "source_document_id": str(doc.id),
+                        "message": extraction_error,
                     })
             except Exception as exc:
-                errors.append({"doc_id": str(doc.id), "error": str(exc)})
+                warnings.append({
+                    "code": "document_processing_failed",
+                    "source_document_id": str(doc.id),
+                    "message": str(exc),
+                })
                 logger.warning("graph_builder: error processing doc %s: %s", doc.id, exc)
 
         await self.session.commit()
 
+        active_relationships_before = {
+            relationship.id for relationship in await self.session.scalars(
+                select(Relationship).where(Relationship.status != "superseded")
+            )
+        }
         relationships_inferred = await self._infer_deterministic_relationships(workspace_scope)
         relationships_inferred += await SemanticRelationshipLinker(
             self.session,
@@ -146,63 +178,87 @@ class GraphBuilderAgent:
         relationships_inferred += await self._infer_cross_doc_relationships(workspace_scope)
         await self.session.commit()
 
-        if workspace_scope:
-            scoped_components = list(await self.session.scalars(
-                select(Component)
-                .options(selectinload(Component.source_document))
-            ))
-            scoped_components = filter_components_for_workspace(
-                scoped_components,
-                workspace_scope[0],
-                workspace_scope[1],
+        current_source_ids = {doc.id for doc in current_documents}
+        scoped_components = list(await self.session.scalars(
+            select(Component).where(
+                Component.source_document_id.in_(current_source_ids),
+                Component.status.in_(("active", "needs_review", "proposed", "stale")),
             )
-            component_ids = {component.id for component in scoped_components}
-            total_components = len(scoped_components)
-            if component_ids:
-                total_relationships = await self.session.scalar(
-                    select(func.count(Relationship.id)).where(
-                        Relationship.source_component_id.in_(component_ids),
-                        Relationship.target_component_id.in_(component_ids),
-                    )
-                ) or 0
-            else:
-                total_relationships = 0
-            pending_after_candidates = list(await self.session.scalars(
-                select(SourceDocument).where(SourceDocument.processed_at.is_(None))
-            ))
-            pending_after = len(filter_source_documents_for_workspace(
-                pending_after_candidates,
-                workspace_scope[0],
-                workspace_scope[1],
-            ))
-        else:
-            total_components = await self.session.scalar(select(func.count(Component.id))) or 0
-            total_relationships = await self.session.scalar(select(func.count(Relationship.id))) or 0
-            pending_after = await self.session.scalar(
-                select(func.count(SourceDocument.id)).where(SourceDocument.processed_at.is_(None))
-            ) or 0
+        )) if current_source_ids else []
+        component_ids = {component.id for component in scoped_components}
+        active_relationships = list(await self.session.scalars(
+            select(Relationship).where(
+                Relationship.source_component_id.in_(component_ids),
+                Relationship.target_component_id.in_(component_ids),
+                Relationship.status != "superseded",
+            )
+        )) if component_ids else []
+        pending_after = sum(1 for doc in current_documents if doc.processed_at is None)
+        created_relationships = [
+            relationship for relationship in active_relationships
+            if relationship.id not in active_relationships_before
+        ]
+        created_by_origin: dict[str, int] = {
+            "deterministic": 0,
+            "extracted": 0,
+            "proposed": 0,
+        }
+        for relationship in created_relationships:
+            origin = relationship.origin or "proposed"
+            if origin == "ai_proposed":
+                origin = "proposed"
+            created_by_origin[origin] = created_by_origin.get(origin, 0) + 1
 
         from app.config import settings
         llm_active = bool(
             (api_key or settings.litellm_api_key) and (model or settings.extraction_model)
         )
 
-        return {
+        result = {
+            "workspace_id": workspace_scope[0],
+            "mode": mode,
             "started_at": started_at.isoformat(),
             "finished_at": utc_now().isoformat(),
             "llm_extraction": llm_active,
+            "remote_sources_refreshed": False,
+            "source_refresh": False,
+            "documents": {
+                "eligible": len(eligible),
+                "pending_before": pending_before,
+                "processed": docs_processed,
+                "reprocessed": docs_reprocessed,
+                "failed": sum(1 for warning in warnings if warning["code"] == "document_processing_failed"),
+                "historical_skipped": historical_skipped,
+                "remaining": pending_after,
+            },
+            "components": {
+                "created": components_created,
+                "reused": components_reused,
+                "superseded": components_superseded,
+                "active_after": len(scoped_components),
+            },
+            "relationships": {
+                "created": len(created_relationships),
+                "reused": 0,
+                "superseded": relationship_projection_superseded,
+                "active_after": len(active_relationships),
+                "created_by_origin": created_by_origin,
+            },
+            "warnings": warnings,
+            # Compatibility fields for one API cycle.
             "docs_processed": docs_processed,
-            "docs_pending_before": len(pending),
+            "docs_pending_before": pending_before,
             "components_created": components_created,
             "relationships_inferred": relationships_inferred,
-            "errors": errors,
+            "errors": warnings,
             "stats": {
-                "total_components": total_components,
-                "total_relationships": total_relationships,
+                "total_components": len(scoped_components),
+                "total_relationships": len(active_relationships),
                 "pending_docs": pending_after,
                 "extraction_quality": extraction_quality,
             },
         }
+        return result
 
     async def _infer_cross_doc_relationships(
         self,
@@ -214,10 +270,8 @@ class GraphBuilderAgent:
             .where(Component.status == "active")
         ))
         if workspace_scope:
-            components = filter_components_for_workspace(
-                components,
-                workspace_scope[0],
-                workspace_scope[1],
+            components = await self._current_workspace_components(
+                components, workspace_scope[0]
             )
         if not components:
             return 0
@@ -274,10 +328,8 @@ class GraphBuilderAgent:
             .where(Component.status.in_(["active", "needs_review", "proposed"]))
         ))
         if workspace_scope:
-            components = filter_components_for_workspace(
-                components,
-                workspace_scope[0],
-                workspace_scope[1],
+            components = await self._current_workspace_components(
+                components, workspace_scope[0]
             )
         if not components:
             return 0
@@ -330,6 +382,22 @@ class GraphBuilderAgent:
             inferred += 1
 
         return inferred
+
+    async def _current_workspace_components(
+        self,
+        components: list[Component],
+        workspace_id: str,
+    ) -> list[Component]:
+        documents = filter_explicit_source_documents_for_workspace(
+            list(await self.session.scalars(select(SourceDocument))),
+            workspace_id,
+        )
+        current_documents, _ = current_source_documents(documents)
+        current_source_ids = {document.id for document in current_documents}
+        return [
+            component for component in components
+            if component.source_document_id in current_source_ids
+        ]
 
     def _infer_github_slack_references(
         self,
