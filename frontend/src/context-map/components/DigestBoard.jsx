@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   AlertTriangle,
@@ -54,6 +54,7 @@ export default function DigestBoard({
   const [layoutMode, setLayoutMode] = useState("auto");
   const [locked, setLocked] = useState(true);
   const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
   const [nodeOffsets, setNodeOffsets] = useState({});
   const [hiddenLanes, setHiddenLanes] = useState(() => new Set());
 
@@ -67,6 +68,7 @@ export default function DigestBoard({
     setLayoutMode("auto");
     setLocked(true);
     setZoom(1);
+    setPan({ x: 0, y: 0 });
     setNodeOffsets({});
     setHiddenLanes(new Set());
   }, [digest?.workspace_id]);
@@ -121,7 +123,7 @@ export default function DigestBoard({
       aria-label={`Evidence graph for ${workspaceName}`}
       tabIndex={0}
       onKeyDown={handleKeyDown}
-      className="relative h-full min-h-[680px] overflow-y-auto bg-[#f4f4ed] text-[#171713] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#171713]/30 dark:bg-[#0f0f0c] dark:text-[#f4f4ec]"
+      className="relative flex h-full min-h-0 flex-col overflow-hidden bg-[#f4f4ed] text-[#171713] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#171713]/30 dark:bg-[#0f0f0c] dark:text-[#f4f4ec]"
     >
       <GraphCommandBar
         workspaceName={workspaceName}
@@ -151,7 +153,7 @@ export default function DigestBoard({
         />
       ) : null}
 
-      <div className="mx-auto max-w-[1240px] px-3 pb-20 pt-4 sm:px-5">
+      <div className="relative min-h-0 flex-1 overflow-hidden">
         {projection.nodes.length ? (
           <EvidenceFlow
             lanes={projection.lanes}
@@ -164,6 +166,9 @@ export default function DigestBoard({
             nodeById={nodeById}
             onSelect={(card) => selectNode(nodeById.get(card.id))}
             zoom={zoom}
+            onZoom={setZoom}
+            pan={pan}
+            onPan={setPan}
             layoutMode={layoutMode}
             locked={locked}
             nodeOffsets={nodeOffsets}
@@ -175,25 +180,30 @@ export default function DigestBoard({
               else next.add(laneId);
               return next;
             })}
-            onFit={() => setZoom(1)}
+            onFit={() => {
+              setZoom(1);
+              setPan({ x: 0, y: 0 });
+            }}
           />
         ) : (
           <SparseGraphState onBuild={onBuild} building={building} />
         )}
 
-        {projection.nodes.length ? (
-          <RelationshipSummary
-            edges={visibleEdges}
-            nodeById={nodeById}
-            expanded={linksExpanded || Boolean(selectedId)}
-            onExpand={() => setLinksExpanded(true)}
-            selected={Boolean(selectedId)}
-            onClear={clearSelection}
-          />
+        {projection.nodes.length && selectedId ? (
+          <div className="absolute left-3 top-3 z-30 max-h-[min(18rem,45%)] w-[min(22rem,calc(100%-1.5rem))] overflow-y-auto">
+            <RelationshipSummary
+              edges={visibleEdges}
+              nodeById={nodeById}
+              expanded={linksExpanded || Boolean(selectedId)}
+              onExpand={() => setLinksExpanded(true)}
+              selected={Boolean(selectedId)}
+              onClear={clearSelection}
+            />
+          </div>
         ) : null}
 
         {projection.hiddenCardCount ? (
-          <p className="mt-4 text-center text-[10px] font-semibold text-[#77776e] dark:text-[#999990]">
+          <p className="absolute bottom-3 left-1/2 z-20 hidden -translate-x-1/2 rounded-full bg-white/90 px-3 py-1.5 text-center text-[10px] font-semibold text-[#77776e] shadow-sm dark:bg-[#1a1a17]/90 dark:text-[#999990] sm:block">
             {projection.hiddenCardCount} lower-priority record{projection.hiddenCardCount === 1 ? " is" : "s are"} outside this overview. Inspect Sources for the complete evidence inventory.
           </p>
         ) : null}
@@ -203,9 +213,12 @@ export default function DigestBoard({
         <FlowControls
           zoom={zoom}
           locked={locked}
-          onZoomIn={() => setZoom((value) => Math.min(1.1, Number((value + 0.05).toFixed(2))))}
-          onZoomOut={() => setZoom((value) => Math.max(0.85, Number((value - 0.05).toFixed(2))))}
-          onFit={() => setZoom(1)}
+          onZoomIn={() => setZoom((value) => Math.min(2.5, Number((value + 0.1).toFixed(2))))}
+          onZoomOut={() => setZoom((value) => Math.max(0.65, Number((value - 0.1).toFixed(2))))}
+          onFit={() => {
+            setZoom(1);
+            setPan({ x: 0, y: 0 });
+          }}
           layoutMode={layoutMode}
           onToggleLock={() => {
             if (layoutMode === "manual") setLocked((value) => !value);
@@ -270,17 +283,100 @@ function GraphCommandBar({ workspaceName, nodeCount, edgeCount, objectiveText, q
   );
 }
 
-function EvidenceFlow({ lanes, searchTerm, expandedLanes, onExpandLane, selectedId, selectedNeighbors, edges, nodeById, onSelect, zoom, layoutMode, locked, nodeOffsets, onMoveNode, hiddenLanes, onToggleLane, onFit }) {
+function EvidenceFlow({ lanes, searchTerm, expandedLanes, onExpandLane, selectedId, selectedNeighbors, edges, nodeById, onSelect, zoom, onZoom, pan, onPan, layoutMode, locked, nodeOffsets, onMoveNode, hiddenLanes, onToggleLane, onFit }) {
+  const viewportRef = useRef(null);
+  const graphRef = useRef(null);
+  const panDragRef = useRef(null);
+  const [fitScale, setFitScale] = useState(1);
+  const [panning, setPanning] = useState(false);
   const byId = Object.fromEntries(lanes.map((lane) => [lane.id, {
     ...lane,
     cards: lane.cards.filter((card) => !searchTerm || cardSearchText(card).includes(searchTerm)),
   }]));
   const downstream = [byId.prs, byId.issues, byId.documents, byId.next_tasks].filter((lane) => !hiddenLanes.has(lane.id));
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    const graph = graphRef.current;
+    if (!viewport || !graph) return undefined;
+
+    const fit = () => {
+      const availableWidth = Math.max(1, viewport.clientWidth - 32);
+      const availableHeight = Math.max(1, viewport.clientHeight - 64);
+      const naturalWidth = Math.max(1, graph.offsetWidth);
+      const naturalHeight = Math.max(1, graph.offsetHeight);
+      setFitScale(Math.min(1, availableWidth / naturalWidth, availableHeight / naturalHeight));
+    };
+
+    fit();
+    if (typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(fit);
+    observer.observe(viewport);
+    observer.observe(graph);
+    return () => observer.disconnect();
+  }, [lanes, searchTerm, expandedLanes, hiddenLanes]);
+
+  const renderedScale = fitScale * zoom;
+  const beginPan = (event) => {
+    if (event.button !== 0 || event.target.closest("button, a, input, [data-no-pan]")) return;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    panDragRef.current = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      baseX: pan.x,
+      baseY: pan.y,
+    };
+    setPanning(true);
+  };
+  const movePan = (event) => {
+    const drag = panDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    onPan({ x: drag.baseX + event.clientX - drag.x, y: drag.baseY + event.clientY - drag.y });
+  };
+  const endPan = (event) => {
+    const drag = panDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    panDragRef.current = null;
+    setPanning(false);
+  };
+  const handleWheel = (event) => {
+    if (event.target.closest("button, a, input, [data-no-pan]")) return;
+    event.preventDefault();
+    const delta = event.deltaY < 0 ? 0.1 : -0.1;
+    const nextZoom = Math.max(0.65, Math.min(2.5, Number((zoom + delta).toFixed(2))));
+    if (nextZoom !== zoom) {
+      const rect = viewportRef.current?.getBoundingClientRect();
+      if (rect) {
+        const ratio = nextZoom / zoom;
+        const pointerX = event.clientX - (rect.left + rect.width / 2);
+        const pointerY = event.clientY - (rect.top + 48);
+        onPan({
+          x: pointerX - (pointerX - pan.x) * ratio,
+          y: pointerY - (pointerY - pan.y) * ratio,
+        });
+      }
+      onZoom(nextZoom);
+    }
+  };
   return (
-    <div data-testid="evidence-flow-canvas" className="relative overflow-x-auto px-1 py-4 text-[#171713] dark:text-[#f4f4ec] sm:px-3 sm:py-6">
-      <div className="pointer-events-none absolute inset-0 opacity-20 [background-image:radial-gradient(circle,#aaa9a0_1px,transparent_1px)] [background-size:24px_24px] [mask-image:linear-gradient(to_bottom,transparent,black_8%,black_92%,transparent)] dark:opacity-20 dark:[background-image:radial-gradient(circle,#77776e_1px,transparent_1px)]" />
+    <div
+      ref={viewportRef}
+      data-testid="evidence-flow-canvas"
+      data-panning={panning ? "true" : "false"}
+      aria-label="Interactive graph canvas. Drag the background to pan and use the wheel or trackpad to zoom."
+      title="Drag to pan · Wheel or trackpad to zoom"
+      className={`relative h-full min-h-0 touch-none overflow-hidden text-[#171713] dark:text-[#f4f4ec] ${panning ? "cursor-grabbing" : "cursor-grab"}`}
+      onPointerDown={beginPan}
+      onPointerMove={movePan}
+      onPointerUp={endPan}
+      onPointerCancel={endPan}
+      onWheel={handleWheel}
+    >
+      <div className="pointer-events-none absolute inset-0 opacity-20 [background-image:radial-gradient(circle,#aaa9a0_1px,transparent_1px)] [background-size:24px_24px] dark:opacity-20 dark:[background-image:radial-gradient(circle,#77776e_1px,transparent_1px)]" />
       <FlowFilters lanes={lanes} hiddenLanes={hiddenLanes} onToggle={onToggleLane} />
-      <div className="relative mx-auto min-w-[920px] max-w-[1080px] origin-top transition-transform" style={{ transform: `scale(${zoom})`, transformOrigin: "top center", marginBottom: `${(zoom - 1) * 520}px` }}>
+      <div ref={graphRef} data-testid="fitted-evidence-graph" className="absolute left-1/2 top-12 w-[720px] max-w-none origin-top lg:w-[1080px]" style={{ transform: `translateX(-50%) translate3d(${pan.x}px, ${pan.y}px, 0) scale(${renderedScale})`, transformOrigin: "top center" }}>
         {!hiddenLanes.has("sessions") ? <FlowGroup lane={byId.sessions} variant="sessions" expanded={expandedLanes.has("sessions") || Boolean(searchTerm)} onExpand={() => onExpandLane("sessions")} selectedId={selectedId} selectedNeighbors={selectedNeighbors} edges={edges} onSelect={onSelect} layoutMode={layoutMode} locked={locked} nodeOffsets={nodeOffsets} onMoveNode={onMoveNode} /> : null}
 
         {!hiddenLanes.has("sessions") && !hiddenLanes.has("decisions") ? <div className="mx-auto my-3 h-7 w-px bg-gradient-to-b from-[#7764b7] to-[#4b9b67]" aria-hidden="true" /> : null}
@@ -289,20 +385,20 @@ function EvidenceFlow({ lanes, searchTerm, expandedLanes, onExpandLane, selected
 
         <FactualLinkRail edges={edges} nodeById={nodeById} />
 
-        <div className="grid grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           {downstream.map((lane) => <FlowGroup key={lane.id} lane={lane} variant="branch" expanded={expandedLanes.has(lane.id) || Boolean(searchTerm)} onExpand={() => onExpandLane(lane.id)} selectedId={selectedId} selectedNeighbors={selectedNeighbors} edges={edges} onSelect={onSelect} layoutMode={layoutMode} locked={locked} nodeOffsets={nodeOffsets} onMoveNode={onMoveNode} />)}
         </div>
 
         {byId.other?.cards.length ? <div className="mt-4"><FlowGroup lane={byId.other} variant="other" expanded={expandedLanes.has("other") || Boolean(searchTerm)} onExpand={() => onExpandLane("other")} selectedId={selectedId} selectedNeighbors={selectedNeighbors} edges={edges} onSelect={onSelect} layoutMode={layoutMode} locked={locked} nodeOffsets={nodeOffsets} onMoveNode={onMoveNode} /></div> : null}
       </div>
-      <MiniMap lanes={lanes} onFit={onFit} />
+      <MiniMap lanes={lanes} hiddenLanes={hiddenLanes} scale={zoom} pan={pan} onFit={onFit} />
     </div>
   );
 }
 
 function FlowFilters({ lanes, hiddenLanes, onToggle }) {
   return (
-    <div aria-label="Graph quick filters" className="relative z-20 mb-4 flex max-w-[calc(100%-9rem)] flex-wrap gap-1.5">
+    <div aria-label="Graph quick filters" className="absolute left-3 right-44 top-3 z-20 flex flex-wrap gap-1.5">
       {lanes.filter((lane) => lane.id !== "other").map((lane) => {
         const active = !hiddenLanes.has(lane.id);
         return <button key={lane.id} type="button" aria-pressed={active} onClick={() => onToggle(lane.id)} className={`rounded-full px-2.5 py-1.5 text-[8px] font-bold transition ${active ? "bg-white text-[#34342e] shadow-[0_1px_4px_rgba(23,23,19,.1)] dark:bg-[#20201c] dark:text-[#d8d8cf]" : "bg-transparent text-[#999990] line-through"}`}>{lane.label} · {lane.totalCount ?? lane.cards.length}</button>;
@@ -391,6 +487,7 @@ function FactualLinkRail({ edges, nodeById }) {
   if (!edges.length) return <p className="mx-auto my-4 w-fit rounded-full bg-white/70 px-3 py-1 text-[8px] font-semibold text-[#77776e] dark:bg-[#20201c]">No explicit cross-record links returned</p>;
   return (
     <div className="mx-auto my-4 flex max-w-[760px] items-center justify-center gap-2 overflow-hidden text-[8px] font-semibold text-[#999990]" aria-label={`${edges.length} factual relationships`}>
+      {edges.map((edge) => <span key={edge.id} data-evidence-edge data-relationship-type={edge.relationship_type} className="sr-only">{nodeTitle(nodeById.get(edge.source_card_id)?.card)} {edge.label || edge.relationship_type} {nodeTitle(nodeById.get(edge.target_card_id)?.card)}</span>)}
       <span className="h-px flex-1 bg-[#c8c8be] dark:bg-[#3b3b35]" />
       <span title={edges.slice(0, 3).map((edge) => `${nodeTitle(nodeById.get(edge.source_card_id)?.card)} ${edge.label || edge.relationship_type} ${nodeTitle(nodeById.get(edge.target_card_id)?.card)}`).join("; ")} className="rounded-full bg-white px-2.5 py-1 text-[#6f6f67] shadow-sm dark:bg-[#20201c] dark:text-[#999990]">{edges.length} explicit link{edges.length === 1 ? "" : "s"}</span>
       <span className="h-px flex-1 bg-[#c8c8be] dark:bg-[#3b3b35]" />
@@ -398,16 +495,35 @@ function FactualLinkRail({ edges, nodeById }) {
   );
 }
 
-function MiniMap({ lanes, onFit }) {
-  const colors = { sessions: "#7764b7", decisions: "#4b9b67", prs: "#3972c4", issues: "#d95c4f", documents: "#c68a2d", next_tasks: "#c64b97", other: "#77776e" };
+function MiniMap({ lanes, hiddenLanes, scale, pan, onFit }) {
+  const laneById = Object.fromEntries(lanes.map((lane) => [lane.id, lane]));
+  const downstream = ["prs", "issues", "documents", "next_tasks"].filter((id) => laneById[id] && !hiddenLanes.has(id));
+  const downstreamWidth = downstream.length ? 112 / downstream.length : 112;
+  const viewportWidth = Math.min(116, 116 / Math.max(1, scale));
+  const viewportHeight = Math.min(78, 78 / Math.max(1, scale));
+  const viewportX = Math.max(2, Math.min(118 - viewportWidth, 60 - viewportWidth / 2 - pan.x / 14));
+  const viewportY = Math.max(2, Math.min(80 - viewportHeight, 41 - viewportHeight / 2 - pan.y / 14));
   return (
-    <aside aria-label="Graph minimap and legend" className="absolute right-3 top-3 hidden w-32 rounded-[10px] bg-white/95 p-2.5 shadow-[0_4px_18px_rgba(23,23,19,.12)] dark:bg-[#1a1a17]/95 dark:shadow-[0_5px_22px_rgba(0,0,0,.3)] xl:block">
-      <button type="button" aria-label="Fit graph from minimap" onClick={onFit} className="grid h-12 w-full grid-cols-4 items-center gap-1 rounded-[7px] bg-[#f2f2eb] p-2 transition hover:bg-[#e9e9e1] dark:bg-[#10100e] dark:hover:bg-[#242420]">
-        {lanes.flatMap((lane) => lane.cards.slice(0, 3).map((card) => <span key={card.id} className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: colors[lane.id] }} />))}
+    <aside aria-label="Graph minimap" className="absolute right-3 top-3 z-30 w-32 rounded-[10px] bg-white/95 p-2 shadow-[0_4px_18px_rgba(23,23,19,.12)] dark:bg-[#1a1a17]/95 dark:shadow-[0_5px_22px_rgba(0,0,0,.3)] md:w-40 md:p-2.5">
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <span className="text-[8px] font-black uppercase tracking-[.14em] text-[#77776e] dark:text-[#999990]">Minimap</span>
+        <button type="button" aria-label="Fit graph from minimap" onClick={onFit} className="rounded px-1.5 py-0.5 text-[8px] font-bold text-[#5f5f57] transition hover:bg-[#efefe8] dark:text-[#d8d8cf] dark:hover:bg-[#292925]">Fit</button>
+      </div>
+      <button type="button" aria-label="Fit graph from minimap overview" onClick={onFit} className="block h-[66px] w-full rounded-[7px] bg-[#f2f2eb] p-1 transition hover:bg-[#e9e9e1] dark:bg-[#10100e] dark:hover:bg-[#242420] md:h-[92px]">
+        <svg data-testid="graph-minimap-svg" viewBox="0 0 120 82" className="h-full w-full" role="img" aria-label="Structural overview of the evidence graph">
+          {!hiddenLanes.has("sessions") && !hiddenLanes.has("decisions") ? <line x1="60" y1="20" x2="60" y2="31" stroke="#aaa9a0" strokeWidth="1.5" /> : null}
+          {!hiddenLanes.has("decisions") && downstream.length ? downstream.map((id, index) => {
+            const x = 4 + downstreamWidth * index + downstreamWidth / 2;
+            return <line key={`edge-${id}`} x1="60" y1="43" x2={x} y2="59" stroke="#aaa9a0" strokeWidth="1" />;
+          }) : null}
+          {!hiddenLanes.has("sessions") ? <rect x="38" y="6" width="44" height="14" rx="4" fill={flowColor("sessions").dot} opacity=".9" /> : null}
+          {!hiddenLanes.has("decisions") ? <rect x="32" y="31" width="56" height="14" rx="4" fill={flowColor("decisions").dot} opacity=".9" /> : null}
+          {downstream.map((id, index) => (
+            <rect key={id} x={5 + downstreamWidth * index} y="59" width={Math.max(12, downstreamWidth - 4)} height="15" rx="3" fill={flowColor(id).dot} opacity=".9" />
+          ))}
+          <rect data-testid="graph-minimap-viewport" x={viewportX} y={viewportY} width={viewportWidth} height={viewportHeight} rx="5" fill="none" stroke="#171713" strokeWidth="1.5" strokeDasharray="3 2" className="dark:stroke-[#d9ff68]" />
+        </svg>
       </button>
-      <ul className="mt-2 space-y-1">
-        {lanes.filter((lane) => lane.id !== "other").map((lane) => <li key={lane.id} className="flex items-center gap-1.5 text-[8px] font-semibold text-[#62625b] dark:text-[#b8b8af]"><span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: colors[lane.id] }} /><span className="min-w-0 flex-1 truncate">{lane.label}</span><span>{lane.totalCount ?? lane.cards.length}</span></li>)}
-      </ul>
     </aside>
   );
 }
@@ -426,13 +542,13 @@ function flowColor(id) {
 }
 
 function FlowControls({ zoom, locked, layoutMode, onZoomIn, onZoomOut, onFit, onToggleLock }) {
-  return <div className="sticky bottom-3 z-30 ml-auto mr-3 flex w-fit items-center rounded-[10px] bg-white p-1 text-[#5f5f57] shadow-[0_5px_20px_rgba(23,23,19,.14)] dark:bg-[#1a1a17] dark:text-[#d8d8cf] dark:shadow-[0_6px_24px_rgba(0,0,0,.3)]"><button type="button" aria-label="Fit graph" onClick={onFit} className="h-7 rounded px-2 text-[8px] font-bold">Fit</button><button type="button" aria-label="Zoom in" onClick={onZoomIn} className="flex h-7 w-7 items-center justify-center"><Plus className="h-3.5 w-3.5" /></button><span className="min-w-9 text-center text-[8px] font-bold">{Math.round(zoom * 100)}%</span><button type="button" aria-label="Zoom out" onClick={onZoomOut} className="flex h-7 w-7 items-center justify-center"><Minus className="h-3.5 w-3.5" /></button><button type="button" aria-label={layoutMode === "auto" ? "Switch to manual layout to move nodes" : locked ? "Unlock layout" : "Lock layout"} aria-disabled={layoutMode === "auto"} onClick={onToggleLock} className={`flex h-7 w-7 items-center justify-center ${layoutMode === "auto" ? "opacity-35" : ""}`}>{locked ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}</button></div>;
+  return <div className="absolute bottom-3 left-3 z-30 flex w-fit items-center rounded-[10px] bg-white p-1 text-[#5f5f57] shadow-[0_5px_20px_rgba(23,23,19,.14)] dark:bg-[#1a1a17] dark:text-[#d8d8cf] dark:shadow-[0_6px_24px_rgba(0,0,0,.3)]"><button type="button" aria-label="Fit graph" onClick={onFit} className="h-7 rounded px-2 text-[8px] font-bold">Fit</button><button type="button" aria-label="Zoom in" onClick={onZoomIn} className="flex h-7 w-7 items-center justify-center"><Plus className="h-3.5 w-3.5" /></button><span className="min-w-9 text-center text-[8px] font-bold">{Math.round(zoom * 100)}%</span><button type="button" aria-label="Zoom out" onClick={onZoomOut} className="flex h-7 w-7 items-center justify-center"><Minus className="h-3.5 w-3.5" /></button><button type="button" aria-label={layoutMode === "auto" ? "Switch to manual layout to move nodes" : locked ? "Unlock layout" : "Lock layout"} aria-disabled={layoutMode === "auto"} onClick={onToggleLock} className={`flex h-7 w-7 items-center justify-center ${layoutMode === "auto" ? "opacity-35" : ""}`}>{locked ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}</button></div>;
 }
 
 function QuickPeek({ card, onClose, onOpen }) {
   if (!card) return null;
   return (
-    <aside aria-label="Selected record quick peek" className="sticky bottom-3 z-40 mx-auto mb-3 w-[min(760px,calc(100%-1.5rem))] rounded-[12px] border border-[#c8c8be] bg-white p-4 text-[#171713] shadow-[0_18px_55px_rgba(23,23,19,.18)] dark:border-[#3a3a34] dark:bg-[#171713] dark:text-[#f4f4ec] dark:shadow-[0_18px_55px_rgba(0,0,0,.35)]">
+    <aside aria-label="Selected record quick peek" className="absolute bottom-3 left-1/2 z-40 w-[min(760px,calc(100%-1.5rem))] -translate-x-1/2 rounded-[12px] border border-[#c8c8be] bg-white p-4 text-[#171713] shadow-[0_18px_55px_rgba(23,23,19,.18)] dark:border-[#3a3a34] dark:bg-[#171713] dark:text-[#f4f4ec] dark:shadow-[0_18px_55px_rgba(0,0,0,.35)]">
       <div className="flex items-start gap-3"><span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] bg-[#efefe8] text-[#7764b7] dark:bg-[#292925] dark:text-[#d9ff68]"><Info className="h-3.5 w-3.5" /></span><span className="min-w-0 flex-1"><span className="block text-[9px] font-bold uppercase tracking-[.14em] text-[#7a7a72] dark:text-[#999990]">{nodeTypeLabel(card)} · quick peek</span><strong className="mt-1 block text-[12px] leading-5">{nodeTitle(card)}</strong><span className="mt-1 block text-[10px] leading-4 text-[#68685f] dark:text-[#b8b8af]">{nodeSummary(card)}</span></span><button type="button" onClick={onOpen} className="shrink-0 rounded-[7px] border border-[#d2d2c8] px-2.5 py-1.5 text-[9px] font-bold dark:border-[#3a3a34]">Open full details</button><button type="button" aria-label="Close quick peek" onClick={onClose}><X className="h-4 w-4 text-[#999990]" /></button></div>
     </aside>
   );
@@ -441,7 +557,7 @@ function QuickPeek({ card, onClose, onOpen }) {
 function RelationshipSummary({ edges, nodeById, expanded, onExpand, selected, onClear }) {
   const visible = expanded ? edges : edges.slice(0, INITIAL_LINK_LIMIT);
   return (
-    <section className="mt-6 rounded-[12px] bg-white/65 p-4 dark:bg-[#171713]/65">
+    <section className="rounded-[12px] bg-white/90 p-4 shadow-[0_8px_28px_rgba(23,23,19,.12)] backdrop-blur dark:bg-[#171713]/90">
       <div className="flex items-center gap-2">
         <GitBranch className="h-3.5 w-3.5 text-[#77776e]" />
         <h2 className="text-[11px] font-extrabold">{selected ? "Links for selected record" : "Sourced relationships"}</h2>

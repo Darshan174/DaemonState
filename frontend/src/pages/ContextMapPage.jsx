@@ -68,7 +68,7 @@ function ContextDigestSurface() {
   return (
     <div className="flex h-full min-h-0 flex-col bg-[#f7f7f2] text-[#171713] dark:bg-[#0d0d0b] dark:text-[#f4f4ec]">
       <div className="min-h-0 flex-1">
-        <main className="h-full min-h-0 overflow-hidden px-3 py-3 md:px-5 md:py-4">
+        <main className="h-full min-h-0 overflow-hidden">
           {digest ? (
             <div className="relative flex h-full min-h-0">
               <div className="min-w-0 flex-1">

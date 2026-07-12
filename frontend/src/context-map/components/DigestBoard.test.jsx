@@ -134,6 +134,50 @@ describe("DigestBoard", () => {
     });
   });
 
+  it("fits one graph viewport without nested native scroll surfaces", () => {
+    renderBoard();
+
+    expect(screen.getByTestId("session-knowledge-map")).toHaveClass("overflow-hidden");
+    expect(screen.getByTestId("session-knowledge-map")).not.toHaveClass("overflow-y-auto");
+    expect(screen.getByTestId("evidence-flow-canvas")).toHaveClass("overflow-hidden");
+    expect(screen.getByTestId("evidence-flow-canvas")).not.toHaveClass("overflow-x-auto");
+    expect(screen.getByTestId("fitted-evidence-graph")).not.toHaveClass("min-w-[920px]");
+  });
+
+  it("renders a structural minimap without the duplicate dot legend", () => {
+    renderBoard();
+
+    expect(screen.getByRole("complementary", { name: "Graph minimap" })).toBeInTheDocument();
+    expect(screen.getByTestId("graph-minimap-svg")).toBeInTheDocument();
+    expect(screen.getByTestId("graph-minimap-viewport")).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Graph minimap and legend" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Fit graph from minimap overview" })).toBeInTheDocument();
+  });
+
+  it("pans the graph canvas and resets its position with Fit", () => {
+    renderBoard();
+    const canvas = screen.getByTestId("evidence-flow-canvas");
+    const graph = screen.getByTestId("fitted-evidence-graph");
+
+    fireEvent.pointerDown(canvas, { pointerId: 7, button: 0, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(canvas, { pointerId: 7, clientX: 155, clientY: 130 });
+    fireEvent.pointerUp(canvas, { pointerId: 7, clientX: 155, clientY: 130 });
+
+    expect(graph.style.transform).toContain("translate3d(55px, 30px, 0)");
+    fireEvent.click(screen.getByRole("button", { name: "Fit graph" }));
+    expect(graph.style.transform).toContain("translate3d(0px, 0px, 0)");
+  });
+
+  it("zooms the graph around the wheel pointer", () => {
+    renderBoard();
+    const canvas = screen.getByTestId("evidence-flow-canvas");
+
+    fireEvent.wheel(canvas, { deltaY: -100, clientX: 200, clientY: 220 });
+
+    expect(screen.getByText("110%")).toBeInTheDocument();
+    expect(screen.getByTestId("fitted-evidence-graph").style.transform).toContain("scale(1.1)");
+  });
+
   it("shows identifiable session context on an individual evidence node", () => {
     renderBoard();
 
