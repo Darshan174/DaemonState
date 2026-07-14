@@ -133,6 +133,8 @@ async def test_model_detail_and_relationships_filter_by_workspace(client, db_ses
         target_component_id=a_target.id,
         relationship_type="depends_on",
         confidence=0.9,
+        evidence="A source links to A target.",
+        origin="ai_proposed",
     )
     rel_b = Relationship(
         id=uuid4(),
@@ -140,10 +142,17 @@ async def test_model_detail_and_relationships_filter_by_workspace(client, db_ses
         target_component_id=b_target.id,
         relationship_type="depends_on",
         confidence=0.9,
+        evidence="B source links to B target.",
+        origin="deterministic",
+    )
+    rejected = Relationship(
+        id=uuid4(), source_component_id=a_source.id, target_component_id=a_target.id,
+        relationship_type="related_to", confidence=0.99,
+        evidence="Rejected candidate.", origin="deterministic", status="rejected",
     )
     db_session.add_all([
         ws_a, ws_b, model, doc_a, doc_b,
-        a_source, a_target, b_source, b_target, rel_a, rel_b,
+        a_source, a_target, b_source, b_target, rel_a, rel_b, rejected,
     ])
     await db_session.flush()
     await db_session.commit()
@@ -162,3 +171,4 @@ async def test_model_detail_and_relationships_filter_by_workspace(client, db_ses
     relationship_ids = {relationship["id"] for relationship in relationships.json()}
     assert relationship_ids == {str(rel_a.id)}
     assert str(rel_b.id) not in relationship_ids
+    assert relationships.json()[0]["origin"] == "ai_proposed"

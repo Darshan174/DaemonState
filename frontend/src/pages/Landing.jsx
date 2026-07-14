@@ -8,8 +8,8 @@ const GITHUB_URL = "https://github.com/Darshan174/Context-Engine";
 
 const PRINCIPLES = [
   ["01", "Keep the source", "Sessions, pull requests, issues, documents, and test output are stored before anything is extracted."],
-  ["02", "Track what changed", "New source content becomes a new revision. Old evidence stays available instead of being overwritten."],
-  ["03", "Prepare the next run", "The compiler selects current facts, relevant files, blockers, exclusions, and exact verification commands."],
+  ["02", "See the whole project", "The project map connects current evidence so direction, delivery, and risks are visible together."],
+  ["03", "Continue with context", "The compiler selects current facts, relevant files, blockers, exclusions, and exact verification commands."],
 ];
 
 const PACK_ROWS = [
@@ -42,7 +42,7 @@ export default function Landing() {
                 to="/app"
                 className="inline-flex h-12 items-center justify-center gap-2 rounded-md bg-[#171713] px-5 text-sm font-semibold text-white transition hover:bg-black focus:outline-none focus-visible:ring-2 focus-visible:ring-[#171713] focus-visible:ring-offset-4 focus-visible:ring-offset-[#f7f7f2] dark:bg-[#f4f4ec] dark:text-black dark:hover:bg-white dark:focus-visible:ring-[#f4f4ec] dark:focus-visible:ring-offset-[#0d0d0b]"
               >
-                Prepare a run <ArrowRight className="h-4 w-4" />
+                Open your project <ArrowRight className="h-4 w-4" />
               </Link>
               <a
                 href={GITHUB_URL}

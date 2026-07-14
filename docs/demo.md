@@ -14,8 +14,7 @@ bash scripts/doctor.sh --docker
 docker compose up --build
 ```
 
-Open `http://localhost:8000`, then click **Run Demo Workspace** in onboarding.
-You can also seed directly:
+Seed the demo workspace directly:
 
 ```bash
 curl -X POST http://localhost:8000/api/seed-demo \
@@ -23,33 +22,34 @@ curl -X POST http://localhost:8000/api/seed-demo \
   -d '{}'
 ```
 
-The seed creates raw `SourceDocument` rows from launch-available source families
-only: GitHub issue, GitHub pull request, Slack thread, Gmail thread, Google
-Drive document, and Codex session. It does not mark any provider connector as
-authenticated or connected.
+Then open `http://localhost:8000/app` and select **Context Engine Demo** when
+the workspace chooser appears.
+
+The seed creates raw `SourceDocument` rows from launch-available source families:
+GitHub issue, GitHub pull request, Slack thread, Gmail thread, Google Drive
+document, and Codex session. It also records `your-org/context-engine` as the
+demo project boundary through a disconnected GitHub configuration, so the map
+opens immediately. It does not store credentials or mark any provider connected.
+
+When running in Docker, the local-path importer sees container paths. Compose
+mounts the current checkout read-only at `/workspace` by default. To inspect a
+different host project, start with
+`CONTEXT_ENGINE_PROJECT_PATH=/absolute/host/path docker compose up --build`,
+then enter `/workspace` in the Project screen.
 
 ## What To Inspect
 
-1. Open **Graph**. Board is the default view and groups facts by source family.
-2. Select any node or edge. The right inspector shows value, source metadata,
-   provenance, confidence, evidence, and relationship review state.
-3. Switch to **Explore** for an Obsidian-style local graph. Orphans are hidden by
-   default, and the local graph panel can expand one or two hops.
-4. Open **Ask** and run `What is blocking our launch?`. The answer includes
+1. Open **Project**. The map places sessions, direction, delivery, and risks in
+   one selected-workspace view.
+2. Select a node. The inspector shows value, source metadata, provenance,
+   confidence, evidence, relationship state, and session relevance reasons.
+3. Only source-backed relationships are drawn. Unknown or different-project
+   sessions remain visually subdued instead of driving the project story.
+4. Open `/app/query` and run `What is blocking our launch?`. The answer includes
    retrieval controls, a stable `query.v1` response shape, facts used, and
    relationship expansion evidence.
 5. Open **Connectors**. Launch connectors expose backend-backed actions;
    coming-soon providers stay disabled instead of creating fake connected state.
-
-## Screenshots
-
-Board keeps the canvas quiet and puts trust detail in the inspector:
-
-![Board graph with relationship inspector](assets/board-inspector-demo.jpg)
-
-Ask shows the retrieval trace agents can audit:
-
-![Ask UI with facts-used trace](assets/query-trace-demo.jpg)
 
 ## Verification
 

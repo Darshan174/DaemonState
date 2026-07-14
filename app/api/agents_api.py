@@ -3,7 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from pydantic import BaseModel
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db_session
@@ -96,8 +96,13 @@ async def run_relationship_agent(
     payload: AgentRequest,
     session: AsyncSession = Depends(get_db_session),
 ) -> RelationshipReportOut:
+    if payload.workspace_id is None:
+        raise HTTPException(status_code=422, detail="workspace_id is required")
     agent = RelationshipAgent(session, api_key=payload.api_key, model=payload.model)
-    report = await agent.run()
+    try:
+        report = await agent.run(workspace_id=str(payload.workspace_id))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return RelationshipReportOut(
         suggested=[SuggestedRelOut(**r.__dict__) for r in report.suggested],
         duplicates=report.duplicates,

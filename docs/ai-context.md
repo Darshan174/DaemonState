@@ -45,7 +45,7 @@ curl -X POST http://localhost:8000/api/connectors/ai-session/ingest \
     "workspace_id": "00000000-0000-0000-0000-000000000000",
     "connector_type": "codex",
     "session_id": "launch-polish-001",
-    "content": "Decision: keep Board as default\nNext step: add smoke tests\nRisk: connector claims must stay honest"
+    "content": "Decision: keep the Project map source-backed\nNext step: add smoke tests\nRisk: connector claims must stay honest"
   }'
 ```
 
@@ -67,7 +67,7 @@ curl -X POST http://localhost:8000/api/connectors/ai-context/import \
           "branch": "launch/oss-polish",
           "commit": "abc123"
         },
-        "content": "Decision: use source-backed Board clusters\nTodo: verify frontend smoke coverage"
+        "content": "Decision: use source-backed Project map zones\nTodo: verify frontend smoke coverage"
       }
     ]
   }'

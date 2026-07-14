@@ -1,7 +1,7 @@
 # OSS Readiness Review
 
-Last updated: 2026-07-10
-Reviewed: 2026-05-01 by Xiaomi MiMo V2.5 Pro; refreshed 2026-07-10 for the immediate context-compiler strengthening pass.
+Last updated: 2026-07-13
+Reviewed: 2026-05-01 by Xiaomi MiMo V2.5 Pro; refreshed 2026-07-13 for the project-map simplification pass.
 
 ## Score
 
@@ -24,17 +24,14 @@ still calling out final hardening gaps below.
 - Connector API now avoids marking Slack as connected when no tested sync path exists.
 - AI-context subtype documents are counted together in connector processing summary.
 - Demo seed endpoint creates source-backed GitHub, Slack, Gmail, Google Drive, and Codex documents without faking connector auth state.
-- Frontend smoke coverage now guards the onboarding demo copy, landing-page
-  launch-source claims, agent-page source claims, and seed action.
-- Launch-facing docs now cover architecture, connectors, AI Context, Board vs
-  Explore, MCP, and the seeded demo walkthrough.
+- Frontend tests guard the project-first routes, repository intake, visual
+  session relevance, landing claims, source flows, and connector honesty.
+- Launch-facing docs now cover architecture, connectors, AI Context, the
+  Project map, MCP, and the seeded demo walkthrough.
 - MCP examples now include copy-paste installed/local checkout configs and an
   agent grounding prompt tied to `query_context` and `trace.facts_used`.
-- README now includes real screenshots captured from the seeded Board inspector
-  and Ask facts-used trace.
-- Board default now opens at a card-readable viewport when a full fit would
-  collapse source cards into unlabeled dots; the minimap still provides whole
-  graph orientation and the explicit fit button preserves overview behavior.
+- The Project map replaces the older Cytoscape Board/Explore implementation,
+  minimap, layout chooser, and duplicate quick-inspection surfaces.
 - Query returns a deterministic source-backed answer summary when no AI answer model is configured.
 - Query status/confidence filtering now runs in SQL before semantic/lexical ranking.
 - Source Manager now uses the shared frontend API client instead of raw fetch
@@ -81,9 +78,9 @@ still calling out final hardening gaps below.
   cover recall, precision, evidence coverage against final citation fields,
   stale leakage, conflict detection, token efficiency, and verification-command
   presence on fixtures.
-- Implemented in this branch: `/app` is the objective-first prepare flow and
-  exposes the persisted `context_pack.v2` markdown, selected context, citations,
-  exclusions, health reasons, definition of done, and verification commands.
+- Implemented in this branch: `/app` is the project-first visual map. The manual
+  Prepare form is removed; persisted `context_pack.v2` preparation remains
+  available through the HTTP API, CLI, and MCP bridge.
 - Implemented in this branch: source objects use workspace-scoped append-only
   revisions, and MCP `record_agent_run_finish` links an exact pack to terminal
   repository and verification observations without claiming causal lift.
@@ -95,10 +92,11 @@ pytest -q
 cd frontend && npm run build
 ```
 
-Latest verified result from the 2026-07-10 integration pass:
+Latest verified result from the 2026-07-13 project-map and graph-truth pass:
 
-- `pytest -q`: 447 passed, 1 SQLite datetime deprecation warning.
-- `cd frontend && npm test -- --run`: 14 files, 63 tests passed.
+- `pytest -q`: 480 passed, 1 SQLite datetime deprecation warning.
+- `ruff check app tests`: passed.
+- `cd frontend && npm test -- --run`: 8 files, 48 tests passed.
 - `cd frontend && npm run build`: passed.
 
 Not verified in this pass:
@@ -246,7 +244,6 @@ token attempts so they cannot create fake connected provider state.
 - `examples/mcp/installed-cli.json`
 - `examples/mcp/local-checkout.json`
 - `examples/mcp/agent-system-prompt.md`
-- `docs/assets/board-inspector-demo.jpg`
 - `docs/assets/query-trace-demo.jpg`
 - `SECURITY.md`
 - `scripts/doctor.sh`

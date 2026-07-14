@@ -23,6 +23,7 @@ services:
         condition: service_healthy
     volumes:
       - ce_uploads:/data
+      - ${CONTEXT_ENGINE_PROJECT_PATH:-.}:/workspace:ro
     environment:
       DATABASE_URL: postgresql://ce:${POSTGRES_PASSWORD:-contextengine}@db:5432/context_engine
       DATA_DIR: /data

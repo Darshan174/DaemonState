@@ -23,9 +23,10 @@ class ContextPrepareRequest(BaseModel):
     objective: str | None = Field(default=None, min_length=1)
     goal: str | None = Field(default=None, min_length=1)
     workspace_id: UUID | None = None
-    repo_path: str = Field(min_length=1)
+    repo_path: str | None = Field(default=None, min_length=1)
     target_model: str | None = None
     token_budget: int | None = Field(default=None, ge=300)
+    mode: Literal["task", "project_snapshot"] = "task"
 
     @model_validator(mode="after")
     def _has_objective(self) -> "ContextPrepareRequest":
@@ -58,6 +59,7 @@ async def prepare_context(
             target_model=payload.target_model,
             token_budget=payload.token_budget,
             persist=True,
+            objective_kind=("project_snapshot" if payload.mode == "project_snapshot" else "observed"),
         )
         await session.commit()
     except ContextBudgetExceededError as exc:

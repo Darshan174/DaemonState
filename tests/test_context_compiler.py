@@ -321,6 +321,39 @@ async def test_api_prepare_commits_pack_manifest_markdown_and_items(client, db_s
         await fresh.close()
 
 
+async def test_project_snapshot_handoff_does_not_invent_a_supplied_objective(
+    client, db_session
+):
+    workspace = Workspace(
+        id=uuid4(),
+        name="Snapshot-only workspace",
+        slug=f"snapshot-only-{uuid4().hex}",
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+
+    response = await client.post(
+        "/api/context/prepare",
+        json={
+            "objective": "Compile a read-only project snapshot; do not infer a new task objective.",
+            "workspace_id": str(workspace.id),
+            "mode": "project_snapshot",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["manifest"]["objective_kind"] == "project_snapshot"
+    assert "trusted_system_snapshot_purpose" in {
+        item["inclusion_reason"] for item in payload["selected_context"]
+    }
+    digest = await client.get(
+        "/api/context/digest", params={"workspace_id": str(workspace.id)}
+    )
+    assert digest.status_code == 200
+    assert digest.json()["objective"]["status"] == "not_supplied"
+
+
 async def test_identical_persisted_compile_reuses_context_pack(db_session, tmp_path):
     (tmp_path / "app.py").write_text("def handler():\n    return True\n")
     compiler = ContextCompiler(db_session)

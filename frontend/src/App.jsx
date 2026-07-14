@@ -5,48 +5,25 @@ import CeIcon from "./components/CeIcon";
 import WorkspaceSwitcher from "./components/WorkspaceSwitcher";
 import { useWorkspaces } from "./api/hooks";
 import {
-  Activity,
   Cable,
   Database,
-  GitBranch,
-  LayoutDashboard,
-  PackageCheck,
+  Map,
   PanelLeftClose,
   PanelLeftOpen,
-  Search,
 } from "lucide-react";
 
-const PrepareContextPage = lazy(() => import("./pages/PrepareContextPage"));
 const ContextMapPage = lazy(() => import("./pages/ContextMapPage"));
 const QueryView    = lazy(() => import("./pages/QueryView"));
 const SourceManager = lazy(() => import("./pages/SourceManager"));
 const Landing      = lazy(() => import("./pages/Landing"));
-const Dashboard    = lazy(() => import("./pages/Dashboard"));
 const Connectors   = lazy(() => import("./pages/Connectors"));
 const Changes      = lazy(() => import("./pages/Changes"));
-const AgentsView   = lazy(() => import("./pages/AgentsView"));
 
-const NAV_GROUPS = [
-  {
-    label: "Work",
-    items: [
-      { to: "/app", label: "Prepare", icon: PackageCheck, end: true },
-      { to: "/app/dashboard", label: "Dashboard", icon: LayoutDashboard },
-      { to: "/app/graph", label: "Graph", icon: GitBranch },
-      { to: "/app/query", label: "Ask", icon: Search },
-    ],
-  },
-  {
-    label: "Evidence",
-    items: [
-      { to: "/app/sources", label: "Sources", icon: Database },
-      { to: "/app/connectors", label: "Connectors", icon: Cable },
-      { to: "/app/changes", label: "Changes", icon: Activity },
-    ],
-  },
+const NAV_ITEMS = [
+  { to: "/app", label: "Project", icon: Map, end: true },
+  { to: "/app/sources", label: "Sources", icon: Database },
+  { to: "/app/connectors", label: "Connectors", icon: Cable },
 ];
-
-const NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items);
 
 function PageLoader() {
   return (
@@ -73,7 +50,7 @@ export default function App() {
 
 function AdminShell() {
   const location = useLocation();
-  const isGraphPage = location.pathname === "/app/graph";
+  const isProjectPage = location.pathname === "/app" || location.pathname === "/app/";
   const { data: workspaces } = useWorkspaces();
   const showWorkspaceSwitcher = (workspaces?.length ?? 0) > 1;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
@@ -115,15 +92,8 @@ function AdminShell() {
           </span>
         </Link>
 
-        <nav aria-label="Application" className={`mt-8 flex-1 ${sidebarCollapsed ? "space-y-3" : "space-y-6"}`}>
-          {NAV_GROUPS.map((group) => (
-            <div key={group.label}>
-              <p className={sidebarCollapsed ? "sr-only" : "mb-2 px-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#8a8a80] dark:text-[#77776e]"}>{group.label}</p>
-              <div className="space-y-1">
-                {group.items.map((item) => <ShellNavLink key={item.to} collapsed={sidebarCollapsed} {...item} />)}
-              </div>
-            </div>
-          ))}
+        <nav aria-label="Application" className="mt-8 flex-1 space-y-1">
+          {NAV_ITEMS.map((item) => <ShellNavLink key={item.to} collapsed={sidebarCollapsed} {...item} />)}
         </nav>
 
         <div className="space-y-3 border-t border-[#d9d9d0] pt-4 dark:border-[#292925]">
@@ -158,15 +128,15 @@ function AdminShell() {
           </nav>
         </header>
 
-        <main className={`relative min-h-0 flex-1 dark:text-[#f4f4ec] ${isGraphPage ? "overflow-hidden" : "overflow-y-auto px-5 py-7 sm:px-8 sm:py-9"}`}>
-        {!isGraphPage ? (
+        <main className={`relative min-h-0 flex-1 dark:text-[#f4f4ec] ${isProjectPage ? "overflow-hidden" : "overflow-y-auto px-5 py-7 sm:px-8 sm:py-9"}`}>
+        {!isProjectPage ? (
           <div className="pointer-events-none absolute inset-x-0 top-0 h-28 border-b border-[#e7e7df] bg-[linear-gradient(180deg,rgba(255,255,255,0.48),rgba(247,247,242,0))] dark:border-[#1d1d1a] dark:bg-[linear-gradient(180deg,rgba(255,255,255,0.025),rgba(13,13,11,0))]" />
         ) : null}
         <Suspense fallback={<PageLoader />}>
           <Routes>
-            <Route index                                  element={<PrepareContextPage />} />
-            <Route path="dashboard"                       element={<Dashboard />} />
-            <Route path="graph"                           element={<ContextMapPage />} />
+            <Route index                                  element={<ContextMapPage />} />
+            <Route path="dashboard"                       element={<Navigate to="/app" replace />} />
+            <Route path="graph"                           element={<Navigate to="/app" replace />} />
             <Route path="query"                           element={<QueryView />} />
             <Route path="sources"                         element={<SourceManager />} />
             <Route path="agents"                          element={<Navigate to="/app" replace />} />

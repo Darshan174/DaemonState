@@ -4,7 +4,7 @@ import logging
 import json
 import re
 
-from sqlalchemy import select, func
+from sqlalchemy import or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -33,6 +33,7 @@ def _merge_extraction_quality(target: dict, report) -> None:
         "missing_excerpt_count",
         "missing_relationship_evidence_count",
         "duplicate_fact_count",
+        "rejected_fact_count",
     ):
         target[key] += int(getattr(report, key, 0) or 0)
 
@@ -89,6 +90,7 @@ class GraphBuilderAgent:
             workspace_scope[0],
         )
         current_documents, historical_skipped = current_source_documents(workspace_documents)
+        current_source_ids = {doc.id for doc in current_documents}
         current_documents.sort(
             key=lambda doc: (doc.ingested_at, str(doc.id)),
             reverse=True,
@@ -105,6 +107,7 @@ class GraphBuilderAgent:
         components_reused = 0
         components_superseded = 0
         relationship_projection_superseded = 0
+        relationships_rejected_missing_evidence = 0
         warnings: list[dict] = []
         extraction_quality = {
             "fact_count": 0,
@@ -114,10 +117,12 @@ class GraphBuilderAgent:
             "missing_excerpt_count": 0,
             "missing_relationship_evidence_count": 0,
             "duplicate_fact_count": 0,
+            "rejected_fact_count": 0,
             "contract_warning_count": 0,
         }
 
         for doc in documents_to_process:
+            doc_id = doc.id
             was_processed = doc.processed_at is not None
             try:
                 async with self.session.begin_nested():
@@ -128,6 +133,9 @@ class GraphBuilderAgent:
                 components_superseded += int(projection.get("superseded", 0) or 0)
                 relationship_projection_superseded += int(
                     projection.get("relationships_superseded", 0) or 0
+                )
+                relationships_rejected_missing_evidence += int(
+                    projection.get("relationships_rejected_missing_evidence", 0) or 0
                 )
                 docs_processed += 1
                 docs_reprocessed += int(was_processed)
@@ -142,23 +150,23 @@ class GraphBuilderAgent:
                     extraction_quality["contract_warning_count"] += len(extraction_warnings)
                     warnings.append({
                         "code": "extraction_contract_warnings",
-                        "source_document_id": str(doc.id),
+                        "source_document_id": str(doc_id),
                         "message": "; ".join(extraction_warnings[:10]),
                     })
                 extraction_error = getattr(ingestor, "last_extraction_error", None)
                 if extraction_error:
                     warnings.append({
                         "code": "llm_extraction_failed_regex_fallback",
-                        "source_document_id": str(doc.id),
+                        "source_document_id": str(doc_id),
                         "message": extraction_error,
                     })
             except Exception as exc:
                 warnings.append({
                     "code": "document_processing_failed",
-                    "source_document_id": str(doc.id),
+                    "source_document_id": str(doc_id),
                     "message": str(exc),
                 })
-                logger.warning("graph_builder: error processing doc %s: %s", doc.id, exc)
+                logger.warning("graph_builder: error processing doc %s: %s", doc_id, exc)
 
         await self.session.commit()
 
@@ -174,11 +182,11 @@ class GraphBuilderAgent:
             max_candidates=250,
             require_cross_source_type=True,
             workspace_scope=workspace_scope,
+            allowed_source_document_ids=current_source_ids,
         ).create_relationships(limit=100)
         relationships_inferred += await self._infer_cross_doc_relationships(workspace_scope)
         await self.session.commit()
 
-        current_source_ids = {doc.id for doc in current_documents}
         scoped_components = list(await self.session.scalars(
             select(Component).where(
                 Component.source_document_id.in_(current_source_ids),
@@ -190,10 +198,47 @@ class GraphBuilderAgent:
             select(Relationship).where(
                 Relationship.source_component_id.in_(component_ids),
                 Relationship.target_component_id.in_(component_ids),
-                Relationship.status != "superseded",
+                Relationship.status.notin_(("superseded", "rejected")),
             )
         )) if component_ids else []
         pending_after = sum(1 for doc in current_documents if doc.processed_at is None)
+        historical_source_ids = {
+            document.id for document in workspace_documents
+            if document.id not in current_source_ids
+        }
+        historical_active_projections = 0
+        if historical_source_ids:
+            historical_active_projections = int(await self.session.scalar(
+                select(func.count(Component.id)).where(
+                    Component.source_document_id.in_(historical_source_ids),
+                    Component.status.in_(("active", "needs_review", "proposed", "stale")),
+                )
+            ) or 0)
+        dangling_relationships = 0
+        if component_ids:
+            touching_relationships = list(await self.session.scalars(
+                select(Relationship).where(
+                    or_(
+                        Relationship.source_component_id.in_(component_ids),
+                        Relationship.target_component_id.in_(component_ids),
+                    ),
+                    Relationship.status.notin_(("superseded", "rejected")),
+                )
+            ))
+            dangling_relationships = sum(
+                1 for relationship in touching_relationships
+                if relationship.source_component_id not in component_ids
+                or relationship.target_component_id not in component_ids
+            )
+        failed_documents = sum(
+            1 for warning in warnings if warning["code"] == "document_processing_failed"
+        )
+        projection_consistent = (
+            pending_after == 0
+            and historical_active_projections == 0
+            and dangling_relationships == 0
+            and failed_documents == 0
+        )
         created_relationships = [
             relationship for relationship in active_relationships
             if relationship.id not in active_relationships_before
@@ -241,10 +286,20 @@ class GraphBuilderAgent:
                 "created": len(created_relationships),
                 "reused": 0,
                 "superseded": relationship_projection_superseded,
+                "rejected_missing_evidence": relationships_rejected_missing_evidence,
                 "active_after": len(active_relationships),
                 "created_by_origin": created_by_origin,
             },
             "warnings": warnings,
+            "reconciliation": {
+                "projection_consistent": projection_consistent,
+                "current_source_revisions": len(current_documents),
+                "historical_source_revisions": historical_skipped,
+                "pending_current_revisions": pending_after,
+                "historical_active_projections": historical_active_projections,
+                "dangling_relationships": dangling_relationships,
+                "upstream_refreshed": False,
+            },
             # Compatibility fields for one API cycle.
             "docs_processed": docs_processed,
             "docs_pending_before": pending_before,
@@ -308,6 +363,7 @@ class GraphBuilderAgent:
                         relationship_type="related_to",
                         confidence=0.5,
                         evidence=f"Name mention: '{other_name}' found in '{comp.name}' — cross-document candidate, verify before trusting",
+                        status="proposed",
                         origin="ai_proposed",
                     ))
                     existing_pairs.add((comp.id, other.id))
@@ -339,8 +395,6 @@ class GraphBuilderAgent:
             for r in await self.session.scalars(select(Relationship))
         }
 
-        issues: dict[tuple[str, int], Component] = {}
-        pull_requests: list[tuple[tuple[str, int], Component]] = []
         github_targets: list[tuple[str, str, int, Component]] = []
         document_targets = _document_reference_targets(components)
         slack_hubs = _slack_channel_hubs(components)
@@ -351,36 +405,11 @@ class GraphBuilderAgent:
                 continue
             kind, repo, number = identity
             github_targets.append((kind, repo, number, component))
-            key = (repo, number)
-            if kind == "issue":
-                issues[key] = component
-            elif kind == "pull_request":
-                pull_requests.append((key, component))
 
         inferred = 0
         inferred += self._infer_slack_github_references(components, github_targets, existing)
         inferred += self._infer_slack_document_references(components, document_targets, existing)
         inferred += self._infer_github_slack_references(components, slack_hubs, existing)
-        for key, pr_component in pull_requests:
-            issue_component = issues.get(key)
-            if issue_component is None or issue_component.id == pr_component.id:
-                continue
-            rel_key = (pr_component.id, issue_component.id, "part_of")
-            if rel_key in existing:
-                continue
-
-            repo, number = key
-            self.session.add(Relationship(
-                source_component_id=pr_component.id,
-                target_component_id=issue_component.id,
-                relationship_type="part_of",
-                confidence=1.0,
-                evidence=f"GitHub metadata: PR #{number} and issue thread #{number} are the same item in {repo}.",
-                origin="deterministic",
-            ))
-            existing.add(rel_key)
-            inferred += 1
-
         return inferred
 
     async def _current_workspace_components(
@@ -828,10 +857,6 @@ def _slack_reference_in_component(
     if explicit_matches:
         hub, channel = explicit_matches[0]
         return hub, f"#{channel}", 0.94
-
-    if len(slack_hubs) == 1:
-        hub, channel = slack_hubs[0]
-        return hub, "Slack", 0.86
 
     return None
 

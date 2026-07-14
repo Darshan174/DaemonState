@@ -18,6 +18,7 @@ class ExtractedRelationship:
     relationship_type: str
     confidence: float = 0.7
     evidence: str | None = None
+    origin: str | None = None
 
 
 @dataclass
@@ -43,6 +44,8 @@ class ExtractionQualityReport:
     missing_excerpt_count: int = 0
     missing_relationship_evidence_count: int = 0
     duplicate_fact_count: int = 0
+    rejected_fact_count: int = 0
+    rejection_reason_counts: dict[str, int] = field(default_factory=dict)
     model_counts: dict[str, int] = field(default_factory=dict)
     fact_type_counts: dict[str, int] = field(default_factory=dict)
 
@@ -82,7 +85,12 @@ Return JSON with this exact schema:
       "temporal": "current | past | future | unknown",
       "confidence": 0.0,
       "relationships": [
-        {"target_name": "exact name of another extracted fact", "relationship_type": "...", "confidence": 0.0}
+        {
+          "target_name": "exact name of another extracted fact",
+          "relationship_type": "...",
+          "confidence": 0.0,
+          "evidence": "short exact source excerpt that proves this relationship"
+        }
       ]
     }
   ]
@@ -121,6 +129,8 @@ QUALITY RULES:
   - Always link Decisions to their source Meeting/Message when visible
   - Always link Tasks to the Risk/Decision they address when visible
   - Always link Agent Sessions to the Decisions and Tasks they generated
+  - Every relationship MUST include a short exact source excerpt as evidence;
+    omit a relationship when the source does not explicitly support it
 
 Document:
 {content}
@@ -686,6 +696,7 @@ def _attach_slack_structure(
             relationship_type="discussed_in",
             confidence=0.9,
             evidence=f'Extracted from Slack message: "{snippet}"',
+            origin="deterministic",
         ))
     facts = [*facts, root]
 
@@ -696,6 +707,7 @@ def _attach_slack_structure(
             relationship_type="part_of",
             confidence=0.95,
             evidence=f"Message posted in Slack channel {_slack_channel_label(metadata)}.",
+            origin="deterministic",
         ))
         facts.append(channel)
     return facts

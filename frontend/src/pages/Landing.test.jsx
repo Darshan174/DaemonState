@@ -23,13 +23,13 @@ describe("Landing", () => {
       screen.getByRole("heading", { name: "Your next coding agent shouldn’t start from zero." }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: /search/i })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Prepare a run/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Open your project/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /View on GitHub/ })).toBeInTheDocument();
     expect(screen.getAllByText("context_pack.v2")).toHaveLength(2);
     expect(screen.getByText("Continuity, without another pile of notes.")).toBeInTheDocument();
     expect(screen.getByText("Keep the source")).toBeInTheDocument();
-    expect(screen.getByText("Track what changed")).toBeInTheDocument();
-    expect(screen.getByText("Prepare the next run")).toBeInTheDocument();
+    expect(screen.getByText("See the whole project")).toBeInTheDocument();
+    expect(screen.getByText("Continue with context")).toBeInTheDocument();
     expect(screen.getByText("Unsupported providers stay visibly unsupported.", { exact: false })).toBeInTheDocument();
     expect(screen.queryByText("Recently indexed")).not.toBeInTheDocument();
     expect(screen.queryByText("Auth refactor")).not.toBeInTheDocument();

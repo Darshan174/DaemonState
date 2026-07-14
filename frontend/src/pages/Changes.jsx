@@ -229,8 +229,7 @@ function getDestination(item) {
 function getGraphDestination(item) {
   const focus = item.modelName || item.sourceLabel || item.title;
   if (!focus) return null;
-  const p = new URLSearchParams({ view: "local", focus, q: focus });
-  return { href: `/app/graph?${p.toString()}`, label: "Explore graph" };
+  return { href: "/app", label: "Open project" };
 }
 
 function buildMeta(item) {

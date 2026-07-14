@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import re
 from uuid import UUID
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models import Component, Model, Relationship, SourceDocument, UnresolvedRelationship
 from app.processing.embedder import BaseEmbedder, build_default_embedder
@@ -21,6 +23,10 @@ from app.services.identity import (
 )
 from app.services.claims import upsert_claim_for_fact
 from app.services.evidence import ensure_source_document_ledger_fields
+from app.services.extraction_quality import (
+    extracted_fact_dedupe_key,
+    extracted_fact_rejection_reason,
+)
 from app.taxonomy import (
     canonical_model_name,
     canonical_origin,
@@ -35,6 +41,7 @@ from app.processing.source_extractors import (
     extract_agent_session,
     extract_github_issue,
     extract_github_pr,
+    extract_local_repository,
 )
 from app.time import utc_now
 
@@ -57,6 +64,7 @@ class IngestionService:
             "reused": 0,
             "superseded": 0,
             "relationships_superseded": 0,
+            "relationships_rejected_missing_evidence": 0,
         }
 
     async def process_document(self, doc_id: UUID, *, force: bool = False) -> int:
@@ -69,6 +77,7 @@ class IngestionService:
             "reused": 0,
             "superseded": 0,
             "relationships_superseded": 0,
+            "relationships_rejected_missing_evidence": 0,
         }
         if doc is None or (doc.processed_at is not None and not force):
             return 0
@@ -99,8 +108,52 @@ class IngestionService:
             self.last_extraction_report = getattr(self._extractor, "last_report", None)
         if isinstance(facts, list):
             facts = [f for f in facts if isinstance(f, ExtractedFact)]
-        if self.last_extraction_report is None:
-            self.last_extraction_report = evaluate_extraction_quality(facts or [])
+        accepted_facts: list[ExtractedFact] = []
+        rejection_counts: dict[str, int] = {}
+        seen_facts: dict[tuple[str, str, str], ExtractedFact] = {}
+        for fact in facts or []:
+            reason = extracted_fact_rejection_reason(fact, source_type=doc.source_type)
+            fact_key = extracted_fact_dedupe_key(fact)
+            if reason is None and fact_key in seen_facts:
+                existing_fact = seen_facts[fact_key]
+                existing_relationships = {
+                    (
+                        relationship.target_name,
+                        relationship.relationship_type,
+                        relationship.evidence,
+                    )
+                    for relationship in existing_fact.relationships
+                }
+                existing_fact.relationships.extend(
+                    relationship for relationship in fact.relationships
+                    if (
+                        relationship.target_name,
+                        relationship.relationship_type,
+                        relationship.evidence,
+                    ) not in existing_relationships
+                )
+                existing_fact.confidence = max(existing_fact.confidence, fact.confidence)
+                if not existing_fact.excerpt and fact.excerpt:
+                    existing_fact.excerpt = fact.excerpt
+                if not existing_fact.provenance and fact.provenance:
+                    existing_fact.provenance = fact.provenance
+                reason = "duplicate"
+            if reason is not None:
+                rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+                continue
+            seen_facts[fact_key] = fact
+            accepted_facts.append(fact)
+        facts = accepted_facts
+        self.last_extraction_report = evaluate_extraction_quality(facts)
+        self.last_extraction_report.rejected_fact_count = sum(rejection_counts.values())
+        self.last_extraction_report.rejection_reason_counts = rejection_counts
+        if rejection_counts:
+            rejection_summary = ", ".join(
+                f"{reason}={count}" for reason, count in sorted(rejection_counts.items())
+            )
+            self.last_extraction_warnings.append(
+                f"Rejected derived semantic facts: {rejection_summary}"
+            )
         if not facts:
             await self._reconcile_source_projection(doc, [])
             doc.processed_at = utc_now()
@@ -134,7 +187,11 @@ class IngestionService:
 
         for component, fact in components:
             for rel in fact.relationships:
-                origin = _determine_origin(doc.source_type, rel)
+                origin = _determine_origin(
+                    doc.source_type,
+                    rel,
+                    extraction_method=extraction_method,
+                )
                 await self._create_relationship(component, rel, origin)
 
         await self._reconcile_source_projection(
@@ -156,6 +213,9 @@ class IngestionService:
         resolved = resolve_agent_session_type(doc.source_type)
         if resolved == "agent_session":
             return extract_agent_session(doc.content, metadata)
+
+        if doc.source_type == "local_repository":
+            return extract_local_repository(doc.content, metadata)
 
         return []
 
@@ -344,7 +404,21 @@ class IngestionService:
             return
 
         target = None
-        if target_identity_key:
+        source_document = (
+            await self.session.get(SourceDocument, source.source_document_id)
+            if source.source_document_id else None
+        )
+        github_reference_scope = _github_reference_scope(source_document, target_name)
+        github_reference_scoped = github_reference_scope is not None
+        if github_reference_scoped:
+            target = await self._resolve_github_reference_target(
+                scope=github_reference_scope,
+                source=source,
+                workspace_id=workspace_id,
+                active_statuses=active_statuses,
+            )
+
+        if target is None and not github_reference_scoped and target_identity_key:
             target = await self.session.scalar(
                 _scope_component_query(
                     select(Component).where(
@@ -357,7 +431,7 @@ class IngestionService:
                 ).order_by(Component.confidence.desc()).limit(1)
             )
 
-        if target is None:
+        if target is None and not github_reference_scoped:
             target = await self.session.scalar(
                 _scope_component_query(
                     select(Component).where(
@@ -370,7 +444,7 @@ class IngestionService:
                 ).order_by(Component.confidence.desc()).limit(1)
             )
 
-        if target is None and target_identity_key:
+        if target is None and not github_reference_scoped and target_identity_key:
             target = await self.session.scalar(
                 _scope_component_query(
                     select(Component).where(
@@ -382,7 +456,7 @@ class IngestionService:
                 ).order_by(Component.confidence.desc()).limit(1)
             )
 
-        if target is None:
+        if target is None and not github_reference_scoped:
             target = await self.session.scalar(
                 _scope_component_query(
                     select(Component).where(
@@ -394,7 +468,7 @@ class IngestionService:
                 ).order_by(Component.confidence.desc()).limit(1)
             )
 
-        if target is None:
+        if target is None and not github_reference_scoped:
             target_prefix = f"{target_name}:"
             target = await self.session.scalar(
                 _scope_component_query(
@@ -408,7 +482,7 @@ class IngestionService:
                 ).order_by(Component.confidence.desc()).limit(1)
             )
 
-        if target is None:
+        if target is None and not github_reference_scoped:
             target_prefix = f"{target_name}:"
             target = await self.session.scalar(
                 _scope_component_query(
@@ -426,6 +500,11 @@ class IngestionService:
         if rel_type == "related_to" and confidence < 0.7:
             return
 
+        evidence = str(getattr(rel, "evidence", None) or "").strip()
+        if not evidence:
+            self.last_projection_report["relationships_rejected_missing_evidence"] += 1
+            return
+
         if target is None:
             await self._record_unresolved_relationship(
                 source=source,
@@ -433,7 +512,7 @@ class IngestionService:
                 target_identity_key=target_identity_key,
                 relationship_type=rel_type,
                 confidence=confidence,
-                evidence=getattr(rel, "evidence", None),
+                evidence=evidence,
                 origin=origin,
             )
             return
@@ -448,13 +527,10 @@ class IngestionService:
         if exists is not None:
             return
 
-        evidence = getattr(rel, "evidence", None)
-        if not evidence:
-            evidence = f"'{source.name}' {rel_type} '{target_name}' (template evidence)"
-
         resolved_origin = canonical_origin(origin)
-        if resolved_origin == "ai_proposed" and confidence >= 0.85:
-            resolved_origin = "ai_proposed"
+        relationship_status = (
+            "proposed" if resolved_origin in {"ai_proposed", "proposed"} else "active"
+        )
 
         self.session.add(Relationship(
             source_component_id=source.id,
@@ -463,8 +539,56 @@ class IngestionService:
             confidence=confidence,
             evidence=evidence,
             origin=resolved_origin,
+            status=relationship_status,
         ))
         await self.session.flush()
+
+    async def _resolve_github_reference_target(
+        self,
+        *,
+        scope: tuple[str, str, int],
+        source: Component,
+        workspace_id: UUID | None,
+        active_statuses: list[str],
+    ) -> Component | None:
+        repo_full_name, target_kind, target_number = scope
+        candidates = list(await self.session.scalars(
+            _scope_component_query(
+                select(Component)
+                .options(selectinload(Component.source_document))
+                .where(
+                    Component.id != source.id,
+                    Component.status.in_(active_statuses),
+                ),
+                workspace_id,
+            ).order_by(Component.confidence.desc(), Component.id)
+        ))
+        matches: list[Component] = []
+        for candidate in candidates:
+            metadata = _parse_metadata(
+                candidate.source_document.metadata_json
+                if candidate.source_document else "{}"
+            )
+            candidate_kind = resolve_github_item_type(
+                candidate.source_document.source_type if candidate.source_document else None,
+                metadata,
+            )
+            expected_kind = "github_pr" if target_kind == "pr" else "github_issue"
+            if candidate_kind != expected_kind:
+                continue
+            if str(metadata.get("repo_full_name") or "").casefold() != repo_full_name.casefold():
+                continue
+            try:
+                candidate_number = int(metadata.get("number"))
+            except (TypeError, ValueError):
+                continue
+            if candidate_number != target_number:
+                continue
+            root_types = {"pr", "pull_request"} if target_kind == "pr" else {"issue"}
+            if str(candidate.fact_type or "").lower() not in root_types:
+                continue
+            matches.append(candidate)
+        return matches[0] if len(matches) == 1 else None
 
     async def _record_unresolved_relationship(
         self,
@@ -510,16 +634,28 @@ class IngestionService:
         await self.session.flush()
 
 
-def _determine_origin(source_type: str, rel) -> str:
+def _determine_origin(
+    source_type: str,
+    rel,
+    *,
+    extraction_method: str = "deterministic",
+) -> str:
     source_type = (source_type or "").strip().lower()
+    explicit_origin = canonical_origin(getattr(rel, "origin", None))
+    if getattr(rel, "origin", None) and explicit_origin in {
+        "deterministic", "extracted", "ai_proposed", "human_verified", "proposed",
+    }:
+        return explicit_origin
     deterministic_types = {
         "solves", "fixes", "created_from", "part_of", "generated_by_agent",
-        "implemented_in", "duplicates", "supersedes", "touches_file",
+        "implemented_in", "implements", "duplicates", "supersedes", "touches_file",
         "resolved_by", "discussed_in",
     }
     rel_type = canonical_relationship_type(getattr(rel, "relationship_type", "related_to"))
-    if rel_type in deterministic_types:
+    if extraction_method == "deterministic" and rel_type in deterministic_types:
         return "deterministic"
+    if extraction_method == "llm_or_regex":
+        return "ai_proposed"
     if source_type in GITHUB_SOURCE_TYPES | AGENT_SESSION_SOURCE_TYPES | AI_CONTEXT_COMPAT_TYPES:
         return "extracted"
     return "proposed"
@@ -547,3 +683,30 @@ def _scope_component_query(stmt, workspace_id: UUID | None):
     if workspace_id:
         return stmt.where(Component.workspace_id == workspace_id)
     return stmt.where(Component.workspace_id.is_(None))
+
+
+def _github_reference_scope(
+    source_document: SourceDocument | None,
+    target_name: str,
+) -> tuple[str, str, int] | None:
+    qualified_match = re.match(
+        r"^(Issue|PR)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)\b",
+        target_name,
+        re.I,
+    )
+    bare_match = re.match(r"^(Issue|PR)\s+#(\d+)\b", target_name, re.I)
+    match = qualified_match or bare_match
+    if match is None or source_document is None:
+        return None
+    if qualified_match:
+        repo_full_name = qualified_match.group(2)
+        target_kind = qualified_match.group(1).lower()
+        target_number = int(qualified_match.group(3))
+    else:
+        metadata = _parse_metadata(source_document.metadata_json)
+        repo_full_name = str(metadata.get("repo_full_name") or "").strip()
+        target_kind = bare_match.group(1).lower()
+        target_number = int(bare_match.group(2))
+    if not repo_full_name:
+        return None
+    return repo_full_name, target_kind, target_number

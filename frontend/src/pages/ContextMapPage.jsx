@@ -6,7 +6,7 @@ import {
 import { useWorkspaces } from "../api/hooks";
 import { resolveWorkspaceId, useWorkspaceSelection } from "../context/WorkspaceContext";
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
-import { useBuildContext, useContextDigest } from "../context-map/api";
+import { useBuildContext, useContextDigest, useIndexProject, usePrepareContext } from "../context-map/api";
 import DigestBoard from "../context-map/components/DigestBoard";
 import ContextInspector from "../context-map/components/ContextInspector";
 
@@ -22,12 +22,22 @@ function ContextDigestSurface() {
   const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId);
   const digestQuery = useContextDigest(activeWorkspaceId);
   const buildContext = useBuildContext(activeWorkspaceId);
-  const [selectedCard, setSelectedCard] = useState(null);
+  const indexProject = useIndexProject(activeWorkspaceId);
+  const prepareContext = usePrepareContext();
+  const [selectedCardId, setSelectedCardId] = useState(null);
 
   const digest = digestQuery.data;
+  const selectedCard = digest?.cards?.find((card) => card.id === selectedCardId) || null;
+  const closeInspector = () => {
+    const previousCardId = selectedCardId;
+    setSelectedCardId(null);
+    globalThis.requestAnimationFrame?.(() => {
+      globalThis.document?.querySelector(`[data-graph-node="${previousCardId}"]`)?.focus();
+    });
+  };
 
   useEffect(() => {
-    setSelectedCard(null);
+    setSelectedCardId(null);
   }, [activeWorkspaceId]);
 
   if (!workspacesQuery.isLoading && !activeWorkspaceId) {
@@ -80,7 +90,25 @@ function ContextDigestSurface() {
                   building={buildContext.isPending}
                   buildResult={buildContext.data}
                   buildError={buildContext.isError ? buildContext.error : null}
-                  onSelectCard={setSelectedCard}
+                  selectedCardId={selectedCardId}
+                  onSelectCard={(card) => setSelectedCardId(card.id)}
+                  onClearSelection={() => setSelectedCardId(null)}
+                  onIndexProject={(repoPath) => indexProject.mutate({ repo_path: repoPath })}
+                  indexingProject={indexProject.isPending}
+                  indexResult={indexProject.data}
+                  indexError={indexProject.isError ? indexProject.error : null}
+                  onPrepareHandoff={async () => {
+                    const objective = digest?.objective?.status === "supplied"
+                      ? digest.objective.text
+                      : `Compile a read-only project snapshot for ${activeWorkspace?.name || "this project"}; do not infer a new task objective.`;
+                    const result = await prepareContext.mutateAsync({
+                      objective,
+                      workspace_id: activeWorkspaceId,
+                      repo_path: digest?.scope?.project_paths?.[0] || undefined,
+                      mode: digest?.objective?.status === "supplied" ? "task" : "project_snapshot",
+                    });
+                    return result.markdown;
+                  }}
                 />
               </div>
               {selectedCard ? (
@@ -90,7 +118,7 @@ function ContextDigestSurface() {
                     cards={digest.cards}
                     links={digest.links}
                     workspaceId={activeWorkspaceId}
-                    onClose={() => setSelectedCard(null)}
+                    onClose={closeInspector}
                   />
                 </div>
               ) : null}

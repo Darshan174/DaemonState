@@ -1,34 +1,33 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   AlertTriangle,
+  Check,
   CheckCircle2,
-  ExternalLink,
-  GitBranch,
-  Info,
+  Clipboard,
+  FolderGit2,
   Loader2,
-  Lock,
-  Minus,
+  Maximize2,
   MoreHorizontal,
-  Plus,
   RefreshCw,
   RotateCcw,
   Search,
-  Unlock,
-  X,
 } from "lucide-react";
 import {
   buildEvidenceGraph,
   cardDisplayLine,
-  issueLabel,
-  observedRemoteState,
-  pullRequestLabel,
-  relevanceLabel,
+  cardIcon,
+  preciseLine,
   sessionIdentity,
   TONE_CLASSES,
 } from "../digest";
-
-const INITIAL_LINK_LIMIT = 4;
+import {
+  MAP_HEIGHT,
+  MAP_LANE_LIMITS,
+  MAP_WIDTH,
+  MAP_ZONES,
+  positionNodes,
+} from "../layout";
 
 export default function DigestBoard({
   digest,
@@ -38,289 +37,108 @@ export default function DigestBoard({
   building = false,
   buildResult = null,
   buildError = null,
+  selectedCardId = null,
   onSelectCard,
+  onClearSelection,
+  onIndexProject,
+  indexingProject = false,
+  indexResult = null,
+  indexError = null,
+  onPrepareHandoff,
 }) {
-  const projection = useMemo(() => buildEvidenceGraph(digest), [digest]);
-  const nodeById = useMemo(
-    () => new Map(projection.nodes.map((node) => [node.id, node])),
-    [projection.nodes],
-  );
-  const [selectedId, setSelectedId] = useState(null);
   const [query, setQuery] = useState("");
-  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [changingProject, setChangingProject] = useState(false);
+  const prioritizedCardIds = useMemo(() => {
+    const term = query.trim().toLowerCase();
+    if (!term) return new Set();
+    return new Set(
+      (digest?.cards || [])
+        .filter((card) => cardSearchText(card).includes(term))
+        .map((card) => card.id),
+    );
+  }, [digest?.cards, query]);
+  const projection = useMemo(
+    () => buildEvidenceGraph(digest, {
+      limitPerLane: 2,
+      laneLimits: MAP_LANE_LIMITS,
+      prioritizedCardIds,
+    }),
+    [digest, prioritizedCardIds],
+  );
+  const hasProjectBoundary = Boolean(
+    digest?.scope?.project_paths?.length
+    || digest?.scope?.project_repositories?.length,
+  );
+  const nodes = useMemo(() => positionNodes(projection), [projection]);
+  const nodeById = useMemo(
+    () => new Map(nodes.map((node) => [node.id, node])),
+    [nodes],
+  );
+  const initialView = defaultMapView(nodes);
   const [actionsOpen, setActionsOpen] = useState(false);
-  const [expandedLanes, setExpandedLanes] = useState(() => new Set());
-  const [linksExpanded, setLinksExpanded] = useState(false);
-  const [layoutMode, setLayoutMode] = useState("auto");
-  const [locked, setLocked] = useState(true);
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [nodeOffsets, setNodeOffsets] = useState({});
-  const [hiddenLanes, setHiddenLanes] = useState(() => new Set());
+  const [zoom, setZoom] = useState(initialView.zoom);
+  const [pan, setPan] = useState(initialView.pan);
+  const [panning, setPanning] = useState(false);
+  const [handoffStatus, setHandoffStatus] = useState("idle");
+  const panRef = useRef(null);
 
   useEffect(() => {
-    setSelectedId(null);
     setQuery("");
-    setDetailsOpen(false);
     setActionsOpen(false);
-    setExpandedLanes(new Set());
-    setLinksExpanded(false);
-    setLayoutMode("auto");
-    setLocked(true);
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
-    setNodeOffsets({});
-    setHiddenLanes(new Set());
-  }, [digest?.workspace_id]);
+    const view = defaultMapView(nodes);
+    setZoom(view.zoom);
+    setPan(view.pan);
+    setHandoffStatus("idle");
+  }, [digest?.workspace_id, digest?.generated_at]);
+
+  useEffect(() => {
+    if (indexResult) setChangingProject(false);
+  }, [indexResult]);
 
   const selectedNeighbors = useMemo(() => {
-    if (!selectedId) return new Set();
-    const ids = new Set([selectedId]);
+    if (!selectedCardId) return new Set();
+    const ids = new Set([selectedCardId]);
     projection.edges.forEach((edge) => {
-      if (edge.source_card_id === selectedId) ids.add(edge.target_card_id);
-      if (edge.target_card_id === selectedId) ids.add(edge.source_card_id);
+      if (edge.source_card_id === selectedCardId) ids.add(edge.target_card_id);
+      if (edge.target_card_id === selectedCardId) ids.add(edge.source_card_id);
     });
     return ids;
-  }, [projection.edges, selectedId]);
+  }, [projection.edges, selectedCardId]);
 
-  const objectiveText = ["supplied", "set"].includes(digest?.objective?.status)
-    ? digest.objective.text
-    : null;
   const searchTerm = query.trim().toLowerCase();
-  const visibleEdges = selectedId
-    ? projection.edges.filter((edge) => edge.source_card_id === selectedId || edge.target_card_id === selectedId)
-    : projection.edges;
+  const matchesSearch = (card) => !searchTerm || cardSearchText(card).includes(searchTerm);
 
-  const selectNode = (node) => {
-    const nextId = selectedId === node.id ? null : node.id;
-    setSelectedId(nextId);
+  const fitMap = () => {
+    const view = defaultMapView(nodes);
+    setZoom(view.zoom);
+    setPan(view.pan);
   };
 
-  const clearSelection = () => {
-    setSelectedId(null);
-  };
-
-  const toggleLayout = () => {
-    setLayoutMode((current) => {
-      const next = current === "auto" ? "manual" : "auto";
-      setLocked(next === "auto");
-      if (next === "auto") setNodeOffsets({});
-      return next;
-    });
+  const copyHandoff = async () => {
+    try {
+      setHandoffStatus("preparing");
+      const handoff = await onPrepareHandoff();
+      await writeClipboard(handoff);
+      setHandoffStatus("copied");
+    } catch {
+      setHandoffStatus("error");
+    }
   };
 
   const handleKeyDown = (event) => {
-    if (event.key !== "Escape") return;
-    if (selectedId) clearSelection();
-    setDetailsOpen(false);
-    setActionsOpen(false);
+    if (event.key === "Escape") {
+      setActionsOpen(false);
+      onClearSelection?.();
+    }
+    if (event.key === "0") fitMap();
+    if (event.key === "+" || event.key === "=") setZoom((value) => clampZoom(value + 0.1));
+    if (event.key === "-") setZoom((value) => clampZoom(value - 0.1));
   };
 
-  return (
-    <section
-      data-testid="session-knowledge-map"
-      role="region"
-      aria-label={`Evidence graph for ${workspaceName}`}
-      tabIndex={0}
-      onKeyDown={handleKeyDown}
-      className="relative flex h-full min-h-0 flex-col overflow-hidden bg-[#f4f4ed] text-[#171713] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#171713]/30 dark:bg-[#0f0f0c] dark:text-[#f4f4ec]"
-    >
-      <GraphCommandBar
-        workspaceName={workspaceName}
-        nodeCount={projection.nodes.length}
-        edgeCount={projection.edges.length}
-        objectiveText={objectiveText}
-        query={query}
-        onQueryChange={setQuery}
-        onBuild={onBuild}
-        building={building}
-        actionsOpen={actionsOpen}
-        onToggleActions={() => setActionsOpen((value) => !value)}
-        onToggleDetails={() => {
-          setDetailsOpen((value) => !value);
-          setActionsOpen(false);
-        }}
-        layoutMode={layoutMode}
-        onToggleLayout={toggleLayout}
-      />
-
-      {detailsOpen ? (
-        <MapDetails
-          digest={digest}
-          generatedAt={generatedAt}
-          sessionCount={projection.nodes.filter((node) => node.card?.category === "agent_session").length}
-          onClose={() => setDetailsOpen(false)}
-        />
-      ) : null}
-
-      <div className="relative min-h-0 flex-1 overflow-hidden">
-        {projection.nodes.length ? (
-          <EvidenceFlow
-            lanes={projection.lanes}
-            searchTerm={searchTerm}
-            expandedLanes={expandedLanes}
-            onExpandLane={(laneId) => setExpandedLanes((current) => new Set([...current, laneId]))}
-            selectedId={selectedId}
-            selectedNeighbors={selectedNeighbors}
-            edges={projection.edges}
-            nodeById={nodeById}
-            onSelect={(card) => selectNode(nodeById.get(card.id))}
-            zoom={zoom}
-            onZoom={setZoom}
-            pan={pan}
-            onPan={setPan}
-            layoutMode={layoutMode}
-            locked={locked}
-            nodeOffsets={nodeOffsets}
-            onMoveNode={(cardId, offset) => setNodeOffsets((current) => ({ ...current, [cardId]: offset }))}
-            hiddenLanes={hiddenLanes}
-            onToggleLane={(laneId) => setHiddenLanes((current) => {
-              const next = new Set(current);
-              if (next.has(laneId)) next.delete(laneId);
-              else next.add(laneId);
-              return next;
-            })}
-            onFit={() => {
-              setZoom(1);
-              setPan({ x: 0, y: 0 });
-            }}
-          />
-        ) : (
-          <SparseGraphState onBuild={onBuild} building={building} />
-        )}
-
-        {projection.nodes.length && selectedId ? (
-          <div className="absolute left-3 top-3 z-30 max-h-[min(18rem,45%)] w-[min(22rem,calc(100%-1.5rem))] overflow-y-auto">
-            <RelationshipSummary
-              edges={visibleEdges}
-              nodeById={nodeById}
-              expanded={linksExpanded || Boolean(selectedId)}
-              onExpand={() => setLinksExpanded(true)}
-              selected={Boolean(selectedId)}
-              onClear={clearSelection}
-            />
-          </div>
-        ) : null}
-
-        {projection.hiddenCardCount ? (
-          <p className="absolute bottom-3 left-1/2 z-20 hidden -translate-x-1/2 rounded-full bg-white/90 px-3 py-1.5 text-center text-[10px] font-semibold text-[#77776e] shadow-sm dark:bg-[#1a1a17]/90 dark:text-[#999990] sm:block">
-            {projection.hiddenCardCount} lower-priority record{projection.hiddenCardCount === 1 ? " is" : "s are"} outside this overview. Inspect Sources for the complete evidence inventory.
-          </p>
-        ) : null}
-      </div>
-
-      {projection.nodes.length ? (
-        <FlowControls
-          zoom={zoom}
-          locked={locked}
-          onZoomIn={() => setZoom((value) => Math.min(2.5, Number((value + 0.1).toFixed(2))))}
-          onZoomOut={() => setZoom((value) => Math.max(0.65, Number((value - 0.1).toFixed(2))))}
-          onFit={() => {
-            setZoom(1);
-            setPan({ x: 0, y: 0 });
-          }}
-          layoutMode={layoutMode}
-          onToggleLock={() => {
-            if (layoutMode === "manual") setLocked((value) => !value);
-          }}
-        />
-      ) : null}
-
-      {selectedId ? <QuickPeek card={nodeById.get(selectedId)?.card} onClose={clearSelection} onOpen={() => onSelectCard?.(nodeById.get(selectedId)?.card)} /> : null}
-
-      {buildResult || buildError ? <BuildToast result={buildResult} error={buildError} /> : null}
-    </section>
-  );
-}
-
-function GraphCommandBar({ workspaceName, nodeCount, edgeCount, objectiveText, query, onQueryChange, onBuild, building, actionsOpen, onToggleActions, onToggleDetails, layoutMode, onToggleLayout }) {
-  return (
-    <header className="sticky inset-x-0 top-0 z-40 flex min-h-14 flex-wrap items-center gap-2 border-b border-[#d4d4ca] bg-[#fbfbf6]/95 px-3 py-2 backdrop-blur dark:border-[#30302b] dark:bg-[#171713]/95 sm:flex-nowrap sm:px-4">
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] bg-[#171713] text-[#d9ff68] dark:bg-[#d9ff68] dark:text-[#171713]">
-        <GitBranch className="h-4 w-4" />
-      </span>
-      <span className="min-w-0">
-        <span className="block truncate text-[12px] font-extrabold">{workspaceName}</span>
-        <span className="block text-[10px] font-medium text-[#77776e] dark:text-[#999990]">{nodeCount} records · {edgeCount} sourced links</span>
-      </span>
-
-      <button type="button" aria-label="Toggle graph layout mode" aria-pressed={layoutMode === "manual"} onClick={onToggleLayout} className="flex h-7 items-center gap-1.5 rounded-full border border-[#d8d8cf] bg-white px-2.5 text-[9px] font-bold text-[#68685f] dark:border-[#3a3a34] dark:bg-[#11110f] dark:text-[#c8c8be]">
-        <span className={`h-1.5 w-1.5 rounded-full ${layoutMode === "auto" ? "bg-[#7764b7]" : "bg-[#c68a2d]"}`} />{layoutMode === "auto" ? "Auto layout" : "Manual view"}
-      </button>
-
-      <span className="mx-auto hidden min-w-0 max-w-[340px] flex-1 truncate text-center text-[10px] font-semibold text-[#68685f] dark:text-[#b8b8af] lg:block">
-        {objectiveText || "Objective not supplied — showing workspace evidence"}
-      </span>
-
-      <label className="order-last flex h-8 w-full basis-full items-center gap-2 rounded-[8px] border border-[#deded5] bg-white px-2.5 text-[#77776e] focus-within:border-[#8c8c82] dark:border-[#33332e] dark:bg-[#11110f] sm:order-none sm:ml-auto sm:w-[190px] sm:basis-auto">
-        <Search className="h-3.5 w-3.5 shrink-0" />
-        <span className="sr-only">Search graph</span>
-        <input value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="Find evidence" className="min-w-0 flex-1 bg-transparent text-[11px] font-semibold text-[#171713] outline-none placeholder:text-[#9a9a90] dark:text-[#f4f4ec]" />
-        {query ? <button type="button" aria-label="Clear graph search" onClick={() => onQueryChange("")}><X className="h-3 w-3" /></button> : null}
-      </label>
-
-      <button type="button" aria-label="Update graph" onClick={() => onBuild?.("incremental")} disabled={!onBuild || building} className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[8px] bg-[#171713] px-2.5 text-[11px] font-bold text-white transition hover:bg-[#34342e] disabled:opacity-50 dark:bg-[#d9ff68] dark:text-[#171713]">
-        {building ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-        <span className="hidden md:inline">Update</span>
-      </button>
-
-      <div className="relative">
-        <button type="button" aria-label="Open graph actions" aria-expanded={actionsOpen} onClick={onToggleActions} className="flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#d8d8cf] bg-white text-[#5f5f57] dark:border-[#363631] dark:bg-[#11110f] dark:text-[#c8c8be]">
-          <MoreHorizontal className="h-4 w-4" />
-        </button>
-        {actionsOpen ? (
-          <div className="absolute right-0 top-10 w-64 overflow-hidden rounded-md border border-[#d4d4ca] bg-[#fbfbf6] p-1.5 shadow-[0_18px_50px_rgba(23,23,19,0.16)] dark:border-[#33332e] dark:bg-[#171713]">
-            <ActionButton icon={RotateCcw} label="Rebuild from snapshots" detail="Re-extract current imported sources" onClick={() => onBuild?.("rebuild")} disabled={!onBuild || building} />
-            <ActionButton icon={Info} label="Graph details" detail="Objective, scope, and freshness" onClick={onToggleDetails} />
-            <div className="my-1 h-px bg-[#e6e6dd] dark:bg-[#2c2c27]" />
-            <ActionLink to="/app/sources" icon={ExternalLink} label="Inspect sources" />
-            <ActionLink to="/app/connectors" icon={RefreshCw} label="Refresh provider snapshots" />
-            <p className="px-2.5 pb-1 pt-2 text-[9px] font-semibold leading-4 text-[#85857c]">Update and rebuild use imported snapshots only.</p>
-          </div>
-        ) : null}
-      </div>
-    </header>
-  );
-}
-
-function EvidenceFlow({ lanes, searchTerm, expandedLanes, onExpandLane, selectedId, selectedNeighbors, edges, nodeById, onSelect, zoom, onZoom, pan, onPan, layoutMode, locked, nodeOffsets, onMoveNode, hiddenLanes, onToggleLane, onFit }) {
-  const viewportRef = useRef(null);
-  const graphRef = useRef(null);
-  const panDragRef = useRef(null);
-  const [fitScale, setFitScale] = useState(1);
-  const [panning, setPanning] = useState(false);
-  const byId = Object.fromEntries(lanes.map((lane) => [lane.id, {
-    ...lane,
-    cards: lane.cards.filter((card) => !searchTerm || cardSearchText(card).includes(searchTerm)),
-  }]));
-  const downstream = [byId.prs, byId.issues, byId.documents, byId.next_tasks].filter((lane) => !hiddenLanes.has(lane.id));
-
-  useLayoutEffect(() => {
-    const viewport = viewportRef.current;
-    const graph = graphRef.current;
-    if (!viewport || !graph) return undefined;
-
-    const fit = () => {
-      const availableWidth = Math.max(1, viewport.clientWidth - 32);
-      const availableHeight = Math.max(1, viewport.clientHeight - 64);
-      const naturalWidth = Math.max(1, graph.offsetWidth);
-      const naturalHeight = Math.max(1, graph.offsetHeight);
-      setFitScale(Math.min(1, availableWidth / naturalWidth, availableHeight / naturalHeight));
-    };
-
-    fit();
-    if (typeof ResizeObserver === "undefined") return undefined;
-    const observer = new ResizeObserver(fit);
-    observer.observe(viewport);
-    observer.observe(graph);
-    return () => observer.disconnect();
-  }, [lanes, searchTerm, expandedLanes, hiddenLanes]);
-
-  const renderedScale = fitScale * zoom;
   const beginPan = (event) => {
-    if (event.button !== 0 || event.target.closest("button, a, input, [data-no-pan]")) return;
+    if (event.button !== 0 || event.target.closest("button, input")) return;
     event.currentTarget.setPointerCapture?.(event.pointerId);
-    panDragRef.current = {
+    panRef.current = {
       pointerId: event.pointerId,
       x: event.clientX,
       y: event.clientY,
@@ -328,347 +146,596 @@ function EvidenceFlow({ lanes, searchTerm, expandedLanes, onExpandLane, selected
       baseY: pan.y,
     };
     setPanning(true);
+    onClearSelection?.();
   };
+
   const movePan = (event) => {
-    const drag = panDragRef.current;
+    const drag = panRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    onPan({ x: drag.baseX + event.clientX - drag.x, y: drag.baseY + event.clientY - drag.y });
+    setPan({
+      x: drag.baseX + event.clientX - drag.x,
+      y: drag.baseY + event.clientY - drag.y,
+    });
   };
+
   const endPan = (event) => {
-    const drag = panDragRef.current;
+    const drag = panRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     event.currentTarget.releasePointerCapture?.(event.pointerId);
-    panDragRef.current = null;
+    panRef.current = null;
     setPanning(false);
   };
+
   const handleWheel = (event) => {
-    if (event.target.closest("button, a, input, [data-no-pan]")) return;
+    if (event.target.closest("button, input")) return;
     event.preventDefault();
-    const delta = event.deltaY < 0 ? 0.1 : -0.1;
-    const nextZoom = Math.max(0.65, Math.min(2.5, Number((zoom + delta).toFixed(2))));
-    if (nextZoom !== zoom) {
-      const rect = viewportRef.current?.getBoundingClientRect();
-      if (rect) {
-        const ratio = nextZoom / zoom;
-        const pointerX = event.clientX - (rect.left + rect.width / 2);
-        const pointerY = event.clientY - (rect.top + 48);
-        onPan({
-          x: pointerX - (pointerX - pan.x) * ratio,
-          y: pointerY - (pointerY - pan.y) * ratio,
-        });
-      }
-      onZoom(nextZoom);
-    }
+    setZoom((value) => clampZoom(value + (event.deltaY < 0 ? 0.1 : -0.1)));
   };
+
   return (
-    <div
-      ref={viewportRef}
-      data-testid="evidence-flow-canvas"
-      data-panning={panning ? "true" : "false"}
-      aria-label="Interactive graph canvas. Drag the background to pan and use the wheel or trackpad to zoom."
-      title="Drag to pan · Wheel or trackpad to zoom"
-      className={`relative h-full min-h-0 touch-none overflow-hidden text-[#171713] dark:text-[#f4f4ec] ${panning ? "cursor-grabbing" : "cursor-grab"}`}
-      onPointerDown={beginPan}
-      onPointerMove={movePan}
-      onPointerUp={endPan}
-      onPointerCancel={endPan}
-      onWheel={handleWheel}
+    <section
+      data-testid="session-knowledge-map"
+      role="region"
+      aria-label={`Project map for ${workspaceName}`}
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
+      className="relative flex h-full min-h-0 flex-col overflow-hidden bg-[#f4f4ed] text-[#171713] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#171713]/30 dark:bg-[#0f0f0c] dark:text-[#f4f4ec]"
     >
-      <div className="pointer-events-none absolute inset-0 opacity-20 [background-image:radial-gradient(circle,#aaa9a0_1px,transparent_1px)] [background-size:24px_24px] dark:opacity-20 dark:[background-image:radial-gradient(circle,#77776e_1px,transparent_1px)]" />
-      <FlowFilters lanes={lanes} hiddenLanes={hiddenLanes} onToggle={onToggleLane} />
-      <div ref={graphRef} data-testid="fitted-evidence-graph" className="absolute left-1/2 top-12 w-[720px] max-w-none origin-top lg:w-[1080px]" style={{ transform: `translateX(-50%) translate3d(${pan.x}px, ${pan.y}px, 0) scale(${renderedScale})`, transformOrigin: "top center" }}>
-        {!hiddenLanes.has("sessions") ? <FlowGroup lane={byId.sessions} variant="sessions" expanded={expandedLanes.has("sessions") || Boolean(searchTerm)} onExpand={() => onExpandLane("sessions")} selectedId={selectedId} selectedNeighbors={selectedNeighbors} edges={edges} onSelect={onSelect} layoutMode={layoutMode} locked={locked} nodeOffsets={nodeOffsets} onMoveNode={onMoveNode} /> : null}
+      {hasProjectBoundary ? <ProjectBar
+        workspaceName={workspaceName}
+        objectiveText={digest?.objective?.status === "supplied" ? digest.objective.text : null}
+        generatedAt={generatedAt}
+        nodeCount={nodes.length}
+        edgeCount={projection.edges.length}
+        query={query}
+        onQueryChange={setQuery}
+        onFit={fitMap}
+        onBuild={onBuild}
+        building={building}
+        actionsOpen={actionsOpen}
+        onToggleActions={() => setActionsOpen((value) => !value)}
+        canCopyHandoff={hasProjectBoundary && nodes.length > 0 && Boolean(onPrepareHandoff)}
+        handoffStatus={handoffStatus}
+        onCopyHandoff={copyHandoff}
+        onChangeProject={() => {
+          setActionsOpen(false);
+          setChangingProject(true);
+        }}
+      /> : null}
 
-        {!hiddenLanes.has("sessions") && !hiddenLanes.has("decisions") ? <div className="mx-auto my-3 h-7 w-px bg-gradient-to-b from-[#7764b7] to-[#4b9b67]" aria-hidden="true" /> : null}
+      <div className="relative min-h-0 flex-1 overflow-hidden">
+        {!hasProjectBoundary || changingProject ? (
+          <ProjectEmptyState
+            onIndexProject={onIndexProject}
+            indexing={indexingProject}
+            result={indexResult}
+            error={indexError}
+            onCancel={hasProjectBoundary ? () => setChangingProject(false) : null}
+          />
+        ) : nodes.length ? (
+          <div
+            data-testid="evidence-flow-canvas"
+            data-panning={panning ? "true" : "false"}
+            aria-label="Interactive project map. Drag the background to pan and use the wheel or trackpad to zoom."
+            className={`relative h-full min-h-0 touch-none overflow-hidden ${panning ? "cursor-grabbing" : "cursor-grab"}`}
+            onPointerDown={beginPan}
+            onPointerMove={movePan}
+            onPointerUp={endPan}
+            onPointerCancel={endPan}
+            onWheel={handleWheel}
+          >
+            <div className="pointer-events-none absolute inset-0 opacity-[0.16] [background-image:radial-gradient(circle,#aaa9a0_1px,transparent_1px)] [background-size:28px_28px] dark:[background-image:radial-gradient(circle,#66665e_1px,transparent_1px)]" />
+            <div
+              data-testid="fitted-evidence-graph"
+              className="absolute left-1/2 top-1/2 h-[620px] w-[1000px] origin-center"
+              style={{ transform: `translate3d(calc(-50% + ${pan.x}px), calc(-50% + ${pan.y}px), 0) scale(${zoom})` }}
+            >
+              <ZoneBackdrops projection={projection} />
+              <EvidenceEdges
+                edges={projection.edges}
+                nodeById={nodeById}
+                selectedCardId={selectedCardId}
+                matchesSearch={matchesSearch}
+              />
+              {nodes.map((node) => (
+                <MapNode
+                  key={node.id}
+                  node={node}
+                  selected={node.id === selectedCardId}
+                  related={!selectedCardId || selectedNeighbors.has(node.id)}
+                  searchMatch={matchesSearch(node.card)}
+                  onSelect={() => onSelectCard?.(node.card)}
+                />
+              ))}
+            </div>
 
-        {!hiddenLanes.has("decisions") ? <FlowGroup lane={byId.decisions} variant="hub" expanded={expandedLanes.has("decisions") || Boolean(searchTerm)} onExpand={() => onExpandLane("decisions")} selectedId={selectedId} selectedNeighbors={selectedNeighbors} edges={edges} onSelect={onSelect} layoutMode={layoutMode} locked={locked} nodeOffsets={nodeOffsets} onMoveNode={onMoveNode} /> : null}
+            <div className="absolute bottom-3 left-3 z-30 flex items-center rounded-lg border border-[#d8d8cf] bg-[#fbfbf6]/95 p-1 shadow-sm backdrop-blur dark:border-[#33332e] dark:bg-[#171713]/95">
+              <button type="button" onClick={() => setZoom((value) => clampZoom(value - 0.1))} aria-label="Zoom out" className="flex h-7 w-7 items-center justify-center text-sm font-bold">−</button>
+              <span className="min-w-10 text-center text-[9px] font-bold text-[#77776e]">{Math.round(zoom * 100)}%</span>
+              <button type="button" onClick={() => setZoom((value) => clampZoom(value + 0.1))} aria-label="Zoom in" className="flex h-7 w-7 items-center justify-center text-sm font-bold">+</button>
+            </div>
 
-        <FactualLinkRail edges={edges} nodeById={nodeById} />
-
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          {downstream.map((lane) => <FlowGroup key={lane.id} lane={lane} variant="branch" expanded={expandedLanes.has(lane.id) || Boolean(searchTerm)} onExpand={() => onExpandLane(lane.id)} selectedId={selectedId} selectedNeighbors={selectedNeighbors} edges={edges} onSelect={onSelect} layoutMode={layoutMode} locked={locked} nodeOffsets={nodeOffsets} onMoveNode={onMoveNode} />)}
-        </div>
-
-        {byId.other?.cards.length ? <div className="mt-4"><FlowGroup lane={byId.other} variant="other" expanded={expandedLanes.has("other") || Boolean(searchTerm)} onExpand={() => onExpandLane("other")} selectedId={selectedId} selectedNeighbors={selectedNeighbors} edges={edges} onSelect={onSelect} layoutMode={layoutMode} locked={locked} nodeOffsets={nodeOffsets} onMoveNode={onMoveNode} /></div> : null}
+            {projection.hiddenCardCount ? (
+              <p title="Use Find to bring a quieter matching record into view." className="absolute bottom-3 right-3 rounded-full bg-[#fbfbf6]/95 px-3 py-1.5 text-[9px] font-semibold text-[#68685f] shadow-sm dark:bg-[#171713]/95 dark:text-[#aaa9a0]">
+                +{projection.hiddenCardCount} quieter
+              </p>
+            ) : null}
+          </div>
+        ) : <ProjectReadyState />}
       </div>
-      <MiniMap lanes={lanes} hiddenLanes={hiddenLanes} scale={zoom} pan={pan} onFit={onFit} />
-    </div>
-  );
-}
 
-function FlowFilters({ lanes, hiddenLanes, onToggle }) {
-  return (
-    <div aria-label="Graph quick filters" className="absolute left-3 right-44 top-3 z-20 flex flex-wrap gap-1.5">
-      {lanes.filter((lane) => lane.id !== "other").map((lane) => {
-        const active = !hiddenLanes.has(lane.id);
-        return <button key={lane.id} type="button" aria-pressed={active} onClick={() => onToggle(lane.id)} className={`rounded-full px-2.5 py-1.5 text-[8px] font-bold transition ${active ? "bg-white text-[#34342e] shadow-[0_1px_4px_rgba(23,23,19,.1)] dark:bg-[#20201c] dark:text-[#d8d8cf]" : "bg-transparent text-[#999990] line-through"}`}>{lane.label} · {lane.totalCount ?? lane.cards.length}</button>;
-      })}
-    </div>
-  );
-}
-
-function FlowGroup({ lane, variant, expanded, onExpand, selectedId, selectedNeighbors, edges, onSelect, layoutMode, locked, nodeOffsets, onMoveNode }) {
-  if (!lane) return null;
-  const limit = variant === "sessions" ? 3 : variant === "hub" ? 3 : 3;
-  const visible = expanded ? lane.cards : lane.cards.slice(0, limit);
-  const hiddenCount = Math.max(0, lane.cards.length - visible.length);
-  const colors = flowColor(lane.id);
-  const emptyDocuments = lane.id === "documents" && !lane.cards.length;
-  return (
-    <section className={variant === "sessions" || variant === "hub" ? "mx-auto w-[360px]" : "min-w-0"} aria-labelledby={`flow-${lane.id}`}>
-      <header id={`flow-${lane.id}`} className={`flex items-center gap-2 rounded-[9px] px-3 py-2 text-[11px] font-bold ${colors.header}`}>
-        <span className="h-2 w-2 rounded-full" style={{ backgroundColor: colors.dot }} />
-        <span className="min-w-0 flex-1 truncate">{lane.label}</span>
-        <span className="rounded-full bg-black/20 px-1.5 py-0.5 text-[9px]">{lane.totalCount ?? lane.cards.length}</span>
-      </header>
-      {visible.length ? (
-        <div className={`mt-2 ${variant === "hub" ? "grid gap-1.5" : "space-y-1.5"}`}>
-          {visible.map((card) => {
-            const connectionCount = edges.filter((edge) => edge.source_card_id === card.id || edge.target_card_id === card.id).length;
-            const dimmed = Boolean(selectedId) && !selectedNeighbors.has(card.id);
-            return <FlowCard key={card.id} card={card} selected={selectedId === card.id} dimmed={dimmed} connectionCount={connectionCount} onClick={() => onSelect(card)} accent={colors.dot} movable={layoutMode === "manual" && !locked} offset={nodeOffsets[card.id]} onMove={onMoveNode} />;
-          })}
+      {buildResult || buildError ? <BuildToast result={buildResult} error={buildError} /> : null}
+      {handoffStatus === "error" ? (
+        <div role="alert" className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[10px] font-bold text-red-800 shadow-lg dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-200">
+          Could not create or copy the source-backed handoff.
         </div>
-      ) : (
-        <p className="mt-2 px-3 py-1.5 text-[9px] font-medium leading-4 text-[#85857c] dark:text-[#999990]">
-          {emptyDocuments ? "Document checks are not available or verified for this workspace." : `No explicit ${lane.label.toLowerCase()} were returned.`}
-        </p>
-      )}
-      {hiddenCount ? <button type="button" onClick={onExpand} className="mx-auto mt-2 block rounded-full bg-white px-2.5 py-1 text-[9px] font-bold text-[#68685f] shadow-sm dark:bg-[#20201c] dark:text-[#b8b8af]">+ {hiddenCount} more</button> : null}
+      ) : null}
     </section>
   );
 }
 
-function FlowCard({ card, selected, dimmed, connectionCount, onClick, accent, movable, offset, onMove }) {
-  const dragRef = useRef(null);
-  const suppressClickRef = useRef(false);
-  const handlePointerDown = (event) => {
-    if (!movable || event.button !== 0) return;
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-    dragRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, baseX: offset?.x || 0, baseY: offset?.y || 0, moved: false };
-  };
-  const handlePointerMove = (event) => {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    const dx = event.clientX - drag.x;
-    const dy = event.clientY - drag.y;
-    if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true;
-    onMove?.(card.id, { x: drag.baseX + dx, y: drag.baseY + dy });
-  };
-  const handlePointerEnd = (event) => {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    suppressClickRef.current = drag.moved;
-    event.currentTarget.releasePointerCapture?.(event.pointerId);
-    dragRef.current = null;
-  };
-  const handleClick = () => {
-    if (suppressClickRef.current) {
-      suppressClickRef.current = false;
-      return;
-    }
-    onClick();
-  };
+function ProjectBar({ workspaceName, objectiveText, generatedAt, nodeCount, edgeCount, query, onQueryChange, onFit, onBuild, building, actionsOpen, onToggleActions, canCopyHandoff, handoffStatus, onCopyHandoff, onChangeProject }) {
+  const observed = formatDigestTimestamp(generatedAt);
   return (
-    <button type="button" data-graph-node={card.id} data-card-category={card.category || "unknown"} data-movable={movable ? "true" : "false"} aria-pressed={selected} aria-label={`${nodeTitle(card)}${movable ? ". Drag to reposition" : ""}`} onClick={handleClick} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerEnd} onPointerCancel={handlePointerEnd} style={{ transform: `translate(${offset?.x || 0}px, ${offset?.y || 0}px)`, position: "relative", zIndex: offset?.x || offset?.y ? 10 : undefined, touchAction: movable ? "none" : undefined }} className={`block w-full rounded-[10px] bg-white px-3 py-2.5 text-left shadow-[0_2px_10px_rgba(23,23,19,.09)] transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#7764b7] dark:bg-[#1a1a17] dark:shadow-[0_3px_14px_rgba(0,0,0,.28)] dark:focus-visible:ring-[#d9ff68] ${movable ? "cursor-grab active:cursor-grabbing" : ""} ${selected ? "shadow-[0_5px_22px_rgba(119,100,183,.22)] ring-2 ring-[#7764b7]/50 dark:shadow-[0_5px_24px_rgba(217,255,104,.12)] dark:ring-[#d9ff68]/55" : "hover:-translate-y-px hover:shadow-[0_6px_20px_rgba(23,23,19,.14)]"} ${dimmed ? "opacity-20 saturate-0" : "opacity-100"}`}>
-      <span className="flex items-start gap-2">
-        <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: accent }} />
-        <span className="min-w-0 flex-1">
-          <span className="block text-[10px] font-bold leading-4 text-[#171713] dark:text-[#f4f4ec]">{nodeTitle(card)}</span>
-          <span className="mt-0.5 block line-clamp-2 text-[9px] font-medium leading-4 text-[#74746c] dark:text-[#999990]">{nodeSummary(card)}</span>
+    <header className="relative z-40 flex min-h-16 shrink-0 items-center gap-3 border-b border-[#d8d8cf] bg-[#fbfbf6]/95 px-4 py-2.5 backdrop-blur dark:border-[#292925] dark:bg-[#141411]/95 sm:px-5">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="h-2 w-2 rounded-full bg-[#58ad70]" aria-hidden="true" />
+          <p className="truncate text-[10px] font-semibold text-[#77776e] dark:text-[#aaa9a0]">{workspaceName}</p>
+        </div>
+        <div className="mt-0.5 flex items-baseline gap-2">
+          <h1 className="text-sm font-extrabold">Project map</h1>
+          <span className="hidden text-[9px] font-medium text-[#929289] sm:inline">{nodeCount} records · {edgeCount} sourced link{edgeCount === 1 ? "" : "s"}{observed ? ` · ${observed}` : ""}</span>
+        </div>
+        {objectiveText ? <p className="mt-0.5 max-w-xl truncate text-[9px] font-semibold text-[#68685f] dark:text-[#b8b8af]" title={objectiveText}><span className="text-[#929289]">Now ·</span> {objectiveText}</p> : null}
+      </div>
+
+      <label className="hidden h-8 w-40 items-center gap-2 rounded-lg border border-[#d8d8cf] bg-white px-2.5 focus-within:border-[#77776e] dark:border-[#33332e] dark:bg-[#0f0f0c] sm:flex lg:w-52">
+        <Search className="h-3.5 w-3.5 shrink-0 text-[#929289]" />
+        <span className="sr-only">Search project map</span>
+        <input value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="Find" className="min-w-0 flex-1 bg-transparent text-[11px] font-semibold outline-none placeholder:text-[#aaa9a0]" />
+      </label>
+      <button type="button" onClick={() => onBuild?.("incremental")} disabled={!onBuild || building} aria-label="Refresh project map" title="Refresh map" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#171713] text-white transition hover:bg-[#34342e] disabled:opacity-50 dark:bg-[#d9ff68] dark:text-[#171713]">
+        {building ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+      </button>
+      {canCopyHandoff ? (
+        <button type="button" onClick={onCopyHandoff} disabled={handoffStatus === "preparing"} className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-[#d8d8cf] bg-white px-2.5 text-[10px] font-bold text-[#4f4f48] transition hover:border-[#aaa9a0] hover:text-[#171713] disabled:opacity-60 dark:border-[#33332e] dark:bg-[#1b1b18] dark:text-[#d8d8cf] dark:hover:text-white">
+          {handoffStatus === "preparing" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : handoffStatus === "copied" ? <Check className="h-3.5 w-3.5" /> : <Clipboard className="h-3.5 w-3.5" />}
+          {handoffStatus === "preparing" ? "Preparing" : handoffStatus === "copied" ? "Copied" : "Copy handoff"}
+        </button>
+      ) : null}
+      <div className="relative">
+        <button type="button" onClick={onToggleActions} aria-label="Open project map actions" aria-expanded={actionsOpen} className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#d8d8cf] bg-white text-[#68685f] dark:border-[#33332e] dark:bg-[#1b1b18] dark:text-[#aaa9a0]">
+          <MoreHorizontal className="h-4 w-4" />
+        </button>
+        {actionsOpen ? (
+          <div className="absolute right-0 top-10 z-50 w-64 rounded-lg border border-[#d8d8cf] bg-[#fbfbf6] p-2 shadow-xl dark:border-[#33332e] dark:bg-[#171713]">
+            <button type="button" aria-label="Fit project map" onClick={onFit} className="flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left transition hover:bg-[#efefe7] dark:hover:bg-[#252521]">
+              <Maximize2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>
+                <span className="block text-[11px] font-bold">Fit project map</span>
+                <span className="mt-0.5 block text-[9px] leading-4 text-[#85857c]">Reset pan and zoom to the full project.</span>
+              </span>
+            </button>
+            <button type="button" aria-label="Rebuild projection" onClick={() => onBuild?.("rebuild")} disabled={!onBuild || building} className="flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left transition hover:bg-[#efefe7] disabled:opacity-50 dark:hover:bg-[#252521]">
+              <RotateCcw className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>
+                <span className="block text-[11px] font-bold">Rebuild projection</span>
+                <span className="mt-0.5 block text-[9px] leading-4 text-[#85857c]">Re-read imported snapshots. Provider sync stays separate.</span>
+              </span>
+            </button>
+            <button type="button" aria-label="Change local project" onClick={onChangeProject} className="flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left transition hover:bg-[#efefe7] dark:hover:bg-[#252521]">
+              <FolderGit2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>
+                <span className="block text-[11px] font-bold">Change local project</span>
+                <span className="mt-0.5 block text-[9px] leading-4 text-[#85857c]">Replace this workspace's active repository boundary.</span>
+              </span>
+            </button>
+          </div>
+        ) : null}
+      </div>
+    </header>
+  );
+}
+
+function ZoneBackdrops({ projection }) {
+  return Object.entries(MAP_ZONES).map(([zoneId, zone]) => {
+    const lane = projection.lanes.find((item) => item.id === zoneId);
+    const hasCards = Boolean(lane?.cards.length);
+    if (zoneId === "other" && !hasCards) return null;
+    return (
+      <div
+        key={zone.label}
+        aria-label={`${zone.label}: ${hasCards ? `${lane.cards.length} visible records` : "no evidence"}`}
+        data-zone-empty={hasCards ? "false" : "true"}
+        className={`pointer-events-none absolute rounded-2xl border ${hasCards ? "border-[#d8d8cf]/65 bg-[#fbfbf6]/20 dark:border-[#33332e]/70 dark:bg-[#171713]/15" : "border-dashed border-[#d8d8cf]/45 dark:border-[#33332e]/45"}`}
+        style={{
+          left: `${(zone.x / MAP_WIDTH) * 100}%`,
+          top: `${(zone.y / MAP_HEIGHT) * 100}%`,
+          width: `${(zone.width / MAP_WIDTH) * 100}%`,
+          height: `${(zone.height / MAP_HEIGHT) * 100}%`,
+        }}
+      >
+        <span className={`absolute left-3 top-2 text-[9px] font-black uppercase tracking-[0.16em] ${hasCards ? "text-[#929289] dark:text-[#77776e]" : "text-[#c2c2b9] dark:text-[#44443e]"}`}>
+          {zone.label}
         </span>
-        {connectionCount ? <span className="shrink-0 text-[8px] font-bold text-[#77776e]">{connectionCount}↗</span> : null}
+      </div>
+    );
+  });
+}
+
+function EvidenceEdges({ edges, nodeById, selectedCardId, matchesSearch }) {
+  return (
+    <svg className="pointer-events-none absolute inset-0 h-full w-full overflow-visible" viewBox={`0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`} preserveAspectRatio="none" aria-label={`${edges.length} sourced relationships`}>
+      <defs>
+        <marker id="project-map-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+          <path d="M 0 0 L 8 4 L 0 8 z" fill="currentColor" />
+        </marker>
+      </defs>
+      {edges.map((edge) => {
+        const source = nodeById.get(edge.source_card_id);
+        const target = nodeById.get(edge.target_card_id);
+        if (!source || !target) return null;
+        const selected = selectedCardId && (edge.source_card_id === selectedCardId || edge.target_card_id === selectedCardId);
+        const subdued = selectedCardId && !selected;
+        const searchSubdued = !matchesSearch(source.card) || !matchesSearch(target.card);
+        const risk = ["blocks", "blocked_by", "contradicts", "conflicts_with"].includes(edge.relationship_type);
+        const opacity = subdued || searchSubdued ? 0.08 : selected ? 0.9 : 0.32;
+        const midX = (source.x + target.x) / 2;
+        const midY = (source.y + target.y) / 2;
+        return (
+          <g key={edge.id} className={risk ? "text-red-500" : "text-[#77776e] dark:text-[#8f8f86]"}>
+            <line
+              data-evidence-edge
+              data-relationship-type={edge.relationship_type}
+              x1={source.x}
+              y1={source.y}
+              x2={target.x}
+              y2={target.y}
+              stroke="currentColor"
+              strokeWidth={selected ? 2.2 : 1.35}
+              opacity={opacity}
+              markerEnd="url(#project-map-arrow)"
+              vectorEffect="non-scaling-stroke"
+            />
+            {selected ? (
+              <g transform={`translate(${midX} ${midY})`}>
+                <rect x="-42" y="-10" width="84" height="20" rx="10" className="fill-[#fbfbf6] stroke-[#d8d8cf] dark:fill-[#171713] dark:stroke-[#3a3a34]" />
+                <text textAnchor="middle" dominantBaseline="middle" className="fill-[#4f4f48] text-[9px] font-bold dark:fill-[#d8d8cf]">{edge.label || edge.relationship_type}</text>
+              </g>
+            ) : null}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function MapNode({ node, selected, related, searchMatch, onSelect }) {
+  const { card } = node;
+  const Icon = cardIcon(card);
+  const relevance = sessionRelevance(card);
+  const baseVisual = relevanceVisual(relevance);
+  const focusOpacity = related && searchMatch ? baseVisual.opacity : Math.min(baseVisual.opacity, 0.13);
+  const renderedOpacity = selected ? Math.max(focusOpacity, relevance === "not_relevant" ? 0.44 : 0.72) : focusOpacity;
+  const colors = stateColors(observedCardState(card));
+  const kind = nodeKind(card);
+  const relevanceLabel = {
+    relevant: "current project",
+    unknown: "project match uncertain",
+    not_relevant: "different project",
+  }[relevance];
+  const label = `${nodeTitle(card)}. ${kind}.${isSession(card) ? ` Project relevance: ${relevanceLabel}.` : ""}`;
+
+  return (
+    <button
+      type="button"
+      data-graph-node={card.id}
+      data-card-category={card.category || "unknown"}
+      data-card-state={card.status || "unknown"}
+      data-relevance-status={isSession(card) ? relevance : "relevant"}
+      aria-pressed={selected}
+      aria-label={label}
+      onClick={(event) => {
+        event.stopPropagation();
+        onSelect();
+      }}
+      className={`absolute z-10 flex min-h-[58px] w-[112px] -translate-x-1/2 -translate-y-1/2 items-center gap-2 px-2.5 py-2 text-left shadow-[0_5px_18px_rgba(23,23,19,.12)] transition-[opacity,filter,box-shadow,transform] duration-200 hover:z-20 hover:scale-[1.02] focus:z-20 focus:!opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#171713] dark:shadow-[0_7px_22px_rgba(0,0,0,.3)] dark:focus-visible:ring-[#d9ff68] sm:w-[124px] ${nodeShape(card)} ${colors.surface} ${selected ? colors.selected : ""}`}
+      style={{
+        left: `${(node.x / MAP_WIDTH) * 100}%`,
+        top: `${(node.y / MAP_HEIGHT) * 100}%`,
+        opacity: renderedOpacity,
+        filter: `saturate(${baseVisual.saturation}) ${relevance === "not_relevant" ? "grayscale(1)" : ""}`,
+        borderStyle: baseVisual.borderStyle,
+      }}
+    >
+      <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${colors.icon}`} aria-hidden="true">
+        <Icon className="h-3.5 w-3.5" />
       </span>
+      <span className="line-clamp-2 text-sm font-extrabold leading-4 sm:text-[11px]">{nodeTitle(card)}</span>
     </button>
   );
 }
 
-function FactualLinkRail({ edges, nodeById }) {
-  if (!edges.length) return <p className="mx-auto my-4 w-fit rounded-full bg-white/70 px-3 py-1 text-[8px] font-semibold text-[#77776e] dark:bg-[#20201c]">No explicit cross-record links returned</p>;
+function ProjectEmptyState({ onIndexProject, indexing, result, error, onCancel }) {
+  const [repoPath, setRepoPath] = useState("");
+  const [validationError, setValidationError] = useState("");
+
+  const submit = (event) => {
+    event.preventDefault();
+    const value = repoPath.trim();
+    if (!value || !value.startsWith("/")) {
+      setValidationError("Enter an absolute local project path.");
+      return;
+    }
+    setValidationError("");
+    onIndexProject?.(value);
+  };
+
+  const errorMessage = validationError || error?.message || "";
   return (
-    <div className="mx-auto my-4 flex max-w-[760px] items-center justify-center gap-2 overflow-hidden text-[8px] font-semibold text-[#999990]" aria-label={`${edges.length} factual relationships`}>
-      {edges.map((edge) => <span key={edge.id} data-evidence-edge data-relationship-type={edge.relationship_type} className="sr-only">{nodeTitle(nodeById.get(edge.source_card_id)?.card)} {edge.label || edge.relationship_type} {nodeTitle(nodeById.get(edge.target_card_id)?.card)}</span>)}
-      <span className="h-px flex-1 bg-[#c8c8be] dark:bg-[#3b3b35]" />
-      <span title={edges.slice(0, 3).map((edge) => `${nodeTitle(nodeById.get(edge.source_card_id)?.card)} ${edge.label || edge.relationship_type} ${nodeTitle(nodeById.get(edge.target_card_id)?.card)}`).join("; ")} className="rounded-full bg-white px-2.5 py-1 text-[#6f6f67] shadow-sm dark:bg-[#20201c] dark:text-[#999990]">{edges.length} explicit link{edges.length === 1 ? "" : "s"}</span>
-      <span className="h-px flex-1 bg-[#c8c8be] dark:bg-[#3b3b35]" />
+    <div className="flex h-full min-h-[420px] items-center justify-center px-5 py-10">
+      <div className="w-full max-w-lg text-center">
+        <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-[#171713] text-[#d9ff68] dark:bg-[#d9ff68] dark:text-[#171713]">
+          <FolderGit2 className="h-5 w-5" />
+        </span>
+        <h2 className="mt-5 text-2xl font-semibold">Open your project</h2>
+        <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-[#77776e] dark:text-[#aaa9a0]">
+          Add the repository once. Context Engine will use it as the boundary for sessions and project evidence.
+        </p>
+
+        <form onSubmit={submit} className="mx-auto mt-6 flex max-w-md gap-2" noValidate>
+          <label className="sr-only" htmlFor="project-repo-path">Local project path</label>
+          <input
+            id="project-repo-path"
+            value={repoPath}
+            onChange={(event) => setRepoPath(event.target.value)}
+            placeholder="/absolute/path/to/project"
+            className="h-11 min-w-0 flex-1 rounded-lg border border-[#d8d8cf] bg-[#fbfbf6] px-3.5 font-mono text-xs outline-none transition focus:border-[#77776e] focus:ring-4 focus:ring-[#77776e]/10 dark:border-[#33332e] dark:bg-[#171713]"
+          />
+          <button type="submit" disabled={indexing || !onIndexProject} className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-[#171713] px-4 text-xs font-bold text-white transition hover:bg-[#34342e] disabled:opacity-50 dark:bg-[#d9ff68] dark:text-[#171713]">
+            {indexing ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            Open
+          </button>
+        </form>
+
+        {errorMessage ? <p role="alert" className="mt-3 text-xs font-semibold text-red-600 dark:text-red-400">{errorMessage}</p> : null}
+        {result ? (
+          <div role="status" className="mx-auto mt-4 flex max-w-md items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-left text-xs text-emerald-800 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-200">
+            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+            <span><strong>Project opened.</strong> {result.files_indexed ?? 0} files indexed from the current repository state.</span>
+          </div>
+        ) : null}
+        <div className="mt-5 flex items-center justify-center gap-3 text-[10px] font-semibold text-[#77776e] dark:text-[#aaa9a0]">
+          <Link to="/app/connectors" className="underline decoration-[#aaa9a0] underline-offset-4 hover:text-[#171713] dark:hover:text-white">Choose a GitHub repository</Link>
+          {onCancel ? <button type="button" onClick={onCancel} className="underline decoration-[#aaa9a0] underline-offset-4 hover:text-[#171713] dark:hover:text-white">Cancel</button> : null}
+        </div>
+      </div>
     </div>
   );
 }
 
-function MiniMap({ lanes, hiddenLanes, scale, pan, onFit }) {
-  const laneById = Object.fromEntries(lanes.map((lane) => [lane.id, lane]));
-  const downstream = ["prs", "issues", "documents", "next_tasks"].filter((id) => laneById[id] && !hiddenLanes.has(id));
-  const downstreamWidth = downstream.length ? 112 / downstream.length : 112;
-  const viewportWidth = Math.min(116, 116 / Math.max(1, scale));
-  const viewportHeight = Math.min(78, 78 / Math.max(1, scale));
-  const viewportX = Math.max(2, Math.min(118 - viewportWidth, 60 - viewportWidth / 2 - pan.x / 14));
-  const viewportY = Math.max(2, Math.min(80 - viewportHeight, 41 - viewportHeight / 2 - pan.y / 14));
+function ProjectReadyState() {
   return (
-    <aside aria-label="Graph minimap" className="absolute right-3 top-3 z-30 w-32 rounded-[10px] bg-white/95 p-2 shadow-[0_4px_18px_rgba(23,23,19,.12)] dark:bg-[#1a1a17]/95 dark:shadow-[0_5px_22px_rgba(0,0,0,.3)] md:w-40 md:p-2.5">
-      <div className="mb-1.5 flex items-center justify-between gap-2">
-        <span className="text-[8px] font-black uppercase tracking-[.14em] text-[#77776e] dark:text-[#999990]">Minimap</span>
-        <button type="button" aria-label="Fit graph from minimap" onClick={onFit} className="rounded px-1.5 py-0.5 text-[8px] font-bold text-[#5f5f57] transition hover:bg-[#efefe8] dark:text-[#d8d8cf] dark:hover:bg-[#292925]">Fit</button>
+    <div className="flex h-full min-h-[420px] items-center justify-center px-5 py-10">
+      <div className="w-full max-w-md text-center">
+        <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-[#d8d8cf] bg-[#fbfbf6] text-[#68685f] dark:border-[#33332e] dark:bg-[#171713] dark:text-[#aaa9a0]">
+          <FolderGit2 className="h-5 w-5" />
+        </span>
+        <h2 className="mt-5 text-xl font-semibold">Your project is ready</h2>
+        <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-[#77776e] dark:text-[#aaa9a0]">
+          Add an AI coding session or source. The map will appear when there is project evidence to show.
+        </p>
+        <Link to="/app/sources" className="mt-6 inline-flex h-10 items-center justify-center rounded-lg bg-[#171713] px-4 text-xs font-bold text-white transition hover:bg-[#34342e] dark:bg-[#d9ff68] dark:text-[#171713]">
+          Add evidence
+        </Link>
       </div>
-      <button type="button" aria-label="Fit graph from minimap overview" onClick={onFit} className="block h-[66px] w-full rounded-[7px] bg-[#f2f2eb] p-1 transition hover:bg-[#e9e9e1] dark:bg-[#10100e] dark:hover:bg-[#242420] md:h-[92px]">
-        <svg data-testid="graph-minimap-svg" viewBox="0 0 120 82" className="h-full w-full" role="img" aria-label="Structural overview of the evidence graph">
-          {!hiddenLanes.has("sessions") && !hiddenLanes.has("decisions") ? <line x1="60" y1="20" x2="60" y2="31" stroke="#aaa9a0" strokeWidth="1.5" /> : null}
-          {!hiddenLanes.has("decisions") && downstream.length ? downstream.map((id, index) => {
-            const x = 4 + downstreamWidth * index + downstreamWidth / 2;
-            return <line key={`edge-${id}`} x1="60" y1="43" x2={x} y2="59" stroke="#aaa9a0" strokeWidth="1" />;
-          }) : null}
-          {!hiddenLanes.has("sessions") ? <rect x="38" y="6" width="44" height="14" rx="4" fill={flowColor("sessions").dot} opacity=".9" /> : null}
-          {!hiddenLanes.has("decisions") ? <rect x="32" y="31" width="56" height="14" rx="4" fill={flowColor("decisions").dot} opacity=".9" /> : null}
-          {downstream.map((id, index) => (
-            <rect key={id} x={5 + downstreamWidth * index} y="59" width={Math.max(12, downstreamWidth - 4)} height="15" rx="3" fill={flowColor(id).dot} opacity=".9" />
-          ))}
-          <rect data-testid="graph-minimap-viewport" x={viewportX} y={viewportY} width={viewportWidth} height={viewportHeight} rx="5" fill="none" stroke="#171713" strokeWidth="1.5" strokeDasharray="3 2" className="dark:stroke-[#d9ff68]" />
-        </svg>
-      </button>
-    </aside>
-  );
-}
-
-function flowColor(id) {
-  const meta = {
-    sessions: { dot: "#8d71d6", header: "bg-violet-100/80 text-violet-950 dark:bg-violet-950/35 dark:text-violet-100" },
-    decisions: { dot: "#58ad70", header: "bg-emerald-100/80 text-emerald-950 dark:bg-emerald-950/35 dark:text-emerald-100" },
-    prs: { dot: "#4f86d6", header: "bg-blue-100/80 text-blue-950 dark:bg-blue-950/35 dark:text-blue-100" },
-    issues: { dot: "#e15d52", header: "bg-red-100/80 text-red-950 dark:bg-red-950/35 dark:text-red-100" },
-    documents: { dot: "#d29a35", header: "bg-amber-100/80 text-amber-950 dark:bg-amber-950/35 dark:text-amber-100" },
-    next_tasks: { dot: "#d65aa2", header: "bg-pink-100/80 text-pink-950 dark:bg-pink-950/35 dark:text-pink-100" },
-    other: { dot: "#8c8c82", header: "bg-neutral-200/70 text-neutral-800 dark:bg-neutral-900 dark:text-neutral-200" },
-  };
-  return meta[id] || meta.other;
-}
-
-function FlowControls({ zoom, locked, layoutMode, onZoomIn, onZoomOut, onFit, onToggleLock }) {
-  return <div className="absolute bottom-3 left-3 z-30 flex w-fit items-center rounded-[10px] bg-white p-1 text-[#5f5f57] shadow-[0_5px_20px_rgba(23,23,19,.14)] dark:bg-[#1a1a17] dark:text-[#d8d8cf] dark:shadow-[0_6px_24px_rgba(0,0,0,.3)]"><button type="button" aria-label="Fit graph" onClick={onFit} className="h-7 rounded px-2 text-[8px] font-bold">Fit</button><button type="button" aria-label="Zoom in" onClick={onZoomIn} className="flex h-7 w-7 items-center justify-center"><Plus className="h-3.5 w-3.5" /></button><span className="min-w-9 text-center text-[8px] font-bold">{Math.round(zoom * 100)}%</span><button type="button" aria-label="Zoom out" onClick={onZoomOut} className="flex h-7 w-7 items-center justify-center"><Minus className="h-3.5 w-3.5" /></button><button type="button" aria-label={layoutMode === "auto" ? "Switch to manual layout to move nodes" : locked ? "Unlock layout" : "Lock layout"} aria-disabled={layoutMode === "auto"} onClick={onToggleLock} className={`flex h-7 w-7 items-center justify-center ${layoutMode === "auto" ? "opacity-35" : ""}`}>{locked ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}</button></div>;
-}
-
-function QuickPeek({ card, onClose, onOpen }) {
-  if (!card) return null;
-  return (
-    <aside aria-label="Selected record quick peek" className="absolute bottom-3 left-1/2 z-40 w-[min(760px,calc(100%-1.5rem))] -translate-x-1/2 rounded-[12px] border border-[#c8c8be] bg-white p-4 text-[#171713] shadow-[0_18px_55px_rgba(23,23,19,.18)] dark:border-[#3a3a34] dark:bg-[#171713] dark:text-[#f4f4ec] dark:shadow-[0_18px_55px_rgba(0,0,0,.35)]">
-      <div className="flex items-start gap-3"><span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] bg-[#efefe8] text-[#7764b7] dark:bg-[#292925] dark:text-[#d9ff68]"><Info className="h-3.5 w-3.5" /></span><span className="min-w-0 flex-1"><span className="block text-[9px] font-bold uppercase tracking-[.14em] text-[#7a7a72] dark:text-[#999990]">{nodeTypeLabel(card)} · quick peek</span><strong className="mt-1 block text-[12px] leading-5">{nodeTitle(card)}</strong><span className="mt-1 block text-[10px] leading-4 text-[#68685f] dark:text-[#b8b8af]">{nodeSummary(card)}</span></span><button type="button" onClick={onOpen} className="shrink-0 rounded-[7px] border border-[#d2d2c8] px-2.5 py-1.5 text-[9px] font-bold dark:border-[#3a3a34]">Open full details</button><button type="button" aria-label="Close quick peek" onClick={onClose}><X className="h-4 w-4 text-[#999990]" /></button></div>
-    </aside>
-  );
-}
-
-function RelationshipSummary({ edges, nodeById, expanded, onExpand, selected, onClear }) {
-  const visible = expanded ? edges : edges.slice(0, INITIAL_LINK_LIMIT);
-  return (
-    <section className="rounded-[12px] bg-white/90 p-4 shadow-[0_8px_28px_rgba(23,23,19,.12)] backdrop-blur dark:bg-[#171713]/90">
-      <div className="flex items-center gap-2">
-        <GitBranch className="h-3.5 w-3.5 text-[#77776e]" />
-        <h2 className="text-[11px] font-extrabold">{selected ? "Links for selected record" : "Sourced relationships"}</h2>
-        <span className="text-[9px] font-semibold text-[#85857c]">{edges.length}</span>
-        {selected ? <button type="button" onClick={onClear} className="ml-auto text-[9px] font-bold text-[#68685f] underline underline-offset-2 dark:text-[#d9ff68]">Clear focus</button> : null}
-      </div>
-      {visible.length ? (
-        <div className="mt-3 space-y-1.5">
-          {visible.map((edge) => {
-            const source = nodeById.get(edge.source_card_id)?.card;
-            const target = nodeById.get(edge.target_card_id)?.card;
-            return (
-              <div key={edge.id} data-evidence-edge data-relationship-type={edge.relationship_type} className="grid items-center gap-1.5 rounded-[8px] bg-[#f0f0e8] px-3 py-2 text-[9px] font-semibold text-[#68685f] dark:bg-[#23231f] dark:text-[#b8b8af] sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
-                <span className="truncate">{source ? nodeTitle(source) : "Unavailable source"}</span>
-                <span className="w-fit rounded-full border border-[#d2d2c8] bg-[#fbfbf6] px-2 py-0.5 font-bold text-[#45453f] dark:border-[#3a3a34] dark:bg-[#171713] dark:text-[#d9ff68]">{edge.label || edge.relationship_type}</span>
-                <span className="truncate sm:text-right">{target ? nodeTitle(target) : "Unavailable target"}</span>
-              </div>
-            );
-          })}
-        </div>
-      ) : <p className="mt-2 text-[10px] font-medium text-[#85857c]">No explicit links were returned for this {selected ? "record" : "workspace"}. Records remain readable without inferred edges.</p>}
-      {!expanded && edges.length > INITIAL_LINK_LIMIT ? <button type="button" onClick={onExpand} className="mt-2 text-[9px] font-bold text-[#68685f] underline underline-offset-2">Show {edges.length - INITIAL_LINK_LIMIT} more links</button> : null}
-    </section>
-  );
-}
-
-function ActionButton({ icon: Icon, label, detail, onClick, disabled }) {
-  return <button type="button" aria-label={label} onClick={onClick} disabled={disabled} className="flex w-full items-start gap-2.5 rounded-[8px] px-2.5 py-2 text-left transition hover:bg-[#efefe7] disabled:opacity-45 dark:hover:bg-[#252521]"><Icon className="mt-0.5 h-3.5 w-3.5 shrink-0" /><span><span className="block text-[11px] font-bold">{label}</span><span className="mt-0.5 block text-[9px] text-[#85857c]">{detail}</span></span></button>;
-}
-
-function ActionLink({ to, icon: Icon, label }) {
-  return <Link to={to} className="flex items-center gap-2.5 rounded-[8px] px-2.5 py-2 text-[11px] font-bold transition hover:bg-[#efefe7] dark:hover:bg-[#252521]"><Icon className="h-3.5 w-3.5" />{label}</Link>;
-}
-
-function MapDetails({ digest, generatedAt, sessionCount, onClose }) {
-  const scope = digest?.scope;
-  const builtLabel = formatDigestTimestamp(digest?.build?.last_built_at || digest?.build?.last_processed_at || generatedAt);
-  return (
-    <aside className="fixed right-3 top-[72px] z-50 w-[min(340px,calc(100%-1.5rem))] rounded-md border border-[#d4d4ca] bg-[#fbfbf6] p-4 shadow-[0_18px_50px_rgba(23,23,19,0.16)] dark:border-[#33332e] dark:bg-[#171713]">
-      <div className="flex items-center justify-between"><h2 className="text-[12px] font-extrabold">Graph details</h2><button type="button" aria-label="Close graph details" onClick={onClose}><X className="h-4 w-4 text-[#77776e]" /></button></div>
-      <dl className="mt-3 grid grid-cols-2 gap-2">
-        <DetailStat label="Imported sources" value={scope?.included_source_count ?? scope?.included_sources ?? scope?.source_count ?? 0} />
-        <DetailStat label="Pending" value={scope?.pending_source_count ?? scope?.pending_sources ?? 0} />
-        <DetailStat label="AI sessions" value={sessionCount} />
-        <DetailStat label="Last processing" value={builtLabel || "Not recorded"} wide />
-      </dl>
-      <p className="mt-3 rounded-[8px] bg-[#f0f0e8] px-3 py-2 text-[10px] font-medium leading-4 text-[#68685f] dark:bg-[#23231f] dark:text-[#b8b8af]">Only relationships returned by the evidence-backed digest appear here. Provider state remains an imported snapshot until sources are refreshed.</p>
-    </aside>
-  );
-}
-
-function DetailStat({ label, value, wide }) {
-  return <div className={`${wide ? "col-span-2" : ""} rounded-[8px] border border-[#e0e0d7] px-3 py-2 dark:border-[#30302b]`}><dt className="text-[9px] font-semibold text-[#85857c]">{label}</dt><dd className="mt-0.5 truncate text-[11px] font-extrabold">{value}</dd></div>;
-}
-
-function SparseGraphState({ onBuild, building }) {
-  return (
-    <div className="mx-auto mt-16 w-[min(400px,100%)] rounded-[14px] border border-dashed border-[#bdbdb3] bg-[#fbfbf6] p-6 text-center dark:border-[#41413b] dark:bg-[#171713]">
-      <GitBranch className="mx-auto h-5 w-5 text-[#85857c]" />
-      <h2 className="mt-3 text-[14px] font-extrabold">The overview is ready for evidence</h2>
-      <p className="mt-1 text-[11px] font-medium leading-5 text-[#77776e]">Import sources, then process their current snapshots into inspectable records.</p>
-      <button type="button" onClick={() => onBuild?.("incremental")} disabled={!onBuild || building} className="mt-4 inline-flex h-8 items-center gap-2 rounded-[8px] bg-[#171713] px-3 text-[10px] font-bold text-white dark:bg-[#d9ff68] dark:text-[#171713]">{building ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}Process imported sources</button>
     </div>
   );
 }
 
 function BuildToast({ result, error }) {
   const warnings = result?.warnings?.length || result?.errors?.length || result?.documents?.failed || 0;
-  return <div role={error ? "alert" : "status"} className={`fixed bottom-4 left-1/2 z-50 flex max-w-[min(440px,calc(100%-2rem))] -translate-x-1/2 items-start gap-2 rounded-[9px] border px-3 py-2 text-[10px] font-bold shadow-lg ${error ? TONE_CLASSES.red : warnings ? TONE_CLASSES.amber : TONE_CLASSES.green}`}>{error || warnings ? <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" /> : <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />}{error?.message || buildSummary(result)}</div>;
+  return (
+    <div role={error ? "alert" : "status"} className={`fixed bottom-4 left-1/2 z-50 flex max-w-[min(440px,calc(100%-2rem))] -translate-x-1/2 items-start gap-2 rounded-lg border px-3 py-2 text-[10px] font-bold shadow-lg ${error ? TONE_CLASSES.red : warnings ? TONE_CLASSES.amber : TONE_CLASSES.green}`}>
+      {error || warnings ? <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" /> : <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+      {error?.message || buildSummary(result)}
+    </div>
+  );
+}
+
+function isSession(card) {
+  return ["agent_session", "session"].includes(card?.category);
+}
+
+function sessionRelevance(card) {
+  if (!isSession(card)) return "relevant";
+  const status = card?.workspace_relevance?.status;
+  return ["relevant", "unknown", "not_relevant"].includes(status) ? status : "unknown";
+}
+
+function relevanceVisual(status) {
+  if (status === "not_relevant") return { opacity: 0.16, saturation: 0, borderStyle: "dashed" };
+  if (status === "unknown") return { opacity: 0.48, saturation: 0.55, borderStyle: "dotted" };
+  return { opacity: 1, saturation: 1, borderStyle: "solid" };
 }
 
 function nodeTitle(card) {
-  if (["agent_session", "session"].includes(card?.category)) return sessionIdentity(card).title;
-  if (card?.category === "pull_request") return pullRequestLabel(card);
-  if (card?.category === "issue") return issueLabel(card);
-  return cardDisplayLine(card, card?.category || "summary", 16);
+  if (isSession(card)) return sessionIdentity(card).title;
+  if (card?.category === "pull_request") return remoteNodeTitle(card, "PR");
+  if (card?.category === "issue") return remoteNodeTitle(card, "Issue");
+  if (card?.category === "supporting_evidence") return supportingNodeTitle(card);
+  return sentenceCase(cardDisplayLine(card, card?.category || "summary", 7));
 }
 
-function nodeSummary(card) {
-  if (["agent_session", "session"].includes(card?.category)) {
-    const identity = sessionIdentity(card);
-    return [identity.source, identity.context, identity.detail, relevanceLabel(card)].filter(Boolean).join(" · ");
-  }
-  if (["pull_request", "issue"].includes(card?.category)) return observedRemoteState(card);
-  return cardDisplayLine(card, "summary", 24);
+function supportingNodeTitle(card) {
+  const candidates = [
+    card?.summary,
+    ...(card?.provenance || []).map((source) => source.excerpt),
+    card?.title,
+  ];
+  const selected = candidates.find((value) => (
+    value
+    && !/\bhub for messages\b|^(?:slack\s+)?channel\s*[:#]|^source type\s*:/i.test(String(value).trim())
+  ));
+  const evidenceText = String(selected || card?.summary || card?.title || "")
+    .replace(/^#?\s*Context Engine\s*(?:[-\u2013\u2014:]\s*)?/i, "");
+  return sentenceCase(preciseLine(evidenceText, 7));
 }
 
-function nodeTypeLabel(card) {
-  const labels = { agent_session: "AI session", blocker: "Blocker", decision: "Decision", document_finding: "Document warning", issue: "Issue snapshot", pull_request: "Pull request snapshot", supporting_evidence: "Supporting evidence" };
+function remoteNodeTitle(card, prefix) {
+  const number = card?.remote_item?.number;
+  const title = String(card?.remote_item?.title || "").trim();
+  const identity = number ? `${prefix} #${number}` : prefix;
+  return title ? `${identity} · ${title}` : identity;
+}
+
+function sentenceCase(value) {
+  return value ? `${value.charAt(0).toUpperCase()}${value.slice(1)}` : "";
+}
+
+function nodeKind(card) {
+  const labels = {
+    agent_session: "AI session",
+    blocker: "Blocker",
+    decision: "Decision",
+    document_finding: "Document finding",
+    code_area: "Repository area",
+    issue: "Issue snapshot",
+    pull_request: "Pull request snapshot",
+    supporting_evidence: "Supporting evidence",
+    task: "Next task",
+  };
   return labels[card?.category] || String(card?.type || "Evidence").replaceAll("_", " ");
 }
 
+function nodeShape(card) {
+  if (isSession(card)) return "rounded-2xl border-2";
+  if (["blocker", "issue"].includes(card?.category)) return "rounded-md border-2";
+  if (card?.category === "decision") return "rounded-xl border";
+  return "rounded-lg border";
+}
+
+function stateColors(status) {
+  const map = {
+    verified: {
+      surface: "border-emerald-300 bg-emerald-50 text-emerald-950 dark:border-emerald-700 dark:bg-emerald-950/70 dark:text-emerald-50",
+      icon: "bg-emerald-200/70 text-emerald-800 dark:bg-emerald-800/60 dark:text-emerald-100",
+      selected: "ring-2 ring-emerald-500/45",
+    },
+    blocked: {
+      surface: "border-red-400 bg-red-50 text-red-950 dark:border-red-600 dark:bg-red-950/70 dark:text-red-50",
+      icon: "bg-red-200/80 text-red-800 dark:bg-red-800/60 dark:text-red-100",
+      selected: "ring-2 ring-red-500/50",
+    },
+    conflict: {
+      surface: "border-red-400 bg-red-50 text-red-950 dark:border-red-600 dark:bg-red-950/70 dark:text-red-50",
+      icon: "bg-red-200/80 text-red-800 dark:bg-red-800/60 dark:text-red-100",
+      selected: "ring-2 ring-red-500/50",
+    },
+    stale: {
+      surface: "border-[#b8b8af] bg-[#e9e9e1] text-[#55554e] dark:border-[#55554e] dark:bg-[#242420] dark:text-[#c8c8be]",
+      icon: "bg-[#d8d8cf] text-[#68685f] dark:bg-[#33332e] dark:text-[#aaa9a0]",
+      selected: "ring-2 ring-[#77776e]/45",
+    },
+    needs_review: {
+      surface: "border-[#b8b8af] bg-[#fbfbf6] text-[#34342e] dark:border-[#4a4a43] dark:bg-[#1b1b18] dark:text-[#e8e8e0]",
+      icon: "bg-[#e8e8e0] text-[#68685f] dark:bg-[#292925] dark:text-[#aaa9a0]",
+      selected: "ring-2 ring-[#77776e]/45 dark:ring-[#d9ff68]/40",
+    },
+    open: {
+      surface: "border-sky-300 bg-sky-50 text-sky-950 dark:border-sky-800 dark:bg-sky-950/65 dark:text-sky-50",
+      icon: "bg-sky-200/75 text-sky-800 dark:bg-sky-800/60 dark:text-sky-100",
+      selected: "ring-2 ring-sky-500/45",
+    },
+    closed: {
+      surface: "border-[#b8b8af] bg-[#f1f1e9] text-[#55554e] dark:border-[#4a4a43] dark:bg-[#242420] dark:text-[#d8d8cf]",
+      icon: "bg-[#d8d8cf] text-[#68685f] dark:bg-[#33332e] dark:text-[#b8b8af]",
+      selected: "ring-2 ring-[#77776e]/45",
+    },
+    draft: {
+      surface: "border-violet-300 bg-violet-50 text-violet-950 dark:border-violet-800 dark:bg-violet-950/65 dark:text-violet-50",
+      icon: "bg-violet-200/75 text-violet-800 dark:bg-violet-800/60 dark:text-violet-100",
+      selected: "ring-2 ring-violet-500/45",
+    },
+  };
+  return map[status] || {
+    surface: "border-violet-300 bg-white text-[#171713] dark:border-violet-800 dark:bg-[#1b1b18] dark:text-[#f4f4ec]",
+    icon: "bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-200",
+    selected: "ring-2 ring-violet-500/45 dark:ring-[#d9ff68]/45",
+  };
+}
+
+function observedCardState(card) {
+  const remoteState = card?.remote_item?.observed_status || card?.remote_item?.provider_state;
+  if (["open", "closed", "draft"].includes(remoteState)) return remoteState;
+  if (remoteState === "merged") return "verified";
+  return card?.status;
+}
+
 function cardSearchText(card) {
-  return [card?.title, card?.summary, card?.why_it_matters, card?.next_action, card?.type, card?.category, card?.status, card?.session?.session_id, card?.session?.branch, card?.remote_item?.repository]
-    .filter(Boolean).join(" ").toLowerCase();
+  return [card?.title, card?.summary, card?.why_it_matters, card?.type, card?.category, card?.status, card?.session?.session_id, card?.session?.branch, card?.remote_item?.repository]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function clampZoom(value) {
+  return Math.max(0.45, Math.min(1.8, Number(value.toFixed(2))));
+}
+
+function defaultMapView(nodes) {
+  if ((globalThis.innerWidth || 1024) >= 640) {
+    return { zoom: 1, pan: { x: 0, y: 0 } };
+  }
+  const relevantNodes = nodes.filter((node) => sessionRelevance(node.card) !== "not_relevant");
+  const focusNodes = relevantNodes.length ? relevantNodes : nodes;
+  const centerX = focusNodes.length
+    ? focusNodes.reduce((sum, node) => sum + node.x, 0) / focusNodes.length
+    : MAP_WIDTH / 2;
+  const centerY = focusNodes.length
+    ? focusNodes.reduce((sum, node) => sum + node.y, 0) / focusNodes.length
+    : MAP_HEIGHT / 2;
+  const zoom = 0.72;
+  return {
+    zoom,
+    pan: {
+      x: Math.round((MAP_WIDTH / 2 - centerX) * zoom),
+      y: Math.round((MAP_HEIGHT / 2 - centerY) * zoom),
+    },
+  };
 }
 
 function buildSummary(result) {
-  if (!result) return "Graph processing finished.";
+  if (!result) return "Project map refreshed.";
   const processed = result.documents?.processed ?? result.docs_processed ?? 0;
   const reprocessed = result.documents?.reprocessed ?? result.docs_reprocessed ?? 0;
   const created = result.components?.created ?? result.components_created ?? 0;
-  const superseded = result.components?.superseded ?? result.components_superseded ?? 0;
   const failed = result.documents?.failed ?? result.errors?.length ?? 0;
-  if (processed === 0 && reprocessed === 0 && failed === 0) return "No imported source needed processing. Provider snapshots were unchanged.";
-  return `${result.mode === "rebuild" ? "Rebuild" : "Update"}: ${processed} processed, ${reprocessed} reprocessed, ${created} created, ${superseded} superseded${failed ? `, ${failed} failed` : ""}.`;
+  if (processed === 0 && reprocessed === 0 && failed === 0) return "Imported evidence was already up to date.";
+  return `${processed + reprocessed} source snapshot${processed + reprocessed === 1 ? "" : "s"} read · ${created} record${created === 1 ? "" : "s"} added${failed ? ` · ${failed} failed` : ""}.`;
 }
 
 function formatDigestTimestamp(value) {
   if (!value) return null;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
-  return date.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+async function writeClipboard(value) {
+  if (globalThis.navigator?.clipboard?.writeText) {
+    await globalThis.navigator.clipboard.writeText(value);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand?.("copy");
+  textarea.remove();
+  if (!copied) throw new Error("Clipboard unavailable");
 }

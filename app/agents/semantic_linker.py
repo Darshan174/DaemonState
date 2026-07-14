@@ -40,6 +40,7 @@ class SemanticRelationshipLinker:
         neighbors_per_component: int = 5,
         require_cross_source_type: bool = True,
         workspace_scope: tuple[str, set[str]] | None = None,
+        allowed_source_document_ids: set[UUID] | None = None,
     ) -> None:
         self.session = session
         self.threshold = threshold
@@ -47,6 +48,7 @@ class SemanticRelationshipLinker:
         self.neighbors_per_component = neighbors_per_component
         self.require_cross_source_type = require_cross_source_type
         self.workspace_scope = workspace_scope
+        self.allowed_source_document_ids = allowed_source_document_ids
 
     async def candidates(self) -> list[SemanticCandidate]:
         components = list(await self.session.scalars(
@@ -61,6 +63,11 @@ class SemanticRelationshipLinker:
                 self.workspace_scope[0],
                 self.workspace_scope[1],
             )
+        if self.allowed_source_document_ids is not None:
+            components = [
+                component for component in components
+                if component.source_document_id in self.allowed_source_document_ids
+            ]
         embedded = [
             (component, vector)
             for component in components

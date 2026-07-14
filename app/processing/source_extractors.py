@@ -8,6 +8,61 @@ from typing import Any
 from app.processing.extractor import ExtractedFact, ExtractedRelationship
 
 
+def extract_local_repository(content: str, metadata: dict) -> list[ExtractedFact]:
+    """Project source → deterministic repository and top-level area facts."""
+    repository = metadata.get("repository") if isinstance(metadata, dict) else None
+    areas = metadata.get("areas", []) if isinstance(metadata, dict) else []
+    if not isinstance(repository, dict) or not isinstance(areas, list):
+        return []
+    root_name = str(repository.get("name") or "Project").strip() or "Project"
+    root_summary = str(repository.get("summary") or "").strip()
+    if not root_summary or root_summary not in content:
+        return []
+    provenance = json.dumps({
+        "source_type": "local_repository",
+        "repo_root": repository.get("repo_root"),
+        "head_commit": repository.get("head_commit"),
+        "extraction": "deterministic_inventory",
+    }, sort_keys=True)
+    root_fact_name = f"Repository: {root_name}"
+    facts = [ExtractedFact(
+        model_name="Repo",
+        name=root_fact_name,
+        value=root_summary,
+        fact_type="repo_root",
+        confidence=1.0,
+        temporal="current",
+        temporal_hint="current",
+        provenance=provenance,
+        excerpt=root_summary,
+    )]
+    for area in areas[:9]:
+        if not isinstance(area, dict):
+            continue
+        label = str(area.get("label") or "").strip()
+        summary = str(area.get("summary") or "").strip()
+        if not label or not summary or summary not in content:
+            continue
+        facts.append(ExtractedFact(
+            model_name="Repo",
+            name=f"Area: {label}",
+            value=summary,
+            fact_type="code_area",
+            confidence=1.0,
+            temporal="current",
+            temporal_hint="current",
+            relationships=[ExtractedRelationship(
+                target_name=root_fact_name,
+                relationship_type="part_of",
+                confidence=1.0,
+                evidence=summary,
+            )],
+            provenance=provenance,
+            excerpt=summary,
+        ))
+    return facts
+
+
 @dataclass
 class GitHubIssueData:
     title: str
@@ -38,6 +93,7 @@ class GitHubPRData:
     changed_files: list[str] = field(default_factory=list)
     review_comments: list[str] = field(default_factory=list)
     linked_issues: list[int] = field(default_factory=list)
+    linked_issue_refs: list[GitHubIssueReference] = field(default_factory=list)
     html_url: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -45,6 +101,12 @@ class GitHubPRData:
     merged_at: str | None = None
     draft: bool = False
     user: str | None = None
+
+
+@dataclass(frozen=True)
+class GitHubIssueReference:
+    number: int
+    repo_full_name: str | None = None
 
 
 @dataclass
@@ -278,13 +340,12 @@ def _extract_single_github_pr(data: dict, doc_metadata: dict[str, Any] | None = 
     else:
         changed_files = changed_files_raw if isinstance(changed_files_raw, list) else []
 
-    linked_issues: list[int] = []
     body_text = data.get("body", "") or ""
-    for m in re.finditer(r"#(\d+)", body_text):
-        linked_issues.append(int(m.group(1)))
-    for num in data.get("linked_issues", []):
-        if num not in linked_issues:
-            linked_issues.append(num)
+    linked_issue_refs = _extract_github_issue_references(
+        body_text,
+        data.get("linked_issues", []),
+    )
+    linked_issues = list(dict.fromkeys(ref.number for ref in linked_issue_refs))
 
     pr = GitHubPRData(
         title=data.get("title", ""),
@@ -298,6 +359,7 @@ def _extract_single_github_pr(data: dict, doc_metadata: dict[str, Any] | None = 
         changed_files=changed_files,
         review_comments=data.get("review_comments", []),
         linked_issues=linked_issues,
+        linked_issue_refs=linked_issue_refs,
         html_url=data.get("html_url"),
         created_at=data.get("created_at"),
         updated_at=data.get("updated_at"),
@@ -331,7 +393,11 @@ def _extract_github_pr_text(content: str, doc_metadata: dict[str, Any] | None = 
         draft=bool(meta.get("draft", False)),
         user=meta.get("author"),
     )
-    pr.linked_issues = [int(m.group(1)) for m in re.finditer(r"#(\d+)", content)]
+    pr.linked_issue_refs = _extract_github_issue_references(
+        content,
+        meta.get("linked_issues", []),
+    )
+    pr.linked_issues = list(dict.fromkeys(ref.number for ref in pr.linked_issue_refs))
     return _build_github_pr_facts(pr, doc_metadata)
 
 
@@ -369,46 +435,60 @@ def _build_github_pr_facts(pr: GitHubPRData, doc_metadata: dict[str, Any] | None
 
     pr_fact = facts[0]
 
-    for issue_num in pr.linked_issues:
-        is_fix = _is_fix_reference(pr.body, issue_num)
+    issue_refs = pr.linked_issue_refs or [
+        GitHubIssueReference(number=issue_num) for issue_num in pr.linked_issues
+    ]
+    for issue_ref in issue_refs:
+        issue_num = issue_ref.number
+        qualified_ref = (
+            f"{issue_ref.repo_full_name}#{issue_num}"
+            if issue_ref.repo_full_name
+            else f"#{issue_num}"
+        )
+        is_fix = _is_fix_reference(
+            pr.body,
+            issue_num,
+            repo_full_name=issue_ref.repo_full_name,
+        )
         if is_fix:
             pr_fact.relationships.append(ExtractedRelationship(
-                target_name=f"Issue #{issue_num}",
+                target_name=f"Issue {qualified_ref}",
                 relationship_type="fixes",
                 confidence=0.95,
-                evidence=_build_fixes_evidence(pr.number, issue_num, pr.body),
-            ))
-            pr_fact.relationships.append(ExtractedRelationship(
-                target_name=f"Issue #{issue_num}",
-                relationship_type="solves",
-                confidence=0.95,
-                evidence=_build_fixes_evidence(pr.number, issue_num, pr.body),
+                evidence=_build_fixes_evidence(
+                    pr.number,
+                    issue_num,
+                    pr.body,
+                    repo_full_name=issue_ref.repo_full_name,
+                ),
             ))
         else:
             pr_fact.relationships.append(ExtractedRelationship(
-                target_name=f"Issue #{issue_num}",
+                target_name=f"Issue {qualified_ref}",
                 relationship_type="mentions",
                 confidence=0.75,
-                evidence=f"PR #{pr.number} references #{issue_num}",
+                evidence=f"PR #{pr.number} references {qualified_ref}",
             ))
 
     for filename in pr.changed_files[:10]:
+        file_name = f"File: {filename}"
         facts.append(ExtractedFact(
             model_name="Repo",
-            name=f"File: {filename}",
+            name=file_name,
             value=f"Changed in PR #{pr.number}: {pr.title}",
             fact_type="changed_file",
             confidence=0.90,
             temporal=state_temporal,
             temporal_hint=state_temporal,
-            relationships=[ExtractedRelationship(
-                target_name=pr_name,
-                relationship_type="touches_file",
-                confidence=0.92,
-                evidence=f"File {filename} changed in PR #{pr.number}",
-            )],
+            relationships=[],
             provenance=provenance,
             excerpt=f"Changed file: {filename}",
+        ))
+        pr_fact.relationships.append(ExtractedRelationship(
+            target_name=file_name,
+            relationship_type="touches_file",
+            confidence=0.92,
+            evidence=f"File {filename} changed in PR #{pr.number}",
         ))
 
     for comment in pr.review_comments[:5]:
@@ -818,32 +898,101 @@ def _extract_session_file_refs(content: str, provenance: str) -> list[ExtractedF
     return facts
 
 
+_GITHUB_ISSUE_REFERENCE = re.compile(
+    r"(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<number>\d+)\b"
+)
+
+
+def _extract_github_issue_references(
+    body: str,
+    supplied_references: object = None,
+) -> list[GitHubIssueReference]:
+    references: list[GitHubIssueReference] = []
+    seen: set[tuple[str | None, int]] = set()
+
+    def add(repo_full_name: str | None, number: int) -> None:
+        normalized_repo = repo_full_name.strip() if repo_full_name else None
+        key = (normalized_repo.casefold() if normalized_repo else None, number)
+        if number <= 0 or key in seen:
+            return
+        seen.add(key)
+        references.append(GitHubIssueReference(
+            number=number,
+            repo_full_name=normalized_repo,
+        ))
+
+    for match in _GITHUB_ISSUE_REFERENCE.finditer(body or ""):
+        add(match.group("repo"), int(match.group("number")))
+
+    body_reference_numbers = {reference.number for reference in references}
+    if isinstance(supplied_references, list):
+        for supplied in supplied_references:
+            if isinstance(supplied, int):
+                if supplied in body_reference_numbers:
+                    continue
+                add(None, supplied)
+                continue
+            if isinstance(supplied, str):
+                match = _GITHUB_ISSUE_REFERENCE.fullmatch(supplied.strip())
+                if match:
+                    if match.group("repo") is None and int(match.group("number")) in body_reference_numbers:
+                        continue
+                    add(match.group("repo"), int(match.group("number")))
+
+    return references
+
+
 _FIX_KEYWORDS = re.compile(
-    r"\b(?:fix(?:es)?|close(?:s)?|resolve(?:s)?|closes)\s+#(\d+)",
+    r"\b(?:fix(?:es)?|close(?:s)?|resolve(?:s)?)\s+"
+    r"(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<number>\d+)\b",
     re.IGNORECASE,
 )
 
 
-def _is_fix_reference(body: str, issue_num: int) -> bool:
+def _is_fix_reference(
+    body: str,
+    issue_num: int,
+    *,
+    repo_full_name: str | None = None,
+) -> bool:
     if not body:
         return False
     for m in _FIX_KEYWORDS.finditer(body):
         try:
-            if int(m.group(1)) == issue_num:
+            matched_repo = m.group("repo")
+            repository_matches = (
+                matched_repo.casefold() == repo_full_name.casefold()
+                if matched_repo and repo_full_name
+                else matched_repo is None and repo_full_name is None
+            )
+            if int(m.group("number")) == issue_num and repository_matches:
                 return True
-        except (ValueError, IndexError):
+        except (ValueError, IndexError, AttributeError):
             continue
     return False
 
 
-def _build_fixes_evidence(pr_number: int, issue_num: int, body: str) -> str:
+def _build_fixes_evidence(
+    pr_number: int,
+    issue_num: int,
+    body: str,
+    *,
+    repo_full_name: str | None = None,
+) -> str:
     for m in _FIX_KEYWORDS.finditer(body or ""):
         try:
-            if int(m.group(1)) == issue_num:
+            matched_repo = m.group("repo")
+            repository_matches = (
+                matched_repo.casefold() == repo_full_name.casefold()
+                if matched_repo and repo_full_name
+                else matched_repo is None and repo_full_name is None
+            )
+            if int(m.group("number")) == issue_num and repository_matches:
                 return f"PR #{pr_number} {m.group(0).strip()}"
-        except (ValueError, IndexError):
+        except (ValueError, IndexError, AttributeError):
             continue
-    return f"PR #{pr_number} fixes #{issue_num}"
+    qualified_ref = f"{repo_full_name}#{issue_num}" if repo_full_name else f"#{issue_num}"
+    return f"PR #{pr_number} fixes {qualified_ref}"
 
 
 _EXPLICIT_BLOCK_RE = re.compile(

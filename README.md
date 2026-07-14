@@ -185,7 +185,7 @@ Observed in this checkout:
 | Retrieval | Postgres/pgvector and text-search paths exist for indexed retrieval; unconfigured installs fall back to lexical-only behavior instead of pretending hash vectors are semantic search. |
 | Context compiler | `ContextCompiler`, model profiles, objective-conditioned repo indexing, rendered-budget enforcement, the replay lockfile, `POST /api/context/prepare`, `ctxe prepare`, `ContextPack`, and `ContextPackItem` are implemented in the active tree. |
 | MCP | `ctxe mcp` exposes graph read tools, `prepare_task`, run start/finish outcome capture, and runtime observation write tools for decisions, blockers, patch summaries, verification, and task closure. |
-| Frontend | React app with an objective-first Prepare surface at `/app`, plus Dashboard, Graph, Ask, Sources, Connectors, Changes, workspace switching, digest inspection, connector status, and source review flows. |
+| Frontend | React app with a project-first visual map at `/app`, plus Sources and Connectors as primary destinations; Ask and Changes remain compatibility routes, and compiler preparation remains available through HTTP, CLI, and MCP. |
 | Tests | Backend pytest coverage, frontend Vitest coverage, migration tests, connector honesty tests, query/reranker tests, context compiler tests, MCP tests, extraction evals, and smoke scripts are present. |
 
 This is enough to show the project has a real technical spine. It is not enough
@@ -193,14 +193,25 @@ to claim general availability.
 
 ## Product Tour
 
-The current app is a working developer surface, not a marketing shell. Prepare
-is the default view at `/app`; Dashboard, Graph, Ask, Sources, Connectors, and
-Changes remain supporting inspection surfaces.
+The current app is a working developer surface, not a marketing shell. Project
+is the default view at `/app`; it combines the useful overview and evidence map
+instead of splitting them across Prepare, Dashboard, and Graph pages. Sources
+and Connectors remain primary supporting surfaces.
 
-The Graph route is a selected-workspace projection over imported source
+The Project map is a selected-workspace projection over imported source
 revisions. It separates provider refresh from incremental graph updates and
 explicit rebuilds, shows provider state as a timestamped observation, and does
 not invent a workspace objective when none was supplied.
+
+Opening a local repository establishes the workspace's project boundary and
+creates a deterministic, source-backed inventory of the repository root and
+its largest top-level areas, so the map has a useful system view immediately.
+Imported AI sessions are then matched only by deterministic repository, path,
+or commit evidence; uncertain and different-project sessions remain visually
+subdued and do not drive health, recommendations, or sourced links. **Copy
+handoff** runs the hardened `context_pack.v2` compiler, preserves its
+inclusion/exclusion audit, excludes uncertain session claims, and prevents
+prompt-risk evidence from becoming agent instructions.
 
 Typed PR, issue, session, decision, and blocker cards open an inspector with
 source evidence, classification, snapshot/revision metadata, confidence,

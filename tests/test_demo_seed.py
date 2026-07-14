@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+from uuid import UUID
 
 from sqlalchemy import select
 
-from app.models import Component, Relationship, SourceDocument
+from app.models import Component, Connector, Relationship, SourceDocument
 
 
 async def test_seed_demo_creates_source_backed_workspace(client, db_session):
@@ -27,6 +28,7 @@ async def test_seed_demo_creates_source_backed_workspace(client, db_session):
     }
     assert "notion" not in data["message"].lower()
     assert "zoom" not in data["message"].lower()
+    assert data["projectBoundaryCreated"] is True
 
     docs = list(await db_session.scalars(
         select(SourceDocument).where(SourceDocument.external_id.like("demo:%"))
@@ -50,6 +52,23 @@ async def test_seed_demo_creates_source_backed_workspace(client, db_session):
         for rel in relationships
     )
 
+    connector = await db_session.scalar(select(Connector).where(
+        Connector.workspace_id == UUID(data["workspaceId"]),
+        Connector.connector_type == "github",
+    ))
+    assert connector is not None
+    assert connector.status == "disconnected"
+    assert connector.credentials_json == "{}"
+    assert json.loads(connector.config_json)["repositories"] == ["your-org/context-engine"]
+
+    digest = await client.get(
+        "/api/context/digest", params={"workspace_id": data["workspaceId"]}
+    )
+    assert digest.status_code == 200
+    digest_data = digest.json()
+    assert digest_data["scope"]["project_repositories"] == ["your-org/context-engine"]
+    assert digest_data["cards"]
+
 
 async def test_seed_demo_is_idempotent_for_workspace(client, db_session):
     first_response = await client.post("/api/seed-demo", json={})
@@ -65,8 +84,14 @@ async def test_seed_demo_is_idempotent_for_workspace(client, db_session):
     assert data["existingDocuments"] == 6
     assert data["processedDocuments"] == 0
     assert data["componentsCreated"] == 0
+    assert data["projectBoundaryCreated"] is False
 
     docs = list(await db_session.scalars(
         select(SourceDocument).where(SourceDocument.external_id.like("demo:%"))
     ))
     assert len(docs) == 6
+    demo_connectors = list(await db_session.scalars(select(Connector).where(
+        Connector.workspace_id == UUID(workspace_id),
+        Connector.connector_type == "github",
+    )))
+    assert len(demo_connectors) == 1
