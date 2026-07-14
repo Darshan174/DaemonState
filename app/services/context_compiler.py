@@ -78,6 +78,13 @@ class ContextBudgetExceededError(ContextCompilerError):
         )
 
 
+class FocusValidationError(ContextCompilerError):
+    def __init__(self, code: str, message: str, *, status_code: int = 422) -> None:
+        self.code = code
+        self.status_code = status_code
+        super().__init__(message)
+
+
 @dataclass(frozen=True)
 class GoalFrame:
     objective: str
@@ -268,9 +275,25 @@ class ContextCompiler:
         persist: bool = True,
         compatibility_mode: bool = False,
         objective_kind: str = "observed",
+        focus_component_id: str | UUID | None = None,
+        objective_origin: str | None = None,
+        objective_source_document_id: str | UUID | None = None,
+        objective_evidence_span_id: str | UUID | None = None,
     ) -> CompiledContextPack:
         if objective_kind not in {"observed", "project_snapshot"}:
             raise InvalidGoalError("objective_kind must be observed or project_snapshot")
+        effective_origin = objective_origin or (
+            "project_snapshot" if objective_kind == "project_snapshot" else "trusted_human"
+        )
+        goal, focus = await self._resolve_focus(
+            goal=goal,
+            workspace_id=_uuid_or_none(workspace_id),
+            objective_kind=objective_kind,
+            objective_origin=effective_origin,
+            focus_component_id=_uuid_or_none(focus_component_id),
+            objective_source_document_id=_uuid_or_none(objective_source_document_id),
+            objective_evidence_span_id=_uuid_or_none(objective_evidence_span_id),
+        )
         goal_frame = parse_goal(goal, objective_kind=objective_kind)
         profile = profile_for_target_model(target_model, token_budget)
         effective_budget = int(token_budget or profile.max_pack_tokens)
@@ -296,7 +319,17 @@ class ContextCompiler:
                 "repo_path is required when no workspace evidence scope is supplied"
             )
         repo_state = repo_frame.to_manifest(goal_frame.keywords, goal_frame.file_hints)
-        task_frame = infer_task_frame(goal_frame, repo_frame, profile)
+        affected_code = (
+            repo_frame.affected_code_for_goal(goal_frame.keywords, goal_frame.file_hints)
+            if focus["component_id"] is not None
+            else None
+        )
+        task_frame = infer_task_frame(
+            goal_frame,
+            repo_frame,
+            profile,
+            affected_code=affected_code,
+        )
         candidates = await self._collect_candidates(
             goal_frame,
             repo_frame,
@@ -305,8 +338,37 @@ class ContextCompiler:
             workspace_uuid,
             profile,
         )
+        if focus["component_id"] is not None:
+            focus_candidate = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate.component_id == focus["component_id"]
+                ),
+                None,
+            )
+            if focus_candidate is None:
+                raise FocusValidationError(
+                    "focus_not_eligible",
+                    "Focused Component could not be bound to current source evidence.",
+                )
+            focus_candidate.mandatory = True
+            focus_candidate.inclusion_reason = "explicit_focus_source_component"
+            focus_candidate.rank_features["explicit_focus"] = True
+            if (
+                focus_candidate.truth_state == "unknown"
+                and focus_candidate.source_document_id == focus["source_document_id"]
+            ):
+                focus_candidate.truth_state = "current"
         self._score_candidates(candidates, goal_frame, repo_state)
         selected, excluded = self._select_candidates(candidates, effective_budget, profile)
+        if focus["component_id"] is not None and not any(
+            candidate.component_id == focus["component_id"] for candidate in selected
+        ):
+            raise FocusValidationError(
+                "focus_not_eligible",
+                "Focused Component failed context safety or evidence-integrity checks.",
+            )
         selected, excluded = _assign_citation_ids(selected, excluded, profile)
 
         pack_id = str(uuid4()) if persist or compatibility_mode is False else None
@@ -322,12 +384,14 @@ class ContextCompiler:
                 profile=profile,
                 token_budget=effective_budget,
                 repo_state=repo_state,
+                affected_code=affected_code,
                 selected=selected,
                 excluded=excluded,
                 task_frame=task_frame,
                 health=health,
                 persistence_available=bool(persist),
                 persistence_reason=None if persist else "file_output_only",
+                focus=focus,
             )
             markdown = render_context_pack_markdown(manifest, profile)
             rendered_tokens = estimate_tokens(markdown)
@@ -370,6 +434,7 @@ class ContextCompiler:
             excluded=excluded,
             rendered_tokens=rendered_tokens,
             token_budget=effective_budget,
+            focus=focus,
         )
         manifest["input_fingerprint"] = manifest["lockfile"]["replay_key"]
         selected_item_tokens = sum(item.token_cost for item in selected)
@@ -412,6 +477,7 @@ class ContextCompiler:
                         repo_state=repo_state,
                         idempotency_key=manifest["lockfile"]["replay_key"],
                         selected=selected,
+                        focus=focus,
                     )
                     if str(persisted_pack.id) != str(pack_id):
                         stored_manifest = json.loads(persisted_pack.manifest)
@@ -448,6 +514,164 @@ class ContextCompiler:
             excluded_items=excluded_items,
             health_score=float(health["readiness_score"]),
         )
+
+    async def _resolve_focus(
+        self,
+        *,
+        goal: str,
+        workspace_id: UUID | None,
+        objective_kind: str,
+        objective_origin: str,
+        focus_component_id: UUID | None,
+        objective_source_document_id: UUID | None,
+        objective_evidence_span_id: UUID | None,
+    ) -> tuple[str, dict[str, Any]]:
+        allowed_origins = {"trusted_human", "source_component", "project_snapshot"}
+        if objective_origin not in allowed_origins:
+            raise FocusValidationError(
+                "invalid_objective_origin",
+                "objective_origin must be trusted_human, source_component, or project_snapshot.",
+            )
+        if objective_kind == "project_snapshot":
+            if objective_origin != "project_snapshot" or focus_component_id is not None:
+                raise FocusValidationError(
+                    "invalid_objective_origin",
+                    "project_snapshot requires project_snapshot origin and no focus.",
+                )
+            objective = " ".join(str(goal or "").strip().split())
+            if not objective:
+                objective = "Compile a read-only project snapshot from current source evidence."
+            return objective, {
+                "kind": "project_snapshot",
+                "component_id": None,
+                "fact_type": None,
+                "objective_origin": objective_origin,
+                "source_document_id": None,
+                "source_revision_number": None,
+                "evidence_span_id": None,
+            }
+        if objective_origin == "project_snapshot":
+            raise FocusValidationError(
+                "invalid_objective_origin",
+                "project_snapshot origin is valid only in project_snapshot mode.",
+            )
+        if objective_origin == "trusted_human" and not str(goal or "").strip():
+            raise FocusValidationError(
+                "invalid_objective_origin", "trusted_human requires a non-empty objective."
+            )
+        if objective_origin == "source_component" and str(goal or "").strip():
+            raise FocusValidationError(
+                "invalid_objective_origin",
+                "source_component objective must be omitted; the selected source value is authoritative.",
+            )
+        if objective_origin == "source_component" and focus_component_id is None:
+            raise FocusValidationError(
+                "invalid_objective_origin", "source_component requires focus_component_id."
+            )
+        if focus_component_id is None:
+            return str(goal or ""), {
+                "kind": "none",
+                "component_id": None,
+                "fact_type": None,
+                "objective_origin": objective_origin,
+                "source_document_id": None,
+                "source_revision_number": None,
+                "evidence_span_id": None,
+            }
+        if self.session is None:
+            raise FocusValidationError(
+                "focus_not_eligible", "Focused preparation requires database evidence."
+            )
+        component = await self.session.scalar(
+            select(Component)
+            .options(selectinload(Component.source_document), selectinload(Component.claim))
+            .where(Component.id == focus_component_id, Component.workspace_id == workspace_id)
+        )
+        if component is None:
+            raise FocusValidationError(
+                "focus_not_found", "Focused Component was not found in this workspace.", status_code=404
+            )
+        if component.fact_type not in {"task", "issue", "requirement", "decision", "blocker"}:
+            raise FocusValidationError(
+                "focus_not_eligible", f"Component type {component.fact_type!r} cannot be a task focus."
+            )
+        if component.status in {"rejected", "resolved", "superseded"}:
+            raise FocusValidationError(
+                "focus_not_eligible", f"Component status {component.status!r} cannot be a task focus."
+            )
+        source = component.source_document
+        if source is None or source.workspace_id != workspace_id:
+            raise FocusValidationError(
+                "focus_not_eligible", "Focused Component lacks same-workspace source evidence."
+            )
+        if objective_source_document_id is not None and objective_source_document_id != source.id:
+            raise FocusValidationError(
+                "focus_source_stale",
+                "Focused Component no longer points to the requested source revision.",
+                status_code=409,
+            )
+        successor_id = await self.session.scalar(
+            select(SourceDocument.id)
+            .where(SourceDocument.supersedes_source_document_id == source.id)
+            .limit(1)
+        )
+        if successor_id is not None:
+            raise FocusValidationError(
+                "focus_source_stale",
+                f"Focused source revision is stale; current source document is {successor_id}.",
+                status_code=409,
+            )
+        if source.content_sha256 and source.content_sha256 != _sha256_text(source.content):
+            raise FocusValidationError(
+                "focus_not_eligible", "Focused source content failed its integrity hash."
+            )
+        evidence_id = objective_evidence_span_id
+        evidence_was_explicit = objective_evidence_span_id is not None
+        if evidence_id is None and component.claim is not None:
+            revision_id = component.claim.current_revision_id
+            if revision_id is not None:
+                evidence_id = await self.session.scalar(
+                    select(ClaimRevision.evidence_span_id).where(ClaimRevision.id == revision_id)
+                )
+        if evidence_id is not None:
+            evidence = await self.session.get(EvidenceSpan, evidence_id)
+            if evidence is None or evidence.source_document_id != source.id:
+                raise FocusValidationError(
+                    "focus_not_eligible", "Focused evidence span does not belong to its source revision."
+                )
+            valid, reason = _validate_evidence_span(evidence)
+            if not valid:
+                if evidence_was_explicit:
+                    raise FocusValidationError(
+                        "focus_not_eligible", f"Focused evidence span failed validation: {reason}."
+                    )
+                # A Component may have only source-document-grade provenance.
+                # Do not promote an unverified derived span, but do not hide an
+                # otherwise exact selected source record from focused preparation.
+                evidence_id = None
+        prompt_risk = _prompt_injection_risk(
+            " ".join([component.value or "", component.excerpt or "", source.content or ""])
+        )
+        if prompt_risk >= 0.70:
+            raise FocusValidationError(
+                "focus_not_eligible", "Focused source contains prompt-injection-like instructions."
+            )
+        resolved_goal = str(goal or "")
+        if objective_origin == "source_component":
+            resolved_goal = " ".join(str(component.value or "").strip().split())
+            if not resolved_goal:
+                raise FocusValidationError(
+                    "focus_not_eligible", "Focused Component has no objective value."
+                )
+        return resolved_goal, {
+            "kind": "component",
+            "component_id": str(component.id),
+            "fact_type": component.fact_type,
+            "objective_origin": objective_origin,
+            "source_document_id": str(source.id),
+            "source_revision_number": int(source.revision_number or 1),
+            "evidence_span_id": str(evidence_id) if evidence_id else None,
+        }
 
     async def inspect_repo(
         self,
@@ -858,14 +1082,16 @@ class ContextCompiler:
         profile: ModelCapabilityProfile,
         token_budget: int,
         repo_state: dict[str, Any],
+        affected_code: dict[str, Any] | None,
         selected: list[ContextCandidate],
         excluded: list[ExcludedContextCandidate],
         task_frame: dict[str, Any],
         health: dict[str, Any],
         persistence_available: bool,
         persistence_reason: str | None,
+        focus: dict[str, Any],
     ) -> dict[str, Any]:
-        return {
+        manifest = {
             "schema_version": SCHEMA_VERSION,
             "compiler": {
                 "name": "ContextCompiler",
@@ -877,6 +1103,7 @@ class ContextCompiler:
             "context_pack_id": context_pack_id,
             "objective": goal_frame.objective,
             "objective_kind": goal_frame.objective_kind,
+            "focus": focus,
             "created_at": created_at,
             "workspace_id": str(workspace_id) if workspace_id else None,
             "target_model": {
@@ -922,6 +1149,9 @@ class ContextCompiler:
                 "estimation_method": TOKEN_ESTIMATION_METHOD,
             },
         }
+        if affected_code is not None:
+            manifest["affected_code"] = affected_code
+        return manifest
 
     async def _persist_pack(
         self,
@@ -938,6 +1168,7 @@ class ContextCompiler:
         repo_state: dict[str, Any],
         idempotency_key: str,
         selected: list[ContextCandidate],
+        focus: dict[str, Any],
     ) -> ContextPack:
         existing = await self.session.scalar(
             select(ContextPack)
@@ -952,6 +1183,10 @@ class ContextCompiler:
             id=pack_id,
             workspace_id=workspace_id,
             objective=objective,
+            focus_component_id=_uuid_or_none(focus.get("component_id")),
+            objective_origin=focus.get("objective_origin"),
+            objective_source_document_id=_uuid_or_none(focus.get("source_document_id")),
+            objective_evidence_span_id=_uuid_or_none(focus.get("evidence_span_id")),
             target_model=target_model,
             model_profile=model_profile,
             token_budget=token_budget,
@@ -969,6 +1204,7 @@ class ContextCompiler:
                 for candidate in selected:
                     self.session.add(ContextPackItem(
                         context_pack_id=pack.id,
+                        manifest_item_id=candidate.id,
                         item_type=candidate.item_type,
                         claim_id=_uuid_or_none(candidate.claim_id),
                         component_id=_uuid_or_none(candidate.component_id),
@@ -1058,10 +1294,22 @@ def infer_task_frame(
     goal_frame: GoalFrame,
     repo_frame: RepoFrame,
     profile: ModelCapabilityProfile,
+    *,
+    affected_code: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     repo_state = repo_frame.to_manifest(goal_frame.keywords, goal_frame.file_hints)
     relevant_paths = [item["path"] for item in repo_state["relevant_files"]]
-    test_files = _relevant_test_files(relevant_paths, repo_frame.test_files, goal_frame)
+    exact_test_files = list(dict.fromkeys(
+        related_test["path"]
+        for item in ((affected_code or {}).get("files") or [])
+        for related_test in item.get("related_tests") or []
+        if related_test.get("path")
+    ))
+    test_files = exact_test_files or _relevant_test_files(
+        relevant_paths,
+        repo_frame.test_files,
+        goal_frame,
+    )
     commands = []
     command_index = 1
     if test_files:
@@ -1233,6 +1481,7 @@ def render_context_pack_markdown(
     profile: ModelCapabilityProfile,
 ) -> str:
     repo_state = manifest["repo_state"]
+    affected_files = (manifest.get("affected_code") or {}).get("files") or []
     target_model = manifest["target_model"]
     selected = manifest["selected_context"]
     excluded = manifest["excluded_context"]
@@ -1251,7 +1500,7 @@ def render_context_pack_markdown(
         f"- Dirty worktree: `{str(bool(repo_state.get('dirty'))).lower()}`",
         f"- Target model profile: `{target_model.get('profile')}`",
         "",
-        "## Relevant Files",
+        "## Affected Code" if affected_files else "## Relevant Repository Files",
         "",
     ]
     selected_file_paths = {
@@ -1260,7 +1509,7 @@ def render_context_pack_markdown(
         if item.get("lane") == "code_and_tests"
         for path in item.get("files") or []
     }
-    relevant_files = [
+    relevant_files = affected_files or [
         item
         for item in repo_state.get("relevant_files") or []
         if item.get("path") in selected_file_paths
@@ -1269,11 +1518,17 @@ def render_context_pack_markdown(
         for item in relevant_files[:20]:
             digest = str(item.get("sha256") or "unknown")[:12]
             sections.append(
-                f"- `{item['path']}` - {item.get('reason') or 'selected by repo indexer'} "
+                f"- `{item['path']}` - "
+                f"{item.get('why') or 'Selected as a repository context candidate'} "
                 f"(sha256 `{digest}`)."
             )
+            for related_test in (item.get("related_tests") or [])[:4]:
+                sections.append(
+                    f"  - Related test: `{related_test['path']}` - "
+                    f"{related_test.get('why') or 'Exact repository test link.'}"
+                )
     else:
-        sections.append("- No relevant files were inferred.")
+        sections.append("- No repository files were selected.")
 
     sections.extend(["", "## Non-Negotiable Decisions", ""])
     decisions = [
@@ -1812,6 +2067,7 @@ def _item_type_for_component(component: Component) -> str:
 
 
 def _exclusion_for(candidate: ContextCandidate) -> ExcludedContextCandidate | None:
+    explicit_source_focus = bool(candidate.rank_features.get("explicit_focus"))
     if candidate.prompt_injection_risk_score >= 0.70:
         return _exclude(candidate, "prompt_injection_risk", "Prompt-injection-like evidence is quoted only and excluded from instructions.")
     if candidate.status == "stale":
@@ -1826,13 +2082,17 @@ def _exclusion_for(candidate: ContextCandidate) -> ExcludedContextCandidate | No
             candidate.truth_state,
             f"Candidate truth state is {candidate.truth_state}; only current truth is selected.",
         )
-    if candidate.truth_state == "unknown" and candidate.component_id is not None:
+    if (
+        candidate.truth_state == "unknown"
+        and candidate.component_id is not None
+        and not explicit_source_focus
+    ):
         return _exclude(
             candidate,
             "unknown_provenance",
             "Durable graph facts require a current claim revision and exact verified evidence.",
         )
-    if candidate.status in {"needs_review", "contested"}:
+    if candidate.status in {"needs_review", "contested"} and not explicit_source_focus:
         return _exclude(
             candidate,
             "needs_review" if candidate.status == "needs_review" else "contested",
@@ -1957,6 +2217,7 @@ def _build_lockfile(
     excluded: list[ExcludedContextCandidate],
     rendered_tokens: int,
     token_budget: int,
+    focus: dict[str, Any],
 ) -> dict[str, Any]:
     repo_snapshot = {
         "repo_path": repo_state.get("repo_path"),
@@ -2051,6 +2312,7 @@ def _build_lockfile(
         "ranking_version": RANKING_VERSION,
         "objective": goal_frame.objective,
         "objective_kind": goal_frame.objective_kind,
+        "focus": focus,
         "workspace_id": str(workspace_id) if workspace_id else None,
         "target_model": target_model or "default",
         "capability": asdict(profile),

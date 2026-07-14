@@ -120,6 +120,9 @@ async def test_compile_pack_persists_manifest_markdown_and_items(db_session, tmp
     assert result.manifest["target_model"]["profile"] == "small_coder_model"
     assert result.markdown.startswith("# Objective\n")
     assert "## Current Repo State" in result.markdown
+    assert "## Relevant Repository Files" in result.markdown
+    assert "## Affected Code" not in result.markdown
+    assert "affected_code" not in result.manifest
     assert "## Stop Conditions" in result.markdown
 
     pack = await db_session.get(ContextPack, UUID(result.context_pack_id))
@@ -483,7 +486,7 @@ async def test_current_verified_claim_revision_populates_exact_evidence_audit(
     assert result.manifest["compiler"] == {
         "name": "ContextCompiler",
         "version": "context_compiler.v3",
-        "ranking_version": "objective_file_rank.v2",
+        "ranking_version": "objective_file_rank.v3",
         "evidence_contract_version": "exact_evidence_span.v1",
         "token_estimation_method": "chars_div_4.v1",
     }
@@ -733,3 +736,185 @@ async def test_workspace_scoped_compile_does_not_read_other_or_global_components
     assert f"component:{components[0].id}" not in global_candidate_ids
     assert f"component:{components[1].id}" not in global_candidate_ids
     assert f"component:{components[2].id}" in global_candidate_ids
+
+
+async def test_source_component_focus_is_mandatory_and_persisted(db_session, tmp_path):
+    (tmp_path / "app.py").write_text("def retry_safe():\n    return True\n")
+    workspace = Workspace(id=uuid4(), name="Focus", slug=f"focus-{uuid4()}")
+    model = Model(id=uuid4(), name=f"Task-{uuid4()}")
+    doc = SourceDocument(
+        id=uuid4(), workspace_id=workspace.id, source_type="local",
+        external_id="task-retry-safe", content="Task: make runtime writes retry-safe.",
+        metadata_json="{}",
+    )
+    component = Component(
+        id=uuid4(), workspace_id=workspace.id, model_id=model.id,
+        source_document_id=doc.id, name="Retry-safe runtime writes",
+        value="Make runtime writes retry-safe.", fact_type="task", status="active",
+        confidence=0.9, authority_weight=0.9,
+    )
+    db_session.add_all([workspace, model, doc, component])
+    await db_session.flush()
+
+    result = await ContextCompiler(db_session).compile_context_pack(
+        "", workspace_id=workspace.id, repo_path=str(tmp_path), token_budget=3000,
+        focus_component_id=component.id, objective_origin="source_component",
+    )
+
+    assert result.manifest["objective"] == component.value
+    assert result.manifest["focus"] == {
+        "kind": "component", "component_id": str(component.id), "fact_type": "task",
+        "objective_origin": "source_component", "source_document_id": str(doc.id),
+        "source_revision_number": 1, "evidence_span_id": None,
+    }
+    selected = next(
+        item for item in result.selected_items if item["component_id"] == str(component.id)
+    )
+    assert selected["mandatory"] is True
+    pack = await db_session.get(ContextPack, UUID(result.context_pack_id))
+    assert pack.focus_component_id == component.id
+    assert pack.objective_origin == "source_component"
+    assert pack.objective_source_document_id == doc.id
+    item = await db_session.scalar(select(ContextPackItem).where(
+        ContextPackItem.context_pack_id == pack.id,
+        ContextPackItem.component_id == component.id,
+    ))
+    assert item.manifest_item_id == f"component:{component.id}"
+
+
+async def test_github_issue_component_can_be_a_source_focus(db_session, tmp_path):
+    workspace = Workspace(id=uuid4(), name="Issue focus", slug=f"issue-focus-{uuid4()}")
+    model = Model(id=uuid4(), name=f"Issue-{uuid4()}")
+    doc = SourceDocument(
+        id=uuid4(),
+        workspace_id=workspace.id,
+        source_type="github",
+        external_id="issue:4",
+        content="Issue 4: Define and publish the accuracy gate.",
+        metadata_json="{}",
+    )
+    evidence = EvidenceSpan(
+        id=uuid4(),
+        source_document_id=doc.id,
+        start_char=0,
+        end_char=len(doc.content),
+        text=doc.content,
+        text_sha256=hashlib.sha256(doc.content.encode()).hexdigest(),
+        review_status="needs_review",
+        trust_zone="untrusted_external",
+    )
+    claim = Claim(
+        id=uuid4(),
+        workspace_id=workspace.id,
+        identity_key=f"issue-focus:{uuid4()}",
+        claim_type="issue",
+        status="needs_review",
+        temporal="current",
+    )
+    db_session.add_all([workspace, model, doc, evidence, claim])
+    await db_session.flush()
+    revision = ClaimRevision(
+        id=uuid4(),
+        claim_id=claim.id,
+        evidence_span_id=evidence.id,
+        value=doc.content,
+        status_after="needs_review",
+    )
+    db_session.add(revision)
+    await db_session.flush()
+    claim.current_revision_id = revision.id
+    component = Component(
+        id=uuid4(),
+        workspace_id=workspace.id,
+        model_id=model.id,
+        source_document_id=doc.id,
+        claim_id=claim.id,
+        name="Issue #4",
+        value="Define and publish the accuracy gate.",
+        fact_type="issue",
+        status="active",
+        confidence=0.9,
+        authority_weight=0.9,
+    )
+    db_session.add(component)
+    await db_session.flush()
+
+    result = await ContextCompiler(db_session).compile_context_pack(
+        "",
+        workspace_id=workspace.id,
+        repo_path=str(tmp_path),
+        token_budget=3000,
+        focus_component_id=component.id,
+        objective_origin="source_component",
+    )
+
+    assert result.manifest["objective"] == component.value
+    assert result.manifest["focus"]["fact_type"] == "issue"
+
+
+async def test_focused_pack_exposes_exact_affected_code_and_linked_test(
+    db_session, tmp_path
+):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "app" / "repo_indexer.py").write_text(
+        "def incremental_index():\n    return True\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests" / "test_repo_indexer.py").write_text(
+        "def test_incremental_index():\n    assert True\n",
+        encoding="utf-8",
+    )
+    workspace = Workspace(id=uuid4(), name="Affected code", slug=f"affected-{uuid4()}")
+    model = Model(id=uuid4(), name=f"Affected-{uuid4()}")
+    source = SourceDocument(
+        id=uuid4(),
+        workspace_id=workspace.id,
+        source_type="local",
+        external_id="task-incremental-index",
+        content="Task: make the repository index incremental.",
+        metadata_json="{}",
+    )
+    focus = Component(
+        id=uuid4(),
+        workspace_id=workspace.id,
+        model_id=model.id,
+        source_document_id=source.id,
+        name="Incremental repository index",
+        value="Make the repository index incremental.",
+        fact_type="task",
+        status="active",
+        confidence=0.9,
+        authority_weight=0.9,
+    )
+    db_session.add_all([workspace, model, source, focus])
+    await db_session.flush()
+
+    result = await ContextCompiler(db_session).compile_context_pack(
+        "",
+        workspace_id=workspace.id,
+        repo_path=str(tmp_path),
+        token_budget=3000,
+        focus_component_id=focus.id,
+        objective_origin="source_component",
+    )
+
+    affected = result.manifest["affected_code"]
+    implementation = next(
+        item for item in affected["files"] if item["path"] == "app/repo_indexer.py"
+    )
+    assert affected["schema_version"] == "affected_code.v1"
+    assert implementation["role"] == "likely_implementation"
+    assert implementation["related_tests"] == [
+        {
+            "path": "tests/test_repo_indexer.py",
+            "why": "Linked by the repository's exact test path.",
+            "edge_key": implementation["related_tests"][0]["edge_key"],
+            "rule_id": "test_path_match.v1",
+        }
+    ]
+    assert "## Affected Code" in result.markdown
+    assert "Related test: `tests/test_repo_indexer.py`" in result.markdown
+    assert result.manifest["verification"]["commands"][0]["command"] == (
+        "python3 -m pytest -q tests/test_repo_indexer.py"
+    )

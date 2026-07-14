@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from sqlalchemy import select
 
-from app.models import CodeFile, CodeSymbol, Workspace
+from app.models import CodeEdge, CodeFile, CodeSymbol, Workspace
 from app.services.repo_indexer import RepoIndexer
 
 
@@ -45,6 +45,8 @@ async def test_indexes_typescript_imports_components_and_routes(tmp_path):
     src.mkdir()
     (src / "server.tsx").write_text(
         "import React from 'react';\n"
+        "import express from 'express';\n"
+        "const app = express();\n"
         "app.get('/health', () => true);\n"
         "export const StatusPanel = () => <div />;\n"
         "function helper() { return true; }\n",
@@ -257,6 +259,395 @@ async def test_repo_index_endpoint_replaces_the_previous_workspace_project(
     )
     assert digest.status_code == 200
     assert digest.json()["scope"]["project_paths"] == [str(second_root.resolve())]
+
+
+async def test_incremental_index_preserves_unchanged_ids_and_builds_exact_edges(
+    db_session, tmp_path
+):
+    workspace = Workspace(
+        id=uuid4(), name="Incremental project", slug=f"incremental-{uuid4().hex}"
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "app" / "service.py").write_text(
+        "def run_service():\n    return True\n", encoding="utf-8"
+    )
+    (tmp_path / "app" / "api.py").write_text(
+        "from .service import run_service\n"
+        "from fastapi import APIRouter\n"
+        "router = APIRouter()\n\n"
+        "@router.get('/health')\n"
+        "def health():\n    return run_service()\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_service.py").write_text(
+        "def test_run_service():\n    assert True\n", encoding="utf-8"
+    )
+
+    first = await RepoIndexer(db_session).inspect_repo(
+        tmp_path, workspace_id=workspace.id, persist=True
+    )
+    assert first.persistence_available is True
+    assert first.files_added == 4
+    assert first.files_changed == 0
+    assert first.edges_indexed == 3
+    files_first = {
+        item.path: item.id
+        for item in await db_session.scalars(
+            select(CodeFile).where(CodeFile.workspace_id == workspace.id)
+        )
+    }
+    symbols_first = {
+        (str(item.code_file_id), item.symbol_type, item.name): item.id
+        for item in await db_session.scalars(select(CodeSymbol))
+    }
+    edges_first = {
+        item.edge_key: item.id for item in await db_session.scalars(select(CodeEdge))
+    }
+    assert {edge["rule_id"] for edge in first.exact_edges} == {
+        "local_module_import.v1",
+        "route_handler_owner.v1",
+        "test_path_match.v1",
+    }
+    affected = first.affected_code_for_goal({"service"}, [])
+    assert all(item["role"] == "likely_implementation" for item in affected["files"])
+    service_file = next(
+        item for item in affected["files"] if item["path"] == "app/service.py"
+    )
+    assert service_file["related_tests"][0]["path"] == "tests/test_service.py"
+    assert {
+        tuple(item["paths"]) for item in service_file["impact_paths"]
+    } >= {
+        ("tests/test_service.py", "app/service.py"),
+        ("app/api.py", "app/service.py"),
+    }
+    explicit_test = first.affected_code_for_goal(
+        {"service"}, ["tests/test_service.py"]
+    )
+    assert any(
+        item["path"] == "tests/test_service.py" and item["role"] == "related_test"
+        for item in explicit_test["files"]
+    )
+
+    second = await RepoIndexer(db_session).inspect_repo(
+        tmp_path, workspace_id=workspace.id, persist=True
+    )
+    assert second.files_unchanged == 4
+    assert second.files_added == second.files_changed == second.files_deleted == 0
+    files_second = {
+        item.path: item.id
+        for item in await db_session.scalars(
+            select(CodeFile).where(CodeFile.workspace_id == workspace.id)
+        )
+    }
+    symbols_second = {
+        (str(item.code_file_id), item.symbol_type, item.name): item.id
+        for item in await db_session.scalars(select(CodeSymbol))
+    }
+    edges_second = {
+        item.edge_key: item.id for item in await db_session.scalars(select(CodeEdge))
+    }
+    assert files_second == files_first
+    assert symbols_second == symbols_first
+    assert edges_second == edges_first
+
+    (tmp_path / "app" / "service.py").write_text(
+        "def run_service():\n    return 'changed'\n", encoding="utf-8"
+    )
+    third = await RepoIndexer(db_session).inspect_repo(
+        tmp_path, workspace_id=workspace.id, persist=True
+    )
+    assert third.files_changed == 1
+    assert third.files_unchanged == 3
+    files_third = {
+        item.path: item.id
+        for item in await db_session.scalars(
+            select(CodeFile).where(CodeFile.workspace_id == workspace.id)
+        )
+    }
+    assert files_third == files_first
+    symbols_third = {
+        (str(item.code_file_id), item.symbol_type, item.name): item.id
+        for item in await db_session.scalars(select(CodeSymbol))
+    }
+    assert symbols_third[(str(files_first["app/api.py"]), "module", "app/api.py")] == (
+        symbols_first[(str(files_first["app/api.py"]), "module", "app/api.py")]
+    )
+    assert symbols_third[(str(files_first["app/service.py"]), "module", "app/service.py")] != (
+        symbols_first[(str(files_first["app/service.py"]), "module", "app/service.py")]
+    )
+
+
+async def test_deleting_indexed_file_removes_incident_edges(db_session, tmp_path):
+    workspace = Workspace(
+        id=uuid4(), name="Deletion project", slug=f"deletion-{uuid4().hex}"
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "target.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (tmp_path / "source.py").write_text("import target\n", encoding="utf-8")
+    first = await RepoIndexer(db_session).inspect_repo(
+        tmp_path, workspace_id=workspace.id, persist=True
+    )
+    assert first.edges_indexed == 1
+
+    (tmp_path / "target.py").unlink()
+    second = await RepoIndexer(db_session).inspect_repo(
+        tmp_path, workspace_id=workspace.id, persist=True
+    )
+    assert second.files_deleted == 1
+    assert second.edges_indexed == 0
+    assert list(await db_session.scalars(select(CodeEdge))) == []
+
+
+async def test_typescript_edges_require_one_exact_target(db_session, tmp_path):
+    workspace = Workspace(
+        id=uuid4(), name="TypeScript edges", slug=f"typescript-edges-{uuid4().hex}"
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "helper.ts").write_text(
+        "export function helper() { return true; }\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "server.ts").write_text(
+        "import { helper } from './helper';\n"
+        "import express from 'express';\n"
+        "const app = express();\n"
+        "function getHealth() { return helper(); }\n"
+        "app.get('/health', getHealth);\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "src" / "server.test.ts").write_text(
+        "test('health', () => true);\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "util.ts").write_text("export const value = 1;\n", encoding="utf-8")
+    (tmp_path / "src" / "util.js").write_text("export const value = 1;\n", encoding="utf-8")
+    (tmp_path / "src" / "ambiguous.ts").write_text(
+        "import { value } from './util';\nimport React from 'react';\n",
+        encoding="utf-8",
+    )
+
+    frame = await RepoIndexer(db_session).inspect_repo(
+        tmp_path, workspace_id=workspace.id, persist=True
+    )
+
+    assert {
+        (edge["rule_id"], edge["source_path"], edge["target_path"])
+        for edge in frame.exact_edges
+    } == {
+        ("local_module_import.v1", "src/server.ts", "src/helper.ts"),
+        ("route_handler_owner.v1", "src/server.ts", "src/server.ts"),
+        ("test_path_match.v1", "src/server.test.ts", "src/server.ts"),
+    }
+
+
+async def test_javascript_comments_strings_and_unbound_routes_emit_no_edges(
+    db_session, tmp_path
+):
+    workspace = Workspace(
+        id=uuid4(), name="Masked JavaScript", slug=f"masked-js-{uuid4().hex}"
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "helper.ts").write_text("export function helper() {}\n", encoding="utf-8")
+    (tmp_path / "masked.ts").write_text(
+        "// import { helper } from './helper';\n"
+        "/* app.get('/comment', commentHandler); */\n"
+        "const sample = \"import x from './helper'; app.get('/text', textHandler)\";\n"
+        "function looseHandler() { return true; }\n"
+        "app.get('/unbound', looseHandler);\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "bound_masked.ts").write_text(
+        "const app = express();\n"
+        "function hiddenHandler() { return true; }\n"
+        "// app.get('/comment', hiddenHandler);\n"
+        "const sample = \"app.get('/text', hiddenHandler)\";\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "local_constructor.ts").write_text(
+        "function express() { return {}; }\n"
+        "const app = express();\n"
+        "function fakeHandler() { return true; }\n"
+        "app.get('/fake', fakeHandler);\n",
+        encoding="utf-8",
+    )
+
+    frame = await RepoIndexer(db_session).inspect_repo(
+        tmp_path, workspace_id=workspace.id, persist=True
+    )
+
+    assert frame.exact_edges == []
+    masked = next(item for item in frame.indexed_files if item.path == "masked.ts")
+    assert masked.imports == []
+    assert masked.route_hints == []
+
+
+async def test_python_routes_require_local_fastapi_binding(db_session, tmp_path):
+    workspace = Workspace(
+        id=uuid4(), name="Bound Python routes", slug=f"bound-python-{uuid4().hex}"
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "routes.py").write_text(
+        "class Cache:\n    def get(self, path):\n        return lambda fn: fn\n"
+        "cache = Cache()\n\n"
+        "@cache.get('/cached')\n"
+        "def cached():\n    return True\n\n"
+        "@app.get('/unbound')\n"
+        "def unbound():\n    return True\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "local_router.py").write_text(
+        "def APIRouter():\n    return object()\n\n"
+        "router = APIRouter()\n\n"
+        "@router.get('/fake')\n"
+        "def fake():\n    return True\n",
+        encoding="utf-8",
+    )
+
+    frame = await RepoIndexer(db_session).inspect_repo(
+        tmp_path, workspace_id=workspace.id, persist=True
+    )
+
+    assert not any(
+        edge["rule_id"] == "route_handler_owner.v1" for edge in frame.exact_edges
+    )
+    routes = next(item for item in frame.indexed_files if item.path == "routes.py")
+    assert routes.route_hints == []
+
+
+async def test_repo_indexer_enforces_one_active_root_without_api(db_session, tmp_path):
+    workspace = Workspace(
+        id=uuid4(), name="One active root", slug=f"one-root-{uuid4().hex}"
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / ".git").mkdir()
+    (second / ".git").mkdir()
+    (first / "first.py").write_text("def first(): pass\n", encoding="utf-8")
+    (second / "second.py").write_text("def second(): pass\n", encoding="utf-8")
+
+    await RepoIndexer(db_session).inspect_repo(
+        first, workspace_id=workspace.id, persist=True
+    )
+    await RepoIndexer(db_session).inspect_repo(
+        second, workspace_id=workspace.id, persist=True
+    )
+
+    stored = list(await db_session.scalars(
+        select(CodeFile).where(CodeFile.workspace_id == workspace.id)
+    ))
+    assert {(item.repo_root, item.path) for item in stored} == {
+        (str(second.resolve()), "second.py")
+    }
+
+
+async def test_founder_oversight_objective_does_not_expand_on_generic_terms(
+    db_session, tmp_path
+):
+    workspace = Workspace(
+        id=uuid4(), name="No lexical slop", slug=f"no-slop-{uuid4().hex}"
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "app").mkdir()
+    for index in range(15):
+        (tmp_path / "app" / f"generic_{index}.py").write_text(
+            f"def context_agent_project_task_{index}():\n    return True\n",
+            encoding="utf-8",
+        )
+    (tmp_path / "app" / "founder_oversight.py").write_text(
+        "def detect_silent_ignore_and_scrutiny():\n    return True\n",
+        encoding="utf-8",
+    )
+    objective = {
+        "providing", "birds", "eye", "view", "eyes", "non", "technical",
+        "founder", "gaps", "slop", "code", "incomplete", "progress",
+        "silent", "ignore", "agents", "scrutiny", "aggressive", "grilling",
+        "gathering", "context",
+    }
+
+    frame = await RepoIndexer(db_session).inspect_repo(
+        tmp_path, workspace_id=workspace.id, persist=True
+    )
+    affected = frame.affected_code_for_goal(objective, [])
+
+    assert affected is not None
+    assert [item["path"] for item in affected["files"]] == [
+        "app/founder_oversight.py"
+    ]
+
+
+async def test_accuracy_gate_issue_does_not_match_common_prose(db_session, tmp_path):
+    workspace = Workspace(
+        id=uuid4(), name="Accuracy gate", slug=f"accuracy-gate-{uuid4().hex}"
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "app").mkdir()
+    (tmp_path / "evals").mkdir()
+    (tmp_path / "docs").mkdir()
+    (tmp_path / ".agent-runs").mkdir()
+    (tmp_path / ".github").mkdir()
+    (tmp_path / ".github" / "ISSUE_TEMPLATE").mkdir()
+    for index in range(12):
+        (tmp_path / "app" / f"generic_{index}.py").write_text(
+            f"def current_explicit_state_for_item_{index}():\n    return True\n",
+            encoding="utf-8",
+        )
+    (tmp_path / "app" / "context_compiler.py").write_text(
+        "def existing_state():\n    return None\n", encoding="utf-8"
+    )
+    (tmp_path / "app" / "evaluation.py").write_text(
+        "def evaluate_acceptance():\n    return None\n", encoding="utf-8"
+    )
+    (tmp_path / "evals" / "accuracy_gate.py").write_text(
+        "def publish_phase_thresholds():\n    return True\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "docs" / "overview.md").write_text(
+        "Current issue documentation.\n", encoding="utf-8"
+    )
+    (tmp_path / ".agent-runs" / "hardening-task.md").write_text(
+        "Hardening issue task.\n", encoding="utf-8"
+    )
+    (tmp_path / ".github" / "ISSUE_TEMPLATE" / "bug.yml").write_text(
+        "name: Issue hardening\n", encoding="utf-8"
+    )
+    objective = {
+        "define", "and", "publish", "the", "phase", "accuracy", "gate",
+        "for", "current", "explicit", "thresholds", "is", "at",
+    }
+
+    frame = await RepoIndexer(db_session).inspect_repo(
+        tmp_path, workspace_id=workspace.id, persist=True
+    )
+    frame.changed_files = [
+        {"path": "app/context_compiler.py"},
+        {"path": "app/evaluation.py"},
+    ]
+    affected = frame.affected_code_for_goal(objective, [])
+
+    assert affected is not None
+    assert [item["path"] for item in affected["files"]] == [
+        "evals/accuracy_gate.py"
+    ]
 
 
 async def test_repo_index_endpoint_reports_the_persisted_symbol_cap(

@@ -874,6 +874,9 @@ class TestEvidenceLedgerMigration:
                         "repo_events",
                     )
                 }
+                deterministic_triggers = set((await conn.execute(text(
+                    "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+                ))).scalars())
 
                 assert {"content_sha256", "trust_zone", "source_created_at"} <= set(source_columns)
                 assert "claim_id" in component_columns
@@ -922,6 +925,15 @@ class TestEvidenceLedgerMigration:
                 } <= set(runtime_tables["context_pack_items"])
                 for columns in runtime_tables.values():
                     assert columns
+                assert {
+                    "trg_code_files_identity_key_not_null_insert",
+                    "trg_code_files_identity_key_not_null_update",
+                    "trg_code_symbols_identity_key_not_null_insert",
+                    "trg_code_edges_edge_key_not_null_insert",
+                    "trg_code_edges_rule_id_not_null_insert",
+                    "trg_code_edges_rule_version_not_null_insert",
+                    "trg_code_edges_evidence_sha256_not_null_insert",
+                } <= deterministic_triggers
 
                 row = (
                     await conn.execute(

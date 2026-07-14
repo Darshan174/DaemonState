@@ -6,11 +6,10 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db_session
-from app.models import CodeFile, CodeSymbol, Workspace
+from app.models import Workspace
 from app.services.ingest import IngestionService
 from app.services.repo_indexer import PROJECT_ROOT_MARKERS, RepoFrame, RepoIndexer
 from app.services.source_revisions import ingest_source_document_revision
@@ -29,7 +28,13 @@ class RepoIndexResponse(BaseModel):
     head_commit: str | None = None
     dirty: bool
     files_indexed: int
+    files_added: int
+    files_changed: int
+    files_unchanged: int
+    files_deleted: int
     symbols_indexed: int
+    edges_indexed: int
+    snapshot_fingerprint: str
     persistence_available: bool
 
 
@@ -76,23 +81,6 @@ async def index_repo(
             detail=frame.persistence_reason or "Repository index could not be persisted",
         )
 
-    # A workspace has one active local project boundary. RepoIndexer replaces
-    # repeated scans of the same root; this endpoint also removes evidence from
-    # a previously selected root so stale paths cannot influence relevance.
-    previous_file_ids = list(await session.scalars(
-        select(CodeFile.id).where(
-            CodeFile.workspace_id == payload.workspace_id,
-            CodeFile.repo_root != frame.repo_path,
-        )
-    ))
-    if previous_file_ids:
-        await session.execute(
-            delete(CodeSymbol).where(CodeSymbol.code_file_id.in_(previous_file_ids))
-        )
-        await session.execute(
-            delete(CodeFile).where(CodeFile.id.in_(previous_file_ids))
-        )
-
     inventory_content, inventory_metadata = _project_inventory(frame)
     inventory = await ingest_source_document_revision(
         session,
@@ -116,7 +104,13 @@ async def index_repo(
         head_commit=frame.head_commit,
         dirty=frame.dirty,
         files_indexed=len(frame.indexed_files),
+        files_added=frame.files_added,
+        files_changed=frame.files_changed,
+        files_unchanged=frame.files_unchanged,
+        files_deleted=frame.files_deleted,
         symbols_indexed=sum(min(len(item.symbols), 300) for item in frame.indexed_files),
+        edges_indexed=frame.edges_indexed,
+        snapshot_fingerprint=frame.snapshot_fingerprint,
         persistence_available=True,
     )
 
@@ -140,7 +134,9 @@ def _project_inventory(frame: RepoFrame) -> tuple[str, dict[str, Any]]:
     branch = frame.branch or "untracked branch"
     root_name = Path(frame.repo_path).name or "Project"
     root_summary = (
-        f"Repository {root_name}: {len(frame.indexed_files)} indexed files on {branch}."
+        f"Repository {root_name}: {len(frame.indexed_files)} indexed files on {branch}. "
+        f"Snapshot {frame.snapshot_fingerprint}; HEAD {frame.head_commit or 'none'}; "
+        f"dirty {str(frame.dirty).lower()}."
     )
     areas = []
     lines = [root_summary]
@@ -158,6 +154,8 @@ def _project_inventory(frame: RepoFrame) -> tuple[str, dict[str, Any]]:
         "repo_root": frame.repo_path,
         "branch": frame.branch,
         "head_commit": frame.head_commit,
+        "dirty": frame.dirty,
+        "snapshot_fingerprint": frame.snapshot_fingerprint,
         "repository": {
             "name": root_name,
             "repo_root": frame.repo_path,

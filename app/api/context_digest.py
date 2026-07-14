@@ -31,6 +31,10 @@ from app.services.workspace_scope import (
     workspace_scope_exists,
 )
 from app.services.evidence import sha256_text
+from app.services.founder_oversight import (
+    FounderOversightNotFoundError,
+    FounderOversightService,
+)
 from app.services.session_summary import derive_session_topic
 from app.services.project_scope import workspace_references, workspace_relevance
 from app.taxonomy import relationship_display_label, source_type_display
@@ -205,6 +209,7 @@ class ContextDigest(BaseModel):
     clusters: list[ContextCluster]
     links: list[DigestLink]
     recommended_actions: list[RecommendedAction]
+    oversight: dict
 
 
 @router.get("/context/digest", response_model=ContextDigest)
@@ -422,7 +427,53 @@ async def get_context_digest(
         clusters=_clusters(project_cards),
         links=links,
         recommended_actions=_recommended_actions(project_cards, health),
+        oversight=await _digest_oversight(session, workspace_id_str),
     )
+
+
+async def _digest_oversight(
+    session: AsyncSession,
+    workspace_id: str | None,
+) -> dict:
+    empty = {
+        "current_focus": None,
+        "state": None,
+        "latest_outcome": None,
+        "attention": {"blocked": 0, "unverified": 0, "stale": 0},
+    }
+    if not workspace_id:
+        return empty
+    workspace_uuid = UUID(workspace_id)
+    pack = await session.scalar(
+        select(ContextPack)
+        .where(
+            ContextPack.workspace_id == workspace_uuid,
+            ContextPack.focus_component_id.is_not(None),
+            ContextPack.objective_origin != "project_snapshot",
+        )
+        .order_by(ContextPack.created_at.desc(), ContextPack.id.desc())
+        .limit(1)
+    )
+    if pack is None or pack.focus_component_id is None:
+        return empty
+    try:
+        timeline = await FounderOversightService(session).build_timeline(
+            workspace_id=workspace_uuid,
+            focus_component_id=pack.focus_component_id,
+        )
+    except FounderOversightNotFoundError:
+        return empty
+    focus = dict(timeline.get("focus") or {})
+    return {
+        "current_focus": {
+            "component_id": focus.get("component_id"),
+            "title": focus.get("title") or pack.objective,
+            "context_pack_id": str(pack.id),
+        },
+        "state": timeline.get("state"),
+        "latest_outcome": timeline.get("latest_outcome"),
+        "attention": timeline.get("attention") or empty["attention"],
+    }
 
 
 def _relationship_ids_by_component(relationships: list[Relationship]) -> dict[UUID, list[str]]:

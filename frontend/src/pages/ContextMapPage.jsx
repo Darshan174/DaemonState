@@ -6,7 +6,13 @@ import {
 import { useWorkspaces } from "../api/hooks";
 import { resolveWorkspaceId, useWorkspaceSelection } from "../context/WorkspaceContext";
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
-import { useBuildContext, useContextDigest, useIndexProject, usePrepareContext } from "../context-map/api";
+import {
+  useBuildContext,
+  useContextDigest,
+  useIndexProject,
+  usePrepareContext,
+  useRunTimeline,
+} from "../context-map/api";
 import DigestBoard from "../context-map/components/DigestBoard";
 import ContextInspector from "../context-map/components/ContextInspector";
 
@@ -28,6 +34,8 @@ function ContextDigestSurface() {
 
   const digest = digestQuery.data;
   const selectedCard = digest?.cards?.find((card) => card.id === selectedCardId) || null;
+  const selectedFocusComponentId = focusComponentId(selectedCard);
+  const timelineQuery = useRunTimeline(activeWorkspaceId, selectedFocusComponentId);
   const closeInspector = () => {
     const previousCardId = selectedCardId;
     setSelectedCardId(null);
@@ -98,14 +106,13 @@ function ContextDigestSurface() {
                   indexResult={indexProject.data}
                   indexError={indexProject.isError ? indexProject.error : null}
                   onPrepareHandoff={async () => {
-                    const objective = digest?.objective?.status === "supplied"
-                      ? digest.objective.text
-                      : `Compile a read-only project snapshot for ${activeWorkspace?.name || "this project"}; do not infer a new task objective.`;
+                    const objective = `Compile a read-only project snapshot for ${activeWorkspace?.name || "this project"}; do not infer a new task objective.`;
                     const result = await prepareContext.mutateAsync({
                       objective,
                       workspace_id: activeWorkspaceId,
                       repo_path: digest?.scope?.project_paths?.[0] || undefined,
-                      mode: digest?.objective?.status === "supplied" ? "task" : "project_snapshot",
+                      mode: "project_snapshot",
+                      objective_origin: "project_snapshot",
                     });
                     return result.markdown;
                   }}
@@ -119,6 +126,24 @@ function ContextDigestSurface() {
                     links={digest.links}
                     workspaceId={activeWorkspaceId}
                     onClose={closeInspector}
+                    canPrepareForAgent={Boolean(selectedFocusComponentId && isEligibleFocusCard(selectedCard))}
+                    onPrepareForAgent={async () => {
+                      const result = await prepareContext.mutateAsync({
+                        workspace_id: activeWorkspaceId,
+                        repo_path: digest?.scope?.project_paths?.[0] || undefined,
+                        mode: "task",
+                        objective_origin: "source_component",
+                        focus_component_id: selectedFocusComponentId,
+                      });
+                      await Promise.all([digestQuery.refetch(), timelineQuery.refetch()]);
+                      return result;
+                    }}
+                    preparing={prepareContext.isPending}
+                    prepareError={prepareContext.isError ? prepareContext.error : null}
+                    timeline={timelineQuery.data}
+                    timelineLoading={timelineQuery.isLoading}
+                    timelineError={timelineQuery.isError ? timelineQuery.error : null}
+                    onRetryTimeline={() => timelineQuery.refetch()}
                   />
                 </div>
               ) : null}
@@ -128,6 +153,17 @@ function ContextDigestSurface() {
       </div>
     </div>
   );
+}
+
+function focusComponentId(card) {
+  const match = /^component:([0-9a-f-]{36})$/i.exec(card?.id || "");
+  return match?.[1] || null;
+}
+
+function isEligibleFocusCard(card) {
+  if (["rejected", "resolved", "superseded"].includes(card?.status)) return false;
+  return ["task", "decision", "blocker", "requirement"].includes(card?.type)
+    || ["task", "decision", "blocker", "requirement"].includes(card?.category);
 }
 
 function PageLoading({ label }) {
