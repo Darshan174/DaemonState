@@ -183,7 +183,7 @@ Observed in this checkout:
 | Graph | `Model`, `Component`, `Relationship`, `UnresolvedRelationship`, provenance, confidence, authority weight, temporal state, and review status are exposed through graph APIs. |
 | Query | `POST /api/query` returns `query.v1` with lexical/vector candidate retrieval, deterministic reranking, entity diversification, facts-used traces, and relationship expansion. |
 | Retrieval | Postgres/pgvector and text-search paths exist for indexed retrieval; unconfigured installs fall back to lexical-only behavior instead of pretending hash vectors are semantic search. |
-| Context compiler | `ContextCompiler`, model profiles, objective-conditioned repo indexing, rendered-budget enforcement, the replay lockfile, `POST /api/context/prepare`, `ctxe prepare`, `ContextPack`, and `ContextPackItem` are implemented in the active tree. |
+| Context compiler | `ContextCompiler`, model profiles, incremental file/symbol indexing, exact import/route/test-path edges, focused affected-code output, rendered-budget enforcement, the replay lockfile, `POST /api/context/prepare`, `ctxe prepare`, `ContextPack`, and `ContextPackItem` are implemented in the active tree. |
 | MCP | `ctxe mcp` exposes graph read tools, `prepare_task`, run start/finish outcome capture, and runtime observation write tools for decisions, blockers, patch summaries, verification, and task closure. |
 | Frontend | React app with a project-first visual map at `/app`, plus Sources and Connectors as primary destinations; Ask and Changes remain compatibility routes, and compiler preparation remains available through HTTP, CLI, and MCP. |
 | Tests | Backend pytest coverage, frontend Vitest coverage, migration tests, connector honesty tests, query/reranker tests, context compiler tests, MCP tests, extraction evals, and smoke scripts are present. |
@@ -209,7 +209,7 @@ its largest top-level areas, so the map has a useful system view immediately.
 Imported AI sessions are then matched only by deterministic repository, path,
 or commit evidence; uncertain and different-project sessions remain visually
 subdued and do not drive health, recommendations, or sourced links. **Copy
-handoff** runs the hardened `context_pack.v2` compiler, preserves its
+project brief** runs the hardened `context_pack.v2` compiler, preserves its
 inclusion/exclusion audit, excludes uncertain session claims, and prevents
 prompt-risk evidence from becoming agent instructions.
 
@@ -217,6 +217,9 @@ Typed PR, issue, session, decision, and blocker cards open an inspector with
 source evidence, classification, snapshot/revision metadata, confidence,
 relationships, and imported source content. Unsupported or unverified
 categories remain visibly empty instead of being filled from title keywords.
+After **Prepare for agent**, a compact, collapsed **Affected code** section shows
+only evidence-backed likely files, exact linked tests, and short impact paths. It
+stays absent when the compiler has no supported match.
 
 The Ask surface returns source-backed answers with a visible facts-used trace
 instead of a black-box response.
