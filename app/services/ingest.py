@@ -98,8 +98,9 @@ class IngestionService:
         if doc.source_url:
             metadata.setdefault("source_url", doc.source_url)
         facts = self._extract_source_facts(doc, metadata)
+        deterministic_empty_is_final = doc.source_type == "agent_run_observation"
         extraction_method = "deterministic" if facts else "fallback"
-        if not facts:
+        if not facts and not deterministic_empty_is_final:
             facts_list = await self._extractor.extract(doc.content, metadata)
             facts = facts_list
             extraction_method = "llm_or_regex"
@@ -216,7 +217,112 @@ class IngestionService:
 
         if doc.source_type == "local_repository":
             return extract_local_repository(doc.content, metadata)
+        if doc.source_type == "agent_run_observation":
+            return self._extract_runtime_observation(doc, metadata)
 
+        return []
+
+    def _extract_runtime_observation(
+        self,
+        doc: SourceDocument,
+        metadata: dict,
+    ) -> list[ExtractedFact]:
+        """Project only explicitly structured durable runtime observations."""
+        event_type = str(metadata.get("event_type") or "").strip().lower()
+        payload = metadata.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+        run_id = str(metadata.get("run_id") or payload.get("run_id") or "unknown")
+        content = str(payload.get("content") or "").strip()
+        files = [str(item) for item in payload.get("files") or [] if str(item).strip()]
+        provenance = f"agent_run:{run_id};source_document:{doc.id}"
+        excerpt = doc.content[:2000]
+
+        if event_type == "verification":
+            command = str(payload.get("command") or "").strip()
+            exit_code = payload.get("exit_code")
+            if not command or not isinstance(exit_code, int) or isinstance(exit_code, bool):
+                return []
+            state = "passed" if exit_code == 0 else "failed"
+            return [ExtractedFact(
+                model_name="Metric",
+                name=f"Verification: {command[:160]}",
+                value=f"{command} {state} with exit code {exit_code}.",
+                fact_type="metric",
+                confidence=0.99,
+                temporal="current",
+                provenance=provenance,
+                excerpt=excerpt,
+            )]
+        if event_type == "blocker":
+            severity = str(payload.get("severity") or "").strip().lower()
+            if not content or not severity:
+                return []
+            return [ExtractedFact(
+                model_name="Risk",
+                name=f"Blocker: {content[:160]}",
+                value=f"{content} Severity: {severity}.",
+                fact_type="blocker",
+                confidence=0.98,
+                temporal="current",
+                provenance=provenance,
+                excerpt=excerpt,
+            )]
+        if event_type == "decision":
+            decision = str(payload.get("decision") or content).strip()
+            if not decision:
+                return []
+            return [ExtractedFact(
+                model_name="Decision",
+                name=f"Decision: {decision[:160]}",
+                value=decision,
+                fact_type="decision",
+                confidence=0.95,
+                temporal="current",
+                provenance=provenance,
+                excerpt=excerpt,
+            )]
+        if event_type == "patch_summary":
+            if not content or not files:
+                return []
+            return [ExtractedFact(
+                model_name="Agent Session",
+                name=f"Observed patch for run {run_id}",
+                value=f"{content} Changed files: {', '.join(files)}.",
+                fact_type="observed_change",
+                confidence=0.98,
+                temporal="current",
+                provenance=provenance,
+                excerpt=excerpt,
+            )]
+        if event_type == "outcome":
+            status = str(payload.get("status") or "").strip().lower()
+            if not content or status not in {"completed", "failed", "blocked", "cancelled"}:
+                return []
+            return [ExtractedFact(
+                model_name="Agent Session",
+                name=f"Run outcome: {run_id}",
+                value=f"{status}: {content}",
+                fact_type="run_outcome",
+                confidence=0.99,
+                temporal="current",
+                provenance=provenance,
+                excerpt=excerpt,
+            )]
+        if event_type == "blocker_resolution":
+            resolves = str(payload.get("resolves_event_key") or "").strip()
+            if not content or not resolves:
+                return []
+            return [ExtractedFact(
+                model_name="Risk",
+                name=f"Blocker resolution: {resolves}",
+                value=content,
+                fact_type="risk",
+                confidence=0.98,
+                temporal="current",
+                provenance=provenance,
+                excerpt=excerpt,
+            )]
         return []
 
     async def _get_or_create_model(self, name: str) -> Model:

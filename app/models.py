@@ -681,6 +681,8 @@ class ContextPack(Base):
     __table_args__ = (
         Index("ix_context_packs_workspace_created", "workspace_id", "created_at"),
         Index("ix_context_packs_target_model", "target_model"),
+        Index("ix_context_packs_focus_component", "focus_component_id"),
+        Index("ix_context_packs_objective_origin", "objective_origin"),
         Index(
             "ix_context_packs_workspace_target_created",
             "workspace_id",
@@ -695,6 +697,16 @@ class ContextPack(Base):
         ForeignKey("workspaces.id"), nullable=True, index=True
     )
     objective: Mapped[str] = mapped_column(Text, nullable=False)
+    focus_component_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("components.id"), nullable=True
+    )
+    objective_origin: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    objective_source_document_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("source_documents.id"), nullable=True
+    )
+    objective_evidence_span_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("evidence_spans.id"), nullable=True
+    )
     target_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     model_profile: Mapped[str | None] = mapped_column(String(100), nullable=True)
     token_budget: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -721,6 +733,14 @@ class ContextPackItem(Base):
         Index("ix_context_pack_items_component", "component_id"),
         Index("ix_context_pack_items_evidence", "evidence_span_id"),
         Index("ix_context_pack_items_source_document", "source_document_id"),
+        Index(
+            "uq_context_pack_items_manifest_item_id",
+            "context_pack_id",
+            "manifest_item_id",
+            unique=True,
+            sqlite_where=text("manifest_item_id IS NOT NULL"),
+            postgresql_where=text("manifest_item_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -728,6 +748,7 @@ class ContextPackItem(Base):
         ForeignKey("context_packs.id"), nullable=False, index=True
     )
     item_type: Mapped[str] = mapped_column(String(50), nullable=False, default="component")
+    manifest_item_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     claim_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("claims.id"), nullable=True, index=True
     )
@@ -760,6 +781,14 @@ class AgentRun(Base):
         Index("ix_agent_runs_workspace_started", "workspace_id", "started_at"),
         Index("ix_agent_runs_context_pack", "context_pack_id"),
         Index("ix_agent_runs_status", "status"),
+        Index(
+            "uq_agent_runs_context_pack_run_key",
+            "context_pack_id",
+            "run_key",
+            unique=True,
+            sqlite_where=text("run_key IS NOT NULL"),
+            postgresql_where=text("run_key IS NOT NULL"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -769,6 +798,7 @@ class AgentRun(Base):
     context_pack_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("context_packs.id"), nullable=True, index=True
     )
+    run_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     tool: Mapped[str | None] = mapped_column(String(100), nullable=True)
     model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     objective: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -790,6 +820,15 @@ class RunObservation(Base):
         Index("ix_run_observations_agent_run_created", "agent_run_id", "created_at"),
         Index("ix_run_observations_source_document", "source_document_id"),
         Index("ix_run_observations_event_type", "event_type"),
+        Index("ix_run_observations_observed_at", "observed_at"),
+        Index(
+            "uq_run_observations_agent_run_event_key",
+            "agent_run_id",
+            "event_key",
+            unique=True,
+            sqlite_where=text("event_key IS NOT NULL"),
+            postgresql_where=text("event_key IS NOT NULL"),
+        ),
         Index(
             "uq_run_observations_terminal_outcome",
             "agent_run_id",
@@ -807,6 +846,11 @@ class RunObservation(Base):
         ForeignKey("source_documents.id"), nullable=True, index=True
     )
     event_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    event_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    payload_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}", server_default=text("'{}'")
+    )
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
     files_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     command: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -824,6 +868,14 @@ class CodeFile(Base):
     __table_args__ = (
         Index("ix_code_files_workspace_path", "workspace_id", "path"),
         Index("ix_code_files_sha256", "sha256"),
+        Index("uq_code_files_identity_key", "identity_key", unique=True),
+        Index(
+            "uq_code_files_workspace_root_path",
+            "workspace_id",
+            "repo_root",
+            "path",
+            unique=True,
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -832,10 +884,12 @@ class CodeFile(Base):
     )
     repo_root: Mapped[str | None] = mapped_column(Text, nullable=True)
     path: Mapped[str] = mapped_column(Text, nullable=False)
+    identity_key: Mapped[str] = mapped_column(String(64), nullable=False)
     language: Mapped[str | None] = mapped_column(String(50), nullable=True)
     sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_commit: Mapped[str | None] = mapped_column(String(100), nullable=True)
     size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_test: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
     )
@@ -848,12 +902,14 @@ class CodeSymbol(Base):
     __table_args__ = (
         Index("ix_code_symbols_file", "code_file_id"),
         Index("ix_code_symbols_qualified_name", "qualified_name"),
+        Index("uq_code_symbols_identity_key", "identity_key", unique=True),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     code_file_id: Mapped[UUID] = mapped_column(
         ForeignKey("code_files.id"), nullable=False, index=True
     )
+    identity_key: Mapped[str] = mapped_column(String(64), nullable=False)
     symbol_type: Mapped[str] = mapped_column(String(50), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     qualified_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -880,6 +936,8 @@ class CodeEdge(Base):
             "ix_code_edges_source_target_type", "source_symbol_id", "target_symbol_id", "edge_type"
         ),
         Index("ix_code_edges_target", "target_symbol_id"),
+        Index("uq_code_edges_edge_key", "edge_key", unique=True),
+        Index("ix_code_edges_rule_source", "rule_id", "source_symbol_id"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -890,6 +948,19 @@ class CodeEdge(Base):
         ForeignKey("code_symbols.id"), nullable=False, index=True
     )
     edge_type: Mapped[str] = mapped_column(String(50), nullable=False, default="references")
+    edge_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    rule_id: Mapped[str] = mapped_column(
+        String(100), nullable=False, default="legacy.unspecified"
+    )
+    rule_version: Mapped[str] = mapped_column(String(32), nullable=False, default="0")
+    evidence_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_start_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    evidence_end_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    evidence_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    evidence_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    snapshot_commit: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    snapshot_dirty: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    snapshot_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     source_symbol: Mapped["CodeSymbol"] = orm_relationship(
         back_populates="outgoing_edges",
@@ -920,6 +991,62 @@ class RepoEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
+
+
+def _canonical_hash(parts: object) -> str:
+    return hashlib.sha256(
+        json.dumps(parts, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+
+
+@event.listens_for(CodeFile, "before_insert")
+@event.listens_for(CodeFile, "before_update")
+def _populate_code_file_identity(mapper, connection, target: CodeFile) -> None:
+    target.repo_root = str(target.repo_root) if target.repo_root is not None else None
+    target.path = str(target.path).replace("\\", "/")
+    while target.path.startswith("./"):
+        target.path = target.path[2:]
+    target.identity_key = _canonical_hash([
+        str(target.workspace_id) if target.workspace_id is not None else None,
+        target.repo_root,
+        target.path,
+    ])
+
+
+@event.listens_for(CodeSymbol, "before_insert")
+@event.listens_for(CodeSymbol, "before_update")
+def _populate_code_symbol_identity(mapper, connection, target: CodeSymbol) -> None:
+    target.identity_key = _canonical_hash([
+        str(target.code_file_id),
+        target.symbol_type,
+        target.qualified_name or target.name,
+        target.start_line,
+        target.end_line,
+    ])
+
+
+@event.listens_for(CodeEdge, "before_insert")
+@event.listens_for(CodeEdge, "before_update")
+def _populate_code_edge_identity(mapper, connection, target: CodeEdge) -> None:
+    if target.id is None:
+        target.id = uuid4()
+    target.rule_id = target.rule_id or "legacy.unspecified"
+    target.rule_version = target.rule_version or "0"
+    target.evidence_json = target.evidence_json or "{}"
+    target.evidence_sha256 = hashlib.sha256(target.evidence_json.encode("utf-8")).hexdigest()
+    if not target.edge_key:
+        if target.rule_id == "legacy.unspecified":
+            target.edge_key = _canonical_hash(["legacy", str(target.id)])
+        else:
+            target.edge_key = _canonical_hash([
+                target.rule_id,
+                target.rule_version,
+                str(target.source_symbol_id),
+                str(target.target_symbol_id),
+                target.evidence_path,
+                target.evidence_start_line,
+                target.evidence_end_line,
+            ])
 
 
 @event.listens_for(SourceDocument, "before_insert")

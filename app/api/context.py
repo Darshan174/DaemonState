@@ -12,8 +12,13 @@ from app.services.context_compiler import (
     ContextBudgetExceededError,
     ContextCompiler,
     ContextPersistenceError,
+    FocusValidationError,
     InvalidGoalError,
     InvalidRepoPathError,
+)
+from app.services.founder_oversight import (
+    FounderOversightNotFoundError,
+    FounderOversightService,
 )
 
 router = APIRouter()
@@ -27,10 +32,17 @@ class ContextPrepareRequest(BaseModel):
     target_model: str | None = None
     token_budget: int | None = Field(default=None, ge=300)
     mode: Literal["task", "project_snapshot"] = "task"
+    focus_component_id: UUID | None = None
+    objective_origin: Literal[
+        "trusted_human", "source_component", "project_snapshot"
+    ] | None = None
 
     @model_validator(mode="after")
     def _has_objective(self) -> "ContextPrepareRequest":
-        if not (self.objective or self.goal):
+        origin = self.objective_origin or (
+            "project_snapshot" if self.mode == "project_snapshot" else "trusted_human"
+        )
+        if origin == "trusted_human" and not (self.objective or self.goal):
             raise ValueError("objective is required")
         return self
 
@@ -43,6 +55,25 @@ class ContextPrepareResponse(BaseModel):
     health_score: float
     selected_context: list[dict[str, Any]]
     excluded_context: list[dict[str, Any]]
+    focus: dict[str, Any]
+
+
+@router.get("/context/run-timeline")
+async def get_run_timeline(
+    workspace_id: UUID,
+    focus_component_id: UUID,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    try:
+        return await FounderOversightService(session).build_timeline(
+            workspace_id=workspace_id,
+            focus_component_id=focus_component_id,
+        )
+    except FounderOversightNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "focus_not_found", "message": str(exc)},
+        ) from exc
 
 
 @router.post("/context/prepare", response_model=ContextPrepareResponse)
@@ -60,6 +91,8 @@ async def prepare_context(
             token_budget=payload.token_budget,
             persist=True,
             objective_kind=("project_snapshot" if payload.mode == "project_snapshot" else "observed"),
+            focus_component_id=payload.focus_component_id,
+            objective_origin=payload.objective_origin,
         )
         await session.commit()
     except ContextBudgetExceededError as exc:
@@ -71,6 +104,12 @@ async def prepare_context(
                 "message": str(exc),
                 "minimum_required_tokens": exc.minimum_required_tokens,
             },
+        ) from exc
+    except FocusValidationError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": str(exc)},
         ) from exc
     except (InvalidGoalError, InvalidRepoPathError, ValueError) as exc:
         await session.rollback()
@@ -107,4 +146,5 @@ async def prepare_context(
         health_score=result.health_score,
         selected_context=result.selected_items,
         excluded_context=result.excluded_items,
+        focus=dict(result.manifest.get("focus") or {}),
     )

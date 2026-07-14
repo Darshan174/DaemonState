@@ -118,7 +118,7 @@ describe("DigestBoard", () => {
     renderBoard();
 
     expect(screen.getByRole("button", { name: "Refresh project map" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Copy handoff" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy project brief" })).toBeInTheDocument();
     expect(screen.getByLabelText("Search project map")).toBeInTheDocument();
     expect(screen.queryByRole("complementary", { name: "Graph minimap" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /layout/i })).not.toBeInTheDocument();
@@ -274,13 +274,46 @@ describe("DigestBoard", () => {
     });
     renderBoard({ onPrepareHandoff });
 
-    fireEvent.click(screen.getByRole("button", { name: "Copy handoff" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy project brief" }));
     await waitFor(() => expect(onPrepareHandoff).toHaveBeenCalledOnce());
     await waitFor(() => expect(writeText).toHaveBeenCalledOnce());
     const copied = writeText.mock.calls[0][0];
     expect(copied).toContain("Context Engine safe compiled handoff");
     expect(copied).toContain("Prompt-risk evidence excluded");
     expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
+  });
+
+  it("shows focused oversight and only non-zero attention counts", () => {
+    const onSelectCard = vi.fn();
+    const focusId = "00000000-0000-0000-0000-000000000010";
+    const focusedCard = digestCard({
+      id: `component:${focusId}`,
+      type: "task",
+      category: "task",
+      title: "Make runtime writes retry-safe",
+      summary: "Add stable runtime event identity.",
+    });
+    renderBoard({
+      digest: {
+        ...digest,
+        cards: [...digest.cards, focusedCard],
+        oversight: {
+          current_focus: { component_id: focusId, title: "Make runtime writes retry-safe" },
+          latest_outcome: null,
+          attention: { blocked: 1, unverified: 2, stale: 0 },
+        },
+      },
+      onSelectCard,
+    });
+
+    expect(screen.getByTitle("Make runtime writes retry-safe")).toHaveTextContent("Focus · Make runtime writes retry-safe");
+    expect(screen.getByLabelText("Attention")).toHaveTextContent("Blocked 1");
+    expect(screen.getByLabelText("Attention")).toHaveTextContent("Unverified 2");
+    expect(screen.getByLabelText("Attention")).not.toHaveTextContent("Stale");
+    expect(screen.getByRole("button", { name: "Attention 3" })).toBeInTheDocument();
+    fireEvent.click(screen.getByTitle("Make runtime writes retry-safe"));
+    expect(onSelectCard).toHaveBeenCalledWith(focusedCard);
+    expect(screen.queryByText(/ready score/i)).not.toBeInTheDocument();
   });
 
   it("opens a local project from the honest empty state", () => {

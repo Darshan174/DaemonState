@@ -81,6 +81,11 @@ export default function DigestBoard({
   const [panning, setPanning] = useState(false);
   const [handoffStatus, setHandoffStatus] = useState("idle");
   const panRef = useRef(null);
+  const focusedCard = useMemo(() => {
+    const componentId = digest?.oversight?.current_focus?.component_id;
+    if (!componentId) return null;
+    return (digest?.cards || []).find((card) => card.id === `component:${componentId}`) || null;
+  }, [digest?.cards, digest?.oversight?.current_focus?.component_id]);
 
   useEffect(() => {
     setQuery("");
@@ -184,6 +189,7 @@ export default function DigestBoard({
       {hasProjectBoundary ? <ProjectBar
         workspaceName={workspaceName}
         objectiveText={digest?.objective?.status === "supplied" ? digest.objective.text : null}
+        oversight={digest?.oversight}
         generatedAt={generatedAt}
         nodeCount={nodes.length}
         edgeCount={projection.edges.length}
@@ -197,6 +203,7 @@ export default function DigestBoard({
         canCopyHandoff={hasProjectBoundary && nodes.length > 0 && Boolean(onPrepareHandoff)}
         handoffStatus={handoffStatus}
         onCopyHandoff={copyHandoff}
+        onOpenFocus={focusedCard ? () => onSelectCard?.(focusedCard) : null}
         onChangeProject={() => {
           setActionsOpen(false);
           setChangingProject(true);
@@ -274,8 +281,15 @@ export default function DigestBoard({
   );
 }
 
-function ProjectBar({ workspaceName, objectiveText, generatedAt, nodeCount, edgeCount, query, onQueryChange, onFit, onBuild, building, actionsOpen, onToggleActions, canCopyHandoff, handoffStatus, onCopyHandoff, onChangeProject }) {
+function ProjectBar({ workspaceName, objectiveText, oversight, generatedAt, nodeCount, edgeCount, query, onQueryChange, onFit, onBuild, building, actionsOpen, onToggleActions, canCopyHandoff, handoffStatus, onCopyHandoff, onChangeProject, onOpenFocus }) {
   const observed = formatDigestTimestamp(generatedAt);
+  const focus = oversight?.current_focus;
+  const latestOutcome = oversight?.latest_outcome;
+  const attention = [
+    ["Blocked", oversight?.attention?.blocked, "text-red-700 dark:text-red-300"],
+    ["Unverified", oversight?.attention?.unverified, "text-amber-700 dark:text-amber-300"],
+    ["Stale", oversight?.attention?.stale, "text-slate-600 dark:text-slate-300"],
+  ].filter(([, count]) => Number(count) > 0);
   return (
     <header className="relative z-40 flex min-h-16 shrink-0 items-center gap-3 border-b border-[#d8d8cf] bg-[#fbfbf6]/95 px-4 py-2.5 backdrop-blur dark:border-[#292925] dark:bg-[#141411]/95 sm:px-5">
       <div className="min-w-0 flex-1">
@@ -287,8 +301,30 @@ function ProjectBar({ workspaceName, objectiveText, generatedAt, nodeCount, edge
           <h1 className="text-sm font-extrabold">Project map</h1>
           <span className="hidden text-[9px] font-medium text-[#929289] sm:inline">{nodeCount} records · {edgeCount} sourced link{edgeCount === 1 ? "" : "s"}{observed ? ` · ${observed}` : ""}</span>
         </div>
-        {objectiveText ? <p className="mt-0.5 max-w-xl truncate text-[9px] font-semibold text-[#68685f] dark:text-[#b8b8af]" title={objectiveText}><span className="text-[#929289]">Now ·</span> {objectiveText}</p> : null}
+        {focus ? (
+          <button type="button" onClick={onOpenFocus} disabled={!onOpenFocus} className="mt-0.5 block max-w-xl truncate text-left text-[9px] font-semibold text-[#68685f] underline-offset-2 enabled:hover:underline disabled:cursor-default dark:text-[#b8b8af]" title={focus.title}>
+            <span className="text-[#929289]">Focus ·</span> {focus.title}
+            <span className="text-[#929289]"> · {latestOutcome?.summary || "No observed outcome yet"}</span>
+          </button>
+        ) : objectiveText ? (
+          <p className="mt-0.5 max-w-xl truncate text-[9px] font-semibold text-[#68685f] dark:text-[#b8b8af]" title={objectiveText}><span className="text-[#929289]">Now ·</span> {objectiveText}</p>
+        ) : null}
       </div>
+
+      {attention.length ? (
+        <div aria-label="Attention" className="flex items-center gap-1">
+          <button type="button" onClick={onOpenFocus} disabled={!onOpenFocus} className="rounded-full bg-[#efefe7] px-2 py-1 text-[9px] font-black text-amber-700 enabled:hover:ring-1 enabled:hover:ring-amber-400 disabled:cursor-default dark:bg-[#252521] dark:text-amber-300 lg:hidden">
+            Attention {attention.reduce((total, [, count]) => total + Number(count), 0)}
+          </button>
+          <div className="hidden items-center gap-1 lg:flex">
+            {attention.map(([label, count, tone]) => (
+              <button type="button" onClick={onOpenFocus} disabled={!onOpenFocus} key={label} className={`rounded-full bg-[#efefe7] px-2 py-1 text-[9px] font-black enabled:hover:ring-1 enabled:hover:ring-[#aaa9a0] disabled:cursor-default dark:bg-[#252521] ${tone}`}>
+                {label} {count}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       <label className="hidden h-8 w-40 items-center gap-2 rounded-lg border border-[#d8d8cf] bg-white px-2.5 focus-within:border-[#77776e] dark:border-[#33332e] dark:bg-[#0f0f0c] sm:flex lg:w-52">
         <Search className="h-3.5 w-3.5 shrink-0 text-[#929289]" />
@@ -301,7 +337,7 @@ function ProjectBar({ workspaceName, objectiveText, generatedAt, nodeCount, edge
       {canCopyHandoff ? (
         <button type="button" onClick={onCopyHandoff} disabled={handoffStatus === "preparing"} className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-[#d8d8cf] bg-white px-2.5 text-[10px] font-bold text-[#4f4f48] transition hover:border-[#aaa9a0] hover:text-[#171713] disabled:opacity-60 dark:border-[#33332e] dark:bg-[#1b1b18] dark:text-[#d8d8cf] dark:hover:text-white">
           {handoffStatus === "preparing" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : handoffStatus === "copied" ? <Check className="h-3.5 w-3.5" /> : <Clipboard className="h-3.5 w-3.5" />}
-          {handoffStatus === "preparing" ? "Preparing" : handoffStatus === "copied" ? "Copied" : "Copy handoff"}
+          {handoffStatus === "preparing" ? "Preparing" : handoffStatus === "copied" ? "Copied" : "Copy project brief"}
         </button>
       ) : null}
       <div className="relative">

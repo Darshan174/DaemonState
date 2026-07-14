@@ -44,8 +44,27 @@ def test_alembic_upgrade_bootstraps_current_sqlite_schema(tmp_path):
         assert "workspace_id" in source_columns
         assert "metadata" in source_columns
 
+        pack_columns = {column["name"] for column in inspector.get_columns("context_packs")}
+        assert {
+            "focus_component_id", "objective_origin", "objective_source_document_id",
+            "objective_evidence_span_id",
+        } <= pack_columns
+        observation_columns = {
+            column["name"] for column in inspector.get_columns("run_observations")
+        }
+        assert {"event_key", "payload_json", "observed_at"} <= observation_columns
+        file_columns = {column["name"] for column in inspector.get_columns("code_files")}
+        symbol_columns = {column["name"] for column in inspector.get_columns("code_symbols")}
+        edge_columns = {column["name"] for column in inspector.get_columns("code_edges")}
+        assert {"identity_key", "is_test"} <= file_columns
+        assert "identity_key" in symbol_columns
+        assert {
+            "edge_key", "rule_id", "rule_version", "evidence_json",
+            "evidence_sha256", "snapshot_fingerprint",
+        } <= edge_columns
+
         with engine.connect() as conn:
             version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert version == "0001_bootstrap_current_schema"
+        assert version == "0003_project_compiler"
     finally:
         engine.dispose()

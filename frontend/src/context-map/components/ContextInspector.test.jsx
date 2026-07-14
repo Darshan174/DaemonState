@@ -43,6 +43,10 @@ const card = {
 describe("ContextInspector", () => {
   beforeEach(() => {
     api.get.mockReset();
+    Object.defineProperty(globalThis.navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    });
   });
 
   it("shows session identity and loads the imported transcript", async () => {
@@ -132,5 +136,229 @@ describe("ContextInspector", () => {
     expect(screen.queryByText(/State: open Labels:/)).not.toBeInTheDocument();
     expect(screen.queryByText("Provider updated")).not.toBeInTheDocument();
     expect(screen.queryByText("Last successful sync")).not.toBeInTheDocument();
+  });
+
+  it("prepares a selected task and exposes factual run scrutiny", async () => {
+    api.get.mockResolvedValue({ content: "Structured verification evidence." });
+    const onPrepareForAgent = vi.fn().mockResolvedValue({
+      markdown: "# Focused agent pack",
+      manifest: {
+        affected_code: {
+          schema_version: "affected_code.v1",
+          snapshot: { head_commit: "abc123456", dirty: true },
+          files: [{
+            path: "app/mcp/server.py",
+            role: "likely_implementation",
+            why: "Matches the focused task's runtime-event wording.",
+            line_ranges: [{ start_line: 1700, end_line: 1780 }],
+            impact_paths: [{
+              paths: ["app/mcp/server.py", "app/services/ingest.py"],
+              why: "Exact local import.",
+            }],
+            related_tests: [{
+              path: "tests/test_mcp.py",
+              why: "Linked by the repository's exact test path.",
+            }],
+          }],
+        },
+      },
+    });
+    const focusedTask = {
+      ...card,
+      id: "component:00000000-0000-0000-0000-000000000010",
+      type: "task",
+      category: "task",
+      session: null,
+      title: "Make runtime writes retry-safe",
+      summary: "Add stable runtime event identity.",
+    };
+    const timeline = {
+      state: "verification_failed",
+      latest_outcome: { summary: "Implementation claimed complete." },
+      findings: [{
+        id: "finding-1",
+        severity: "critical",
+        title: "Required verification failed",
+        explanation: "pytest exited with code 1.",
+        next_action: "Inspect and rerun the required command.",
+        sources: [
+          { source_document_id: "source-outcome-1", excerpt: "Claimed completion." },
+          { source_document_id: "source-verification-1", excerpt: "Failed required check." },
+        ],
+      }],
+      runs: [{
+        run_id: "run-1",
+        tool: "codex",
+        status: "completed",
+        state: "verification_failed",
+        started_at: "2026-07-14T12:00:00Z",
+        base_commit: "abc123",
+        head_commit: "def456",
+        events: [{
+          event_key: "pytest-1",
+          event_type: "verification",
+          summary: "Focused tests failed.",
+          command: "pytest -q tests/test_mcp.py",
+          exit_code: 1,
+          observed_at: "2026-07-14T12:10:00Z",
+          source_document_id: "source-verification-1",
+          verification_results: [{
+            command: "pytest -q tests/test_mcp.py",
+            status: "failed",
+            exit_code: 1,
+          }],
+        }],
+      }],
+    };
+
+    render(
+      <ContextInspector
+        card={focusedTask}
+        cards={[focusedTask]}
+        onClose={() => {}}
+        canPrepareForAgent
+        onPrepareForAgent={onPrepareForAgent}
+        timeline={timeline}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Prepare for agent" }));
+    await waitFor(() => expect(onPrepareForAgent).toHaveBeenCalledOnce());
+    await waitFor(() => expect(globalThis.navigator.clipboard.writeText).toHaveBeenCalledWith("# Focused agent pack"));
+    expect(screen.getByRole("button", { name: "Agent pack copied" })).toBeInTheDocument();
+    const affectedCode = screen.getByText("Affected code").closest("details");
+    expect(affectedCode).not.toHaveAttribute("open");
+    expect(screen.getByText("1 likely file · 1 linked test")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Affected code"));
+    expect(screen.getByText("Based on HEAD abc1234 with local changes")).toBeInTheDocument();
+    expect(screen.getByText("app/mcp/server.py")).toBeInTheDocument();
+    expect(screen.getByText("tests/test_mcp.py")).toBeInTheDocument();
+    expect(screen.getByText("Matches the focused task's runtime-event wording.")).toBeInTheDocument();
+    expect(screen.getByText("lines 1700–1780")).toBeInTheDocument();
+    expect(screen.getByText("app/mcp/server.py → app/services/ingest.py · Exact local import.")).toBeInTheDocument();
+    expect(screen.getByText("Required verification failed")).toBeInTheDocument();
+    expect(screen.getByText("Required verification failed").closest("[data-severity]"))
+      .toHaveAttribute("data-severity", "critical");
+    expect(screen.getByText("pytest -q tests/test_mcp.py · exit 1")).toBeInTheDocument();
+    expect(screen.getByText("pytest -q tests/test_mcp.py · failed · exit 1")).toBeInTheDocument();
+
+    expect(screen.getByRole("button", { name: "View evidence 2" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "View evidence 2" }));
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith("/sources/source-verification-1"));
+    expect((await screen.findAllByText("Structured verification evidence.")).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Challenge agent" }));
+    await waitFor(() => expect(globalThis.navigator.clipboard.writeText).toHaveBeenLastCalledWith(
+      expect.stringContaining("Sources: source-outcome-1, source-verification-1"),
+    ));
+    expect(screen.getByRole("button", { name: "Challenge copied" })).toBeInTheDocument();
+  });
+
+  it("keeps prepare absent for ineligible evidence cards", () => {
+    api.get.mockImplementation(() => new Promise(() => {}));
+    render(<ContextInspector card={card} cards={[card]} onClose={() => {}} />);
+    expect(screen.queryByRole("button", { name: "Prepare for agent" })).not.toBeInTheDocument();
+  });
+
+  it("does not render an empty affected-code panel", () => {
+    api.get.mockImplementation(() => new Promise(() => {}));
+    render(
+      <ContextInspector
+        card={{ ...card, type: "task", category: "task" }}
+        cards={[card]}
+        onClose={() => {}}
+        canPrepareForAgent
+        timeline={{ runs: [], affected_code: { files: [] } }}
+      />,
+    );
+
+    expect(screen.queryByText("Affected code")).not.toBeInTheDocument();
+  });
+
+  it("removes stale timeline affected code when a new pack has no supported match", async () => {
+    api.get.mockImplementation(() => new Promise(() => {}));
+    const onPrepareForAgent = vi.fn().mockResolvedValue({
+      markdown: "# Pack with no affected code",
+      manifest: {},
+    });
+    render(
+      <ContextInspector
+        card={{ ...card, type: "task", category: "task" }}
+        cards={[card]}
+        onClose={() => {}}
+        canPrepareForAgent
+        onPrepareForAgent={onPrepareForAgent}
+        timeline={{
+          runs: [],
+          affected_code: {
+            snapshot: {},
+            files: [{
+              path: "app/stale.py",
+              role: "likely_implementation",
+              why: "From an older pack.",
+            }],
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Affected code")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Prepare for agent" }));
+    await waitFor(() => expect(onPrepareForAgent).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.queryByText("Affected code")).not.toBeInTheDocument());
+  });
+
+  it("counts a top-level related test as a linked test, not a likely implementation file", () => {
+    api.get.mockImplementation(() => new Promise(() => {}));
+    render(
+      <ContextInspector
+        card={{ ...card, type: "task", category: "task" }}
+        cards={[card]}
+        onClose={() => {}}
+        canPrepareForAgent
+        timeline={{
+          runs: [],
+          affected_code: {
+            snapshot: {},
+            files: [{
+              path: "tests/test_mcp.py",
+              role: "related_test",
+              why: "Named explicitly in the focused task.",
+            }],
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("0 likely files · 1 linked test")).toBeInTheDocument();
+  });
+
+  it("keeps a prepared pack usable when clipboard access fails", async () => {
+    api.get.mockImplementation(() => new Promise(() => {}));
+    globalThis.navigator.clipboard.writeText.mockRejectedValueOnce(new Error("denied"));
+    const focusedTask = {
+      ...card,
+      id: "component:00000000-0000-0000-0000-000000000011",
+      type: "task",
+      category: "task",
+      session: null,
+    };
+    render(
+      <ContextInspector
+        card={focusedTask}
+        cards={[focusedTask]}
+        onClose={() => {}}
+        canPrepareForAgent
+        onPrepareForAgent={vi.fn().mockResolvedValue({ markdown: "# Prepared pack" })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Prepare for agent" }));
+    expect(await screen.findByRole("button", { name: "Pack ready — retry copy" })).toBeInTheDocument();
+    expect(screen.getByText(/clipboard access was unavailable/i)).toBeInTheDocument();
+
+    globalThis.navigator.clipboard.writeText.mockResolvedValueOnce(undefined);
+    fireEvent.click(screen.getByRole("button", { name: "Pack ready — retry copy" }));
+    expect(await screen.findByRole("button", { name: "Agent pack copied" })).toBeInTheDocument();
   });
 });

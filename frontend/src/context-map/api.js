@@ -17,6 +17,23 @@ export function useContextDigest(workspaceId) {
   });
 }
 
+function runTimelinePath(workspaceId, focusComponentId) {
+  const params = new URLSearchParams({
+    workspace_id: workspaceId,
+    focus_component_id: focusComponentId,
+  });
+  return `/context/run-timeline?${params}`;
+}
+
+export function useRunTimeline(workspaceId, focusComponentId) {
+  return useQuery({
+    queryKey: ["context-run-timeline", workspaceId, focusComponentId],
+    queryFn: () => api.get(runTimelinePath(workspaceId, focusComponentId)),
+    enabled: Boolean(workspaceId && focusComponentId),
+    retry: 1,
+  });
+}
+
 export function useBuildContext(workspaceId) {
   const queryClient = useQueryClient();
 

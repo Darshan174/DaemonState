@@ -32,7 +32,263 @@ async def run_migrations(conn: AsyncConnection) -> None:
     await _migrate_retrieval_events_schema(conn)
     await _migrate_pgvector_search_schema(conn)
     await _migrate_postgres_text_search_schema(conn)
+    await _migrate_founder_oversight_schema(conn)
+    await _migrate_deterministic_project_compiler_schema(conn)
     await _migrate_query_and_sync_indexes(conn)
+
+
+async def _migrate_deterministic_project_compiler_schema(conn: AsyncConnection) -> None:
+    """Backfill stable code identities and source-backed deterministic edge fields."""
+    additions = {
+        "code_files": {
+            "identity_key": "VARCHAR(64) NULL",
+            "is_test": "BOOLEAN NOT NULL DEFAULT false",
+        },
+        "code_symbols": {"identity_key": "VARCHAR(64) NULL"},
+        "code_edges": {
+            "edge_key": "VARCHAR(64) NULL",
+            "rule_id": "VARCHAR(100) NULL",
+            "rule_version": "VARCHAR(32) NULL",
+            "evidence_path": "TEXT NULL",
+            "evidence_start_line": "INTEGER NULL",
+            "evidence_end_line": "INTEGER NULL",
+            "evidence_json": "TEXT NOT NULL DEFAULT '{}'",
+            "evidence_sha256": "VARCHAR(64) NULL",
+            "snapshot_commit": "VARCHAR(100) NULL",
+            "snapshot_dirty": "BOOLEAN NOT NULL DEFAULT false",
+            "snapshot_fingerprint": "VARCHAR(64) NULL",
+        },
+    }
+    for table_name, columns_to_add in additions.items():
+        columns = await _get_table_columns(conn, table_name)
+        if not columns:
+            continue
+        for column_name, ddl in columns_to_add.items():
+            if column_name not in columns:
+                await conn.execute(text(
+                    f"ALTER TABLE {table_name} ADD COLUMN {column_name} {ddl}"
+                ))
+
+    file_columns = await _get_table_columns(conn, "code_files")
+    if {"id", "workspace_id", "repo_root", "path", "identity_key"} <= file_columns:
+        rows = (await conn.execute(text(
+            "SELECT id, workspace_id, repo_root, path, identity_key FROM code_files"
+        ))).all()
+        natural_keys: set[tuple[object, object, str]] = set()
+        for row in rows:
+            natural_key = (
+                _migration_uuid_text(row[1]),
+                str(row[2]) if row[2] is not None else None,
+                str(row[3]).replace("\\", "/"),
+            )
+            if natural_key in natural_keys:
+                raise RuntimeError(
+                    "duplicate code_files identities detected; re-index the workspace "
+                    "before applying the deterministic project compiler migration"
+                )
+            natural_keys.add(natural_key)
+            identity_key = row[4] or _migration_canonical_hash(list(natural_key))
+            await conn.execute(
+                text("UPDATE code_files SET identity_key = :key WHERE id = :id"),
+                {"key": identity_key, "id": row[0]},
+            )
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_code_files_identity_key "
+            "ON code_files (identity_key)"
+        ))
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_code_files_workspace_root_path "
+            "ON code_files (workspace_id, repo_root, path)"
+        ))
+
+    symbol_columns = await _get_table_columns(conn, "code_symbols")
+    required_symbols = {
+        "id", "code_file_id", "symbol_type", "name", "qualified_name",
+        "start_line", "end_line", "identity_key",
+    }
+    if required_symbols <= symbol_columns:
+        rows = (await conn.execute(text(
+            "SELECT id, code_file_id, symbol_type, name, qualified_name, "
+            "start_line, end_line, identity_key FROM code_symbols"
+        ))).all()
+        for row in rows:
+            identity_key = row[7] or _migration_canonical_hash([
+                _migration_uuid_text(row[1]), row[2], row[4] or row[3], row[5], row[6]
+            ])
+            await conn.execute(
+                text("UPDATE code_symbols SET identity_key = :key WHERE id = :id"),
+                {"key": identity_key, "id": row[0]},
+            )
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_code_symbols_identity_key "
+            "ON code_symbols (identity_key)"
+        ))
+
+    edge_columns = await _get_table_columns(conn, "code_edges")
+    if {"id", "edge_key", "rule_id", "rule_version", "evidence_json", "evidence_sha256"} <= edge_columns:
+        rows = (await conn.execute(text(
+            "SELECT id, edge_key, rule_id, rule_version, evidence_json, evidence_sha256 "
+            "FROM code_edges"
+        ))).all()
+        for row in rows:
+            evidence_json = row[4]
+            if not evidence_json or evidence_json == "{}":
+                evidence_json = json.dumps(
+                    {"legacy_edge_id": str(row[0])},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            values = {
+                "id": row[0],
+                "edge_key": row[1] or _migration_canonical_hash(["legacy", str(row[0])]),
+                "rule_id": row[2] or "legacy.unspecified",
+                "rule_version": row[3] or "0",
+                "evidence_json": evidence_json,
+                "evidence_sha256": row[5] or hashlib.sha256(
+                    evidence_json.encode("utf-8")
+                ).hexdigest(),
+            }
+            await conn.execute(text(
+                "UPDATE code_edges SET edge_key = :edge_key, rule_id = :rule_id, "
+                "rule_version = :rule_version, evidence_json = :evidence_json, "
+                "evidence_sha256 = :evidence_sha256 WHERE id = :id"
+            ), values)
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_code_edges_edge_key "
+            "ON code_edges (edge_key)"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_code_edges_rule_source "
+            "ON code_edges (rule_id, source_symbol_id)"
+        ))
+    await _enforce_deterministic_project_compiler_not_null(conn)
+
+
+async def _enforce_deterministic_project_compiler_not_null(
+    conn: AsyncConnection,
+) -> None:
+    required = {
+        "code_files": ("identity_key",),
+        "code_symbols": ("identity_key",),
+        "code_edges": ("edge_key", "rule_id", "rule_version", "evidence_sha256"),
+    }
+    if conn.dialect.name == "postgresql":
+        for table_name, column_names in required.items():
+            columns = await _get_table_columns(conn, table_name)
+            for column_name in column_names:
+                if column_name in columns:
+                    await conn.execute(text(
+                        f"ALTER TABLE {table_name} ALTER COLUMN {column_name} SET NOT NULL"
+                    ))
+        return
+    if conn.dialect.name != "sqlite":
+        return
+
+    # SQLite cannot tighten an added column in place. Enforce the same write
+    # invariant for upgraded databases with deterministic insert/update guards.
+    for table_name, column_names in required.items():
+        columns = await _get_table_columns(conn, table_name)
+        for column_name in column_names:
+            if column_name not in columns:
+                continue
+            for operation, reference in (("INSERT", "NEW"), ("UPDATE", "NEW")):
+                trigger_name = (
+                    f"trg_{table_name}_{column_name}_not_null_{operation.lower()}"
+                )
+                await conn.execute(text(f"""
+                    CREATE TRIGGER IF NOT EXISTS {trigger_name}
+                    BEFORE {operation} ON {table_name}
+                    WHEN {reference}.{column_name} IS NULL
+                    BEGIN
+                        SELECT RAISE(ABORT, '{table_name}.{column_name} must not be null');
+                    END
+                """))
+
+
+def _migration_canonical_hash(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _migration_uuid_text(value: object) -> str | None:
+    if value is None:
+        return None
+    try:
+        return str(UUID(str(value)))
+    except (TypeError, ValueError, AttributeError):
+        return str(value)
+
+
+async def _migrate_founder_oversight_schema(conn: AsyncConnection) -> None:
+    """Add nullable focus provenance and retry-safe runtime event identity."""
+    uuid_type = "UUID" if conn.dialect.name == "postgresql" else "CHAR(32)"
+    table_columns = {
+        "context_packs": {
+            "focus_component_id": f"{uuid_type} NULL",
+            "objective_origin": "VARCHAR(32) NULL",
+            "objective_source_document_id": f"{uuid_type} NULL",
+            "objective_evidence_span_id": f"{uuid_type} NULL",
+        },
+        "context_pack_items": {
+            "manifest_item_id": "VARCHAR(255) NULL",
+        },
+        "agent_runs": {
+            "run_key": "VARCHAR(255) NULL",
+        },
+        "run_observations": {
+            "event_key": "VARCHAR(255) NULL",
+            "payload_json": "TEXT NOT NULL DEFAULT '{}'",
+            "observed_at": "DATETIME NULL" if conn.dialect.name == "sqlite" else "TIMESTAMP NULL",
+        },
+    }
+    for table_name, additions in table_columns.items():
+        columns = await _get_table_columns(conn, table_name)
+        if not columns:
+            continue
+        for column_name, ddl in additions.items():
+            if column_name not in columns:
+                await conn.execute(
+                    text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {ddl}")
+                )
+
+    context_pack_columns = await _get_table_columns(conn, "context_packs")
+    if "focus_component_id" in context_pack_columns:
+        await conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_context_packs_focus_component
+            ON context_packs (focus_component_id)
+        """))
+    if "objective_origin" in context_pack_columns:
+        await conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_context_packs_objective_origin
+            ON context_packs (objective_origin)
+        """))
+    item_columns = await _get_table_columns(conn, "context_pack_items")
+    if {"context_pack_id", "manifest_item_id"} <= item_columns:
+        await conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_context_pack_items_manifest_item_id
+            ON context_pack_items (context_pack_id, manifest_item_id)
+            WHERE manifest_item_id IS NOT NULL
+        """))
+    run_columns = await _get_table_columns(conn, "agent_runs")
+    if {"context_pack_id", "run_key"} <= run_columns:
+        await conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_runs_context_pack_run_key
+            ON agent_runs (context_pack_id, run_key)
+            WHERE run_key IS NOT NULL
+        """))
+    observation_columns = await _get_table_columns(conn, "run_observations")
+    if "observed_at" in observation_columns:
+        await conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_run_observations_observed_at
+            ON run_observations (observed_at)
+        """))
+    if {"agent_run_id", "event_key"} <= observation_columns:
+        await conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_run_observations_agent_run_event_key
+            ON run_observations (agent_run_id, event_key)
+            WHERE event_key IS NOT NULL
+        """))
 
 
 async def _migrate_workspace_ownership_columns(conn: AsyncConnection) -> None:
@@ -1400,10 +1656,12 @@ async def _migrate_evidence_ledger_and_claim_graph(conn: AsyncConnection) -> Non
             workspace_id CHAR(32),
             repo_root TEXT,
             path TEXT NOT NULL,
+            identity_key VARCHAR(64) NOT NULL,
             language VARCHAR(50),
             sha256 VARCHAR(64),
             last_commit VARCHAR(100),
             size INTEGER,
+            is_test BOOLEAN NOT NULL DEFAULT false,
             updated_at {dt_type} DEFAULT CURRENT_TIMESTAMP NOT NULL,
             PRIMARY KEY (id),
             FOREIGN KEY(workspace_id) REFERENCES workspaces (id)
@@ -1422,6 +1680,7 @@ async def _migrate_evidence_ledger_and_claim_graph(conn: AsyncConnection) -> Non
             end_line INTEGER,
             docstring TEXT,
             signature TEXT,
+            identity_key VARCHAR(64) NOT NULL,
             PRIMARY KEY (id),
             FOREIGN KEY(code_file_id) REFERENCES code_files (id)
         )
@@ -1434,6 +1693,17 @@ async def _migrate_evidence_ledger_and_claim_graph(conn: AsyncConnection) -> Non
             source_symbol_id CHAR(32) NOT NULL,
             target_symbol_id CHAR(32) NOT NULL,
             edge_type VARCHAR(50) NOT NULL DEFAULT 'references',
+            edge_key VARCHAR(64) NOT NULL,
+            rule_id VARCHAR(100) NOT NULL,
+            rule_version VARCHAR(32) NOT NULL,
+            evidence_path TEXT,
+            evidence_start_line INTEGER,
+            evidence_end_line INTEGER,
+            evidence_json TEXT NOT NULL DEFAULT '{}',
+            evidence_sha256 VARCHAR(64) NOT NULL,
+            snapshot_commit VARCHAR(100),
+            snapshot_dirty BOOLEAN NOT NULL DEFAULT false,
+            snapshot_fingerprint VARCHAR(64),
             PRIMARY KEY (id),
             FOREIGN KEY(source_symbol_id) REFERENCES code_symbols (id),
             FOREIGN KEY(target_symbol_id) REFERENCES code_symbols (id)

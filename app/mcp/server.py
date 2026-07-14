@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import hashlib
 import json
 import logging
 from typing import Any
@@ -29,14 +31,16 @@ from app.models import (
     Claim,
     Component,
     ContextPack,
+    ContextPackItem,
     Model,
     Relationship,
     RunObservation,
     SourceDocument,
 )
 from app.processing.embedder import build_default_embedder, cosine_similarity
-from app.services.claims import append_claim_revision, upsert_claim_for_fact
+from app.services.claims import append_claim_revision
 from app.services.evidence import create_evidence_span
+from app.services.ingest import IngestionService
 from app.services.query import QueryService
 from app.services.source_revisions import ingest_source_document_revision
 from app.time import utc_now
@@ -94,7 +98,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "goal": {
                         "type": "string",
-                        "description": "Task objective for the coding agent.",
+                        "description": "Trusted task objective; omit for source_component origin.",
                     },
                     "workspace_id": {
                         "type": "string",
@@ -112,8 +116,16 @@ async def list_tools() -> list[Tool]:
                         "type": "integer",
                         "description": "Maximum context-pack token budget.",
                     },
+                    "focus_component_id": {
+                        "type": "string",
+                        "description": "Eligible task, requirement, decision, or blocker Component UUID.",
+                    },
+                    "objective_origin": {
+                        "type": "string",
+                        "enum": ["trusted_human", "source_component", "project_snapshot"],
+                    },
                 },
-                "required": ["goal", "workspace_id", "repo_path", "target_model", "token_budget"],
+                "required": ["workspace_id", "repo_path", "target_model", "token_budget"],
             },
         ),
         Tool(
@@ -246,8 +258,12 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "ContextPack UUID returned by prepare_task.",
                     },
+                    "run_key": {
+                        "type": "string",
+                        "description": "Stable harness identity for retries within this context pack.",
+                    },
                 },
-                "required": ["tool", "model", "branch", "base_commit", "objective", "context_pack_id"],
+                "required": ["tool", "model", "branch", "base_commit", "objective", "context_pack_id", "run_key"],
             },
         ),
         Tool(
@@ -262,6 +278,7 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "run_id": {"type": "string", "description": "AgentRun UUID."},
+                    "event_key": {"type": "string", "description": "Stable event identity; conventionally outcome."},
                     "status": {
                         "type": "string",
                         "enum": ["completed", "failed", "blocked", "cancelled"],
@@ -285,6 +302,9 @@ async def list_tools() -> list[Tool]:
                         "items": {"type": "object"},
                         "description": "Observed test/check results; no commands are executed.",
                     },
+                    "observed_at": {"type": "string", "description": "Optional ISO-8601 harness occurrence time."},
+                    "completed_context_item_ids": {"type": "array", "items": {"type": "string"}},
+                    "addresses_context_item_ids": {"type": "array", "items": {"type": "string"}},
                 },
                 "required": [
                     "run_id",
@@ -293,6 +313,7 @@ async def list_tools() -> list[Tool]:
                     "summary",
                     "changed_files",
                     "verification_results",
+                    "event_key",
                 ],
             },
         ),
@@ -307,6 +328,7 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "run_id": {"type": "string", "description": "AgentRun UUID."},
+                    "event_key": {"type": "string", "description": "Stable event identity within the run."},
                     "event_type": {"type": "string", "description": "Event type such as command or test."},
                     "content": {"type": "string", "description": "Observed event text."},
                     "files": {
@@ -316,8 +338,12 @@ async def list_tools() -> list[Tool]:
                     },
                     "command": {"type": "string", "description": "Command text that was observed."},
                     "exit_code": {"type": "integer", "description": "Observed command exit code."},
+                    "observed_at": {"type": "string", "description": "Optional ISO-8601 harness occurrence time."},
+                    "requirement_id": {"type": "string", "description": "Exact manifest verification requirement ID."},
+                    "addresses_context_item_ids": {"type": "array", "items": {"type": "string"}},
+                    "resolves_event_key": {"type": "string", "description": "Exact earlier blocker event key."},
                 },
-                "required": ["run_id", "event_type", "content"],
+                "required": ["run_id", "event_key", "event_type", "content"],
             },
         ),
         Tool(
@@ -330,12 +356,13 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "run_id": {"type": "string", "description": "AgentRun UUID."},
+                    "event_key": {"type": "string", "description": "Stable event identity within the run."},
                     "decision": {"type": "string", "description": "Decision statement."},
                     "rationale": {"type": "string", "description": "Why the decision was made."},
                     "files": {"type": "array", "items": {"type": "string"}},
                     "evidence": {"type": "string", "description": "Source evidence for the decision."},
                 },
-                "required": ["run_id", "decision", "rationale", "files", "evidence"],
+                "required": ["run_id", "event_key", "decision", "rationale", "files", "evidence"],
             },
         ),
         Tool(
@@ -348,12 +375,13 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "run_id": {"type": "string", "description": "AgentRun UUID."},
+                    "event_key": {"type": "string", "description": "Stable event identity within the run."},
                     "blocker": {"type": "string", "description": "Blocker statement."},
                     "severity": {"type": "string", "description": "Severity label."},
                     "attempted_fix": {"type": "string", "description": "Attempted fix or mitigation."},
                     "evidence": {"type": "string", "description": "Source evidence for the blocker."},
                 },
-                "required": ["run_id", "blocker", "severity", "attempted_fix", "evidence"],
+                "required": ["run_id", "event_key", "blocker", "severity", "attempted_fix", "evidence"],
             },
         ),
         Tool(
@@ -366,11 +394,13 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "run_id": {"type": "string", "description": "AgentRun UUID."},
+                    "event_key": {"type": "string", "description": "Stable event identity within the run."},
                     "changed_files": {"type": "array", "items": {"type": "string"}},
                     "summary": {"type": "string", "description": "Patch summary."},
                     "tests_run": {"type": "array", "items": {"type": "string"}},
+                    "addresses_context_item_ids": {"type": "array", "items": {"type": "string"}},
                 },
-                "required": ["run_id", "changed_files", "summary", "tests_run"],
+                "required": ["run_id", "event_key", "changed_files", "summary", "tests_run"],
             },
         ),
         Tool(
@@ -414,11 +444,13 @@ async def list_tools() -> list[Tool]:
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     if name == "prepare_task":
         return await _prepare_task(
-            arguments["goal"],
+            arguments.get("goal"),
             workspace_id=arguments.get("workspace_id"),
             repo_path=arguments.get("repo_path"),
             target_model=arguments.get("target_model"),
             token_budget=arguments.get("token_budget"),
+            focus_component_id=arguments.get("focus_component_id"),
+            objective_origin=arguments.get("objective_origin"),
         )
     elif name == "search_nodes":
         return await _search_nodes(arguments["query"], arguments.get("limit", 10))
@@ -445,6 +477,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             base_commit=arguments.get("base_commit"),
             objective=arguments.get("objective"),
             context_pack_id=arguments.get("context_pack_id"),
+            run_key=arguments.get("run_key"),
         )
     elif name == "record_agent_run_finish":
         return await _record_agent_run_finish(
@@ -454,6 +487,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             summary=arguments.get("summary"),
             changed_files=arguments.get("changed_files"),
             verification_results=arguments.get("verification_results"),
+            event_key=arguments.get("event_key"),
+            observed_at=arguments.get("observed_at"),
+            completed_context_item_ids=arguments.get("completed_context_item_ids"),
+            addresses_context_item_ids=arguments.get("addresses_context_item_ids"),
         )
     elif name == "record_agent_event":
         return await _record_agent_event(
@@ -463,6 +500,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             files=arguments.get("files"),
             command=arguments.get("command"),
             exit_code=arguments.get("exit_code"),
+            event_key=arguments.get("event_key"),
+            observed_at=arguments.get("observed_at"),
+            requirement_id=arguments.get("requirement_id"),
+            addresses_context_item_ids=arguments.get("addresses_context_item_ids"),
+            resolves_event_key=arguments.get("resolves_event_key"),
         )
     elif name == "record_decision":
         return await _record_decision(
@@ -471,6 +513,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             rationale=arguments.get("rationale"),
             files=arguments.get("files"),
             evidence=arguments.get("evidence"),
+            event_key=arguments.get("event_key"),
         )
     elif name == "record_blocker":
         return await _record_blocker(
@@ -479,6 +522,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             severity=arguments.get("severity"),
             attempted_fix=arguments.get("attempted_fix"),
             evidence=arguments.get("evidence"),
+            event_key=arguments.get("event_key"),
         )
     elif name == "record_patch_summary":
         return await _record_patch_summary(
@@ -486,6 +530,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             changed_files=arguments.get("changed_files"),
             summary=arguments.get("summary"),
             tests_run=arguments.get("tests_run"),
+            event_key=arguments.get("event_key"),
+            addresses_context_item_ids=arguments.get("addresses_context_item_ids"),
         )
     elif name == "verify_context_item":
         return await _verify_context_item(
@@ -518,13 +564,112 @@ class _RuntimeFact:
     provenance: str | None = None
 
 
+class RuntimeIdentityConflictError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        super().__init__(message)
+
+
+def _stable_key(value: str | None, field: str) -> str:
+    key = _required_text(value, field)
+    if len(key) > 255:
+        raise ValueError(f"{field} must be 255 characters or less")
+    return key
+
+
+def _canonical_json(value: dict[str, Any]) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _parse_observed_at(value: str | None) -> datetime:
+    if value is None:
+        return utc_now()
+    try:
+        parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("observed_at must be an ISO-8601 datetime") from exc
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def _isoformat_utc(value: datetime) -> str:
+    return value.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _projection_status(source: SourceDocument, event_type: str) -> str:
+    if event_type not in {
+        "verification", "blocker", "patch_summary", "outcome", "decision",
+        "blocker_resolution",
+    }:
+        return "not_applicable"
+    return "processed" if source.processed_at is not None else "failed"
+
+
+async def _validate_runtime_references(
+    session: AsyncSession,
+    *,
+    run: AgentRun,
+    payload: dict[str, Any],
+) -> None:
+    item_ids = {
+        str(item)
+        for key in (
+            "addresses_context_item_ids",
+            "completed_context_item_ids",
+        )
+        for item in payload.get(key) or []
+    }
+    if item_ids:
+        if run.context_pack_id is None:
+            raise ValueError("context item references require a linked ContextPack")
+        known = set(await session.scalars(
+            select(ContextPackItem.manifest_item_id).where(
+                ContextPackItem.context_pack_id == run.context_pack_id,
+                ContextPackItem.manifest_item_id.in_(item_ids),
+            )
+        ))
+        missing = sorted(item_ids - known)
+        if missing:
+            raise ValueError(f"unknown context pack item IDs: {', '.join(missing)}")
+    resolves = str(payload.get("resolves_event_key") or "").strip()
+    if resolves:
+        blocker = await session.scalar(
+            select(RunObservation).where(
+                RunObservation.agent_run_id == run.id,
+                RunObservation.event_key == resolves,
+                RunObservation.event_type == "blocker",
+            )
+        )
+        if blocker is None:
+            raise ValueError("resolves_event_key must identify an earlier blocker in this run")
+    requirement_id = str(payload.get("requirement_id") or "").strip()
+    if requirement_id:
+        if run.context_pack_id is None:
+            raise ValueError("requirement_id requires a linked ContextPack")
+        pack = await session.get(ContextPack, run.context_pack_id)
+        manifest = _stored_manifest(pack) if pack is not None else {}
+        commands = (manifest.get("verification") or {}).get("commands") or []
+        known_requirement_ids = {
+            str(item.get("id")) for item in commands if isinstance(item, dict) and item.get("id")
+        }
+        if requirement_id not in known_requirement_ids:
+            raise ValueError(f"unknown verification requirement_id: {requirement_id}")
+
+
 async def _prepare_task(
-    goal: str,
+    goal: str | None,
     *,
     workspace_id: str | None,
     repo_path: str | None,
     target_model: str | None,
     token_budget: int | None,
+    focus_component_id: str | None = None,
+    objective_origin: str | None = None,
 ) -> list[TextContent]:
     if _ContextCompiler is None:
         detail = (
@@ -540,7 +685,7 @@ async def _prepare_task(
         )
 
     try:
-        if not _none_if_blank(goal):
+        if objective_origin != "source_component" and not _none_if_blank(goal):
             return _error_text("invalid_input", "goal is required")
         if not _none_if_blank(target_model):
             return _error_text("invalid_input", "target_model is required")
@@ -549,13 +694,17 @@ async def _prepare_task(
 
         async with AsyncSessionLocal() as session:
             compiler = _ContextCompiler(session)
-            result = await compiler.compile_context_pack(
-                goal,
-                workspace_id=workspace_id,
-                repo_path=repo_path,
-                target_model=target_model,
-                token_budget=token_budget,
-            )
+            compiler_kwargs = {
+                "workspace_id": workspace_id,
+                "repo_path": repo_path,
+                "target_model": target_model,
+                "token_budget": token_budget,
+            }
+            if focus_component_id is not None:
+                compiler_kwargs["focus_component_id"] = focus_component_id
+            if objective_origin is not None:
+                compiler_kwargs["objective_origin"] = objective_origin
+            result = await compiler.compile_context_pack(goal or "", **compiler_kwargs)
             manifest = _result_manifest(result)
             pack_id = _result_pack_id(result, manifest)
             if pack_id is None:
@@ -588,6 +737,7 @@ async def _prepare_task(
             "markdown": markdown,
             "manifest": manifest,
             "health_score": _result_health_score(result, manifest, pack),
+            "focus": manifest.get("focus"),
         })
     except (RuntimeError, OSError) as exc:
         if "no such table" in str(exc).lower():
@@ -609,16 +759,51 @@ async def _record_agent_run_start(
     base_commit: str | None,
     objective: str | None,
     context_pack_id: str | None,
+    run_key: str | None = None,
 ) -> list[TextContent]:
     try:
         pack_id = _required_uuid(context_pack_id, "context_pack_id")
+        identity = {
+            "context_pack_id": str(pack_id),
+            "tool": _none_if_blank(tool),
+            "model": _none_if_blank(model),
+            "branch": _none_if_blank(branch),
+            "base_commit": _none_if_blank(base_commit),
+            "objective": _none_if_blank(objective),
+        }
+        stable_run_key = _stable_key(
+            run_key or f"derived:{_sha256_text(_canonical_json(identity))}",
+            "run_key",
+        )
         async with AsyncSessionLocal() as session:
             pack = await session.get(ContextPack, pack_id)
             if pack is None:
                 return _error_text("context_pack_not_found", f"ContextPack not found: {context_pack_id}")
+            existing = await session.scalar(
+                select(AgentRun).where(
+                    AgentRun.context_pack_id == pack.id,
+                    AgentRun.run_key == stable_run_key,
+                )
+            )
+            if existing is not None:
+                existing_identity = {
+                    "context_pack_id": str(existing.context_pack_id),
+                    "tool": existing.tool,
+                    "model": existing.model,
+                    "branch": existing.branch,
+                    "base_commit": existing.base_commit,
+                    "objective": existing.objective,
+                }
+                if _canonical_json(existing_identity) != _canonical_json(identity):
+                    return _error_text(
+                        "run_identity_conflict",
+                        f"run_key {stable_run_key!r} already identifies a different run payload.",
+                    )
+                return _json_text({"run_id": str(existing.id), "deduplicated": True})
             run = AgentRun(
                 workspace_id=pack.workspace_id,
                 context_pack_id=pack.id,
+                run_key=stable_run_key,
                 tool=_none_if_blank(tool),
                 model=_none_if_blank(model),
                 objective=_none_if_blank(objective),
@@ -628,9 +813,31 @@ async def _record_agent_run_start(
                 status="running",
             )
             session.add(run)
-            await session.flush()
-            await session.commit()
-            return _json_text({"run_id": str(run.id)})
+            try:
+                await session.flush()
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                existing = await session.scalar(
+                    select(AgentRun).where(
+                        AgentRun.context_pack_id == pack.id,
+                        AgentRun.run_key == stable_run_key,
+                    )
+                )
+                if existing is None:
+                    raise
+                existing_identity = {
+                    "context_pack_id": str(existing.context_pack_id),
+                    "tool": existing.tool,
+                    "model": existing.model,
+                    "branch": existing.branch,
+                    "base_commit": existing.base_commit,
+                    "objective": existing.objective,
+                }
+                if _canonical_json(existing_identity) != _canonical_json(identity):
+                    return _error_text("run_identity_conflict", "run_key was concurrently reused.")
+                return _json_text({"run_id": str(existing.id), "deduplicated": True})
+            return _json_text({"run_id": str(run.id), "deduplicated": False})
     except ValueError as exc:
         return _error_text("invalid_input", str(exc))
     except Exception as exc:
@@ -646,6 +853,10 @@ async def _record_agent_run_finish(
     summary: str | None,
     changed_files: Any,
     verification_results: Any,
+    event_key: str | None = None,
+    observed_at: str | None = None,
+    completed_context_item_ids: Any = None,
+    addresses_context_item_ids: Any = None,
 ) -> list[TextContent]:
     try:
         run_uuid = _required_uuid(run_id, "run_id")
@@ -659,18 +870,13 @@ async def _record_agent_run_finish(
         outcome_summary = _required_text(summary, "summary")
         changed = _string_list(changed_files)
         verification = _verification_result_list(verification_results)
+        completed_ids = _string_list(completed_context_item_ids)
+        addressed_ids = _string_list(addresses_context_item_ids)
 
         async with AsyncSessionLocal() as session:
-            run = await session.scalar(
-                select(AgentRun).where(AgentRun.id == run_uuid).with_for_update()
-            )
+            run = await _load_run(session, run_uuid)
             if run is None:
                 return _error_text("agent_run_not_found", f"AgentRun not found: {run_id}")
-            if run.status != "running" or run.ended_at is not None:
-                return _error_text(
-                    "agent_run_already_finished",
-                    f"AgentRun {run_id} is already terminal with status {run.status}.",
-                )
             if run.context_pack_id is None:
                 return _error_text(
                     "context_pack_not_found",
@@ -683,56 +889,30 @@ async def _record_agent_run_finish(
                     f"ContextPack not found: {run.context_pack_id}",
                 )
 
-            content = _run_outcome_content(
-                status=terminal_status,
-                head_commit=head,
-                summary=outcome_summary,
-                changed_files=changed,
-                verification_results=verification,
-            )
-            revision = await ingest_source_document_revision(
-                session,
-                workspace_id=run.workspace_id,
-                source_type="agent_run_outcome",
-                external_id=f"agent_run_outcome:{run.id}",
-                content=content,
-                author=run.tool or "mcp-agent",
-                metadata_json={
-                    "run_id": str(run.id),
-                    "context_pack_id": str(pack.id),
-                    "status": terminal_status,
-                    "base_commit": run.base_commit,
-                    "head_commit": head,
-                    "changed_files": changed,
-                    "verification_results": verification,
-                    "trust_zone": "semi_trusted_tool",
-                    "ingested_via": "mcp_runtime_bridge",
-                },
-                trust_zone="semi_trusted_tool",
-            )
-            source_doc = revision.document
-            observation = RunObservation(
-                id=uuid4(),
-                agent_run_id=run.id,
-                source_document_id=source_doc.id,
-                event_type="outcome",
-                content=outcome_summary,
-                files_json=json.dumps(changed, sort_keys=True),
-            )
-            session.add(observation)
+            try:
+                source_doc, observation, deduplicated, projection_status = await _record_observation(
+                    session,
+                    run=run,
+                    event_key=event_key,
+                    event_type="outcome",
+                    content=outcome_summary,
+                    files=changed,
+                    observed_at=observed_at,
+                    extra_payload={
+                        "status": terminal_status,
+                        "head_commit": head,
+                        "verification_results": verification,
+                        "completed_context_item_ids": completed_ids,
+                        "addresses_context_item_ids": addressed_ids,
+                    },
+                )
+            except RuntimeIdentityConflictError as exc:
+                return _error_text(exc.code, str(exc))
 
             run.head_commit = head
-            run.ended_at = utc_now()
+            run.ended_at = observation.observed_at or utc_now()
             run.status = terminal_status
-            try:
-                await session.flush()
-                await session.commit()
-            except IntegrityError:
-                await session.rollback()
-                return _error_text(
-                    "agent_run_already_finished",
-                    f"AgentRun {run_id} already has a terminal outcome.",
-                )
+            await session.commit()
             return _json_text({
                 "run_id": str(run.id),
                 "context_pack_id": str(pack.id),
@@ -740,7 +920,11 @@ async def _record_agent_run_finish(
                 "base_commit": run.base_commit,
                 "head_commit": run.head_commit,
                 "outcome_source_document_id": str(source_doc.id),
+                "source_document_id": str(source_doc.id),
+                "source_revision_number": source_doc.revision_number,
                 "run_observation_id": str(observation.id),
+                "deduplicated": deduplicated,
+                "projection_status": projection_status,
             })
     except ValueError as exc:
         return _error_text("invalid_input", str(exc))
@@ -757,27 +941,53 @@ async def _record_agent_event(
     files: Any = None,
     command: str | None = None,
     exit_code: int | None = None,
+    event_key: str | None = None,
+    observed_at: str | None = None,
+    requirement_id: str | None = None,
+    addresses_context_item_ids: Any = None,
+    resolves_event_key: str | None = None,
 ) -> list[TextContent]:
     try:
         run_uuid = _required_uuid(run_id, "run_id")
+        normalized_type = _required_text(event_type, "event_type").strip().lower()
+        command_text = _none_if_blank(command)
+        if normalized_type == "verification" and (
+            command_text is None
+            or not isinstance(exit_code, int)
+            or isinstance(exit_code, bool)
+        ):
+            raise ValueError("verification requires command and integer exit_code")
+        if normalized_type == "blocker_resolution" and not _none_if_blank(resolves_event_key):
+            raise ValueError("blocker_resolution requires resolves_event_key")
         async with AsyncSessionLocal() as session:
             run = await _load_run(session, run_uuid)
             if run is None:
                 return _error_text("agent_run_not_found", f"AgentRun not found: {run_id}")
-            source_doc, observation = await _record_observation(
-                session,
-                run=run,
-                event_type=_required_text(event_type, "event_type"),
-                content=_required_text(content, "content"),
-                files=_string_list(files),
-                command=_none_if_blank(command),
-                exit_code=exit_code,
-                source_type="agent_run_event",
-            )
-            await session.commit()
+            try:
+                source_doc, observation, deduplicated, projection_status = await _record_observation(
+                    session,
+                    run=run,
+                    event_key=event_key,
+                    event_type=normalized_type,
+                    content=_required_text(content, "content"),
+                    files=_string_list(files),
+                    command=command_text,
+                    exit_code=exit_code,
+                    observed_at=observed_at,
+                    extra_payload={
+                        "requirement_id": _none_if_blank(requirement_id),
+                        "addresses_context_item_ids": _string_list(addresses_context_item_ids),
+                        "resolves_event_key": _none_if_blank(resolves_event_key),
+                    },
+                )
+            except RuntimeIdentityConflictError as exc:
+                return _error_text(exc.code, str(exc))
             return _json_text({
                 "source_document_id": str(source_doc.id),
+                "source_revision_number": source_doc.revision_number,
                 "run_observation_id": str(observation.id),
+                "deduplicated": deduplicated,
+                "projection_status": projection_status,
             })
     except ValueError as exc:
         return _error_text("invalid_input", str(exc))
@@ -793,6 +1003,7 @@ async def _record_decision(
     rationale: str | None,
     files: Any,
     evidence: str | None,
+    event_key: str | None = None,
 ) -> list[TextContent]:
     try:
         decision_text = _required_text(decision, "decision")
@@ -806,55 +1017,33 @@ async def _record_decision(
             run = await _load_run(session, run_uuid)
             if run is None:
                 return _error_text("agent_run_not_found", f"AgentRun not found: {run_id}")
-            source_doc, observation = await _record_observation(
-                session,
-                run=run,
-                event_type="decision",
-                content=content,
-                files=file_list,
-                source_type="agent_decision",
+            try:
+                source_doc, observation, deduplicated, projection_status = await _record_observation(
+                    session,
+                    run=run,
+                    event_key=event_key,
+                    event_type="decision",
+                    content=content,
+                    files=file_list,
+                    extra_payload={
+                        "decision": decision_text,
+                        "rationale": rationale_text,
+                        "evidence": evidence_text,
+                    },
+                )
+            except RuntimeIdentityConflictError as exc:
+                return _error_text(exc.code, str(exc))
+            projected = await session.scalar(
+                select(Component).where(Component.source_document_id == source_doc.id).limit(1)
             )
-            fact = _RuntimeFact(
-                model_name="Decision",
-                name=_title("Decision", decision_text),
-                value=decision_text,
-                fact_type="decision",
-                confidence=0.82,
-                excerpt=evidence_text,
-                provenance=_provenance(run, source_doc, observation),
-            )
-            claim_result = await upsert_claim_for_fact(
-                session,
-                source_document=source_doc,
-                fact=fact,
-                component_status="active",
-                extraction_method="mcp_runtime",
-            )
-            model = await _ensure_model(session, "Decision")
-            component = Component(
-                workspace_id=run.workspace_id,
-                model_id=model.id,
-                source_document_id=source_doc.id,
-                claim_id=claim_result.claim.id,
-                identity_key=claim_result.claim.identity_key,
-                name=fact.name,
-                value=decision_text,
-                fact_type="decision",
-                temporal="current",
-                confidence=fact.confidence,
-                authority_weight=claim_result.evidence.authority_weight,
-                status=claim_result.claim.status,
-                provenance=fact.provenance,
-                excerpt=evidence_text,
-            )
-            session.add(component)
-            await session.flush()
-            await session.commit()
             return _json_text({
-                "component_id": str(component.id),
-                "claim_id": str(claim_result.claim.id),
+                "component_id": str(projected.id) if projected else None,
+                "claim_id": str(projected.claim_id) if projected and projected.claim_id else None,
                 "source_document_id": str(source_doc.id),
+                "source_revision_number": source_doc.revision_number,
                 "run_observation_id": str(observation.id),
+                "deduplicated": deduplicated,
+                "projection_status": projection_status,
             })
     except ValueError as exc:
         return _error_text("invalid_input", str(exc))
@@ -870,6 +1059,7 @@ async def _record_blocker(
     severity: str | None,
     attempted_fix: str | None,
     evidence: str | None,
+    event_key: str | None = None,
 ) -> list[TextContent]:
     try:
         blocker_text = _required_text(blocker, "blocker")
@@ -877,71 +1067,38 @@ async def _record_blocker(
         attempted_fix_text = _required_text(attempted_fix, "attempted_fix")
         evidence_text = _required_text(evidence, "evidence")
         run_uuid = _required_uuid(run_id, "run_id")
-        content = _blocker_content(
-            blocker_text,
-            severity_text,
-            attempted_fix_text,
-            evidence_text,
-        )
-
         async with AsyncSessionLocal() as session:
             run = await _load_run(session, run_uuid)
             if run is None:
                 return _error_text("agent_run_not_found", f"AgentRun not found: {run_id}")
-            source_doc, observation = await _record_observation(
-                session,
-                run=run,
-                event_type="blocker",
-                content=content,
-                files=[],
-                source_type="agent_blocker",
-                extra_metadata={"severity": severity_text},
+            try:
+                source_doc, observation, deduplicated, projection_status = await _record_observation(
+                    session,
+                    run=run,
+                    event_key=event_key,
+                    event_type="blocker",
+                    content=blocker_text,
+                    files=[],
+                    extra_metadata={"severity": severity_text},
+                    extra_payload={
+                        "severity": severity_text,
+                        "attempted_fix": attempted_fix_text,
+                        "evidence": evidence_text,
+                    },
+                )
+            except RuntimeIdentityConflictError as exc:
+                return _error_text(exc.code, str(exc))
+            projected = await session.scalar(
+                select(Component).where(Component.source_document_id == source_doc.id).limit(1)
             )
-            value = (
-                f"{blocker_text} Severity: {severity_text}. "
-                f"Attempted fix: {attempted_fix_text}"
-            )
-            fact = _RuntimeFact(
-                model_name="Risk",
-                name=_title("Blocker", blocker_text),
-                value=value,
-                fact_type="blocker",
-                confidence=0.8,
-                excerpt=evidence_text,
-                provenance=_provenance(run, source_doc, observation),
-            )
-            claim_result = await upsert_claim_for_fact(
-                session,
-                source_document=source_doc,
-                fact=fact,
-                component_status="active",
-                extraction_method="mcp_runtime",
-            )
-            model = await _ensure_model(session, "Risk")
-            component = Component(
-                workspace_id=run.workspace_id,
-                model_id=model.id,
-                source_document_id=source_doc.id,
-                claim_id=claim_result.claim.id,
-                identity_key=claim_result.claim.identity_key,
-                name=fact.name,
-                value=value,
-                fact_type="blocker",
-                temporal="current",
-                confidence=fact.confidence,
-                authority_weight=claim_result.evidence.authority_weight,
-                status=claim_result.claim.status,
-                provenance=fact.provenance,
-                excerpt=evidence_text,
-            )
-            session.add(component)
-            await session.flush()
-            await session.commit()
             return _json_text({
-                "component_id": str(component.id),
-                "claim_id": str(claim_result.claim.id),
+                "component_id": str(projected.id) if projected else None,
+                "claim_id": str(projected.claim_id) if projected and projected.claim_id else None,
                 "source_document_id": str(source_doc.id),
+                "source_revision_number": source_doc.revision_number,
                 "run_observation_id": str(observation.id),
+                "deduplicated": deduplicated,
+                "projection_status": projection_status,
             })
     except ValueError as exc:
         return _error_text("invalid_input", str(exc))
@@ -956,29 +1113,39 @@ async def _record_patch_summary(
     changed_files: Any,
     summary: str | None,
     tests_run: Any,
+    event_key: str | None = None,
+    addresses_context_item_ids: Any = None,
 ) -> list[TextContent]:
     try:
         run_uuid = _required_uuid(run_id, "run_id")
         changed = _string_list(changed_files)
         tests = _string_list(tests_run)
-        content = _patch_summary_content(_required_text(summary, "summary"), changed, tests)
         async with AsyncSessionLocal() as session:
             run = await _load_run(session, run_uuid)
             if run is None:
                 return _error_text("agent_run_not_found", f"AgentRun not found: {run_id}")
-            source_doc, observation = await _record_observation(
-                session,
-                run=run,
-                event_type="patch_summary",
-                content=content,
-                files=changed,
-                source_type="agent_patch_summary",
-                extra_metadata={"tests_run": tests},
-            )
-            await session.commit()
+            try:
+                source_doc, observation, deduplicated, projection_status = await _record_observation(
+                    session,
+                    run=run,
+                    event_key=event_key,
+                    event_type="patch_summary",
+                    content=_required_text(summary, "summary"),
+                    files=changed,
+                    extra_metadata={"tests_run": tests},
+                    extra_payload={
+                        "tests_run": tests,
+                        "addresses_context_item_ids": _string_list(addresses_context_item_ids),
+                    },
+                )
+            except RuntimeIdentityConflictError as exc:
+                return _error_text(exc.code, str(exc))
             return _json_text({
                 "source_document_id": str(source_doc.id),
+                "source_revision_number": source_doc.revision_number,
                 "run_observation_id": str(observation.id),
+                "deduplicated": deduplicated,
+                "projection_status": projection_status,
             })
     except ValueError as exc:
         return _error_text("invalid_input", str(exc))
@@ -1580,14 +1747,58 @@ async def _record_observation(
     session: AsyncSession,
     *,
     run: AgentRun,
+    event_key: str | None,
     event_type: str,
     content: str,
     files: list[str],
     command: str | None = None,
     exit_code: int | None = None,
-    source_type: str,
+    observed_at: str | None = None,
     extra_metadata: dict[str, Any] | None = None,
-) -> tuple[SourceDocument, RunObservation]:
+    extra_payload: dict[str, Any] | None = None,
+) -> tuple[SourceDocument, RunObservation, bool, str]:
+    occurrence_time = _parse_observed_at(observed_at)
+    payload: dict[str, Any] = {
+        "schema_version": "run_observation.v1",
+        "event_type": event_type,
+        "content": content,
+        "files": files,
+        "command": command,
+        "exit_code": exit_code,
+    }
+    if observed_at is not None:
+        payload["observed_at"] = _isoformat_utc(occurrence_time)
+    if extra_payload:
+        payload.update(extra_payload)
+    payload_json = _canonical_json(payload)
+    stable_key = _stable_key(
+        event_key or f"derived:{_sha256_text(payload_json)}",
+        "event_key",
+    )
+
+    existing = await session.scalar(
+        select(RunObservation).where(
+            RunObservation.agent_run_id == run.id,
+            RunObservation.event_key == stable_key,
+        )
+    )
+    if existing is not None:
+        if existing.payload_json != payload_json:
+            raise RuntimeIdentityConflictError(
+                "event_identity_conflict",
+                f"event_key {stable_key!r} already identifies a different payload.",
+            )
+        source = await session.get(SourceDocument, existing.source_document_id)
+        if source is None:
+            raise RuntimeError("idempotent observation is missing its source document")
+        projection_status = await _ensure_runtime_projection(
+            session,
+            source=source,
+            event_type=event_type,
+        )
+        return source, existing, True, projection_status
+
+    await _validate_runtime_references(session, run=run, payload=payload)
     metadata = {
         "run_id": str(run.id),
         "event_type": event_type,
@@ -1596,40 +1807,97 @@ async def _record_observation(
         "exit_code": exit_code,
         "trust_zone": "semi_trusted_tool",
         "ingested_via": "mcp_runtime_bridge",
+        "payload": payload,
     }
     if extra_metadata:
         metadata.update(extra_metadata)
-    source_doc = SourceDocument(
-        id=uuid4(),
+    revision = await ingest_source_document_revision(
+        session,
         workspace_id=run.workspace_id,
-        source_type=source_type,
-        external_id=f"{source_type}:{run.id}:{uuid4()}",
-        content=_event_source_content(
-            event_type=event_type,
-            content=content,
-            files=files,
-            command=command,
-            exit_code=exit_code,
+        source_type="agent_run_observation",
+        external_id=f"agent_runtime:{run.id}:{stable_key}",
+        content=(
+            _event_source_content(
+                event_type=event_type,
+                content=content,
+                files=files,
+                command=command,
+                exit_code=exit_code,
+            )
+            + f"\nStructured payload: {payload_json}"
         ),
         author=run.tool or "mcp-agent",
-        metadata_json=json.dumps(metadata, sort_keys=True),
+        metadata_json=metadata,
         trust_zone="semi_trusted_tool",
     )
-    session.add(source_doc)
-    await session.flush()
+    source_doc = revision.document
     observation = RunObservation(
         id=uuid4(),
         agent_run_id=run.id,
         source_document_id=source_doc.id,
         event_type=event_type,
+        event_key=stable_key,
+        payload_json=payload_json,
+        observed_at=occurrence_time,
         content=content,
         files_json=json.dumps(files, sort_keys=True),
         command=command,
         exit_code=exit_code,
     )
     session.add(observation)
-    await session.flush()
-    return source_doc, observation
+    try:
+        await session.flush()
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        existing = await session.scalar(
+            select(RunObservation).where(
+                RunObservation.agent_run_id == run.id,
+                RunObservation.event_key == stable_key,
+            )
+        )
+        if existing is None or existing.payload_json != payload_json:
+            raise RuntimeIdentityConflictError(
+                "event_identity_conflict",
+                f"event_key {stable_key!r} was concurrently used for different evidence.",
+            )
+        source = await session.get(SourceDocument, existing.source_document_id)
+        if source is None:
+            raise RuntimeError("idempotent observation is missing its source document")
+        projection_status = await _ensure_runtime_projection(
+            session,
+            source=source,
+            event_type=event_type,
+        )
+        return source, existing, True, projection_status
+
+    projection_status = await _ensure_runtime_projection(
+        session,
+        source=source_doc,
+        event_type=event_type,
+    )
+    return source_doc, observation, False, projection_status
+
+
+async def _ensure_runtime_projection(
+    session: AsyncSession,
+    *,
+    source: SourceDocument,
+    event_type: str,
+) -> str:
+    status = _projection_status(source, event_type)
+    if status != "failed":
+        return status
+    source_id = source.id
+    try:
+        await IngestionService(session).process_document(source_id)
+        await session.commit()
+        await session.refresh(source)
+        return _projection_status(source, event_type)
+    except Exception:
+        await session.rollback()
+        logger.exception("runtime observation projection failed for %s", source_id)
+        return "failed"
 
 
 async def _status_source_document(

@@ -467,6 +467,7 @@ async def test_mcp_runtime_write_tools_persist_source_backed_loop(
         base_commit="abc123",
         objective="finish runtime bridge",
         context_pack_id=str(pack.id),
+        run_key="runtime-bridge-1",
     )
     run_id = json.loads(run_result[0].text)["run_id"]
 
@@ -477,6 +478,7 @@ async def test_mcp_runtime_write_tools_persist_source_backed_loop(
         files=["tests/test_mcp.py"],
         command="pytest -q tests/test_mcp.py",
         exit_code=0,
+        event_key="pytest-1",
     )
     event = json.loads(event_result[0].text)
     source_doc = await db_session.get(SourceDocument, UUID(event["source_document_id"]))
@@ -490,6 +492,7 @@ async def test_mcp_runtime_write_tools_persist_source_backed_loop(
         rationale="MCP must not duplicate compiler logic.",
         files=["app/mcp/server.py"],
         evidence="MCP must not duplicate compiler logic.",
+        event_key="decision-1",
     )
     decision = json.loads(decision_result[0].text)
     assert decision["component_id"]
@@ -501,6 +504,7 @@ async def test_mcp_runtime_write_tools_persist_source_backed_loop(
         severity="high",
         attempted_fix="Verified AgentRun and RunObservation tables exist.",
         evidence="Runtime bridge waits on persistence tables.",
+        event_key="blocker-1",
     )
     blocker = json.loads(blocker_result[0].text)
     blocker_component = await db_session.get(Component, UUID(blocker["component_id"]))
@@ -512,6 +516,7 @@ async def test_mcp_runtime_write_tools_persist_source_backed_loop(
         changed_files=["app/mcp/server.py", "tests/test_mcp.py"],
         summary="Added MCP runtime bridge tools.",
         tests_run=["pytest -q tests/test_mcp.py"],
+        event_key="patch-1",
     )
     patch = json.loads(patch_result[0].text)
     assert patch["source_document_id"]
@@ -527,6 +532,7 @@ async def test_mcp_runtime_write_tools_persist_source_backed_loop(
             "exit_code": 0,
             "status": "passed",
         }],
+        event_key="outcome",
     )
     finished = json.loads(finish_result[0].text)
     assert finished["context_pack_id"] == str(pack.id)
@@ -545,7 +551,7 @@ async def test_mcp_runtime_write_tools_persist_source_backed_loop(
         UUID(finished["outcome_source_document_id"]),
     )
     assert outcome_doc is not None
-    assert outcome_doc.source_type == "agent_run_outcome"
+    assert outcome_doc.source_type == "agent_run_observation"
     assert outcome_doc.revision_number == 1
     assert "pytest -q tests/test_mcp.py" in outcome_doc.content
     assert outcome_doc.content_sha256
@@ -556,18 +562,38 @@ async def test_mcp_runtime_write_tools_persist_source_backed_loop(
     assert outcome_observation.agent_run_id == finished_run.id
     assert outcome_observation.source_document_id == outcome_doc.id
     assert outcome_observation.event_type == "outcome"
+    assert outcome_observation.event_key == "outcome"
+    assert json.loads(outcome_observation.payload_json)["status"] == "completed"
 
     duplicate_finish = await mcp_server._record_agent_run_finish(
         run_id=run_id,
         status="completed",
         head_commit="def456",
-        summary="Duplicate finish should not create evidence.",
-        changed_files=[],
-        verification_results=[],
+        summary="Runtime bridge finished with focused tests passing.",
+        changed_files=["app/mcp/server.py", "tests/test_mcp.py"],
+        verification_results=[{
+            "command": "pytest -q tests/test_mcp.py",
+            "exit_code": 0,
+            "status": "passed",
+        }],
+        event_key="outcome",
     )
     duplicate_data = json.loads(duplicate_finish[0].text)
-    assert duplicate_data["ok"] is False
-    assert duplicate_data["error"]["code"] == "agent_run_already_finished"
+    assert duplicate_data["deduplicated"] is True
+    assert duplicate_data["run_observation_id"] == finished["run_observation_id"]
+
+    conflicting_finish = await mcp_server._record_agent_run_finish(
+        run_id=run_id,
+        status="completed",
+        head_commit="def456",
+        summary="Changed payload under the same event identity.",
+        changed_files=[],
+        verification_results=[],
+        event_key="outcome",
+    )
+    conflict_data = json.loads(conflicting_finish[0].text)
+    assert conflict_data["ok"] is False
+    assert conflict_data["error"]["code"] == "event_identity_conflict"
 
     verify_result = await mcp_server._verify_context_item(
         component_id=decision["component_id"],
@@ -595,3 +621,62 @@ async def test_mcp_runtime_write_tools_persist_source_backed_loop(
         await db_session.scalars(select(Component).where(Component.fact_type == "decision"))
     ).all()
     assert any(item.source_document_id for item in decisions)
+
+
+async def test_idempotent_runtime_retry_retries_failed_projection(db_session, monkeypatch):
+    workspace = Workspace(id=uuid4(), name="Projection retry", slug=f"retry-{uuid4()}")
+    db_session.add(workspace)
+    await db_session.flush()
+    pack_id = uuid4()
+    await _insert_context_pack(
+        db_session,
+        pack_id=pack_id,
+        workspace_id=workspace.id,
+        objective="retry failed runtime projection",
+        target_model="gpt-5",
+        token_budget=2000,
+        markdown="# Context Pack v2",
+        manifest=json.dumps({"schema_version": "context_pack.v2"}),
+    )
+    mcp_server = _patch_mcp_session(monkeypatch, db_session)
+    started = json.loads((await mcp_server._record_agent_run_start(
+        tool="codex",
+        model="gpt-5",
+        branch="codex/projection-retry",
+        base_commit="abc123",
+        objective="retry failed runtime projection",
+        context_pack_id=str(pack_id),
+        run_key="projection-retry",
+    ))[0].text)
+
+    original_process = mcp_server.IngestionService.process_document
+    attempts = 0
+
+    async def flaky_process(service, source_document_id):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("temporary projection failure")
+        return await original_process(service, source_document_id)
+
+    monkeypatch.setattr(mcp_server.IngestionService, "process_document", flaky_process)
+    first = json.loads((await mcp_server._record_patch_summary(
+        run_id=started["run_id"],
+        changed_files=["app/mcp/server.py"],
+        summary="Retry projection safely.",
+        tests_run=["pytest -q tests/test_mcp.py"],
+        event_key="patch",
+    ))[0].text)
+    retry = json.loads((await mcp_server._record_patch_summary(
+        run_id=started["run_id"],
+        changed_files=["app/mcp/server.py"],
+        summary="Retry projection safely.",
+        tests_run=["pytest -q tests/test_mcp.py"],
+        event_key="patch",
+    ))[0].text)
+
+    assert first["projection_status"] == "failed"
+    assert retry["deduplicated"] is True
+    assert retry["projection_status"] == "processed"
+    assert retry["run_observation_id"] == first["run_observation_id"]
+    assert attempts == 2
