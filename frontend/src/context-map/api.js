@@ -31,7 +31,22 @@ export function useBuildContext(workspaceId) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["context-digest", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["knowledge-graph"] });
-      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+}
+
+export function useIndexProject(workspaceId) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ repo_path }) => api.post("/repo/index", {
+      workspace_id: workspaceId,
+      repo_path,
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["context-digest", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["knowledge-graph"] });
+      queryClient.invalidateQueries({ queryKey: ["workspaces"] });
     },
   });
 }

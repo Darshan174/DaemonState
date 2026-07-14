@@ -46,7 +46,7 @@ contract, extraction behavior, and current limits.
 
 `POST /api/seed-demo` is a product demo path, not connector authentication. It
 creates source-backed example documents tagged with `demo_seed=true` and a
-workspace ID, then processes them synchronously so Board, Explore, Ask, and MCP
+workspace ID, then processes them synchronously so the Project map, Ask, and MCP
 have useful graph data immediately.
 
 Seeded source families:

@@ -49,6 +49,7 @@ export const TONE_CLASSES = {
 
 const GRAPH_LANES = [
   { id: "sessions", label: "AI sessions", description: "Imported coding sessions in this workspace" },
+  { id: "architecture", label: "System", description: "Deterministic areas discovered in the selected repository" },
   { id: "decisions", label: "Decisions", description: "Recorded choices and claims that guide the work" },
   { id: "prs", label: "Pull requests", description: "Observed pull requests from imported provider snapshots" },
   { id: "issues", label: "Issues & blockers", description: "Explicit issues, blockers, and risks" },
@@ -268,15 +269,43 @@ export function cardRelationships(card, cards = [], links = []) {
     }));
 }
 
-export function buildEvidenceGraph(digest, { limitPerLane = 6 } = {}) {
-  const allCards = [...(digest?.cards || [])]
+export function buildEvidenceGraph(
+  digest,
+  { limitPerLane = 6, laneLimits = {}, prioritizedCardIds = new Set() } = {},
+) {
+  const candidateCards = [...(digest?.cards || [])]
     .filter((card) => card?.id && hasUsefulCard(card));
-  const cardIds = new Set(allCards.map((card) => card.id));
+  const candidateIds = new Set(candidateCards.map((card) => card.id));
   const factualLinks = (digest?.links || []).filter((link) => (
-    cardIds.has(link?.source_card_id)
-    && cardIds.has(link?.target_card_id)
+    candidateIds.has(link?.source_card_id)
+    && candidateIds.has(link?.target_card_id)
     && link?.source_card_id !== link?.target_card_id
   ));
+  const linkedIds = new Set(factualLinks.flatMap((link) => [link.source_card_id, link.target_card_id]));
+  const namedSourceRoots = new Set(candidateCards
+    .filter((card) => ["agent_session", "pull_request", "issue"].includes(card.category))
+    .map(cardSourceIdentity)
+    .filter(Boolean));
+  const bestSupportingCardBySource = new Map();
+  candidateCards.forEach((card) => {
+    if (card.category !== "supporting_evidence" || linkedIds.has(card.id)) return;
+    const sourceIdentity = cardSourceIdentity(card);
+    if (!sourceIdentity || namedSourceRoots.has(sourceIdentity)) return;
+    const current = bestSupportingCardBySource.get(sourceIdentity);
+    if (!current || supportingVisualScore(card) > supportingVisualScore(current)) {
+      bestSupportingCardBySource.set(sourceIdentity, card);
+    }
+  });
+  const allCards = candidateCards.filter((card) => {
+    if (card.category !== "supporting_evidence") return true;
+    if (isGenericSourceHub(card)) return false;
+    if (linkedIds.has(card.id)) return true;
+    if (supportingRemoteMatch(card)) return false;
+    const sourceIdentity = cardSourceIdentity(card);
+    if (!sourceIdentity) return true;
+    if (namedSourceRoots.has(sourceIdentity)) return false;
+    return bestSupportingCardBySource.get(sourceIdentity)?.id === card.id;
+  });
   const lanes = GRAPH_LANES.map((lane) => ({ ...lane, cards: [] }));
 
   allCards.forEach((card) => {
@@ -286,8 +315,8 @@ export function buildEvidenceGraph(digest, { limitPerLane = 6 } = {}) {
   lanes.forEach((lane) => {
     lane.totalCount = lane.cards.length;
     lane.cards = lane.cards
-      .sort((a, b) => (b.attention_score || 0) - (a.attention_score || 0))
-      .slice(0, limitPerLane);
+      .sort((a, b) => compareMapCards(a, b, prioritizedCardIds))
+      .slice(0, laneLimits[lane.id] ?? limitPerLane);
   });
   const cards = lanes.flatMap((lane) => lane.cards);
   const visibleIds = new Set(cards.map((card) => card.id));
@@ -311,15 +340,72 @@ export function buildEvidenceGraph(digest, { limitPerLane = 6 } = {}) {
   };
 }
 
+function compareMapCards(a, b, prioritizedCardIds) {
+  const prioritized = Number(prioritizedCardIds.has(b.id)) - Number(prioritizedCardIds.has(a.id));
+  if (prioritized) return prioritized;
+  if (a.category === "agent_session" && b.category === "agent_session") {
+    const relevance = { relevant: 3, unknown: 2, not_relevant: 1 };
+    const relevanceOrder = (relevance[b.workspace_relevance?.status] || 0) - (relevance[a.workspace_relevance?.status] || 0);
+    if (relevanceOrder) return relevanceOrder;
+  }
+  if (a.category === "code_area" && b.category === "code_area") {
+    const rootOrder = Number(/Repository:/i.test(b.title || "")) - Number(/Repository:/i.test(a.title || ""));
+    if (rootOrder) return rootOrder;
+  }
+  return (b.attention_score || 0) - (a.attention_score || 0)
+    || String(a.title || "").localeCompare(String(b.title || ""));
+}
+
 export function graphLaneForCard(card) {
   const category = card?.category;
   if (["agent_session", "session"].includes(category)) return "sessions";
+  if (category === "code_area") return "architecture";
   if (category === "decision") return "decisions";
   if (category === "pull_request") return "prs";
   if (["issue", "blocker"].includes(category)) return "issues";
   if (category === "document_finding") return "documents";
   if (category === "task") return "next_tasks";
   return "other";
+}
+
+function singleLine(value) {
+  return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function cardSourceIdentity(card) {
+  return card?.source_snapshot?.source_document_id
+    || card?.provenance?.[0]?.source_document_id
+    || card?.source_ids?.[0]
+    || null;
+}
+
+function supportingVisualScore(card) {
+  const title = singleLine(card?.title).toLowerCase();
+  const summary = singleLine(card?.summary).toLowerCase();
+  let score = Math.min(240, summary.length) + Math.min(120, title.length);
+  if (/\bhub for messages\b|^slack channel\b/.test(`${title} ${summary}`)) score -= 500;
+  if (/^slack:|^message:/.test(title)) score += 160;
+  return score;
+}
+
+function isGenericSourceHub(card) {
+  const title = singleLine(card?.title);
+  const summary = singleLine(card?.summary);
+  const channelHeading = /^(?:slack\s+)?channel\s*[:#]/i;
+  return channelHeading.test(title)
+    && (
+      !summary
+      || /\bhub for messages\b/i.test(summary)
+      || channelHeading.test(summary)
+      || cleanDisplayText(title).toLowerCase() === cleanDisplayText(summary).toLowerCase()
+    );
+}
+
+function supportingRemoteMatch(card) {
+  return [card?.title, card?.summary]
+    .map(singleLine)
+    .map((value) => value.match(/(?:^|\b)(PR|Issue)\s*#?(\d+)/i))
+    .find(Boolean);
 }
 
 function uniqueBySource(cards) {
@@ -443,8 +529,8 @@ export function cleanDisplayText(value) {
     .replace(/\s*[-\u2013\u2014]\s*/g, " - ")
     .replace(/\s+/g, " ")
     .trim()
-    .replace(/^[./\\\s:;-]+/, "")
-    .replace(/[./\\\s:;-]+$/, "");
+    .replace(/^[,./\\\s:;!?…\-\u2013\u2014]+/, "")
+    .replace(/[,./\\\s:;!?…\-\u2013\u2014]+$/, "");
 }
 
 function buildNextAgentPrompt({ groups, workspaceName, health }) {

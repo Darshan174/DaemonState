@@ -32,6 +32,7 @@ from app.services.workspace_scope import (
 )
 from app.services.evidence import sha256_text
 from app.services.session_summary import derive_session_topic
+from app.services.project_scope import workspace_references, workspace_relevance
 from app.taxonomy import relationship_display_label, source_type_display
 from app.time import utc_now
 
@@ -61,7 +62,7 @@ BadgeTone = Literal["gray", "blue", "green", "amber", "red", "violet"]
 HealthStatus = Literal["empty", "healthy", "needs_review", "critical"]
 CardCategory = Literal[
     "agent_session", "decision", "pull_request", "issue", "blocker",
-    "document_finding", "supporting_evidence",
+    "code_area", "document_finding", "task", "supporting_evidence",
 ]
 
 
@@ -179,6 +180,9 @@ class DigestLink(BaseModel):
     label: str
     status: str
     confidence: float
+    origin: str
+    evidence: str
+    source_component_document_id: str | None = None
 
 
 class RecommendedAction(BaseModel):
@@ -239,6 +243,7 @@ async def get_context_digest(
     components = list(await session.scalars(stmt)) if current_source_ids else []
 
     comp_ids = {component.id for component in components}
+    components_by_id = {component.id: component for component in components}
     relationships: list[Relationship] = []
     if comp_ids:
         rel_stmt = (
@@ -265,11 +270,19 @@ async def get_context_digest(
     blocker_component_ids = _blocked_component_ids(factual_relationships)
     evidence_by_component = await _evidence_by_component(session, components)
     github_last_sync = await _github_last_sync(session, workspace_id_str)
-    workspace_repositories, workspace_paths = await _workspace_references(
+    workspace_repositories, workspace_paths, workspace_commits = await workspace_references(
         session, workspace_id_str
     )
 
-    components = [component for component in components if not _is_digest_noise_component(component)]
+    # Session roots are the durable representation of an imported agent run.
+    # Their transcript preview can legitimately contain prompt-like language,
+    # so generic noise rules must only apply to extracted child facts.
+    components = [
+        component
+        for component in components
+        if (component.fact_type or "").lower() in {"session_root", "ai_session"}
+        or not _is_digest_noise_component(component)
+    ]
 
     cards: list[ContextCard] = []
     session_source_ids: set[UUID] = set()
@@ -286,17 +299,67 @@ async def get_context_digest(
             github_last_sync=github_last_sync,
             workspace_repositories=workspace_repositories,
             workspace_paths=workspace_paths,
+            workspace_commits=workspace_commits,
             conflict=component.id in conflict_component_ids,
             relationship_blocker=component.id in blocker_component_ids,
         )
+        is_session_source = _is_agent_source(component)
+        is_session_root = (component.fact_type or "").lower() in {"session_root", "ai_session"}
+        if (
+            workspace_id_str
+            and is_session_source
+            and card.workspace_relevance.status != "relevant"
+            and not is_session_root
+        ):
+            if card.workspace_relevance.status == "not_relevant":
+                excluded_irrelevant_sources.add(component.source_document_id)
+            continue
         if card.workspace_relevance.status == "not_relevant":
             excluded_irrelevant_sources.add(component.source_document_id)
-            continue
         cards.append(card)
-    cards.sort(key=lambda card: (card.attention_score, card.created_at or datetime.min), reverse=True)
-    cards = cards[:limit]
+    relevance_priority = {"relevant": 2, "unknown": 1, "not_relevant": 0}
+    all_session_roots = [card for card in cards if card.category == "agent_session"]
+    candidate_session_count = len(all_session_roots)
+    unknown_relevance_source_count = len({
+        card.source_snapshot.source_document_id
+        for card in all_session_roots
+        if card.workspace_relevance.status == "unknown"
+    })
 
-    visible_card_ids = {card.id for card in cards}
+    # A digest limit must not silently erase peripheral sessions behind a large
+    # number of relevant extracted facts. Reserve space for session roots first,
+    # ordered by attention/recency without using relevance as a visibility gate.
+    all_session_roots.sort(
+        key=lambda card: (
+            card.attention_score,
+            card.created_at or datetime.min,
+        ),
+        reverse=True,
+    )
+    supporting_cards = [card for card in cards if card.category != "agent_session"]
+    supporting_cards.sort(
+        key=lambda card: (
+            relevance_priority.get(card.workspace_relevance.status, 0),
+            card.attention_score,
+            card.created_at or datetime.min,
+        ),
+        reverse=True,
+    )
+    cards = all_session_roots[:limit]
+    cards.extend(supporting_cards[:max(0, limit - len(cards))])
+    cards.sort(
+        key=lambda card: (
+            relevance_priority.get(card.workspace_relevance.status, 0),
+            card.attention_score,
+            card.created_at or datetime.min,
+        ),
+        reverse=True,
+    )
+
+    visible_card_ids = {
+        card.id for card in cards
+        if not workspace_id_str or card.workspace_relevance.status == "relevant"
+    }
     links = [
         DigestLink(
             id=f"link:{rel.id}",
@@ -307,25 +370,42 @@ async def get_context_digest(
             label=relationship_display_label(rel.relationship_type, getattr(rel, "origin", "proposed")),
             status=rel.status,
             confidence=rel.confidence,
+            origin=rel.origin or "proposed",
+            evidence=rel.evidence,
+            source_component_document_id=(
+                str(components_by_id[rel.source_component_id].source_document_id)
+                if components_by_id.get(rel.source_component_id)
+                and components_by_id[rel.source_component_id].source_document_id
+                else None
+            ),
         )
         for rel in factual_relationships
         if f"component:{rel.source_component_id}" in visible_card_ids
         and f"component:{rel.target_component_id}" in visible_card_ids
     ]
 
-    health = _digest_health(cards)
+    project_cards = (
+        [card for card in cards if card.workspace_relevance.status == "relevant"]
+        if workspace_id_str
+        else cards
+    )
+    health = _digest_health(project_cards)
     return ContextDigest(
         workspace_id=workspace_id_str,
         generated_at=utc_now(),
         objective=await _digest_objective(session, workspace_id_str),
         scope={
-            "included_source_count": len({card.source_snapshot.source_document_id for card in cards}),
+            "included_source_count": len({card.source_snapshot.source_document_id for card in project_cards}),
             "excluded_unscoped_source_count": sum(
                 1 for doc in all_documents
                 if doc.workspace_id is None and not metadata_dict(doc).get("workspace_id")
             ) if workspace_id else 0,
             "excluded_irrelevant_source_count": len(excluded_irrelevant_sources),
+            "candidate_session_count": candidate_session_count,
+            "unknown_relevance_source_count": unknown_relevance_source_count,
             "pending_source_count": sum(1 for doc in current_documents if doc.processed_at is None),
+            "project_paths": sorted(workspace_paths),
+            "project_repositories": sorted(workspace_repositories),
         },
         build={
             "status": "pending" if any(doc.processed_at is None for doc in current_documents) else "up_to_date",
@@ -336,12 +416,12 @@ async def get_context_digest(
                 default=None,
             ),
         },
-        freshness=_freshness_summary(cards),
+        freshness=_freshness_summary(project_cards),
         health=health,
         cards=cards,
-        clusters=_clusters(cards),
+        clusters=_clusters(project_cards),
         links=links,
-        recommended_actions=_recommended_actions(cards, health),
+        recommended_actions=_recommended_actions(project_cards, health),
     )
 
 
@@ -380,6 +460,21 @@ def _is_digest_noise_component(component: Component) -> bool:
     if _looks_like_agent_session_fragment(component):
         return True
 
+    fact_type = (component.fact_type or "").lower()
+    if fact_type in {
+        "decision", "blocker", "risk", "task", "action_item",
+        "ai_decision", "ai_blocker", "ai_task",
+    }:
+        for claim_text in (component.value, component.name):
+            unlabelled = re.sub(
+                r"^\s*(?:decision|task|risk|blocker|file|session|agent session)\s*:\s*",
+                "",
+                str(claim_text or ""),
+                flags=re.IGNORECASE,
+            ).lstrip()
+            if re.match(r"^[,;:]", unlabelled):
+                return True
+
     fields = [
         component.name,
         component.value,
@@ -398,7 +493,7 @@ def _is_digest_noise_component(component: Component) -> bool:
 
     clean = _clean_digest_text(" ".join(str(value) for value in (component.name, component.value, component.excerpt) if value))
     words = re.findall(r"[A-Za-z][A-Za-z0-9'-]{2,}", clean)
-    if len(words) < 2 and (component.fact_type or "").lower() in {"decision", "blocker", "risk", "ai_decision", "ai_blocker"}:
+    if len(words) < 2 and fact_type in {"decision", "blocker", "risk", "ai_decision", "ai_blocker"}:
         return True
     return False
 
@@ -482,7 +577,14 @@ def _clean_digest_text(value: str | None) -> str:
     text = re.sub(r"[A-Za-z0-9+/]{140,}={0,2}", " ", text)
     text = re.sub(r"[*_`>\[\](){}\"]", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
-    return re.sub(r"^[./\\\s:;-]+|[./\\\s:;-]+$", "", text)
+    text = re.sub(
+        r"^(\s*(?:decision|task|risk|blocker|file|session|agent session)\s*:)"
+        r"\s*[,.;:!?…\-–—]+\s*",
+        r"\1 ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"^[,./\\\s:;!?…\-–—]+|[,./\\\s:;!?…\-–—]+$", "", text)
 
 
 async def _evidence_by_component(
@@ -531,29 +633,6 @@ async def _github_last_sync(
     )
 
 
-async def _workspace_references(
-    session: AsyncSession,
-    workspace_id: str | None,
-) -> tuple[set[str], set[str]]:
-    if not workspace_id:
-        return set(), set()
-    connectors = list(await session.scalars(
-        select(Connector).where(Connector.workspace_id == UUID(workspace_id))
-    ))
-    repositories: set[str] = set()
-    paths: set[str] = set()
-    for connector in connectors:
-        try:
-            config = json.loads(connector.config_json or "{}")
-        except (json.JSONDecodeError, TypeError):
-            config = {}
-        repositories.update(str(item).lower() for item in config.get("repositories", []) if item)
-        for key in ("path", "repo_path", "root_path", "repository_path"):
-            if config.get(key):
-                paths.add(str(config[key]).rstrip("/"))
-    return repositories, paths
-
-
 def _evidence_read(source: SourceDocument, evidence: EvidenceSpan | None) -> CardEvidence:
     if evidence is None:
         return CardEvidence(verification_status="unavailable")
@@ -582,6 +661,7 @@ def _classify_component(
     relationship_blocker: bool,
 ) -> tuple[CardCategory, CardClassification]:
     fact_type = (component.fact_type or "").lower()
+    source_type = (component.source_document.source_type or "").lower()
     item_type = str(metadata.get("item_type") or "").lower()
     source_url = str(metadata.get("source_url") or "")
     url_matches_type = (
@@ -607,7 +687,11 @@ def _classify_component(
         return "agent_session", CardClassification(
             basis="fact_type", reason="One root fact for an imported AI session."
         )
-    source_type = (component.source_document.source_type or "").lower()
+    if fact_type in {"repo_root", "code_area"} and source_type == "local_repository":
+        return "code_area", CardClassification(
+            basis="fact_type",
+            reason="Deterministic repository inventory from the selected local project.",
+        )
     is_agent_source = (
         source_type in {"agent_session", "codex", "claude", "opencode"}
         or source_type.startswith("ai_context")
@@ -623,6 +707,14 @@ def _classify_component(
     ):
         return "decision", CardClassification(
             basis="fact_type", reason="Typed decision with an exact verified source range."
+        )
+    if (
+        fact_type in {"task", "action_item"}
+        and evidence.verification_status == "verified"
+        and (not is_agent_source or human_confirmed)
+    ):
+        return "task", CardClassification(
+            basis="fact_type", reason="Typed task with an exact verified source range."
         )
     if (
         fact_type in {"blocker", "ai_blocker"}
@@ -654,29 +746,6 @@ def _classify_component(
         basis="supporting_only",
         reason="The source lacks the typed metadata or verified evidence required for a named panel.",
     )
-
-
-def _workspace_relevance(
-    component: Component,
-    metadata: dict,
-    workspace_repositories: set[str],
-    workspace_paths: set[str],
-) -> WorkspaceRelevance:
-    if (component.fact_type or "").lower() not in {"session_root", "ai_session"}:
-        return WorkspaceRelevance(status="relevant", reasons=["Source is explicitly assigned to this workspace."])
-    repository = str(
-        metadata.get("repository") or metadata.get("repo_full_name") or metadata.get("repo") or ""
-    ).lower()
-    cwd = str(metadata.get("cwd") or metadata.get("working_directory") or "").rstrip("/")
-    if repository and workspace_repositories:
-        if repository in workspace_repositories:
-            return WorkspaceRelevance(status="relevant", reasons=["Session repository matches a configured workspace repository."])
-        return WorkspaceRelevance(status="not_relevant", reasons=["Session repository does not match configured workspace repositories."])
-    if cwd and workspace_paths:
-        if any(cwd == path or cwd.startswith(f"{path}/") for path in workspace_paths):
-            return WorkspaceRelevance(status="relevant", reasons=["Session working directory is inside a configured workspace path."])
-        return WorkspaceRelevance(status="not_relevant", reasons=["Session working directory is outside configured workspace paths."])
-    return WorkspaceRelevance(status="unknown", reasons=["No comparable repository or workspace path metadata is available."])
 
 
 def _source_snapshot(
@@ -797,21 +866,28 @@ async def _digest_objective(
                 recorded_at=run.started_at,
                 excerpt=run.objective.strip(),
             )
-        pack = await session.scalar(
+        packs = list(await session.scalars(
             select(ContextPack)
             .where(ContextPack.workspace_id == workspace_uuid)
             .order_by(ContextPack.created_at.desc(), ContextPack.id.desc())
-            .limit(1)
-        )
-        if pack and pack.objective and pack.objective.strip():
-            return DigestObjective(
-                status="supplied",
-                text=pack.objective.strip(),
-                source_kind="context_pack",
-                source_id=str(pack.id),
-                recorded_at=pack.created_at,
-                excerpt=pack.objective.strip(),
-            )
+            .limit(20)
+        ))
+        for pack in packs:
+            try:
+                manifest = json.loads(pack.manifest or "{}")
+            except (json.JSONDecodeError, TypeError):
+                manifest = {}
+            if manifest.get("objective_kind") == "project_snapshot":
+                continue
+            if pack.objective and pack.objective.strip():
+                return DigestObjective(
+                    status="supplied",
+                    text=pack.objective.strip(),
+                    source_kind="context_pack",
+                    source_id=str(pack.id),
+                    recorded_at=pack.created_at,
+                    excerpt=pack.objective.strip(),
+                )
     return DigestObjective(status="not_supplied")
 
 
@@ -832,6 +908,7 @@ def _component_to_card(
     github_last_sync: datetime | None = None,
     workspace_repositories: set[str] | None = None,
     workspace_paths: set[str] | None = None,
+    workspace_commits: set[str] | None = None,
     conflict: bool = False,
     relationship_blocker: bool = False,
 ) -> ContextCard:
@@ -860,11 +937,16 @@ def _component_to_card(
     if category != "blocker" and status == "blocked" and not conflict:
         status = "needs_review"
     score = _attention_score(component, card_type, status, relationship_ids)
-    relevance = _workspace_relevance(
+    project_relevance = workspace_relevance(
         component,
         metadata,
         workspace_repositories or set(),
         workspace_paths or set(),
+        workspace_commits or set(),
+    )
+    relevance = WorkspaceRelevance(
+        status=project_relevance.status,
+        reasons=project_relevance.reasons,
     )
     source_snapshot = _source_snapshot(source, metadata, github_last_sync)
     session_info = _session_info(source, metadata) if category == "agent_session" else None
@@ -930,7 +1012,7 @@ def _card_type(component: Component) -> CardType:
         return "decision"
     if fact_type in {"task", "action_item", "ai_task", "issue", "github_issue", "pr", "github_pr"}:
         return "task"
-    if fact_type in {"changed_file", "commit_reference"}:
+    if fact_type in {"changed_file", "commit_reference", "repo_root", "code_area"}:
         return "file"
     if fact_type in {"ai_session", "session_root", "ai_step"} or "agent" in source_type or source_type.startswith("ai_context"):
         return "agent_session"

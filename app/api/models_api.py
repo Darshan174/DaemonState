@@ -201,17 +201,12 @@ async def get_model_relationships(
         select(Relationship).where(
             Relationship.source_component_id.in_(comp_ids),
             Relationship.target_component_id.in_(comp_ids),
+            Relationship.status.notin_(("rejected", "superseded")),
         )
     ))
 
     def _resolve_origin(rel: Relationship) -> str:
-        if rel.status == "human_verified":
-            return "human_verified"
-        if rel.confidence >= 0.85:
-            return "deterministic"
-        if rel.confidence >= 0.6:
-            return "extracted"
-        return "ai_proposed"
+        return getattr(rel, "origin", None) or "proposed"
 
     return [
         {

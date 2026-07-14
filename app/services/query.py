@@ -294,12 +294,12 @@ class QueryService:
         relationships_used: list[Relationship] = []
         for _, _, c in top:
             for rel in c.outgoing_relationships:
-                if rel.status == "rejected":
+                if not _relationship_is_safe_for_expansion(rel):
                     continue
                 related_ids.add(rel.target_component_id)
                 relationships_used.append(rel)
             for rel in c.incoming_relationships:
-                if rel.status == "rejected":
+                if not _relationship_is_safe_for_expansion(rel):
                     continue
                 related_ids.add(rel.source_component_id)
                 relationships_used.append(rel)
@@ -318,6 +318,15 @@ class QueryService:
                 )
         else:
             related = []
+
+        visible_component_ids = {
+            component.id for _, _, component in top
+        } | {component.id for component in related}
+        relationships_used = [
+            relationship for relationship in relationships_used
+            if relationship.source_component_id in visible_component_ids
+            and relationship.target_component_id in visible_component_ids
+        ]
 
         result_components = []
         sources_seen: set[UUID] = set()
@@ -752,3 +761,11 @@ def _dedupe_relationships(relationships: list[Relationship]) -> list[Relationshi
         seen.add(rel.id)
         deduped.append(rel)
     return deduped
+
+
+def _relationship_is_safe_for_expansion(relationship: Relationship) -> bool:
+    return bool(
+        relationship.status == "active"
+        and relationship.origin in {"deterministic", "extracted", "human_verified"}
+        and str(relationship.evidence or "").strip()
+    )

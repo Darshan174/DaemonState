@@ -102,11 +102,20 @@ class UnresolvedRelationshipRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class GraphSliceMetadata(BaseModel):
+    focus_component_ids: list[UUID]
+    max_hops: int
+    node_limit: int
+    edge_limit: int
+    truncated: bool = False
+
+
 class GraphResponse(BaseModel):
     models: list[ModelRead]
     components: list[ComponentRead]
     relationships: list[RelationshipRead]
     unresolved_relationships: list[UnresolvedRelationshipRead] = []
+    slice: GraphSliceMetadata | None = None
 
 
 class SourceKnowledgeDiff(BaseModel):
@@ -387,6 +396,7 @@ class BuildResult(BaseModel):
     documents: dict
     components: dict
     relationships: dict
+    reconciliation: dict
     warnings: list[dict]
     docs_processed: int
     docs_pending_before: int
@@ -483,15 +493,23 @@ async def get_timeline(
 # ── Graph Slice ────────────────────────────────────────────────────────────────
 
 class GraphSliceRequest(BaseModel):
+    workspace_id: UUID
+    focus_component_ids: list[UUID] = Field(min_length=1, max_length=10)
     model_ids: list[UUID] | None = None
     source_types: list[str] | None = None
     statuses: list[str] | None = None
     fact_types: list[str] | None = None
-    confidence_min: float | None = None
+    confidence_min: float | None = Field(default=None, ge=0.0, le=1.0)
     temporal: str | None = None
     include_stale: bool = False
-    include_proposed_edges: bool = True
-    max_hops: int = 2
+    include_proposed_components: bool = False
+    include_proposed_edges: bool = False
+    relationship_origins: list[
+        Literal["deterministic", "extracted", "ai_proposed", "human_verified", "proposed"]
+    ] | None = None
+    max_hops: int = Field(default=1, ge=0, le=2)
+    max_nodes: int = Field(default=100, ge=1, le=100)
+    max_edges: int = Field(default=200, ge=0, le=200)
 
 
 @router.post("/graph/slice", response_model=GraphResponse)
@@ -499,17 +517,32 @@ async def get_graph_slice(
     body: GraphSliceRequest,
     session: AsyncSession = Depends(get_db_session),
 ) -> GraphResponse:
+    workspace_id = str(body.workspace_id)
+    if not await workspace_scope_exists(session, workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    scoped_documents = filter_explicit_source_documents_for_workspace(
+        list(await session.scalars(select(SourceDocument))),
+        workspace_id,
+    )
+    current_documents, _ = current_source_documents(scoped_documents)
+    current_source_ids = {document.id for document in current_documents}
+    if not current_source_ids:
+        raise HTTPException(status_code=404, detail="Workspace has no current source evidence")
+
     allowed_statuses = ["active", "needs_review"]
     if body.include_stale:
         allowed_statuses.append("stale")
-    if body.include_proposed_edges:
+    if body.include_proposed_components:
         allowed_statuses.append("proposed")
 
     comp_stmt = (
         select(Component)
         .options(selectinload(Component.model), selectinload(Component.source_document))
-        .where(Component.status.in_(allowed_statuses))
-        .order_by(Component.created_at.desc())
+        .where(
+            Component.source_document_id.in_(current_source_ids),
+            Component.status.in_(allowed_statuses),
+        )
     )
     if body.model_ids:
         comp_stmt = comp_stmt.where(Component.model_id.in_(body.model_ids))
@@ -526,20 +559,141 @@ async def get_graph_slice(
     if body.temporal:
         comp_stmt = comp_stmt.where(Component.temporal == body.temporal)
 
-    components = list(await session.scalars(comp_stmt))
-    comp_ids = {c.id for c in components}
+    focus_ids = list(dict.fromkeys(body.focus_component_ids))
+    if len(focus_ids) > body.max_nodes:
+        raise HTTPException(
+            status_code=422,
+            detail="max_nodes must be at least the number of unique focus components",
+        )
+    focus_components = list(await session.scalars(
+        comp_stmt.where(Component.id.in_(focus_ids))
+    ))
+    found_focus_ids = {component.id for component in focus_components}
+    missing_focus_ids = [component_id for component_id in focus_ids if component_id not in found_focus_ids]
+    if missing_focus_ids:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "message": "One or more focus components are outside the current workspace slice",
+                "component_ids": [str(component_id) for component_id in missing_focus_ids],
+            },
+        )
 
+    allowed_edge_statuses = ["active"]
+    allowed_origins = set(
+        body.relationship_origins
+        if body.relationship_origins is not None
+        else ("deterministic", "extracted", "human_verified")
+    )
+    if body.include_proposed_edges:
+        allowed_edge_statuses.append("proposed")
+        if body.relationship_origins is None:
+            allowed_origins.update(("ai_proposed", "proposed"))
+    else:
+        allowed_origins.difference_update(("ai_proposed", "proposed"))
+
+    selected_by_id = {component.id: component for component in focus_components}
+    frontier = set(selected_by_id)
+    traversal_relationship_ids: set[UUID] = set()
+    truncated = False
+    for _ in range(body.max_hops):
+        if not frontier:
+            break
+        adjacent_relationships = list(await session.scalars(
+            select(Relationship).where(
+                Relationship.status.in_(allowed_edge_statuses),
+                Relationship.origin.in_(allowed_origins),
+                func.trim(func.coalesce(Relationship.evidence, "")) != "",
+                (
+                    Relationship.source_component_id.in_(frontier)
+                    | Relationship.target_component_id.in_(frontier)
+                ),
+            ).order_by(Relationship.created_at, Relationship.id).limit(
+                body.max_edges + body.max_nodes + 1
+            )
+        ))
+        neighbor_ids: set[UUID] = set()
+        for relationship in adjacent_relationships:
+            for component_id in (
+                relationship.source_component_id,
+                relationship.target_component_id,
+            ):
+                if component_id in selected_by_id:
+                    continue
+                neighbor_ids.add(component_id)
+        if not neighbor_ids:
+            break
+        neighbors = list(await session.scalars(
+            comp_stmt.where(Component.id.in_(neighbor_ids))
+        ))
+        neighbors_by_id = {component.id: component for component in neighbors}
+        next_frontier: set[UUID] = set()
+        for relationship in adjacent_relationships:
+            new_component_ids = [
+                component_id for component_id in (
+                    relationship.source_component_id,
+                    relationship.target_component_id,
+                )
+                if component_id not in selected_by_id and component_id in neighbors_by_id
+            ]
+            if not new_component_ids:
+                continue
+            if len(traversal_relationship_ids) >= body.max_edges:
+                truncated = True
+                break
+            if len(selected_by_id) >= body.max_nodes:
+                truncated = True
+                break
+            traversal_relationship_ids.add(relationship.id)
+            for component_id in new_component_ids:
+                if len(selected_by_id) >= body.max_nodes:
+                    truncated = True
+                    break
+                selected_by_id[component_id] = neighbors_by_id[component_id]
+                next_frontier.add(component_id)
+        frontier = next_frontier
+
+    components = list(selected_by_id.values())
+    comp_ids = set(selected_by_id)
     rel_stmt = select(Relationship).where(
         Relationship.source_component_id.in_(comp_ids),
         Relationship.target_component_id.in_(comp_ids),
-    )
-    relationships = list(await session.scalars(rel_stmt))
-    unresolved_relationships = list(await session.scalars(
+        Relationship.status.in_(allowed_edge_statuses),
+        Relationship.origin.in_(allowed_origins),
+        func.trim(func.coalesce(Relationship.evidence, "")) != "",
+    ).order_by(Relationship.created_at, Relationship.id)
+    all_relationships = list(await session.scalars(rel_stmt))
+    traversal_relationships = [
+        relationship for relationship in all_relationships
+        if relationship.id in traversal_relationship_ids
+    ]
+    additional_relationships = [
+        relationship for relationship in all_relationships
+        if relationship.id not in traversal_relationship_ids
+    ]
+    remaining_resolved_slots = max(0, body.max_edges - len(traversal_relationships))
+    if len(additional_relationships) > remaining_resolved_slots:
+        truncated = True
+    relationships = [
+        *traversal_relationships,
+        *additional_relationships[:remaining_resolved_slots],
+    ]
+    unresolved_candidates = list(await session.scalars(
         select(UnresolvedRelationship)
         .options(selectinload(UnresolvedRelationship.source_component))
         .where(UnresolvedRelationship.source_component_id.in_(comp_ids))
         .where(UnresolvedRelationship.status == "unresolved")
+        .where(UnresolvedRelationship.origin.in_(allowed_origins))
+        .order_by(UnresolvedRelationship.created_at, UnresolvedRelationship.id)
     ))
+    unresolved_candidates = [
+        relationship for relationship in unresolved_candidates
+        if str(relationship.evidence or "").strip()
+    ]
+    remaining_edge_slots = max(0, body.max_edges - len(relationships))
+    if len(unresolved_candidates) > remaining_edge_slots:
+        truncated = True
+    unresolved_relationships = unresolved_candidates[:remaining_edge_slots]
 
     model_ids_in_result = {c.model_id for c in components}
     model_stmt = select(Model).where(Model.id.in_(model_ids_in_result)).order_by(Model.name)
@@ -550,23 +704,12 @@ async def get_graph_slice(
         model_counts[c.model_id] = model_counts.get(c.model_id, 0) + 1
 
     rel_counts: dict[UUID, int] = {}
-    inbound_counts: dict[UUID, int] = {}
-    outbound_counts: dict[UUID, int] = {}
     for r in relationships:
         rel_counts[r.source_component_id] = rel_counts.get(r.source_component_id, 0) + 1
         rel_counts[r.target_component_id] = rel_counts.get(r.target_component_id, 0) + 1
-        outbound_counts[r.source_component_id] = outbound_counts.get(r.source_component_id, 0) + 1
-        inbound_counts[r.target_component_id] = inbound_counts.get(r.target_component_id, 0) + 1
 
     def _resolve_origin(rel: Relationship) -> str:
-        stored = getattr(rel, "origin", None) or "proposed"
-        if stored in ("deterministic", "extracted", "ai_proposed", "human_verified", "proposed"):
-            return stored
-        if rel.status == "human_verified":
-            return "human_verified"
-        if stored == "proposed" and rel.confidence >= 0.85:
-            return "extracted"
-        return stored
+        return getattr(rel, "origin", None) or "proposed"
 
     def _display_title(comp: Component) -> str:
         if comp.fact_type in ("decision", "outcome"):
@@ -621,6 +764,7 @@ async def get_graph_slice(
             ingested_at=c.source_document.ingested_at if c.source_document else None,
             provenance=getattr(c, "provenance", None),
             excerpt=getattr(c, "excerpt", None),
+            relationship_count=rel_counts.get(c.id, 0),
         ) for c in components],
         relationships=[RelationshipRead(
             id=r.id, source_component_id=r.source_component_id,
@@ -635,6 +779,13 @@ async def get_graph_slice(
         unresolved_relationships=[
             _unresolved_relationship_read(r) for r in unresolved_relationships
         ],
+        slice=GraphSliceMetadata(
+            focus_component_ids=focus_ids,
+            max_hops=body.max_hops,
+            node_limit=body.max_nodes,
+            edge_limit=body.max_edges,
+            truncated=truncated,
+        ),
     )
 
 
@@ -695,14 +846,7 @@ async def get_component_detail(
     outbound_rels = list(await session.scalars(outbound_stmt))
 
     def _resolve_origin(rel: Relationship) -> str:
-        stored = getattr(rel, "origin", None) or "proposed"
-        if stored in ("deterministic", "extracted", "ai_proposed", "human_verified", "proposed"):
-            return stored
-        if rel.status == "human_verified":
-            return "human_verified"
-        if stored == "proposed" and rel.confidence >= 0.85:
-            return "extracted"
-        return stored
+        return getattr(rel, "origin", None) or "proposed"
 
     def _format_rel(rel: Relationship) -> RelationshipRead:
         origin = _resolve_origin(rel)
@@ -827,14 +971,7 @@ async def get_relationship_detail(
         target_model_name = target_model.name if target_model else None
 
     def _resolve_origin(r: Relationship) -> str:
-        stored = getattr(r, "origin", None) or "proposed"
-        if stored in ("deterministic", "extracted", "ai_proposed", "human_verified", "proposed"):
-            return stored
-        if r.status == "human_verified":
-            return "human_verified"
-        if stored == "proposed" and r.confidence >= 0.85:
-            return "extracted"
-        return stored
+        return getattr(r, "origin", None) or "proposed"
 
     return RelationshipDetail(
         id=rel.id,
@@ -974,12 +1111,7 @@ async def get_source_diff(
                 comp_name_map[r.target_component_id] = tgt.name
 
     def _resolve_origin(rel: Relationship) -> str:
-        stored = getattr(rel, "origin", None) or "proposed"
-        if stored in ("deterministic", "extracted", "ai_proposed", "human_verified", "proposed"):
-            return stored
-        if rel.status == "human_verified":
-            return "human_verified"
-        return stored
+        return getattr(rel, "origin", None) or "proposed"
 
     def _display_title(comp: Component) -> str:
         if comp.fact_type in ("decision", "outcome"):

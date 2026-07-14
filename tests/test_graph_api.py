@@ -86,6 +86,224 @@ class TestGraphProvenance:
         assert unresolved[0]["relationship_type"] == "depends_on"
         assert all(edge["id"] != str(gap.id) for edge in data["relationships"])
 
+
+class TestGraphAPI:
+    async def test_slice_is_workspace_scoped_bounded_and_hop_aware(self, client, db_session):
+        workspace = Workspace(id=uuid4(), name="Primary", slug=f"primary-{uuid4().hex}")
+        other_workspace = Workspace(id=uuid4(), name="Other", slug=f"other-{uuid4().hex}")
+        model = Model(id=uuid4(), name="Focused graph")
+        docs = [
+            SourceDocument(
+                id=uuid4(), workspace_id=workspace.id, source_type="local",
+                external_id=f"focused-{index}", content=f"Focused evidence {index}",
+                metadata_json=json.dumps({"workspace_id": str(workspace.id)}),
+            )
+            for index in range(4)
+        ]
+        other_doc = SourceDocument(
+            id=uuid4(), workspace_id=other_workspace.id, source_type="local",
+            external_id="other-focused", content="Other workspace evidence",
+            metadata_json=json.dumps({"workspace_id": str(other_workspace.id)}),
+        )
+        components = [
+            Component(
+                id=uuid4(), workspace_id=workspace.id, model_id=model.id,
+                source_document_id=docs[index].id, name=f"Node {index}",
+                value=f"Node {index}", fact_type="fact", confidence=0.9,
+                status="active",
+            )
+            for index in range(4)
+        ]
+        other_component = Component(
+            id=uuid4(), workspace_id=other_workspace.id, model_id=model.id,
+            source_document_id=other_doc.id, name="Other node", value="Other node",
+            fact_type="fact", confidence=0.9, status="active",
+        )
+        relationships = [
+            Relationship(
+                id=uuid4(), source_component_id=components[0].id,
+                target_component_id=components[1].id, relationship_type="depends_on",
+                confidence=0.9, evidence="Node 0 depends on Node 1",
+                status="active", origin="deterministic",
+            ),
+            Relationship(
+                id=uuid4(), source_component_id=components[1].id,
+                target_component_id=components[2].id, relationship_type="depends_on",
+                confidence=0.9, evidence="Node 1 depends on Node 2",
+                status="active", origin="extracted",
+            ),
+            Relationship(
+                id=uuid4(), source_component_id=components[2].id,
+                target_component_id=components[3].id, relationship_type="related_to",
+                confidence=0.92, evidence="AI candidate",
+                status="proposed", origin="ai_proposed",
+            ),
+            Relationship(
+                id=uuid4(), source_component_id=components[1].id,
+                target_component_id=other_component.id, relationship_type="mentions",
+                confidence=0.99, evidence="Unsafe cross-workspace edge",
+                status="active", origin="deterministic",
+            ),
+            Relationship(
+                id=uuid4(), source_component_id=components[0].id,
+                target_component_id=components[3].id, relationship_type="depends_on",
+                confidence=0.99, evidence=None,
+                status="active", origin="deterministic",
+            ),
+        ]
+        db_session.add_all([
+            workspace, other_workspace, model, *docs, other_doc,
+            *components, other_component, *relationships,
+        ])
+        await db_session.flush()
+
+        one_hop = await client.post("/api/graph/slice", json={
+            "workspace_id": str(workspace.id),
+            "focus_component_ids": [str(components[0].id)],
+            "max_hops": 1,
+        })
+        assert one_hop.status_code == 200
+        one_hop_ids = {item["id"] for item in one_hop.json()["components"]}
+        assert one_hop_ids == {str(components[0].id), str(components[1].id)}
+        assert all(
+            item["relationship_count"] == 1
+            for item in one_hop.json()["components"]
+        )
+
+        two_hops = await client.post("/api/graph/slice", json={
+            "workspace_id": str(workspace.id),
+            "focus_component_ids": [str(components[0].id)],
+            "max_hops": 2,
+        })
+        assert two_hops.status_code == 200
+        payload = two_hops.json()
+        assert {item["id"] for item in payload["components"]} == {
+            str(components[0].id), str(components[1].id), str(components[2].id),
+        }
+        assert {edge["origin"] for edge in payload["relationships"]} == {
+            "deterministic", "extracted",
+        }
+        assert payload["slice"] == {
+            "focus_component_ids": [str(components[0].id)],
+            "max_hops": 2,
+            "node_limit": 100,
+            "edge_limit": 200,
+            "truncated": False,
+        }
+
+        edge_limited = await client.post("/api/graph/slice", json={
+            "workspace_id": str(workspace.id),
+            "focus_component_ids": [str(components[0].id)],
+            "max_hops": 2,
+            "max_edges": 1,
+        })
+        assert edge_limited.status_code == 200
+        assert {item["id"] for item in edge_limited.json()["components"]} == {
+            str(components[0].id), str(components[1].id),
+        }
+        assert len(edge_limited.json()["relationships"]) == 1
+        assert edge_limited.json()["slice"]["truncated"] is True
+
+    async def test_slice_proposed_edges_are_opt_in_and_respect_caps(self, client, db_session):
+        workspace = Workspace(id=uuid4(), name="Proposed", slug=f"proposed-{uuid4().hex}")
+        model = Model(id=uuid4(), name="Proposed graph")
+        docs = [
+            SourceDocument(
+                id=uuid4(), workspace_id=workspace.id, source_type="local",
+                external_id=f"proposed-{index}", content=f"Evidence {index}",
+                metadata_json=json.dumps({"workspace_id": str(workspace.id)}),
+            )
+            for index in range(2)
+        ]
+        components = [
+            Component(
+                id=uuid4(), workspace_id=workspace.id, model_id=model.id,
+                source_document_id=docs[index].id, name=f"Candidate {index}",
+                value=f"Candidate {index}", fact_type="fact", confidence=0.9,
+                status="active",
+            )
+            for index in range(2)
+        ]
+        relationship = Relationship(
+            id=uuid4(), source_component_id=components[0].id,
+            target_component_id=components[1].id, relationship_type="related_to",
+            confidence=0.95, evidence="Unverified candidate text",
+            status="proposed", origin="ai_proposed",
+        )
+        trusted_unresolved = UnresolvedRelationship(
+            id=uuid4(), workspace_id=workspace.id,
+            source_component_id=components[0].id,
+            source_document_id=docs[0].id,
+            target_name="Trusted missing target", relationship_type="depends_on",
+            confidence=0.8, evidence="Explicit missing dependency.",
+            origin="extracted", status="unresolved",
+        )
+        ai_unresolved = UnresolvedRelationship(
+            id=uuid4(), workspace_id=workspace.id,
+            source_component_id=components[0].id,
+            source_document_id=docs[0].id,
+            target_name="AI missing target", relationship_type="related_to",
+            confidence=0.9, evidence="AI candidate text.",
+            origin="ai_proposed", status="unresolved",
+        )
+        no_evidence_unresolved = UnresolvedRelationship(
+            id=uuid4(), workspace_id=workspace.id,
+            source_component_id=components[0].id,
+            source_document_id=docs[0].id,
+            target_name="Unsupported missing target", relationship_type="depends_on",
+            confidence=0.9, evidence=None,
+            origin="extracted", status="unresolved",
+        )
+        db_session.add_all([
+            workspace, model, *docs, *components, relationship,
+            trusted_unresolved, ai_unresolved, no_evidence_unresolved,
+        ])
+        await db_session.flush()
+
+        hidden = await client.post("/api/graph/slice", json={
+            "workspace_id": str(workspace.id),
+            "focus_component_ids": [str(components[0].id)],
+            "max_hops": 1,
+        })
+        assert hidden.status_code == 200
+        assert [item["id"] for item in hidden.json()["components"]] == [str(components[0].id)]
+        assert [
+            item["id"] for item in hidden.json()["unresolved_relationships"]
+        ] == [str(trusted_unresolved.id)]
+
+        unresolved_opt_in = await client.post("/api/graph/slice", json={
+            "workspace_id": str(workspace.id),
+            "focus_component_ids": [str(components[0].id)],
+            "max_hops": 0,
+            "include_proposed_edges": True,
+            "max_edges": 2,
+        })
+        assert unresolved_opt_in.status_code == 200
+        assert {
+            item["id"] for item in unresolved_opt_in.json()["unresolved_relationships"]
+        } == {str(trusted_unresolved.id), str(ai_unresolved.id)}
+
+        visible = await client.post("/api/graph/slice", json={
+            "workspace_id": str(workspace.id),
+            "focus_component_ids": [str(components[0].id)],
+            "max_hops": 1,
+            "include_proposed_edges": True,
+            "max_edges": 0,
+        })
+        assert visible.status_code == 200
+        assert [item["id"] for item in visible.json()["components"]] == [
+            str(components[0].id)
+        ]
+        assert visible.json()["relationships"] == []
+        assert visible.json()["slice"]["truncated"] is True
+
+        invalid_cap = await client.post("/api/graph/slice", json={
+            "workspace_id": str(workspace.id),
+            "focus_component_ids": [str(component.id) for component in components],
+            "max_nodes": 1,
+        })
+        assert invalid_cap.status_code == 422
+
     async def test_legacy_source_detail_returns_components(self, client, db_session):
         model = Model(id=uuid4(), name="Email")
         doc = SourceDocument(
@@ -596,7 +814,29 @@ class TestWorkspaceScopedGraphEndpoints:
             fact_type="risk", confidence=0.9, status="active",
             embedding=json.dumps(await embedder.embed_text("billing risk workspace two")),
         )
-        db_session.add_all([model, doc_ws1, doc_ws2, comp_ws1, comp_ws2])
+        same_workspace_neighbor = Component(
+            id=uuid4(), workspace_id=UUID(ws1), model_id=model.id,
+            source_document_id=doc_ws1.id, name="Peripheral neighbor",
+            value="Peripheral unrelated context", fact_type="fact",
+            confidence=0.9, status="active",
+            embedding=json.dumps(await embedder.embed_text("peripheral unrelated context")),
+        )
+        cross_workspace_edge = Relationship(
+            id=uuid4(), source_component_id=comp_ws1.id,
+            target_component_id=comp_ws2.id, relationship_type="depends_on",
+            confidence=0.99, evidence="Unsafe cross-workspace evidence.",
+            status="active", origin="deterministic",
+        )
+        proposed_edge = Relationship(
+            id=uuid4(), source_component_id=comp_ws1.id,
+            target_component_id=same_workspace_neighbor.id,
+            relationship_type="related_to", confidence=0.99,
+            evidence="Unverified AI candidate.", status="proposed", origin="ai_proposed",
+        )
+        db_session.add_all([
+            model, doc_ws1, doc_ws2, comp_ws1, comp_ws2,
+            same_workspace_neighbor, cross_workspace_edge, proposed_edge,
+        ])
         await db_session.flush()
 
         resp = await client.post("/api/query", json={
@@ -609,9 +849,10 @@ class TestWorkspaceScopedGraphEndpoints:
         assert "Workspace one billing risk" in component_names
         assert "Workspace two billing risk" not in component_names
         trace = resp.json()["trace"]
-        assert trace["candidate_component_count"] == 1
-        assert trace["scoped_component_count"] == 1
-        assert trace["scored_component_count"] == 1
+        assert trace["candidate_component_count"] >= 1
+        assert trace["scoped_component_count"] >= 1
+        assert trace["scored_component_count"] >= 1
+        assert trace["relationships_used"] == []
 
     async def test_query_exposes_versioned_trace_and_retrieval_knobs(self, client, db_session):
         embedder = HashingEmbedder()

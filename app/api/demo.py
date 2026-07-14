@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db_session
-from app.models import SourceDocument, Workspace
+from app.models import Connector, SourceDocument, Workspace
 from app.services.ingest import IngestionService
 
 router = APIRouter()
@@ -32,21 +32,21 @@ DEMO_SOURCES: list[dict[str, Any]] = [
             "item_type": "issue",
             "repo_full_name": "your-org/context-engine",
             "number": 12,
-            "title": "Board graph needs source-first clusters",
+            "title": "Project map needs source-backed relevance",
         },
         "content": {
             "number": 12,
-            "title": "Board graph needs source-first clusters",
+            "title": "Project map needs source-backed relevance",
             "state": "open",
             "user": {"login": "maya"},
             "labels": ["enhancement", "graph", "trust"],
             "body": "\n".join([
-                "Decision: Board should group facts by source family before entity type.",
-                "Task: Add Board | Explore toggle with Board as the default URL state.",
+                "Decision: The project map should group evidence by delivery meaning.",
+                "Task: Show imported session relevance through visual weight and color.",
                 "Risk: Users lose trust when facts are not visibly tied to source evidence.",
             ]),
             "comments": [
-                "Keep canvas quiet by default and move trust metadata into the inspector.",
+                "Keep the map quiet and move detailed trust metadata into one inspector.",
             ],
         },
     },
@@ -58,11 +58,11 @@ DEMO_SOURCES: list[dict[str, Any]] = [
             "item_type": "pull_request",
             "repo_full_name": "your-org/context-engine",
             "number": 11,
-            "title": "Ship Board graph default",
+            "title": "Ship the source-backed project map",
         },
         "content": {
             "number": 11,
-            "title": "Ship Board graph default",
+            "title": "Ship the source-backed project map",
             "state": "closed",
             "merged": True,
             "user": {"login": "ravi"},
@@ -70,11 +70,11 @@ DEMO_SOURCES: list[dict[str, Any]] = [
             "body": "\n".join([
                 "Fixes #12",
                 "Decision: Keep confidence, temporal state, and edge origin in the inspector.",
-                "Task: Add hover-only edge labels so default zoom stays quiet.",
+                "Task: Draw only evidence-backed relationships on the default map.",
             ]),
             "changed_files": [
-                {"filename": "frontend/src/pages/GraphView.jsx"},
-                {"filename": "frontend/src/graph/boardMode.js"},
+                {"filename": "frontend/src/pages/ContextMapPage.jsx"},
+                {"filename": "frontend/src/context-map/components/DigestBoard.jsx"},
             ],
             "review_comments": [
                 "Concern: source links must stay visible before this can launch.",
@@ -93,9 +93,9 @@ DEMO_SOURCES: list[dict[str, Any]] = [
             "permalink": "https://slack.com/app_redirect?channel=CDEMOENG",
         },
         "content": "\n".join([
-            "Decision: Use a right-rail inspector for provenance and trust metadata.",
+            "Decision: Use one evidence inspector for provenance and trust metadata.",
             "Task: Expose source links for every selected fact.",
-            "Risk: Rainbow edge styling overwhelms the graph at default zoom.",
+            "Risk: Decorative relationships overwhelm the project map at default zoom.",
         ]),
     },
     {
@@ -106,15 +106,15 @@ DEMO_SOURCES: list[dict[str, Any]] = [
             "thread_id": "thread-alpha-usage",
             "subject": "AI agents need project memory before sprint planning",
             "from": "Priya <founder@example.com>",
-            "snippet": "Top-K controls and facts-used traces would make answers auditable.",
+            "snippet": "A source-backed handoff would reduce context switching between agents.",
         },
         "content": "\n".join([
             "Subject: AI agents need project memory before sprint planning",
             "From: Priya <founder@example.com>",
             "",
-            "Decision: Retrieval answers must show the facts used with source provenance.",
-            "Task: Add top_k and min_confidence controls to the Ask workflow.",
-            "Metric: Demo users should understand why an answer was returned in under 30 seconds.",
+            "Decision: Agent handoffs must identify the source evidence they use.",
+            "Task: Generate a concise project handoff directly from the map.",
+            "Metric: Demo users should understand project direction in under 30 seconds.",
         ]),
     },
     {
@@ -129,7 +129,7 @@ DEMO_SOURCES: list[dict[str, Any]] = [
         "content": "\n".join([
             "OSS Launch Runbook",
             "Decision: Keep MCP and context packs as the primary outputs for AI agents.",
-            "Task: Publish architecture, connector, Board vs Explore, and MCP documentation.",
+            "Task: Publish architecture, project map, connector, and MCP documentation.",
             "Risk: Demo datasets that mention unsupported connectors will damage trust.",
         ]),
     },
@@ -141,15 +141,15 @@ DEMO_SOURCES: list[dict[str, Any]] = [
             "tool": "codex",
             "connector_type": "codex",
             "session_id": "board-explore-session",
-            "title": "Board and Explore graph implementation",
-            "branch": "demo/board-explore",
+            "title": "Source-backed project map implementation",
+            "branch": "demo/project-map",
         },
         "content": "\n".join([
-            "# Board and Explore graph implementation",
-            "Decision: Board remains default and Explore handles Obsidian-style local navigation.",
-            "Next step: Add frontend smoke tests for the onboarding demo and graph views.",
-            "Risk: Explore mode is impressive only if the local graph panel explains one-hop context.",
-            "Touched files: frontend/src/pages/GraphView.jsx frontend/src/graph/exploreMode.js",
+            "# Source-backed project map implementation",
+            "Decision: The map is the default project view and uses fixed semantic zones.",
+            "Next step: Add frontend smoke tests for project intake and evidence inspection.",
+            "Risk: Visual polish is meaningless if session relevance is not deterministic.",
+            "Touched files: frontend/src/pages/ContextMapPage.jsx frontend/src/context-map/components/DigestBoard.jsx",
         ]),
     },
 ]
@@ -169,6 +169,7 @@ async def seed_demo(
     components_created = 0
     document_ids: list[str] = []
     source_types: set[str] = set()
+    project_boundary_created = await _ensure_demo_project_boundary(session, workspace.id)
 
     for spec in DEMO_SOURCES:
         doc = await _find_seed_document(session, spec, workspace.id)
@@ -202,8 +203,38 @@ async def seed_demo(
         "componentsCreated": components_created,
         "sourceTypes": sorted(source_types),
         "documentIds": document_ids,
+        "projectBoundaryCreated": project_boundary_created,
         "message": "Seeded launch demo data from GitHub, Slack, Gmail, Google Drive, and Codex sources.",
     }
+
+
+async def _ensure_demo_project_boundary(
+    session: AsyncSession,
+    workspace_id: UUID,
+) -> bool:
+    connectors = list(await session.scalars(
+        select(Connector).where(
+            Connector.workspace_id == workspace_id,
+            Connector.connector_type == "github",
+        )
+    ))
+    for connector in connectors:
+        config = _metadata_dict(connector.config_json)
+        if config.get("demo_seed") is True:
+            return False
+
+    session.add(Connector(
+        workspace_id=workspace_id,
+        connector_type="github",
+        status="disconnected",
+        config_json=json.dumps({
+            "demo_seed": True,
+            "repositories": ["your-org/context-engine"],
+        }),
+        credentials_json="{}",
+    ))
+    await session.flush()
+    return True
 
 
 async def _resolve_workspace(session: AsyncSession, workspace_id: UUID | None) -> Workspace:

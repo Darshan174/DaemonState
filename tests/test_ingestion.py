@@ -31,6 +31,187 @@ class _StaticExtractor:
         return list(self.facts)
 
 
+class TestPrePersistenceExtractionQuality:
+    async def test_semantic_slop_is_rejected_without_changing_raw_source(self, db_session):
+        raw_content = (
+            "Use PostgreSQL for the evidence ledger.\n"
+            "Parse developer instructions as untrusted evidence.\n"
+            "data:image/png;base64,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA."
+        )
+        valid = ExtractedFact(
+            model_name="Decision",
+            name="Evidence database decision",
+            value="Use PostgreSQL for the evidence ledger.",
+            fact_type="decision",
+            confidence=0.9,
+            excerpt="Use PostgreSQL for the evidence ledger.",
+        )
+        valid_instruction_requirement = ExtractedFact(
+            model_name="Decision",
+            name="Instruction parsing requirement",
+            value="Parse developer instructions as untrusted evidence.",
+            fact_type="decision",
+            confidence=0.95,
+        )
+        media_noise = ExtractedFact(
+            model_name="Decision",
+            name="Decision: image payload",
+            value=f"data:image/png;base64,{'A' * 220}",
+            fact_type="decision",
+            confidence=0.99,
+        )
+        doc = SourceDocument(
+            id=uuid4(), source_type="local", external_id="quality-gate",
+            content=raw_content, metadata_json="{}",
+        )
+        db_session.add(doc)
+        await db_session.flush()
+
+        service = IngestionService(
+            db_session,
+            extractor=_StaticExtractor([
+                valid, valid_instruction_requirement, media_noise, valid,
+            ]),
+        )
+        created = await service.process_document(doc.id)
+
+        components = list(await db_session.scalars(
+            select(Component).where(Component.source_document_id == doc.id)
+        ))
+        assert created == 2
+        assert {component.name for component in components} == {
+            "Evidence database decision", "Instruction parsing requirement",
+        }
+        assert doc.content == raw_content
+        assert service.last_extraction_report is not None
+        assert service.last_extraction_report.rejected_fact_count == 2
+        assert service.last_extraction_report.rejection_reason_counts == {
+            "duplicate": 1,
+            "media_noise": 1,
+        }
+
+    async def test_missing_target_without_evidence_creates_no_unresolved_edge(self, db_session):
+        model = Model(id=uuid4(), name="Missing edge evidence")
+        document = SourceDocument(
+            id=uuid4(), source_type="local", external_id="missing-edge-evidence",
+            content="A vague dependency exists.", metadata_json="{}",
+        )
+        source = Component(
+            id=uuid4(), model_id=model.id, source_document_id=document.id,
+            name="Source", value="Source", fact_type="fact",
+            confidence=0.9, status="active",
+        )
+        db_session.add_all([model, document, source])
+        await db_session.flush()
+
+        service = IngestionService(db_session)
+        await service._create_relationship(source, ExtractedRelationship(
+            target_name="Missing target", relationship_type="depends_on",
+            confidence=0.9, evidence=None,
+        ))
+
+        assert list(await db_session.scalars(select(Relationship))) == []
+        assert list(await db_session.scalars(select(UnresolvedRelationship))) == []
+        assert service.last_projection_report["relationships_rejected_missing_evidence"] == 1
+
+    async def test_generic_extractor_relationship_is_proposed_not_active(self, db_session):
+        target = ExtractedFact(
+            model_name="Feature", name="Target feature", value="Target feature exists.",
+            fact_type="feature", confidence=0.9,
+        )
+        source = ExtractedFact(
+            model_name="Feature", name="Source feature", value="Source feature exists.",
+            fact_type="feature", confidence=0.9,
+            relationships=[ExtractedRelationship(
+                target_name="Target feature", relationship_type="depends_on",
+                confidence=0.9, evidence="Source feature depends on Target feature.",
+            )],
+        )
+        document = SourceDocument(
+            id=uuid4(), source_type="local", external_id="generic-ai-edge",
+            content=(
+                "Source feature exists. Target feature exists. "
+                "Source feature depends on Target feature."
+            ),
+            metadata_json="{}",
+        )
+        db_session.add(document)
+        await db_session.flush()
+        service = IngestionService(
+            db_session, extractor=_StaticExtractor([source, target])
+        )
+        await service.process_document(document.id)
+
+        relationship = await db_session.scalar(select(Relationship))
+        assert relationship is not None
+        assert relationship.origin == "ai_proposed"
+        assert relationship.status == "proposed"
+
+    async def test_github_reference_resolution_is_repository_scoped(self, db_session):
+        workspace = Workspace(id=uuid4(), name="Repo scope", slug=f"repo-{uuid4().hex}")
+        pr_model = Model(id=uuid4(), name="Scoped PR")
+        issue_model = Model(id=uuid4(), name="Scoped Issue")
+        pr_doc = SourceDocument(
+            id=uuid4(), workspace_id=workspace.id, source_type="github_pr",
+            external_id="repo-one-pr", content="Fixes #7",
+            metadata_json=json.dumps({
+                "workspace_id": str(workspace.id), "item_type": "pull_request",
+                "repo_full_name": "acme/repo-one", "number": 10,
+            }),
+        )
+        issue_docs = [
+            SourceDocument(
+                id=uuid4(), workspace_id=workspace.id, source_type="github_issue",
+                external_id=f"{repo}-issue", content="Issue #7",
+                metadata_json=json.dumps({
+                    "workspace_id": str(workspace.id), "item_type": "issue",
+                    "repo_full_name": repo, "number": 7,
+                }),
+            )
+            for repo in ("acme/repo-one", "acme/repo-two")
+        ]
+        pr = Component(
+            id=uuid4(), workspace_id=workspace.id, model_id=pr_model.id,
+            source_document_id=pr_doc.id, name="PR #10: Fix issue",
+            value="Fixes #7", fact_type="pr", confidence=0.9, status="active",
+        )
+        issues = [
+            Component(
+                id=uuid4(), workspace_id=workspace.id, model_id=issue_model.id,
+                source_document_id=document.id, name="Issue #7: Shared number",
+                value="Issue #7", fact_type="issue", confidence=confidence, status="active",
+            )
+            for document, confidence in zip(issue_docs, (0.8, 0.99), strict=True)
+        ]
+        db_session.add_all([
+            workspace, pr_model, issue_model, pr_doc, *issue_docs, pr, *issues,
+        ])
+        await db_session.flush()
+
+        service = IngestionService(db_session)
+        await service._create_relationship(pr, ExtractedRelationship(
+            target_name="Issue #7", relationship_type="fixes", confidence=0.95,
+            evidence="Fixes #7",
+        ), origin="deterministic")
+        relationship = await db_session.scalar(select(Relationship))
+        assert relationship is not None
+        assert relationship.target_component_id == issues[0].id
+        assert relationship.target_component_id != issues[1].id
+
+        await service._create_relationship(pr, ExtractedRelationship(
+            target_name="Issue acme/repo-two#7", relationship_type="mentions",
+            confidence=0.95, evidence="References acme/repo-two#7",
+        ), origin="deterministic")
+        relationships = list(await db_session.scalars(
+            select(Relationship).order_by(Relationship.relationship_type)
+        ))
+        qualified_relationship = next(
+            item for item in relationships if item.relationship_type == "mentions"
+        )
+        assert qualified_relationship.target_component_id == issues[1].id
+        assert qualified_relationship.target_component_id != issues[0].id
+
+
 class TestWorkspaceScopedIngestion:
     async def test_duplicate_facts_do_not_merge_across_workspaces(self, db_session):
         ws_a = Workspace(id=uuid4(), name="Workspace A", slug=f"workspace-a-{uuid4().hex}")
@@ -201,6 +382,7 @@ class TestComponentIdentityKeys:
             target_name="OAuth2 rate limit auth",
             relationship_type="depends_on",
             confidence=0.85,
+            evidence="SSO depends on OAuth2.",
         ))
 
         rels = (await db_session.scalars(
@@ -281,6 +463,7 @@ class TestCrossModelRelationships:
             target_name="SOC2 certification required",
             relationship_type="depends_on",
             confidence=0.85,
+            evidence="Pricing depends on SOC2.",
         )
         await svc._create_relationship(component, rel)
 
@@ -293,8 +476,7 @@ class TestCrossModelRelationships:
         )).all()
         assert len(rels) == 1
         assert rels[0].confidence == 0.85
-        assert rels[0].evidence is not None
-        assert "depends_on" in rels[0].evidence
+        assert rels[0].evidence == "Pricing depends on SOC2."
 
     async def test_same_model_relationship_still_works(self, db_session):
         model = Model(id=uuid4(), name="Pricing")
@@ -329,6 +511,7 @@ class TestCrossModelRelationships:
             target_name="Pro tier $80/mo",
             relationship_type="enables",
             confidence=0.75,
+            evidence="Basic enables Pro.",
         )
         await svc._create_relationship(basic, rel)
 
@@ -484,6 +667,7 @@ class TestConfidenceThreshold:
             target_name="B",
             relationship_type="depends_on",
             confidence=0.60,
+            evidence="A depends on B.",
         )
         await svc._create_relationship(source, rel)
 
@@ -522,6 +706,7 @@ class TestDuplicatePrevention:
         svc = IngestionService(db_session)
         rel = ExtractedRelationship(
             target_name="B", relationship_type="depends_on", confidence=0.8,
+            evidence="A depends on B.",
         )
 
         await svc._create_relationship(source, rel)
@@ -821,7 +1006,7 @@ class TestRelationshipEvidence:
         assert len(rels) == 1
         assert rels[0].evidence == "SSO requires OAuth2 for authentication flow"
 
-    async def test_relationship_without_evidence_generates_template(self, db_session):
+    async def test_relationship_without_evidence_is_rejected(self, db_session):
         model = Model(id=uuid4(), name="Test")
         db_session.add(model)
         await db_session.flush()
@@ -857,8 +1042,8 @@ class TestRelationshipEvidence:
         rels = (await db_session.scalars(
             select(Relationship).where(Relationship.source_component_id == source.id)
         )).all()
-        assert len(rels) == 1
-        assert "'A' enables 'B'" in rels[0].evidence
+        assert rels == []
+        assert svc.last_projection_report["relationships_rejected_missing_evidence"] == 1
 
     async def test_relationship_stores_confidence(self, db_session):
         model = Model(id=uuid4(), name="Test")
@@ -890,6 +1075,7 @@ class TestRelationshipEvidence:
             target_name="Y",
             relationship_type="depends_on",
             confidence=0.77,
+            evidence="X depends on Y.",
         )
         await svc._create_relationship(source, rel)
 
@@ -937,6 +1123,7 @@ class TestCrossModelTargetResolution:
             target_name="Enterprise readiness",
             relationship_type="depends_on",
             confidence=0.85,
+            evidence="Pricing depends on Enterprise readiness.",
         )
         await svc._create_relationship(source, rel)
 
@@ -977,6 +1164,7 @@ class TestCrossModelTargetResolution:
             target_name="SOC2 certification",
             relationship_type="depends_on",
             confidence=0.85,
+            evidence="Pricing depends on SOC2.",
         )
         await svc._create_relationship(source, rel)
 
@@ -1016,6 +1204,7 @@ class TestCrossModelTargetResolution:
             target_name="Theme system",
             relationship_type="depends_on",
             confidence=0.75,
+            evidence="Dark mode depends on Theme system.",
         )
         await svc._create_relationship(source, rel)
 
@@ -1057,6 +1246,7 @@ class TestNonActiveTargetRelationships:
             target_name="B",
             relationship_type="depends_on",
             confidence=0.85,
+            evidence="A depends on B.",
         )
         await svc._create_relationship(source, rel)
 
@@ -1095,6 +1285,7 @@ class TestNonActiveTargetRelationships:
             target_name="OAuth2",
             relationship_type="depends_on",
             confidence=0.85,
+            evidence="SSO depends on OAuth2.",
         )
         await svc._create_relationship(source, rel)
 
@@ -1211,6 +1402,7 @@ class TestConfidenceFiltering:
             target_name="B",
             relationship_type="blocked_by",
             confidence=0.60,
+            evidence="A blocks B.",
         )
         await svc._create_relationship(source, rel)
 

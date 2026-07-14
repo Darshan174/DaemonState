@@ -220,8 +220,8 @@ class TestEvidenceRequirements:
         assert fetched.evidence is not None, "Persisted relationship must have evidence"
         assert len(fetched.evidence) > 0, "Persisted relationship evidence must be non-empty"
 
-    async def test_evidenceless_relationship_from_ingestion_gets_template(self, db_session):
-        """When extraction provides no evidence, ingest._create_relationship generates a template."""
+    async def test_evidenceless_relationship_from_ingestion_is_rejected(self, db_session):
+        """Missing evidence must not be replaced with invented provenance."""
         model = Model(id=uuid4(), name="Test")
         doc = SourceDocument(id=uuid4(), source_type="local", external_id="tmpl-ev",
                              content="X blocks Y.", metadata_json="{}")
@@ -242,10 +242,8 @@ class TestEvidenceRequirements:
         persisted = (await db_session.scalars(
             select(Relationship).where(Relationship.source_component_id == comp_x.id)
         )).all()
-        assert len(persisted) == 1
-        # Template-based evidence should at least name both components
-        assert "X" in persisted[0].evidence
-        assert "Y" in persisted[0].evidence
+        assert persisted == []
+        assert svc.last_projection_report["relationships_rejected_missing_evidence"] == 1
 
     async def test_extracted_relationship_no_evidence_defaults_none(self):
         """ExtractedRelationship defaults evidence to None — caller side check."""
@@ -978,9 +976,9 @@ class TestTaxonomyEdgeCases:
         assert canonical_model_name("outcome") == "Decision"
 
     def test_relationship_alias_causes_maps_caused_by(self):
-        assert canonical_relationship_type("causes") == "caused_by"
+        assert canonical_relationship_type("causes") == "causes"
         assert canonical_relationship_type("generated_by") == "generated_by_agent"
-        assert canonical_relationship_type("implements") == "implemented_in"
+        assert canonical_relationship_type("implements") == "implements"
         assert canonical_relationship_type("relates_to") == "related_to"
 
     def test_valid_relationship_types_all_canonical(self):

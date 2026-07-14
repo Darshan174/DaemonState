@@ -183,9 +183,7 @@ _MODEL_ALIASES = {
 }
 
 _RELATIONSHIP_ALIASES = {
-    "causes": "caused_by",
     "generated_by": "generated_by_agent",
-    "implements": "implemented_in",
     "relates_to": "related_to",
     "fix": "fixes",
     "closes": "fixes",
@@ -202,6 +200,7 @@ VALID_RELATIONSHIP_TYPES = {
     "blocked_by",
     "blocks",
     "caused_by",
+    "causes",
     "co_occurs",
     "confirms",
     "conflicts_with",

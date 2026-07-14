@@ -9,6 +9,7 @@ from app.processing.extractor import (
     _facts_from_llm_payload,
     evaluate_extraction_quality,
 )
+from app.services.extraction_quality import extracted_fact_rejection_reason
 
 
 class TestRegexExtractor:
@@ -402,3 +403,19 @@ class TestExtractedFactDataclass:
             relationships=[rel],
         )
         assert fact.relationships[0].evidence == evidence
+
+
+def test_session_quality_gate_preserves_first_person_and_temporal_project_intent():
+    valid_claims = [
+        "I will use PostgreSQL for the evidence ledger.",
+        "After launch, add billing reconciliation.",
+        "When the migration completes, verify every evidence hash.",
+    ]
+    for value in valid_claims:
+        fact = ExtractedFact(
+            model_name="Task", name=f"Task: {value}", value=value,
+            fact_type="task", confidence=0.9,
+        )
+        assert extracted_fact_rejection_reason(
+            fact, source_type="agent_session"
+        ) is None

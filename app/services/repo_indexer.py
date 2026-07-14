@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import ast
 import hashlib
 import json
+import os
 import re
 import subprocess
 import tomllib
@@ -52,6 +54,25 @@ MANIFEST_NAMES = {
     "docker-compose.yml",
     "docker-compose.yaml",
 }
+PROJECT_ROOT_MARKERS = {
+    ".git",
+    "Cargo.toml",
+    "Gemfile",
+    "build.gradle",
+    "composer.json",
+    "deno.json",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "go.mod",
+    "mix.exs",
+    "package.json",
+    "pom.xml",
+    "pyproject.toml",
+    "requirements.txt",
+}
+MAX_INDEXED_FILES = 5_000
+MAX_INDEXED_BYTES = 50_000_000
+MAX_INDEXED_FILE_BYTES = 400_000
 ENV_FILE_RE = re.compile(r"(^|/)\.env($|[.\-])|\.env\.example$|config\.(?:py|js|ts|json|ya?ml)$")
 RANKING_VERSION = "objective_file_rank.v2"
 _GENERIC_GOAL_TERMS = {
@@ -258,8 +279,10 @@ class RepoIndexer:
             raise FileNotFoundError(f"repo path does not exist: {root}")
         if not root.is_dir():
             raise NotADirectoryError(f"repo path is not a directory: {root}")
-
-        frame = _scan_repo(root)
+        # Filesystem traversal, parsing, and git subprocesses are synchronous.
+        # Keep them off the API event loop so one large repository cannot stall
+        # health checks and unrelated requests.
+        frame = await asyncio.to_thread(_scan_repo, root)
         if persist and self.session is not None:
             await self._persist_frame(frame, workspace_id)
         elif persist:
@@ -392,14 +415,39 @@ def _scan_repo(root: Path) -> RepoFrame:
 
 def _iter_interesting_files(root: Path) -> list[Path]:
     files: list[Path] = []
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-        rel_parts = path.relative_to(root).parts
-        if any(part in IGNORED_DIRS for part in rel_parts):
-            continue
-        if path.name in MANIFEST_NAMES or path.suffix in INDEXED_SUFFIXES or ENV_FILE_RE.search(path.as_posix()):
+    total_bytes = 0
+    for current_root, dir_names, file_names in os.walk(root, followlinks=False):
+        dir_names[:] = sorted(
+            name for name in dir_names
+            if name not in IGNORED_DIRS
+            and not (Path(current_root) / name).is_symlink()
+        )
+        for file_name in sorted(file_names):
+            path = Path(current_root) / file_name
+            if path.is_symlink():
+                continue
+            if not (
+                path.name in MANIFEST_NAMES
+                or path.suffix in INDEXED_SUFFIXES
+                or ENV_FILE_RE.search(path.as_posix())
+            ):
+                continue
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            if size > MAX_INDEXED_FILE_BYTES:
+                continue
             files.append(path)
+            total_bytes += size
+            if len(files) > MAX_INDEXED_FILES:
+                raise ValueError(
+                    f"project exceeds the {MAX_INDEXED_FILES:,} indexed-file safety limit"
+                )
+            if total_bytes > MAX_INDEXED_BYTES:
+                raise ValueError(
+                    f"project exceeds the {MAX_INDEXED_BYTES // 1_000_000} MB indexing safety limit"
+                )
     return sorted(files)
 
 
@@ -409,7 +457,7 @@ def _index_file(root: Path, path: Path) -> IndexedFile | None:
         raw = path.read_bytes()
     except OSError:
         return None
-    if len(raw) > 400_000:
+    if len(raw) > MAX_INDEXED_FILE_BYTES:
         return None
     sha = hashlib.sha256(raw).hexdigest()
     language = _language_for(path)

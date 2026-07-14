@@ -118,7 +118,7 @@ CORE_EXTRACTION_EVAL_CASES: tuple[ExtractionEvalCase, ...] = (
         expected_relationship_types=("part_of",),
     ),
     ExtractionEvalCase(
-        id="github-pr-solves-issue",
+        id="github-pr-fixes-issue",
         source_type="github_pr",
         content=json.dumps({
             "title": "Fix OAuth redirect on iOS",
@@ -131,7 +131,7 @@ CORE_EXTRACTION_EVAL_CASES: tuple[ExtractionEvalCase, ...] = (
         metadata={"source_type": "github_pr", "repository": "acme/app"},
         expected_fact_types=("pr",),
         expected_terms=("OAuth redirect", "app/auth/callback.py"),
-        expected_relationship_types=("fixes", "solves"),
+        expected_relationship_types=("fixes",),
     ),
     ExtractionEvalCase(
         id="agent-session-handoff",
@@ -212,7 +212,7 @@ def _generated_realistic_eval_cases() -> tuple[ExtractionEvalCase, ...]:
             metadata={"source_type": "github_pr", "repository": "acme/context-engine"},
             expected_fact_types=("pr", "changed_file", "task"),
             expected_terms=(topic, "smoke coverage"),
-            expected_relationship_types=("fixes", "solves", "touches_file", "part_of"),
+            expected_relationship_types=("fixes", "touches_file", "part_of"),
         ))
 
     for idx, topic in enumerate(topics[:20], start=1):

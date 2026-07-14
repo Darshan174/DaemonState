@@ -10,6 +10,10 @@ vi.mock("./api/hooks", () => ({
   useWorkspaces: () => ({ data: [], isLoading: false }),
 }));
 
+vi.mock("./pages/ContextMapPage", () => ({
+  default: () => <h1>Project control room</h1>,
+}));
+
 beforeEach(() => {
   const values = new Map();
   Object.defineProperty(globalThis, "localStorage", {
@@ -22,7 +26,7 @@ beforeEach(() => {
   });
 });
 
-it("makes objective-first preparation the default app route and keeps inspection routes reachable", async () => {
+it("makes the project control room the default and keeps only primary product navigation", async () => {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -38,22 +42,52 @@ it("makes objective-first preparation the default app route and keeps inspection
     </QueryClientProvider>,
   );
 
-  expect(await screen.findByRole("heading", {
-    name: "Compile the evidence your next agent actually needs.",
-  })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "Project control room" })).toBeInTheDocument();
   const expectResponsiveLinks = (name, href) => {
     const links = screen.getAllByRole("link", { name });
     expect(links.length).toBeGreaterThanOrEqual(1);
     links.forEach((link) => expect(link).toHaveAttribute("href", href));
   };
-  expectResponsiveLinks("Prepare", "/app");
-  expectResponsiveLinks("Dashboard", "/app/dashboard");
-  expectResponsiveLinks("Graph", "/app/graph");
-  expectResponsiveLinks("Ask", "/app/query");
+  expectResponsiveLinks("Project", "/app");
   expectResponsiveLinks("Sources", "/app/sources");
   expectResponsiveLinks("Connectors", "/app/connectors");
-  expectResponsiveLinks("Changes", "/app/changes");
-  expect(screen.queryByText("Live")).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Prepare" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Dashboard" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Graph" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Ask" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Changes" })).not.toBeInTheDocument();
+  expect(screen.queryByText("Work")).not.toBeInTheDocument();
+  expect(screen.queryByText("Evidence")).not.toBeInTheDocument();
+});
+
+it("redirects the former dashboard and graph routes to the project control room", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { unmount } = render(
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider>
+        <WorkspaceProvider>
+          <MemoryRouter initialEntries={["/app/dashboard"]}>
+            <App />
+          </MemoryRouter>
+        </WorkspaceProvider>
+      </ThemeProvider>
+    </QueryClientProvider>,
+  );
+  expect(await screen.findByRole("heading", { name: "Project control room" })).toBeInTheDocument();
+  unmount();
+
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider>
+        <WorkspaceProvider>
+          <MemoryRouter initialEntries={["/app/graph"]}>
+            <App />
+          </MemoryRouter>
+        </WorkspaceProvider>
+      </ThemeProvider>
+    </QueryClientProvider>,
+  );
+  expect(await screen.findByRole("heading", { name: "Project control room" })).toBeInTheDocument();
 });
 
 it("collapses the desktop sidebar with an accessible persisted control", async () => {
@@ -76,5 +110,5 @@ it("collapses the desktop sidebar with an accessible persisted control", async (
   const expand = screen.getByRole("button", { name: "Expand sidebar" });
   expect(expand).toHaveAttribute("aria-expanded", "false");
   expect(localStorage.getItem("ce_sidebar_collapsed")).toBe("true");
-  expect(screen.getAllByRole("link", { name: "Graph" }).length).toBeGreaterThan(0);
+  expect(screen.getAllByRole("link", { name: "Project" }).length).toBeGreaterThan(0);
 });

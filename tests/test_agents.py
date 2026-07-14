@@ -7,9 +7,9 @@ from sqlalchemy import select
 
 from app.agents.context_pack import ContextPackAgent
 from app.agents.gap_detector import GapDetectorAgent
-from app.agents.relationship_agent import RelationshipAgent
+from app.agents.relationship_agent import RelationshipAgent, SuggestedRelationship
 from app.agents.semantic_linker import SemanticRelationshipLinker
-from app.models import Component, Model, Relationship, SourceDocument
+from app.models import Component, Model, Relationship, SourceDocument, Workspace
 
 
 async def test_gap_detector_normalizes_legacy_plural_model_names(db_session):
@@ -111,9 +111,102 @@ async def test_relationship_agent_persists_high_confidence_suggestions(db_sessio
         Relationship.__table__.select()
     )).mappings())
     assert len(rels) == 1
-    assert rels[0]["relationship_type"] == "implemented_in"
+    assert rels[0]["relationship_type"] == "implements"
     assert rels[0]["confidence"] == 0.82
     assert rels[0]["status"] == "proposed"
+
+
+async def test_relationship_agent_cannot_resolve_names_across_workspaces(db_session, monkeypatch):
+    primary = Workspace(id=uuid4(), name="Primary", slug=f"primary-{uuid4().hex}")
+    other = Workspace(id=uuid4(), name="Other", slug=f"other-{uuid4().hex}")
+    model = Model(id=uuid4(), name="Scoped decisions")
+    primary_doc = SourceDocument(
+        id=uuid4(), workspace_id=primary.id, source_type="local",
+        external_id="primary-agent", content="Use Postgres and provision it.",
+        metadata_json=json.dumps({"workspace_id": str(primary.id)}),
+    )
+    other_doc = SourceDocument(
+        id=uuid4(), workspace_id=other.id, source_type="local",
+        external_id="other-agent", content="A different database task.",
+        metadata_json=json.dumps({"workspace_id": str(other.id)}),
+    )
+    source = Component(
+        id=uuid4(), workspace_id=primary.id, model_id=model.id,
+        source_document_id=primary_doc.id, name="Use Postgres",
+        value="Use Postgres", fact_type="decision", confidence=0.9, status="active",
+    )
+    primary_target = Component(
+        id=uuid4(), workspace_id=primary.id, model_id=model.id,
+        source_document_id=primary_doc.id, name="Provision database",
+        value="Primary task", fact_type="task", confidence=0.9, status="active",
+    )
+    other_target = Component(
+        id=uuid4(), workspace_id=other.id, model_id=model.id,
+        source_document_id=other_doc.id, name="Provision database",
+        value="Other task", fact_type="task", confidence=0.99, status="active",
+    )
+    db_session.add_all([
+        primary, other, model, primary_doc, other_doc,
+        source, primary_target, other_target,
+    ])
+    await db_session.flush()
+
+    async def fake_discover(self, components, relationships, workspace_scope):
+        assert {component.id for component in components} == {source.id, primary_target.id}
+        return {
+            "suggested_relationships": [{
+                "source_name": source.name,
+                "target_name": primary_target.name,
+                "relationship_type": "depends_on",
+                "confidence": 0.8,
+                "reasoning": "Primary source supports this candidate.",
+            }],
+            "duplicates": [],
+        }
+
+    monkeypatch.setattr(RelationshipAgent, "_ai_discover", fake_discover)
+    await RelationshipAgent(db_session, api_key="test", model="test-model").run(
+        workspace_id=str(primary.id)
+    )
+
+    relationship = await db_session.scalar(select(Relationship))
+    assert relationship is not None
+    assert relationship.source_component_id == source.id
+    assert relationship.target_component_id == primary_target.id
+    assert relationship.target_component_id != other_target.id
+
+
+async def test_relationship_agent_rejects_ambiguous_names_within_workspace(db_session):
+    model = Model(id=uuid4(), name="Ambiguous relationship model")
+    document = SourceDocument(
+        id=uuid4(), source_type="local", external_id="ambiguous-agent",
+        content="Ambiguous tasks.", metadata_json="{}",
+    )
+    source = Component(
+        id=uuid4(), model_id=model.id, source_document_id=document.id,
+        name="Source", value="Source", fact_type="fact", confidence=0.9, status="active",
+    )
+    targets = [
+        Component(
+            id=uuid4(), model_id=model.id, source_document_id=document.id,
+            name="Duplicate target", value=f"Target {index}", fact_type="fact",
+            confidence=0.9, status="active",
+        )
+        for index in range(2)
+    ]
+    db_session.add_all([model, document, source, *targets])
+    await db_session.flush()
+    suggestion = SuggestedRelationship(
+        source_name="Source", target_name="Duplicate target",
+        relationship_type="depends_on", confidence=0.9,
+        reasoning="Ambiguous names cannot prove identity.",
+    )
+
+    persisted = await RelationshipAgent(db_session)._persist_suggestions(
+        [suggestion], [source, *targets]
+    )
+    assert persisted == 0
+    assert list(await db_session.scalars(select(Relationship))) == []
 
 
 async def test_semantic_linker_creates_proposed_cross_source_edges(db_session):
@@ -166,6 +259,71 @@ async def test_semantic_linker_creates_proposed_cross_source_edges(db_session):
     assert rels[0].status == "proposed"
     assert rels[0].origin == "ai_proposed"
     assert "Semantic similarity" in rels[0].evidence
+
+
+async def test_semantic_linker_respects_explicit_source_document_boundary(db_session):
+    model = Model(id=uuid4(), name="Scoped semantic model")
+    assigned_doc = SourceDocument(
+        id=uuid4(), source_type="slack", external_id="assigned-semantic",
+        content="Shared semantic topic", metadata_json="{}",
+    )
+    unassigned_doc = SourceDocument(
+        id=uuid4(), source_type="github", external_id="unassigned-semantic",
+        content="Shared semantic topic", metadata_json="{}",
+    )
+    vector = json.dumps([1.0, 0.0, 0.0])
+    assigned = Component(
+        id=uuid4(), model_id=model.id, source_document_id=assigned_doc.id,
+        name="Assigned semantic fact", value="Shared semantic topic",
+        fact_type="fact", confidence=0.9, status="active", embedding=vector,
+    )
+    unassigned = Component(
+        id=uuid4(), model_id=model.id, source_document_id=unassigned_doc.id,
+        name="Unassigned semantic fact", value="Shared semantic topic",
+        fact_type="fact", confidence=0.9, status="active", embedding=vector,
+    )
+    db_session.add_all([model, assigned_doc, unassigned_doc, assigned, unassigned])
+    await db_session.flush()
+
+    created = await SemanticRelationshipLinker(
+        db_session,
+        threshold=0.8,
+        allowed_source_document_ids={assigned_doc.id},
+    ).create_relationships()
+    assert created == 0
+    assert list(await db_session.scalars(select(Relationship))) == []
+
+
+async def test_name_mention_candidates_are_proposed(db_session):
+    model = Model(id=uuid4(), name="Name mention model")
+    first_doc = SourceDocument(
+        id=uuid4(), source_type="local", external_id="mention-one",
+        content="Payment service depends on Checkout pipeline.", metadata_json="{}",
+    )
+    second_doc = SourceDocument(
+        id=uuid4(), source_type="local", external_id="mention-two",
+        content="Checkout pipeline", metadata_json="{}",
+    )
+    source = Component(
+        id=uuid4(), model_id=model.id, source_document_id=first_doc.id,
+        name="Payment service", value="Payment service mentions Checkout pipeline",
+        fact_type="fact", confidence=0.9, status="active",
+    )
+    target = Component(
+        id=uuid4(), model_id=model.id, source_document_id=second_doc.id,
+        name="Checkout pipeline", value="Checkout pipeline",
+        fact_type="fact", confidence=0.9, status="active",
+    )
+    db_session.add_all([model, first_doc, second_doc, source, target])
+    await db_session.flush()
+
+    from app.agents.graph_builder import GraphBuilderAgent
+    created = await GraphBuilderAgent(db_session)._infer_cross_doc_relationships()
+    relationship = await db_session.scalar(select(Relationship))
+    assert created == 1
+    assert relationship is not None
+    assert relationship.origin == "ai_proposed"
+    assert relationship.status == "proposed"
 
 
 async def test_relationship_agent_candidate_pairs_are_not_limited_to_six_per_type(db_session):

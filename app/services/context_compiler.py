@@ -25,7 +25,9 @@ from app.models import (
     UnresolvedRelationship,
 )
 from app.services.model_profiles import ModelCapabilityProfile, profile_for_target_model
+from app.services.project_scope import workspace_references, workspace_relevance
 from app.services.repo_indexer import RANKING_VERSION, RepoFrame, RepoIndexer
+from app.services.workspace_scope import metadata_dict
 from app.taxonomy import canonical_trust_zone
 from app.time import utc_now
 
@@ -84,6 +86,7 @@ class GoalFrame:
     domains: set[str]
     requires_tests: bool
     constraints: list[str]
+    objective_kind: str = "observed"
 
 
 @dataclass
@@ -229,6 +232,27 @@ class CompiledContextPack:
         return self.context_pack_id
 
 
+def _empty_repo_frame() -> RepoFrame:
+    return RepoFrame(
+        repo_path="",
+        branch=None,
+        base_commit=None,
+        head_commit=None,
+        dirty=False,
+        changed_files=[],
+        untracked_files=[],
+        indexed_files=[],
+        package_manifests={},
+        recent_commits=[],
+        test_files=[],
+        manifest_files=[],
+        env_files=[],
+        last_indexed_at=utc_now().isoformat(timespec="seconds") + "Z",
+        persistence_available=False,
+        persistence_reason="workspace_evidence_only",
+    )
+
+
 class ContextCompiler:
     def __init__(self, session: AsyncSession | None = None) -> None:
         self.session = session
@@ -243,24 +267,34 @@ class ContextCompiler:
         token_budget: int | None = None,
         persist: bool = True,
         compatibility_mode: bool = False,
+        objective_kind: str = "observed",
     ) -> CompiledContextPack:
-        goal_frame = parse_goal(goal)
+        if objective_kind not in {"observed", "project_snapshot"}:
+            raise InvalidGoalError("objective_kind must be observed or project_snapshot")
+        goal_frame = parse_goal(goal, objective_kind=objective_kind)
         profile = profile_for_target_model(target_model, token_budget)
         effective_budget = int(token_budget or profile.max_pack_tokens)
         if effective_budget < 300:
             raise InvalidGoalError("token_budget is too small for mandatory context-pack sections")
         workspace_uuid = _uuid_or_none(workspace_id)
-        if repo_path is None or not str(repo_path).strip():
-            raise InvalidRepoPathError("repo_path is required for context pack preparation")
-        root = Path(repo_path).expanduser().resolve()
-        if not root.exists() or not root.is_dir():
-            raise InvalidRepoPathError(f"repo_path must be an existing directory: {root}")
-
-        repo_frame = await self.inspect_repo(
-            str(root),
-            workspace_id=workspace_uuid,
-            persist_repo_index=persist and self.session is not None,
-        )
+        if repo_path is not None and str(repo_path).strip():
+            root = Path(repo_path).expanduser().resolve()
+            if not root.exists() or not root.is_dir():
+                raise InvalidRepoPathError(f"repo_path must be an existing directory: {root}")
+            repo_frame = await self.inspect_repo(
+                str(root),
+                workspace_id=workspace_uuid,
+                persist_repo_index=persist and self.session is not None,
+            )
+        elif workspace_uuid is not None:
+            # GitHub-only workspaces still need a safe, durable handoff. The
+            # graph candidates retain their provenance; repository commands
+            # simply remain absent until a local project is indexed.
+            repo_frame = _empty_repo_frame()
+        else:
+            raise InvalidRepoPathError(
+                "repo_path is required when no workspace evidence scope is supplied"
+            )
         repo_state = repo_frame.to_manifest(goal_frame.keywords, goal_frame.file_hints)
         task_frame = infer_task_frame(goal_frame, repo_frame, profile)
         candidates = await self._collect_candidates(
@@ -479,6 +513,12 @@ class ContextCompiler:
         except SQLAlchemyError:
             return []
 
+        project_references = (set(), set(), set())
+        if workspace_id is not None:
+            project_references = await workspace_references(
+                self.session, str(workspace_id)
+            )
+
         revision_ids = {
             component.claim.current_revision_id
             for component in components
@@ -537,6 +577,14 @@ class ContextCompiler:
             doc = evidence.source_document if evidence is not None else component.source_document
             if doc is not None and doc.workspace_id != workspace_id:
                 continue
+            if workspace_id is not None:
+                relevance = workspace_relevance(
+                    component,
+                    metadata_dict(doc) if doc is not None else {},
+                    *project_references,
+                )
+                if relevance.status != "relevant":
+                    continue
             trust_zone = _source_trust_zone(doc)
             summary = revision.value if revision is not None else component.value
             quote = _first_non_empty(
@@ -828,6 +876,7 @@ class ContextCompiler:
             },
             "context_pack_id": context_pack_id,
             "objective": goal_frame.objective,
+            "objective_kind": goal_frame.objective_kind,
             "created_at": created_at,
             "workspace_id": str(workspace_id) if workspace_id else None,
             "target_model": {
@@ -961,7 +1010,7 @@ async def compile_context_pack(
     )
 
 
-def parse_goal(goal: str) -> GoalFrame:
+def parse_goal(goal: str, *, objective_kind: str = "observed") -> GoalFrame:
     objective = " ".join(str(goal or "").strip().split())
     if not objective:
         raise InvalidGoalError("objective is required")
@@ -1001,6 +1050,7 @@ def parse_goal(goal: str) -> GoalFrame:
         domains=domains,
         requires_tests=requires_tests,
         constraints=constraints,
+        objective_kind=objective_kind,
     )
 
 
@@ -1306,29 +1356,33 @@ def _core_candidates(
     repo_state: dict[str, Any],
     task_frame: dict[str, Any],
 ) -> list[ContextCandidate]:
+    is_snapshot = goal_frame.objective_kind == "project_snapshot"
+    objective_title = "Project snapshot purpose" if is_snapshot else "Task objective"
+    objective_trust = "trusted_system" if is_snapshot else "trusted_human"
+    objective_source = "context_engine_snapshot" if is_snapshot else "user_task"
     candidates = [
         ContextCandidate(
             id=f"objective:{_stable_hash(goal_frame.objective)}",
             item_type="objective",
-            title="Task objective",
+            title=objective_title,
             summary=goal_frame.objective,
             token_cost=estimate_tokens(goal_frame.objective),
-            inclusion_reason="trusted_human_objective",
-            trust_zone="trusted_human",
+            inclusion_reason=("trusted_system_snapshot_purpose" if is_snapshot else "trusted_human_objective"),
+            trust_zone=objective_trust,
             confidence=1.0,
             authority_weight=1.0,
             citations=[{
                 "citation_id": "",
                 "source_document_id": None,
                 "evidence_span_id": None,
-                "source_type": "user_task",
+                "source_type": objective_source,
                 "source_url": None,
                 "quote": goal_frame.objective,
-                "trust_zone": "trusted_human",
+                "trust_zone": objective_trust,
             }],
             mandatory=True,
             lane="instructions",
-            rank_features={"source": "direct_user_objective"},
+            rank_features={"source": ("generated_project_snapshot" if is_snapshot else "direct_user_objective")},
             provenance_verified=True,
             truth_state="current",
         ),
@@ -1996,6 +2050,7 @@ def _build_lockfile(
         "compiler_version": COMPILER_VERSION,
         "ranking_version": RANKING_VERSION,
         "objective": goal_frame.objective,
+        "objective_kind": goal_frame.objective_kind,
         "workspace_id": str(workspace_id) if workspace_id else None,
         "target_model": target_model or "default",
         "capability": asdict(profile),

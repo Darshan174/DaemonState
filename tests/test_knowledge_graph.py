@@ -248,8 +248,31 @@ class TestGitHubPRExtraction:
         }
         facts = extract_github_pr(json.dumps(data))
         pr_fact = facts[0]
-        solves_rels = [r for r in pr_fact.relationships if r.relationship_type == "solves"]
-        assert len(solves_rels) >= 1
+        fixes_rels = [r for r in pr_fact.relationships if r.relationship_type == "fixes"]
+        assert len(fixes_rels) == 1
+
+    def test_preserves_repository_qualified_issue_reference(self):
+        data = {
+            "title": "Fix a dependency issue",
+            "body": "Fixes acme/repo-two#7",
+            "state": "open",
+            "number": 51,
+            "linked_issues": [7],
+        }
+        facts = extract_github_pr(
+            json.dumps(data),
+            {"repo_full_name": "acme/repo-one"},
+        )
+
+        fixes_rels = [
+            relationship
+            for relationship in facts[0].relationships
+            if relationship.relationship_type == "fixes"
+        ]
+        assert len(fixes_rels) == 1
+        assert len(facts[0].relationships) == 1
+        assert fixes_rels[0].target_name == "Issue acme/repo-two#7"
+        assert fixes_rels[0].evidence == "PR #51 Fixes acme/repo-two#7"
 
     def test_extracts_review_findings(self):
         data = {
@@ -296,13 +319,13 @@ class TestGitHubPRExtraction:
             "number": 15,
         }
         facts = extract_github_pr(json.dumps(data))
-        solves_rels = []
+        fixes_rels = []
         for f in facts:
             for r in f.relationships:
-                if r.relationship_type == "solves":
-                    solves_rels.append(r)
-        assert len(solves_rels) >= 1
-        assert solves_rels[0].confidence >= 0.90
+                if r.relationship_type == "fixes":
+                    fixes_rels.append(r)
+        assert len(fixes_rels) == 1
+        assert fixes_rels[0].confidence >= 0.90
 
 
 class TestAgentSessionExtraction:
@@ -475,7 +498,7 @@ class TestDetermineOrigin:
 
 
 class TestRelationshipSafety:
-    async def test_relationship_requires_evidence(self, db_session):
+    async def test_relationship_without_evidence_is_not_persisted(self, db_session):
         model = Model(id=uuid4(), name="Test")
         db_session.add(model)
         await db_session.flush()
@@ -509,9 +532,8 @@ class TestRelationshipSafety:
         rels = (await db_session.scalars(
             select(Relationship).where(Relationship.source_component_id == source.id)
         )).all()
-        assert len(rels) == 1
-        assert rels[0].evidence is not None
-        assert len(rels[0].evidence) > 0
+        assert rels == []
+        assert svc.last_projection_report["relationships_rejected_missing_evidence"] == 1
 
     async def test_relationship_stores_origin(self, db_session):
         model = Model(id=uuid4(), name="Test")
@@ -743,12 +765,8 @@ class TestGithubPRToIssueDeterministic:
         rels = (await db_session.scalars(
             select(Relationship).where(Relationship.source_component_id == pr_comp.id)
         )).all()
-        assert inferred == 1
-        assert len(rels) == 1
-        assert rels[0].target_component_id == issue_comp.id
-        assert rels[0].relationship_type == "part_of"
-        assert rels[0].origin == "deterministic"
-        assert rels[0].confidence == 1.0
+        assert inferred == 0
+        assert rels == []
 
     async def test_graph_builder_links_slack_github_url_to_issue(self, db_session):
         github_model = Model(id=uuid4(), name="GitHub")
@@ -953,13 +971,8 @@ class TestGithubPRToIssueDeterministic:
         rels = (await db_session.scalars(
             select(Relationship).where(Relationship.source_component_id == issue_comp.id)
         )).all()
-        assert inferred == 1
-        assert len(rels) == 1
-        assert rels[0].target_component_id == slack_hub.id
-        assert rels[0].relationship_type == "mentions"
-        assert rels[0].origin == "deterministic"
-        assert rels[0].confidence == 0.86
-        assert "Slack" in rels[0].evidence
+        assert inferred == 0
+        assert rels == []
 
     async def test_pr_solves_issue_deterministic(self, db_session):
         model = Model(id=uuid4(), name="GitHub")
@@ -1256,6 +1269,14 @@ class TestSourceSpecificExtraction:
             select(Component).where(Component.source_document_id == doc.id)
         )).all()
         assert any(c.fact_type == "pr" for c in components)
+        pr_component = next(c for c in components if c.fact_type == "pr")
+        file_component = next(c for c in components if c.fact_type == "changed_file")
+        relationship = await db_session.scalar(select(Relationship).where(
+            Relationship.relationship_type == "touches_file"
+        ))
+        assert relationship is not None
+        assert relationship.source_component_id == pr_component.id
+        assert relationship.target_component_id == file_component.id
 
     async def test_local_source_uses_regex_extractor(self, db_session):
         doc = SourceDocument(
@@ -1760,6 +1781,14 @@ class TestIsExplicitBlock:
 
 
 class TestDetermineOriginContract:
+    def test_llm_relationship_type_never_implies_deterministic_origin(self):
+        class FakeRel:
+            relationship_type = "fixes"
+
+        assert _determine_origin(
+            "github_pr", FakeRel(), extraction_method="llm_or_regex"
+        ) == "ai_proposed"
+
     def test_github_source_non_deterministic_is_extracted(self):
         class FakeRel:
             relationship_type = "related_to"

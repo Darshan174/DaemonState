@@ -11,11 +11,8 @@ import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tansta
 import { api } from "./client";
 import { resolveWorkspaceId } from "../context/WorkspaceContext";
 import {
-  dashboardStats,
   evalCasesByDomain as mockEvalCasesByDomain,
   evalSummary as mockEvalSummary,
-  recentActivity,
-  staleAlerts,
   connectors as mockConnectors,
   reviewQueue as mockReviewQueue,
   sourceDocuments as mockSourceDocuments,
@@ -315,125 +312,6 @@ export function useCreateWorkspace() {
       }
       qc.invalidateQueries({ queryKey: ["workspaces"] });
     },
-  });
-}
-
-// ── Dashboard ──────────────────────────────────────────────────
-
-const MOCK_DASHBOARD = {
-  stats: dashboardStats,
-  activity: recentActivity,
-  alerts: staleAlerts,
-};
-
-function buildActivityFromGraph(graph) {
-  const components = Array.isArray(graph?.components) ? graph.components : [];
-  if (components.length === 0) return [];
-
-  return components.slice(0, 5).map((component, index) => ({
-    id: component.id ?? index,
-    text: `Component available: ${component.name ?? "Untitled component"}`,
-    ts: component.model_name ? `Model: ${component.model_name}` : "Current graph",
-    type: component.status === "needs_review" ? "alert" : "create",
-  }));
-}
-
-function buildDashboardIo({ connectors = [], sourceCount = 0, componentCount = 0, relationshipCount = 0 } = {}) {
-  const availableConnectors = connectors.filter((connector) => connector.availability === "available");
-  const connectedConnectors = availableConnectors.filter((connector) => connector.status === "connected");
-  const comingSoonCount = connectors.filter((connector) => connector.availability === "coming_soon").length;
-  const activeFeeds = connectedConnectors.length > 0 ? connectedConnectors : availableConnectors.slice(0, 4);
-  const feedFallback = sourceCount > 0
-    ? [{ name: "Source documents", detail: `${sourceCount} raw source${sourceCount === 1 ? "" : "s"} preserved` }]
-    : [{ name: "Local files", detail: "Upload or import a source to start the graph" }];
-
-  return {
-    feeds: (activeFeeds.length > 0 ? activeFeeds.map((connector) => ({
-      name: connector.name,
-      detail: connector.status === "connected"
-        ? `${connector.itemsSynced || 0} item${connector.itemsSynced === 1 ? "" : "s"} synced`
-        : connector.message || "Available connector",
-    })) : feedFallback).slice(0, 4),
-    feedFooter: comingSoonCount > 0
-      ? `${comingSoonCount} planned connector${comingSoonCount === 1 ? "" : "s"} kept as coming soon`
-      : "Connector status is sourced from the backend catalog",
-    outputs: [
-      { name: "MCP server", detail: "Agent tools read graph facts with source IDs and evidence" },
-      { name: "Context packs", detail: "Selection or full-graph handoffs include 1-hop neighbors" },
-      { name: "Query API", detail: `${componentCount} facts searchable with retrieval trace` },
-      { name: "Graph UI", detail: `${relationshipCount} relationship${relationshipCount === 1 ? "" : "s"} inspectable` },
-    ],
-  };
-}
-
-export function useDashboard() {
-  return useQuery({
-    queryKey: ["dashboard"],
-    queryFn: withFallback(async () => {
-      const wsId = await getWorkspaceId();
-      if (!wsId) {
-        const [stats, graph, connectorsPayload] = await Promise.all([
-          api.get("/stats"),
-          api.get("/graph"),
-          api.get("/connectors"),
-        ]);
-
-        const sourceCount = stats?.sources ?? 0;
-        const componentCount = stats?.components ?? graph?.components?.length ?? 0;
-        const relationshipCount = stats?.relationships ?? graph?.relationships?.length ?? 0;
-        const connectors = normalizeConnectors(connectorsPayload);
-        return {
-          stats: [
-            { label: "Sources", value: sourceCount, icon: "database", delta: sourceCount > 0 ? `${sourceCount} source${sourceCount === 1 ? "" : "s"} ingested` : "No sources yet" },
-            { label: "Models", value: stats?.models ?? graph?.models?.length ?? 0, icon: "cube", delta: "Current backend" },
-            { label: "Components", value: componentCount, icon: "puzzle", delta: `${stats?.pending_review ?? 0} pending review` },
-            { label: "Relationships", value: relationshipCount, icon: "link", delta: "Graph edges" },
-          ],
-          activity: buildActivityFromGraph(graph),
-          alerts: staleAlerts,
-          io: buildDashboardIo({ connectors, sourceCount, componentCount, relationshipCount }),
-        };
-      }
-
-      const [stats, models, connectorsPayload, sources] = await Promise.all([
-        api.get(`/stats?workspace_id=${wsId}`),
-        api.get(`/models?workspace_id=${wsId}`),
-        api.get(`/connectors?workspace_id=${wsId}`),
-        api.get(`${FOUNDER_WORKFLOW_API.sourceDocuments}?workspace_id=${wsId}&limit=1`),
-      ]);
-      const connectors = normalizeConnectors(connectorsPayload);
-      const totalComponents = stats?.components
-        ?? models.reduce((n, m) => n + (m.component_count ?? 0), 0);
-      const relationshipCount = stats?.relationships ?? 0;
-      
-      const sourceDocumentCount = stats?.sources ?? sources?.total ?? 0;
-      const activeConnectorCount = connectors.filter(
-        (connector) => connector.status === "connected" || connector.status === "error",
-      ).length;
-      const sourceDelta =
-        activeConnectorCount > 0
-          ? `${activeConnectorCount} connector${activeConnectorCount === 1 ? "" : "s"} active`
-          : sourceDocumentCount > 0
-            ? `${sourceDocumentCount} document${sourceDocumentCount === 1 ? "" : "s"} uploaded`
-            : "No connectors active";
-
-      return {
-        stats: [
-          { label: "Sources", value: sourceDocumentCount, icon: "database", delta: sourceDelta },
-          { label: "Models", value: models.length, icon: "cube", delta: "—" },
-          { label: "Components", value: totalComponents, icon: "puzzle", delta: "—" },
-          { label: "Relationships", value: relationshipCount, icon: "link", delta: "—" },
-        ],
-        activity: recentActivity, // no backend endpoint yet
-        alerts: staleAlerts, // no backend endpoint yet
-        io: buildDashboardIo({
-          connectors,
-          sourceCount: sourceDocumentCount,
-          componentCount: totalComponents,
-          relationshipCount,
-        }),
-      };
-    }, MOCK_DASHBOARD),
   });
 }
 

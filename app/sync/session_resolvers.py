@@ -41,7 +41,7 @@ def _resolve_codex_session(session_id: str) -> ResolvedSession:
         raise SessionResolutionError(f"Codex session directory not found: {sessions_dir}")
 
     for path in _recent_files(sessions_dir, "*.jsonl"):
-        resolved = _read_codex_rollout(path, session_id)
+        resolved = _read_codex_rollout(path, session_id, root=root)
         if resolved is not None:
             return resolved
 
@@ -53,7 +53,12 @@ def _resolve_codex_session(session_id: str) -> ResolvedSession:
     raise SessionResolutionError(f"Codex session not found locally: {session_id}")
 
 
-def _read_codex_rollout(path: Path, session_id: str) -> ResolvedSession | None:
+def _read_codex_rollout(
+    path: Path,
+    session_id: str,
+    *,
+    root: Path,
+) -> ResolvedSession | None:
     messages: list[tuple[str, str]] = []
     metadata: dict[str, Any] = {"tool": "codex", "source_path": str(path)}
     matched = False

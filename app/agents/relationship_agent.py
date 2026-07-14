@@ -7,7 +7,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.agents.semantic_linker import SemanticCandidate, SemanticRelationshipLinker
-from app.models import Component, Relationship
+from app.models import Component, Relationship, SourceDocument
+from app.services.workspace_scope import (
+    current_source_documents,
+    filter_explicit_source_documents_for_workspace,
+    workspace_connector_types,
+    workspace_scope_exists,
+)
 from app.taxonomy import canonical_model_name, canonical_relationship_type
 
 
@@ -74,16 +80,38 @@ class RelationshipAgent:
         self.api_key = api_key
         self.model = model
 
-    async def run(self) -> RelationshipReport:
+    async def run(self, *, workspace_id: str | None = None) -> RelationshipReport:
         comp_result = await self.session.execute(
-            select(Component).options(selectinload(Component.model))
+            select(Component).options(
+                selectinload(Component.model),
+                selectinload(Component.source_document),
+            )
         )
-        components = comp_result.scalars().all()
+        components = list(comp_result.scalars().all())
+        workspace_scope: tuple[str, set[str]] | None = None
+        if workspace_id:
+            workspace_scope = await workspace_connector_types(self.session, workspace_id)
+            if not await workspace_scope_exists(self.session, workspace_scope[0]):
+                raise LookupError("Workspace not found")
+            documents = filter_explicit_source_documents_for_workspace(
+                list(await self.session.scalars(select(SourceDocument))),
+                workspace_scope[0],
+            )
+            current_documents, _ = current_source_documents(documents)
+            current_source_ids = {document.id for document in current_documents}
+            components = [
+                component for component in components
+                if component.source_document_id in current_source_ids
+            ]
+        component_ids = {component.id for component in components}
 
         rel_result = await self.session.execute(
             select(Relationship).options(
                 selectinload(Relationship.source_component),
                 selectinload(Relationship.target_component),
+            ).where(
+                Relationship.source_component_id.in_(component_ids),
+                Relationship.target_component_id.in_(component_ids),
             )
         )
         relationships = rel_result.scalars().all()
@@ -95,7 +123,10 @@ class RelationshipAgent:
                 message="Configure an AI key to enable relationship discovery.",
             )
 
-        result = await self._ai_discover(components, relationships)
+        if workspace_scope:
+            result = await self._ai_discover(components, relationships, workspace_scope)
+        else:
+            result = await self._ai_discover(components, relationships)
         if not result:
             return RelationshipReport(suggested=[], duplicates=[], message="Analysis failed — check your AI key.")
 
@@ -122,8 +153,13 @@ class RelationshipAgent:
             ),
         )
 
-    async def _ai_discover(self, components, relationships) -> dict | None:
-        candidates = await self._candidate_pairs()
+    async def _ai_discover(
+        self,
+        components,
+        relationships,
+        workspace_scope: tuple[str, set[str]] | None = None,
+    ) -> dict | None:
+        candidates = await self._candidate_pairs(components, workspace_scope)
         if not candidates:
             return {"suggested_relationships": [], "duplicates": []}
 
@@ -156,28 +192,46 @@ class RelationshipAgent:
         except Exception:
             return None
 
-    async def _candidate_pairs(self) -> list[SemanticCandidate]:
-        return await SemanticRelationshipLinker(
+    async def _candidate_pairs(
+        self,
+        components: list[Component] | None = None,
+        workspace_scope: tuple[str, set[str]] | None = None,
+    ) -> list[SemanticCandidate]:
+        candidates = await SemanticRelationshipLinker(
             self.session,
             threshold=0.68,
             max_candidates=120,
             require_cross_source_type=False,
+            workspace_scope=workspace_scope,
         ).candidates()
+        if components is None:
+            return candidates
+        component_ids = {component.id for component in components}
+        return [
+            candidate for candidate in candidates
+            if candidate.source.id in component_ids and candidate.target.id in component_ids
+        ]
 
     async def _persist_suggestions(
         self,
         suggestions: list[SuggestedRelationship],
         components: list[Component],
     ) -> int:
-        by_name = {c.name.strip().lower(): c for c in components}
+        by_name: dict[str, list[Component]] = {}
+        for component in components:
+            by_name.setdefault(component.name.strip().lower(), []).append(component)
         persisted = 0
 
         for suggestion in suggestions:
             if suggestion.confidence < 0.6:
                 continue
 
-            source = by_name.get(suggestion.source_name.strip().lower())
-            target = by_name.get(suggestion.target_name.strip().lower())
+            source_matches = by_name.get(suggestion.source_name.strip().lower(), [])
+            target_matches = by_name.get(suggestion.target_name.strip().lower(), [])
+            if len(source_matches) != 1 or len(target_matches) != 1:
+                continue
+            source = source_matches[0]
+            target = target_matches[0]
             if not source or not target or source.id == target.id:
                 continue
 
