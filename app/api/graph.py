@@ -12,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db_session
+from app.api.dependencies import get_access_scope
+from app.services.access import AccessScope, source_access_predicate
 from app.models import Component, Model, Relationship, SourceDocument, UnresolvedRelationship
 from app.services.workspace_scope import (
     current_source_documents,
@@ -135,7 +137,18 @@ async def get_graph(
     relationship_origin: str | None = None,
     workspace_id: str | None = None,
     session: AsyncSession = Depends(get_db_session),
+    access_scope: AccessScope = Depends(get_access_scope),
 ) -> GraphResponse:
+    workspace_uuid: UUID | None = None
+    workspace_id_str: str | None = None
+    if workspace_id:
+        try:
+            workspace_id_str, _ = await workspace_connector_types(session, workspace_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid workspace_id")
+        if not await workspace_scope_exists(session, workspace_id_str):
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        workspace_uuid = UUID(workspace_id_str)
     model_stmt = select(Model).order_by(Model.name)
     if model_id:
         model_stmt = model_stmt.where(Model.id == model_id)
@@ -144,6 +157,8 @@ async def get_graph(
     comp_stmt = (
         select(Component)
         .options(selectinload(Component.model), selectinload(Component.source_document))
+        .join(SourceDocument, Component.source_document_id == SourceDocument.id)
+        .where(source_access_predicate(access_scope, workspace_id=workspace_uuid))
         .where(Component.status.in_(["active", "needs_review", "proposed"]))
         .order_by(Component.created_at.desc())
     )
@@ -161,16 +176,14 @@ async def get_graph(
             c for c in components
             if c.source_document and canonical_source_type(c.source_document.source_type) == requested_source_type
         ]
-    if workspace_id:
-        try:
-            workspace_id_str, connector_types = await workspace_connector_types(session, workspace_id)
-        except ValueError:
-            raise HTTPException(status_code=422, detail="Invalid workspace_id")
-        if not await workspace_scope_exists(session, workspace_id_str):
-            raise HTTPException(status_code=404, detail="Workspace not found")
+    if workspace_uuid is not None:
+        scoped_documents = list(await session.scalars(
+            select(SourceDocument).where(
+                source_access_predicate(access_scope, workspace_id=workspace_uuid)
+            )
+        ))
         scoped_documents = filter_explicit_source_documents_for_workspace(
-            list(await session.scalars(select(SourceDocument))),
-            workspace_id_str,
+            scoped_documents, workspace_id_str
         )
         current_documents, _ = current_source_documents(scoped_documents)
         current_source_ids = {document.id for document in current_documents}

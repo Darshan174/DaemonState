@@ -33,6 +33,7 @@ def _force_local_providers(monkeypatch):
     monkeypatch.setattr("app.processing.extractor.settings.extraction_model", None)
     monkeypatch.setattr("app.config.settings.encryption_key", None, raising=False)
     monkeypatch.setattr("app.config.settings.server_api_key", None, raising=False)
+    monkeypatch.setattr("app.config.settings.principal_api_keys", None, raising=False)
     monkeypatch.setattr("app.config.settings.api_rate_limit_per_minute", 0, raising=False)
     from app.services.auth import reset_api_rate_limits
     reset_api_rate_limits()

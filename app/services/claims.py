@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
@@ -18,6 +20,7 @@ from app.models import (
 from app.services.evidence import EvidenceSpanResult, create_evidence_span_for_fact, sha256_text
 from app.services.identity import identity_key_for_component_name
 from app.taxonomy import canonical_fact_type, canonical_temporal
+from app.time import utc_now
 
 
 @dataclass(frozen=True)
@@ -50,6 +53,7 @@ async def upsert_claim_for_fact(
         workspace_id=workspace_id,
         identity_key=identity_key,
         claim_type=claim_type,
+        for_update=True,
     )
     confidence = _clamp(float(getattr(fact, "confidence", 0.5) or 0.5))
     temporal = canonical_temporal(getattr(fact, "temporal", None))
@@ -59,6 +63,7 @@ async def upsert_claim_for_fact(
         confidence=confidence,
     )
 
+    previous: ClaimRevision | None = None
     previous_value = None
     previous_confidence = 0.0
     if claim is None:
@@ -84,18 +89,78 @@ async def upsert_claim_for_fact(
         claim.confidence = max(claim.confidence, confidence)
         claim.authority_weight = max(claim.authority_weight, evidence_result.span.authority_weight)
 
+    status = claim.status
+    observed_at, valid_from, validity_basis = _revision_time_from_evidence(
+        evidence_result.span
+    )
+    incoming_value = str(getattr(fact, "value", "") or "")
+    revision_key = _claim_revision_key(
+        claim_id=claim.id,
+        evidence_span=evidence_result.span,
+        value=incoming_value,
+        operation=operation,
+    )
+    existing_revision = await session.scalar(
+        select(ClaimRevision).where(ClaimRevision.revision_key == revision_key)
+    )
+    if existing_revision is not None:
+        claim.current_revision_id = existing_revision.id
+        return ClaimWriteResult(
+            claim=claim,
+            revision=existing_revision,
+            evidence=evidence_result.span,
+            evidence_is_exact=evidence_result.exact,
+        )
+    now = utc_now()
+    if previous is not None:
+        if operation == "confirm":
+            previous.transaction_to = previous.transaction_to or now
+            valid_from = previous.valid_from
+            validity_basis = previous.validity_basis
+        elif operation == "update":
+            if valid_from is not None:
+                if previous.valid_from is None or valid_from >= previous.valid_from:
+                    previous.transaction_to = previous.transaction_to or now
+                    previous.valid_to = valid_from
+                else:
+                    # Late historical evidence remains in history and cannot
+                    # silently replace the established current truth.
+                    status = "contested"
+            else:
+                status = "contested"
     revision = ClaimRevision(
         claim_id=claim.id,
         evidence_span_id=evidence_result.span.id,
-        value=str(getattr(fact, "value", "") or ""),
+        revision_key=revision_key,
+        value=incoming_value,
         operation=operation,
         confidence_delta=round(confidence - previous_confidence, 4),
         status_after=claim.status,
         created_by=f"extractor:{extraction_method}",
+        valid_from=valid_from,
+        observed_at=observed_at,
+        validity_basis=validity_basis,
     )
     session.add(revision)
-    await session.flush()
-    claim.current_revision_id = revision.id
+    try:
+        await session.flush()
+    except IntegrityError:
+        # A concurrent identical writer won the deterministic revision key.
+        existing_revision = await session.scalar(
+            select(ClaimRevision).where(ClaimRevision.revision_key == revision_key)
+        )
+        if existing_revision is None:
+            raise
+        revision = existing_revision
+    if status == "contested" and operation == "update" and (
+        valid_from is None
+        or (previous is not None and previous.valid_from is not None and valid_from < previous.valid_from)
+    ):
+        claim.status = "contested"
+        claim.current_revision_id = None
+    else:
+        claim.status = status
+        claim.current_revision_id = revision.id
     await session.flush()
     return ClaimWriteResult(
         claim=claim,
@@ -131,6 +196,9 @@ async def append_claim_revision(
     supersedes_claim_id: UUID | None = None,
     contradicts_claim_id: UUID | None = None,
     created_by: str | None = None,
+    valid_from: datetime | None = None,
+    observed_at: datetime | None = None,
+    validity_basis: str | None = None,
 ) -> ClaimRevision:
     operation = operation.strip().lower()
     supersedes_target_id = supersedes_claim_id or (
@@ -143,11 +211,52 @@ async def append_claim_revision(
         raise ValueError("supersede revisions require supersedes_claim_id")
     if operation == "contradict" and contradicts_target_id is None:
         raise ValueError("contradict revisions require contradicts_claim_id")
+    for target_id in (supersedes_target_id, contradicts_target_id):
+        if target_id is None:
+            continue
+        target_claim = await session.get(Claim, target_id)
+        if target_claim is None or target_claim.workspace_id != claim.workspace_id:
+            raise ValueError("claim revision targets must exist in the same workspace")
 
     next_status = status_after or claim.status
+    previous = await _latest_revision(session, claim.id, for_update=True)
+    evidence_observed_at, evidence_valid_from, evidence_basis = _revision_time_from_evidence(
+        evidence_span
+    )
+    effective_observed_at = observed_at or evidence_observed_at
+    effective_valid_from = valid_from if valid_from is not None else evidence_valid_from
+    effective_basis = validity_basis or evidence_basis
+    if effective_basis not in {"source_time", "observation_time", "unknown"}:
+        raise ValueError("invalid claim revision validity_basis")
+    now = utc_now()
+    if previous is not None:
+        if operation == "confirm":
+            previous.transaction_to = previous.transaction_to or now
+            effective_valid_from = previous.valid_from
+            effective_basis = previous.validity_basis
+        elif operation not in {"contradict"} and effective_valid_from is not None:
+            if previous.valid_from is None or effective_valid_from >= previous.valid_from:
+                previous.transaction_to = previous.transaction_to or now
+                previous.valid_to = effective_valid_from
+            else:
+                next_status = "contested"
+    revision_key = _claim_revision_key(
+        claim_id=claim.id,
+        evidence_span=evidence_span,
+        value=value,
+        operation=operation,
+        supersedes_claim_id=supersedes_target_id,
+        contradicts_claim_id=contradicts_target_id,
+    )
+    existing_revision = await session.scalar(
+        select(ClaimRevision).where(ClaimRevision.revision_key == revision_key)
+    )
+    if existing_revision is not None:
+        return existing_revision
     revision = ClaimRevision(
         claim_id=claim.id,
         evidence_span_id=evidence_span.id,
+        revision_key=revision_key,
         value=value,
         operation=operation,
         confidence_delta=round(float(confidence_delta), 4),
@@ -155,18 +264,34 @@ async def append_claim_revision(
         supersedes_claim_id=supersedes_target_id,
         contradicts_claim_id=contradicts_target_id,
         created_by=created_by,
+        valid_from=effective_valid_from,
+        observed_at=effective_observed_at,
+        validity_basis=effective_basis,
     )
     session.add(revision)
     await session.flush()
     claim.status = next_status
-    claim.current_revision_id = revision.id
+    claim.current_revision_id = (
+        None
+        if next_status == "contested" and operation not in {"contradict"}
+        else revision.id
+    )
     if operation == "supersede":
         target = supersedes_claim
         if target is None and supersedes_target_id is not None:
             target = await session.get(Claim, supersedes_target_id)
         if target is not None:
-            target.status = "superseded"
-            await _sync_claim_components(session, target, "superseded")
+            target_revision = await _latest_revision(session, target.id, for_update=True)
+            if effective_valid_from is None:
+                target.status = "contested"
+                claim.status = "contested"
+                claim.current_revision_id = None
+            else:
+                target.status = "superseded"
+                if target_revision is not None:
+                    target_revision.valid_to = effective_valid_from
+                    target_revision.transaction_to = target_revision.transaction_to or now
+                await _sync_claim_components(session, target, "superseded")
             await _link_claim_components(
                 session,
                 source_claim=claim,
@@ -201,6 +326,7 @@ async def _find_claim(
     workspace_id: UUID | None,
     identity_key: str,
     claim_type: str,
+    for_update: bool = False,
 ) -> Claim | None:
     stmt = select(Claim).where(
         Claim.identity_key == identity_key,
@@ -210,16 +336,87 @@ async def _find_claim(
         stmt = stmt.where(Claim.workspace_id == workspace_id)
     else:
         stmt = stmt.where(Claim.workspace_id.is_(None))
-    return await session.scalar(stmt.order_by(Claim.created_at).limit(1))
+    stmt = stmt.order_by(Claim.created_at).limit(1)
+    if for_update and session.get_bind().dialect.name == "postgresql":
+        stmt = stmt.with_for_update()
+    return await session.scalar(stmt)
 
 
-async def _latest_revision(session: AsyncSession, claim_id: UUID) -> ClaimRevision | None:
-    return await session.scalar(
+async def _latest_revision(
+    session: AsyncSession,
+    claim_id: UUID,
+    *,
+    for_update: bool = False,
+) -> ClaimRevision | None:
+    stmt = (
         select(ClaimRevision)
         .where(ClaimRevision.claim_id == claim_id)
         .order_by(ClaimRevision.created_at.desc(), ClaimRevision.id.desc())
         .limit(1)
     )
+    if for_update and session.get_bind().dialect.name == "postgresql":
+        stmt = stmt.with_for_update()
+    return await session.scalar(stmt)
+
+
+async def claim_revisions_as_of(
+    session: AsyncSession,
+    *,
+    claim_id: UUID,
+    valid_at: datetime | None = None,
+    known_at: datetime | None = None,
+) -> list[ClaimRevision]:
+    """Return every revision true at validity time and known at transaction time."""
+    stmt = select(ClaimRevision).where(ClaimRevision.claim_id == claim_id)
+    if valid_at is not None:
+        stmt = stmt.where(
+            (ClaimRevision.valid_from.is_(None) | (ClaimRevision.valid_from <= valid_at)),
+            (ClaimRevision.valid_to.is_(None) | (ClaimRevision.valid_to > valid_at)),
+        )
+    if known_at is not None:
+        stmt = stmt.where(
+            ClaimRevision.created_at <= known_at,
+            (ClaimRevision.transaction_to.is_(None) | (ClaimRevision.transaction_to > known_at)),
+        )
+    else:
+        stmt = stmt.where(ClaimRevision.transaction_to.is_(None))
+    return list(await session.scalars(
+        stmt.order_by(ClaimRevision.valid_from, ClaimRevision.created_at, ClaimRevision.id)
+    ))
+
+
+def _revision_time_from_evidence(
+    evidence_span: EvidenceSpan,
+) -> tuple[datetime, datetime | None, str]:
+    source = evidence_span.__dict__.get("source_document")
+    if source is not None and source.source_created_at is not None:
+        return source.ingested_at or utc_now(), source.source_created_at, "source_time"
+    if source is not None and source.ingested_at is not None:
+        return source.ingested_at, source.ingested_at, "observation_time"
+    observed_at = evidence_span.created_at or utc_now()
+    return observed_at, None, "unknown"
+
+
+def _claim_revision_key(
+    *,
+    claim_id: UUID,
+    evidence_span: EvidenceSpan,
+    value: str,
+    operation: str,
+    supersedes_claim_id: UUID | None = None,
+    contradicts_claim_id: UUID | None = None,
+) -> str:
+    source_id = getattr(evidence_span, "source_document_id", None)
+    payload = "\x1f".join([
+        str(claim_id),
+        str(source_id or ""),
+        str(evidence_span.text_sha256 or ""),
+        operation,
+        value,
+        str(supersedes_claim_id or ""),
+        str(contradicts_claim_id or ""),
+    ])
+    return sha256_text(payload)
 
 
 def _claim_status(

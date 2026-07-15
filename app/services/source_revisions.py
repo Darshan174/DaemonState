@@ -10,9 +10,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import SourceDocument
+from app.models import SourceDocument, SourceReadGrant
 from app.services.evidence import sha256_text
 from app.source_identity import canonical_source_identity_sha256
+from app.time import utc_now
 
 
 @dataclass(frozen=True)
@@ -62,9 +63,26 @@ async def ingest_source_document_revision(
     metadata_json: dict[str, Any] | str | None = None,
     source_created_at: datetime | None = None,
     trust_zone: str | None = None,
+    visibility_scope: str = "workspace",
+    permission_source: str = "workspace_default",
+    permission_observed_at: datetime | None = None,
+    allowed_principal_ids: list[str] | tuple[str, ...] | None = None,
 ) -> SourceRevisionResult:
     """Insert immutable content revisions while making identical retries idempotent."""
     incoming_hash = sha256_text(content)
+    if visibility_scope not in {"workspace", "restricted"}:
+        raise ValueError("visibility_scope must be workspace or restricted")
+    normalized_principals = sorted({
+        str(value).strip() for value in (allowed_principal_ids or []) if str(value).strip()
+    })
+    if visibility_scope == "restricted" and not normalized_principals:
+        raise ValueError("restricted sources require at least one allowed principal")
+    observed_at = permission_observed_at or utc_now()
+    permission_snapshot_sha256 = sha256_text(json.dumps({
+        "visibility_scope": visibility_scope,
+        "permission_source": permission_source,
+        "allowed_principal_ids": normalized_principals,
+    }, sort_keys=True, separators=(",", ":")))
     identity_sha256 = canonical_source_identity_sha256(workspace_id, source_type, external_id)
 
     for attempt in range(2):
@@ -79,6 +97,7 @@ async def ingest_source_document_revision(
             current is not None
             and current.content_sha256 == incoming_hash
             and current.content == content
+            and current.permission_snapshot_sha256 == permission_snapshot_sha256
         ):
             return SourceRevisionResult(
                 document=current,
@@ -102,11 +121,27 @@ async def ingest_source_document_revision(
             metadata_json=_serialize_metadata(metadata_json),
             source_created_at=source_created_at,
             trust_zone=trust_zone,
+            visibility_scope=visibility_scope,
+            permission_source=permission_source,
+            permission_observed_at=observed_at,
+            permission_snapshot_sha256=permission_snapshot_sha256,
         )
         try:
             async with session.begin_nested():
                 session.add(doc)
                 await session.flush()
+                if workspace_id is not None:
+                    for principal_id in normalized_principals:
+                        session.add(SourceReadGrant(
+                            workspace_id=workspace_id,
+                            source_document_id=doc.id,
+                            principal_id=principal_id,
+                            grant_key=sha256_text(
+                                f"{doc.id}:{principal_id}:{permission_snapshot_sha256}"
+                            ),
+                            permission_snapshot_sha256=permission_snapshot_sha256,
+                        ))
+                    await session.flush()
         except IntegrityError:
             if attempt == 0:
                 continue

@@ -9,6 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.services.access import AccessScope
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,7 @@ async def search_component_vectors(
     workspace_id: UUID | None,
     min_confidence: float,
     limit: int,
+    access_scope: AccessScope | None = None,
 ) -> VectorSearchResult:
     """Return nearest component ids from Postgres/pgvector when available.
 
@@ -64,7 +66,11 @@ async def search_component_vectors(
     vector_literal = _to_pgvector_literal(vector)
     effective_limit = max(1, min(int(limit or settings.pgvector_candidate_limit), 1000))
 
-    workspace_predicate = ""
+    access_scope = access_scope or AccessScope.local()
+    if not access_scope.allows_workspace(workspace_id):
+        return VectorSearchResult(enabled=True, matches=[])
+    workspace_predicate = _workspace_sql_predicate(workspace_id)
+    access_predicate = ""
     params: dict[str, object] = {
         "embedding": vector_literal,
         "dimension": dimension,
@@ -72,28 +78,50 @@ async def search_component_vectors(
         "limit": effective_limit,
     }
     if workspace_id is not None:
-        workspace_predicate = """
-          AND (workspace_id = :workspace_id OR workspace_id IS NULL)
-        """
         params["workspace_id"] = str(workspace_id)
+        params["workspace_metadata_spaced"] = (
+            f'%"workspace_id": "{workspace_id}"%'
+        )
+        params["workspace_metadata_compact"] = (
+            f'%"workspace_id":"{workspace_id}"%'
+        )
+    if not access_scope.unrestricted:
+        access_predicate = """
+          AND (
+            source_documents.visibility_scope = 'workspace'
+            OR (
+              source_documents.visibility_scope = 'restricted'
+              AND EXISTS (
+                SELECT 1 FROM source_read_grants
+                WHERE source_read_grants.source_document_id = source_documents.id
+                  AND source_read_grants.principal_id = :principal_id
+                  AND source_read_grants.permission_snapshot_sha256 =
+                      source_documents.permission_snapshot_sha256
+              )
+            )
+          )
+        """
+        params["principal_id"] = access_scope.principal_id
 
     try:
         async with session.begin_nested():
             rows = (await session.execute(text(f"""
                 SELECT
-                    id,
+                    components.id,
                     1 - (
-                        embedding_vector::vector({dimension})
+                        components.embedding_vector::vector({dimension})
                         <=> CAST(:embedding AS vector({dimension}))
                     ) AS semantic_score
                 FROM components
-                WHERE embedding_vector IS NOT NULL
-                  AND vector_dims(embedding_vector) = :dimension
-                  AND status IN ('active', 'needs_review')
-                  AND confidence >= :min_confidence
+                JOIN source_documents ON source_documents.id = components.source_document_id
+                WHERE components.embedding_vector IS NOT NULL
+                  AND vector_dims(components.embedding_vector) = :dimension
+                  AND components.status IN ('active', 'needs_review')
+                  AND components.confidence >= :min_confidence
                   {workspace_predicate}
+                  {access_predicate}
                 ORDER BY
-                    embedding_vector::vector({dimension})
+                    components.embedding_vector::vector({dimension})
                     <=> CAST(:embedding AS vector({dimension}))
                 LIMIT :limit
             """), params)).fetchall()
@@ -119,6 +147,7 @@ async def search_component_text(
     workspace_id: UUID | None,
     min_confidence: float,
     limit: int,
+    access_scope: AccessScope | None = None,
 ) -> TextSearchResult:
     """Return lexical component candidates using Postgres full-text search."""
     normalized_query = " ".join(str(query or "").split())
@@ -132,17 +161,41 @@ async def search_component_text(
         return TextSearchResult(enabled=False, matches=[], reason="text_search_unavailable")
 
     effective_limit = max(1, min(int(limit or settings.pgvector_candidate_limit), 1000))
-    workspace_predicate = ""
+    access_scope = access_scope or AccessScope.local()
+    if not access_scope.allows_workspace(workspace_id):
+        return TextSearchResult(enabled=True, matches=[])
+    workspace_predicate = _workspace_sql_predicate(workspace_id)
+    access_predicate = ""
     params: dict[str, object] = {
         "query": normalized_query,
         "min_confidence": min_confidence,
         "limit": effective_limit,
     }
     if workspace_id is not None:
-        workspace_predicate = """
-          AND (workspace_id::text = :workspace_id OR workspace_id IS NULL)
-        """
         params["workspace_id"] = str(workspace_id)
+        params["workspace_metadata_spaced"] = (
+            f'%"workspace_id": "{workspace_id}"%'
+        )
+        params["workspace_metadata_compact"] = (
+            f'%"workspace_id":"{workspace_id}"%'
+        )
+    if not access_scope.unrestricted:
+        access_predicate = """
+          AND (
+            source_documents.visibility_scope = 'workspace'
+            OR (
+              source_documents.visibility_scope = 'restricted'
+              AND EXISTS (
+                SELECT 1 FROM source_read_grants
+                WHERE source_read_grants.source_document_id = source_documents.id
+                  AND source_read_grants.principal_id = :principal_id
+                  AND source_read_grants.permission_snapshot_sha256 =
+                      source_documents.permission_snapshot_sha256
+              )
+            )
+          )
+        """
+        params["principal_id"] = access_scope.principal_id
 
     try:
         async with session.begin_nested():
@@ -154,12 +207,15 @@ async def search_component_text(
                     components.id,
                     LEAST(ts_rank_cd(components.search_tsv, q.query, 32) * 8.0, 1.4)
                         AS lexical_score
-                FROM components, q
+                FROM components
+                JOIN source_documents ON source_documents.id = components.source_document_id,
+                q
                 WHERE components.search_tsv IS NOT NULL
                   AND components.search_tsv @@ q.query
                   AND components.status IN ('active', 'needs_review')
                   AND components.confidence >= :min_confidence
                   {workspace_predicate}
+                  {access_predicate}
                 ORDER BY ts_rank_cd(components.search_tsv, q.query, 32) DESC
                 LIMIT :limit
             """), params)).fetchall()
@@ -212,6 +268,23 @@ async def _text_search_ready(session: AsyncSession) -> bool:
     except SQLAlchemyError:
         return False
     return bool(row[0])
+
+
+def _workspace_sql_predicate(workspace_id: UUID | None) -> str:
+    if workspace_id is None:
+        return "AND source_documents.workspace_id IS NULL"
+    return """
+      AND (
+        source_documents.workspace_id = :workspace_id
+        OR (
+          source_documents.workspace_id IS NULL
+          AND (
+            source_documents.metadata LIKE :workspace_metadata_spaced
+            OR source_documents.metadata LIKE :workspace_metadata_compact
+          )
+        )
+      )
+    """
 
 
 def pgvector_index_dimension() -> int:

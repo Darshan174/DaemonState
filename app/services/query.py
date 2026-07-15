@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -20,6 +20,12 @@ from app.services.vector_search import (
     pgvector_candidate_limit,
     search_component_text,
     search_component_vectors,
+)
+from app.services.access import AccessScope, source_access_predicate
+from app.services.live_retrieval import (
+    LiveRetrievalError,
+    LiveRetrievalLane,
+    retrieve_live_context,
 )
 
 
@@ -103,6 +109,8 @@ class QueryTrace:
     expanded_relationship_count: int
     facts_used: list[QueryTraceFact]
     relationships_used: list[QueryTraceRelationship]
+    retrieval_mode: str = "indexed"
+    live_lanes: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -114,6 +122,7 @@ class QueryResult:
     components: list[QueryComponent]
     sources: list[dict]
     trace: QueryTrace
+    live_lanes: list[dict] = field(default_factory=list)
 
 
 ANSWER_PROMPT = """You are a knowledge graph assistant for a startup. Answer the user's question using ONLY the facts provided below. Be direct and specific. If the facts don't contain enough information to answer, say so clearly.
@@ -152,9 +161,48 @@ class QueryService:
         top_k: int = 8,
         min_confidence: float = 0.0,
         hybrid: bool = True,
+        access_scope: AccessScope | None = None,
+        retrieval_mode: str = "indexed",
+        live_sources: list[str] | None = None,
+        repo_path: str | None = None,
     ) -> QueryResult:
         top_k = max(1, min(int(top_k or 8), 20))
         min_confidence = max(0.0, min(float(min_confidence or 0.0), 1.0))
+        access_scope = access_scope or AccessScope.local()
+        retrieval_mode = str(retrieval_mode or "indexed").strip().lower()
+        if retrieval_mode not in {"indexed", "live", "combined"}:
+            raise ValueError("retrieval_mode must be indexed, live, or combined")
+        requested_workspace_id = _event_workspace_id(workspace_id)
+        live_lanes: list[LiveRetrievalLane] = []
+        if retrieval_mode != "indexed":
+            if requested_workspace_id is None:
+                raise LiveRetrievalError(
+                    "live_workspace_required",
+                    "Live retrieval requires an explicit workspace_id.",
+                )
+            if not access_scope.allows_workspace(requested_workspace_id):
+                raise LiveRetrievalError(
+                    "live_workspace_unavailable",
+                    "The live workspace is unavailable in this access scope.",
+                )
+            live_lanes = await retrieve_live_context(
+                self.session,
+                workspace_id=requested_workspace_id,
+                question=question,
+                sources=list(live_sources or []),
+                repo_path=repo_path,
+                fail_fast=retrieval_mode == "live",
+            )
+            if retrieval_mode == "live":
+                result = _live_only_result(
+                    question=question,
+                    top_k=top_k,
+                    min_confidence=min_confidence,
+                    hybrid=hybrid,
+                    lanes=live_lanes,
+                )
+                await self._record_retrieval_event(result, workspace_id)
+                return result
         q_embedding = await self._embedder.embed_text(question)
         workspace_uuid: UUID | None = None
         vector_prefilter_limit = pgvector_candidate_limit(top_k)
@@ -164,6 +212,7 @@ class QueryService:
             workspace_id=_event_workspace_id(workspace_id),
             min_confidence=min_confidence,
             limit=vector_prefilter_limit,
+            access_scope=access_scope,
         )
         text_search = await search_component_text(
             self.session,
@@ -171,6 +220,7 @@ class QueryService:
             workspace_id=_event_workspace_id(workspace_id),
             min_confidence=min_confidence,
             limit=vector_prefilter_limit,
+            access_scope=access_scope,
         ) if hybrid else None
         vector_ids = [match.component_id for match in vector_search.matches]
         text_ids = [match.component_id for match in text_search.matches] if text_search else []
@@ -199,6 +249,11 @@ class QueryService:
                 selectinload(Component.incoming_relationships).selectinload(Relationship.source_component),
             )
             .where(Component.status.in_(["active", "needs_review"]))
+            .join(SourceDocument, Component.source_document_id == SourceDocument.id)
+            .where(source_access_predicate(
+                access_scope,
+                workspace_id=requested_workspace_id,
+            ))
         )
         if min_confidence > 0:
             component_stmt = component_stmt.where(Component.confidence >= min_confidence)
@@ -208,12 +263,7 @@ class QueryService:
         workspace_scope: tuple[str, set[str]] | None = None
         if workspace_id:
             _, workspace_uuid = normalize_workspace_id(workspace_id)
-            component_stmt = component_stmt.where(
-                or_(
-                    Component.workspace_id == workspace_uuid,
-                    Component.workspace_id.is_(None),
-                )
-            )
+            component_stmt = component_stmt.where(Component.workspace_id == workspace_uuid)
 
         components = list(await self.session.scalars(component_stmt))
         candidate_component_count = len(components)
@@ -277,15 +327,21 @@ class QueryService:
                 expanded_relationship_count=0,
                 facts_used=[],
                 relationships_used=[],
+                retrieval_mode=retrieval_mode,
+                live_lanes=[item.to_dict() for item in live_lanes],
             )
+            live_sources_result = _live_source_entries(live_lanes)
             result = QueryResult(
                 question=question,
                 schema_version="query.v1",
-                answer=f'No matching context found for "{question}".',
-                confidence=0.0,
+                answer=_combined_answer(
+                    f'No matching context found for "{question}".', live_lanes
+                ),
+                confidence=0.35 if live_sources_result else 0.0,
                 components=[],
-                sources=[],
+                sources=live_sources_result,
                 trace=empty_trace,
+                live_lanes=[item.to_dict() for item in live_lanes],
             )
             await self._record_retrieval_event(result, workspace_id)
             return result
@@ -308,7 +364,12 @@ class QueryService:
             related = list(await self.session.scalars(
                 select(Component)
                 .options(selectinload(Component.model), selectinload(Component.source_document))
+                .join(SourceDocument, Component.source_document_id == SourceDocument.id)
                 .where(Component.id.in_(related_ids))
+                .where(source_access_predicate(
+                    access_scope,
+                    workspace_id=requested_workspace_id,
+                ))
             ))
             if workspace_scope:
                 related = filter_components_for_workspace(
@@ -485,16 +546,30 @@ class QueryService:
             expanded_relationship_count=len(trace_relationships),
             facts_used=facts_used,
             relationships_used=trace_relationships,
+            retrieval_mode=retrieval_mode,
+            live_lanes=[item.to_dict() for item in live_lanes],
         )
+
+        live_source_entries = _live_source_entries(live_lanes)
+        existing_source_keys = {
+            str(item.get("id") or item.get("source_identity")) for item in sources
+        }
+        for item in live_source_entries:
+            source_key = str(item.get("id") or item.get("source_identity"))
+            if source_key in existing_source_keys:
+                continue
+            sources.append(item)
+            existing_source_keys.add(source_key)
 
         result = QueryResult(
             question=question,
             schema_version="query.v1",
-            answer=answer,
+            answer=_combined_answer(answer, live_lanes),
             confidence=round(avg_conf, 2),
             components=result_components,
             sources=sources,
             trace=trace,
+            live_lanes=[item.to_dict() for item in live_lanes],
         )
         await self._record_retrieval_event(result, workspace_id)
         return result
@@ -673,7 +748,88 @@ def _query_trace_to_dict(trace: QueryTrace) -> dict:
             }
             for rel in trace.relationships_used
         ],
+        "retrieval_mode": trace.retrieval_mode,
+        "live_lanes": trace.live_lanes,
     }
+
+
+def _live_only_result(
+    *,
+    question: str,
+    top_k: int,
+    min_confidence: float,
+    hybrid: bool,
+    lanes: list[LiveRetrievalLane],
+) -> QueryResult:
+    lane_dicts = [item.to_dict() for item in lanes]
+    sources = _live_source_entries(lanes)
+    trace = QueryTrace(
+        retrieval_strategy="live_provider",
+        ranking_strategy="provider_bounded_lexical_v1",
+        calibration_strategy="live_source_identity_v1",
+        vector_candidate_count=0,
+        text_candidate_count=0,
+        vector_prefilter_limit=None,
+        text_prefilter_limit=None,
+        top_k=top_k,
+        min_confidence=min_confidence,
+        hybrid=hybrid,
+        candidate_component_count=0,
+        scoped_component_count=0,
+        scored_component_count=0,
+        entity_group_count=0,
+        entity_duplicate_count=0,
+        matched_component_count=0,
+        returned_component_count=0,
+        expanded_relationship_count=0,
+        facts_used=[],
+        relationships_used=[],
+        retrieval_mode="live",
+        live_lanes=lane_dicts,
+    )
+    return QueryResult(
+        question=question,
+        schema_version="query.v1",
+        answer=_combined_answer(f'No matching context found for "{question}".', lanes),
+        confidence=0.5 if sources else 0.0,
+        components=[],
+        sources=sources,
+        trace=trace,
+        live_lanes=lane_dicts,
+    )
+
+
+def _live_source_entries(lanes: list[LiveRetrievalLane]) -> list[dict]:
+    return [
+        {
+            "id": item.source_document_id,
+            "source_identity": item.source_identity,
+            "type": lane.lane,
+            "url": item.source_url,
+            "title": item.title,
+            "excerpt": item.excerpt,
+            "path": item.path,
+            "line": item.line,
+            "sha256": item.sha256,
+            "observed_at": item.observed_at,
+            "provider_updated_at": item.provider_updated_at,
+            "retrieval_state": "checked_live",
+        }
+        for lane in lanes
+        for item in lane.items
+    ]
+
+
+def _combined_answer(indexed_answer: str, lanes: list[LiveRetrievalLane]) -> str:
+    items = [item for lane in lanes if lane.status == "checked_live" for item in lane.items]
+    if not items:
+        return indexed_answer
+    live_summary = " | ".join(
+        f"{item.title}: {_compact_text(item.excerpt, 180)}" for item in items[:3]
+    )
+    if indexed_answer.startswith("No matching context found"):
+        return f"Live source check: {live_summary}"
+    return f"{indexed_answer} Live source check: {live_summary}"
 
 
 def _fallback_answer_from_facts(question: str, top: list[tuple[float, Component]]) -> str:

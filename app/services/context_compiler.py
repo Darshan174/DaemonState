@@ -25,6 +25,9 @@ from app.models import (
     UnresolvedRelationship,
 )
 from app.services.model_profiles import ModelCapabilityProfile, profile_for_target_model
+from app.services.access import AccessScope, source_access_predicate
+from app.services.focus_policy import focus_eligibility
+from app.services.playbooks import PlaybookService
 from app.services.project_scope import workspace_references, workspace_relevance
 from app.services.repo_indexer import RANKING_VERSION, RepoFrame, RepoIndexer
 from app.services.workspace_scope import metadata_dict
@@ -279,7 +282,9 @@ class ContextCompiler:
         objective_origin: str | None = None,
         objective_source_document_id: str | UUID | None = None,
         objective_evidence_span_id: str | UUID | None = None,
+        access_scope: AccessScope | None = None,
     ) -> CompiledContextPack:
+        access_scope = access_scope or AccessScope.local()
         if objective_kind not in {"observed", "project_snapshot"}:
             raise InvalidGoalError("objective_kind must be observed or project_snapshot")
         effective_origin = objective_origin or (
@@ -293,6 +298,7 @@ class ContextCompiler:
             focus_component_id=_uuid_or_none(focus_component_id),
             objective_source_document_id=_uuid_or_none(objective_source_document_id),
             objective_evidence_span_id=_uuid_or_none(objective_evidence_span_id),
+            access_scope=access_scope,
         )
         goal_frame = parse_goal(goal, objective_kind=objective_kind)
         profile = profile_for_target_model(target_model, token_budget)
@@ -337,6 +343,7 @@ class ContextCompiler:
             task_frame,
             workspace_uuid,
             profile,
+            access_scope,
         )
         if focus["component_id"] is not None:
             focus_candidate = next(
@@ -371,6 +378,15 @@ class ContextCompiler:
             )
         selected, excluded = _assign_citation_ids(selected, excluded, profile)
 
+        known_playbook = None
+        if self.session is not None and workspace_uuid is not None:
+            known_playbook = await PlaybookService(self.session).compatible_playbook(
+                workspace_id=workspace_uuid,
+                objective=goal_frame.objective,
+                repo_state=repo_state,
+                access_scope=access_scope,
+            )
+
         pack_id = str(uuid4()) if persist or compatibility_mode is False else None
         created_at = utc_now().isoformat(timespec="seconds") + "Z"
         while True:
@@ -392,6 +408,7 @@ class ContextCompiler:
                 persistence_available=bool(persist),
                 persistence_reason=None if persist else "file_output_only",
                 focus=focus,
+                known_playbook=known_playbook,
             )
             markdown = render_context_pack_markdown(manifest, profile)
             rendered_tokens = estimate_tokens(markdown)
@@ -435,6 +452,7 @@ class ContextCompiler:
             rendered_tokens=rendered_tokens,
             token_budget=effective_budget,
             focus=focus,
+            known_playbook=known_playbook,
         )
         manifest["input_fingerprint"] = manifest["lockfile"]["replay_key"]
         selected_item_tokens = sum(item.token_cost for item in selected)
@@ -525,6 +543,7 @@ class ContextCompiler:
         focus_component_id: UUID | None,
         objective_source_document_id: UUID | None,
         objective_evidence_span_id: UUID | None,
+        access_scope: AccessScope,
     ) -> tuple[str, dict[str, Any]]:
         allowed_origins = {"trusted_human", "source_component", "project_snapshot"}
         if objective_origin not in allowed_origins:
@@ -585,19 +604,22 @@ class ContextCompiler:
         component = await self.session.scalar(
             select(Component)
             .options(selectinload(Component.source_document), selectinload(Component.claim))
+            .join(SourceDocument, Component.source_document_id == SourceDocument.id)
             .where(Component.id == focus_component_id, Component.workspace_id == workspace_id)
+            .where(source_access_predicate(access_scope, workspace_id=workspace_id))
         )
         if component is None:
             raise FocusValidationError(
                 "focus_not_found", "Focused Component was not found in this workspace.", status_code=404
             )
-        if component.fact_type not in {"task", "issue", "requirement", "decision", "blocker"}:
+        focus_eligible, focus_ineligible_reason = focus_eligibility(
+            component.fact_type,
+            component.status,
+        )
+        if not focus_eligible:
             raise FocusValidationError(
-                "focus_not_eligible", f"Component type {component.fact_type!r} cannot be a task focus."
-            )
-        if component.status in {"rejected", "resolved", "superseded"}:
-            raise FocusValidationError(
-                "focus_not_eligible", f"Component status {component.status!r} cannot be a task focus."
+                "focus_not_eligible",
+                focus_ineligible_reason or "This evidence cannot be used as an agent task.",
             )
         source = component.source_document
         if source is None or source.workspace_id != workspace_id:
@@ -694,13 +716,18 @@ class ContextCompiler:
         task_frame: dict[str, Any],
         workspace_id: UUID | None,
         profile: ModelCapabilityProfile,
+        access_scope: AccessScope,
     ) -> list[ContextCandidate]:
         candidates: list[ContextCandidate] = []
         candidates.extend(_core_candidates(goal_frame, repo_state, task_frame))
         candidates.extend(_repo_candidates(repo_frame, repo_state, profile))
         if self.session is not None:
-            candidates.extend(await self._graph_candidates(goal_frame, workspace_id, profile))
-            candidates.extend(await self._unresolved_relationship_candidates(workspace_id))
+            candidates.extend(await self._graph_candidates(
+                goal_frame, workspace_id, profile, access_scope
+            ))
+            candidates.extend(await self._unresolved_relationship_candidates(
+                workspace_id, access_scope
+            ))
         return _dedupe_candidates(candidates)
 
     async def _graph_candidates(
@@ -708,6 +735,7 @@ class ContextCompiler:
         goal_frame: GoalFrame,
         workspace_id: UUID | None,
         profile: ModelCapabilityProfile,
+        access_scope: AccessScope,
     ) -> list[ContextCandidate]:
         stmt = (
             select(Component)
@@ -726,6 +754,8 @@ class ContextCompiler:
                 "stale",
                 "superseded",
             ]))
+            .join(SourceDocument, Component.source_document_id == SourceDocument.id)
+            .where(source_access_predicate(access_scope, workspace_id=workspace_id))
             .order_by(Component.identity_key, Component.id)
         )
         if workspace_id is not None:
@@ -757,7 +787,10 @@ class ContextCompiler:
                         EvidenceSpan.source_document
                     )
                 )
+                .join(EvidenceSpan, ClaimRevision.evidence_span_id == EvidenceSpan.id)
+                .join(SourceDocument, EvidenceSpan.source_document_id == SourceDocument.id)
                 .where(ClaimRevision.id.in_(revision_ids))
+                .where(source_access_predicate(access_scope, workspace_id=workspace_id))
                 .order_by(ClaimRevision.id)
             )
             try:
@@ -781,13 +814,18 @@ class ContextCompiler:
                 superseded_document_ids = {
                     document_id
                     for document_id in await self.session.scalars(
-                        select(supersedes_column).where(supersedes_column.is_not(None))
+                        select(supersedes_column)
+                        .where(supersedes_column.is_not(None))
+                        .where(source_access_predicate(
+                            access_scope, workspace_id=workspace_id
+                        ))
                     )
                     if document_id is not None
                 }
             except SQLAlchemyError:
                 superseded_document_ids = set()
 
+        authorized_component_ids = {component.id for component in components}
         candidates: list[ContextCandidate] = []
         for component in components:
             claim = component.claim
@@ -822,7 +860,9 @@ class ContextCompiler:
                 float(evidence.prompt_injection_risk_score or 0.0) if evidence is not None else 0.0,
             )
             item_type = _item_type_for_component(component)
-            relationships = _relationship_summaries(component, workspace_id)
+            relationships = _relationship_summaries(
+                component, workspace_id, authorized_component_ids
+            )
             conflict_state = (
                 "unresolved"
                 if (
@@ -931,11 +971,17 @@ class ContextCompiler:
     async def _unresolved_relationship_candidates(
         self,
         workspace_id: UUID | None,
+        access_scope: AccessScope,
     ) -> list[ContextCandidate]:
         stmt = (
             select(UnresolvedRelationship)
             .options(selectinload(UnresolvedRelationship.source_component))
             .where(UnresolvedRelationship.status == "unresolved")
+            .join(
+                SourceDocument,
+                UnresolvedRelationship.source_document_id == SourceDocument.id,
+            )
+            .where(source_access_predicate(access_scope, workspace_id=workspace_id))
             .order_by(UnresolvedRelationship.created_at.desc())
             .limit(100)
         )
@@ -1090,6 +1136,7 @@ class ContextCompiler:
         persistence_available: bool,
         persistence_reason: str | None,
         focus: dict[str, Any],
+        known_playbook: dict[str, Any] | None,
     ) -> dict[str, Any]:
         manifest = {
             "schema_version": SCHEMA_VERSION,
@@ -1151,6 +1198,8 @@ class ContextCompiler:
         }
         if affected_code is not None:
             manifest["affected_code"] = affected_code
+        if known_playbook is not None:
+            manifest["known_playbook"] = known_playbook
         return manifest
 
     async def _persist_pack(
@@ -1574,6 +1623,25 @@ def render_context_pack_markdown(
     sections.extend(["", "## Implementation Plan", ""])
     for index, step in enumerate(manifest.get("implementation_plan", []), start=1):
         sections.append(f"{index}. {step['text']}")
+
+    known_playbook = manifest.get("known_playbook")
+    if isinstance(known_playbook, dict):
+        sections.extend(["", "## Verified Playbook", ""])
+        sections.append(
+            "Use these previously verified steps only while they remain compatible "
+            "with the repository snapshot in this pack."
+        )
+        for index, step in enumerate(known_playbook.get("ordered_steps") or [], start=1):
+            sections.append(f"{index}. {str(step)}")
+        commands = known_playbook.get("verification_commands") or []
+        if commands:
+            sections.append("- Re-run verification: " + ", ".join(f"`{item}`" for item in commands))
+        source_ids = [
+            source.get("source_document_id") for source in known_playbook.get("sources") or []
+            if isinstance(source, dict) and source.get("source_document_id")
+        ]
+        if source_ids:
+            sections.append("- Verified run evidence: " + ", ".join(f"`{item}`" for item in source_ids))
 
     sections.extend(["", "## Verification Commands", ""])
     if verification:
@@ -2016,6 +2084,7 @@ def _assign_citation_ids(
 def _relationship_summaries(
     component: Component,
     workspace_id: UUID | None,
+    authorized_component_ids: set[UUID] | None = None,
 ) -> list[dict[str, Any]]:
     relationships = []
     for rel in [*component.outgoing_relationships, *component.incoming_relationships]:
@@ -2030,6 +2099,13 @@ def _relationship_summaries(
             or target_component is None
             or source.workspace_id != workspace_id
             or target_component.workspace_id != workspace_id
+            or (
+                authorized_component_ids is not None
+                and (
+                    source.id not in authorized_component_ids
+                    or target_component.id not in authorized_component_ids
+                )
+            )
         ):
             continue
         target = None
@@ -2218,6 +2294,7 @@ def _build_lockfile(
     rendered_tokens: int,
     token_budget: int,
     focus: dict[str, Any],
+    known_playbook: dict[str, Any] | None,
 ) -> dict[str, Any]:
     repo_snapshot = {
         "repo_path": repo_state.get("repo_path"),
@@ -2320,6 +2397,11 @@ def _build_lockfile(
         "repo": repo_snapshot,
         "evidence": evidence_snapshot,
         "selection": selection,
+        "known_playbook": {
+            "id": known_playbook.get("id"),
+            "last_verified_at": known_playbook.get("last_verified_at"),
+            "repository_snapshot": known_playbook.get("repository_snapshot"),
+        } if known_playbook else None,
     }
     replay_key = _sha256_text(json.dumps(
         replay_inputs,

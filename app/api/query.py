@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db_session
+from app.api.dependencies import get_access_scope
+from app.services.access import AccessScope
 from app.services.query import QueryService
+from app.services.live_retrieval import LiveRetrievalError
 
 router = APIRouter()
 
@@ -20,6 +24,9 @@ class QueryRequest(BaseModel):
     top_k: int = Field(default=8, ge=1, le=20)
     min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     hybrid: bool = True
+    retrieval_mode: Literal["indexed", "live", "combined"] = "indexed"
+    live_sources: list[str] = Field(default_factory=list, max_length=4)
+    repo_path: str | None = None
 
 
 class QueryComponentRead(BaseModel):
@@ -98,6 +105,8 @@ class QueryTraceRead(BaseModel):
     expanded_relationship_count: int
     facts_used: list[QueryTraceFactRead]
     relationships_used: list[QueryTraceRelationshipRead]
+    retrieval_mode: str = "indexed"
+    live_lanes: list[dict] = Field(default_factory=list)
 
 
 class QueryResultRead(BaseModel):
@@ -108,21 +117,35 @@ class QueryResultRead(BaseModel):
     components: list[QueryComponentRead]
     sources: list[dict]
     trace: QueryTraceRead
+    live_lanes: list[dict] = Field(default_factory=list)
 
 
 @router.post("/query", response_model=QueryResultRead)
 async def query_context(
     payload: QueryRequest,
     session: AsyncSession = Depends(get_db_session),
+    access_scope: AccessScope = Depends(get_access_scope),
 ) -> QueryResultRead:
     svc = QueryService(session, api_key=payload.api_key, model=payload.model)
-    result = await svc.query(
-        payload.question,
-        workspace_id=str(payload.workspace_id) if payload.workspace_id else None,
-        top_k=payload.top_k,
-        min_confidence=payload.min_confidence,
-        hybrid=payload.hybrid,
-    )
+    try:
+        result = await svc.query(
+            payload.question,
+            workspace_id=str(payload.workspace_id) if payload.workspace_id else None,
+            top_k=payload.top_k,
+            min_confidence=payload.min_confidence,
+            hybrid=payload.hybrid,
+            access_scope=access_scope,
+            retrieval_mode=payload.retrieval_mode,
+            live_sources=payload.live_sources,
+            repo_path=payload.repo_path,
+        )
+        await session.commit()
+    except LiveRetrievalError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
     return QueryResultRead(
         question=result.question,
         schema_version=result.schema_version,
@@ -205,5 +228,8 @@ async def query_context(
                 )
                 for r in result.trace.relationships_used
             ],
+            retrieval_mode=result.trace.retrieval_mode,
+            live_lanes=result.trace.live_lanes,
         ),
+        live_lanes=result.live_lanes,
     )

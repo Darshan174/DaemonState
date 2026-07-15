@@ -19,6 +19,7 @@ from app.services.auth import (
     api_rate_limit_enabled,
     check_api_rate_limit,
     request_has_valid_api_key,
+    request_access_scope,
 )
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
@@ -38,12 +39,14 @@ app = FastAPI(title="Context Engine", lifespan=lifespan)
 @app.middleware("http")
 async def require_api_key_for_api_routes(request: Request, call_next):
     if request.url.path.startswith("/api") and request.method != "OPTIONS":
+        access_scope = request_access_scope(request)
         if api_auth_enabled() and not request_has_valid_api_key(request):
             return JSONResponse(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 content={"detail": "Invalid or missing API key."},
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        request.state.access_scope = access_scope
         if api_rate_limit_enabled():
             allowed, retry_after = check_api_rate_limit(request)
             if not allowed:

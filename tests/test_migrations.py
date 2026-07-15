@@ -872,6 +872,8 @@ class TestEvidenceLedgerMigration:
                         "code_symbols",
                         "code_edges",
                         "repo_events",
+                        "open_loops",
+                        "verified_playbooks",
                     )
                 }
                 deterministic_triggers = set((await conn.execute(text(

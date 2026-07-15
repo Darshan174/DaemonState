@@ -1277,6 +1277,58 @@ class TestWorkspaceScopedGraphEndpoints:
 
 
 class TestContextDigestEndpoint:
+    async def test_context_digest_exposes_exact_focus_eligibility(self, client, db_session):
+        model = Model(id=uuid4(), name="Delivery")
+        pull_request_source = SourceDocument(
+            id=uuid4(),
+            source_type="github_pr",
+            external_id="pr-focus-policy",
+            content="PR #22 delivers the issue fix.",
+            metadata_json=json.dumps({"title": "PR #22 delivery"}),
+        )
+        issue_source = SourceDocument(
+            id=uuid4(),
+            source_type="github_issue",
+            external_id="issue-focus-policy",
+            content="Issue #22 requires the fix.",
+            metadata_json=json.dumps({"title": "Issue #22 task"}),
+        )
+        pull_request = Component(
+            id=uuid4(),
+            model_id=model.id,
+            source_document_id=pull_request_source.id,
+            name="PR #22 delivery",
+            value="Delivers the issue fix.",
+            fact_type="pr",
+            confidence=0.92,
+            status="active",
+        )
+        issue = Component(
+            id=uuid4(),
+            model_id=model.id,
+            source_document_id=issue_source.id,
+            name="Issue #22 task",
+            value="Implement the required fix.",
+            fact_type="issue",
+            confidence=0.92,
+            status="active",
+        )
+        db_session.add_all([model, pull_request_source, issue_source, pull_request, issue])
+        await db_session.flush()
+
+        response = await client.get("/api/context/digest")
+        assert response.status_code == 200
+        cards = {card["id"]: card for card in response.json()["cards"]}
+
+        pr_card = cards[f"component:{pull_request.id}"]
+        assert pr_card["focus_eligible"] is False
+        assert pr_card["focus_ineligible_reason"].startswith(
+            "Pull requests are delivery evidence."
+        )
+        issue_card = cards[f"component:{issue.id}"]
+        assert issue_card["focus_eligible"] is True
+        assert issue_card["focus_ineligible_reason"] is None
+
     async def test_context_digest_ranks_attention_cards_with_provenance(self, client, db_session):
         model = Model(id=uuid4(), name="Auth")
         doc = SourceDocument(

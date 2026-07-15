@@ -27,6 +27,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     query_parser.add_argument("question", help="Question to ask")
     query_parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     query_parser.add_argument("--api-key", default=None, help="API key for protected servers")
+    query_parser.add_argument("--workspace-id", default=None)
+    query_parser.add_argument(
+        "--retrieval-mode", choices=["indexed", "live", "combined"], default="indexed"
+    )
+    query_parser.add_argument(
+        "--live-source", action="append", default=[], choices=["local_repo", "github"]
+    )
+    query_parser.add_argument("--repo", default=None, help="Active indexed local repo path")
     query_parser.add_argument("--json", action="store_true", dest="json_output")
     query_parser.set_defaults(func=run_query)
 
@@ -61,6 +69,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
     repo_index_parser.add_argument("--json", action="store_true", dest="json_output")
     repo_index_parser.set_defaults(func=run_repo)
 
+    repo_watch_parser = repo_subparsers.add_parser(
+        "watch",
+        help="Watch a local repository and persist bounded change evidence.",
+    )
+    repo_watch_parser.add_argument("path", nargs="?", default=".")
+    repo_watch_parser.add_argument("--workspace-id", required=True)
+    repo_watch_parser.add_argument("--poll-interval", type=float, default=2.0)
+    repo_watch_parser.add_argument("--debounce", type=float, default=0.5)
+    repo_watch_parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run one poll cycle and stop.",
+    )
+    repo_watch_parser.add_argument(
+        "--max-cycles",
+        type=int,
+        default=None,
+        help="Stop after this many poll cycles (primarily for tests/automation).",
+    )
+    repo_watch_parser.add_argument("--json", action="store_true", dest="json_output")
+    repo_watch_parser.set_defaults(func=run_repo)
 
     eval_parser = subparsers.add_parser("eval", help="Run local quality evals.")
     eval_parser.add_argument("suite", choices=["extraction"], help="Eval suite to run")
@@ -177,12 +206,20 @@ def run_ingest(args: argparse.Namespace) -> int:
 
 
 def run_query(args: argparse.Namespace) -> int:
+    payload = {"question": args.question}
+    if args.workspace_id:
+        payload["workspace_id"] = args.workspace_id
+    if args.retrieval_mode != "indexed":
+        payload["retrieval_mode"] = args.retrieval_mode
+        payload["live_sources"] = args.live_source
+    if args.repo:
+        payload["repo_path"] = args.repo
     try:
         resp = api_request(
             args.base_url,
             "POST",
             "/api/query",
-            payload={"question": args.question},
+            payload=payload,
             api_key=_api_key(args),
         )
     except APIError as exc:
@@ -279,6 +316,29 @@ async def _compile_prepare(args: argparse.Namespace):
 def run_repo(args: argparse.Namespace) -> int:
     import asyncio
 
+    if args.repo_command == "watch":
+        try:
+            result = asyncio.run(_watch_repo(args))
+        except KeyboardInterrupt:
+            print("repo watch stopped", file=sys.stderr)
+            return 130
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            prefix = f"Error [{code}]" if code else "Error"
+            print(f"{prefix}: {exc}", file=sys.stderr)
+            return 1
+        if args.json_output:
+            print(json.dumps(result.to_dict(), indent=2))
+        else:
+            print(
+                "repo watch complete: "
+                f"cycles={result.cycles} "
+                f"changes={result.changes_detected} "
+                f"events_created={result.events_created} "
+                f"stopped={result.stopped_reason}"
+            )
+        return 0
+
     try:
         frame = asyncio.run(_index_repo(args))
     except Exception as exc:
@@ -317,6 +377,37 @@ async def _index_repo(args: argparse.Namespace):
         )
         await session.commit()
         return frame
+
+
+async def _watch_repo(args: argparse.Namespace):
+    from app.database import AsyncSessionLocal
+    from app.services.repo_watcher import watch_repository
+
+    def _print_event(event) -> None:
+        data = event.to_dict()
+        if args.json_output:
+            print(json.dumps({"type": "repository_event", **data}), flush=True)
+            return
+        print(
+            "repo change: "
+            f"added={data['files_added']} "
+            f"changed={data['files_changed']} "
+            f"deleted={data['files_deleted']} "
+            f"snapshot={data['snapshot_fingerprint'][:12]}",
+            flush=True,
+        )
+
+    async with AsyncSessionLocal() as session:
+        return await watch_repository(
+            session,
+            repo_path=args.path,
+            workspace_id=args.workspace_id,
+            poll_interval_seconds=args.poll_interval,
+            debounce_seconds=args.debounce,
+            once=args.once,
+            max_cycles=args.max_cycles,
+            on_event=_print_event,
+        )
 
 
 def run_graph(args: argparse.Namespace) -> int:

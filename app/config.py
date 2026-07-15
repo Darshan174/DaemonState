@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     enable_local_embedder: bool = False
     data_dir: str = "./data"
     server_api_key: str | None = None
+    # JSON object keyed by API token. Values are objects containing a stable
+    # ``principal_id`` and a list of ``workspace_ids``. Tokens are resolved on
+    # the server and are never accepted as caller-authored principal claims.
+    principal_api_keys: str | None = None
     google_client_id: str | None = None
     google_client_secret: str | None = None
     google_redirect_uri: str | None = None

@@ -12,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db_session
+from app.api.dependencies import get_access_scope
+from app.services.access import AccessScope, source_access_predicate
 from app.models import Component, SourceDocument
 from app.services.ingest import IngestionService
 from app.services.source_revisions import ingest_source_document_revision
@@ -93,9 +95,12 @@ async def create_source(
     background_tasks: BackgroundTasks,
     sync: bool = False,
     session: AsyncSession = Depends(get_db_session),
+    access_scope: AccessScope = Depends(get_access_scope),
 ) -> SourceDocument:
     metadata = dict(payload.metadata)
     workspace_id = payload.workspace_id or _metadata_workspace_uuid(metadata)
+    if not access_scope.allows_workspace(workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
     if workspace_id:
         metadata.setdefault("workspace_id", str(workspace_id))
     result = await ingest_source_document_revision(
@@ -129,12 +134,15 @@ async def create_sources_bulk(
     background_tasks: BackgroundTasks,
     sync: bool = False,
     session: AsyncSession = Depends(get_db_session),
+    access_scope: AccessScope = Depends(get_access_scope),
 ) -> dict:
     doc_ids = []
     created_ids = []
     for item in payload.documents:
         metadata = dict(item.metadata)
         workspace_id = item.workspace_id or _metadata_workspace_uuid(metadata)
+        if not access_scope.allows_workspace(workspace_id):
+            raise HTTPException(status_code=404, detail="Workspace not found")
         if workspace_id:
             metadata.setdefault("workspace_id", str(workspace_id))
         result = await ingest_source_document_revision(
@@ -175,7 +183,10 @@ async def upload_source(
     workspace_id: UUID | None = None,
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_db_session),
+    access_scope: AccessScope = Depends(get_access_scope),
 ) -> SourceRead:
+    if not access_scope.allows_workspace(workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
     content = (await file.read()).decode("utf-8", errors="replace")
     metadata = {"filename": file.filename}
     if workspace_id:
@@ -213,17 +224,19 @@ async def upload_source(
 async def list_sources(
     workspace_id: str | None = None,
     session: AsyncSession = Depends(get_db_session),
+    access_scope: AccessScope = Depends(get_access_scope),
 ) -> list[SourceDocument]:
-    stmt = select(SourceDocument).order_by(SourceDocument.ingested_at.desc())
+    workspace_uuid: UUID | None = None
     if workspace_id:
-        workspace_id_str, connector_types = await _source_workspace_scope(session, workspace_id)
-        docs = list(await session.scalars(stmt))
-        return [
-            doc for doc in docs
-            if source_matches_workspace(doc, workspace_id_str, connector_types)
-        ][:100]
-
-    result = await session.scalars(stmt.limit(100))
+        workspace_id_str, _ = await _source_workspace_scope(session, workspace_id)
+        workspace_uuid = UUID(workspace_id_str)
+    stmt = (
+        select(SourceDocument)
+        .where(source_access_predicate(access_scope, workspace_id=workspace_uuid))
+        .order_by(SourceDocument.ingested_at.desc())
+        .limit(100)
+    )
+    result = await session.scalars(stmt)
     return list(result)
 
 
@@ -232,8 +245,14 @@ async def get_source(
     source_id: UUID,
     workspace_id: str | None = None,
     session: AsyncSession = Depends(get_db_session),
+    access_scope: AccessScope = Depends(get_access_scope),
 ) -> dict:
-    doc = await session.get(SourceDocument, source_id)
+    workspace_uuid = UUID(workspace_id) if workspace_id else None
+    doc = await session.scalar(
+        select(SourceDocument)
+        .where(SourceDocument.id == source_id)
+        .where(source_access_predicate(access_scope, workspace_id=workspace_uuid))
+    )
     if doc is None:
         raise HTTPException(status_code=404, detail="Source not found")
     workspace_id_str = None

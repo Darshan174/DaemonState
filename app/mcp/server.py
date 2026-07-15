@@ -41,6 +41,8 @@ from app.processing.embedder import build_default_embedder, cosine_similarity
 from app.services.claims import append_claim_revision
 from app.services.evidence import create_evidence_span
 from app.services.ingest import IngestionService
+from app.services.open_loops import OpenLoopService
+from app.services.playbooks import PlaybookService
 from app.services.query import QueryService
 from app.services.source_revisions import ingest_source_document_revision
 from app.time import utc_now
@@ -178,6 +180,22 @@ async def list_tools() -> list[Tool]:
                     "hybrid": {
                         "type": "boolean",
                         "description": "Whether to combine embedding and lexical overlap. Default true.",
+                    },
+                    "workspace_id": {
+                        "type": "string",
+                        "description": "Required workspace UUID for live or combined retrieval.",
+                    },
+                    "retrieval_mode": {
+                        "type": "string",
+                        "enum": ["indexed", "live", "combined"],
+                    },
+                    "live_sources": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": ["local_repo", "github"]},
+                    },
+                    "repo_path": {
+                        "type": "string",
+                        "description": "Active indexed repository path for local live checks.",
                     },
                 },
                 "required": ["query"],
@@ -460,6 +478,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             top_k=arguments.get("top_k", 8),
             min_confidence=arguments.get("min_confidence", 0.0),
             hybrid=arguments.get("hybrid", True),
+            workspace_id=arguments.get("workspace_id"),
+            retrieval_mode=arguments.get("retrieval_mode", "indexed"),
+            live_sources=arguments.get("live_sources") or [],
+            repo_path=arguments.get("repo_path"),
         )
     elif name == "expand_graph":
         return await _expand_graph(arguments["node_id"])
@@ -1310,6 +1332,10 @@ async def _query_context(
     top_k: int = 8,
     min_confidence: float = 0.0,
     hybrid: bool = True,
+    workspace_id: str | None = None,
+    retrieval_mode: str = "indexed",
+    live_sources: list[str] | None = None,
+    repo_path: str | None = None,
 ) -> list[TextContent]:
     try:
         async with AsyncSessionLocal() as session:
@@ -1319,7 +1345,12 @@ async def _query_context(
                 top_k=top_k,
                 min_confidence=min_confidence,
                 hybrid=hybrid,
+                workspace_id=workspace_id,
+                retrieval_mode=retrieval_mode,
+                live_sources=live_sources,
+                repo_path=repo_path,
             )
+            await session.commit()
 
         return _json_text({
             "schema_version": result.schema_version,
@@ -1414,7 +1445,10 @@ async def _query_context(
                     }
                     for rel in result.trace.relationships_used
                 ],
+                "retrieval_mode": result.trace.retrieval_mode,
+                "live_lanes": result.trace.live_lanes,
             },
+            "live_lanes": result.live_lanes,
         })
 
     except Exception as exc:
@@ -1796,6 +1830,7 @@ async def _record_observation(
             source=source,
             event_type=event_type,
         )
+        await _reconcile_run_artifacts(session, run.id)
         return source, existing, True, projection_status
 
     await _validate_runtime_references(session, run=run, payload=payload)
@@ -1869,6 +1904,7 @@ async def _record_observation(
             source=source,
             event_type=event_type,
         )
+        await _reconcile_run_artifacts(session, run.id)
         return source, existing, True, projection_status
 
     projection_status = await _ensure_runtime_projection(
@@ -1876,7 +1912,20 @@ async def _record_observation(
         source=source_doc,
         event_type=event_type,
     )
+    await _reconcile_run_artifacts(session, run.id)
     return source_doc, observation, False, projection_status
+
+
+async def _reconcile_run_artifacts(session: AsyncSession, run_id: UUID) -> None:
+    """Persist deterministic scrutiny and reusable steps without losing run evidence."""
+    try:
+        async with session.begin_nested():
+            await OpenLoopService(session).reconcile_run(run_id)
+            await PlaybookService(session).extract_from_run(run_id)
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        logger.exception("run learning-artifact reconciliation failed for %s", run_id)
 
 
 async def _ensure_runtime_projection(

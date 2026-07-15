@@ -30,6 +30,7 @@ from sqlalchemy.orm import (
 
 from app.taxonomy import default_trust_zone_for_source
 from app.source_identity import canonical_source_identity_sha256
+from app.time import utc_now
 
 
 class Base(DeclarativeBase):
@@ -55,8 +56,15 @@ class Workspace(Base):
     components: Mapped[list["Component"]] = orm_relationship(back_populates="workspace")
     evidence_spans: Mapped[list["EvidenceSpan"]] = orm_relationship(back_populates="workspace")
     claims: Mapped[list["Claim"]] = orm_relationship(back_populates="workspace")
+    source_read_grants: Mapped[list["SourceReadGrant"]] = orm_relationship(
+        back_populates="workspace"
+    )
     context_packs: Mapped[list["ContextPack"]] = orm_relationship(back_populates="workspace")
     agent_runs: Mapped[list["AgentRun"]] = orm_relationship(back_populates="workspace")
+    open_loops: Mapped[list["OpenLoop"]] = orm_relationship(back_populates="workspace")
+    verified_playbooks: Mapped[list["VerifiedPlaybook"]] = orm_relationship(
+        back_populates="workspace"
+    )
     unresolved_relationships: Mapped[list["UnresolvedRelationship"]] = orm_relationship(
         back_populates="workspace"
     )
@@ -229,6 +237,18 @@ class SourceDocument(Base):
         ForeignKey("source_documents.id"), nullable=True
     )
     trust_zone: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
+    visibility_scope: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="workspace", server_default="workspace", index=True
+    )
+    permission_source: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="workspace_default", server_default="workspace_default"
+    )
+    permission_observed_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, server_default=func.now()
+    )
+    permission_snapshot_sha256: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="", server_default=""
+    )
     source_created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     author: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
@@ -244,6 +264,9 @@ class SourceDocument(Base):
     components: Mapped[list["Component"]] = orm_relationship(back_populates="source_document")
     evidence_spans: Mapped[list["EvidenceSpan"]] = orm_relationship(
         back_populates="source_document"
+    )
+    read_grants: Mapped[list["SourceReadGrant"]] = orm_relationship(
+        back_populates="source_document", cascade="all, delete-orphan"
     )
 
 
@@ -276,6 +299,18 @@ class EvidenceSpan(Base):
         String(50), nullable=False, default="deterministic"
     )
     review_status: Mapped[str] = mapped_column(String(50), nullable=False, default="verified")
+    visibility_scope: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="workspace", server_default="workspace", index=True
+    )
+    permission_source: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="workspace_default", server_default="workspace_default"
+    )
+    permission_observed_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, server_default=func.now()
+    )
+    permission_snapshot_sha256: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="", server_default=""
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
@@ -285,6 +320,38 @@ class EvidenceSpan(Base):
     claim_revisions: Mapped[list["ClaimRevision"]] = orm_relationship(
         back_populates="evidence_span"
     )
+
+
+class SourceReadGrant(Base):
+    """One immutable principal read grant for a source-document revision."""
+
+    __tablename__ = "source_read_grants"
+    __table_args__ = (
+        Index("uq_source_read_grants_grant_key", "grant_key", unique=True),
+        Index(
+            "ix_source_read_grants_document_principal",
+            "source_document_id",
+            "principal_id",
+        ),
+        Index("ix_source_read_grants_workspace_principal", "workspace_id", "principal_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id"), nullable=False, index=True
+    )
+    source_document_id: Mapped[UUID] = mapped_column(
+        ForeignKey("source_documents.id"), nullable=False, index=True
+    )
+    principal_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    grant_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    permission_snapshot_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    workspace: Mapped["Workspace"] = orm_relationship(back_populates="source_read_grants")
+    source_document: Mapped["SourceDocument"] = orm_relationship(back_populates="read_grants")
 
 
 class Model(Base):
@@ -440,6 +507,7 @@ class Claim(Base):
         Index("ix_claims_workspace_identity", "workspace_id", "identity_key"),
         Index("ix_claims_workspace_status", "workspace_id", "status"),
         Index("ix_claims_type_status", "claim_type", "status"),
+        Index("uq_claims_scope_identity_sha256", "scope_identity_sha256", unique=True),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -447,12 +515,23 @@ class Claim(Base):
         ForeignKey("workspaces.id"), nullable=True, index=True
     )
     identity_key: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    scope_identity_sha256: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="", server_default=""
+    )
     claim_type: Mapped[str] = mapped_column(String(50), nullable=False, default="fact")
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="needs_review")
     temporal: Mapped[str] = mapped_column(String(20), nullable=False, default="unknown")
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
     authority_weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
-    current_revision_id: Mapped[UUID | None] = mapped_column(nullable=True, index=True)
+    current_revision_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(
+            "claim_revisions.id",
+            use_alter=True,
+            name="fk_claims_current_revision_id_claim_revisions",
+        ),
+        nullable=True,
+        index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
@@ -474,6 +553,9 @@ class ClaimRevision(Base):
     __table_args__ = (
         Index("ix_claim_revisions_claim_created", "claim_id", "created_at"),
         Index("ix_claim_revisions_evidence_span", "evidence_span_id"),
+        Index("uq_claim_revisions_revision_key", "revision_key", unique=True),
+        Index("ix_claim_revisions_claim_valid", "claim_id", "valid_from", "valid_to"),
+        Index("ix_claim_revisions_claim_transaction", "claim_id", "created_at", "transaction_to"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -481,12 +563,28 @@ class ClaimRevision(Base):
     evidence_span_id: Mapped[UUID] = mapped_column(
         ForeignKey("evidence_spans.id"), nullable=False, index=True
     )
+    revision_key: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="", server_default=""
+    )
     value: Mapped[str] = mapped_column(Text, nullable=False)
     operation: Mapped[str] = mapped_column(String(50), nullable=False, default="create")
     confidence_delta: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     status_after: Mapped[str] = mapped_column(String(50), nullable=False, default="needs_review")
-    supersedes_claim_id: Mapped[UUID | None] = mapped_column(nullable=True, index=True)
-    contradicts_claim_id: Mapped[UUID | None] = mapped_column(nullable=True, index=True)
+    supersedes_claim_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("claims.id"), nullable=True, index=True
+    )
+    contradicts_claim_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("claims.id"), nullable=True, index=True
+    )
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, server_default=func.now()
+    )
+    transaction_to: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    validity_basis: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="unknown", server_default="unknown"
+    )
     created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
@@ -863,6 +961,113 @@ class RunObservation(Base):
     source_document: Mapped["SourceDocument | None"] = orm_relationship()
 
 
+class OpenLoop(Base):
+    """One durable, deterministic founder-oversight finding."""
+
+    __tablename__ = "open_loops"
+    __table_args__ = (
+        Index("uq_open_loops_natural_key", "natural_key", unique=True),
+        Index("ix_open_loops_workspace_status", "workspace_id", "status"),
+        Index("ix_open_loops_focus_status", "focus_component_id", "status"),
+        Index("ix_open_loops_pack_rule", "context_pack_id", "rule_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id"), nullable=False, index=True
+    )
+    natural_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    rule_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    rule_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
+    severity: Mapped[str] = mapped_column(String(32), nullable=False, default="warning")
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    explanation: Mapped[str] = mapped_column(Text, nullable=False)
+    next_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+    context_pack_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("context_packs.id"), nullable=True, index=True
+    )
+    run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_runs.id"), nullable=True, index=True
+    )
+    focus_component_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("components.id"), nullable=True, index=True
+    )
+    trigger_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    sources_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    assigned_to: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    resolution_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolution_source_document_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("source_documents.id"), nullable=True
+    )
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    workspace: Mapped["Workspace"] = orm_relationship(back_populates="open_loops")
+    resolution_source_document: Mapped["SourceDocument | None"] = orm_relationship()
+
+
+class VerifiedPlaybook(Base):
+    """Reusable steps admitted only from structurally verified agent runs."""
+
+    __tablename__ = "verified_playbooks"
+    __table_args__ = (
+        Index("uq_verified_playbooks_identity_key", "identity_key", unique=True),
+        Index("ix_verified_playbooks_workspace_status", "workspace_id", "status"),
+        Index("ix_verified_playbooks_objective", "workspace_id", "objective_fingerprint"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id"), nullable=False, index=True
+    )
+    identity_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    objective_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    objective_pattern: Mapped[str] = mapped_column(Text, nullable=False)
+    repository_identity: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    repository_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pending_review"
+    )
+    ordered_steps_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    verification_commands_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]"
+    )
+    source_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_runs.id"), nullable=False, index=True
+    )
+    supporting_run_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    source_document_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    successful_run_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    last_verified_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    review_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    review_source_document_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("source_documents.id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    workspace: Mapped["Workspace"] = orm_relationship(back_populates="verified_playbooks")
+    source_run: Mapped["AgentRun"] = orm_relationship(foreign_keys=[source_run_id])
+    review_source_document: Mapped["SourceDocument | None"] = orm_relationship()
+
+
 class CodeFile(Base):
     __tablename__ = "code_files"
     __table_args__ = (
@@ -1075,10 +1280,73 @@ def _populate_source_document_ledger_fields(mapper, connection, target: SourceDo
         target.trust_zone = default_trust_zone_for_source(target.source_type, metadata)
     if not target.source_created_at:
         target.source_created_at = _datetime_from_metadata(metadata)
+    target.visibility_scope = target.visibility_scope or "workspace"
+    target.permission_source = target.permission_source or "workspace_default"
+    target.permission_observed_at = target.permission_observed_at or utc_now()
+    if target.visibility_scope not in {"workspace", "restricted"}:
+        raise ValueError("visibility_scope must be workspace or restricted")
+    target.permission_snapshot_sha256 = _permission_snapshot_sha256(
+        visibility_scope=target.visibility_scope,
+        permission_source=target.permission_source,
+        permission_observed_at=target.permission_observed_at,
+        existing=target.permission_snapshot_sha256,
+    )
+
+
+@event.listens_for(Claim, "before_insert")
+@event.listens_for(Claim, "before_update")
+def _populate_claim_scope_identity(mapper, connection, target: Claim) -> None:
+    target.claim_type = target.claim_type or "fact"
+    target.scope_identity_sha256 = _canonical_hash([
+        str(target.workspace_id) if target.workspace_id else "global",
+        target.claim_type,
+        target.identity_key,
+    ])
+
+
+@event.listens_for(ClaimRevision, "before_insert")
+def _populate_claim_revision_key(mapper, connection, target: ClaimRevision) -> None:
+    target.operation = target.operation or "create"
+    target.validity_basis = target.validity_basis or "unknown"
+    target.observed_at = target.observed_at or utc_now()
+    if not target.revision_key:
+        target.revision_key = _canonical_hash([
+            str(target.claim_id),
+            str(target.evidence_span_id),
+            target.operation,
+            target.value,
+            str(target.supersedes_claim_id) if target.supersedes_claim_id else None,
+            str(target.contradicts_claim_id) if target.contradicts_claim_id else None,
+        ])
+    if target.valid_from and target.valid_to and target.valid_to <= target.valid_from:
+        raise ValueError("claim revision valid_to must be after valid_from")
+    if target.transaction_to and target.created_at and target.transaction_to <= target.created_at:
+        raise ValueError("claim revision transaction_to must be after created_at")
+    if target.validity_basis not in {"source_time", "observation_time", "unknown"}:
+        raise ValueError("invalid claim revision validity_basis")
 
 
 def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _permission_snapshot_sha256(
+    *,
+    visibility_scope: str,
+    permission_source: str,
+    permission_observed_at: datetime | None,
+    existing: str | None,
+) -> str:
+    # Explicit snapshots supplied by connector ingestion include principal grants
+    # and are therefore authoritative. Direct/legacy rows receive a stable,
+    # conservative workspace-default snapshot.
+    if existing:
+        return existing
+    return _sha256_text(json.dumps({
+        "visibility_scope": visibility_scope,
+        "permission_source": permission_source,
+        "allowed_principal_ids": [],
+    }, sort_keys=True, separators=(",", ":")))
 
 
 def _metadata_dict(raw: object) -> dict[str, Any]:
