@@ -10,11 +10,16 @@ import {
   useBuildContext,
   useContextDigest,
   useIndexProject,
+  useOpenLoops,
+  usePlaybooks,
   usePrepareContext,
   useRunTimeline,
+  useUpdateOpenLoop,
+  useUpdatePlaybook,
 } from "../context-map/api";
 import DigestBoard from "../context-map/components/DigestBoard";
 import ContextInspector from "../context-map/components/ContextInspector";
+import OpenLoopsPanel from "../context-map/components/OpenLoopsPanel";
 
 export default function ContextMapPage() {
   return <ContextDigestSurface />;
@@ -31,11 +36,23 @@ function ContextDigestSurface() {
   const indexProject = useIndexProject(activeWorkspaceId);
   const prepareContext = usePrepareContext();
   const [selectedCardId, setSelectedCardId] = useState(null);
+  const [openLoopsOpen, setOpenLoopsOpen] = useState(false);
 
   const digest = digestQuery.data;
   const selectedCard = digest?.cards?.find((card) => card.id === selectedCardId) || null;
   const selectedFocusComponentId = focusComponentId(selectedCard);
   const timelineQuery = useRunTimeline(activeWorkspaceId, selectedFocusComponentId);
+  const openLoopsQuery = useOpenLoops(activeWorkspaceId, { enabled: openLoopsOpen });
+  const playbooksQuery = usePlaybooks(activeWorkspaceId, { enabled: openLoopsOpen });
+  const updateOpenLoop = useUpdateOpenLoop(activeWorkspaceId);
+  const updatePlaybook = useUpdatePlaybook(activeWorkspaceId);
+  const refreshProjectMap = async (mode) => {
+    const repoPath = digest?.scope?.project_paths?.[0];
+    if (repoPath) {
+      await indexProject.mutateAsync({ repo_path: repoPath });
+    }
+    return buildContext.mutateAsync({ mode });
+  };
   const closeInspector = () => {
     const previousCardId = selectedCardId;
     setSelectedCardId(null);
@@ -46,6 +63,7 @@ function ContextDigestSurface() {
 
   useEffect(() => {
     setSelectedCardId(null);
+    setOpenLoopsOpen(false);
   }, [activeWorkspaceId]);
 
   if (!workspacesQuery.isLoading && !activeWorkspaceId) {
@@ -94,12 +112,17 @@ function ContextDigestSurface() {
                   digest={digest}
                   workspaceName={activeWorkspace?.name || "selected workspace"}
                   generatedAt={digest?.generated_at}
-                  onBuild={(mode) => buildContext.mutate({ mode })}
-                  building={buildContext.isPending}
+                  onBuild={refreshProjectMap}
+                  building={buildContext.isPending || indexProject.isPending}
                   buildResult={buildContext.data}
-                  buildError={buildContext.isError ? buildContext.error : null}
+                  buildError={indexProject.isError
+                    ? indexProject.error
+                    : buildContext.isError ? buildContext.error : null}
                   selectedCardId={selectedCardId}
-                  onSelectCard={(card) => setSelectedCardId(card.id)}
+                  onSelectCard={(card) => {
+                    setOpenLoopsOpen(false);
+                    setSelectedCardId(card.id);
+                  }}
                   onClearSelection={() => setSelectedCardId(null)}
                   onIndexProject={(repoPath) => indexProject.mutate({ repo_path: repoPath })}
                   indexingProject={indexProject.isPending}
@@ -116,9 +139,40 @@ function ContextDigestSurface() {
                     });
                     return result.markdown;
                   }}
+                  onOpenLoops={() => {
+                    setSelectedCardId(null);
+                    setOpenLoopsOpen(true);
+                  }}
                 />
               </div>
-              {selectedCard ? (
+              {openLoopsOpen ? (
+                <div className="absolute inset-y-0 right-0 z-50 flex w-full max-w-[430px] overflow-hidden rounded-r-lg shadow-[-24px_0_60px_rgba(15,23,42,0.16)]">
+                  <OpenLoopsPanel
+                    data={openLoopsQuery.data || digest.open_loops}
+                    playbooks={playbooksQuery.data?.items || []}
+                    loading={openLoopsQuery.isLoading}
+                    playbooksLoading={playbooksQuery.isLoading}
+                    error={openLoopsQuery.isError ? openLoopsQuery.error : null}
+                    workspaceId={activeWorkspaceId}
+                    onClose={() => {
+                      setOpenLoopsOpen(false);
+                      globalThis.requestAnimationFrame?.(() => {
+                        globalThis.document?.querySelector("[data-project-attention]")?.focus();
+                      });
+                    }}
+                    onOpenFocus={(componentId) => {
+                      const focusCard = digest.cards.find((card) => card.id === `component:${componentId}`);
+                      if (!focusCard) return;
+                      setOpenLoopsOpen(false);
+                      setSelectedCardId(focusCard.id);
+                    }}
+                    onUpdate={(input) => updateOpenLoop.mutateAsync(input)}
+                    updating={updateOpenLoop.isPending}
+                    onUpdatePlaybook={(input) => updatePlaybook.mutateAsync(input)}
+                    updatingPlaybook={updatePlaybook.isPending}
+                  />
+                </div>
+              ) : selectedCard ? (
                 <div className="absolute inset-y-0 right-0 z-50 flex w-full max-w-[430px] overflow-hidden rounded-r-lg shadow-[-24px_0_60px_rgba(15,23,42,0.16)]">
                   <ContextInspector
                     card={selectedCard}
@@ -126,7 +180,8 @@ function ContextDigestSurface() {
                     links={digest.links}
                     workspaceId={activeWorkspaceId}
                     onClose={closeInspector}
-                    canPrepareForAgent={Boolean(selectedFocusComponentId && isEligibleFocusCard(selectedCard))}
+                    canPrepareForAgent={Boolean(selectedFocusComponentId && selectedCard.focus_eligible)}
+                    prepareUnavailableReason={selectedCard.focus_ineligible_reason}
                     onPrepareForAgent={async () => {
                       const result = await prepareContext.mutateAsync({
                         workspace_id: activeWorkspaceId,
@@ -144,6 +199,9 @@ function ContextDigestSurface() {
                     timelineLoading={timelineQuery.isLoading}
                     timelineError={timelineQuery.isError ? timelineQuery.error : null}
                     onRetryTimeline={() => timelineQuery.refetch()}
+                    onUpdateOpenLoop={(input) => updateOpenLoop.mutateAsync(input)}
+                    updatingOpenLoop={updateOpenLoop.isPending}
+                    contextRevision={digest.generated_at}
                   />
                 </div>
               ) : null}
@@ -158,12 +216,6 @@ function ContextDigestSurface() {
 function focusComponentId(card) {
   const match = /^component:([0-9a-f-]{36})$/i.exec(card?.id || "");
   return match?.[1] || null;
-}
-
-function isEligibleFocusCard(card) {
-  if (["rejected", "resolved", "superseded"].includes(card?.status)) return false;
-  return ["task", "decision", "blocker", "requirement"].includes(card?.type)
-    || ["task", "decision", "blocker", "requirement"].includes(card?.category);
 }
 
 function PageLoading({ label }) {

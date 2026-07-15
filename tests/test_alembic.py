@@ -27,6 +27,8 @@ def test_alembic_upgrade_bootstraps_current_sqlite_schema(tmp_path):
             "relationships",
             "unresolved_relationships",
             "retrieval_events",
+            "open_loops",
+            "verified_playbooks",
             "alembic_version",
         } <= tables
 
@@ -65,6 +67,6 @@ def test_alembic_upgrade_bootstraps_current_sqlite_schema(tmp_path):
 
         with engine.connect() as conn:
             version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert version == "0003_project_compiler"
+        assert version == "0005_learning_loop"
     finally:
         engine.dispose()

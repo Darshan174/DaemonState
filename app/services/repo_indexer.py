@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, or_, select, text as sql_text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -76,6 +76,7 @@ MAX_INDEXED_BYTES = 50_000_000
 MAX_INDEXED_FILE_BYTES = 400_000
 ENV_FILE_RE = re.compile(r"(^|/)\.env($|[.\-])|\.env\.example$|config\.(?:py|js|ts|json|ya?ml)$")
 RANKING_VERSION = "objective_file_rank.v3"
+_REPO_INDEX_LOCKS: dict[str, asyncio.Lock] = {}
 _GENERIC_GOAL_TERMS = {
     "a",
     "add",
@@ -230,6 +231,16 @@ class IndexedRouteOwner:
 
 
 @dataclass(frozen=True)
+class IndexedTestReference:
+    test_symbol_name: str
+    test_symbol_start_line: int
+    target_name: str
+    target_specifier: str
+    binding_line: int
+    reference_line: int
+
+
+@dataclass(frozen=True)
 class PersistedEdgeSpec:
     source_symbol_id: UUID
     target_symbol_id: UUID
@@ -256,6 +267,7 @@ class IndexedFile:
     import_hints: list[IndexedImport] = field(default_factory=list)
     route_hints: list[str] = field(default_factory=list)
     route_owners: list[IndexedRouteOwner] = field(default_factory=list)
+    test_references: list[IndexedTestReference] = field(default_factory=list)
     is_test: bool = False
     is_config: bool = False
     is_manifest: bool = False
@@ -577,7 +589,15 @@ class RepoIndexer:
             frame.persistence_available = False
             frame.persistence_reason = "workspace_required_for_persistence"
             return
+        lock_key = f"{workspace_uuid}:{frame.repo_path}"
+        process_lock = _REPO_INDEX_LOCKS.setdefault(lock_key, asyncio.Lock())
+        await process_lock.acquire()
         try:
+            if self.session.get_bind().dialect.name == "postgresql":
+                await self.session.execute(
+                    sql_text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                    {"key": lock_key},
+                )
             async with self.session.begin_nested():
                 await self._delete_inactive_roots(workspace_uuid, frame.repo_path)
                 existing_files = list(await self.session.scalars(
@@ -700,6 +720,7 @@ class RepoIndexer:
                     "local_module_import.v1",
                     "route_handler_owner.v1",
                     "test_path_match.v1",
+                    "test_symbol_match.v1",
                 }
                 existing_edges = list(await self.session.scalars(
                     select(CodeEdge).where(
@@ -791,6 +812,8 @@ class RepoIndexer:
         except (SQLAlchemyError, ValueError) as exc:
             frame.persistence_available = False
             frame.persistence_reason = f"repo_index_persistence_unavailable: {exc.__class__.__name__}"
+        finally:
+            process_lock.release()
 
     def _add_symbols(self, code_file: CodeFile, indexed: IndexedFile) -> None:
         for symbol in indexed.symbols[:300]:
@@ -999,7 +1022,7 @@ def _resolve_exact_edges(
             "target_sha256": indexed_by_path[target_path].sha256,
             "transformation": "exact_test_path",
         }
-        specs.append(_edge_spec(
+        pair_spec = _edge_spec(
             source_module,
             target_module,
             source_path=test_path,
@@ -1010,7 +1033,57 @@ def _resolve_exact_edges(
             start_line=None,
             end_line=None,
             evidence=evidence,
-        ))
+        )
+        specs.append(pair_spec)
+
+        source_symbols = symbols_by_file.get(files_by_path[test_path].id, [])
+        target_symbols = symbols_by_file.get(files_by_path[target_path].id, [])
+        for reference in test_file.test_references:
+            if not _test_reference_resolves_to_target(
+                test_path,
+                target_path,
+                test_file,
+                reference,
+                indexed_by_path,
+            ):
+                continue
+            source_matches = [
+                symbol for symbol in source_symbols
+                if symbol.name == reference.test_symbol_name
+                and symbol.start_line == reference.test_symbol_start_line
+                and symbol.symbol_type in {"function", "async_function", "test"}
+            ]
+            target_matches = [
+                symbol for symbol in target_symbols
+                if symbol.name == reference.target_name
+                and symbol.symbol_type not in {"module", "import", "route", "test"}
+            ]
+            if len(source_matches) != 1 or len(target_matches) != 1:
+                continue
+            symbol_evidence = {
+                "pairing_edge_key": pair_spec.edge_key,
+                "test_path": test_path,
+                "target_path": target_path,
+                "test_symbol": source_matches[0].qualified_name,
+                "target_symbol": target_matches[0].qualified_name,
+                "binding_specifier": reference.target_specifier,
+                "binding_line": reference.binding_line,
+                "reference_line": reference.reference_line,
+                "test_sha256": test_file.sha256,
+                "target_sha256": indexed_by_path[target_path].sha256,
+            }
+            specs.append(_edge_spec(
+                source_matches[0],
+                target_matches[0],
+                source_path=test_path,
+                target_path=target_path,
+                edge_type="tests",
+                rule_id="test_symbol_match.v1",
+                evidence_path=test_path,
+                start_line=reference.reference_line,
+                end_line=reference.reference_line,
+                evidence=symbol_evidence,
+            ))
 
     unique = {spec.edge_key: spec for spec in specs}
     return [unique[key] for key in sorted(unique)]
@@ -1137,6 +1210,37 @@ def _test_target_candidates(
         candidate for candidate in candidates
         if candidate in indexed_by_path and not indexed_by_path[candidate].is_test
     )
+
+
+def _test_reference_resolves_to_target(
+    test_path: str,
+    target_path: str,
+    test_file: IndexedFile,
+    reference: IndexedTestReference,
+    indexed_by_path: dict[str, IndexedFile],
+) -> bool:
+    if test_file.language == "python":
+        specifier = reference.target_specifier
+        level = len(specifier) - len(specifier.lstrip("."))
+        module = specifier[level:]
+        resolved = _resolve_python_import_module(
+            test_path,
+            IndexedImport(
+                specifier=specifier,
+                start_line=reference.binding_line,
+                end_line=reference.binding_line,
+                python_level=level,
+                python_module=module or None,
+            ),
+        )
+        return resolved == _python_module_for_path(target_path)
+    if test_file.language in {
+        "javascript", "javascript-react", "typescript", "typescript-react"
+    }:
+        return _resolve_javascript_import_path(
+            test_path, reference.target_specifier, indexed_by_path
+        ) == target_path
+    return False
 def _iter_interesting_files(root: Path) -> list[Path]:
     files: list[Path] = []
     total_bytes = 0
@@ -1191,21 +1295,25 @@ def _index_file(root: Path, path: Path) -> IndexedFile | None:
     import_hints: list[IndexedImport] = []
     route_hints: list[str] = []
     route_owners: list[IndexedRouteOwner] = []
+    test_references: list[IndexedTestReference] = []
+    test_symbols: list[IndexedSymbol] = []
     if text is not None:
         if path.suffix == ".py":
             symbols, imports, route_hints, import_hints, route_owners = _python_symbols(
                 text, rel
             )
+            test_references = _python_test_references(text, rel)
         elif path.suffix in {".js", ".jsx", ".ts", ".tsx"}:
             symbols, imports, route_hints, import_hints, route_owners = _javascript_symbols(
                 text, rel
             )
+            test_references, test_symbols = _javascript_test_references(text, rel)
     module_symbol = IndexedSymbol(
         symbol_type="module",
         name=rel,
         qualified_name=rel,
     )
-    symbols = [module_symbol, *_dedupe_symbols(symbols)[:299]]
+    symbols = [module_symbol, *_dedupe_symbols([*symbols, *test_symbols])[:299]]
     is_test = _is_test_file(rel, text or "")
     is_config = bool(ENV_FILE_RE.search(rel))
     is_manifest = path.name in MANIFEST_NAMES
@@ -1219,6 +1327,7 @@ def _index_file(root: Path, path: Path) -> IndexedFile | None:
         import_hints=import_hints,
         route_hints=route_hints,
         route_owners=route_owners,
+        test_references=test_references,
         is_test=is_test,
         is_config=is_config,
         is_manifest=is_manifest,
@@ -1334,6 +1443,165 @@ def _python_signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     if node.args.kwarg:
         args.append("**" + node.args.kwarg.arg)
     return f"{node.name}({', '.join(args)})"
+
+
+def _python_test_references(text: str, rel_path: str) -> list[IndexedTestReference]:
+    try:
+        module = ast.parse(text)
+    except SyntaxError:
+        return []
+    direct: dict[str, tuple[str, str, int]] = {}
+    namespaces: dict[str, tuple[str, int]] = {}
+    for statement in module.body:
+        if isinstance(statement, ast.ImportFrom) and all(
+            alias.name != "*" for alias in statement.names
+        ):
+            specifier = "." * int(statement.level or 0) + (statement.module or "")
+            for alias in statement.names:
+                direct[alias.asname or alias.name] = (
+                    specifier,
+                    alias.name,
+                    statement.lineno,
+                )
+        elif isinstance(statement, ast.Import):
+            for alias in statement.names:
+                namespaces[alias.asname or alias.name.split(".")[0]] = (
+                    alias.name,
+                    statement.lineno,
+                )
+    references: list[IndexedTestReference] = []
+    for function in module.body:
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not function.name.startswith("test_"):
+            continue
+        for node in ast.walk(function):
+            expression = node.func if isinstance(node, ast.Call) else None
+            if isinstance(expression, ast.Name) and expression.id in direct:
+                specifier, target_name, binding_line = direct[expression.id]
+            elif (
+                isinstance(expression, ast.Attribute)
+                and isinstance(expression.value, ast.Name)
+                and expression.value.id in namespaces
+            ):
+                specifier, binding_line = namespaces[expression.value.id]
+                target_name = expression.attr
+            else:
+                continue
+            references.append(IndexedTestReference(
+                test_symbol_name=function.name,
+                test_symbol_start_line=function.lineno,
+                target_name=target_name,
+                target_specifier=specifier,
+                binding_line=binding_line,
+                reference_line=node.lineno,
+            ))
+    unique = {
+        (item.test_symbol_name, item.target_name, item.reference_line): item
+        for item in references
+    }
+    return [unique[key] for key in sorted(unique)]
+
+
+def _javascript_test_references(
+    text: str,
+    rel_path: str,
+) -> tuple[list[IndexedTestReference], list[IndexedSymbol]]:
+    mask = _javascript_code_mask(text)
+    direct: dict[str, tuple[str, str, int]] = {}
+    namespaces: dict[str, tuple[str, int]] = {}
+    for match in re.finditer(
+        r"\bimport\s*\{([^}]+)\}\s*from\s*['\"]([^'\"]+)['\"]",
+        text,
+    ):
+        if not mask[match.start()]:
+            continue
+        line = _line_number_at_offset(text, match.start())
+        for raw_binding in match.group(1).split(","):
+            parts = re.split(r"\s+as\s+", raw_binding.strip())
+            if not parts or not re.fullmatch(r"[A-Za-z_$][\w$]*", parts[0]):
+                continue
+            local = parts[-1]
+            if re.fullmatch(r"[A-Za-z_$][\w$]*", local):
+                direct[local] = (match.group(2), parts[0], line)
+    for match in re.finditer(
+        r"\bimport\s*\*\s*as\s*([A-Za-z_$][\w$]*)\s*from\s*['\"]([^'\"]+)['\"]",
+        text,
+    ):
+        if mask[match.start()]:
+            namespaces[match.group(1)] = (
+                match.group(2), _line_number_at_offset(text, match.start())
+            )
+
+    references: list[IndexedTestReference] = []
+    symbols: list[IndexedSymbol] = []
+    callback_pattern = re.compile(
+        r"\b(test|it)\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>\s*\{"
+    )
+    for match in callback_pattern.finditer(text):
+        if not mask[match.start()]:
+            continue
+        open_brace = match.end() - 1
+        close_brace = _matching_javascript_brace(text, mask, open_brace)
+        if close_brace is None:
+            continue
+        start_line = _line_number_at_offset(text, match.start())
+        end_line = _line_number_at_offset(text, close_brace)
+        symbol_name = f"{match.group(1)}@{start_line}"
+        symbols.append(IndexedSymbol(
+            symbol_type="test",
+            name=symbol_name,
+            qualified_name=f"{rel_path}:{symbol_name}",
+            start_line=start_line,
+            end_line=end_line,
+        ))
+        body = text[open_brace + 1:close_brace]
+        body_offset = open_brace + 1
+        for local, (specifier, target_name, binding_line) in direct.items():
+            for ref in re.finditer(rf"\b{re.escape(local)}\s*\(", body):
+                absolute = body_offset + ref.start()
+                if mask[absolute]:
+                    references.append(IndexedTestReference(
+                        test_symbol_name=symbol_name,
+                        test_symbol_start_line=start_line,
+                        target_name=target_name,
+                        target_specifier=specifier,
+                        binding_line=binding_line,
+                        reference_line=_line_number_at_offset(text, absolute),
+                    ))
+        for local, (specifier, binding_line) in namespaces.items():
+            for ref in re.finditer(
+                rf"\b{re.escape(local)}\.([A-Za-z_$][\w$]*)\s*\(", body
+            ):
+                absolute = body_offset + ref.start()
+                if mask[absolute]:
+                    references.append(IndexedTestReference(
+                        test_symbol_name=symbol_name,
+                        test_symbol_start_line=start_line,
+                        target_name=ref.group(1),
+                        target_specifier=specifier,
+                        binding_line=binding_line,
+                        reference_line=_line_number_at_offset(text, absolute),
+                    ))
+    return references, symbols
+
+
+def _matching_javascript_brace(
+    text: str,
+    mask: list[bool],
+    open_brace: int,
+) -> int | None:
+    depth = 0
+    for offset in range(open_brace, len(text)):
+        if not mask[offset]:
+            continue
+        if text[offset] == "{":
+            depth += 1
+        elif text[offset] == "}":
+            depth -= 1
+            if depth == 0:
+                return offset
+    return None
 
 
 def _route_decorators(

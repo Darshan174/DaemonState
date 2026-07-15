@@ -34,7 +34,258 @@ async def run_migrations(conn: AsyncConnection) -> None:
     await _migrate_postgres_text_search_schema(conn)
     await _migrate_founder_oversight_schema(conn)
     await _migrate_deterministic_project_compiler_schema(conn)
+    await _migrate_truth_access_schema(conn)
+    await _migrate_learning_loop_schema(conn)
     await _migrate_query_and_sync_indexes(conn)
+
+
+async def _migrate_learning_loop_schema(conn: AsyncConnection) -> None:
+    """Create durable open-loop and verified-playbook workflow tables."""
+    timestamp = "TIMESTAMP" if conn.dialect.name == "postgresql" else "DATETIME"
+    uuid_type = "UUID" if conn.dialect.name == "postgresql" else "CHAR(32)"
+    await conn.execute(text(f"""
+        CREATE TABLE IF NOT EXISTS open_loops (
+            id {uuid_type} PRIMARY KEY,
+            workspace_id {uuid_type} NOT NULL REFERENCES workspaces(id),
+            natural_key VARCHAR(64) NOT NULL,
+            rule_id VARCHAR(100) NOT NULL,
+            rule_version INTEGER NOT NULL DEFAULT 1,
+            status VARCHAR(32) NOT NULL DEFAULT 'open',
+            severity VARCHAR(32) NOT NULL DEFAULT 'warning',
+            title TEXT NOT NULL,
+            explanation TEXT NOT NULL,
+            next_action TEXT,
+            context_pack_id {uuid_type} REFERENCES context_packs(id),
+            run_id {uuid_type} REFERENCES agent_runs(id),
+            focus_component_id {uuid_type} REFERENCES components(id),
+            trigger_ids_json TEXT NOT NULL DEFAULT '[]',
+            sources_json TEXT NOT NULL DEFAULT '[]',
+            assigned_to VARCHAR(255),
+            resolution_reason TEXT,
+            resolution_source_document_id {uuid_type} REFERENCES source_documents(id),
+            first_seen_at {timestamp} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at {timestamp} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            closed_at {timestamp},
+            created_at {timestamp} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at {timestamp} NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    await conn.execute(text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_open_loops_natural_key "
+        "ON open_loops (natural_key)"
+    ))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_open_loops_workspace_status "
+        "ON open_loops (workspace_id, status)"
+    ))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_open_loops_focus_status "
+        "ON open_loops (focus_component_id, status)"
+    ))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_open_loops_pack_rule "
+        "ON open_loops (context_pack_id, rule_id)"
+    ))
+
+    await conn.execute(text(f"""
+        CREATE TABLE IF NOT EXISTS verified_playbooks (
+            id {uuid_type} PRIMARY KEY,
+            workspace_id {uuid_type} NOT NULL REFERENCES workspaces(id),
+            identity_key VARCHAR(64) NOT NULL,
+            objective_fingerprint VARCHAR(64) NOT NULL,
+            objective_pattern TEXT NOT NULL,
+            repository_identity VARCHAR(512),
+            repository_snapshot VARCHAR(255),
+            status VARCHAR(32) NOT NULL DEFAULT 'pending_review',
+            ordered_steps_json TEXT NOT NULL DEFAULT '[]',
+            verification_commands_json TEXT NOT NULL DEFAULT '[]',
+            source_run_id {uuid_type} NOT NULL REFERENCES agent_runs(id),
+            supporting_run_ids_json TEXT NOT NULL DEFAULT '[]',
+            source_document_ids_json TEXT NOT NULL DEFAULT '[]',
+            successful_run_count INTEGER NOT NULL DEFAULT 1,
+            last_verified_at {timestamp} NOT NULL,
+            approved_at {timestamp},
+            review_reason TEXT,
+            review_source_document_id {uuid_type} REFERENCES source_documents(id),
+            created_at {timestamp} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at {timestamp} NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    await conn.execute(text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_verified_playbooks_identity_key "
+        "ON verified_playbooks (identity_key)"
+    ))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_verified_playbooks_workspace_status "
+        "ON verified_playbooks (workspace_id, status)"
+    ))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_verified_playbooks_objective "
+        "ON verified_playbooks (workspace_id, objective_fingerprint)"
+    ))
+
+
+async def _migrate_truth_access_schema(conn: AsyncConnection) -> None:
+    """Add conservative bi-temporal and evidence-permission storage."""
+    timestamp = "TIMESTAMP" if conn.dialect.name == "postgresql" else "DATETIME"
+    uuid_type = "UUID" if conn.dialect.name == "postgresql" else "CHAR(32)"
+    for table_name in ("source_documents", "evidence_spans"):
+        columns = await _get_table_columns(conn, table_name)
+        if not columns:
+            continue
+        additions = {
+            "visibility_scope": "VARCHAR(32) NOT NULL DEFAULT 'workspace'",
+            "permission_source": "VARCHAR(64) NOT NULL DEFAULT 'workspace_default'",
+            "permission_observed_at": f"{timestamp} NULL",
+            "permission_snapshot_sha256": "VARCHAR(64) NULL",
+        }
+        for name, ddl in additions.items():
+            if name not in columns:
+                await conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {name} {ddl}"))
+
+    source_columns = await _get_table_columns(conn, "source_documents")
+    if {"id", "ingested_at", "permission_snapshot_sha256"} <= source_columns:
+        rows = (await conn.execute(text(
+            "SELECT id, permission_snapshot_sha256 FROM source_documents"
+        ))).all()
+        for row in rows:
+            snapshot = row[1] or _migration_canonical_hash([
+                "workspace", "workspace_default", str(row[0])
+            ])
+            await conn.execute(text(
+                "UPDATE source_documents SET visibility_scope='workspace', "
+                "permission_source=COALESCE(permission_source, 'workspace_default'), "
+                "permission_observed_at=COALESCE(permission_observed_at, ingested_at), "
+                "permission_snapshot_sha256=:snapshot WHERE id=:id"
+            ), {"snapshot": snapshot, "id": row[0]})
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_source_documents_visibility_scope "
+            "ON source_documents (visibility_scope)"
+        ))
+    evidence_columns = await _get_table_columns(conn, "evidence_spans")
+    if {"source_document_id", "permission_snapshot_sha256"} <= evidence_columns:
+        await conn.execute(text(
+            "UPDATE evidence_spans SET "
+            "visibility_scope=(SELECT visibility_scope FROM source_documents WHERE "
+            "source_documents.id=evidence_spans.source_document_id), "
+            "permission_source=(SELECT permission_source FROM source_documents WHERE "
+            "source_documents.id=evidence_spans.source_document_id), "
+            "permission_observed_at=(SELECT permission_observed_at FROM source_documents WHERE "
+            "source_documents.id=evidence_spans.source_document_id), "
+            "permission_snapshot_sha256=(SELECT permission_snapshot_sha256 FROM source_documents "
+            "WHERE source_documents.id=evidence_spans.source_document_id) "
+            "WHERE permission_snapshot_sha256 IS NULL OR permission_snapshot_sha256=''"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_evidence_spans_visibility_scope "
+            "ON evidence_spans (visibility_scope)"
+        ))
+
+    await conn.execute(text(f"""
+        CREATE TABLE IF NOT EXISTS source_read_grants (
+            id {uuid_type} PRIMARY KEY,
+            workspace_id {uuid_type} NOT NULL REFERENCES workspaces(id),
+            source_document_id {uuid_type} NOT NULL REFERENCES source_documents(id),
+            principal_id VARCHAR(255) NOT NULL,
+            grant_key VARCHAR(64) NOT NULL,
+            permission_snapshot_sha256 VARCHAR(64) NOT NULL,
+            created_at {timestamp} NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    await conn.execute(text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_source_read_grants_grant_key "
+        "ON source_read_grants (grant_key)"
+    ))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_source_read_grants_document_principal "
+        "ON source_read_grants (source_document_id, principal_id)"
+    ))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_source_read_grants_workspace_principal "
+        "ON source_read_grants (workspace_id, principal_id)"
+    ))
+
+    claim_columns = await _get_table_columns(conn, "claims")
+    if claim_columns and "scope_identity_sha256" not in claim_columns:
+        await conn.execute(text(
+            "ALTER TABLE claims ADD COLUMN scope_identity_sha256 VARCHAR(64) NULL"
+        ))
+    if claim_columns:
+        rows = (await conn.execute(text(
+            "SELECT id, workspace_id, identity_key, claim_type, scope_identity_sha256 FROM claims"
+        ))).all()
+        seen: set[str] = set()
+        for row in rows:
+            key = row[4] or _migration_canonical_hash([
+                _migration_uuid_text(row[1]) or "global", row[3], row[2]
+            ])
+            if key in seen:
+                raise RuntimeError(
+                    "duplicate claim identities detected; reconcile claims before migration"
+                )
+            seen.add(key)
+            await conn.execute(text(
+                "UPDATE claims SET scope_identity_sha256=:key WHERE id=:id"
+            ), {"key": key, "id": row[0]})
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_claims_scope_identity_sha256 "
+            "ON claims (scope_identity_sha256)"
+        ))
+
+    revision_columns = await _get_table_columns(conn, "claim_revisions")
+    if revision_columns:
+        additions = {
+            "revision_key": "VARCHAR(64) NULL",
+            "valid_from": f"{timestamp} NULL",
+            "valid_to": f"{timestamp} NULL",
+            "observed_at": f"{timestamp} NULL",
+            "transaction_to": f"{timestamp} NULL",
+            "validity_basis": "VARCHAR(32) NOT NULL DEFAULT 'unknown'",
+        }
+        for name, ddl in additions.items():
+            if name not in revision_columns:
+                await conn.execute(text(
+                    f"ALTER TABLE claim_revisions ADD COLUMN {name} {ddl}"
+                ))
+        rows = (await conn.execute(text(
+            "SELECT id, claim_id, evidence_span_id, operation, value, created_at, "
+            "revision_key FROM claim_revisions"
+        ))).all()
+        for row in rows:
+            key = row[6] or _migration_canonical_hash([
+                "legacy", str(row[0]), str(row[1]), str(row[2]), row[3], row[4]
+            ])
+            await conn.execute(text(
+                "UPDATE claim_revisions SET revision_key=:key, "
+                "observed_at=COALESCE(observed_at, created_at), "
+                "validity_basis=COALESCE(validity_basis, 'unknown') WHERE id=:id"
+            ), {"key": key, "id": row[0]})
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_claim_revisions_revision_key "
+            "ON claim_revisions (revision_key)"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_claim_revisions_claim_valid "
+            "ON claim_revisions (claim_id, valid_from, valid_to)"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_claim_revisions_claim_transaction "
+            "ON claim_revisions (claim_id, created_at, transaction_to)"
+        ))
+
+    if conn.dialect.name == "postgresql":
+        for table_name, column_names in {
+            "source_documents": ("permission_observed_at", "permission_snapshot_sha256"),
+            "evidence_spans": ("permission_observed_at", "permission_snapshot_sha256"),
+            "claims": ("scope_identity_sha256",),
+            "claim_revisions": ("revision_key", "observed_at"),
+        }.items():
+            columns = await _get_table_columns(conn, table_name)
+            for column_name in column_names:
+                if column_name in columns:
+                    await conn.execute(text(
+                        f"ALTER TABLE {table_name} ALTER COLUMN {column_name} SET NOT NULL"
+                    ))
 
 
 async def _migrate_deterministic_project_compiler_schema(conn: AsyncConnection) -> None:

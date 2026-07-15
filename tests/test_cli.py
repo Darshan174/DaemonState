@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+
+import pytest
 
 from app.cli import main as cli_main
 
@@ -143,6 +146,62 @@ def test_cli_repo_index_no_persist_reports_counts(tmp_path, capsys):
     assert "repo index:" in output
     assert "files=1" in output
     assert "persistence=False" in output
+
+
+def test_cli_repo_watch_forwards_bounded_options(monkeypatch, tmp_path, capsys):
+    workspace_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    captured = {}
+
+    async def fake_watch_repo(args):
+        captured.update(vars(args))
+        return SimpleNamespace(
+            cycles=3,
+            changes_detected=2,
+            events_created=2,
+            last_snapshot_fingerprint="f" * 64,
+            stopped_reason="max_cycles",
+            to_dict=lambda: {
+                "workspace_id": workspace_id,
+                "cycles": 3,
+                "changes_detected": 2,
+                "events_created": 2,
+                "last_snapshot_fingerprint": "f" * 64,
+                "stopped_reason": "max_cycles",
+            },
+        )
+
+    monkeypatch.setattr(cli_main, "_watch_repo", fake_watch_repo)
+
+    assert cli_main.main([
+        "repo",
+        "watch",
+        str(tmp_path),
+        "--workspace-id",
+        workspace_id,
+        "--poll-interval",
+        "0.25",
+        "--debounce",
+        "0.1",
+        "--max-cycles",
+        "3",
+    ]) == 0
+
+    assert captured["repo_command"] == "watch"
+    assert captured["path"] == str(tmp_path)
+    assert captured["workspace_id"] == workspace_id
+    assert captured["poll_interval"] == 0.25
+    assert captured["debounce"] == 0.1
+    assert captured["once"] is False
+    assert captured["max_cycles"] == 3
+    assert "repo watch complete: cycles=3 changes=2 events_created=2" in (
+        capsys.readouterr().out
+    )
+
+
+def test_cli_repo_watch_requires_workspace_id():
+    with pytest.raises(SystemExit) as exc:
+        cli_main.main(["repo", "watch", ".", "--once"])
+    assert exc.value.code == 2
 
 
 def test_cli_eval_extraction_runs_local_corpus(capsys):

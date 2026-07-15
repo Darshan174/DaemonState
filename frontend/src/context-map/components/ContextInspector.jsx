@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
+  BookOpenCheck,
   Check,
   Clipboard,
   ExternalLink,
@@ -19,6 +20,7 @@ import {
   confidenceLabel,
   sessionIdentity,
 } from "../digest";
+import { OpenLoopList } from "./OpenLoopsPanel";
 
 export default function ContextInspector({
   card,
@@ -27,6 +29,7 @@ export default function ContextInspector({
   workspaceId,
   onClose,
   canPrepareForAgent = false,
+  prepareUnavailableReason = null,
   onPrepareForAgent,
   preparing = false,
   prepareError = null,
@@ -34,6 +37,9 @@ export default function ContextInspector({
   timelineLoading = false,
   timelineError = null,
   onRetryTimeline,
+  onUpdateOpenLoop,
+  updatingOpenLoop = false,
+  contextRevision = null,
 }) {
   const panelRef = useRef(null);
   const [sourceDetail, setSourceDetail] = useState(null);
@@ -42,6 +48,9 @@ export default function ContextInspector({
   const [prepareStatus, setPrepareStatus] = useState("idle");
   const [preparedMarkdown, setPreparedMarkdown] = useState(null);
   const [preparedAffectedCode, setPreparedAffectedCode] = useState(null);
+  const [preparedKnownPlaybook, setPreparedKnownPlaybook] = useState(null);
+  const [preparedItemCount, setPreparedItemCount] = useState(0);
+  const [showPreparedBrief, setShowPreparedBrief] = useState(false);
   const relationships = cardRelationships(card, cards, links);
   const sourceId = card?.provenance?.[0]?.source_document_id || card?.source_ids?.[0];
 
@@ -75,30 +84,36 @@ export default function ContextInspector({
     setPrepareStatus("idle");
     setPreparedMarkdown(null);
     setPreparedAffectedCode(null);
-  }, [card?.id]);
+    setPreparedKnownPlaybook(null);
+    setPreparedItemCount(0);
+    setShowPreparedBrief(false);
+  }, [card?.id, contextRevision]);
+
+  const copyPreparedBrief = async (markdown = preparedMarkdown) => {
+    try {
+      await copyText(markdown);
+      setPrepareStatus("copied");
+    } catch {
+      setPrepareStatus("ready");
+    }
+  };
 
   const prepareForAgent = async () => {
-    if (preparedMarkdown) {
-      try {
-        await copyText(preparedMarkdown);
-        setPrepareStatus("copied");
-      } catch {
-        setPrepareStatus("ready");
-      }
-      return;
-    }
     try {
       setPrepareStatus("preparing");
       const result = await onPrepareForAgent?.();
       const markdown = result?.markdown || "";
       setPreparedMarkdown(markdown);
       setPreparedAffectedCode(result?.manifest?.affected_code || null);
-      try {
-        await copyText(markdown);
-        setPrepareStatus("copied");
-      } catch {
-        setPrepareStatus("ready");
-      }
+      setPreparedKnownPlaybook(result?.manifest?.known_playbook || null);
+      setPreparedItemCount(
+        Array.isArray(result?.selected_context)
+          ? result.selected_context.length
+          : Array.isArray(result?.manifest?.selected_context)
+            ? result.manifest.selected_context.length
+            : 0,
+      );
+      await copyPreparedBrief(markdown);
     } catch {
       setPrepareStatus("error");
     }
@@ -141,6 +156,10 @@ export default function ContextInspector({
   const affectedCode = preparedMarkdown !== null
     ? preparedAffectedCode
     : timeline?.affected_code || null;
+  const knownPlaybook = preparedMarkdown !== null
+    ? preparedKnownPlaybook
+    : timeline?.known_playbook || null;
+  const openLoops = Array.isArray(timeline?.open_loops) ? timeline.open_loops : [];
 
   return (
     <aside ref={panelRef} role="dialog" aria-modal="true" aria-labelledby="context-inspector-title" onKeyDown={handleDialogKeyDown} className="flex min-h-0 w-full shrink-0 flex-col border-l border-slate-200 bg-white dark:border-neutral-800 dark:bg-[#07080a]">
@@ -174,19 +193,47 @@ export default function ContextInspector({
             </span>
           ) : null}
         </div>
-        {canPrepareForAgent ? (
+        {canPrepareForAgent && preparedMarkdown === null ? (
           <button
             type="button"
             onClick={prepareForAgent}
             disabled={preparing || prepareStatus === "preparing"}
             className="mt-3 inline-flex h-9 w-full items-center justify-center gap-2 rounded-md bg-slate-950 px-3 text-xs font-black text-white transition hover:bg-slate-800 disabled:opacity-60 dark:bg-[#d9ff68] dark:text-[#171713]"
           >
-            {preparing || prepareStatus === "preparing" ? <Loader2 className="h-4 w-4 animate-spin" /> : prepareStatus === "copied" ? <Check className="h-4 w-4" /> : <Clipboard className="h-4 w-4" />}
-            {preparing || prepareStatus === "preparing" ? "Preparing" : prepareStatus === "copied" ? "Agent pack copied" : prepareStatus === "ready" ? "Pack ready — retry copy" : "Prepare for agent"}
+            {preparing || prepareStatus === "preparing" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clipboard className="h-4 w-4" />}
+            {preparing || prepareStatus === "preparing" ? "Preparing agent brief" : "Prepare for agent"}
           </button>
         ) : null}
-        {prepareStatus === "ready" ? (
-          <p className="mt-2 text-xs font-semibold text-slate-500 dark:text-neutral-400">The pack is prepared, but clipboard access was unavailable. Select the action again to retry copying.</p>
+        {canPrepareForAgent && preparedMarkdown !== null ? (
+          <div role="status" aria-label="Agent brief ready" className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-900/60 dark:bg-emerald-950/25">
+            <div className="flex items-center gap-2 text-xs font-black text-emerald-900 dark:text-emerald-100">
+              <Check className="h-4 w-4" />
+              Agent brief ready
+            </div>
+            <p className="mt-1.5 text-xs font-semibold leading-5 text-emerald-800 dark:text-emerald-200">
+              {prepareStatus === "copied"
+                ? "Copied to your clipboard. Nothing was sent to an agent automatically."
+                : "The brief was created, but clipboard access was unavailable. Nothing was sent automatically."}
+            </p>
+            {preparedItemCount > 0 ? (
+              <p className="mt-1 text-[10px] font-bold text-emerald-700 dark:text-emerald-300">
+                Includes {preparedItemCount} source-backed {preparedItemCount === 1 ? "context item" : "context items"}.
+              </p>
+            ) : null}
+            <div className="mt-2 flex gap-2">
+              <button type="button" onClick={() => setShowPreparedBrief((visible) => !visible)} className="rounded-md border border-emerald-300 bg-white px-2.5 py-1.5 text-[10px] font-black text-emerald-900 transition hover:bg-emerald-100 dark:border-emerald-800 dark:bg-black/20 dark:text-emerald-100">
+                {showPreparedBrief ? "Hide brief" : "View brief"}
+              </button>
+              <button type="button" onClick={() => copyPreparedBrief()} className="inline-flex items-center gap-1 rounded-md border border-emerald-300 bg-white px-2.5 py-1.5 text-[10px] font-black text-emerald-900 transition hover:bg-emerald-100 dark:border-emerald-800 dark:bg-black/20 dark:text-emerald-100">
+                <Clipboard className="h-3 w-3" /> Copy again
+              </button>
+            </div>
+          </div>
+        ) : null}
+        {!canPrepareForAgent && prepareUnavailableReason ? (
+          <p className="mt-3 text-xs font-semibold leading-5 text-slate-500 dark:text-neutral-400">
+            {prepareUnavailableReason}
+          </p>
         ) : null}
         {(prepareStatus === "error" || prepareError) ? (
           <p role="alert" className="mt-2 text-xs font-semibold text-red-600 dark:text-red-400">
@@ -196,8 +243,30 @@ export default function ContextInspector({
       </div>
 
       <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-4">
+        {showPreparedBrief && preparedMarkdown !== null ? (
+          <InspectorSection title="Prepared agent brief">
+            <p className="mb-2 text-xs font-semibold leading-5 text-slate-500 dark:text-neutral-400">
+              Review this source-backed brief, then paste it into the coding agent you want to use.
+            </p>
+            <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md border border-slate-200 bg-slate-50 p-3 text-[10px] leading-5 text-slate-700 dark:border-neutral-800 dark:bg-black dark:text-neutral-300">
+              {preparedMarkdown}
+            </pre>
+          </InspectorSection>
+        ) : null}
         <SummaryTab card={card} />
+        {openLoops.length ? (
+          <InspectorSection title="Needs attention">
+            <OpenLoopList
+              loops={openLoops}
+              workspaceId={workspaceId}
+              onUpdate={onUpdateOpenLoop}
+              updating={updatingOpenLoop}
+              showClosed
+            />
+          </InspectorSection>
+        ) : null}
         {affectedCode?.files?.length ? <AffectedCode affectedCode={affectedCode} /> : null}
+        {knownPlaybook ? <KnownPlaybook playbook={knownPlaybook} workspaceId={workspaceId} prepared={preparedMarkdown !== null} /> : null}
         {canPrepareForAgent ? (
           <InspectorSection title="Agent runs">
             <RunTimeline
@@ -219,6 +288,61 @@ export default function ContextInspector({
         ) : null}
       </div>
     </aside>
+  );
+}
+
+function KnownPlaybook({ playbook, workspaceId, prepared }) {
+  const incompatible = playbook.compatible === false || ["stale", "disabled"].includes(playbook.status);
+  const title = playbook.title || playbook.name || playbook.objective_pattern || "Verified steps for this task";
+  const steps = playbook.ordered_steps || playbook.steps || [];
+  const verificationCommands = playbook.verification_commands || [];
+  const sourceCount = Number(playbook.verified_run_count || playbook.successful_run_count || 0);
+  const inclusion = incompatible
+    ? "Not included — last verified before the current code snapshot"
+    : prepared
+      ? "Included in this agent pack"
+      : "Included in the latest agent pack";
+  return (
+    <details className="group rounded-lg border border-emerald-200 bg-emerald-50/60 dark:border-emerald-900/60 dark:bg-emerald-950/20">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-3 [&::-webkit-details-marker]:hidden">
+        <span className="flex min-w-0 items-center gap-2 text-xs font-black text-slate-900 dark:text-white">
+          <BookOpenCheck className="h-3.5 w-3.5 shrink-0 text-emerald-700 dark:text-emerald-300" />
+          Verified playbook
+        </span>
+        <span className={`text-right text-[9px] font-black ${incompatible ? "text-amber-700 dark:text-amber-300" : "text-emerald-700 dark:text-emerald-300"}`}>{inclusion}</span>
+      </summary>
+      <div className="space-y-3 border-t border-emerald-200 p-3 dark:border-emerald-900/60">
+        <div>
+          <p className="text-xs font-black text-slate-900 dark:text-white">{title}</p>
+          {sourceCount || playbook.last_verified_at ? (
+            <p className="mt-1 text-[10px] font-semibold text-slate-500 dark:text-neutral-400">
+              {sourceCount ? `Verified from ${sourceCount} successful ${sourceCount === 1 ? "run" : "runs"}` : "Verified from successful runs"}
+              {playbook.last_verified_at ? ` · last checked ${formatDate(playbook.last_verified_at)}` : ""}
+            </p>
+          ) : null}
+        </div>
+        {steps.length ? (
+          <ol className="space-y-1.5 border-l border-emerald-200 pl-4 text-xs leading-5 text-slate-700 dark:border-emerald-900/60 dark:text-neutral-300">
+            {steps.map((step, index) => <li key={`${index}:${typeof step === "string" ? step : step.summary || step.action || "step"}`}>{typeof step === "string" ? step : step.summary || step.action || "Verified step"}</li>)}
+          </ol>
+        ) : null}
+        {verificationCommands.length ? (
+          <div>
+            <p className="text-[9px] font-black uppercase tracking-wide text-slate-400">Verification</p>
+            {verificationCommands.map((command) => <p key={typeof command === "string" ? command : command.command} className="mt-1 break-words rounded bg-white px-2 py-1 font-mono text-[10px] text-slate-600 dark:bg-neutral-950 dark:text-neutral-300">{typeof command === "string" ? command : command.command}</p>)}
+          </div>
+        ) : null}
+        {(playbook.sources || []).map((source, index) => (
+          <SourceEvidenceButton
+            key={`${source.source_document_id || source.source_url || "playbook-source"}:${index}`}
+            sourceDocumentId={source.source_document_id}
+            sourceUrl={source.source_url}
+            workspaceId={workspaceId}
+            label={`View playbook evidence ${index + 1}`}
+          />
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -320,7 +444,8 @@ function RunTimeline({ timeline, workspaceId, loading, error, onRetry }) {
       </div>
     );
   }
-  if (!timeline?.runs?.length) {
+  const legacyFindings = timeline?.open_loops === undefined ? timeline?.findings || [] : [];
+  if (!timeline?.runs?.length && !legacyFindings.length) {
     return <p className="rounded-md border border-dashed border-slate-200 p-3 text-xs font-semibold text-slate-400 dark:border-neutral-800">No observed agent run yet.</p>;
   }
   return (
@@ -331,10 +456,10 @@ function RunTimeline({ timeline, workspaceId, loading, error, onRetry }) {
         </span>
         {timeline.latest_outcome?.summary ? <p className="line-clamp-1 text-[10px] font-semibold text-slate-500">{timeline.latest_outcome.summary}</p> : null}
       </div>
-      {(timeline.findings || []).map((finding) => (
+      {legacyFindings.map((finding) => (
         <FindingCard key={finding.id} finding={finding} workspaceId={workspaceId} />
       ))}
-      {timeline.runs.map((run) => (
+      {(timeline.runs || []).map((run) => (
         <article key={run.run_id} className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-neutral-800 dark:bg-black">
           <div className="flex items-start justify-between gap-3">
             <div>

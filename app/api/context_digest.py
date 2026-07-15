@@ -13,6 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db_session
+from app.api.dependencies import get_access_scope
+from app.services.access import AccessScope, source_access_predicate
 from app.models import (
     AgentRun,
     ClaimRevision,
@@ -35,6 +37,9 @@ from app.services.founder_oversight import (
     FounderOversightNotFoundError,
     FounderOversightService,
 )
+from app.services.focus_policy import focus_eligibility
+from app.services.open_loops import OpenLoopService, open_loop_to_dict
+from app.services.playbooks import PlaybookService
 from app.services.session_summary import derive_session_topic
 from app.services.project_scope import workspace_references, workspace_relevance
 from app.taxonomy import relationship_display_label, source_type_display
@@ -158,6 +163,8 @@ class ContextCard(BaseModel):
     confidence: float
     authority_weight: float
     attention_score: int
+    focus_eligible: bool
+    focus_ineligible_reason: str | None = None
     source_ids: list[str]
     evidence_ids: list[str]
     relationship_ids: list[str]
@@ -210,6 +217,9 @@ class ContextDigest(BaseModel):
     links: list[DigestLink]
     recommended_actions: list[RecommendedAction]
     oversight: dict
+    open_loops: dict
+    playbooks: dict
+    monitoring: dict | None = None
 
 
 @router.get("/context/digest", response_model=ContextDigest)
@@ -217,12 +227,13 @@ async def get_context_digest(
     workspace_id: str | None = None,
     limit: int = 50,
     session: AsyncSession = Depends(get_db_session),
+    access_scope: AccessScope = Depends(get_access_scope),
 ) -> ContextDigest:
     if limit < 1 or limit > 200:
         raise HTTPException(status_code=422, detail="limit must be between 1 and 200")
 
-    all_documents = list(await session.scalars(select(SourceDocument)))
     workspace_id_str = workspace_id
+    workspace_uuid: UUID | None = None
     if workspace_id:
         try:
             workspace_id_str, _ = await workspace_connector_types(session, workspace_id)
@@ -230,13 +241,19 @@ async def get_context_digest(
             raise HTTPException(status_code=422, detail="Invalid workspace_id")
         if not await workspace_scope_exists(session, workspace_id_str):
             raise HTTPException(status_code=404, detail="Workspace not found")
+        workspace_uuid = UUID(workspace_id_str)
+    scoped_documents = list(await session.scalars(
+        select(SourceDocument)
+        .where(source_access_predicate(access_scope, workspace_id=workspace_uuid))
+        .order_by(SourceDocument.ingested_at.desc())
+    ))
+    if workspace_id_str:
         scoped_documents = filter_explicit_source_documents_for_workspace(
-            all_documents, workspace_id_str
+            scoped_documents, workspace_id_str
         )
-    else:
-        scoped_documents = all_documents
 
     current_documents, _ = current_source_documents(scoped_documents)
+    accessible_source_ids = {doc.id for doc in scoped_documents}
     current_source_ids = {doc.id for doc in current_documents}
     stmt = (
         select(Component)
@@ -395,16 +412,27 @@ async def get_context_digest(
         else cards
     )
     health = _digest_health(project_cards)
+    open_loop_items = []
+    playbook_items = []
+    if workspace_uuid is not None:
+        open_loop_items = [
+            item for item in await OpenLoopService(session).list(workspace_id=workspace_uuid)
+            if (item.focus_component_id is None or item.focus_component_id in comp_ids)
+            and _loop_sources_accessible(item.sources_json, accessible_source_ids)
+        ]
+        playbook_items = [
+            item for item in await PlaybookService(session).list(workspace_id=workspace_uuid)
+            if _id_list_accessible(item.source_document_ids_json, accessible_source_ids)
+        ]
     return ContextDigest(
         workspace_id=workspace_id_str,
         generated_at=utc_now(),
         objective=await _digest_objective(session, workspace_id_str),
         scope={
             "included_source_count": len({card.source_snapshot.source_document_id for card in project_cards}),
-            "excluded_unscoped_source_count": sum(
-                1 for doc in all_documents
-                if doc.workspace_id is None and not metadata_dict(doc).get("workspace_id")
-            ) if workspace_id else 0,
+            # Unscoped documents are outside the authorized candidate query,
+            # so this value intentionally does not reveal their count.
+            "excluded_unscoped_source_count": 0,
             "excluded_irrelevant_source_count": len(excluded_irrelevant_sources),
             "candidate_session_count": candidate_session_count,
             "unknown_relevance_source_count": unknown_relevance_source_count,
@@ -427,13 +455,69 @@ async def get_context_digest(
         clusters=_clusters(project_cards),
         links=links,
         recommended_actions=_recommended_actions(project_cards, health),
-        oversight=await _digest_oversight(session, workspace_id_str),
+        oversight=await _digest_oversight(
+            session, workspace_id_str, allowed_component_ids=comp_ids
+        ),
+        open_loops={
+            "open_count": sum(item.status == "open" for item in open_loop_items),
+            "items": [open_loop_to_dict(item) for item in open_loop_items[:50]],
+        },
+        playbooks={
+            "pending_review_count": sum(
+                item.status == "pending_review" for item in playbook_items
+            ),
+        },
+        monitoring=_monitoring_summary(current_documents),
     )
+
+
+def _loop_sources_accessible(raw_sources: str, accessible_source_ids: set[UUID]) -> bool:
+    try:
+        sources = json.loads(raw_sources or "[]")
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(sources, list):
+        return False
+    referenced = {
+        str(item.get("source_document_id"))
+        for item in sources
+        if isinstance(item, dict) and item.get("source_document_id")
+    }
+    return all(value in {str(item) for item in accessible_source_ids} for value in referenced)
+
+
+def _monitoring_summary(documents: list[SourceDocument]) -> dict | None:
+    events = [
+        item for item in documents
+        if item.source_type == "local_repository"
+        and str(item.external_id or "").startswith("repo-watch:")
+    ]
+    if not events:
+        return None
+    latest = max(events, key=lambda item: (item.ingested_at, str(item.id)))
+    metadata = metadata_dict(latest)
+    return {
+        "status": "observed",
+        "last_seen_at": latest.ingested_at,
+        "snapshot_fingerprint": metadata.get("snapshot_fingerprint"),
+        "source_document_id": str(latest.id),
+    }
+
+
+def _id_list_accessible(raw: str, accessible_source_ids: set[UUID]) -> bool:
+    try:
+        values = json.loads(raw or "[]")
+        ids = {UUID(str(value)) for value in values}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return ids <= accessible_source_ids
 
 
 async def _digest_oversight(
     session: AsyncSession,
     workspace_id: str | None,
+    *,
+    allowed_component_ids: set[UUID],
 ) -> dict:
     empty = {
         "current_focus": None,
@@ -450,6 +534,7 @@ async def _digest_oversight(
             ContextPack.workspace_id == workspace_uuid,
             ContextPack.focus_component_id.is_not(None),
             ContextPack.objective_origin != "project_snapshot",
+            ContextPack.focus_component_id.in_(allowed_component_ids),
         )
         .order_by(ContextPack.created_at.desc(), ContextPack.id.desc())
         .limit(1)
@@ -1002,6 +1087,10 @@ def _component_to_card(
     source_snapshot = _source_snapshot(source, metadata, github_last_sync)
     session_info = _session_info(source, metadata) if category == "agent_session" else None
     remote_item = _remote_item(metadata, source_snapshot) if category in {"pull_request", "issue"} else None
+    focus_eligible, focus_ineligible_reason = focus_eligibility(
+        component.fact_type,
+        component.status,
+    )
 
     return ContextCard(
         id=f"component:{component.id}",
@@ -1027,6 +1116,8 @@ def _component_to_card(
         confidence=round(float(component.confidence or 0), 3),
         authority_weight=round(float(component.authority_weight or 0), 3),
         attention_score=score,
+        focus_eligible=focus_eligible,
+        focus_ineligible_reason=focus_ineligible_reason,
         source_ids=source_ids,
         evidence_ids=[evidence_read.evidence_span_id] if evidence_read.evidence_span_id else [],
         relationship_ids=relationship_ids,

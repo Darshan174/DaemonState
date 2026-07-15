@@ -1,38 +1,37 @@
 # Context Engine
 
-Context Engine is an open-source context compiler for AI engineering.
+Context Engine is an open-source project oversight and context layer for people
+building software with coding agents.
 
-It turns agent runs, pull requests, issues, chats, documents, decisions,
-blockers, test output, and repo state into source-backed project context for the
-next human or coding agent.
+It gives a founder or small team one source-backed view of the project: what the
+system contains, what agents changed, which decisions still apply, what is
+blocked or unverified, and what the next agent needs before touching the code.
 
-The point is not to chat with a pile of documents. The point is to make project
-state explicit: what changed, what is true, what is stale, what is blocked, and
-what the next agent must know before it edits code.
+Then it compiles that state into a focused agent brief with relevant files,
+constraints, risks, verification commands, citations, and explicit exclusions.
 
 ```text
-messy project reality
-  -> source evidence
-  -> grounded claims
-  -> project graph
-  -> model-specific context pack
-  -> agent run
-  -> new evidence
+repo + issues + PRs + agent runs + documents
+                    ↓
+        source-backed project state
+                    ↓
+      oversight, gaps, and open loops
+                    ↓
+          focused agent brief
+                    ↓
+       observed work and verification
 ```
 
-Context Engine is being built for solo founders and small teams who use coding
-agents heavily and cannot afford to lose decisions, constraints, failures, and
-handoff context between sessions.
-
-It is not enterprise search, a generic knowledge base, or an all-purpose RAG
-platform.
+Context Engine is not another chat interface over company documents. The product
+is the project view, the scrutiny trail, and the clean handoff into the next run.
 
 ## Contents
 
 - [Status](#status)
-- [Session References](#session-references)
 - [Why It Exists](#why-it-exists)
-- [What It Compiles](#what-it-compiles)
+- [What You Can Do Today](#what-you-can-do-today)
+- [How the Product Loop Works](#how-the-product-loop-works)
+- [Honest Limits](#honest-limits)
 - [Technical Commitments](#technical-commitments)
 - [Current Implementation](#current-implementation)
 - [Product Tour](#product-tour)
@@ -45,30 +44,17 @@ platform.
 
 ## Status
 
-Context Engine is under active development. The repository contains real backend,
-frontend, CLI, MCP, ingestion, graph, retrieval, compiler, and test code, but it
-is not being presented as a polished public install yet.
+Context Engine is an active alpha. The project has a working FastAPI backend,
+React application, CLI, MCP server, repository compiler, evidence ledger,
+retrieval system, agent-run observation loop, and automated test suite.
 
-Setup, deployment, provider configuration, hosted usage, and release packaging
-are coming soon.
-
-The README is intentionally describing the technical shape of the project, not
-pretending the onboarding path is finished.
-
-## Session References
-
-This README update is grounded in the current codebase plus the maintainer
-session references below:
-
-- `019f23d0-0140-7291-aab1-5db5180e26f1`
-- `019f2818-a451-7461-ab81-911ae5acf5d1`
-
-The sessions are design and direction references. The source code and tests are
-the authority for what is implemented now.
+The product workflow is implemented; public onboarding and self-hosting guidance
+are not finished. The [Setup](#setup) and [Deployment](#deployment) sections are
+therefore intentionally brief instead of presenting an unverified install path.
 
 ## Why It Exists
 
-Coding agents fail for reasons that are often not raw model intelligence:
+Coding agents often fail for reasons unrelated to model intelligence:
 
 - the current repo state is unclear;
 - prior decisions are buried in chat logs;
@@ -76,54 +62,112 @@ Coding agents fail for reasons that are often not raw model intelligence:
 - an issue, PR, doc, and agent transcript disagree;
 - the next agent starts without knowing which files, tests, and constraints
   matter;
-- stale context is treated as current truth.
+- stale context is treated as current truth;
+- an agent claims completion while a required check failed or was never run;
+- a non-technical founder cannot tell whether progress is real or merely plausible.
 
-Context Engine owns that layer. It reconstructs the working state of a project
-from source evidence and prepares a narrower, cited task environment for the
-next agent.
+Context Engine owns this missing control layer. It reconstructs current project
+state from source evidence, makes gaps and contradictions visible, and prepares a
+narrower task environment for the next agent.
 
-The intended loop is simple:
+The goal is not to replace the coding agent. It is to give the user eyes across
+agents and give every new run the context earned by the previous one.
+
+## What You Can Do Today
+
+### See the project from above
+
+Open a local repository and inspect a project map organized around the questions
+a founder actually has:
+
+- **System:** what the repository contains;
+- **Direction:** current, source-backed decisions;
+- **Delivery:** observed pull requests;
+- **Risks:** issues and blockers;
+- **Next:** explicit verified tasks;
+- **Docs and evidence:** supporting records and confirmed document gaps.
+
+Cards retain their source, revision, confidence, freshness, and relationships.
+Empty lanes say what evidence is missing instead of fabricating a complete view.
+
+### Scrutinize agent work
+
+For a prepared task, the inspector reconstructs the agent run from recorded
+events: decisions, blockers, patches, verification results, and the claimed
+outcome. Deterministic scrutiny rules currently surface:
+
+- required verification that is missing or failed;
+- unresolved recorded blockers;
+- required context with no completion evidence;
+- a claimed outcome that conflicts with a recorded check;
+- a task prepared from an older source revision.
+
+Every finding links back to evidence. Context Engine does not ask another model to
+invent criticism and present it as fact.
+
+### Keep unfinished work visible
+
+Supported scrutiny findings become durable **open loops**. A user can inspect the
+evidence, assign the loop, resolve it, or dismiss it. Every state change requires a
+reason so silent dismissal does not erase the audit trail. The API also supports
+audited reopening when a resolved finding becomes relevant again.
+
+### Prepare the next agent
+
+Select an eligible issue, task, decision, requirement, or blocker and choose
+**Prepare for agent**. Context Engine creates `context_pack.v2` as:
+
+- readable Markdown for the human or agent;
+- a machine-readable manifest for replay, audit, and evaluation.
+
+The inspector shows how many source-backed items were selected, lets the user view
+the full brief, and copies it to the clipboard. It also shows evidence-backed
+affected files, linked tests, known blockers, required checks, and any compatible
+approved playbook.
+
+Nothing is sent to an agent automatically. The user reviews the brief and pastes
+it into the coding agent they choose.
+
+### Reuse only verified agent procedures
+
+When a completed run passes every required verification, Context Engine can
+extract reusable steps as a reviewable playbook. A playbook must be approved and
+compatible with the current repository snapshot before it can guide a later
+agent. One successful transcript never becomes trusted procedure automatically.
+
+## How the Product Loop Works
 
 ```text
-prepare context -> agent works -> observe result -> ingest result -> improve next context
+1. Capture evidence
+   repository state, issues, PRs, agent sessions, documents, run events
+
+2. Compile project state
+   source revisions -> evidence spans -> claims -> conservative graph projection
+
+3. Prepare a task
+   objective -> relevant context -> affected code -> checks -> agent brief
+
+4. Observe execution
+   run start -> decisions/blockers/patch -> verification -> outcome
+
+5. Scrutinize and learn
+   findings -> open loops -> approved verified playbooks -> better next brief
 ```
 
-Every run should leave evidence that makes the next run less ambiguous.
+Each run should leave inspectable evidence that makes the next run less ambiguous.
 
-## What It Compiles
+## Honest Limits
 
-The core abstraction is:
-
-```text
-sources -> evidence -> claims -> models
-```
-
-Raw source material is preserved first. Extraction happens after that. Graph
-state, query results, and context packs are projections over evidence, not a
-replacement for it.
-
-Context Engine is designed to compile:
-
-- AI coding sessions from Codex, Claude Code, OpenCode, and generic agent logs;
-- GitHub issues, pull requests, review discussions, and sync events;
-- Slack, Gmail, Google Drive, uploaded files, and local project documents;
-- decisions, requirements, tasks, blockers, risks, verification notes, and file
-  references;
-- current repo state, dirty files, symbols, manifests, tests, and recent commit
-  context;
-- source-backed context packs for specific coding-agent objectives.
-
-The output is not just an answer. The useful output is a handoff:
-
-- objective;
-- current repo state;
-- relevant files;
-- active blockers;
-- non-negotiable decisions;
-- implementation constraints;
-- verification commands;
-- citations and excluded stale context;
-- stop conditions for the next agent.
+- Context Engine does not currently launch, control, or grant code-editing access
+  to a coding agent. It prepares context and observes explicitly recorded work.
+- “Prepare for agent” creates and copies a brief; it does not send the brief.
+- Scrutiny is limited to deterministic, evidence-backed rules. It is not a generic
+  “slop score” or an autonomous code reviewer.
+- Live retrieval is currently bounded to the local repository and configured
+  manual-token GitHub access. Unsupported live providers fail explicitly.
+- The graph is an internal evidence projection and inspection tool, not the
+  primary user workflow.
+- Public setup, hosted operation, and production deployment guidance are not ready.
 
 ## Technical Commitments
 
@@ -153,7 +197,8 @@ These are the project rules that matter more than UI copy.
 5. Retrieval must explain itself.
    `query.v1` includes retrieval strategy, candidate counts, reranker features,
    facts used, relationship evidence, source IDs, provenance, confidence, and
-   authority weight. The system should make ranking debuggable.
+   authority weight. Indexed, live, and combined modes report each requested live
+   lane honestly; live failures do not silently fall back to saved context.
 
 6. Context packs are contracts, not summaries.
    `context_pack.v2` is designed as two artifacts: readable markdown for an
@@ -180,12 +225,15 @@ Observed in this checkout:
 | Source ingestion | Direct source APIs, bulk ingest, uploads, local file import, AI session import, demo seed, and provider sync paths create `SourceDocument` rows. |
 | Extraction | Deterministic GitHub and AI-session extractors, LiteLLM extraction when configured, and regex fallback when no model is available. |
 | Evidence ledger | `content_sha256`, workspace-scoped source identity, append-only source revisions, trust zones, exact `EvidenceSpan` validation, prompt-injection scoring, `Claim`, and `ClaimRevision` are present in the current codebase. |
+| Temporal truth and access | Claim revisions carry validity and transaction/observation time with as-of reads. Source/evidence permission snapshots and server-bound principal scopes filter evidence before retrieval and context compilation. |
 | Graph | `Model`, `Component`, `Relationship`, `UnresolvedRelationship`, provenance, confidence, authority weight, temporal state, and review status are exposed through graph APIs. |
-| Query | `POST /api/query` returns `query.v1` with lexical/vector candidate retrieval, deterministic reranking, entity diversification, facts-used traces, and relationship expansion. |
-| Retrieval | Postgres/pgvector and text-search paths exist for indexed retrieval; unconfigured installs fall back to lexical-only behavior instead of pretending hash vectors are semantic search. |
-| Context compiler | `ContextCompiler`, model profiles, objective-conditioned repo indexing, rendered-budget enforcement, the replay lockfile, `POST /api/context/prepare`, `ctxe prepare`, `ContextPack`, and `ContextPackItem` are implemented in the active tree. |
-| MCP | `ctxe mcp` exposes graph read tools, `prepare_task`, run start/finish outcome capture, and runtime observation write tools for decisions, blockers, patch summaries, verification, and task closure. |
-| Frontend | React app with a project-first visual map at `/app`, plus Sources and Connectors as primary destinations; Ask and Changes remain compatibility routes, and compiler preparation remains available through HTTP, CLI, and MCP. |
+| Query | `POST /api/query` returns `query.v1` with lexical/vector candidate retrieval, deterministic reranking, entity diversification, facts-used traces, relationship expansion, and explicit `indexed`, `live`, or `combined` retrieval. Initial live adapters are bounded local-repository search and configured manual-token GitHub search. |
+| Retrieval | Postgres/pgvector and text-search paths exist for indexed retrieval; unconfigured installs fall back to lexical-only behavior instead of pretending hash vectors are semantic search. Live provider results enter immutable source revisions before use. |
+| Context compiler | `ContextCompiler`, model profiles, incremental file/symbol indexing, exact import/route/test-path/test-symbol edges, focused affected-code output, approved compatible playbooks, rendered-budget enforcement, the replay lockfile, `POST /api/context/prepare`, `ctxe prepare`, `ContextPack`, and `ContextPackItem` are implemented in the active tree. |
+| Learning loop | Deterministic founder-scrutiny findings persist as source-backed open loops. Completed runs with every required verification passing can create reviewable playbooks; they are never auto-used from one unreviewed run. |
+| Passive capture | `ctxe repo watch` records bounded, redacted repository-change events and triggers incremental indexing without capturing raw terminal streams or file contents. |
+| MCP | `ctxe mcp` exposes graph read tools, `prepare_task`, indexed/live/combined `query_context`, run start/finish outcome capture, and runtime observation write tools for decisions, blockers, patch summaries, verification, and task closure. |
+| Frontend | React app with a project-first visual map at `/app`, plus Sources and Connectors as primary destinations. The selected-task inspector exposes evidence, run scrutiny, open loops, affected code, compatible playbooks, and a viewable/copyable agent brief with explicit delivery state. |
 | Tests | Backend pytest coverage, frontend Vitest coverage, migration tests, connector honesty tests, query/reranker tests, context compiler tests, MCP tests, extraction evals, and smoke scripts are present. |
 
 This is enough to show the project has a real technical spine. It is not enough
@@ -193,33 +241,50 @@ to claim general availability.
 
 ## Product Tour
 
-The current app is a working developer surface, not a marketing shell. Project
-is the default view at `/app`; it combines the useful overview and evidence map
-instead of splitting them across Prepare, Dashboard, and Graph pages. Sources
-and Connectors remain primary supporting surfaces.
+The application has three primary destinations:
 
-The Project map is a selected-workspace projection over imported source
-revisions. It separates provider refresh from incremental graph updates and
-explicit rebuilds, shows provider state as a timestamped observation, and does
-not invent a workspace objective when none was supplied.
+1. **Project** — the bird's-eye view, evidence map, scrutiny rail, open loops, and
+   task preparation workflow.
+2. **Sources** — the immutable source records behind claims, findings, and briefs.
+3. **Connectors** — honest provider setup and sync state.
 
-Opening a local repository establishes the workspace's project boundary and
-creates a deterministic, source-backed inventory of the repository root and
-its largest top-level areas, so the map has a useful system view immediately.
-Imported AI sessions are then matched only by deterministic repository, path,
-or commit evidence; uncertain and different-project sessions remain visually
-subdued and do not drive health, recommendations, or sourced links. **Copy
-handoff** runs the hardened `context_pack.v2` compiler, preserves its
-inclusion/exclusion audit, excludes uncertain session claims, and prevents
-prompt-risk evidence from becoming agent instructions.
+### Project map
 
-Typed PR, issue, session, decision, and blocker cards open an inspector with
-source evidence, classification, snapshot/revision metadata, confidence,
-relationships, and imported source content. Unsupported or unverified
-categories remain visibly empty instead of being filled from title keywords.
+Opening a local repository establishes the workspace boundary and creates a
+deterministic inventory of its root, top-level code areas, files, symbols,
+imports, routes, manifests, and exact test links. Refreshing the map first updates
+that repository inventory, then updates the evidence projection.
 
-The Ask surface returns source-backed answers with a visible facts-used trace
-instead of a black-box response.
+Imported sessions are matched to the project only through repository, path, or
+commit evidence. Uncertain or different-project sessions are visually subdued and
+cannot silently drive project health or recommendations.
+
+### Selected-card inspector
+
+PR, issue, session, decision, blocker, and other evidence cards open one inspector
+with the current status, confidence, source revision, exact excerpt, imported
+content, and factual relationships.
+
+Only actionable component types expose **Prepare for agent**. Pull requests remain
+delivery evidence, so the UI directs the user to a linked issue or task instead of
+letting an invalid preparation call fail later.
+
+After preparation, the inspector says **Agent brief ready**, reports clipboard
+success or failure, states that nothing was sent automatically, and offers **View
+brief** and **Copy again**. Affected code and known playbooks remain collapsed until
+the user wants the detail.
+
+### Scrutiny and open loops
+
+The same inspector shows the recorded agent timeline and evidence-backed findings.
+Project-wide unresolved findings and pending playbook reviews share one compact
+attention entry point rather than adding more dashboard panels or graph nodes.
+
+### Grounded query
+
+The compatibility Ask route remains available at `/app/query`. It returns a
+source-backed answer with the exact facts-used trace rather than a black-box
+response, but it is not a primary navigation destination.
 
 For the current seeded walkthrough, see [Demo Walkthrough](docs/demo.md).
 
@@ -235,17 +300,24 @@ Important API families:
 | Surface | Purpose |
 |---|---|
 | `/api/sources` | Create, bulk ingest, upload, list, inspect, and reprocess source documents. |
+| `/api/repo/index` | Compile a local repository snapshot, symbols, structural edges, and source-backed project inventory. |
 | `/api/graph` | Read models, components, relationships, unresolved edges, stats, and source diffs. |
 | `/api/query` | Ask grounded project-state questions with `query.v1` traces. |
+| `/api/context/digest` | Build the workspace-scoped Project map projection and attention summary. |
 | `/api/context/prepare` | Compile and persist a `context_pack.v2` for a coding-agent objective. |
+| `/api/context/run-timeline` | Reconstruct recorded agent execution and deterministic scrutiny findings for a prepared task. |
+| `/api/context/claims/{id}/timeline` | Inspect current or bi-temporal claim history with evidence. |
+| `/api/context/open-loops` | List and audit founder-facing unresolved findings. |
+| `/api/context/playbooks` | Review verified reusable agent steps. |
 | `/api/connectors` | List connector catalog/status, setup state, sync jobs, and guarded provider actions. |
 | `/api/seed-demo` | Create a source-backed demo workspace without faking connector authentication. |
 
 ### CLI
 
-The `ctxe` command currently contains subcommands for ingest, query, context
-preparation, repo indexing, worker sync, extraction evals, database migrations,
-credential rotation, graph reads, and MCP server startup.
+The `ctxe` command currently contains subcommands for ingest, indexed/live/combined
+query, context preparation, one-shot repository indexing, bounded repository
+watching, worker sync, extraction evals, database migrations, credential rotation,
+graph reads, and MCP server startup.
 
 These commands are implementation surfaces for contributors right now. A stable
 public CLI guide is coming soon.
@@ -285,9 +357,10 @@ configured. It does not mean public setup documentation is finished.
 
 | Source | Current status | Notes |
 |---|---|---|
+| Local repository | Available | Deterministic indexing and bounded watch mode compile files, symbols, structure, and change events. |
 | Local files | Available | Upload and ingest paths create source documents. |
 | AI sessions | Available | Codex, Claude Code, OpenCode, and generic session imports are supported. |
-| GitHub | Available | Issues and pull requests sync into source documents. |
+| GitHub | Available | Personal access token setup syncs issues, pull requests, and review discussions into source documents. |
 | Slack | Available | OAuth/setup-backed sync path exists. Direct fake connect is rejected. |
 | Gmail | Available | Google OAuth-backed path exists with mocked sync coverage. |
 | Google Drive | Available | Google OAuth-backed path exists with mocked sync coverage. |
@@ -306,12 +379,12 @@ documents; it does not mark providers as connected.
 | `app/main.py` | FastAPI app assembly, startup migration, static frontend serving. |
 | `app/api/` | HTTP routers for sources, graph, query, context, repo, connectors, agents, models, and demo seed. |
 | `app/models.py` | SQLAlchemy schema for workspaces, sources, evidence, claims, graph, retrieval events, context packs, agent runs, and repo index data. |
-| `app/services/` | Ingestion, query, reranking, evidence, claims, compiler, repo indexing, sync worker, auth, credentials, and workspace scope logic. |
+| `app/services/` | Ingestion, query, evidence, claims, compiler, repository indexing/watch, permissions, scrutiny, open loops, playbooks, sync, auth, and workspace scope logic. |
 | `app/processing/` | Extraction and embedding implementations. |
 | `app/sync/` | Provider sync clients for Slack, GitHub, Google, and AI session import helpers. |
 | `app/mcp/server.py` | Model Context Protocol server and agent runtime bridge. |
 | `app/cli/main.py` | `ctxe` command-line entrypoint. |
-| `frontend/src/` | React UI, graph/digest surfaces, API hooks, workspace context, connector pages, and tests. |
+| `frontend/src/` | React Project map, task inspector, open-loop/playbook review, source and connector surfaces, API hooks, workspace context, and tests. |
 | `tests/` | Backend, API, migration, graph, connector, MCP, CLI, compiler, ingestion, and eval coverage. |
 | `docs/` | Architecture notes, connector contracts, context-pack contracts, MCP notes, demo walkthrough, and working design documents. |
 | `examples/mcp/` | MCP client config examples and an agent grounding prompt. |

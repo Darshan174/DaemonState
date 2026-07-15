@@ -339,6 +339,7 @@ class FounderOversightService:
                         ContextPack.focus_component_id == focus_component_id,
                     )
                     .order_by(ContextPack.created_at.desc(), ContextPack.id.desc())
+                    .execution_options(populate_existing=True)
                 )
             ).unique()
         )
@@ -392,6 +393,7 @@ class FounderOversightService:
                     )
                     .order_by(AgentRun.started_at.desc(), AgentRun.id.desc())
                     .limit(10)
+                    .execution_options(populate_existing=True)
                 )
             ).unique()
         )

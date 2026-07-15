@@ -124,6 +124,7 @@ async def create_evidence_span(
     span = EvidenceSpan(
         workspace_id=_coerce_uuid(getattr(source_document, "workspace_id", None)),
         source_document_id=source_document.id,
+        source_document=source_document,
         start_char=start_char,
         end_char=end_char,
         text=span_text,
@@ -134,6 +135,10 @@ async def create_evidence_span(
         prompt_injection_risk_score=prompt_injection_risk_score,
         extraction_method=extraction_method,
         review_status=review_status,
+        visibility_scope=source_document.visibility_scope,
+        permission_source=source_document.permission_source,
+        permission_observed_at=source_document.permission_observed_at,
+        permission_snapshot_sha256=source_document.permission_snapshot_sha256,
     )
     session.add(span)
     await session.flush()
