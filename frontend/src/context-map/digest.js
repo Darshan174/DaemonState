@@ -53,7 +53,7 @@ const GRAPH_LANES = [
   { id: "decisions", label: "Decisions", description: "Recorded choices and claims that guide the work" },
   { id: "prs", label: "Pull requests", description: "Observed pull requests from imported provider snapshots" },
   { id: "issues", label: "Issues & blockers", description: "Explicit issues, blockers, and risks" },
-  { id: "documents", label: "Broken docs", description: "Explicit document findings; absence is not a verified pass" },
+  { id: "documents", label: "Document gaps", description: "Explicit document findings; absence is not a verified pass" },
   { id: "next_tasks", label: "Next agent tasks", description: "Explicit tasks recorded for the next run" },
   { id: "other", label: "Other evidence", description: "Supporting records without a named overview category" },
 ];

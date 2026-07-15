@@ -34,6 +34,71 @@ export function useRunTimeline(workspaceId, focusComponentId) {
   });
 }
 
+function openLoopsPath(workspaceId) {
+  const params = new URLSearchParams();
+  if (workspaceId) params.set("workspace_id", workspaceId);
+  return `/context/open-loops?${params}`;
+}
+
+export function useOpenLoops(workspaceId, { enabled = true } = {}) {
+  return useQuery({
+    queryKey: ["context-open-loops", workspaceId],
+    queryFn: () => api.get(openLoopsPath(workspaceId)),
+    enabled: enabled && Boolean(workspaceId),
+    retry: 1,
+  });
+}
+
+export function useUpdateOpenLoop(workspaceId) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ loopId, action, reason, assignee = undefined }) => api.patch(
+      `/context/open-loops/${loopId}`,
+      {
+        workspace_id: workspaceId,
+        action,
+        reason,
+        ...(assignee ? { assignee } : {}),
+      },
+    ),
+    onSuccess: () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["context-digest", workspaceId] }),
+      queryClient.invalidateQueries({ queryKey: ["context-open-loops", workspaceId] }),
+      queryClient.invalidateQueries({ queryKey: ["context-run-timeline", workspaceId] }),
+    ]),
+  });
+}
+
+function playbooksPath(workspaceId) {
+  const params = new URLSearchParams();
+  if (workspaceId) params.set("workspace_id", workspaceId);
+  return `/context/playbooks?${params}`;
+}
+
+export function usePlaybooks(workspaceId, { enabled = true } = {}) {
+  return useQuery({
+    queryKey: ["context-playbooks", workspaceId],
+    queryFn: () => api.get(playbooksPath(workspaceId)),
+    enabled: enabled && Boolean(workspaceId),
+    retry: 1,
+  });
+}
+
+export function useUpdatePlaybook(workspaceId) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ playbookId, action, reason }) => api.patch(
+      `/context/playbooks/${playbookId}`,
+      { workspace_id: workspaceId, action, reason },
+    ),
+    onSuccess: () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["context-playbooks", workspaceId] }),
+      queryClient.invalidateQueries({ queryKey: ["context-digest", workspaceId] }),
+      queryClient.invalidateQueries({ queryKey: ["context-run-timeline", workspaceId] }),
+    ]),
+  });
+}
+
 export function useBuildContext(workspaceId) {
   const queryClient = useQueryClient();
 

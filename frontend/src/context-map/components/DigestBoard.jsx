@@ -45,6 +45,7 @@ export default function DigestBoard({
   indexResult = null,
   indexError = null,
   onPrepareHandoff,
+  onOpenLoops,
 }) {
   const [query, setQuery] = useState("");
   const [changingProject, setChangingProject] = useState(false);
@@ -204,6 +205,10 @@ export default function DigestBoard({
         handoffStatus={handoffStatus}
         onCopyHandoff={copyHandoff}
         onOpenFocus={focusedCard ? () => onSelectCard?.(focusedCard) : null}
+        openLoopCount={Number(digest?.open_loops?.open_count || 0)}
+        pendingPlaybookCount={Number(digest?.playbooks?.pending_review_count || 0)}
+        onOpenLoops={onOpenLoops}
+        monitoring={digest?.monitoring || null}
         onChangeProject={() => {
           setActionsOpen(false);
           setChangingProject(true);
@@ -281,8 +286,9 @@ export default function DigestBoard({
   );
 }
 
-function ProjectBar({ workspaceName, objectiveText, oversight, generatedAt, nodeCount, edgeCount, query, onQueryChange, onFit, onBuild, building, actionsOpen, onToggleActions, canCopyHandoff, handoffStatus, onCopyHandoff, onChangeProject, onOpenFocus }) {
+function ProjectBar({ workspaceName, objectiveText, oversight, generatedAt, nodeCount, edgeCount, query, onQueryChange, onFit, onBuild, building, actionsOpen, onToggleActions, canCopyHandoff, handoffStatus, onCopyHandoff, onChangeProject, onOpenFocus, openLoopCount, pendingPlaybookCount, onOpenLoops, monitoring }) {
   const observed = formatDigestTimestamp(generatedAt);
+  const monitoringMeta = projectMonitoringMeta(monitoring);
   const focus = oversight?.current_focus;
   const latestOutcome = oversight?.latest_outcome;
   const attention = [
@@ -294,8 +300,15 @@ function ProjectBar({ workspaceName, objectiveText, oversight, generatedAt, node
     <header className="relative z-40 flex min-h-16 shrink-0 items-center gap-3 border-b border-[#d8d8cf] bg-[#fbfbf6]/95 px-4 py-2.5 backdrop-blur dark:border-[#292925] dark:bg-[#141411]/95 sm:px-5">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="h-2 w-2 rounded-full bg-[#58ad70]" aria-hidden="true" />
+          <span
+            className={`h-2 w-2 rounded-full ${monitoringMeta?.tone || "bg-[#58ad70]"}`}
+            aria-hidden={monitoringMeta ? undefined : "true"}
+            aria-label={monitoringMeta?.label}
+            role={monitoringMeta ? "status" : undefined}
+            title={monitoringMeta?.label}
+          />
           <p className="truncate text-[10px] font-semibold text-[#77776e] dark:text-[#aaa9a0]">{workspaceName}</p>
+          {monitoringMeta ? <span aria-hidden="true" className={`hidden truncate text-[9px] font-semibold md:inline ${monitoringMeta.textTone}`}>{monitoringMeta.label}</span> : null}
         </div>
         <div className="mt-0.5 flex items-baseline gap-2">
           <h1 className="text-sm font-extrabold">Project map</h1>
@@ -311,8 +324,14 @@ function ProjectBar({ workspaceName, objectiveText, oversight, generatedAt, node
         ) : null}
       </div>
 
+      {openLoopCount > 0 || pendingPlaybookCount > 0 ? (
+        <button data-project-attention type="button" onClick={onOpenLoops} disabled={!onOpenLoops} aria-label={openLoopCount > 0 ? `Open project open loops, ${openLoopCount} unresolved` : `Review verified agent steps, ${pendingPlaybookCount} pending`} className="shrink-0 rounded-full bg-amber-100 px-2 py-1 text-[9px] font-black text-amber-800 transition enabled:hover:ring-1 enabled:hover:ring-amber-400 disabled:cursor-default dark:bg-amber-950/50 dark:text-amber-200">
+          {openLoopCount > 0 ? `Open loops ${openLoopCount}` : `Review steps ${pendingPlaybookCount}`}
+        </button>
+      ) : null}
+
       {attention.length ? (
-        <div aria-label="Attention" className="flex items-center gap-1">
+        <div aria-label="Focused task attention" className="flex items-center gap-1">
           <button type="button" onClick={onOpenFocus} disabled={!onOpenFocus} className="rounded-full bg-[#efefe7] px-2 py-1 text-[9px] font-black text-amber-700 enabled:hover:ring-1 enabled:hover:ring-amber-400 disabled:cursor-default dark:bg-[#252521] dark:text-amber-300 lg:hidden">
             Attention {attention.reduce((total, [, count]) => total + Number(count), 0)}
           </button>
@@ -374,6 +393,52 @@ function ProjectBar({ workspaceName, objectiveText, oversight, generatedAt, node
   );
 }
 
+function projectMonitoringMeta(monitoring) {
+  if (!monitoring) return null;
+  const status = String(monitoring.status || "unknown").toLowerCase();
+  const observedAt = monitoring.last_seen_at || monitoring.observed_at || monitoring.updated_at;
+  const age = relativeAge(observedAt);
+  if (["watching", "healthy", "active", "current"].includes(status)) {
+    return {
+      label: `Monitoring local activity${age ? ` · updated ${age}` : ""}`,
+      tone: "bg-[#58ad70]",
+      textTone: "text-[#68766a] dark:text-[#9db7a2]",
+    };
+  }
+  if (["observed", "captured", "indexed"].includes(status)) {
+    return {
+      label: `Local activity captured${age ? ` · latest change ${age}` : ""}`,
+      tone: "bg-sky-500",
+      textTone: "text-sky-700 dark:text-sky-300",
+    };
+  }
+  if (["stale", "delayed", "unhealthy"].includes(status)) {
+    return {
+      label: `Local activity may be stale${age ? ` · watcher last seen ${age}` : ""}`,
+      tone: "bg-amber-500",
+      textTone: "text-amber-700 dark:text-amber-300",
+    };
+  }
+  return {
+    label: "Local activity monitoring is off",
+    tone: "bg-slate-400",
+    textTone: "text-slate-500 dark:text-neutral-400",
+  };
+}
+
+function relativeAge(value) {
+  if (!value) return null;
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return null;
+  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
 function ZoneBackdrops({ projection }) {
   return Object.entries(MAP_ZONES).map(([zoneId, zone]) => {
     const lane = projection.lanes.find((item) => item.id === zoneId);
@@ -395,6 +460,11 @@ function ZoneBackdrops({ projection }) {
         <span className={`absolute left-3 top-2 text-[9px] font-black uppercase tracking-[0.16em] ${hasCards ? "text-[#929289] dark:text-[#77776e]" : "text-[#c2c2b9] dark:text-[#44443e]"}`}>
           {zone.label}
         </span>
+        {!hasCards && zone.emptyLabel ? (
+          <span className="absolute inset-x-3 top-1/2 -translate-y-1/2 text-center text-[10px] font-semibold leading-4 text-[#a8a89f] dark:text-[#5f5f58]">
+            {zone.emptyLabel}
+          </span>
+        ) : null}
       </div>
     );
   });

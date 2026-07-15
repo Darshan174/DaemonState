@@ -18,12 +18,12 @@ export const MAP_LANE_LIMITS = {
 
 export const MAP_ZONES = {
   sessions: { label: "AI sessions", x: 26, y: 56, width: 274, height: 230 },
-  architecture: { label: "System", x: 330, y: 56, width: 338, height: 360 },
-  decisions: { label: "Direction", x: 26, y: 310, width: 274, height: 160 },
-  next_tasks: { label: "Next", x: 26, y: 494, width: 274, height: 110 },
+  architecture: { label: "System", emptyLabel: "Refresh this project to map its structure.", x: 330, y: 56, width: 338, height: 360 },
+  decisions: { label: "Direction", emptyLabel: "No current verified decisions.", x: 26, y: 310, width: 274, height: 160 },
+  next_tasks: { label: "Next", emptyLabel: "No explicit verified next task.", x: 26, y: 494, width: 274, height: 110 },
   prs: { label: "Delivery", x: 700, y: 56, width: 274, height: 180 },
   issues: { label: "Risks", x: 700, y: 270, width: 274, height: 180 },
-  documents: { label: "Checks", x: 330, y: 440, width: 162, height: 170 },
+  documents: { label: "Docs", emptyLabel: "No verified document gaps.", x: 330, y: 440, width: 162, height: 170 },
   other: { label: "Evidence", x: 506, y: 440, width: 162, height: 170 },
 };
 

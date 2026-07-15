@@ -10,7 +10,10 @@ const BASE = "/api";
 
 export class ApiError extends Error {
   constructor(status, detail) {
-    super(typeof detail === "string" ? detail : JSON.stringify(detail));
+    const message = typeof detail === "string"
+      ? detail
+      : detail?.message || detail?.detail?.message || "The request could not be completed.";
+    super(message);
     this.status = status;
     this.detail = detail;
   }
