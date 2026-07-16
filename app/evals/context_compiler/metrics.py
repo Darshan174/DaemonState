@@ -30,6 +30,7 @@ FINAL_MANIFEST_KEYS = {
     "workspace_id",
     "input_fingerprint",
     "target_model",
+    "execution_policy",
     "repo_state",
     "selected_context",
     "excluded_context",

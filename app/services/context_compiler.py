@@ -24,7 +24,11 @@ from app.models import (
     SourceDocument,
     UnresolvedRelationship,
 )
-from app.services.model_profiles import ModelCapabilityProfile, profile_for_target_model
+from app.services.model_profiles import (
+    ModelCapabilityProfile,
+    profile_for_target_model,
+    render_execution_policy_markdown,
+)
 from app.services.access import AccessScope, source_access_predicate
 from app.services.focus_policy import focus_eligibility
 from app.services.playbooks import PlaybookService
@@ -36,7 +40,7 @@ from app.time import utc_now
 
 
 SCHEMA_VERSION = "context_pack.v2"
-COMPILER_VERSION = "context_compiler.v3"
+COMPILER_VERSION = "context_compiler.v4"
 EVIDENCE_CONTRACT_VERSION = "exact_evidence_span.v1"
 TOKEN_ESTIMATION_METHOD = "chars_div_4.v1"
 PROMPT_INJECTION_PATTERNS = (
@@ -1160,6 +1164,7 @@ class ContextCompiler:
                 "capability": asdict(profile),
                 "capabilities": asdict(profile),
             },
+            "execution_policy": profile.execution_policy.to_manifest(),
             "repo_state": repo_state,
             "selected_context": [item.to_manifest_item() for item in selected],
             "excluded_context": [item.to_manifest_item() for item in excluded],
@@ -1549,9 +1554,14 @@ def render_context_pack_markdown(
         f"- Dirty worktree: `{str(bool(repo_state.get('dirty'))).lower()}`",
         f"- Target model profile: `{target_model.get('profile')}`",
         "",
-        "## Affected Code" if affected_files else "## Relevant Repository Files",
+        "## Files To Inspect" if affected_files else "## Relevant Repository Files",
         "",
     ]
+    if affected_files:
+        sections.extend([
+            "These are task-based suggestions, not confirmed edit targets. Verify them before changing code.",
+            "",
+        ])
     selected_file_paths = {
         path
         for item in selected
@@ -1623,6 +1633,11 @@ def render_context_pack_markdown(
     sections.extend(["", "## Implementation Plan", ""])
     for index, step in enumerate(manifest.get("implementation_plan", []), start=1):
         sections.append(f"{index}. {step['text']}")
+
+    sections.extend([
+        "",
+        render_execution_policy_markdown(profile.execution_policy),
+    ])
 
     known_playbook = manifest.get("known_playbook")
     if isinstance(known_playbook, dict):
@@ -2413,6 +2428,7 @@ def _build_lockfile(
         "compiler_version": COMPILER_VERSION,
         "ranking_version": RANKING_VERSION,
         "target_model_capability": asdict(profile),
+        "execution_policy": profile.execution_policy.to_manifest(),
         "repo": repo_snapshot,
         "evidence_revisions": evidence_snapshot,
         "token_accounting": {

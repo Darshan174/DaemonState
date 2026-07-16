@@ -212,6 +212,86 @@ def test_cli_eval_extraction_runs_local_corpus(capsys):
     assert "local-decision-postgres" in output
 
 
+def test_cli_eval_harness_reports_only_directional_evidence(tmp_path, capsys):
+    rows = []
+    for label, solved in (
+        ("old_alone", False),
+        ("old_with_context_engine", True),
+        ("new_alone", True),
+    ):
+        rows.append({
+            "task_id": "task-1",
+            "label": label,
+            "outcome_evidence": {
+                "completed": solved,
+                "verification_passed": solved,
+                "unresolved_blockers": 0,
+                "evidence_ids": [f"evidence-{label}"],
+            },
+        })
+    input_path = tmp_path / "harness-eval.json"
+    input_path.write_text(json.dumps(rows), encoding="utf-8")
+
+    assert cli_main.main(["eval", "harness", "--input", str(input_path)]) == 0
+
+    output = capsys.readouterr().out
+    assert "paired_tasks=1" in output
+    assert "claim_status=insufficient_evidence" in output
+    assert "old_with_context_engine: solved=1/1" in output
+
+
+def test_cli_harness_run_forwards_explicit_argv(monkeypatch, capsys):
+    captured = {}
+
+    async def fake_run(args, worker_command):
+        captured.update(vars(args))
+        captured["worker_command"] = worker_command
+        return {
+            "context_pack_id": "pack-1",
+            "run_id": "run-1",
+            "status": "completed",
+            "changed_files": ["app.py"],
+            "verification_results": [],
+        }
+
+    monkeypatch.setattr(cli_main, "_run_local_harness", fake_run)
+
+    assert cli_main.main([
+        "harness",
+        "run",
+        "fix app.py",
+        "--repo",
+        ".",
+        "--workspace-id",
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "--target-model",
+        "qwen2.5-coder-7b",
+        "--",
+        "worker-bin",
+        "--context",
+        "{context_file}",
+    ]) == 0
+
+    assert captured["worker_command"] == [
+        "worker-bin",
+        "--context",
+        "{context_file}",
+    ]
+    assert captured["target_model"] == "qwen2.5-coder-7b"
+    assert "verification: not executed" in capsys.readouterr().out
+
+
+def test_cli_harness_run_requires_explicit_worker_command(capsys):
+    assert cli_main.main([
+        "harness",
+        "run",
+        "fix app.py",
+        "--workspace-id",
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    ]) == 1
+    assert "provide an explicit worker command" in capsys.readouterr().err
+
+
 def test_cli_worker_sync_runs_pending_jobs(monkeypatch, capsys):
     class FakeResult:
         def to_dict(self):

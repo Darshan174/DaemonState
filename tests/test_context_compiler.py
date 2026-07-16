@@ -121,7 +121,7 @@ async def test_compile_pack_persists_manifest_markdown_and_items(db_session, tmp
     assert result.markdown.startswith("# Objective\n")
     assert "## Current Repo State" in result.markdown
     assert "## Relevant Repository Files" in result.markdown
-    assert "## Affected Code" not in result.markdown
+    assert "## Files To Inspect" not in result.markdown
     assert "affected_code" not in result.manifest
     assert "## Stop Conditions" in result.markdown
 
@@ -485,12 +485,19 @@ async def test_current_verified_claim_revision_populates_exact_evidence_audit(
     assert result.manifest["repo_state"]["state_fingerprint"]
     assert result.manifest["compiler"] == {
         "name": "ContextCompiler",
-        "version": "context_compiler.v3",
+        "version": "context_compiler.v4",
         "ranking_version": "objective_file_rank.v3",
         "evidence_contract_version": "exact_evidence_span.v1",
         "token_estimation_method": "chars_div_4.v1",
     }
     assert result.manifest["target_model"]["capabilities"]["name"] == "small_coder_model"
+    assert result.manifest["execution_policy"]["require_plan"] is True
+    assert result.manifest["execution_policy"]["max_files_per_step"] == 2
+    assert "## Execution Policy" in result.markdown
+    assert "at most 2 files" in result.markdown
+    assert result.manifest["lockfile"]["execution_policy"] == (
+        result.manifest["execution_policy"]
+    )
     assert set(result.manifest["retrieval_lanes"]) == {
         "instructions",
         "code_and_tests",
@@ -913,7 +920,8 @@ async def test_focused_pack_exposes_exact_affected_code_and_linked_test(
             "rule_id": "test_path_match.v1",
         }
     ]
-    assert "## Affected Code" in result.markdown
+    assert "## Files To Inspect" in result.markdown
+    assert "not confirmed edit targets" in result.markdown
     assert "Related test: `tests/test_repo_indexer.py`" in result.markdown
     assert result.manifest["verification"]["commands"][0]["command"] == (
         "python3 -m pytest -q tests/test_repo_indexer.py"
