@@ -49,6 +49,21 @@ describe("ContextInspector", () => {
     });
   });
 
+  it("explains why delivery evidence cannot be prepared as a task", () => {
+    api.get.mockImplementation(() => new Promise(() => {}));
+    render(
+      <ContextInspector
+        card={{ ...card, type: "task", category: "pull_request", session: null }}
+        cards={[card]}
+        onClose={() => {}}
+        prepareUnavailableReason="Pull requests are delivery evidence. Prepare from a linked issue, task, decision, requirement, or blocker."
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Prepare for agent" })).not.toBeInTheDocument();
+    expect(screen.getByText(/Pull requests are delivery evidence/)).toBeInTheDocument();
+  });
+
   it("shows session identity and loads the imported transcript", async () => {
     api.get.mockResolvedValue({ content: "[USER]\nMake the graph factual.\n\n[ASSISTANT]\nI will inspect every source." });
     render(
@@ -142,6 +157,7 @@ describe("ContextInspector", () => {
     api.get.mockResolvedValue({ content: "Structured verification evidence." });
     const onPrepareForAgent = vi.fn().mockResolvedValue({
       markdown: "# Focused agent pack",
+      selected_context: [{ id: "one" }, { id: "two" }, { id: "three" }],
       manifest: {
         affected_code: {
           schema_version: "affected_code.v1",
@@ -225,7 +241,15 @@ describe("ContextInspector", () => {
     fireEvent.click(screen.getByRole("button", { name: "Prepare for agent" }));
     await waitFor(() => expect(onPrepareForAgent).toHaveBeenCalledOnce());
     await waitFor(() => expect(globalThis.navigator.clipboard.writeText).toHaveBeenCalledWith("# Focused agent pack"));
-    expect(screen.getByRole("button", { name: "Agent pack copied" })).toBeInTheDocument();
+    const briefStatus = screen.getByRole("status", { name: "Agent brief ready" });
+    expect(briefStatus).toHaveTextContent("Copied to your clipboard");
+    expect(briefStatus).toHaveTextContent("Nothing was sent to an agent automatically");
+    expect(briefStatus).toHaveTextContent("Includes 3 source-backed context items");
+    fireEvent.click(screen.getByRole("button", { name: "View brief" }));
+    expect(screen.getByText("# Focused agent pack")).toBeInTheDocument();
+    expect(screen.getByText(/paste it into the coding agent you want to use/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Copy again" }));
+    await waitFor(() => expect(globalThis.navigator.clipboard.writeText).toHaveBeenCalledTimes(2));
     const affectedCode = screen.getByText("Affected code").closest("details");
     expect(affectedCode).not.toHaveAttribute("open");
     expect(screen.getByText("1 likely file · 1 linked test")).toBeInTheDocument();
@@ -354,11 +378,142 @@ describe("ContextInspector", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Prepare for agent" }));
-    expect(await screen.findByRole("button", { name: "Pack ready — retry copy" })).toBeInTheDocument();
-    expect(screen.getByText(/clipboard access was unavailable/i)).toBeInTheDocument();
+    const briefStatus = await screen.findByRole("status", { name: "Agent brief ready" });
+    expect(briefStatus).toHaveTextContent(/clipboard access was unavailable/i);
+    expect(briefStatus).toHaveTextContent(/Nothing was sent automatically/i);
 
     globalThis.navigator.clipboard.writeText.mockResolvedValueOnce(undefined);
-    fireEvent.click(screen.getByRole("button", { name: "Pack ready — retry copy" }));
-    expect(await screen.findByRole("button", { name: "Agent pack copied" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Copy again" }));
+    await waitFor(() => expect(briefStatus).toHaveTextContent("Copied to your clipboard"));
+  });
+
+  it("shows durable needs-attention loops even when no agent run exists", () => {
+    api.get.mockImplementation(() => new Promise(() => {}));
+    const onUpdateOpenLoop = vi.fn().mockResolvedValue({ status: "resolved" });
+    render(
+      <ContextInspector
+        card={{ ...card, type: "task", category: "task", session: null }}
+        cards={[card]}
+        onClose={() => {}}
+        canPrepareForAgent
+        onUpdateOpenLoop={onUpdateOpenLoop}
+        timeline={{
+          runs: [],
+          open_loops: [{
+            id: "loop-1",
+            status: "open",
+            severity: "critical",
+            title: "Required verification failed",
+            explanation: "The required test exited with code 1.",
+          }],
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Needs attention")).toBeInTheDocument();
+    expect(screen.getByText("Required verification failed")).toBeInTheDocument();
+    expect(screen.getByText("No observed agent run yet.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Challenge agent" })).not.toBeInTheDocument();
+  });
+
+  it("shows a compatible verified playbook collapsed after affected code", () => {
+    api.get.mockImplementation(() => new Promise(() => {}));
+    render(
+      <ContextInspector
+        card={{ ...card, type: "task", category: "task", session: null }}
+        cards={[card]}
+        onClose={() => {}}
+        canPrepareForAgent
+        timeline={{
+          runs: [],
+          affected_code: { snapshot: {}, files: [{ path: "app/service.py", role: "likely_implementation" }] },
+          known_playbook: {
+            id: "playbook-1",
+            title: "Add a source-backed connector",
+            status: "approved",
+            verified_run_count: 2,
+            last_verified_at: "2026-07-14T10:00:00Z",
+            ordered_steps: ["Store the raw source revision first.", "Run the focused connector test."],
+            verification_commands: ["pytest -q tests/test_connectors.py"],
+          },
+        }}
+      />,
+    );
+
+    const affected = screen.getByText("Affected code").closest("details");
+    const playbook = screen.getByText("Verified playbook").closest("details");
+    expect(playbook).not.toHaveAttribute("open");
+    expect(affected.compareDocumentPosition(playbook) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(screen.getByText("Verified playbook"));
+    expect(screen.getByText("Included in the latest agent pack")).toBeInTheDocument();
+    expect(screen.getByText(/Verified from 2 successful runs · last checked/)).toBeInTheDocument();
+    expect(screen.getByText("Store the raw source revision first.")).toBeInTheDocument();
+    expect(screen.getByText("pytest -q tests/test_connectors.py")).toBeInTheDocument();
+  });
+
+  it("clears a prepared playbook when a newer context revision has none", async () => {
+    api.get.mockImplementation(() => new Promise(() => {}));
+    const focusedTask = { ...card, type: "task", category: "task", session: null };
+    const onPrepareForAgent = vi.fn().mockResolvedValue({
+      markdown: "# Pack",
+      manifest: {
+        known_playbook: {
+          id: "playbook-old",
+          title: "Old verified playbook",
+          status: "approved",
+        },
+      },
+    });
+    const { rerender } = render(
+      <ContextInspector
+        card={focusedTask}
+        cards={[focusedTask]}
+        onClose={() => {}}
+        canPrepareForAgent
+        onPrepareForAgent={onPrepareForAgent}
+        contextRevision="revision-1"
+        timeline={{ runs: [] }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Prepare for agent" }));
+    expect(await screen.findByText("Verified playbook")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Verified playbook"));
+    expect(screen.getByText("Included in this agent pack")).toBeInTheDocument();
+    rerender(
+      <ContextInspector
+        card={focusedTask}
+        cards={[focusedTask]}
+        onClose={() => {}}
+        canPrepareForAgent
+        onPrepareForAgent={onPrepareForAgent}
+        contextRevision="revision-2"
+        timeline={{ runs: [] }}
+      />,
+    );
+    await waitFor(() => expect(screen.queryByText("Verified playbook")).not.toBeInTheDocument());
+  });
+
+  it("does not imply that an incompatible playbook was included", () => {
+    api.get.mockImplementation(() => new Promise(() => {}));
+    render(
+      <ContextInspector
+        card={{ ...card, type: "task", category: "task", session: null }}
+        cards={[card]}
+        onClose={() => {}}
+        canPrepareForAgent
+        timeline={{
+          runs: [],
+          known_playbook: {
+            id: "playbook-stale",
+            title: "Old repository procedure",
+            status: "stale",
+            compatible: false,
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Not included — last verified before the current code snapshot")).toBeInTheDocument();
   });
 });

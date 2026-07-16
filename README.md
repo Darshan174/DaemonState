@@ -153,7 +153,8 @@ These are the project rules that matter more than UI copy.
 5. Retrieval must explain itself.
    `query.v1` includes retrieval strategy, candidate counts, reranker features,
    facts used, relationship evidence, source IDs, provenance, confidence, and
-   authority weight. The system should make ranking debuggable.
+   authority weight. Indexed, live, and combined modes report each requested live
+   lane honestly; live failures do not silently fall back to saved context.
 
 6. Context packs are contracts, not summaries.
    `context_pack.v2` is designed as two artifacts: readable markdown for an
@@ -180,12 +181,15 @@ Observed in this checkout:
 | Source ingestion | Direct source APIs, bulk ingest, uploads, local file import, AI session import, demo seed, and provider sync paths create `SourceDocument` rows. |
 | Extraction | Deterministic GitHub and AI-session extractors, LiteLLM extraction when configured, and regex fallback when no model is available. |
 | Evidence ledger | `content_sha256`, workspace-scoped source identity, append-only source revisions, trust zones, exact `EvidenceSpan` validation, prompt-injection scoring, `Claim`, and `ClaimRevision` are present in the current codebase. |
+| Temporal truth and access | Claim revisions carry validity and transaction/observation time with as-of reads. Source/evidence permission snapshots and server-bound principal scopes filter evidence before retrieval and context compilation. |
 | Graph | `Model`, `Component`, `Relationship`, `UnresolvedRelationship`, provenance, confidence, authority weight, temporal state, and review status are exposed through graph APIs. |
-| Query | `POST /api/query` returns `query.v1` with lexical/vector candidate retrieval, deterministic reranking, entity diversification, facts-used traces, and relationship expansion. |
-| Retrieval | Postgres/pgvector and text-search paths exist for indexed retrieval; unconfigured installs fall back to lexical-only behavior instead of pretending hash vectors are semantic search. |
-| Context compiler | `ContextCompiler`, model profiles, incremental file/symbol indexing, exact import/route/test-path edges, focused affected-code output, rendered-budget enforcement, the replay lockfile, `POST /api/context/prepare`, `ctxe prepare`, `ContextPack`, and `ContextPackItem` are implemented in the active tree. |
-| MCP | `ctxe mcp` exposes graph read tools, `prepare_task`, run start/finish outcome capture, and runtime observation write tools for decisions, blockers, patch summaries, verification, and task closure. |
-| Frontend | React app with a project-first visual map at `/app`, plus Sources and Connectors as primary destinations; Ask and Changes remain compatibility routes, and compiler preparation remains available through HTTP, CLI, and MCP. |
+| Query | `POST /api/query` returns `query.v1` with lexical/vector candidate retrieval, deterministic reranking, entity diversification, facts-used traces, relationship expansion, and explicit `indexed`, `live`, or `combined` retrieval. Initial live adapters are bounded local-repository search and configured manual-token GitHub search. |
+| Retrieval | Postgres/pgvector and text-search paths exist for indexed retrieval; unconfigured installs fall back to lexical-only behavior instead of pretending hash vectors are semantic search. Live provider results enter immutable source revisions before use. |
+| Context compiler | `ContextCompiler`, model profiles, incremental file/symbol indexing, exact import/route/test-path/test-symbol edges, focused affected-code output, approved compatible playbooks, rendered-budget enforcement, the replay lockfile, `POST /api/context/prepare`, `ctxe prepare`, `ContextPack`, and `ContextPackItem` are implemented in the active tree. |
+| Learning loop | Deterministic founder-scrutiny findings persist as source-backed open loops. Completed runs with every required verification passing can create reviewable playbooks; they are never auto-used from one unreviewed run. |
+| Passive capture | `ctxe repo watch` records bounded, redacted repository-change events and triggers incremental indexing without capturing raw terminal streams or file contents. |
+| MCP | `ctxe mcp` exposes graph read tools, `prepare_task`, indexed/live/combined `query_context`, run start/finish outcome capture, and runtime observation write tools for decisions, blockers, patch summaries, verification, and task closure. |
+| Frontend | React app with a project-first visual map at `/app`, plus Sources and Connectors as primary destinations. Open loops and pending playbook reviews use one compact Project-bar trigger and the existing scrutiny rail; affected code and approved playbooks stay collapsed in the selected-task inspector. |
 | Tests | Backend pytest coverage, frontend Vitest coverage, migration tests, connector honesty tests, query/reranker tests, context compiler tests, MCP tests, extraction evals, and smoke scripts are present. |
 
 This is enough to show the project has a real technical spine. It is not enough
@@ -221,6 +225,13 @@ After **Prepare for agent**, a compact, collapsed **Affected code** section show
 only evidence-backed likely files, exact linked tests, and short impact paths. It
 stays absent when the compiler has no supported match.
 
+Deterministic missing-work or failed-verification findings appear as **Open loops**
+through one compact Project-bar trigger and the existing right rail. A founder can
+assign, resolve, dismiss, or reopen a finding only with an auditable reason. Agent
+steps appear for review only after a completed, fully verified run; an approved,
+snapshot-compatible playbook is then shown collapsed inside the relevant task
+inspector and included in that task's next context pack.
+
 The Ask surface returns source-backed answers with a visible facts-used trace
 instead of a black-box response.
 
@@ -241,14 +252,18 @@ Important API families:
 | `/api/graph` | Read models, components, relationships, unresolved edges, stats, and source diffs. |
 | `/api/query` | Ask grounded project-state questions with `query.v1` traces. |
 | `/api/context/prepare` | Compile and persist a `context_pack.v2` for a coding-agent objective. |
+| `/api/context/claims/{id}/timeline` | Inspect current or bi-temporal claim history with evidence. |
+| `/api/context/open-loops` | List and audit founder-facing unresolved findings. |
+| `/api/context/playbooks` | Review verified reusable agent steps. |
 | `/api/connectors` | List connector catalog/status, setup state, sync jobs, and guarded provider actions. |
 | `/api/seed-demo` | Create a source-backed demo workspace without faking connector authentication. |
 
 ### CLI
 
-The `ctxe` command currently contains subcommands for ingest, query, context
-preparation, repo indexing, worker sync, extraction evals, database migrations,
-credential rotation, graph reads, and MCP server startup.
+The `ctxe` command currently contains subcommands for ingest, indexed/live/combined
+query, context preparation, one-shot repository indexing, bounded repository
+watching, worker sync, extraction evals, database migrations, credential rotation,
+graph reads, and MCP server startup.
 
 These commands are implementation surfaces for contributors right now. A stable
 public CLI guide is coming soon.

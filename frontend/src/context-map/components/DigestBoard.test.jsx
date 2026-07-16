@@ -126,6 +126,16 @@ describe("DigestBoard", () => {
     expect(screen.queryByText("Broken docs")).not.toBeInTheDocument();
   });
 
+  it("explains empty product lanes without implying checks passed", () => {
+    renderBoard();
+
+    expect(screen.getByText("Refresh this project to map its structure.")).toBeInTheDocument();
+    expect(screen.getByText("No explicit verified next task.")).toBeInTheDocument();
+    expect(screen.getByText("No verified document gaps.")).toBeInTheDocument();
+    expect(screen.getByText("Docs")).toBeInTheDocument();
+    expect(screen.queryByText("Checks")).not.toBeInTheDocument();
+  });
+
   it("shows an observed objective without restoring the execution form", () => {
     renderBoard({
       digest: {
@@ -307,13 +317,59 @@ describe("DigestBoard", () => {
     });
 
     expect(screen.getByTitle("Make runtime writes retry-safe")).toHaveTextContent("Focus · Make runtime writes retry-safe");
-    expect(screen.getByLabelText("Attention")).toHaveTextContent("Blocked 1");
-    expect(screen.getByLabelText("Attention")).toHaveTextContent("Unverified 2");
-    expect(screen.getByLabelText("Attention")).not.toHaveTextContent("Stale");
+    expect(screen.getByLabelText("Focused task attention")).toHaveTextContent("Blocked 1");
+    expect(screen.getByLabelText("Focused task attention")).toHaveTextContent("Unverified 2");
+    expect(screen.getByLabelText("Focused task attention")).not.toHaveTextContent("Stale");
     expect(screen.getByRole("button", { name: "Attention 3" })).toBeInTheDocument();
     fireEvent.click(screen.getByTitle("Make runtime writes retry-safe"));
     expect(onSelectCard).toHaveBeenCalledWith(focusedCard);
     expect(screen.queryByText(/ready score/i)).not.toBeInTheDocument();
+  });
+
+  it("opens the compact project-wide open-loop rail trigger without adding map nodes", () => {
+    const onOpenLoops = vi.fn();
+    const { container } = renderBoard({
+      digest: {
+        ...digest,
+        open_loops: {
+          open_count: 3,
+          items: [{ id: "loop-1", title: "Verification is missing", status: "open" }],
+        },
+      },
+      onOpenLoops,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Open project open loops, 3 unresolved" }));
+    expect(onOpenLoops).toHaveBeenCalledOnce();
+    expect(container.querySelector('[data-graph-node="loop-1"]')).not.toBeInTheDocument();
+  });
+
+  it("surfaces pending playbook review through the same compact attention trigger", () => {
+    const onOpenLoops = vi.fn();
+    renderBoard({
+      digest: {
+        ...digest,
+        open_loops: { open_count: 0, items: [] },
+        playbooks: { pending_review_count: 2 },
+      },
+      onOpenLoops,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Review verified agent steps, 2 pending" }));
+    expect(onOpenLoops).toHaveBeenCalledOnce();
+  });
+
+  it("shows honest monitoring freshness but no watcher or retrieval controls", () => {
+    const lastSeen = new Date(Date.now() - 12 * 60 * 1000).toISOString();
+    renderBoard({
+      digest: {
+        ...digest,
+        monitoring: { status: "stale", last_seen_at: lastSeen },
+      },
+    });
+
+    expect(screen.getByRole("status", { name: /Local activity may be stale · watcher last seen 12m ago/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /watcher|retrieval|indexed|combined/i })).not.toBeInTheDocument();
   });
 
   it("opens a local project from the honest empty state", () => {
