@@ -80,6 +80,16 @@ def test_context_compiler_eval_metrics_score_manifest_shape():
         "workspace_id": None,
         "input_fingerprint": "fixture-fingerprint",
         "target_model": {"context_budget_tokens": 12000},
+        "execution_policy": {
+            "policy_version": "agent_execution_policy.v1",
+            "require_plan": True,
+            "max_files_per_step": 2,
+            "require_diff_review": True,
+            "require_verification": True,
+            "max_retries": 1,
+            "refresh_context_before_retry": True,
+            "stop_on_verification_failure": True,
+        },
         "repo_state": {
             "repo_path": "/fixture/repo",
             "branch": "fixture",
@@ -385,7 +395,7 @@ async def test_context_compiler_eval_invokes_real_compiler_and_validates_evidenc
         source_documents=source_documents,
     )
 
-    assert result.manifest["compiler"]["version"] == "context_compiler.v3"
+    assert result.manifest["compiler"]["version"] == "context_compiler.v4"
     assert metrics["context_recall"] == 1.0
     assert metrics["citation_validity"] == 1.0
     assert metrics["stale_leakage"] == 0.0

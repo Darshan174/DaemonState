@@ -60,17 +60,20 @@ def test_dockerfile_copies_license_before_package_install():
     assert "LICENSE" in lines[copy_line_number]
 
 
-def test_readme_uses_session_references_without_embedded_images():
+def test_readme_is_short_plain_language_and_uses_the_product_logo():
     readme = README.read_text(encoding="utf-8")
     demo_doc = DEMO_DOC.read_text(encoding="utf-8")
 
-    assert "[Product Tour](#product-tour)" in readme
-    assert "019f23d0-0140-7291-aab1-5db5180e26f1" in readme
-    assert "019f2818-a451-7461-ab81-911ae5acf5d1" in readme
+    assert len(readme.splitlines()) <= 230
+    assert '<img src="frontend/public/favicon.svg"' in readme
+    assert "Founders and non-technical users" in readme
+    assert "Developers" in readme
+    assert "task-specific files to inspect" in readme
+    assert "does **not** yet contain evidence of model parity" in " ".join(readme.split())
     assert "![" not in readme
     assert "docs/assets/board-inspector-demo.jpg" not in readme
     assert "docs/assets/query-trace-demo.jpg" not in readme
-    assert "[Demo Walkthrough](docs/demo.md)" in readme
+    assert "[Demo walkthrough](docs/demo.md)" in readme
     assert BOARD_DEMO_IMAGE.is_file()
     assert BOARD_DEMO_IMAGE.stat().st_size > 10_000
     assert QUERY_DEMO_IMAGE.is_file()

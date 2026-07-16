@@ -92,9 +92,74 @@ def build_arg_parser() -> argparse.ArgumentParser:
     repo_watch_parser.set_defaults(func=run_repo)
 
     eval_parser = subparsers.add_parser("eval", help="Run local quality evals.")
-    eval_parser.add_argument("suite", choices=["extraction"], help="Eval suite to run")
+    eval_parser.add_argument(
+        "suite", choices=["extraction", "harness"], help="Eval suite to run"
+    )
+    eval_parser.add_argument(
+        "--input",
+        default=None,
+        help="JSON experiment rows for the harness paired evaluator",
+    )
+    eval_parser.add_argument(
+        "--minimum-directional-tasks",
+        type=int,
+        default=10,
+        help="Minimum complete task triplets before reporting a directional result",
+    )
     eval_parser.add_argument("--json", action="store_true", dest="json_output")
     eval_parser.set_defaults(func=run_eval)
+
+    harness_parser = subparsers.add_parser(
+        "harness",
+        help="Wrap an explicit local coding-agent command and measure observed outcomes.",
+    )
+    harness_subparsers = harness_parser.add_subparsers(
+        dest="harness_command", required=True
+    )
+    harness_run_parser = harness_subparsers.add_parser(
+        "run",
+        help="Compile context, run one explicit worker command, and preserve evidence.",
+        epilog=(
+            "Worker syntax: append `-- executable arg ...`. An exact "
+            "`{context_file}` argument is replaced with the generated brief path."
+        ),
+    )
+    harness_run_parser.add_argument("objective", help="Trusted coding task objective")
+    harness_run_parser.add_argument("--repo", default=".", help="Git repository path")
+    harness_run_parser.add_argument("--workspace-id", required=True)
+    harness_run_parser.add_argument(
+        "--target-model", default="general-coder", help="Worker model name or profile"
+    )
+    harness_run_parser.add_argument("--budget", type=int, default=None)
+    harness_run_parser.add_argument(
+        "--run-key",
+        default=None,
+        help="Optional workspace-level duplicate guard; generated when omitted",
+    )
+    harness_run_parser.add_argument(
+        "--tool", default="local-harness", help="Worker/tool label stored with the run"
+    )
+    harness_run_parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="Explicitly run required verification commands from the compiled pack",
+    )
+    harness_run_parser.add_argument(
+        "--output-limit-bytes", type=int, default=32_768
+    )
+    harness_run_parser.add_argument("--command-timeout", type=float, default=3_600.0)
+    harness_run_parser.add_argument(
+        "--verification-timeout", type=float, default=900.0
+    )
+    harness_run_parser.add_argument("--json", action="store_true", dest="json_output")
+    harness_run_parser.set_defaults(func=run_harness, worker_command=[])
+
+    harness_report_parser = harness_subparsers.add_parser(
+        "report", help="Summarize observed outcomes by model and model profile."
+    )
+    harness_report_parser.add_argument("--workspace-id", required=True)
+    harness_report_parser.add_argument("--json", action="store_true", dest="json_output")
+    harness_report_parser.set_defaults(func=run_harness)
 
     worker_parser = subparsers.add_parser("worker", help="Run local background workers.")
     worker_subparsers = worker_parser.add_subparsers(dest="worker_command", required=True)
@@ -433,6 +498,21 @@ def run_eval(args: argparse.Namespace) -> int:
     if args.suite == "extraction":
         from app.evals.extraction import run_extraction_eval
         report = run_extraction_eval()
+    elif args.suite == "harness":
+        from app.evals.harness_outcomes import evaluate_paired_experiment
+
+        if not args.input:
+            print("Error: --input is required for the harness eval", file=sys.stderr)
+            return 1
+        raw = json.loads(Path(args.input).expanduser().read_text(encoding="utf-8"))
+        rows = raw.get("rows") if isinstance(raw, dict) else raw
+        if not isinstance(rows, list):
+            print("Error: harness eval input must be a JSON list or {'rows': [...]}", file=sys.stderr)
+            return 1
+        report = evaluate_paired_experiment(
+            rows,
+            minimum_directional_tasks=args.minimum_directional_tasks,
+        )
     else:
         print(f"Unknown eval suite: {args.suite}", file=sys.stderr)
         return 1
@@ -440,7 +520,7 @@ def run_eval(args: argparse.Namespace) -> int:
     data = report.to_dict()
     if args.json_output:
         print(json.dumps(data, indent=2))
-    else:
+    elif args.suite == "extraction":
         print(
             f"{args.suite}: {data['passed_count']}/{data['case_count']} passed "
             f"({data['pass_rate']:.0%})"
@@ -459,7 +539,171 @@ def run_eval(args: argparse.Namespace) -> int:
             )
             for problem in problems:
                 print(f"    - {problem}")
-    return 0 if data["failed_count"] == 0 else 1
+    else:
+        print(
+            f"harness: paired_tasks={data['task_count']} "
+            f"claim_status={data['claim_status']}"
+        )
+        for condition in data["conditions"]:
+            print(
+                f"  {condition['label']}: solved={condition['solved_count']}/"
+                f"{condition['task_count']} ({condition['solve_rate']:.0%})"
+            )
+    if args.suite == "extraction":
+        return 0 if data["failed_count"] == 0 else 1
+    return 0
+
+
+def run_harness(args: argparse.Namespace) -> int:
+    import asyncio
+
+    if args.harness_command == "report":
+        try:
+            data = asyncio.run(_harness_outcome_report(args))
+        except Exception as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        if args.json_output:
+            print(json.dumps(data, indent=2))
+        else:
+            print(
+                f"harness outcomes: observed_runs={data['observed_runs']} "
+                f"groups={len(data['groups'])}"
+            )
+            for group in data["groups"]:
+                print(
+                    f"  {group['model']} / {group['model_profile']}: "
+                    f"verified={group['verified_successful_runs']}/"
+                    f"{group['observed_runs']}"
+                )
+        return 0
+
+    worker_command = list(args.worker_command or [])
+    if worker_command and worker_command[0] == "--":
+        worker_command = worker_command[1:]
+    if not worker_command:
+        print("Error: provide an explicit worker command after `--`", file=sys.stderr)
+        return 1
+    try:
+        data = asyncio.run(_run_local_harness(args, worker_command))
+    except KeyboardInterrupt:
+        print("harness run interrupted", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json_output:
+        print(json.dumps(data, indent=2))
+    else:
+        print(f"harness run: status={data['status']} run_id={data['run_id']}")
+        print(f"context_pack_id: {data['context_pack_id']}")
+        print(f"changed_files: {len(data['changed_files'])}")
+        if not args.verify:
+            print("verification: not executed (pass --verify to authorize it)")
+        else:
+            print(f"verification: {len(data['verification_results'])} command(s) executed")
+    return 0 if data["status"] == "completed" else 1
+
+
+async def _run_local_harness(
+    args: argparse.Namespace,
+    worker_command: list[str],
+) -> dict:
+    import asyncio
+    from uuid import UUID, uuid4
+
+    from sqlalchemy import select
+
+    from app.database import AsyncSessionLocal
+    from app.models import AgentRun, Workspace
+    from app.services.context_compiler import ContextCompiler
+    from app.services.local_harness import LocalHarnessRunner
+    from app.time import utc_now
+
+    workspace_id = UUID(str(args.workspace_id))
+    run_key = str(args.run_key or f"local:{uuid4()}")
+    if not run_key.strip() or len(run_key) > 255:
+        raise ValueError("run_key must contain 1 to 255 characters")
+
+    async with AsyncSessionLocal() as session:
+        if await session.get(Workspace, workspace_id) is None:
+            raise ValueError(f"Workspace not found: {workspace_id}")
+        pack_result = await ContextCompiler(session).compile_context_pack(
+            args.objective,
+            workspace_id=workspace_id,
+            repo_path=args.repo,
+            target_model=args.target_model,
+            token_budget=args.budget,
+            persist=True,
+        )
+        if not pack_result.context_pack_id:
+            raise RuntimeError("context compiler returned no durable context_pack_id")
+        pack_id = UUID(str(pack_result.context_pack_id))
+        existing = await session.scalar(
+            select(AgentRun).where(
+                AgentRun.workspace_id == workspace_id,
+                AgentRun.run_key == run_key,
+            )
+        )
+        if existing is not None:
+            raise ValueError(
+                f"run_key {run_key!r} already exists in this workspace; "
+                "use a new key for a new execution"
+            )
+        repo_state = pack_result.manifest.get("repo_state") or {}
+        run = AgentRun(
+            workspace_id=workspace_id,
+            context_pack_id=pack_id,
+            run_key=run_key,
+            tool=str(args.tool or "local-harness"),
+            model=str(args.target_model),
+            objective=str(args.objective),
+            branch=repo_state.get("branch"),
+            base_commit=repo_state.get("head_commit") or repo_state.get("base_commit"),
+            started_at=utc_now(),
+            status="running",
+        )
+        session.add(run)
+        await session.commit()
+        try:
+            result = await LocalHarnessRunner(
+                session,
+                output_limit_bytes=args.output_limit_bytes,
+                command_timeout_seconds=args.command_timeout,
+                verification_timeout_seconds=args.verification_timeout,
+            ).run(
+                context_pack_id=pack_id,
+                run_id=run.id,
+                repo_path=args.repo,
+                command=worker_command,
+                verify=bool(args.verify),
+            )
+        except BaseException:
+            run.status = "failed"
+            run.ended_at = utc_now()
+            await asyncio.shield(session.commit())
+            raise
+        return {
+            **result.to_dict(),
+            "target_model": args.target_model,
+            "model_profile": pack_result.manifest.get("target_model", {}).get("profile"),
+            "execution_policy": pack_result.manifest.get("execution_policy"),
+            "verification_authorized": bool(args.verify),
+        }
+
+
+async def _harness_outcome_report(args: argparse.Namespace) -> dict:
+    from uuid import UUID
+
+    from app.database import AsyncSessionLocal
+    from app.services.harness_outcomes import HarnessOutcomeService
+
+    async with AsyncSessionLocal() as session:
+        report = await HarnessOutcomeService(session).summarize(
+            workspace_id=UUID(str(args.workspace_id))
+        )
+        return report.to_dict()
 
 
 def run_sync_worker(args: argparse.Namespace) -> int:
@@ -624,12 +868,28 @@ def _run_alembic_command(name: str, config, revision: str | None = None) -> None
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
-    args = parser.parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    parse_argv, worker_command = _split_harness_worker_argv(raw_argv)
+    args = parser.parse_args(parse_argv)
+    if worker_command is not None:
+        args.worker_command = worker_command
     try:
         return int(args.func(args))
     except (APIError, Exception) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+
+
+def _split_harness_worker_argv(
+    argv: list[str],
+) -> tuple[list[str], list[str] | None]:
+    if argv[:2] != ["harness", "run"]:
+        return argv, None
+    try:
+        separator = argv.index("--", 2)
+    except ValueError:
+        return argv, []
+    return argv[:separator], argv[separator + 1 :]
 
 
 if __name__ == "__main__":
