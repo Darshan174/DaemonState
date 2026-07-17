@@ -56,6 +56,7 @@ class HarnessOutcomeGroup:
 class HarnessOutcomeReport:
     workspace_id: UUID
     groups: tuple[HarnessOutcomeGroup, ...]
+    runs: tuple["_RunOutcome", ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -63,6 +64,7 @@ class HarnessOutcomeReport:
             "workspace_id": str(self.workspace_id),
             "observed_runs": sum(group.observed_runs for group in self.groups),
             "groups": [group.to_dict() for group in self.groups],
+            "runs": [run.to_dict() for run in self.runs],
             "measurement_note": (
                 "Only local-harness-observed completion and verification evidence can "
                 "produce verified success, and any recorded unresolved blocker prevents "
@@ -87,18 +89,57 @@ class _RunOutcome:
     run_id: str
     model: str
     model_profile: str
+    objective: str | None
+    tool: str | None
+    status: str
     completed: bool
     verified_success: bool
     failed_verification: bool
     unresolved_blocker: bool
     duration_seconds: float | None
+    started_at: datetime | None
+    ended_at: datetime | None
+    outcome_summary: str | None
+    changed_files: tuple[str, ...]
+    verification_observed: int
+    verification_passed: int
+    verification_failed: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "model": self.model,
+            "model_profile": self.model_profile,
+            "objective": self.objective,
+            "tool": self.tool,
+            "status": self.status,
+            "completed": self.completed,
+            "verified_success": self.verified_success,
+            "failed_verification": self.failed_verification,
+            "unresolved_blocker": self.unresolved_blocker,
+            "duration_seconds": self.duration_seconds,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "ended_at": self.ended_at.isoformat() if self.ended_at else None,
+            "outcome_summary": self.outcome_summary,
+            "changed_files": list(self.changed_files),
+            "verification": {
+                "observed": self.verification_observed,
+                "passed": self.verification_passed,
+                "failed": self.verification_failed,
+            },
+        }
 
 
 class HarnessOutcomeService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def summarize(self, *, workspace_id: UUID) -> HarnessOutcomeReport:
+    async def summarize(
+        self,
+        *,
+        workspace_id: UUID,
+        accessible_source_ids: set[UUID] | None = None,
+    ) -> HarnessOutcomeReport:
         runs = list(await self.session.scalars(
             select(AgentRun)
             .options(
@@ -111,21 +152,50 @@ class HarnessOutcomeService:
             .order_by(AgentRun.started_at, AgentRun.id)
         ))
         grouped: dict[tuple[str, str], list[_RunOutcome]] = {}
+        observed_outcomes: list[_RunOutcome] = []
         for run in runs:
-            outcome = _evaluate_run(run)
+            observations = (
+                [
+                    item for item in run.observations
+                    if item.source_document_id in accessible_source_ids
+                ]
+                if accessible_source_ids is not None
+                else run.observations
+            )
+            outcome = _evaluate_run(run, observations=observations)
             if outcome is None:
                 continue
+            observed_outcomes.append(outcome)
             grouped.setdefault((outcome.model, outcome.model_profile), []).append(outcome)
 
         groups = tuple(
             _aggregate_group(model=model, model_profile=profile, outcomes=outcomes)
             for (model, profile), outcomes in sorted(grouped.items())
         )
-        return HarnessOutcomeReport(workspace_id=workspace_id, groups=groups)
+        recent = tuple(sorted(
+            observed_outcomes,
+            key=lambda item: (
+                item.started_at or datetime.min,
+                item.run_id,
+            ),
+            reverse=True,
+        ))
+        return HarnessOutcomeReport(
+            workspace_id=workspace_id,
+            groups=groups,
+            runs=recent,
+        )
 
 
-def _evaluate_run(run: AgentRun) -> _RunOutcome | None:
-    observations = sorted(run.observations, key=_observation_sort_key)
+def _evaluate_run(
+    run: AgentRun,
+    *,
+    observations: Iterable[RunObservation] | None = None,
+) -> _RunOutcome | None:
+    observations = sorted(
+        run.observations if observations is None else observations,
+        key=_observation_sort_key,
+    )
     harness_observations = [
         item for item in observations if _is_local_harness_observation(item)
     ]
@@ -181,15 +251,41 @@ def _evaluate_run(run: AgentRun) -> _RunOutcome | None:
     pack = run.context_pack
     model = _normalized_text(run.model) or "unreported"
     model_profile = _normalized_text(pack.model_profile if pack else None) or "unreported"
+    verification_items = list(latest_evidence.values())
+    changed_files = _observation_files(latest_outcome)
+    if not changed_files:
+        latest_patch = next(
+            (
+                item for item in reversed(harness_observations)
+                if item.event_type == "patch_summary"
+            ),
+            None,
+        )
+        changed_files = _observation_files(latest_patch)
+    outcome_payload = _payload(latest_outcome) if latest_outcome is not None else {}
     return _RunOutcome(
         run_id=str(run.id),
         model=model,
         model_profile=model_profile,
+        objective=_normalized_text(run.objective or (pack.objective if pack else None)),
+        tool=_normalized_text(run.tool),
+        status=_normalized_text(run.status) or "unknown",
         completed=completed,
         verified_success=verified_success,
         failed_verification=failed_verification,
         unresolved_blocker=unresolved_blocker,
         duration_seconds=_duration_seconds(run),
+        started_at=run.started_at,
+        ended_at=run.ended_at,
+        outcome_summary=_normalized_text(
+            outcome_payload.get("summary")
+            or outcome_payload.get("content")
+            or (latest_outcome.content if latest_outcome is not None else None)
+        ),
+        changed_files=changed_files,
+        verification_observed=len(verification_items),
+        verification_passed=sum(item.passed for item in verification_items),
+        verification_failed=sum(not item.passed for item in verification_items),
     )
 
 
@@ -376,6 +472,22 @@ def _payload(observation: RunObservation) -> dict[str, Any]:
     payload.setdefault("command", observation.command)
     payload.setdefault("exit_code", observation.exit_code)
     return payload
+
+
+def _observation_files(observation: RunObservation | None) -> tuple[str, ...]:
+    if observation is None:
+        return ()
+    try:
+        decoded = json.loads(observation.files_json or "[]")
+    except (TypeError, json.JSONDecodeError):
+        return ()
+    if not isinstance(decoded, list):
+        return ()
+    return tuple(sorted({
+        normalized
+        for value in decoded
+        if (normalized := _normalized_text(value)) is not None
+    }))
 
 
 def _is_local_harness_observation(observation: RunObservation) -> bool:

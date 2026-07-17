@@ -108,6 +108,7 @@ async def _observation(
         payload_json=json.dumps(payload, sort_keys=True),
         observed_at=BASE_TIME + timedelta(minutes=minute),
         content=payload.get("content"),
+        files_json=json.dumps(payload.get("files", [])),
         command=payload.get("command"),
         exit_code=payload.get("exit_code"),
     )
@@ -195,7 +196,11 @@ async def test_service_groups_only_structured_observed_outcomes(db_session):
         recovered,
         event_type="outcome",
         event_key="outcome-recovered",
-        payload={"status": "completed"},
+        payload={
+            "status": "completed",
+            "summary": "Authentication redirect fixed and verified.",
+            "files": ["app/auth.py", "tests/test_auth.py"],
+        },
         minute=7,
     )
 
@@ -316,8 +321,78 @@ async def test_service_groups_only_structured_observed_outcomes(db_session):
     }
     assert old_group["evidence"]["verified_successful_run_ids"] == [str(recovered.id)]
     assert old_group["evidence"]["failed_verification_run_ids"] == [str(failed.id)]
+    assert result["runs"][0]["run_id"] == str(incomplete.id)
+    recovered_result = next(
+        item for item in result["runs"] if item["run_id"] == str(recovered.id)
+    )
+    assert recovered_result["verified_success"] is True
+    assert recovered_result["outcome_summary"] == "Authentication redirect fixed and verified."
+    assert recovered_result["changed_files"] == ["app/auth.py", "tests/test_auth.py"]
+    assert recovered_result["verification"] == {
+        "observed": 2,
+        "passed": 1,
+        "failed": 1,
+    }
     assert "parity" not in result
     json.dumps(result)
+
+    restricted = (await HarnessOutcomeService(db_session).summarize(
+        workspace_id=workspace.id,
+        accessible_source_ids=set(),
+    )).to_dict()
+    assert restricted["observed_runs"] == 0
+    assert restricted["runs"] == []
+
+
+async def test_run_outcomes_api_returns_workspace_scoped_observed_runs(
+    client,
+    db_session,
+):
+    workspace = Workspace(id=uuid4(), name="Run API", slug=f"run-api-{uuid4()}")
+    db_session.add(workspace)
+    await db_session.flush()
+    pack = await _pack(
+        db_session,
+        workspace,
+        target_model="older-model",
+        model_profile="small_coder_model",
+    )
+    run = await _run(
+        db_session,
+        workspace,
+        pack,
+        model="older-model",
+        run_key="api-run",
+    )
+    await _observation(
+        db_session,
+        run,
+        event_type="verification",
+        event_key="api-verification",
+        payload={"requirement_id": "V1", "command": COMMAND, "exit_code": 0},
+        minute=2,
+    )
+    await _observation(
+        db_session,
+        run,
+        event_type="outcome",
+        event_key="api-outcome",
+        payload={"status": "completed", "summary": "Observed API run completed."},
+        minute=3,
+    )
+    await db_session.commit()
+
+    response = await client.get(
+        "/api/context/run-outcomes",
+        params={"workspace_id": str(workspace.id)},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["schema_version"] == "harness_outcomes.v1"
+    assert payload["observed_runs"] == 1
+    assert payload["runs"][0]["run_id"] == str(run.id)
+    assert payload["runs"][0]["verified_success"] is True
 
 
 def _evidence(*, completed: bool, passed: bool, blockers: int, evidence_id: str):

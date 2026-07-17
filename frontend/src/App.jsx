@@ -5,14 +5,20 @@ import CeIcon from "./components/CeIcon";
 import WorkspaceSwitcher from "./components/WorkspaceSwitcher";
 import { useWorkspaces } from "./api/hooks";
 import {
+  Activity,
   Cable,
   Database,
-  Map,
+  PackageCheck,
   PanelLeftClose,
   PanelLeftOpen,
+  PlayCircle,
+  Waypoints,
 } from "lucide-react";
 
 const ContextMapPage = lazy(() => import("./pages/ContextMapPage"));
+const NowPage        = lazy(() => import("./pages/NowPage"));
+const PreparePage    = lazy(() => import("./pages/PreparePage"));
+const RunsPage       = lazy(() => import("./pages/RunsPage"));
 const QueryView    = lazy(() => import("./pages/QueryView"));
 const SourceManager = lazy(() => import("./pages/SourceManager"));
 const Landing      = lazy(() => import("./pages/Landing"));
@@ -20,7 +26,10 @@ const Connectors   = lazy(() => import("./pages/Connectors"));
 const Changes      = lazy(() => import("./pages/Changes"));
 
 const NAV_ITEMS = [
-  { to: "/app", label: "Project", icon: Map, end: true },
+  { to: "/app", label: "Now", icon: Activity, end: true },
+  { to: "/app/prepare", label: "Prepare", icon: PackageCheck },
+  { to: "/app/runs", label: "Runs", icon: PlayCircle },
+  { to: "/app/explain", label: "Explain", icon: Waypoints },
   { to: "/app/sources", label: "Sources", icon: Database },
   { to: "/app/connectors", label: "Connectors", icon: Cable },
 ];
@@ -50,7 +59,7 @@ export default function App() {
 
 function AdminShell() {
   const location = useLocation();
-  const isProjectPage = location.pathname === "/app" || location.pathname === "/app/";
+  const isProjectPage = location.pathname === "/app/explain" || location.pathname === "/app/explain/";
   const { data: workspaces } = useWorkspaces();
   const showWorkspaceSwitcher = (workspaces?.length ?? 0) > 1;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
@@ -134,9 +143,12 @@ function AdminShell() {
         ) : null}
         <Suspense fallback={<PageLoader />}>
           <Routes>
-            <Route index                                  element={<ContextMapPage />} />
+            <Route index                                  element={<NowPage />} />
+            <Route path="prepare"                         element={<PreparePage />} />
+            <Route path="runs"                            element={<RunsPage />} />
+            <Route path="explain"                         element={<ContextMapPage />} />
             <Route path="dashboard"                       element={<Navigate to="/app" replace />} />
-            <Route path="graph"                           element={<Navigate to="/app" replace />} />
+            <Route path="graph"                           element={<Navigate to="/app/explain" replace />} />
             <Route path="query"                           element={<QueryView />} />
             <Route path="sources"                         element={<SourceManager />} />
             <Route path="agents"                          element={<Navigate to="/app" replace />} />

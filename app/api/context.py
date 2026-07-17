@@ -35,6 +35,7 @@ from app.services.founder_oversight import (
     FounderOversightNotFoundError,
     FounderOversightService,
 )
+from app.services.harness_outcomes import HarnessOutcomeService
 from app.services.open_loops import (
     OpenLoopActionError,
     OpenLoopNotFoundError,
@@ -385,6 +386,26 @@ async def get_run_timeline(
             status_code=404,
             detail={"code": "focus_not_found", "message": str(exc)},
         ) from exc
+
+
+@router.get("/context/run-outcomes")
+async def get_run_outcomes(
+    workspace_id: UUID,
+    session: AsyncSession = Depends(get_db_session),
+    access_scope: AccessScope = Depends(get_access_scope),
+) -> dict[str, Any]:
+    if not access_scope.allows_workspace(workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    accessible_source_ids = set(await session.scalars(
+        select(SourceDocument.id).where(
+            source_access_predicate(access_scope, workspace_id=workspace_id)
+        )
+    ))
+    report = await HarnessOutcomeService(session).summarize(
+        workspace_id=workspace_id,
+        accessible_source_ids=accessible_source_ids,
+    )
+    return report.to_dict()
 
 
 @router.post("/context/prepare", response_model=ContextPrepareResponse)

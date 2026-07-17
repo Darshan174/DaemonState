@@ -138,6 +138,12 @@ describe("context digest adapter", () => {
     expect(cleanDisplayText(`Blocker: data:image/png;base64,${"B".repeat(200)} OAuth docs are missing`)).toBe(
       "OAuth docs are missing",
     );
+    expect(cleanDisplayText("Graph-aware multi-hop retrieval is source-backed")).toBe(
+      "Graph-aware multi-hop retrieval is source-backed",
+    );
+    expect(cleanDisplayText("old model - same task - verified result")).toBe(
+      "old model — same task — verified result",
+    );
   });
 
   it("projects typed records into stable graph lanes and preserves only visible links", () => {
