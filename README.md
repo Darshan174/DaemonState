@@ -23,6 +23,13 @@ part of every session rebuilding context the project already has.
 A larger context window does not fix this by itself. More text can mean more old
 plans, duplicated facts, and irrelevant history.
 
+## Who it is for
+
+Context Engine is built first for solo founders and tiny teams using coding
+agents every day. Founders and non-technical users get a readable view of the
+work without living in terminal logs. Developers get the exact sources, files,
+checks, and run evidence behind that view.
+
 ## What Context Engine changes
 
 Context Engine turns your repository, issues, pull requests, agent sessions,
