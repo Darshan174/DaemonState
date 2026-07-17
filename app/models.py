@@ -65,6 +65,7 @@ class Workspace(Base):
     verified_playbooks: Mapped[list["VerifiedPlaybook"]] = orm_relationship(
         back_populates="workspace"
     )
+    goals: Mapped[list["WorkspaceGoal"]] = orm_relationship(back_populates="workspace")
     unresolved_relationships: Mapped[list["UnresolvedRelationship"]] = orm_relationship(
         back_populates="workspace"
     )
@@ -821,6 +822,50 @@ class ContextPack(Base):
     workspace: Mapped["Workspace | None"] = orm_relationship(back_populates="context_packs")
     items: Mapped[list["ContextPackItem"]] = orm_relationship(back_populates="context_pack")
     agent_runs: Mapped[list["AgentRun"]] = orm_relationship(back_populates="context_pack")
+
+
+class WorkspaceGoal(Base):
+    """One explicit user-selected workspace objective with durable provenance."""
+
+    __tablename__ = "workspace_goals"
+    __table_args__ = (
+        Index("ix_workspace_goals_workspace_selected", "workspace_id", "selected_at"),
+        Index("ix_workspace_goals_component", "component_id"),
+        Index(
+            "uq_workspace_goals_one_active",
+            "workspace_id",
+            unique=True,
+            sqlite_where=text("status = 'active'"),
+            postgresql_where=text("status = 'active'"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    component_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("components.id"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    source_kind: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="user_selected"
+    )
+    source_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    selected_by: Mapped[str] = mapped_column(
+        String(255), nullable=False, default="local_user"
+    )
+    selected_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, server_default=func.now()
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    workspace: Mapped["Workspace"] = orm_relationship(back_populates="goals")
+    component: Mapped["Component | None"] = orm_relationship()
 
 
 class ContextPackItem(Base):

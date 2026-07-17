@@ -33,10 +33,44 @@ async def run_migrations(conn: AsyncConnection) -> None:
     await _migrate_pgvector_search_schema(conn)
     await _migrate_postgres_text_search_schema(conn)
     await _migrate_founder_oversight_schema(conn)
+    await _migrate_workspace_goals_schema(conn)
     await _migrate_deterministic_project_compiler_schema(conn)
     await _migrate_truth_access_schema(conn)
     await _migrate_learning_loop_schema(conn)
     await _migrate_query_and_sync_indexes(conn)
+
+
+async def _migrate_workspace_goals_schema(conn: AsyncConnection) -> None:
+    """Create explicit workspace-goal history without inferring goals from packs."""
+    timestamp = "TIMESTAMP" if conn.dialect.name == "postgresql" else "DATETIME"
+    uuid_type = "UUID" if conn.dialect.name == "postgresql" else "CHAR(32)"
+    await conn.execute(text(f"""
+        CREATE TABLE IF NOT EXISTS workspace_goals (
+            id {uuid_type} PRIMARY KEY,
+            workspace_id {uuid_type} NOT NULL REFERENCES workspaces(id),
+            title TEXT NOT NULL,
+            component_id {uuid_type} REFERENCES components(id),
+            status VARCHAR(32) NOT NULL DEFAULT 'active',
+            source_kind VARCHAR(32) NOT NULL DEFAULT 'user_selected',
+            source_id VARCHAR(255),
+            selected_by VARCHAR(255) NOT NULL DEFAULT 'local_user',
+            selected_at {timestamp} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            ended_at {timestamp},
+            created_at {timestamp} NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_workspace_goals_workspace_selected "
+        "ON workspace_goals (workspace_id, selected_at)"
+    ))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_workspace_goals_component "
+        "ON workspace_goals (component_id)"
+    ))
+    await conn.execute(text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_workspace_goals_one_active "
+        "ON workspace_goals (workspace_id) WHERE status = 'active'"
+    ))
 
 
 async def _migrate_learning_loop_schema(conn: AsyncConnection) -> None:

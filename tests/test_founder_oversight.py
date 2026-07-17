@@ -622,6 +622,12 @@ async def test_timeline_api_and_digest_expose_latest_focused_oversight(client, d
         "app/services/founder_oversight.py"
     )
 
+    selected = await client.put(
+        f"/api/workspaces/{workspace.id}/current-goal",
+        json={"title": focus.name, "component_id": str(focus.id)},
+    )
+    assert selected.status_code == 200
+
     digest_response = await client.get(
         "/api/context/digest", params={"workspace_id": str(workspace.id)}
     )
