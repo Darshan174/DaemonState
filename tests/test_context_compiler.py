@@ -46,6 +46,9 @@ def test_parse_goal_extracts_files_and_constraints():
     assert frame.file_hints == ["app/sync/github.py"]
     assert any("connector status" in constraint.lower() for constraint in frame.constraints)
 
+    readme_frame = parse_goal("[DOCS] Rewrite README and current repo docs")
+    assert readme_frame.file_hints == ["README"]
+
 
 async def test_compile_pack_persists_manifest_markdown_and_items(db_session, tmp_path):
     (tmp_path / "app").mkdir()
