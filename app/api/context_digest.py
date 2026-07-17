@@ -42,6 +42,7 @@ from app.services.open_loops import OpenLoopService, open_loop_to_dict
 from app.services.playbooks import PlaybookService
 from app.services.session_summary import derive_session_topic
 from app.services.project_scope import workspace_references, workspace_relevance
+from app.services.workspace_goals import resolve_current_goal
 from app.taxonomy import relationship_display_label, source_type_display
 from app.time import utc_now
 
@@ -163,6 +164,7 @@ class ContextCard(BaseModel):
     confidence: float
     authority_weight: float
     attention_score: int
+    attention_required: bool
     focus_eligible: bool
     focus_ineligible_reason: str | None = None
     source_ids: list[str]
@@ -216,6 +218,7 @@ class ContextDigest(BaseModel):
     clusters: list[ContextCluster]
     links: list[DigestLink]
     recommended_actions: list[RecommendedAction]
+    current_goal: dict | None
     oversight: dict
     open_loops: dict
     playbooks: dict
@@ -424,6 +427,15 @@ async def get_context_digest(
             item for item in await PlaybookService(session).list(workspace_id=workspace_uuid)
             if _id_list_accessible(item.source_document_ids_json, accessible_source_ids)
         ]
+    current_goal = (
+        await resolve_current_goal(
+            session,
+            workspace_id=workspace_uuid,
+            allowed_component_ids=comp_ids,
+        )
+        if workspace_uuid is not None
+        else None
+    )
     return ContextDigest(
         workspace_id=workspace_id_str,
         generated_at=utc_now(),
@@ -455,8 +467,12 @@ async def get_context_digest(
         clusters=_clusters(project_cards),
         links=links,
         recommended_actions=_recommended_actions(project_cards, health),
+        current_goal=current_goal,
         oversight=await _digest_oversight(
-            session, workspace_id_str, allowed_component_ids=comp_ids
+            session,
+            workspace_id_str,
+            current_goal=current_goal,
+            allowed_component_ids=comp_ids,
         ),
         open_loops={
             "open_count": sum(item.status == "open" for item in open_loop_items),
@@ -517,6 +533,7 @@ async def _digest_oversight(
     session: AsyncSession,
     workspace_id: str | None,
     *,
+    current_goal: dict | None,
     allowed_component_ids: set[UUID],
 ) -> dict:
     empty = {
@@ -525,35 +542,39 @@ async def _digest_oversight(
         "latest_outcome": None,
         "attention": {"blocked": 0, "unverified": 0, "stale": 0},
     }
-    if not workspace_id:
+    if not workspace_id or not current_goal:
         return empty
     workspace_uuid = UUID(workspace_id)
-    pack = await session.scalar(
-        select(ContextPack)
-        .where(
-            ContextPack.workspace_id == workspace_uuid,
-            ContextPack.focus_component_id.is_not(None),
-            ContextPack.objective_origin != "project_snapshot",
-            ContextPack.focus_component_id.in_(allowed_component_ids),
-        )
-        .order_by(ContextPack.created_at.desc(), ContextPack.id.desc())
-        .limit(1)
-    )
-    if pack is None or pack.focus_component_id is None:
+    component_value = current_goal.get("component_id")
+    if not component_value:
+        return empty
+    try:
+        component_id = UUID(str(component_value))
+    except (TypeError, ValueError):
+        return empty
+    if component_id not in allowed_component_ids:
         return empty
     try:
         timeline = await FounderOversightService(session).build_timeline(
             workspace_id=workspace_uuid,
-            focus_component_id=pack.focus_component_id,
+            focus_component_id=component_id,
         )
     except FounderOversightNotFoundError:
         return empty
     focus = dict(timeline.get("focus") or {})
+    context_pack_id = next(
+        (
+            run.get("context_pack_id")
+            for run in timeline.get("runs") or []
+            if run.get("context_pack_id")
+        ),
+        None,
+    )
     return {
         "current_focus": {
             "component_id": focus.get("component_id"),
-            "title": focus.get("title") or pack.objective,
-            "context_pack_id": str(pack.id),
+            "title": focus.get("title") or current_goal.get("title"),
+            "context_pack_id": context_pack_id,
         },
         "state": timeline.get("state"),
         "latest_outcome": timeline.get("latest_outcome"),
@@ -1116,6 +1137,7 @@ def _component_to_card(
         confidence=round(float(component.confidence or 0), 3),
         authority_weight=round(float(component.authority_weight or 0), 3),
         attention_score=score,
+        attention_required=_card_needs_attention(category, status),
         focus_eligible=focus_eligible,
         focus_ineligible_reason=focus_ineligible_reason,
         source_ids=source_ids,
@@ -1436,10 +1458,13 @@ def _digest_health(cards: list[ContextCard]) -> DigestHealth:
 
 
 def _clusters(cards: list[ContextCard]) -> list[ContextCluster]:
-    attention = [
+    attention = [card for card in cards if _needs_attention(card)]
+    backlog = [
         card
         for card in cards
-        if card.status in {"blocked", "conflict", "needs_review", "stale"} or card.attention_score >= 70
+        if card.category in {"issue", "task"}
+        and card.status not in {"stale"}
+        and not _needs_attention(card)
     ]
     changed = sorted(cards, key=lambda card: card.updated_at or card.created_at or datetime.min, reverse=True)
     decisions = [card for card in cards if card.type == "decision"]
@@ -1463,6 +1488,12 @@ def _clusters(cards: list[ContextCard]) -> list[ContextCluster]:
             card_ids=[card.id for card in changed[:12]],
         ),
         ContextCluster(
+            id="backlog",
+            title="Backlog",
+            description="Open issues and tasks that are available but are not current work or urgent attention.",
+            card_ids=[card.id for card in backlog[:20]],
+        ),
+        ContextCluster(
             id="open_decisions",
             title="Open Decisions",
             description="Decisions and assumptions that constrain future work.",
@@ -1475,6 +1506,22 @@ def _clusters(cards: list[ContextCard]) -> list[ContextCluster]:
             card_ids=[card.id for card in handoff[:12]],
         ),
     ]
+
+
+def _needs_attention(card: ContextCard) -> bool:
+    return card.attention_required
+
+
+def _card_needs_attention(category: CardCategory, status: CardStatus) -> bool:
+    if status in {"blocked", "conflict", "stale"}:
+        return True
+    if category in {"blocker", "risk"}:
+        return True
+    if category == "document_finding" and status == "needs_review":
+        return True
+    if category == "decision" and status == "needs_review":
+        return True
+    return False
 
 
 def _recommended_actions(cards: list[ContextCard], health: DigestHealth) -> list[RecommendedAction]:

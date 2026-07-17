@@ -140,6 +140,7 @@ async def upsert_claim_for_fact(
         valid_from=valid_from,
         observed_at=observed_at,
         validity_basis=validity_basis,
+        created_at=now,
     )
     session.add(revision)
     try:
@@ -267,6 +268,7 @@ async def append_claim_revision(
         valid_from=effective_valid_from,
         observed_at=effective_observed_at,
         validity_basis=effective_basis,
+        created_at=now,
     )
     session.add(revision)
     await session.flush()

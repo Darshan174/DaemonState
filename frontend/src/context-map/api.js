@@ -17,6 +17,22 @@ export function useContextDigest(workspaceId) {
   });
 }
 
+export function useSetCurrentGoal(workspaceId) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (goal) => api.put(`/workspaces/${workspaceId}/current-goal`, goal),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["context-digest", workspaceId] }),
+  });
+}
+
+export function useClearCurrentGoal(workspaceId) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.delete(`/workspaces/${workspaceId}/current-goal`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["context-digest", workspaceId] }),
+  });
+}
+
 function runTimelinePath(workspaceId, focusComponentId) {
   const params = new URLSearchParams({
     workspace_id: workspaceId,

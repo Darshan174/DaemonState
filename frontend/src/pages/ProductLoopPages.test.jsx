@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
   digest: { data: null, isLoading: false, isError: false },
   prepare: { data: null, isPending: false, isError: false, mutateAsync: vi.fn() },
   outcomes: { data: null, isLoading: false, isError: false },
+  setGoal: { isPending: false, error: null, mutateAsync: vi.fn() },
+  clearGoal: { isPending: false, error: null, mutateAsync: vi.fn() },
 }));
 
 vi.mock("./useProductWorkspace", () => ({
@@ -26,6 +28,8 @@ vi.mock("./useProductWorkspace", () => ({
 
 vi.mock("../context-map/api", () => ({
   useContextDigest: () => mocks.digest,
+  useSetCurrentGoal: () => mocks.setGoal,
+  useClearCurrentGoal: () => mocks.clearGoal,
   usePrepareContext: () => mocks.prepare,
   useRunOutcomes: () => mocks.outcomes,
 }));
@@ -41,6 +45,12 @@ beforeEach(() => {
   mocks.outcomes.data = null;
   mocks.outcomes.isLoading = false;
   mocks.outcomes.isError = false;
+  mocks.setGoal.isPending = false;
+  mocks.setGoal.error = null;
+  mocks.setGoal.mutateAsync.mockReset().mockResolvedValue({});
+  mocks.clearGoal.isPending = false;
+  mocks.clearGoal.error = null;
+  mocks.clearGoal.mutateAsync.mockReset().mockResolvedValue(null);
 });
 
 describe("product loop pages", () => {
@@ -48,13 +58,22 @@ describe("product loop pages", () => {
     mocks.digest.data = {
       generated_at: "2026-07-17T10:00:00Z",
       scope: { included_source_count: 7, project_paths: ["/workspace/context-engine"] },
+      current_goal: {
+        component_id: "task-1",
+        title: "Harden the model adapter",
+        source_kind: "user_selected",
+        selected_by: "local",
+        selected_at: "2026-07-17T09:00:00Z",
+        can_clear: true,
+      },
       oversight: {
         current_focus: { component_id: "task-1", title: "Harden the model adapter" },
         latest_outcome: { summary: "Compiler tests passed.", observed_at: "2026-07-17T09:30:00Z" },
       },
       cards: [
-        { id: "component:task-1", category: "task", title: "Harden the model adapter", summary: "Implement capability-aware rendering.", next_action: "Add provider capability probing." },
-        { id: "risk-1", category: "risk", status: "active", title: "Model identity is self-reported", summary: "Provider identity is not independently verified.", attention_score: 95 },
+        { id: "component:task-1", category: "task", title: "Harden the model adapter", summary: "Implement capability-aware rendering.", next_action: "Add provider capability probing.", focus_eligible: true, attention_required: false },
+        { id: "risk-1", category: "risk", status: "active", title: "Model identity is self-reported", summary: "Provider identity is not independently verified.", attention_score: 95, attention_required: true },
+        { id: "component:issue-2", category: "issue", status: "needs_review", title: "Issue #2: Add hybrid retrieval", summary: "Backlog work.", attention_score: 60, focus_eligible: true, attention_required: false },
       ],
     };
 
@@ -62,8 +81,42 @@ describe("product loop pages", () => {
 
     expect(screen.getByRole("heading", { name: "Harden the model adapter" })).toBeInTheDocument();
     expect(screen.getByText(/Model identity is self\s*-\s*reported/)).toBeInTheDocument();
+    expect(screen.getByText("1 visible")).toBeInTheDocument();
+    expect(screen.getAllByText(/Issue 2: Add hybrid retrieval/).length).toBeGreaterThan(0);
     expect(screen.getByRole("link", { name: /Prepare task/ })).toHaveAttribute("href", "/app/prepare?objective=Harden%20the%20model%20adapter");
     expect(screen.getByRole("link", { name: "Explain project" })).toHaveAttribute("href", "/app/explain");
+  });
+
+  it("requires an explicit choice before a backlog issue becomes current", async () => {
+    mocks.digest.data = {
+      generated_at: "2026-07-17T10:00:00Z",
+      scope: { included_source_count: 2, project_paths: ["/workspace/context-engine"] },
+      current_goal: null,
+      oversight: {},
+      cards: [{
+        id: "component:issue-2",
+        category: "issue",
+        status: "needs_review",
+        title: "Issue #2: Add hybrid retrieval",
+        summary: "Backlog work.",
+        attention_score: 60,
+        focus_eligible: true,
+        attention_required: false,
+        source_snapshot: { source_document_id: "source-2" },
+      }],
+    };
+
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+
+    expect(screen.getByRole("heading", { name: "No current goal selected." })).toBeInTheDocument();
+    expect(screen.getByText("0 visible")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Make current" }));
+    await waitFor(() => expect(mocks.setGoal.mutateAsync).toHaveBeenCalledWith({
+      title: "Issue 2: Add hybrid retrieval",
+      component_id: "issue-2",
+      source_kind: "suggested_card",
+      source_id: "source-2",
+    }));
   });
 
   it("shows compiler selection, exclusions, model profile, and the exact brief", async () => {
