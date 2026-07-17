@@ -318,6 +318,13 @@ async def test_incremental_index_preserves_unchanged_ids_and_builds_exact_edges(
     service_file = next(
         item for item in affected["files"] if item["path"] == "app/service.py"
     )
+    assert service_file["match_strength"] == "strong_match"
+    assert service_file["match_basis"]["path"] == ["service"]
+    assert service_file["why"] == "File name matches: service."
+    assert len({
+        (item["start_line"], item["end_line"])
+        for item in service_file["line_ranges"]
+    }) == len(service_file["line_ranges"])
     assert service_file["related_tests"][0]["path"] == "tests/test_service.py"
     assert {
         tuple(item["paths"]) for item in service_file["impact_paths"]
@@ -329,7 +336,9 @@ async def test_incremental_index_preserves_unchanged_ids_and_builds_exact_edges(
         {"service"}, ["tests/test_service.py"]
     )
     assert any(
-        item["path"] == "tests/test_service.py" and item["role"] == "related_test"
+        item["path"] == "tests/test_service.py"
+        and item["role"] == "related_test"
+        and item["match_strength"] == "linked_test"
         for item in explicit_test["files"]
     )
 
@@ -591,6 +600,35 @@ async def test_founder_oversight_objective_does_not_expand_on_generic_terms(
     assert [item["path"] for item in affected["files"]] == [
         "app/founder_oversight.py"
     ]
+
+
+async def test_exact_file_name_match_suppresses_weaker_word_matches(
+    db_session, tmp_path
+):
+    workspace = Workspace(
+        id=uuid4(), name="README focus", slug=f"readme-focus-{uuid4().hex}"
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "app").mkdir()
+    (tmp_path / "README.md").write_text("# Current product\n", encoding="utf-8")
+    (tmp_path / "app" / "extraction.py").write_text(
+        "def rewrite_source_extraction_provenance():\n    return True\n",
+        encoding="utf-8",
+    )
+
+    frame = await RepoIndexer(db_session).inspect_repo(
+        tmp_path, workspace_id=workspace.id, persist=True
+    )
+    affected = frame.affected_code_for_goal(
+        {"rewrite", "readme", "source", "extraction", "provenance"}, ["README"]
+    )
+
+    assert affected is not None
+    assert [item["path"] for item in affected["files"]] == ["README.md"]
+    assert affected["files"][0]["match_strength"] == "named_in_task"
+    assert affected["files"][0]["why"] == "The task names this file."
 
 
 async def test_accuracy_gate_issue_does_not_match_common_prose(db_session, tmp_path):

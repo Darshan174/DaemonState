@@ -2599,6 +2599,11 @@ def _extract_file_paths(text: str) -> list[str]:
         r"(?<![\w/.-])(?:[\w.-]+/)*[\w.-]+\.(?:py|js|jsx|ts|tsx|md|toml|json|ya?ml|sh|css|html)(?![\w.-])",
         str(text or ""),
     )
+    paths.extend(re.findall(
+        r"(?<![\w.-])(?:README|CHANGELOG|CONTRIBUTING|Dockerfile)(?![\w.-])",
+        str(text or ""),
+        flags=re.IGNORECASE,
+    ))
     return sorted(dict.fromkeys(path.strip("./") for path in paths))
 
 

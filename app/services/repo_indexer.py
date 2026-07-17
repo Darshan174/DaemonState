@@ -305,19 +305,37 @@ class RepoFrame:
         retrieval_terms = normalized_keywords - _GENERIC_GOAL_TERMS
         requires_tests = bool({"test", "tests", "pytest", "verify"} & normalized_keywords)
         changed_paths = {item["path"] for item in self.changed_files}
-        scored: list[tuple[float, str, str, list[str], list[dict[str, int]]]] = []
+        scored: list[
+            tuple[
+                float,
+                str,
+                str,
+                list[str],
+                list[dict[str, int]],
+                dict[str, list[str]],
+            ]
+        ] = []
         for indexed in self.indexed_files:
+            explicit_hint = _matches_file_hint(indexed.path, hinted)
             path_tokens = set(_tokenize(indexed.path))
+            file_identity = {
+                Path(indexed.path).name.lower(),
+                Path(indexed.path).stem.lower(),
+            }
             symbol_tokens = set(_tokenize(" ".join(symbol.name for symbol in indexed.symbols[:100])))
             import_tokens = set(_tokenize(" ".join(indexed.imports)))
             route_tokens = set(_tokenize(" ".join(indexed.route_hints)))
             matched_path = sorted(retrieval_terms & path_tokens)
+            matched_file_name = sorted(retrieval_terms & file_identity)
             matched_symbols = sorted(retrieval_terms & symbol_tokens)
-            matched_support = sorted(retrieval_terms & (import_tokens | route_tokens))
+            matched_imports = sorted(retrieval_terms & import_tokens)
+            matched_routes = sorted(retrieval_terms & route_tokens)
+            matched_support = sorted(set(matched_imports + matched_routes))
             matched_terms = sorted(set(matched_path + matched_symbols + matched_support))
             score = 0.0
-            if indexed.path in hinted or Path(indexed.path).name in hinted:
+            if explicit_hint:
                 score += 5.0
+            score += 4.0 * len(matched_file_name)
             score += 1.20 * len(matched_path)
             score += 0.80 * len(matched_symbols)
             score += 0.35 * len(matched_support)
@@ -340,7 +358,7 @@ class RepoFrame:
             line_ranges = _matching_symbol_ranges(indexed, retrieval_terms)
             reason = (
                 "explicit_goal_file_hint"
-                if indexed.path in hinted or Path(indexed.path).name in hinted
+                if explicit_hint
                 else _file_reason(indexed, normalized_keywords)
             )
             scored.append((
@@ -349,6 +367,13 @@ class RepoFrame:
                 reason,
                 matched_terms,
                 line_ranges,
+                {
+                    "file_name": matched_file_name,
+                    "path": matched_path,
+                    "symbols": matched_symbols,
+                    "imports": matched_imports,
+                    "routes": matched_routes,
+                },
             ))
 
         scored.sort(key=lambda item: (-item[0], item[1]))
@@ -360,7 +385,7 @@ class RepoFrame:
                 *self.manifest_files[:3],
             ]
             top = [
-                (0.1, path, "repo_state_fallback", [], [])
+                (0.1, path, "repo_state_fallback", [], [], {})
                 for path in dict.fromkeys(fallback_paths)
             ]
 
@@ -372,13 +397,14 @@ class RepoFrame:
                 "ranking_score": score,
                 "ranking_version": RANKING_VERSION,
                 "matched_terms": matched_terms,
+                "match_basis": match_basis,
                 "line_ranges": line_ranges,
                 "lane": "code_and_tests",
                 "exists": path in indexed_by_path or (Path(self.repo_path) / path).exists(),
                 "sha256": indexed_by_path[path].sha256 if path in indexed_by_path else _sha256_file(Path(self.repo_path) / path),
                 "is_test": indexed_by_path[path].is_test if path in indexed_by_path else _is_test_file(path, ""),
             }
-            for score, path, reason, matched_terms, line_ranges in top
+            for score, path, reason, matched_terms, line_ranges, match_basis in top
         ]
 
     def affected_code_for_goal(
@@ -401,14 +427,21 @@ class RepoFrame:
                 not item.get("is_test")
                 or (
                     item.get("reason") == "explicit_goal_file_hint"
-                    and (
-                        item.get("path") in normalized_hints
-                        or Path(str(item.get("path") or "")).name in normalized_hints
+                    and _matches_file_hint(
+                        str(item.get("path") or ""), normalized_hints
                     )
                 )
             )
         ]
-        relevant = objective_matches[:12]
+        explicit_matches = [
+            item for item in objective_matches
+            if item.get("reason") == "explicit_goal_file_hint"
+        ]
+        exact_name_matches = [
+            item for item in objective_matches
+            if (item.get("match_basis") or {}).get("file_name")
+        ]
+        relevant = (explicit_matches or exact_name_matches or objective_matches)[:12]
         if not relevant:
             return None
         current_edges = [
@@ -477,6 +510,8 @@ class RepoFrame:
             files.append({
                 "path": path,
                 "role": "related_test" if item.get("is_test") else "likely_implementation",
+                "match_strength": _file_match_strength(item),
+                "match_basis": item.get("match_basis") or {},
                 "why": _human_file_reason(item),
                 "sha256": item["sha256"],
                 "line_ranges": list(item.get("line_ranges") or []),
@@ -2100,15 +2135,18 @@ def _matching_symbol_ranges(
     retrieval_terms: set[str],
 ) -> list[dict[str, int]]:
     ranges: list[dict[str, int]] = []
+    seen: set[tuple[int, int]] = set()
     for symbol in indexed.symbols:
         if not retrieval_terms & set(_tokenize(symbol.name)):
             continue
         if symbol.start_line is None:
             continue
-        ranges.append({
-            "start_line": int(symbol.start_line),
-            "end_line": int(symbol.end_line or symbol.start_line),
-        })
+        start_line = int(symbol.start_line)
+        end_line = int(symbol.end_line or symbol.start_line)
+        if (start_line, end_line) in seen:
+            continue
+        seen.add((start_line, end_line))
+        ranges.append({"start_line": start_line, "end_line": end_line})
     return ranges[:12]
 
 
@@ -2127,11 +2165,40 @@ def _file_reason(indexed: IndexedFile, keywords: set[str]) -> str:
 def _human_file_reason(item: dict[str, Any]) -> str:
     path = str(item.get("path") or "This file")
     if item.get("reason") == "explicit_goal_file_hint":
-        return "Named explicitly in the focused task."
-    terms = [str(term) for term in item.get("matched_terms") or []][:4]
-    if terms:
-        return f"Matches the focused task through {', '.join(terms)}."
-    return f"{path} matches the focused task's file or symbol wording."
+        return "The task names this file."
+    basis = item.get("match_basis") or {}
+    for key, label in (
+        ("file_name", "File name matches"),
+        ("path", "File name matches"),
+        ("routes", "API route matches"),
+        ("symbols", "Names inside this file match"),
+        ("imports", "A connected file name matches"),
+    ):
+        terms = [str(term) for term in basis.get(key) or []][:4]
+        if terms:
+            return f"{label}: {', '.join(terms)}."
+    return f"{path} uses wording from the task."
+
+
+def _matches_file_hint(path: str, hints: set[str]) -> bool:
+    normalized = path.strip("./")
+    identities = {
+        normalized.lower(),
+        Path(normalized).name.lower(),
+        Path(normalized).stem.lower(),
+    }
+    return bool(identities & {hint.strip("./").lower() for hint in hints})
+
+
+def _file_match_strength(item: dict[str, Any]) -> str:
+    if item.get("is_test"):
+        return "linked_test"
+    if item.get("reason") == "explicit_goal_file_hint":
+        return "named_in_task"
+    basis = item.get("match_basis") or {}
+    if basis.get("file_name") or basis.get("path") or basis.get("routes"):
+        return "strong_match"
+    return "possible_match"
 
 
 def _eligible_affected_path(path: str) -> bool:

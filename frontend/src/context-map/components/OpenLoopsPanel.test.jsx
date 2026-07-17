@@ -36,10 +36,20 @@ describe("OpenLoopsPanel", () => {
     const { container } = render(<OpenLoopsPanel data={{ open_count: 2, items: loops }} onClose={() => {}} />);
     const cards = [...container.querySelectorAll("[data-open-loop-state]")];
 
+    expect(screen.getByRole("heading", { name: "Unresolved work" })).toBeInTheDocument();
+    expect(screen.getByText(/Evidence-backed problems/)).toBeInTheDocument();
+    expect(screen.queryByText("Open loops")).not.toBeInTheDocument();
     expect(cards[0]).toHaveTextContent("Required verification failed");
     expect(cards[1]).toHaveTextContent("Completion has no verification");
     const closed = screen.getByText("Closed · 1").closest("details");
     expect(closed).not.toHaveAttribute("open");
+  });
+
+  it("uses a clear empty state when no evidence-backed problem exists", () => {
+    render(<OpenLoopsPanel data={{ items: [] }} onClose={() => {}} />);
+
+    expect(screen.getByText("Nothing unresolved")).toBeInTheDocument();
+    expect(screen.getByText("No evidence-backed problem currently needs action.")).toBeInTheDocument();
   });
 
   it("requires an auditable reason before resolving a loop", async () => {

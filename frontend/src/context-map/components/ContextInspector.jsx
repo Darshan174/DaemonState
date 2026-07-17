@@ -8,16 +8,13 @@ import {
   FileText,
   GitBranch,
   Loader2,
-  ShieldCheck,
   X,
 } from "lucide-react";
 import { api } from "../../api/client";
 import {
-  STATUS_META,
   TONE_CLASSES,
   cardRelationships,
   cleanDisplayText,
-  confidenceLabel,
   sessionIdentity,
 } from "../digest";
 import { OpenLoopList } from "./OpenLoopsPanel";
@@ -151,7 +148,7 @@ export default function ContextInspector({
     );
   }
 
-  const status = STATUS_META[card.status] || STATUS_META.active;
+  const status = inspectorStatus(card);
   const inspectorTitle = inspectorHeading(card);
   const affectedCode = preparedMarkdown !== null
     ? preparedAffectedCode
@@ -183,9 +180,6 @@ export default function ContextInspector({
         <div className="flex flex-wrap gap-1.5">
           <span className={`rounded-md border px-1.5 py-1 text-[10px] font-bold ${TONE_CLASSES[status.tone] || TONE_CLASSES.gray}`}>
             {status.label}
-          </span>
-          <span className="rounded-md border border-slate-200 bg-slate-50 px-1.5 py-1 text-[10px] font-bold text-slate-600 dark:border-neutral-800 dark:bg-black dark:text-neutral-300">
-            {confidenceLabel(card.confidence)} confidence
           </span>
           {relationships.length ? (
             <span className="rounded-md border border-slate-200 bg-slate-50 px-1.5 py-1 text-[10px] font-bold text-slate-600 dark:border-neutral-800 dark:bg-black dark:text-neutral-300">
@@ -255,7 +249,7 @@ export default function ContextInspector({
         ) : null}
         <SummaryTab card={card} />
         {openLoops.length ? (
-          <InspectorSection title="Needs attention">
+          <InspectorSection title="Unresolved work">
             <OpenLoopList
               loops={openLoops}
               workspaceId={workspaceId}
@@ -268,7 +262,7 @@ export default function ContextInspector({
         {affectedCode?.files?.length ? <AffectedCode affectedCode={affectedCode} /> : null}
         {knownPlaybook ? <KnownPlaybook playbook={knownPlaybook} workspaceId={workspaceId} prepared={preparedMarkdown !== null} /> : null}
         {canPrepareForAgent ? (
-          <InspectorSection title="Agent runs">
+          <InspectorSection title="Agent work">
             <RunTimeline
               timeline={timeline}
               workspaceId={workspaceId}
@@ -347,61 +341,95 @@ function KnownPlaybook({ playbook, workspaceId, prepared }) {
 }
 
 function AffectedCode({ affectedCode }) {
+  const [showAll, setShowAll] = useState(false);
   const files = affectedCode.files || [];
   const linkedTests = new Map();
   files.forEach((file) => {
     if (file.role === "related_test") linkedTests.set(file.path, file);
     (file.related_tests || []).forEach((test) => linkedTests.set(test.path, test));
   });
-  const likelyFileCount = files.filter((file) => file.role !== "related_test").length;
+  const suggestedFiles = files.filter((file) => file.role !== "related_test");
+  const namedFileCount = suggestedFiles.filter((file) => file.match_strength === "named_in_task").length;
+  const directMatchCount = suggestedFiles.filter((file) => (
+    file.match_strength === "strong_match"
+  )).length;
+  const possibleMatchCount = Math.max(0, suggestedFiles.length - namedFileCount - directMatchCount);
+  const visibleFiles = showAll ? files : files.slice(0, 3);
+  const hiddenFileCount = Math.max(0, files.length - visibleFiles.length);
+  const summary = [
+    namedFileCount
+      ? `${namedFileCount} named ${namedFileCount === 1 ? "file" : "files"}`
+      : null,
+    directMatchCount
+      ? `${directMatchCount} direct ${directMatchCount === 1 ? "match" : "matches"}`
+      : null,
+    possibleMatchCount
+      ? `${possibleMatchCount} possible ${possibleMatchCount === 1 ? "match" : "matches"}`
+      : null,
+    linkedTests.size
+      ? `${linkedTests.size} linked ${linkedTests.size === 1 ? "test" : "tests"}`
+      : null,
+  ].filter(Boolean).join(" · ");
   const snapshot = affectedCode.snapshot || {};
   const snapshotNote = snapshot.dirty
     ? snapshot.head_commit
-      ? `Based on HEAD ${shortCommit(snapshot.head_commit)} with local changes`
-      : "Based on the current local files"
+      ? `Checked against commit ${shortCommit(snapshot.head_commit)} plus your local changes`
+      : "Checked against your current local files"
     : snapshot.head_commit
-      ? `Indexed at commit ${shortCommit(snapshot.head_commit)}`
-      : "Based on the current local files";
+      ? `Checked against commit ${shortCommit(snapshot.head_commit)}`
+      : "Checked against your current local files";
 
   return (
     <details className="group rounded-lg border border-slate-200 bg-slate-50 dark:border-neutral-800 dark:bg-black">
       <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-3 [&::-webkit-details-marker]:hidden">
         <span className="flex min-w-0 items-center gap-2 text-xs font-black text-slate-900 dark:text-white">
           <FileText className="h-3.5 w-3.5 shrink-0" />
-          Affected code
+          Files to inspect
         </span>
         <span className="text-right text-[10px] font-bold text-slate-500 dark:text-neutral-400">
-          {likelyFileCount} likely {likelyFileCount === 1 ? "file" : "files"}
-          {linkedTests.size ? ` · ${linkedTests.size} linked ${linkedTests.size === 1 ? "test" : "tests"}` : ""}
+          {summary}
         </span>
       </summary>
       <div className="space-y-3 border-t border-slate-200 p-3 dark:border-neutral-800">
+        <p className="text-[10px] font-semibold leading-4 text-slate-500 dark:text-neutral-400">
+          Suggestions from the task wording. Check them before deciding what to edit.
+        </p>
         <p className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-500 dark:text-neutral-400">
           <GitBranch className="h-3 w-3 shrink-0" />
           {snapshotNote}
         </p>
         <div className="space-y-2">
-          {files.map((file) => (
+          {visibleFiles.map((file) => (
             <AffectedFile key={file.path} file={file} />
           ))}
         </div>
+        {files.length > 3 ? (
+          <button
+            type="button"
+            onClick={() => setShowAll((visible) => !visible)}
+            className="text-[10px] font-black text-slate-700 underline dark:text-neutral-200"
+          >
+            {showAll ? "Show fewer" : `Show ${hiddenFileCount} more`}
+          </button>
+        ) : null}
       </div>
     </details>
   );
 }
 
 function AffectedFile({ file }) {
+  const lineRanges = uniqueLineRanges(file.line_ranges || []).slice(0, 2);
   return (
     <article className="min-w-0 rounded-md border border-slate-200 bg-white p-2.5 dark:border-neutral-800 dark:bg-[#07080a]">
       <p className="text-[9px] font-black uppercase tracking-wide text-slate-400">
-        {file.role === "related_test" ? "Related test" : "Likely implementation"}
+        {fileMatchLabel(file)}
       </p>
       <p className="mt-1 break-all font-mono text-[10px] font-bold text-slate-800 dark:text-neutral-200">{file.path}</p>
-      {file.why ? <p className="mt-1.5 text-[10px] font-semibold leading-4 text-slate-500 dark:text-neutral-400">{file.why}</p> : null}
-      {file.line_ranges?.length ? (
-        <p className="mt-1.5 font-mono text-[9px] font-semibold text-slate-400">
-          {file.line_ranges.slice(0, 2).map((range) => (
-            `lines ${range.start_line}${range.end_line && range.end_line !== range.start_line ? `–${range.end_line}` : ""}`
+      <p className="mt-1.5 text-[10px] font-semibold leading-4 text-slate-500 dark:text-neutral-400">{plainFileReason(file)}</p>
+      {lineRanges.length ? (
+        <p className="mt-1.5 text-[9px] font-semibold text-slate-400">
+          {lineRanges.map((range) => (
+            `Matching code near ${range.start_line === range.end_line ? "line" : "lines"} ${range.start_line}${range.end_line !== range.start_line ? `–${range.end_line}` : ""}`
           )).join(" · ")}
         </p>
       ) : null}
@@ -409,7 +437,7 @@ function AffectedFile({ file }) {
         <div className="mt-2 space-y-1 border-t border-slate-100 pt-2 dark:border-neutral-900">
           {file.impact_paths.slice(0, 2).map((impact) => (
             <p key={(impact.paths || []).join("→")} className="break-all text-[9px] font-semibold leading-4 text-slate-400">
-              {(impact.paths || []).join(" → ")}{impact.why ? ` · ${impact.why}` : ""}
+              {plainImpactReason(file.path, impact)}
             </p>
           ))}
         </div>
@@ -418,8 +446,8 @@ function AffectedFile({ file }) {
         <div className="mt-2 border-t border-slate-100 pt-2 dark:border-neutral-900">
           {file.related_tests.map((test) => (
             <div key={test.path} className="mt-1 first:mt-0">
+              <p className="text-[9px] font-black uppercase tracking-wide text-slate-400">Test to check</p>
               <p className="break-all font-mono text-[10px] font-bold text-slate-700 dark:text-neutral-300">{test.path}</p>
-              {test.why ? <p className="mt-0.5 text-[9px] font-semibold leading-4 text-slate-400">{test.why}</p> : null}
             </div>
           ))}
         </div>
@@ -446,7 +474,7 @@ function RunTimeline({ timeline, workspaceId, loading, error, onRetry }) {
   }
   const legacyFindings = timeline?.open_loops === undefined ? timeline?.findings || [] : [];
   if (!timeline?.runs?.length && !legacyFindings.length) {
-    return <p className="rounded-md border border-dashed border-slate-200 p-3 text-xs font-semibold text-slate-400 dark:border-neutral-800">No observed agent run yet.</p>;
+    return <p className="rounded-md border border-dashed border-slate-200 p-3 text-xs font-semibold text-slate-400 dark:border-neutral-800">No agent work recorded yet.</p>;
   }
   return (
     <div className="space-y-3">
@@ -616,12 +644,12 @@ function EvidenceTab({ card, sourceDetail, loading, error }) {
           >
             <div className="mb-2 flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-[10px] font-bold uppercase text-slate-400">{source.source_type}</p>
+                <p className="text-[10px] font-bold uppercase text-slate-400">Source</p>
                 <p className="mt-0.5 truncate text-xs font-bold text-slate-900 dark:text-white">
-                  {source.source_label}
+                  {evidenceSourceLabel(card, source)}
                 </p>
                 <p className="mt-1 text-[10px] font-semibold text-slate-400">
-                  Revision {source.revision_number || card.source_snapshot?.revision_number || "unknown"} · {formatStatus(source.verification_status || card.evidence?.verification_status || "verification unknown")}
+                  {sourceRevisionLabel(source.revision_number || card.source_snapshot?.revision_number)}
                 </p>
               </div>
               {source.source_url ? (
@@ -649,7 +677,7 @@ function EvidenceTab({ card, sourceDetail, loading, error }) {
       <details className="group rounded-lg border border-slate-200 bg-slate-50 dark:border-neutral-800 dark:bg-black">
         <summary className="flex cursor-pointer list-none items-center gap-2 p-3 text-[10px] font-bold uppercase text-slate-500 marker:hidden dark:text-neutral-400">
           <FileText className="h-3.5 w-3.5" />
-          Imported source
+          Raw imported source
         </summary>
         <div className="border-t border-slate-200 p-3 dark:border-neutral-800">
           {loading ? (
@@ -694,15 +722,17 @@ function SessionFacts({ session, relevance }) {
 }
 
 function RemoteFacts({ remote, freshness }) {
+  const status = remote.observed_status || remote.provider_state || freshness?.observed_status || freshness?.provider_state;
+  const lastSynced = freshness?.last_successful_sync_at
+    ? formatDate(freshness.last_successful_sync_at)
+    : "Not recently synced";
   const facts = [
     ["Repository", remote.repository || remote.repo_full_name],
     ["Number", remote.number],
-    ["Observed state", remote.observed_status || remote.provider_state || freshness?.observed_status || freshness?.provider_state],
-    ["Provider updated", formatDate(remote.provider_updated_at || freshness?.provider_updated_at)],
-    ["Last successful sync", formatDate(freshness?.last_successful_sync_at)],
-    ["Freshness", freshness?.status || freshness?.freshness || "unknown"],
+    ["Status", sentenceCase(String(status || "Not available").replaceAll("_", " "))],
+    ["Last synced", lastSynced],
   ].filter(([, value]) => value !== null && value !== undefined && value !== "");
-  return <FactGrid label="Provider snapshot" facts={facts} />;
+  return <FactGrid label={remote.kind === "pull_request" ? "Pull request details" : "Issue details"} facts={facts} />;
 }
 
 function FactGrid({ label, facts }) {
@@ -752,10 +782,6 @@ function RelationshipsTab({ relationships }) {
           <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-500 dark:text-neutral-400">
             {relationship.direction === "out" ? "To" : "From"}: {cleanDisplayText(relationship.otherCard?.title) || "Hidden card"}
           </p>
-          <div className="mt-2 flex items-center gap-2 text-[10px] font-bold text-slate-400">
-            <ShieldCheck className="h-3 w-3" />
-            {confidenceLabel(relationship.confidence)} confidence
-          </div>
         </div>
       ))}
     </div>
@@ -780,6 +806,101 @@ function InspectorSection({ title, children }) {
       {children}
     </section>
   );
+}
+
+function inspectorStatus(card) {
+  const remote = card?.remote_item;
+  if (remote) {
+    const state = String(remote.observed_status || remote.provider_state || "").toLowerCase();
+    if (remote.kind === "pull_request") {
+      if (state === "merged") return { label: "Merged pull request", tone: "green" };
+      if (state === "open") return { label: "Open pull request", tone: "blue" };
+      if (state === "closed") return { label: "Closed pull request", tone: "gray" };
+      return { label: "Pull request status not synced", tone: "gray" };
+    }
+    if (state === "open") return { label: "Open issue", tone: "blue" };
+    if (state === "closed") return { label: "Closed issue", tone: "gray" };
+    return { label: "Issue status not synced", tone: "gray" };
+  }
+  const labels = {
+    active: { label: "Current", tone: "blue" },
+    blocked: { label: "Blocked", tone: "red" },
+    conflict: { label: "Conflicting information", tone: "red" },
+    needs_review: { label: "Imported", tone: "gray" },
+    stale: { label: "May be out of date", tone: "amber" },
+    verified: { label: "Checked", tone: "green" },
+  };
+  return labels[card?.status] || labels.active;
+}
+
+function fileMatchLabel(file) {
+  if (file.role === "related_test" || file.match_strength === "linked_test") return "Linked test";
+  if (file.match_strength === "named_in_task") return "Named in task";
+  if (file.match_basis?.file_name?.length) return "File name match";
+  if (file.match_basis?.path?.length) return "File name match";
+  if (file.match_basis?.routes?.length) return "API route match";
+  if (file.match_strength === "strong_match") return "Direct task match";
+  return "Possible word match";
+}
+
+function plainFileReason(file) {
+  if (file.match_strength === "named_in_task" || file.why === "Named explicitly in the focused task.") {
+    return "The task names this file.";
+  }
+  const oldMatch = String(file.why || "").match(/^Matches the focused task through (.+)\.$/i);
+  if (oldMatch) {
+    const unhelpful = new Set(["and", "for", "from", "into", "only", "the", "this", "through", "to", "with"]);
+    const terms = oldMatch[1]
+      .split(",")
+      .map((term) => term.trim())
+      .filter((term) => term && !unhelpful.has(term.toLowerCase()));
+    return terms.length
+      ? `Task words found here: ${terms.join(", ")}.`
+      : "Some task wording also appears in this file.";
+  }
+  if (file.why) return file.why;
+  return "Some task wording also appears in this file.";
+}
+
+function uniqueLineRanges(ranges) {
+  const seen = new Set();
+  return ranges.filter((range) => {
+    const startLine = Number(range?.start_line);
+    const endLine = Number(range?.end_line || range?.start_line);
+    if (!Number.isFinite(startLine) || !Number.isFinite(endLine)) return false;
+    const key = `${startLine}:${endLine}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function plainImpactReason(filePath, impact) {
+  const paths = (impact?.paths || []).filter(Boolean);
+  const connectedPath = paths.find((path) => path !== filePath);
+  if (connectedPath) {
+    return `${connectedPath.includes("test") ? "Connected test" : "Connected file"}: ${connectedPath}`;
+  }
+  if (String(impact?.why || "").toLowerCase().includes("route")) {
+    return "A matching API route is handled here.";
+  }
+  return "Connected to another suggested file.";
+}
+
+function evidenceSourceLabel(card, source) {
+  const remote = card?.remote_item;
+  if (remote) {
+    const provider = String(source?.source_type || "Source").toLowerCase() === "github"
+      ? "GitHub"
+      : sentenceCase(String(source?.source_type || "Source"));
+    const kind = remote.kind === "pull_request" ? "pull request" : "issue";
+    return `${provider} ${kind}${remote.number ? ` #${remote.number}` : ""}`;
+  }
+  return source?.source_label || sentenceCase(String(source?.source_type || "Imported source"));
+}
+
+function sourceRevisionLabel(revision) {
+  return revision ? `Imported revision ${revision}` : "Imported source";
 }
 
 function sentenceCase(value) {

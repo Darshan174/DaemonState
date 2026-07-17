@@ -121,7 +121,7 @@ describe("ContextInspector", () => {
     expect(screen.queryByText("Why it matters")).not.toBeInTheDocument();
     expect(screen.queryByText("Suggested next action")).not.toBeInTheDocument();
     expect(screen.queryByText("Attention")).not.toBeInTheDocument();
-    expect(screen.getByText("Imported source")).toBeInTheDocument();
+    expect(screen.getByText("Raw imported source")).toBeInTheDocument();
   });
 
   it("shows a concise remote summary without empty provider rows", () => {
@@ -141,16 +141,29 @@ describe("ContextInspector", () => {
         observed_status: "open",
       },
       freshness: { status: "unknown" },
-      provenance: [{ ...card.provenance[0], excerpt: "Exact issue evidence." }],
+      provenance: [{
+        ...card.provenance[0],
+        source_type: "github",
+        source_label: "Rewrite README",
+        excerpt: "Exact issue evidence.",
+      }],
     };
 
     render(<ContextInspector card={issue} cards={[issue]} onClose={() => {}} />);
 
     expect(screen.getByRole("heading", { name: "Issue #1 · Rewrite README" })).toBeInTheDocument();
+    expect(screen.getByText("Open issue")).toBeInTheDocument();
+    expect(screen.queryByText("Needs review")).not.toBeInTheDocument();
+    expect(screen.queryByText(/% confidence/)).not.toBeInTheDocument();
     expect(screen.getByText("The README undersells the shipped product.")).toBeInTheDocument();
     expect(screen.queryByText(/State: open Labels:/)).not.toBeInTheDocument();
-    expect(screen.queryByText("Provider updated")).not.toBeInTheDocument();
-    expect(screen.queryByText("Last successful sync")).not.toBeInTheDocument();
+    expect(screen.getByText("Issue details")).toBeInTheDocument();
+    expect(screen.getByText("Status")).toBeInTheDocument();
+    expect(screen.getByText("Open")).toBeInTheDocument();
+    expect(screen.getByText("Last synced")).toBeInTheDocument();
+    expect(screen.getByText("Not recently synced")).toBeInTheDocument();
+    expect(screen.getByText("GitHub issue #1")).toBeInTheDocument();
+    expect(screen.queryByText("unknown", { exact: false })).not.toBeInTheDocument();
   });
 
   it("prepares a selected task and exposes factual run scrutiny", async () => {
@@ -165,7 +178,8 @@ describe("ContextInspector", () => {
           files: [{
             path: "app/mcp/server.py",
             role: "likely_implementation",
-            why: "Matches the focused task's runtime-event wording.",
+            match_strength: "possible_match",
+            why: "Matches the focused task through runtime, event, to.",
             line_ranges: [{ start_line: 1700, end_line: 1780 }],
             impact_paths: [{
               paths: ["app/mcp/server.py", "app/services/ingest.py"],
@@ -250,16 +264,19 @@ describe("ContextInspector", () => {
     expect(screen.getByText(/paste it into the coding agent you want to use/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Copy again" }));
     await waitFor(() => expect(globalThis.navigator.clipboard.writeText).toHaveBeenCalledTimes(2));
-    const affectedCode = screen.getByText("Affected code").closest("details");
+    const affectedCode = screen.getByText("Files to inspect").closest("details");
     expect(affectedCode).not.toHaveAttribute("open");
-    expect(screen.getByText("1 likely file · 1 linked test")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Affected code"));
-    expect(screen.getByText("Based on HEAD abc1234 with local changes")).toBeInTheDocument();
+    expect(screen.getByText("1 possible match · 1 linked test")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Files to inspect"));
+    expect(screen.getByText("Suggestions from the task wording. Check them before deciding what to edit.")).toBeInTheDocument();
+    expect(screen.getByText("Possible word match")).toBeInTheDocument();
+    expect(screen.getByText("Checked against commit abc1234 plus your local changes")).toBeInTheDocument();
     expect(screen.getByText("app/mcp/server.py")).toBeInTheDocument();
     expect(screen.getByText("tests/test_mcp.py")).toBeInTheDocument();
-    expect(screen.getByText("Matches the focused task's runtime-event wording.")).toBeInTheDocument();
-    expect(screen.getByText("lines 1700–1780")).toBeInTheDocument();
-    expect(screen.getByText("app/mcp/server.py → app/services/ingest.py · Exact local import.")).toBeInTheDocument();
+    expect(screen.getByText("Task words found here: runtime, event.")).toBeInTheDocument();
+    expect(screen.getByText("Matching code near lines 1700–1780")).toBeInTheDocument();
+    expect(screen.getByText("Connected file: app/services/ingest.py")).toBeInTheDocument();
+    expect(screen.getByText("Test to check")).toBeInTheDocument();
     expect(screen.getByText("Required verification failed")).toBeInTheDocument();
     expect(screen.getByText("Required verification failed").closest("[data-severity]"))
       .toHaveAttribute("data-severity", "critical");
@@ -296,7 +313,7 @@ describe("ContextInspector", () => {
       />,
     );
 
-    expect(screen.queryByText("Affected code")).not.toBeInTheDocument();
+    expect(screen.queryByText("Files to inspect")).not.toBeInTheDocument();
   });
 
   it("removes stale timeline affected code when a new pack has no supported match", async () => {
@@ -326,10 +343,10 @@ describe("ContextInspector", () => {
       />,
     );
 
-    expect(screen.getByText("Affected code")).toBeInTheDocument();
+    expect(screen.getByText("Files to inspect")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Prepare for agent" }));
     await waitFor(() => expect(onPrepareForAgent).toHaveBeenCalledOnce());
-    await waitFor(() => expect(screen.queryByText("Affected code")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText("Files to inspect")).not.toBeInTheDocument());
   });
 
   it("counts a top-level related test as a linked test, not a likely implementation file", () => {
@@ -354,7 +371,36 @@ describe("ContextInspector", () => {
       />,
     );
 
-    expect(screen.getByText("0 likely files · 1 linked test")).toBeInTheDocument();
+    expect(screen.getByText("1 linked test")).toBeInTheDocument();
+  });
+
+  it("shows only the first three file suggestions until the user asks for more", () => {
+    api.get.mockImplementation(() => new Promise(() => {}));
+    const files = Array.from({ length: 5 }, (_, index) => ({
+      path: `app/file_${index + 1}.py`,
+      role: "likely_implementation",
+      match_strength: "possible_match",
+      why: `Name match ${index + 1}.`,
+    }));
+    render(
+      <ContextInspector
+        card={{ ...card, type: "task", category: "task" }}
+        cards={[card]}
+        onClose={() => {}}
+        canPrepareForAgent
+        timeline={{ runs: [], affected_code: { snapshot: {}, files } }}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Files to inspect"));
+    expect(screen.getByText("app/file_1.py")).toBeInTheDocument();
+    expect(screen.getByText("app/file_3.py")).toBeInTheDocument();
+    expect(screen.queryByText("app/file_4.py")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show 2 more" }));
+    expect(screen.getByText("app/file_4.py")).toBeInTheDocument();
+    expect(screen.getByText("app/file_5.py")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show fewer" }));
+    expect(screen.queryByText("app/file_4.py")).not.toBeInTheDocument();
   });
 
   it("keeps a prepared pack usable when clipboard access fails", async () => {
@@ -410,9 +456,9 @@ describe("ContextInspector", () => {
       />,
     );
 
-    expect(screen.getByText("Needs attention")).toBeInTheDocument();
+    expect(screen.getByText("Unresolved work")).toBeInTheDocument();
     expect(screen.getByText("Required verification failed")).toBeInTheDocument();
-    expect(screen.getByText("No observed agent run yet.")).toBeInTheDocument();
+    expect(screen.getByText("No agent work recorded yet.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Challenge agent" })).not.toBeInTheDocument();
   });
 
@@ -440,7 +486,7 @@ describe("ContextInspector", () => {
       />,
     );
 
-    const affected = screen.getByText("Affected code").closest("details");
+    const affected = screen.getByText("Files to inspect").closest("details");
     const playbook = screen.getByText("Verified playbook").closest("details");
     expect(playbook).not.toHaveAttribute("open");
     expect(affected.compareDocumentPosition(playbook) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
