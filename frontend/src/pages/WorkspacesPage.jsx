@@ -55,6 +55,11 @@ export default function WorkspacesPage() {
     }
   }
 
+  function openWorkspace(id) {
+    setSelectedId(id);
+    navigate("/app");
+  }
+
   return (
     <div className="relative mx-auto max-w-6xl">
       <div className="mb-7 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
@@ -76,8 +81,8 @@ export default function WorkspacesPage() {
 
       {!isLoading ? (
         <div className="space-y-8">
-          <WorkspaceSection title="Projects" description="Real repositories and their project evidence." empty="No real projects connected yet." workspaces={groups.projects} selectedId={selectedId} onUpdate={update} />
-          {groups.samples.length ? <WorkspaceSection title="Samples" description="Tour data, kept visibly separate from real work." workspaces={groups.samples} selectedId={selectedId} onUpdate={update} sample /> : null}
+          <WorkspaceSection title="Projects" description="Real repositories and their project evidence." empty="No real projects connected yet." workspaces={groups.projects} selectedId={selectedId} onOpen={openWorkspace} onUpdate={update} />
+          {groups.samples.length ? <WorkspaceSection title="Samples" description="Tour data, kept visibly separate from real work." workspaces={groups.samples} selectedId={selectedId} onOpen={openWorkspace} onUpdate={update} sample /> : null}
           {groups.archived.length ? <WorkspaceSection title="Archived" description="Hidden from the product loop. Restore or permanently delete." workspaces={groups.archived} selectedId={selectedId} onUpdate={update} onDelete={remove} archived /> : null}
         </div>
       ) : null}
@@ -99,7 +104,7 @@ export default function WorkspacesPage() {
   );
 }
 
-function WorkspaceSection({ title, description, empty, workspaces = [], selectedId, onUpdate, onDelete, sample = false, archived = false }) {
+function WorkspaceSection({ title, description, empty, workspaces = [], selectedId, onOpen, onUpdate, onDelete, sample = false, archived = false }) {
   return (
     <section>
       <div className="mb-3 flex items-end justify-between gap-4">
@@ -111,7 +116,7 @@ function WorkspaceSection({ title, description, empty, workspaces = [], selected
       {workspaces.length ? (
         <div className="grid gap-3 lg:grid-cols-2">
           {workspaces.map((workspace) => (
-            <WorkspaceCard key={workspace.id} workspace={workspace} selected={workspace.id === selectedId} onUpdate={onUpdate} onDelete={onDelete} sample={sample} archived={archived} />
+            <WorkspaceCard key={workspace.id} workspace={workspace} selected={workspace.id === selectedId} onOpen={onOpen} onUpdate={onUpdate} onDelete={onDelete} sample={sample} archived={archived} />
           ))}
         </div>
       ) : (
@@ -121,7 +126,7 @@ function WorkspaceSection({ title, description, empty, workspaces = [], selected
   );
 }
 
-function WorkspaceCard({ workspace, selected, onUpdate, onDelete, sample, archived }) {
+function WorkspaceCard({ workspace, selected, onOpen, onUpdate, onDelete, sample, archived }) {
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(workspace.name);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -140,34 +145,34 @@ function WorkspaceCard({ workspace, selected, onUpdate, onDelete, sample, archiv
 
   return (
     <article className={`rounded-xl border bg-white p-4 dark:bg-black ${selected ? "border-slate-500 ring-2 ring-slate-200 dark:border-[#d9ff68] dark:ring-[#d9ff68]/10" : "border-slate-200 dark:border-neutral-800"}`}>
-      <div className="flex items-start gap-3">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-600 dark:bg-neutral-900 dark:text-neutral-300">
-          {sample ? <Beaker className="h-4 w-4" /> : <FolderGit2 className="h-4 w-4" />}
-        </div>
-        <div className="min-w-0 flex-1">
-          {renaming ? (
-            <div className="flex gap-1.5">
-              <input aria-label={`Rename ${workspace.name}`} value={name} onChange={(event) => setName(event.target.value)} className="min-w-0 flex-1 rounded-md border border-slate-300 px-2 py-1 text-sm font-bold outline-none focus:ring-2 focus:ring-slate-200 dark:border-neutral-700 dark:bg-neutral-950" />
-              <button type="button" aria-label="Save name" onClick={saveName} className="rounded-md p-1.5 hover:bg-slate-100 dark:hover:bg-neutral-900"><Check className="h-4 w-4" /></button>
-              <button type="button" aria-label="Cancel rename" onClick={() => { setName(workspace.name); setRenaming(false); }} className="rounded-md p-1.5 hover:bg-slate-100 dark:hover:bg-neutral-900"><X className="h-4 w-4" /></button>
+      {!archived && !renaming ? (
+        <button type="button" aria-label={`Open ${workspace.name}`} onClick={() => onOpen(workspace.id)} className="group block w-full rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:focus-visible:ring-[#d9ff68]">
+          <WorkspaceCardSummary workspace={workspace} selected={selected} sample={sample} />
+          <WorkspaceMetrics workspace={workspace} interactive />
+        </button>
+      ) : (
+        <>
+          <div className="flex items-start gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-600 dark:bg-neutral-900 dark:text-neutral-300">
+              {sample ? <Beaker className="h-4 w-4" /> : <FolderGit2 className="h-4 w-4" />}
             </div>
-          ) : (
-            <div className="flex min-w-0 items-center gap-2">
-              <h3 className="truncate text-sm font-bold text-slate-950 dark:text-white">{workspace.name}</h3>
-              {selected ? <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-slate-500 dark:bg-neutral-900 dark:text-[#d9ff68]">Current</span> : null}
-              {sample ? <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">Sample</span> : null}
+            <div className="min-w-0 flex-1">
+              {renaming ? (
+                <div className="flex gap-1.5">
+                  <input aria-label={`Rename ${workspace.name}`} value={name} onChange={(event) => setName(event.target.value)} className="min-w-0 flex-1 rounded-md border border-slate-300 px-2 py-1 text-sm font-bold outline-none focus:ring-2 focus:ring-slate-200 dark:border-neutral-700 dark:bg-neutral-950" />
+                  <button type="button" aria-label="Save name" onClick={saveName} className="rounded-md p-1.5 hover:bg-slate-100 dark:hover:bg-neutral-900"><Check className="h-4 w-4" /></button>
+                  <button type="button" aria-label="Cancel rename" onClick={() => { setName(workspace.name); setRenaming(false); }} className="rounded-md p-1.5 hover:bg-slate-100 dark:hover:bg-neutral-900"><X className="h-4 w-4" /></button>
+                </div>
+              ) : (
+                <WorkspaceTitle workspace={workspace} selected={selected} sample={sample} />
+              )}
+              <p className="mt-1 truncate font-mono text-[11px] text-slate-400">{workspace.repo_path || (sample ? "Sample evidence" : "No repository connected")}</p>
             </div>
-          )}
-          <p className="mt-1 truncate font-mono text-[11px] text-slate-400">{workspace.repo_path || (sample ? "Sample evidence" : "No repository connected")}</p>
-        </div>
-      </div>
+          </div>
+          <WorkspaceMetrics workspace={workspace} />
+        </>
+      )}
 
-      <div className="mt-4 grid grid-cols-4 gap-2 border-y border-slate-100 py-3 dark:border-neutral-900">
-        <Metric value={workspace.source_count} label="Sources" />
-        <Metric value={workspace.component_count} label="Facts" />
-        <Metric value={workspace.run_count} label="Runs" />
-        <Metric value={workspace.connector_count} label="Inputs" />
-      </div>
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
         <span className="text-[11px] font-medium text-slate-400">{formatActivity(workspace.last_activity_at)}</span>
         <div className="flex gap-1">
@@ -197,6 +202,41 @@ function WorkspaceCard({ workspace, selected, onUpdate, onDelete, sample, archiv
         </div>
       ) : null}
     </article>
+  );
+}
+
+function WorkspaceCardSummary({ workspace, selected, sample }) {
+  return (
+    <div className="flex items-start gap-3 px-0.5 pt-0.5">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-600 dark:bg-neutral-900 dark:text-neutral-300">
+          {sample ? <Beaker className="h-4 w-4" /> : <FolderGit2 className="h-4 w-4" />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <WorkspaceTitle workspace={workspace} selected={selected} sample={sample} />
+          <p className="mt-1 truncate font-mono text-[11px] text-slate-400">{workspace.repo_path || (sample ? "Sample evidence" : "No repository connected")}</p>
+        </div>
+      </div>
+  );
+}
+
+function WorkspaceTitle({ workspace, selected, sample }) {
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <h3 className="truncate text-sm font-bold text-slate-950 group-hover:underline group-hover:underline-offset-4 dark:text-white">{workspace.name}</h3>
+      {selected ? <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-slate-500 dark:bg-neutral-900 dark:text-[#d9ff68]">Current</span> : null}
+      {sample ? <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">Sample</span> : null}
+    </div>
+  );
+}
+
+function WorkspaceMetrics({ workspace, interactive = false }) {
+  return (
+      <div className={`mt-4 grid grid-cols-4 gap-2 border-y border-slate-100 py-3 dark:border-neutral-900 ${interactive ? "transition group-hover:border-slate-200 dark:group-hover:border-neutral-800" : ""}`}>
+        <Metric value={workspace.source_count} label="Sources" />
+        <Metric value={workspace.component_count} label="Facts" />
+        <Metric value={workspace.run_count} label="Runs" />
+        <Metric value={workspace.connector_count} label="Inputs" />
+      </div>
   );
 }
 

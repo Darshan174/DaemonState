@@ -3,6 +3,7 @@ import { Routes, Route, NavLink, Navigate, Link, useLocation } from "react-route
 import ThemeToggle from "./components/ThemeToggle";
 import CeIcon from "./components/CeIcon";
 import WorkspaceSwitcher from "./components/WorkspaceSwitcher";
+import { useWorkspaceSelection } from "./context/WorkspaceContext";
 import {
   Activity,
   Cable,
@@ -59,6 +60,7 @@ export default function App() {
 
 function AdminShell() {
   const location = useLocation();
+  const { selectedId } = useWorkspaceSelection();
   const isProjectPage = location.pathname === "/app/explain" || location.pathname === "/app/explain/";
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try { return localStorage.getItem("ce_sidebar_collapsed") === "true"; }
@@ -137,7 +139,7 @@ function AdminShell() {
         {!isProjectPage ? (
           <div className="pointer-events-none absolute inset-x-0 top-0 h-28 border-b border-[#e7e7df] bg-[linear-gradient(180deg,rgba(255,255,255,0.48),rgba(247,247,242,0))] dark:border-[#1d1d1a] dark:bg-[linear-gradient(180deg,rgba(255,255,255,0.025),rgba(13,13,11,0))]" />
         ) : null}
-        <Suspense fallback={<PageLoader />}>
+        <Suspense key={selectedId || "unselected-workspace"} fallback={<PageLoader />}>
           <Routes>
             <Route index                                  element={<NowPage />} />
             <Route path="prepare"                         element={<PreparePage />} />

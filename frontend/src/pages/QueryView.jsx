@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useWorkspaces } from "../api/hooks";
 import { resolveWorkspaceId, useWorkspaceSelection } from "../context/WorkspaceContext";
+import { readWorkspacePreferences, writeWorkspacePreferences } from "../context/workspacePreferences";
 
 const SUGGESTIONS = [
   "What is blocking our launch?",
@@ -20,23 +21,36 @@ const SUGGESTIONS = [
 ];
 
 export default function QueryView() {
-  const [question, setQuestion] = useState("");
-  const [result, setResult] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [history, setHistory] = useState([]);
-  const [topK, setTopK] = useState(8);
-  const [minConfidence, setMinConfidence] = useState(0);
-  const [hybrid, setHybrid] = useState(true);
-  const inputRef = useRef(null);
   const { selectedId } = useWorkspaceSelection();
   const { data: workspaces = [] } = useWorkspaces();
   const activeWorkspaceId = resolveWorkspaceId(workspaces, selectedId);
   const activeWorkspace = activeWorkspaceId
     ? workspaces.find((w) => w.id === activeWorkspaceId) || null
     : null;
+  const initialPreferences = readWorkspacePreferences(
+    activeWorkspaceId,
+    "query",
+    { topK: 8, minConfidence: 0, hybrid: true },
+  );
+  const [question, setQuestion] = useState("");
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [topK, setTopK] = useState(initialPreferences.topK);
+  const [minConfidence, setMinConfidence] = useState(initialPreferences.minConfidence);
+  const [hybrid, setHybrid] = useState(initialPreferences.hybrid);
+  const inputRef = useRef(null);
 
   useEffect(() => { inputRef.current?.focus(); }, []);
+
+  useEffect(() => {
+    writeWorkspacePreferences(activeWorkspaceId, "query", {
+      topK,
+      minConfidence,
+      hybrid,
+    });
+  }, [activeWorkspaceId, hybrid, minConfidence, topK]);
 
   async function handleSubmit(e, overrideQuestion) {
     e?.preventDefault();
