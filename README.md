@@ -5,78 +5,102 @@
 <h1 align="center">Context Engine</h1>
 
 <p align="center">
-  Source-backed project memory and oversight for people building software with coding agents.
+  Make every coding agent start with the project, not a blank chat.
 </p>
 
 > **Active alpha.** Core workflows are implemented and tested locally, but public
 > setup, hosting, and production deployment guides are not ready yet.
 
-## What it is
+## The problem
 
-Coding agents are good at writing code. They are less reliable at carrying a
-project's history from one run to the next.
+AI coding feels fast until the next session starts.
 
-Context Engine keeps that history in one place: repository state, issues, pull
-requests, agent sessions, decisions, blockers, documents, patch summaries, and
-test results. It uses that evidence to show where the project stands and prepare
-a focused brief for the next agent.
+The agent has forgotten the decision you made yesterday. It cannot tell which
+issue is actually current. It reads stale files, repeats an abandoned approach,
+or says the work is done without seeing the failed check. You spend the first
+part of every session rebuilding context the project already has.
 
-It is not a chat app over company documents, a generic RAG product, or another
-autonomous coding agent.
+A larger context window does not fix this by itself. More text can mean more old
+plans, duplicated facts, and irrelevant history.
 
-## Who it is for
+## What Context Engine changes
 
-**Founders and non-technical users** get a readable project view:
+Context Engine turns your repository, issues, pull requests, agent sessions,
+decisions, blockers, documents, patches, and test results into durable project
+memory.
 
-- what changed;
-- what is blocked or still unverified;
-- which decisions are current;
-- what the agent actually did;
-- what needs attention next.
+It tells you where the project stands, lets you choose the work that is current,
+and compiles a focused, source-backed brief for the next agent. After the run, it
+records what actually changed and whether the required checks passed. That result
+becomes evidence for the next session.
 
-**Developers** get an auditable context layer:
+The result is simple: AI sessions stop behaving like disconnected chats and start
+behaving like continuous work on one project.
 
-- exact source and revision links;
-- task-specific files to inspect, constraints, risks, and checks;
-- CLI, HTTP, and MCP access;
-- recorded commands, changed-file summaries, verification results, and outcomes;
-- reusable playbooks admitted only from verified runs.
+Context Engine is not another coding agent. It is the memory and evidence layer
+around the agents you already use.
 
-## How it works
+## The bet
 
-```text
-repo + issues + PRs + agent sessions + documents
-                         ↓
-                source-backed project state
-                         ↓
-              focused context for one task
-                         ↓
-             observed work and verification
-                         ↓
-              better context for the next run
-```
+You should not need the newest, most expensive model for every task just because
+an older or cheaper model was given poor context.
+
+Context Engine does not make a weak model magically smarter. It removes an
+avoidable handicap: unclear goals, missing project history, irrelevant context,
+and no execution discipline. The local harness and outcome reports are built to
+measure whether that lets less capable models complete more useful work.
+
+We have not proven that yet. The harness can run and record the comparison; now
+we need results from real projects, not demos.
+
+## The product loop
+
+| Step | What it does for the user |
+|---|---|
+| Connect a project | Creates a clean boundary around one real repository and its evidence. |
+| Capture the work | Preserves code state, issues, decisions, AI sessions, changes, and checks. |
+| Choose the current goal | Keeps the user in control. Open issues stay backlog until selected. |
+| Prepare the next run | Compiles only the files, facts, constraints, risks, and checks relevant to that task. |
+| Observe the result | Records repository changes and verification evidence instead of trusting a completion claim. |
+| Explain what matters | Shows the sources and relationships behind the current project state. |
 
 Every important fact keeps its source. Missing evidence stays missing instead of
-being filled in with a guess.
+being replaced with a confident guess.
+
+## What this gives you
+
+- **Continuity:** start the next session from the last recorded project state and
+  its verified results.
+- **Control:** choose the current goal instead of letting an old issue or context
+  pack choose it for you.
+- **Less noise:** give the agent a task-sized brief, not a dump of everything the
+  project has ever seen.
+- **Proof:** see the changed files, checks, blockers, and evidence behind a run.
+- **Model freedom:** carry project memory across agents and providers instead of
+  locking it inside one chat history.
+- **A path to lower cost:** test where better context lets an older, smaller, or
+  open model do work that otherwise required a frontier model.
 
 ## What works today
 
-| Area | Current behavior |
+| Surface | Actual job |
 |---|---|
-| Project view | Shows system structure, decisions, delivery, risks, next work, and supporting evidence. |
-| Context compiler | Produces `context_pack.v2` as readable Markdown plus an auditable manifest. |
-| Agent scrutiny | Flags missing or failed checks, unresolved blockers, stale task context, and completion claims that conflict with recorded evidence. |
+| Now | Shows the explicit current goal, latest observed result, genuine blockers and risks, and backlog. |
+| Prepare | Builds a readable `context_pack.v2` brief and auditable manifest for one task and target-model profile. |
+| Runs | Shows recorded commands, changed files, checks, outcomes, and honest comparison readiness. |
+| Explain | Uses the knowledge graph to show why evidence and relationships matter without making the graph the product. |
+| Sources and connectors | Keeps raw evidence, revision history, access boundaries, and provenance inspectable. |
 | Local harness | Wraps one user-supplied worker command and records bounded output, Git changes, checks, and outcome evidence. |
-| Learning loop | Keeps unresolved work visible and extracts reviewable playbooks from verified runs. |
-| Query | Returns source-backed answers with a `query.v1` facts-used trace. |
-| Interfaces | React app, FastAPI API, `ctxe` CLI, and MCP server. |
-| Storage | SQLite for local development; PostgreSQL/pgvector in Docker deployments. |
+
+The product is available through the React app, FastAPI API, `ctxe` CLI, and MCP
+server. Local development uses SQLite; Docker deployments can use
+PostgreSQL/pgvector.
 
 ## Local agent harness
 
-The harness does not choose an agent or provider. You supply the command. Context
-Engine prepares the brief, exposes it to the worker, observes the repository, and
-stores factual run evidence.
+You choose the model, provider, and worker command. Context Engine prepares the
+brief, exposes it to the worker, observes the repository, and stores factual run
+evidence.
 
 ```bash
 ctxe harness run "fix the selected task" \
@@ -87,12 +111,7 @@ ctxe harness run "fix the selected task" \
 ```
 
 `--verify` is explicit permission to run the required checks in the compiled
-brief. Without it, the run is recorded but may remain unverified.
-
-The broader goal is to test whether better context and stricter execution help an
-older or cheaper model perform closer to a newer model on an existing project.
-The measurement tools now exist; this repository does **not** yet contain evidence
-of model parity.
+brief. Without it, those checks are not executed.
 
 See [Local Agent Harness](docs/agent-harness.md) for the contract and limits.
 
@@ -113,7 +132,7 @@ when configured. It does not mean public onboarding is finished.
 
 Demo data never marks a connector as authenticated or connected.
 
-## Current limits
+## Honest limits
 
 - The product UI prepares and copies an agent brief; it does not send it
   automatically.
@@ -123,6 +142,8 @@ Demo data never marks a connector as authenticated or connected.
 - Live retrieval is limited to the local repository and configured manual-token
   GitHub access.
 - Captured command output and repository inspection are deliberately bounded.
+- Model-lift reports describe observed runs. They do not yet prove that an older
+  model matches a newer one because of Context Engine.
 - Public setup, hosted operation, and production deployment guidance are unfinished.
 
 ## Developer surface
@@ -154,8 +175,8 @@ ctxe eval harness
 ctxe mcp
 ```
 
-The MCP server can prepare/query context and record run evidence. It cannot edit
-code, run shell commands, push commits, or write to external providers. See
+The MCP server can prepare or query context and record run evidence. It cannot
+edit code, run shell commands, push commits, or write to external providers. See
 [MCP](docs/mcp.md) and [MCP examples](examples/mcp/).
 
 ## Setup
