@@ -544,7 +544,7 @@ class Claim(Base):
     revisions: Mapped[list["ClaimRevision"]] = orm_relationship(
         back_populates="claim",
         foreign_keys="ClaimRevision.claim_id",
-        order_by="ClaimRevision.created_at",
+        order_by="(ClaimRevision.created_at, ClaimRevision.id)",
     )
     components: Mapped[list["Component"]] = orm_relationship(back_populates="claim")
 

@@ -183,7 +183,7 @@ async def test_claim_revisions_are_append_only(db_session):
         await db_session.scalars(
             select(ClaimRevision)
             .where(ClaimRevision.claim_id == claim.id)
-            .order_by(ClaimRevision.created_at)
+            .order_by(ClaimRevision.created_at, ClaimRevision.id)
         )
     ).all()
     assert [revision.value for revision in revisions] == ["Use OAuth2.", "Use OIDC."]
