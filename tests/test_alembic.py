@@ -68,6 +68,9 @@ def test_alembic_upgrade_bootstraps_current_sqlite_schema(tmp_path):
 
         with engine.connect() as conn:
             version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert version == "0006_workspace_goals"
+        workspace_columns = {column["name"] for column in inspector.get_columns("workspaces")}
+        assert {"kind", "status", "archived_at"} <= workspace_columns
+
+        assert version == "0007_workspace_lifecycle"
     finally:
         engine.dispose()

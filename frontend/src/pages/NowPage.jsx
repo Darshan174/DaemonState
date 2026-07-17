@@ -68,6 +68,7 @@ export default function NowPage() {
   const latestOutcome = digest.oversight?.latest_outcome;
   const repoPath = digest.scope?.project_paths?.[0];
   const sourceCount = Number(digest.scope?.included_source_count || 0);
+  const unassignedSessionCount = Number(digest.scope?.unknown_relevance_source_count || 0);
 
   async function chooseCard(card) {
     await setCurrentGoal.mutateAsync({
@@ -112,6 +113,16 @@ export default function NowPage() {
           </Link>
         </div>
       </header>
+
+      {unassignedSessionCount > 0 ? (
+        <div className="flex flex-col justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-amber-950 dark:border-amber-900/60 dark:bg-amber-950/25 dark:text-amber-100 sm:flex-row sm:items-center">
+          <div>
+            <p className="text-xs font-black">{unassignedSessionCount} AI session{unassignedSessionCount === 1 ? " is" : "s are"} not assigned to this project</p>
+            <p className="mt-0.5 text-[11px] leading-5 opacity-75">Visible for review, but excluded from project health, goal suggestions, and compiled project truth until relevance is proven.</p>
+          </div>
+          <Link to="/app/explain" className="shrink-0 text-xs font-black underline underline-offset-4">Review evidence</Link>
+        </div>
+      ) : null}
 
       <section className="grid gap-4 lg:grid-cols-[1.55fr_.95fr]">
         <article className="rounded-2xl border border-[#d8d8cf] bg-[#fbfbf6] p-6 shadow-sm dark:border-[#292925] dark:bg-[#141411]">

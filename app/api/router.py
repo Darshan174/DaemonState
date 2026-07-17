@@ -2,7 +2,20 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api import agents_api, connectors, context, context_digest, demo, graph, models_api, query, repo, sources, workspace_goals
+from app.api import (
+    agents_api,
+    connectors,
+    context,
+    context_digest,
+    demo,
+    graph,
+    models_api,
+    query,
+    repo,
+    sources,
+    workspace_goals,
+    workspaces,
+)
 
 api_router = APIRouter()
 api_router.include_router(sources.router, prefix="", tags=["sources"])
@@ -10,6 +23,7 @@ api_router.include_router(graph.router, prefix="", tags=["graph"])
 api_router.include_router(context_digest.router, prefix="", tags=["context"])
 api_router.include_router(context.router, prefix="", tags=["context"])
 api_router.include_router(workspace_goals.router, prefix="", tags=["workspaces"])
+api_router.include_router(workspaces.router, prefix="", tags=["workspaces"])
 api_router.include_router(query.router, prefix="", tags=["query"])
 api_router.include_router(repo.router, prefix="", tags=["repo"])
 api_router.include_router(connectors.router, prefix="", tags=["connectors"])

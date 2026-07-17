@@ -292,6 +292,14 @@ export function useWorkspaces() {
   });
 }
 
+export function useAllWorkspaces() {
+  return useQuery({
+    queryKey: ["workspaces", "all"],
+    queryFn: () => api.get(`${FOUNDER_WORKFLOW_API.workspaces}?include_archived=true`),
+    retry: 1,
+  });
+}
+
 export function useCreateWorkspace() {
   const qc = useQueryClient();
   return useMutation({
@@ -312,6 +320,69 @@ export function useCreateWorkspace() {
       }
       qc.invalidateQueries({ queryKey: ["workspaces"] });
     },
+  });
+}
+
+export async function createIndexedProject({ name, repo_path }, client = api) {
+  const workspace = await client.post(FOUNDER_WORKFLOW_API.workspaces, {
+    name,
+    kind: "project",
+  });
+  try {
+    const repository = await client.post("/repo/index", {
+      workspace_id: workspace.id,
+      repo_path,
+    });
+    return { workspace, repository };
+  } catch (error) {
+    try {
+      const visibleWorkspaces = await client.get(
+        `${FOUNDER_WORKFLOW_API.workspaces}?include_archived=true`,
+      );
+      const recovered = visibleWorkspaces.find(
+        (candidate) => candidate.id === workspace.id && candidate.repo_path,
+      );
+      if (recovered) {
+        return { workspace: recovered, repository: null, recovered: true };
+      }
+      await client.patch(`/workspaces/${workspace.id}`, { status: "archived" });
+      await client.delete(
+        `/workspaces/${workspace.id}?confirm_name=${encodeURIComponent(workspace.name)}`,
+      );
+    } catch (cleanupError) {
+      error.createdWorkspace = workspace;
+      error.cleanupError = cleanupError;
+    }
+    throw error;
+  }
+}
+
+export function useCreateProjectWorkspace() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: createIndexedProject,
+    onSuccess: ({ workspace }) => {
+      if (workspace?.id) localStorage.setItem(LS_KEY, workspace.id);
+      qc.invalidateQueries({ queryKey: ["workspaces"] });
+    },
+    onError: () => qc.invalidateQueries({ queryKey: ["workspaces"] }),
+  });
+}
+
+export function useUpdateWorkspace() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...body }) => api.patch(`/workspaces/${id}`, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["workspaces"] }),
+  });
+}
+
+export function useDeleteWorkspace() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, confirmName }) =>
+      api.delete(`/workspaces/${id}?confirm_name=${encodeURIComponent(confirmName)}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["workspaces"] }),
   });
 }
 

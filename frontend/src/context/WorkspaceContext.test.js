@@ -12,8 +12,12 @@ describe("resolveWorkspaceId", () => {
     expect(resolveWorkspaceId(null, null)).toBeNull();
   });
 
-  it("auto-selects the only workspace", () => {
+  it("auto-selects the only real project", () => {
     expect(resolveWorkspaceId([workspaces[0]], null)).toBe("ws-default");
+  });
+
+  it("does not silently enter the only sample workspace", () => {
+    expect(resolveWorkspaceId([{ id: "demo", kind: "demo" }], null)).toBeNull();
   });
 
   it("uses a persisted selection when it still exists", () => {

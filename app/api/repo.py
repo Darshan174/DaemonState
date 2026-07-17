@@ -8,13 +8,16 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies import get_access_scope
 from app.database import get_db_session
 from app.models import Workspace
+from app.services.access import AccessScope
 from app.services.ingest import IngestionService
 from app.services.repo_indexer import PROJECT_ROOT_MARKERS, RepoFrame, RepoIndexer
 from app.services.source_revisions import ingest_source_document_revision
 
 router = APIRouter()
+
 
 class RepoIndexRequest(BaseModel):
     workspace_id: UUID
@@ -42,9 +45,13 @@ class RepoIndexResponse(BaseModel):
 async def index_repo(
     payload: RepoIndexRequest,
     session: AsyncSession = Depends(get_db_session),
+    access_scope: AccessScope = Depends(get_access_scope),
 ) -> RepoIndexResponse:
     """Validate and persist one local repository as workspace project evidence."""
-    if await session.get(Workspace, payload.workspace_id) is None:
+    if (
+        not access_scope.allows_workspace(payload.workspace_id)
+        or await session.get(Workspace, payload.workspace_id) is None
+    ):
         raise HTTPException(status_code=404, detail="Workspace not found")
 
     requested_root = Path(payload.repo_path).expanduser().resolve()

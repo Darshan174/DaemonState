@@ -1,72 +1,138 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useLocation } from "react-router-dom";
+import { Beaker, ChevronDown, FolderGit2, Plus, Settings2 } from "lucide-react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useWorkspaces } from "../api/hooks";
-import { useWorkspaceSelection, resolveWorkspaceId } from "../context/WorkspaceContext";
+import { resolveWorkspaceId, useWorkspaceSelection } from "../context/WorkspaceContext";
 
-/**
- * Dropdown workspace switcher for the top bar.
- * Persists selection to localStorage and invalidates workspace-scoped queries on change.
- */
+function repoLabel(workspace) {
+  if (!workspace.repo_path) return workspace.kind === "demo" ? "Sample data" : "No repo connected";
+  return workspace.repo_path.split(/[\\/]/).filter(Boolean).at(-1) || workspace.repo_path;
+}
+
 export default function WorkspaceSwitcher({ variant = "header" }) {
-  const { data: workspaces, isLoading, isError } = useWorkspaces();
+  const { data: workspaces = [], isLoading, isError } = useWorkspaces();
   const { selectedId, setSelectedId } = useWorkspaceSelection();
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
   const qc = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
-
-  // Reconcile: if stored selection is stale (deleted workspace), auto-correct.
-  // With multiple workspaces we intentionally require an explicit selection.
   const resolved = resolveWorkspaceId(workspaces, selectedId);
+  const selected = workspaces.find((workspace) => workspace.id === resolved) || null;
+  const projects = workspaces.filter((workspace) => !["demo", "sandbox"].includes(workspace.kind));
+  const samples = workspaces.filter((workspace) => ["demo", "sandbox"].includes(workspace.kind));
+
   useEffect(() => {
-    if (resolved && resolved !== selectedId) {
-      setSelectedId(resolved);
-    }
+    if (resolved && resolved !== selectedId) setSelectedId(resolved);
   }, [resolved, selectedId, setSelectedId]);
 
-  if (isLoading || isError || !workspaces || workspaces.length === 0) return null;
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOutside = (event) => {
+      if (!rootRef.current?.contains(event.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", closeOutside);
+    return () => document.removeEventListener("mousedown", closeOutside);
+  }, [open]);
 
-  const handleChange = (e) => {
-    const newId = e.target.value;
-    setSelectedId(newId);
-    // Invalidate all workspace-scoped queries so they refetch with the new workspace
-    qc.invalidateQueries({ queryKey: ["dashboard"] });
-    qc.invalidateQueries({ queryKey: ["models"] });
-    qc.invalidateQueries({ queryKey: ["model"] });
-    qc.invalidateQueries({ queryKey: ["model-relationships"] });
-    qc.invalidateQueries({ queryKey: ["connectors"] });
-    qc.invalidateQueries({ queryKey: ["timeline"] });
-    qc.invalidateQueries({ queryKey: ["connector-processing-summary"] });
-    qc.invalidateQueries({ queryKey: ["knowledge-graph"] });
-    qc.invalidateQueries({ queryKey: ["graph-slice"] });
-    // If on a model detail page, navigate away — that model belongs to the old workspace
-    if (location.pathname.startsWith("/app/model/")) {
-      navigate("/app/models");
-    }
-  };
+  function selectWorkspace(workspaceId) {
+    setSelectedId(workspaceId);
+    setOpen(false);
+    qc.invalidateQueries();
+    if (location.pathname.startsWith("/app/model/")) navigate("/app/models");
+  }
+
+  function go(path) {
+    setOpen(false);
+    navigate(path);
+  }
+
+  if (isLoading) {
+    return <div className="h-9 w-full animate-pulse rounded-md bg-[#e8e8e0] dark:bg-[#1f1f1b]" />;
+  }
 
   return (
-    <div className={variant === "sidebar" ? "space-y-2" : "flex min-w-0 items-center gap-2"}>
-      <label className={variant === "sidebar" ? "block px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#8a8a80] dark:text-[#77776e]" : "hidden text-xs font-semibold text-slate-500 dark:text-neutral-500 xl:inline"}>
+    <div ref={rootRef} className={`relative min-w-0 ${variant === "sidebar" ? "space-y-2" : "flex items-center gap-2"}`}>
+      <label className={variant === "sidebar" ? "block px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#8a8a80] dark:text-[#77776e]" : "sr-only"}>
         Workspace
       </label>
-      <select
-        value={resolved || ""}
-        onChange={handleChange}
-        aria-label="Workspace"
-        className={`${variant === "sidebar" ? "w-full" : "max-w-[150px] sm:max-w-[200px]"} truncate rounded-md border border-[#d9d9d0] bg-[#fbfbf6] px-3 py-2 text-xs font-semibold text-[#4f4f48] transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500/40 dark:border-[#35352f] dark:bg-[#141411] dark:text-[#d0d0c7]`}
+      <button
+        type="button"
+        aria-label="Choose workspace"
+        aria-expanded={open}
+        aria-haspopup="menu"
+        onClick={() => setOpen((value) => !value)}
+        className={`${variant === "sidebar" ? "w-full" : "max-w-[190px] sm:max-w-[240px]"} flex h-10 min-w-0 items-center gap-2 rounded-md border border-[#d9d9d0] bg-[#fbfbf6] px-2.5 text-left transition hover:border-[#bdbdb4] focus:outline-none focus:ring-2 focus:ring-brand-500/40 dark:border-[#35352f] dark:bg-[#141411] dark:hover:border-[#505048]`}
       >
-        {!resolved && workspaces.length > 1 ? (
-          <option value="" disabled>
-            Select workspace
-          </option>
-        ) : null}
-        {workspaces.map((w) => (
-          <option key={w.id} value={w.id}>
-            {w.name}
-          </option>
-        ))}
-      </select>
+        {selected?.kind === "demo" || selected?.kind === "sandbox" ? (
+          <Beaker className="h-4 w-4 shrink-0 text-[#77776e]" />
+        ) : (
+          <FolderGit2 className="h-4 w-4 shrink-0 text-[#68685f] dark:text-[#a2a298]" />
+        )}
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-xs font-semibold text-[#383832] dark:text-[#d0d0c7]">
+            {selected?.name || (workspaces.length ? "Choose project" : "Add project")}
+          </span>
+          {variant === "sidebar" && selected ? (
+            <span className="block truncate text-[10px] text-[#8a8a80] dark:text-[#77776e]">{repoLabel(selected)}</span>
+          ) : null}
+        </span>
+        <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-[#8a8a80] transition ${open ? "rotate-180" : ""}`} />
+      </button>
+
+      {open ? (
+        <div
+          role="menu"
+          className={`absolute z-50 w-[min(320px,calc(100vw-2rem))] overflow-hidden rounded-xl border border-[#d9d9d0] bg-[#fbfbf6] shadow-2xl dark:border-[#35352f] dark:bg-[#141411] ${variant === "sidebar" ? "bottom-[calc(100%+8px)] left-0" : "right-0 top-[calc(100%+8px)]"}`}
+        >
+          {isError ? (
+            <p className="px-3 py-4 text-xs font-semibold text-red-600 dark:text-red-400">Workspaces could not be loaded.</p>
+          ) : (
+            <div className="max-h-72 overflow-y-auto p-2">
+              <WorkspaceGroup label="Projects" workspaces={projects} selectedId={resolved} onSelect={selectWorkspace} />
+              <WorkspaceGroup label="Samples" workspaces={samples} selectedId={resolved} onSelect={selectWorkspace} sample />
+              {!workspaces.length ? (
+                <p className="px-2 py-4 text-xs leading-5 text-[#77776e]">No projects yet. Connect a local repository to start with real evidence.</p>
+              ) : null}
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-1 border-t border-[#d9d9d0] p-2 dark:border-[#292925]">
+            <button type="button" role="menuitem" onClick={() => go("/app/workspaces?new=1")} className="flex items-center gap-2 rounded-md px-2.5 py-2 text-xs font-bold text-[#4f4f48] hover:bg-[#e8e8e0] dark:text-[#d0d0c7] dark:hover:bg-[#1f1f1b]">
+              <Plus className="h-3.5 w-3.5" /> Add project
+            </button>
+            <button type="button" role="menuitem" onClick={() => go("/app/workspaces")} className="flex items-center gap-2 rounded-md px-2.5 py-2 text-xs font-bold text-[#4f4f48] hover:bg-[#e8e8e0] dark:text-[#d0d0c7] dark:hover:bg-[#1f1f1b]">
+              <Settings2 className="h-3.5 w-3.5" /> Manage
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
+  );
+}
+
+function WorkspaceGroup({ label, workspaces, selectedId, onSelect, sample = false }) {
+  if (!workspaces.length) return null;
+  return (
+    <section className="mb-2 last:mb-0">
+      <p className="px-2 pb-1 pt-1 text-[9px] font-bold uppercase tracking-[0.16em] text-[#8a8a80]">{label}</p>
+      {workspaces.map((workspace) => (
+        <button
+          key={workspace.id}
+          type="button"
+          role="menuitemradio"
+          aria-checked={workspace.id === selectedId}
+          onClick={() => onSelect(workspace.id)}
+          className={`flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left ${workspace.id === selectedId ? "bg-[#e8e8e0] dark:bg-[#24241f]" : "hover:bg-[#efefe8] dark:hover:bg-[#1f1f1b]"}`}
+        >
+          {sample ? <Beaker className="h-4 w-4 shrink-0 text-[#8a8a80]" /> : <FolderGit2 className="h-4 w-4 shrink-0 text-[#68685f] dark:text-[#a2a298]" />}
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-xs font-bold text-[#383832] dark:text-[#e1e1d8]">{workspace.name}</span>
+            <span className="block truncate text-[10px] text-[#8a8a80] dark:text-[#77776e]">{repoLabel(workspace)}</span>
+          </span>
+          {sample ? <span className="rounded bg-[#e8e8e0] px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide text-[#77776e] dark:bg-[#292925]">sample</span> : null}
+        </button>
+      ))}
+    </section>
   );
 }

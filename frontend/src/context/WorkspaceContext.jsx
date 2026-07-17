@@ -40,7 +40,8 @@ export function useWorkspaceSelection() {
 /**
  * Given a workspaces array, resolve which ID should be active:
  * - If selectedId exists in the list, use it.
- * - Otherwise auto-select only when there is exactly one workspace.
+ * - Otherwise auto-select only when there is exactly one real project.
+ * - Never silently enter a demo or sandbox workspace.
  * - When multiple workspaces exist and no persisted selection is present,
  *   require an explicit user choice instead of silently picking one.
  * Returns null if no workspaces.
@@ -48,6 +49,9 @@ export function useWorkspaceSelection() {
 export function resolveWorkspaceId(workspaces, selectedId) {
   if (!workspaces || workspaces.length === 0) return null;
   if (selectedId && workspaces.some((w) => w.id === selectedId)) return selectedId;
-  if (workspaces.length === 1) return workspaces[0].id;
+  const projects = workspaces.filter((workspace) =>
+    !["demo", "sandbox"].includes(workspace.kind),
+  );
+  if (projects.length === 1) return projects[0].id;
   return null;
 }
