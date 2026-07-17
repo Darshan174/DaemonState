@@ -323,7 +323,7 @@ export function useCreateWorkspace() {
   });
 }
 
-export async function createIndexedProject({ name, repo_path }, client = api) {
+export async function createIndexedProject({ name, repo_path, client = api }) {
   const workspace = await client.post(FOUNDER_WORKFLOW_API.workspaces, {
     name,
     kind: "project",
@@ -360,7 +360,10 @@ export async function createIndexedProject({ name, repo_path }, client = api) {
 export function useCreateProjectWorkspace() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: createIndexedProject,
+    // React Query passes a mutation context as the second argument. Keep the
+    // injectable API client private to direct tests instead of treating that
+    // context object as the client.
+    mutationFn: (variables) => createIndexedProject(variables),
     onSuccess: ({ workspace }) => {
       if (workspace?.id) localStorage.setItem(LS_KEY, workspace.id);
       qc.invalidateQueries({ queryKey: ["workspaces"] });
