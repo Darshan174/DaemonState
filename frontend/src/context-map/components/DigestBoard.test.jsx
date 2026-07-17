@@ -114,6 +114,53 @@ describe("DigestBoard", () => {
     expect(container.querySelectorAll("[data-component-line]")).toHaveLength(0);
   });
 
+  it("renders contained architecture as a parent envelope instead of another generic arrow", () => {
+    const repository = digestCard({
+      id: "code-repository",
+      type: "code_area",
+      category: "code_area",
+      title: "Repository: context-engine",
+      summary: "The indexed repository boundary.",
+      attention_score: 100,
+    });
+    const api = digestCard({
+      id: "code-api",
+      type: "code_area",
+      category: "code_area",
+      title: "API layer",
+      summary: "FastAPI routes and services.",
+      attention_score: 90,
+    });
+    const partOf = {
+      id: "link-contained",
+      source_card_id: "code-api",
+      target_card_id: "code-repository",
+      relationship_type: "part_of",
+      label: "part of",
+    };
+    const { container } = renderBoard({ digest: { ...digest, cards: [repository, api], links: [partOf] } });
+
+    const envelope = container.querySelector("[data-semantic-container]");
+    expect(envelope).toHaveAttribute("data-parent-node", "code-repository");
+    expect(envelope).toHaveAttribute("data-child-node", "code-api");
+    expect(container.querySelector('line[data-relationship-type="part_of"]')).not.toBeInTheDocument();
+  });
+
+  it("uses distinct visual grammar for contradictions and supersession", () => {
+    const { container } = renderBoard({
+      digest: {
+        ...digest,
+        links: [
+          { ...digest.links[0], id: "conflict", relationship_type: "contradicts" },
+          { ...digest.links[0], id: "replacement", relationship_type: "supersedes" },
+        ],
+      },
+    });
+
+    expect(container.querySelector('[data-relationship-visual="contradiction"] line')).toHaveAttribute("stroke-dasharray", "7 4");
+    expect(container.querySelector('[data-relationship-visual="supersession"] line')).toHaveAttribute("stroke-dasharray", "9 4");
+  });
+
   it("keeps the default project map free of the old control-heavy UI", () => {
     renderBoard();
 
@@ -339,7 +386,7 @@ describe("DigestBoard", () => {
       onOpenLoops,
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Open project open loops, 3 unresolved" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open unresolved work, 3 items" }));
     expect(onOpenLoops).toHaveBeenCalledOnce();
     expect(container.querySelector('[data-graph-node="loop-1"]')).not.toBeInTheDocument();
   });

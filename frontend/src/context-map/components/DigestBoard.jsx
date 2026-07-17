@@ -24,6 +24,7 @@ import {
 import {
   MAP_HEIGHT,
   MAP_LANE_LIMITS,
+  MAP_NODE_SIZE,
   MAP_WIDTH,
   MAP_ZONES,
   positionNodes,
@@ -243,6 +244,12 @@ export default function DigestBoard({
               style={{ transform: `translate3d(calc(-50% + ${pan.x}px), calc(-50% + ${pan.y}px), 0) scale(${zoom})` }}
             >
               <ZoneBackdrops projection={projection} />
+              <SemanticContainers
+                edges={projection.edges}
+                nodeById={nodeById}
+                selectedCardId={selectedCardId}
+                matchesSearch={matchesSearch}
+              />
               <EvidenceEdges
                 edges={projection.edges}
                 nodeById={nodeById}
@@ -311,7 +318,7 @@ function ProjectBar({ workspaceName, objectiveText, oversight, generatedAt, node
           {monitoringMeta ? <span aria-hidden="true" className={`hidden truncate text-[9px] font-semibold md:inline ${monitoringMeta.textTone}`}>{monitoringMeta.label}</span> : null}
         </div>
         <div className="mt-0.5 flex items-baseline gap-2">
-          <h1 className="text-sm font-extrabold">Project map</h1>
+          <h1 className="text-sm font-extrabold">Explain</h1>
           <span className="hidden text-[9px] font-medium text-[#929289] sm:inline">{nodeCount} records · {edgeCount} sourced link{edgeCount === 1 ? "" : "s"}{observed ? ` · ${observed}` : ""}</span>
         </div>
         {focus ? (
@@ -325,8 +332,8 @@ function ProjectBar({ workspaceName, objectiveText, oversight, generatedAt, node
       </div>
 
       {openLoopCount > 0 || pendingPlaybookCount > 0 ? (
-        <button data-project-attention type="button" onClick={onOpenLoops} disabled={!onOpenLoops} aria-label={openLoopCount > 0 ? `Open project open loops, ${openLoopCount} unresolved` : `Review verified agent steps, ${pendingPlaybookCount} pending`} className="shrink-0 rounded-full bg-amber-100 px-2 py-1 text-[9px] font-black text-amber-800 transition enabled:hover:ring-1 enabled:hover:ring-amber-400 disabled:cursor-default dark:bg-amber-950/50 dark:text-amber-200">
-          {openLoopCount > 0 ? `Open loops ${openLoopCount}` : `Review steps ${pendingPlaybookCount}`}
+        <button data-project-attention type="button" onClick={onOpenLoops} disabled={!onOpenLoops} aria-label={openLoopCount > 0 ? `Open unresolved work, ${openLoopCount} items` : `Review verified agent steps, ${pendingPlaybookCount} pending`} className="shrink-0 rounded-full bg-amber-100 px-2 py-1 text-[9px] font-black text-amber-800 transition enabled:hover:ring-1 enabled:hover:ring-amber-400 disabled:cursor-default dark:bg-amber-950/50 dark:text-amber-200">
+          {openLoopCount > 0 ? `Unresolved ${openLoopCount}` : `Review steps ${pendingPlaybookCount}`}
         </button>
       ) : null}
 
@@ -470,6 +477,37 @@ function ZoneBackdrops({ projection }) {
   });
 }
 
+function SemanticContainers({ edges, nodeById, selectedCardId, matchesSearch }) {
+  const containers = containmentGroups(edges, nodeById);
+  if (!containers.length) return null;
+  return (
+    <svg className="pointer-events-none absolute inset-0 h-full w-full overflow-visible" viewBox={`0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`} preserveAspectRatio="none" aria-label={`${containers.length} containment group${containers.length === 1 ? "" : "s"}`}>
+      {containers.map(({ parent, children, edges: groupEdges, x, y, width, height }) => {
+        const childIds = children.map((child) => child.id);
+        const selected = selectedCardId && (parent.id === selectedCardId || childIds.includes(selectedCardId));
+        const subdued = (selectedCardId && !selected) || !matchesSearch(parent.card) || children.every((child) => !matchesSearch(child.card));
+        return (
+          <g
+            key={`container:${parent.id}`}
+            data-semantic-container
+            data-relationship-type="contains"
+            data-relationship-count={groupEdges.length}
+            data-parent-node={parent.id}
+            data-child-node={children[0]?.id}
+            data-child-nodes={childIds.join(" ")}
+            opacity={subdued ? 0.08 : selected ? 0.9 : 0.52}
+          >
+            <rect x={x} y={y} width={width} height={height} rx="18" className="fill-sky-100/25 stroke-sky-500 dark:fill-sky-950/15 dark:stroke-sky-400" strokeWidth={selected ? 2.2 : 1.4} strokeDasharray="5 3" vectorEffect="non-scaling-stroke" />
+            <text x={x + 12} y={y + 15} className="fill-sky-700 text-[8px] font-black uppercase tracking-[0.1em] dark:fill-sky-300">
+              {compactLabel(nodeTitle(parent.card), 46)} · contains {children.length}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 function EvidenceEdges({ edges, nodeById, selectedCardId, matchesSearch }) {
   return (
     <svg className="pointer-events-none absolute inset-0 h-full w-full overflow-visible" viewBox={`0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`} preserveAspectRatio="none" aria-label={`${edges.length} sourced relationships`}>
@@ -482,15 +520,16 @@ function EvidenceEdges({ edges, nodeById, selectedCardId, matchesSearch }) {
         const source = nodeById.get(edge.source_card_id);
         const target = nodeById.get(edge.target_card_id);
         if (!source || !target) return null;
+        if (containmentRelation(edge, nodeById)) return null;
         const selected = selectedCardId && (edge.source_card_id === selectedCardId || edge.target_card_id === selectedCardId);
         const subdued = selectedCardId && !selected;
         const searchSubdued = !matchesSearch(source.card) || !matchesSearch(target.card);
-        const risk = ["blocks", "blocked_by", "contradicts", "conflicts_with"].includes(edge.relationship_type);
-        const opacity = subdued || searchSubdued ? 0.08 : selected ? 0.9 : 0.32;
+        const visual = relationshipVisual(edge.relationship_type);
+        const opacity = subdued || searchSubdued ? 0.08 : selected ? 0.92 : visual.opacity;
         const midX = (source.x + target.x) / 2;
         const midY = (source.y + target.y) / 2;
         return (
-          <g key={edge.id} className={risk ? "text-red-500" : "text-[#77776e] dark:text-[#8f8f86]"}>
+          <g key={edge.id} className={visual.tone} data-relationship-visual={visual.kind}>
             <line
               data-evidence-edge
               data-relationship-type={edge.relationship_type}
@@ -499,7 +538,8 @@ function EvidenceEdges({ edges, nodeById, selectedCardId, matchesSearch }) {
               x2={target.x}
               y2={target.y}
               stroke="currentColor"
-              strokeWidth={selected ? 2.2 : 1.35}
+              strokeWidth={selected ? Math.max(2.2, visual.width) : visual.width}
+              strokeDasharray={visual.dash || undefined}
               opacity={opacity}
               markerEnd="url(#project-map-arrow)"
               vectorEffect="non-scaling-stroke"
@@ -515,6 +555,65 @@ function EvidenceEdges({ edges, nodeById, selectedCardId, matchesSearch }) {
       })}
     </svg>
   );
+}
+
+function containmentRelation(edge, nodeById) {
+  const type = String(edge.relationship_type || "").toLowerCase();
+  if (!["contains", "part_of", "contained_by"].includes(type)) return null;
+  const source = nodeById.get(edge.source_card_id);
+  const target = nodeById.get(edge.target_card_id);
+  if (!source || !target) return null;
+  const parent = type === "contains" ? source : target;
+  const child = type === "contains" ? target : source;
+  if (parent.laneId !== child.laneId) return null;
+  return { edge, parent, child };
+}
+
+function containmentGroups(edges, nodeById) {
+  const byParent = new Map();
+  edges.forEach((edge) => {
+    const relation = containmentRelation(edge, nodeById);
+    if (!relation) return;
+    const group = byParent.get(relation.parent.id) || { parent: relation.parent, children: new Map(), edges: [] };
+    group.children.set(relation.child.id, relation.child);
+    group.edges.push(edge);
+    byParent.set(relation.parent.id, group);
+  });
+  return [...byParent.values()].map((group) => {
+    const children = [...group.children.values()];
+    const nodes = [group.parent, ...children];
+    const horizontalPadding = 13;
+    const topPadding = 25;
+    const bottomPadding = 13;
+    const minX = Math.min(...nodes.map((node) => node.x)) - MAP_NODE_SIZE.width / 2;
+    const maxX = Math.max(...nodes.map((node) => node.x)) + MAP_NODE_SIZE.width / 2;
+    const minY = Math.min(...nodes.map((node) => node.y)) - MAP_NODE_SIZE.height / 2;
+    const maxY = Math.max(...nodes.map((node) => node.y)) + MAP_NODE_SIZE.height / 2;
+    return {
+      parent: group.parent,
+      children,
+      edges: group.edges,
+      x: minX - horizontalPadding,
+      y: minY - topPadding,
+      width: maxX - minX + horizontalPadding * 2,
+      height: maxY - minY + topPadding + bottomPadding,
+    };
+  });
+}
+
+function compactLabel(value, maxLength) {
+  const text = String(value || "Parent");
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1).trim()}…` : text;
+}
+
+function relationshipVisual(type) {
+  const value = String(type || "related_to").toLowerCase();
+  if (["blocks", "blocked_by"].includes(value)) return { kind: "blocking", tone: "text-red-500", width: 2, opacity: 0.62, dash: null };
+  if (["contradicts", "conflicts_with"].includes(value)) return { kind: "contradiction", tone: "text-red-500", width: 1.8, opacity: 0.58, dash: "7 4" };
+  if (["supersedes", "superseded_by"].includes(value)) return { kind: "supersession", tone: "text-violet-500", width: 1.7, opacity: 0.52, dash: "9 4" };
+  if (["depends_on", "enables", "confirms"].includes(value)) return { kind: "dependency", tone: "text-sky-600 dark:text-sky-400", width: 1.55, opacity: 0.46, dash: null };
+  if (["created_from", "generated_by_agent", "implemented_in", "touches_file"].includes(value)) return { kind: "provenance", tone: "text-[#77776e] dark:text-[#8f8f86]", width: 1.2, opacity: 0.3, dash: "2 4" };
+  return { kind: "association", tone: "text-[#77776e] dark:text-[#8f8f86]", width: 1.25, opacity: 0.28, dash: null };
 }
 
 function MapNode({ node, selected, related, searchMatch, onSelect }) {

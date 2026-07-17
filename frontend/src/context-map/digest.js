@@ -449,7 +449,7 @@ function searchableText(card) {
 function displayCandidates(card, intent) {
   const sourceLabels = (card?.provenance || []).map((source) => source.source_label);
   const excerpts = (card?.provenance || []).map((source) => source.excerpt);
-  const base = [card?.title, card?.next_action, card?.summary, ...sourceLabels, ...excerpts];
+  const base = [card?.summary, card?.next_action, card?.title, ...sourceLabels, ...excerpts];
 
   if (intent === "blocker") {
     return [
@@ -526,7 +526,8 @@ export function cleanDisplayText(value) {
     .replace(/https?:\/\/\S+/g, " ")
     .replace(/[*_`#>\[\](){}"]/g, " ")
     .replace(/\b(decision|blocker|risk|task|issue|summary|context)\s*:\s*/gi, "")
-    .replace(/\s*[-\u2013\u2014]\s*/g, " - ")
+    .replace(/\s*[\u2013\u2014]\s*/g, " — ")
+    .replace(/\s+-\s+/g, " — ")
     .replace(/\s+/g, " ")
     .trim()
     .replace(/^[,./\\\s:;!?…\-\u2013\u2014]+/, "")

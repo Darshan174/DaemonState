@@ -34,6 +34,21 @@ export function useRunTimeline(workspaceId, focusComponentId) {
   });
 }
 
+function runOutcomesPath(workspaceId) {
+  const params = new URLSearchParams();
+  if (workspaceId) params.set("workspace_id", workspaceId);
+  return `/context/run-outcomes?${params}`;
+}
+
+export function useRunOutcomes(workspaceId) {
+  return useQuery({
+    queryKey: ["context-run-outcomes", workspaceId],
+    queryFn: () => api.get(runOutcomesPath(workspaceId)),
+    enabled: Boolean(workspaceId),
+    retry: 1,
+  });
+}
+
 function openLoopsPath(workspaceId) {
   const params = new URLSearchParams();
   if (workspaceId) params.set("workspace_id", workspaceId);
