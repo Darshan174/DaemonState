@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 import WorkspacesPage from "./WorkspacesPage";
 
@@ -36,6 +36,28 @@ beforeEach(() => {
   mocks.remove.mockReset().mockResolvedValue(null);
   mocks.create.mockReset();
   mocks.setSelectedId.mockReset();
+});
+
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="location">{location.pathname}</output>;
+}
+
+it("opens an active workspace card on its isolated Now page", async () => {
+  const user = userEvent.setup();
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <MemoryRouter initialEntries={["/app/workspaces"]}>
+        <WorkspacesPage />
+        <LocationProbe />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+
+  await user.click(screen.getByRole("button", { name: "Open Product Tour" }));
+
+  expect(mocks.setSelectedId).toHaveBeenCalledWith("demo");
+  expect(screen.getByTestId("location")).toHaveTextContent("/app");
 });
 
 it("manages active, sample, and archived workspaces without mixing their roles", async () => {

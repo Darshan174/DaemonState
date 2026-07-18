@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import subprocess
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import select
 
 from app.models import CodeEdge, CodeFile, CodeSymbol, Workspace
+from app.services import repo_indexer
 from app.services.repo_indexer import RepoIndexer
 
 
@@ -61,6 +64,81 @@ async def test_indexes_typescript_imports_components_and_routes(tmp_path):
     symbols = {(symbol.symbol_type, symbol.name) for symbol in indexed.symbols}
     assert ("component", "StatusPanel") in symbols
     assert ("function", "helper") in symbols
+
+
+async def test_git_index_respects_ignores_and_keeps_tracked_files(
+    monkeypatch, tmp_path
+):
+    subprocess.run(
+        ["git", "init", "--quiet", str(tmp_path)],
+        check=True,
+        capture_output=True,
+    )
+    (tmp_path / ".gitignore").write_text(
+        ".next/\nignored-cache/\ntracked-cache/\n",
+        encoding="utf-8",
+    )
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    (source_dir / "main.ts").write_text(
+        "export const value = 1;\n",
+        encoding="utf-8",
+    )
+    generated_dir = tmp_path / ".next" / "dev"
+    generated_dir.mkdir(parents=True)
+    (generated_dir / "chunk.js").write_text("x" * 1_000, encoding="utf-8")
+    ignored_dir = tmp_path / "ignored-cache"
+    ignored_dir.mkdir()
+    (ignored_dir / "data.json").write_text("x" * 1_000, encoding="utf-8")
+    tracked_dir = tmp_path / "tracked-cache"
+    tracked_dir.mkdir()
+    (tracked_dir / "kept.ts").write_text(
+        "export const kept = 1;\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "add", "--force", "tracked-cache/kept.ts"],
+        check=True,
+        capture_output=True,
+    )
+    monkeypatch.setattr(repo_indexer, "MAX_INDEXED_BYTES", 80)
+
+    frame = await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
+
+    assert [item.path for item in frame.indexed_files] == [
+        "src/main.ts",
+        "tracked-cache/kept.ts",
+    ]
+
+
+async def test_filesystem_fallback_excludes_generated_directories(
+    monkeypatch, tmp_path
+):
+    # An incomplete .git directory exercises the non-Git fallback used by local folders.
+    (tmp_path / ".git").mkdir()
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    (app_dir / "main.py").write_text("value = 1\n", encoding="utf-8")
+    generated_dir = tmp_path / ".next" / "dev"
+    generated_dir.mkdir(parents=True)
+    (generated_dir / "chunk.js").write_text("x" * 1_000, encoding="utf-8")
+    monkeypatch.setattr(repo_indexer, "MAX_INDEXED_BYTES", 80)
+
+    frame = await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
+
+    assert [item.path for item in frame.indexed_files] == ["app/main.py"]
+
+
+async def test_index_still_rejects_genuine_source_over_aggregate_limit(
+    monkeypatch, tmp_path
+):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "one.py").write_text("x" * 30, encoding="utf-8")
+    (tmp_path / "two.py").write_text("y" * 30, encoding="utf-8")
+    monkeypatch.setattr(repo_indexer, "MAX_INDEXED_BYTES", 40)
+
+    with pytest.raises(ValueError, match="indexing safety limit"):
+        await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
 
 
 async def test_objective_ranking_prefers_core_code_over_generic_test_tokens(tmp_path):

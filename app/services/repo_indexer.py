@@ -25,14 +25,28 @@ from app.time import utc_now
 
 IGNORED_DIRS = {
     ".git",
+    ".gradle",
     ".mypy_cache",
+    ".next",
+    ".nox",
+    ".nuxt",
+    ".output",
+    ".parcel-cache",
     ".pytest_cache",
     ".ruff_cache",
+    ".svelte-kit",
+    ".tox",
+    ".turbo",
     ".venv",
     "__pycache__",
     "build",
+    "coverage",
     "dist",
+    "htmlcov",
     "node_modules",
+    "out",
+    "target",
+    "venv",
 }
 INDEXED_SUFFIXES = {
     ".py",
@@ -1241,9 +1255,85 @@ def _test_reference_resolves_to_target(
             test_path, reference.target_specifier, indexed_by_path
         ) == target_path
     return False
+
+
 def _iter_interesting_files(root: Path) -> list[Path]:
+    candidates = _git_visible_files(root)
+    if candidates is None:
+        candidates = _filesystem_visible_files(root)
+
     files: list[Path] = []
     total_bytes = 0
+    for path in candidates:
+        if path.is_symlink() or _is_in_ignored_directory(root, path):
+            continue
+        if not (
+            path.name in MANIFEST_NAMES
+            or path.suffix in INDEXED_SUFFIXES
+            or ENV_FILE_RE.search(path.as_posix())
+        ):
+            continue
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size > MAX_INDEXED_FILE_BYTES:
+            continue
+        files.append(path)
+        total_bytes += size
+        if len(files) > MAX_INDEXED_FILES:
+            raise ValueError(
+                f"project exceeds the {MAX_INDEXED_FILES:,} indexed-file safety limit"
+            )
+        if total_bytes > MAX_INDEXED_BYTES:
+            raise ValueError(
+                f"project exceeds the {MAX_INDEXED_BYTES // 1_000_000} MB indexing safety limit"
+            )
+    return sorted(files)
+
+
+def _git_visible_files(root: Path) -> list[Path] | None:
+    """Return tracked and non-ignored untracked files, or None outside a Git worktree."""
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "ls-files",
+                "-z",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+            ],
+            check=False,
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+
+    files: list[Path] = []
+    for raw_path in proc.stdout.split(b"\0"):
+        if not raw_path:
+            continue
+        candidate = root / os.fsdecode(raw_path)
+        if candidate.is_symlink():
+            continue
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if not resolved.is_relative_to(root) or not resolved.is_file():
+            continue
+        files.append(resolved)
+    return sorted(set(files))
+
+
+def _filesystem_visible_files(root: Path) -> list[Path]:
+    files: list[Path] = []
     for current_root, dir_names, file_names in os.walk(root, followlinks=False):
         dir_names[:] = sorted(
             name for name in dir_names
@@ -1252,31 +1342,17 @@ def _iter_interesting_files(root: Path) -> list[Path]:
         )
         for file_name in sorted(file_names):
             path = Path(current_root) / file_name
-            if path.is_symlink():
-                continue
-            if not (
-                path.name in MANIFEST_NAMES
-                or path.suffix in INDEXED_SUFFIXES
-                or ENV_FILE_RE.search(path.as_posix())
-            ):
-                continue
-            try:
-                size = path.stat().st_size
-            except OSError:
-                continue
-            if size > MAX_INDEXED_FILE_BYTES:
-                continue
-            files.append(path)
-            total_bytes += size
-            if len(files) > MAX_INDEXED_FILES:
-                raise ValueError(
-                    f"project exceeds the {MAX_INDEXED_FILES:,} indexed-file safety limit"
-                )
-            if total_bytes > MAX_INDEXED_BYTES:
-                raise ValueError(
-                    f"project exceeds the {MAX_INDEXED_BYTES // 1_000_000} MB indexing safety limit"
-                )
+            if not path.is_symlink():
+                files.append(path)
     return sorted(files)
+
+
+def _is_in_ignored_directory(root: Path, path: Path) -> bool:
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return True
+    return any(part in IGNORED_DIRS for part in relative.parts[:-1])
 
 
 def _index_file(root: Path, path: Path) -> IndexedFile | None:

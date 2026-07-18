@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import WorkspaceSwitcher from "./WorkspaceSwitcher";
 import WorkspaceTopicGate from "./WorkspaceTopicGate";
@@ -28,10 +28,14 @@ vi.mock("../context/WorkspaceContext", async () => {
   };
 });
 
-function renderWithProviders(element) {
+function LocationProbe() {
+  return <output data-testid="location">{useLocation().pathname}</output>;
+}
+
+function renderWithProviders(element, initialEntries = ["/app"]) {
   return render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <MemoryRouter>{element}</MemoryRouter>
+      <MemoryRouter initialEntries={initialEntries}>{element}<LocationProbe /></MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -48,7 +52,7 @@ describe("workspace entry flow", () => {
       { id: "project-1", name: "Actual Product", kind: "project", repo_path: "/code/actual-product" },
       { id: "demo-1", name: "Context Engine Demo", kind: "demo" },
     ];
-    renderWithProviders(<WorkspaceSwitcher />);
+    renderWithProviders(<WorkspaceSwitcher />, ["/app/prepare?objective=Old%20workspace"]);
 
     fireEvent.click(screen.getByRole("button", { name: "Choose workspace" }));
     expect(screen.getByText("Projects")).toBeInTheDocument();
@@ -57,6 +61,7 @@ describe("workspace entry flow", () => {
 
     fireEvent.click(screen.getByRole("menuitemradio", { name: /Actual Product/ }));
     expect(mocks.setSelectedId).toHaveBeenCalledWith("project-1");
+    expect(screen.getByTestId("location")).toHaveTextContent("/app");
   });
 
   it("creates and indexes a repository before selecting its workspace", async () => {
