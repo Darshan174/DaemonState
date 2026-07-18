@@ -3,7 +3,7 @@ import { Routes, Route, NavLink, Navigate, Link, useLocation } from "react-route
 import ThemeToggle from "./components/ThemeToggle";
 import CeIcon from "./components/CeIcon";
 import WorkspaceSwitcher from "./components/WorkspaceSwitcher";
-import { useWorkspaces } from "./api/hooks";
+import { useWorkspaceSelection } from "./context/WorkspaceContext";
 import {
   Activity,
   Cable,
@@ -24,6 +24,7 @@ const SourceManager = lazy(() => import("./pages/SourceManager"));
 const Landing      = lazy(() => import("./pages/Landing"));
 const Connectors   = lazy(() => import("./pages/Connectors"));
 const Changes      = lazy(() => import("./pages/Changes"));
+const WorkspacesPage = lazy(() => import("./pages/WorkspacesPage"));
 
 const NAV_ITEMS = [
   { to: "/app", label: "Now", icon: Activity, end: true },
@@ -59,9 +60,8 @@ export default function App() {
 
 function AdminShell() {
   const location = useLocation();
+  const { selectedId } = useWorkspaceSelection();
   const isProjectPage = location.pathname === "/app/explain" || location.pathname === "/app/explain/";
-  const { data: workspaces } = useWorkspaces();
-  const showWorkspaceSwitcher = (workspaces?.length ?? 0) > 1;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try { return localStorage.getItem("ce_sidebar_collapsed") === "true"; }
     catch { return false; }
@@ -106,13 +106,11 @@ function AdminShell() {
         </nav>
 
         <div className="space-y-3 border-t border-[#d9d9d0] pt-4 dark:border-[#292925]">
-          {showWorkspaceSwitcher ? (
-            sidebarCollapsed ? (
-              <button type="button" onClick={toggleSidebar} title="Expand to switch workspace" aria-label="Expand sidebar to switch workspace" className="flex h-9 w-full items-center justify-center rounded-md text-[#68685f] hover:bg-[#e8e8e0] dark:text-[#a2a298] dark:hover:bg-[#1f1f1b]">
-                <Database className="h-4 w-4" />
-              </button>
-            ) : <WorkspaceSwitcher variant="sidebar" />
-          ) : null}
+          {sidebarCollapsed ? (
+            <button type="button" onClick={toggleSidebar} title="Expand to switch workspace" aria-label="Expand sidebar to switch workspace" className="flex h-9 w-full items-center justify-center rounded-md text-[#68685f] hover:bg-[#e8e8e0] dark:text-[#a2a298] dark:hover:bg-[#1f1f1b]">
+              <Database className="h-4 w-4" />
+            </button>
+          ) : <WorkspaceSwitcher variant="sidebar" />}
           <div className={`flex items-center ${sidebarCollapsed ? "justify-center" : "justify-between px-2"}`}>
             <span className={sidebarCollapsed ? "sr-only" : "text-xs font-medium text-[#77776e] dark:text-[#929289]"}>Appearance</span>
             <ThemeToggle />
@@ -121,14 +119,14 @@ function AdminShell() {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="shrink-0 border-b border-[#d9d9d0] bg-[#f7f7f2]/95 backdrop-blur-xl dark:border-[#292925] dark:bg-[#0d0d0b]/95 lg:hidden">
+        <header className="relative z-40 shrink-0 border-b border-[#d9d9d0] bg-[#f7f7f2]/95 backdrop-blur-xl dark:border-[#292925] dark:bg-[#0d0d0b]/95 lg:hidden">
           <div className="flex items-center justify-between gap-3 px-4 py-3 sm:px-6">
             <Link to="/" className="flex min-w-0 items-center gap-2.5">
               <CeIcon size={30} />
               <span className="truncate text-sm font-semibold">Context Engine</span>
             </Link>
             <div className="flex min-w-0 items-center gap-2">
-              {showWorkspaceSwitcher ? <WorkspaceSwitcher /> : null}
+              <WorkspaceSwitcher />
               <ThemeToggle />
             </div>
           </div>
@@ -141,7 +139,7 @@ function AdminShell() {
         {!isProjectPage ? (
           <div className="pointer-events-none absolute inset-x-0 top-0 h-28 border-b border-[#e7e7df] bg-[linear-gradient(180deg,rgba(255,255,255,0.48),rgba(247,247,242,0))] dark:border-[#1d1d1a] dark:bg-[linear-gradient(180deg,rgba(255,255,255,0.025),rgba(13,13,11,0))]" />
         ) : null}
-        <Suspense fallback={<PageLoader />}>
+        <Suspense key={selectedId || "unselected-workspace"} fallback={<PageLoader />}>
           <Routes>
             <Route index                                  element={<NowPage />} />
             <Route path="prepare"                         element={<PreparePage />} />
@@ -155,6 +153,7 @@ function AdminShell() {
             <Route path="connectors"                      element={<Connectors />} />
             <Route path="connectors/:connectorType/runs"  element={<Connectors />} />
             <Route path="changes"                         element={<Changes />} />
+            <Route path="workspaces"                      element={<WorkspacesPage />} />
             <Route path="*"                               element={<Navigate to="/app" replace />} />
           </Routes>
         </Suspense>

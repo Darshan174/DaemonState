@@ -451,39 +451,6 @@ async def _revoke_slack_token(access_token: str) -> dict[str, Any] | None:
     return {"ok": True}
 
 
-# ── Workspace endpoints ────────────────────────────────────────
-
-class WorkspaceCreate(BaseModel):
-    name: str
-    slug: str | None = None
-
-
-@router.get("/workspaces")
-async def list_workspaces(session: AsyncSession = Depends(get_db_session)) -> list[dict]:
-    result = await session.scalars(select(Workspace).order_by(Workspace.created_at))
-    workspaces = list(result)
-    if not workspaces:
-        ws = Workspace(name="Default", slug="default")
-        session.add(ws)
-        await session.commit()
-        await session.refresh(ws)
-        workspaces = [ws]
-    return [{"id": str(ws.id), "name": ws.name, "slug": ws.slug} for ws in workspaces]
-
-
-@router.post("/workspaces", status_code=201)
-async def create_workspace(
-    payload: WorkspaceCreate,
-    session: AsyncSession = Depends(get_db_session),
-) -> dict:
-    slug = payload.slug or payload.name.lower().replace(" ", "-")
-    ws = Workspace(name=payload.name, slug=slug)
-    session.add(ws)
-    await session.commit()
-    await session.refresh(ws)
-    return {"id": str(ws.id), "name": ws.name, "slug": ws.slug}
-
-
 # ── Connector list + setup status ──────────────────────────────
 
 @router.get("/connectors")

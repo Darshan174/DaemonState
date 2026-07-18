@@ -6,17 +6,30 @@ import App from "./App";
 import { ThemeProvider } from "./context/ThemeContext";
 import { WorkspaceProvider } from "./context/WorkspaceContext";
 
+const appMocks = vi.hoisted(() => ({ workspaces: [] }));
+
 vi.mock("./api/hooks", () => ({
-  useWorkspaces: () => ({ data: [], isLoading: false }),
+  useWorkspaces: () => ({ data: appMocks.workspaces, isLoading: false }),
 }));
 
 vi.mock("./pages/ContextMapPage", () => ({
   default: () => <h1>Explain project</h1>,
 }));
 
-vi.mock("./pages/NowPage", () => ({
-  default: () => <h1>Now page</h1>,
-}));
+vi.mock("./pages/NowPage", async () => {
+  const { useState } = await vi.importActual("react");
+  return {
+    default: () => {
+      const [draft, setDraft] = useState("");
+      return (
+        <>
+          <h1>Now page</h1>
+          <input aria-label="Transient goal draft" value={draft} onChange={(event) => setDraft(event.target.value)} />
+        </>
+      );
+    },
+  };
+});
 
 vi.mock("./pages/PreparePage", () => ({
   default: () => <h1>Prepare page</h1>,
@@ -27,6 +40,7 @@ vi.mock("./pages/RunsPage", () => ({
 }));
 
 beforeEach(() => {
+  appMocks.workspaces = [];
   const values = new Map();
   Object.defineProperty(globalThis, "localStorage", {
     configurable: true,
@@ -36,6 +50,38 @@ beforeEach(() => {
       removeItem: (key) => values.delete(key),
     },
   });
+});
+
+it("remounts transient product state when the workspace changes", async () => {
+  appMocks.workspaces = [
+    { id: "workspace-one", name: "Workspace One", kind: "project" },
+    { id: "workspace-two", name: "Workspace Two", kind: "project" },
+  ];
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider>
+        <WorkspaceProvider>
+          <MemoryRouter initialEntries={["/app"]}>
+            <App />
+          </MemoryRouter>
+        </WorkspaceProvider>
+      </ThemeProvider>
+    </QueryClientProvider>,
+  );
+
+  expect(await screen.findByRole("heading", { name: "Now page" })).toBeInTheDocument();
+  fireEvent.click(screen.getAllByRole("button", { name: "Choose workspace" })[0]);
+  fireEvent.click(screen.getByRole("menuitemradio", { name: /Workspace One/ }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Transient goal draft" }), {
+    target: { value: "stale goal from workspace one" },
+  });
+  expect(screen.getByRole("textbox", { name: "Transient goal draft" })).toHaveValue("stale goal from workspace one");
+
+  fireEvent.click(screen.getAllByRole("button", { name: "Choose workspace" })[0]);
+  fireEvent.click(screen.getByRole("menuitemradio", { name: /Workspace Two/ }));
+
+  expect(screen.getByRole("textbox", { name: "Transient goal draft" })).toHaveValue("");
 });
 
 it("makes Now the default and exposes the complete product loop", async () => {

@@ -16,6 +16,7 @@ from app.taxonomy import default_trust_zone_for_source
 
 async def run_migrations(conn: AsyncConnection) -> None:
     await _migrate_connectors_workspace_schema(conn)
+    await _migrate_workspace_lifecycle_schema(conn)
     await _migrate_workspace_ownership_columns(conn)
     await _migrate_sync_jobs_result_metadata(conn)
     await _migrate_sync_jobs_durable_schema(conn)
@@ -38,6 +39,42 @@ async def run_migrations(conn: AsyncConnection) -> None:
     await _migrate_truth_access_schema(conn)
     await _migrate_learning_loop_schema(conn)
     await _migrate_query_and_sync_indexes(conn)
+
+
+async def _migrate_workspace_lifecycle_schema(conn: AsyncConnection) -> None:
+    """Add project/sample identity and archive state to legacy workspaces."""
+    columns = await _get_table_columns(conn, "workspaces")
+    if not columns:
+        return
+    timestamp = "TIMESTAMP" if conn.dialect.name == "postgresql" else "DATETIME"
+    added_kind = "kind" not in columns
+    if added_kind:
+        await conn.execute(text(
+            "ALTER TABLE workspaces ADD COLUMN kind VARCHAR(32) NOT NULL DEFAULT 'project'"
+        ))
+    if "status" not in columns:
+        await conn.execute(text(
+            "ALTER TABLE workspaces ADD COLUMN status VARCHAR(32) NOT NULL DEFAULT 'active'"
+        ))
+    if "archived_at" not in columns:
+        await conn.execute(text(
+            f"ALTER TABLE workspaces ADD COLUMN archived_at {timestamp}"
+        ))
+    if added_kind:
+        await conn.execute(text(
+            "UPDATE workspaces SET kind = 'demo' "
+            "WHERE lower(name) LIKE '%demo%' OR lower(slug) LIKE '%demo%'"
+        ))
+        await conn.execute(text(
+            "UPDATE workspaces SET kind = 'sandbox' "
+            "WHERE lower(name) = 'default' OR lower(slug) = 'default'"
+        ))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_workspaces_kind ON workspaces (kind)"
+    ))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_workspaces_status ON workspaces (status)"
+    ))
 
 
 async def _migrate_workspace_goals_schema(conn: AsyncConnection) -> None:
