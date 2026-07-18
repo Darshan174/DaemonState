@@ -94,27 +94,27 @@ CONNECTOR_CATALOG: dict[str, dict[str, Any]] = {
     },
     "codex": {
         "name": "Codex",
-        "description": "OpenAI Codex sessions — decisions, code plans, and AI reasoning",
+        "description": "Automatically synced local Codex sessions and topics",
         "color": "#10a37f",
         "availability": "available",
         "provider": "native",
-        "provider_label": "Session import",
+        "provider_label": "Automatic local sync",
     },
     "claude": {
         "name": "Claude",
-        "description": "Anthropic Claude conversations — architecture choices and research threads",
+        "description": "Automatically synced local Claude Code sessions and topics",
         "color": "#D97757",
         "availability": "available",
         "provider": "native",
-        "provider_label": "Session import",
+        "provider_label": "Automatic local sync",
     },
     "opencode": {
         "name": "OpenCode",
-        "description": "OpenCode AI coding sessions — terminal context and implementation notes",
+        "description": "Automatically synced local OpenCode sessions and topics",
         "color": "#000000",
         "availability": "available",
         "provider": "native",
-        "provider_label": "Session import",
+        "provider_label": "Automatic local sync",
     },
     "wispr_flow": {
         "name": "Wispr Flow",
@@ -1018,6 +1018,10 @@ class AISessionImportByIdRequest(BaseModel):
     session_id: str
 
 
+class AISessionRefreshLinkedRequest(BaseModel):
+    workspace_id: str
+
+
 @router.post("/connectors/ai-session/ingest")
 async def ingest_ai_session(
     body: AISessionIngestRequest,
@@ -1060,6 +1064,97 @@ async def import_ai_session_by_id(
     )
     result["resolved_from"] = resolved.metadata.get("source_path")
     return result
+
+
+@router.post("/connectors/ai-session/refresh-linked")
+async def refresh_linked_ai_sessions(
+    body: AISessionRefreshLinkedRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    """Refresh only local sessions the user has already imported.
+
+    This is the read-only adapter path used by Now. It never discovers or
+    launches unrelated sessions, and unchanged transcripts remain idempotent.
+    """
+    from app.services.workspace_scope import current_source_documents
+    from app.sync.session_resolvers import SessionResolutionError, resolve_local_ai_session
+
+    workspace = await _get_workspace(body.workspace_id, session)
+    documents = list(await session.scalars(
+        select(SourceDocument)
+        .where(
+            SourceDocument.workspace_id == workspace.id,
+            SourceDocument.source_type == "agent_session",
+        )
+        .order_by(SourceDocument.ingested_at.desc(), SourceDocument.id.desc())
+    ))
+    current, _ = current_source_documents(documents)
+    linked: list[tuple[SourceDocument, dict[str, Any], str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for document in current:
+        metadata = _loads_json_dict(document.metadata_json)
+        connector_type = str(
+            metadata.get("connector_type") or metadata.get("tool") or ""
+        ).strip().lower()
+        if connector_type == "claude_code":
+            connector_type = "claude"
+        session_id = str(metadata.get("session_id") or "").strip()
+        key = (connector_type, session_id)
+        if (
+            connector_type not in AI_SESSION_CONNECTORS
+            or not session_id
+            or not metadata.get("source_path")
+            or key in seen
+        ):
+            continue
+        seen.add(key)
+        linked.append((document, metadata, connector_type, session_id))
+        if len(linked) >= 8:
+            break
+
+    refreshed = 0
+    changed = 0
+    unchanged = 0
+    errors: list[dict[str, str]] = []
+    for document, _, connector_type, session_id in linked:
+        try:
+            resolved = resolve_local_ai_session(connector_type, session_id)
+            if resolved.content.strip() == document.content.strip():
+                refreshed += 1
+                unchanged += 1
+                continue
+            result = await _ingest_ai_session_content(
+                session=session,
+                workspace_id=str(workspace.id),
+                connector_type=connector_type,
+                session_id=session_id,
+                content=resolved.content,
+                metadata_extra=resolved.metadata,
+            )
+        except SessionResolutionError as exc:
+            errors.append({
+                "connector_type": connector_type,
+                "session_id": session_id,
+                "message": str(exc),
+            })
+            continue
+        refreshed += 1
+        ingest = result.get("ingest") or {}
+        changed += max(
+            int(ingest.get("documents_persisted") or 0),
+            int(ingest.get("documents_updated") or 0),
+        )
+        unchanged += int(ingest.get("documents_skipped") or ingest.get("unchanged") or 0)
+
+    return {
+        "workspace_id": str(workspace.id),
+        "linked_sessions": len(linked),
+        "refreshed": refreshed,
+        "changed": changed,
+        "unchanged": unchanged,
+        "errors": errors,
+        "refreshed_at": utc_now().isoformat(),
+    }
 
 
 async def _ingest_ai_session_content(
@@ -1439,13 +1534,26 @@ async def _run_sync_job(
                     workspace_id=connector.workspace_id,
                 )
             elif connector.connector_type in AI_SESSION_CONNECTORS:
-                # AI session connectors ingest inline; sync just re-runs extraction
-                sync_result = {"documents_fetched": 0, "documents_persisted": 0}
-                extract_result = await extract_from_source_documents(
-                    connector.connector_type,
+                from app.services.session_library import sync_local_session_library
+
+                library_sync = await sync_local_session_library(
                     session,
-                    workspace_id=connector.workspace_id,
+                    connector.workspace_id,
+                    connector_types=[connector.connector_type],
                 )
+                changed_documents = int(library_sync.get("imported") or 0) + int(
+                    library_sync.get("updated") or 0
+                )
+                sync_result = {
+                    "documents_fetched": int(library_sync.get("discovered") or 0),
+                    "documents_persisted": changed_documents,
+                    "documents_skipped": int(library_sync.get("unchanged") or 0),
+                    "session_library": library_sync,
+                }
+                extract_result = {
+                    "documents_processed": changed_documents,
+                    "components_created": 0,
+                }
             else:
                 # Generic stub for connectors not yet implemented
                 sync_result = {"documents_fetched": 0, "documents_persisted": 0}
