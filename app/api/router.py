@@ -12,6 +12,7 @@ from app.api import (
     models_api,
     query,
     repo,
+    session_library,
     sources,
     workspace_goals,
     workspaces,
@@ -26,6 +27,7 @@ api_router.include_router(workspace_goals.router, prefix="", tags=["workspaces"]
 api_router.include_router(workspaces.router, prefix="", tags=["workspaces"])
 api_router.include_router(query.router, prefix="", tags=["query"])
 api_router.include_router(repo.router, prefix="", tags=["repo"])
+api_router.include_router(session_library.router, prefix="", tags=["session-library"])
 api_router.include_router(connectors.router, prefix="", tags=["connectors"])
 api_router.include_router(models_api.router, prefix="", tags=["models"])
 api_router.include_router(agents_api.router, prefix="", tags=["agents"])

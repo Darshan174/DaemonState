@@ -153,29 +153,29 @@ const CONNECTOR_CATALOG = {
   codex: {
     type: "codex",
     name: "Codex",
-    description: "OpenAI Codex sessions — decisions, code plans, and AI reasoning",
+    description: "Automatically synced local Codex sessions and topics",
     color: "#10a37f",
     availability: "available",
     provider: "native",
-    providerLabel: "Session import",
+    providerLabel: "Automatic local sync",
   },
   claude: {
     type: "claude",
     name: "Claude",
-    description: "Anthropic Claude conversations — architecture choices and research threads",
+    description: "Automatically synced local Claude Code sessions and topics",
     color: "#D97757",
     availability: "available",
     provider: "native",
-    providerLabel: "Session import",
+    providerLabel: "Automatic local sync",
   },
   opencode: {
     type: "opencode",
     name: "OpenCode",
-    description: "OpenCode AI coding sessions — terminal context and implementation notes",
+    description: "Automatically synced local OpenCode sessions and topics",
     color: "#000000",
     availability: "available",
     provider: "native",
-    providerLabel: "Session import",
+    providerLabel: "Automatic local sync",
   },
   wispr_flow: {
     type: "wispr_flow",
@@ -1687,6 +1687,36 @@ export function useImportAISessionById() {
       });
     },
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["connectors"] });
+      qc.invalidateQueries({ queryKey: ["connector-processing-summary"] });
+      qc.invalidateQueries({ queryKey: ["source-documents"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+}
+
+export function useSessionLibrary(workspaceId) {
+  return useQuery({
+    queryKey: ["session-library", workspaceId],
+    queryFn: () => api.get(`/session-library?workspace_id=${encodeURIComponent(workspaceId)}`),
+    enabled: Boolean(workspaceId),
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+  });
+}
+
+export function useSyncSessionLibrary() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ workspaceId, connectorTypes }) => api.post("/session-library/sync", {
+      workspace_id: workspaceId,
+      ...(connectorTypes?.length ? { connector_types: connectorTypes } : {}),
+    }),
+    onSuccess: (result, variables) => {
+      if (result?.library) {
+        qc.setQueryData(["session-library", variables.workspaceId], result.library);
+      }
+      qc.invalidateQueries({ queryKey: ["session-library", variables.workspaceId] });
       qc.invalidateQueries({ queryKey: ["connectors"] });
       qc.invalidateQueries({ queryKey: ["connector-processing-summary"] });
       qc.invalidateQueries({ queryKey: ["source-documents"] });

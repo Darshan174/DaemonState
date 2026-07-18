@@ -39,6 +39,10 @@ vi.mock("./pages/RunsPage", () => ({
   default: () => <h1>Runs page</h1>,
 }));
 
+vi.mock("./pages/SessionLibrary", () => ({
+  default: () => <h1>Session library</h1>,
+}));
+
 beforeEach(() => {
   appMocks.workspaces = [];
   const values = new Map();
@@ -109,6 +113,7 @@ it("makes Now the default and exposes the complete product loop", async () => {
   expectResponsiveLinks("Now", "/app");
   expectResponsiveLinks("Prepare", "/app/prepare");
   expectResponsiveLinks("Runs", "/app/runs");
+  expectResponsiveLinks("Library", "/app/library");
   expectResponsiveLinks("Explain", "/app/explain");
   expectResponsiveLinks("Sources", "/app/sources");
   expectResponsiveLinks("Connectors", "/app/connectors");
@@ -148,6 +153,24 @@ it("redirects legacy dashboard and graph routes to their replacement surfaces", 
     </QueryClientProvider>,
   );
   expect(await screen.findByRole("heading", { name: "Explain project" })).toBeInTheDocument();
+});
+
+it("gives the Explain route a full-height frame", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider>
+        <WorkspaceProvider>
+          <MemoryRouter initialEntries={["/app/explain"]}>
+            <App />
+          </MemoryRouter>
+        </WorkspaceProvider>
+      </ThemeProvider>
+    </QueryClientProvider>,
+  );
+
+  const heading = await screen.findByRole("heading", { name: "Explain project" });
+  expect(heading.closest(".page-enter")).toHaveClass("h-full", "min-h-0");
 });
 
 it("collapses the desktop sidebar with an accessible persisted control", async () => {

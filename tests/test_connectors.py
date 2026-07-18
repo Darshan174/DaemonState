@@ -955,6 +955,69 @@ class TestAISessionIngest:
         assert response.status_code == 404
         assert "not found locally" in response.json()["detail"]
 
+    async def test_linked_local_session_refreshes_incrementally(self, client, db_session, monkeypatch):
+        from app.sync.session_resolvers import ResolvedSession
+
+        workspace = Workspace(id=uuid4(), name="Live Sessions", slug=f"live-sessions-{uuid4().hex}")
+        db_session.add(workspace)
+        await db_session.flush()
+        await db_session.commit()
+        content = {
+            "value": "[USER]\nFix the redirect.\n\n[ASSISTANT]\nI am inspecting the callback."
+        }
+
+        def _resolver(connector_type, session_id):
+            return ResolvedSession(
+                connector_type=connector_type,
+                session_id=session_id,
+                content=content["value"],
+                metadata={
+                    "tool": "codex",
+                    "source_path": "/tmp/codex-live.jsonl",
+                    "cwd": "/workspace/live-project",
+                },
+            )
+
+        monkeypatch.setattr("app.sync.session_resolvers.resolve_local_ai_session", _resolver)
+        imported = await client.post(
+            "/api/connectors/ai-session/import-by-id",
+            json={
+                "workspace_id": str(workspace.id),
+                "connector_type": "codex",
+                "session_id": "live-session",
+            },
+        )
+        assert imported.status_code == 200
+
+        unchanged = await client.post(
+            "/api/connectors/ai-session/refresh-linked",
+            json={"workspace_id": str(workspace.id)},
+        )
+        assert unchanged.status_code == 200
+        assert unchanged.json()["linked_sessions"] == 1
+        assert unchanged.json()["changed"] == 0
+        assert unchanged.json()["unchanged"] == 1
+
+        content["value"] = (
+            "[USER]\nFix the redirect.\n\n"
+            "[ASSISTANT]\nThe callback now preserves redirect state because the state key was dropped."
+        )
+        refreshed = await client.post(
+            "/api/connectors/ai-session/refresh-linked",
+            json={"workspace_id": str(workspace.id)},
+        )
+        assert refreshed.status_code == 200
+        assert refreshed.json()["changed"] == 1
+        assert refreshed.json()["errors"] == []
+
+        revisions = list(await db_session.scalars(
+            select(SourceDocument)
+            .where(SourceDocument.external_id == "codex:session:live-session")
+            .order_by(SourceDocument.revision_number)
+        ))
+        assert [document.revision_number for document in revisions] == [1, 2]
+        assert "preserves redirect state" in revisions[-1].content
+
 
 class TestProcessingSummary:
     async def test_processing_summary_counts_ai_context_documents(self, client, db_session):
