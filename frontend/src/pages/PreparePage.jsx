@@ -5,6 +5,7 @@ import { useSearchParams } from "react-router-dom";
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
 import { useContextDigest, usePrepareContext } from "../context-map/api";
 import { cleanDisplayText } from "../context-map/digest";
+import { readWorkspacePreferences, writeWorkspacePreferences } from "../context/workspacePreferences";
 import { useProductWorkspace } from "./useProductWorkspace";
 
 export default function PreparePage() {
@@ -12,10 +13,22 @@ export default function PreparePage() {
   const digestQuery = useContextDigest(workspace.activeWorkspaceId);
   const prepareContext = usePrepareContext();
   const [searchParams] = useSearchParams();
+  const initialPreferences = readWorkspacePreferences(
+    workspace.activeWorkspaceId,
+    "prepare",
+    { targetModel: "", tokenBudget: "4000" },
+  );
   const [objective, setObjective] = useState(searchParams.get("objective") || "");
-  const [targetModel, setTargetModel] = useState("");
-  const [tokenBudget, setTokenBudget] = useState("4000");
+  const [targetModel, setTargetModel] = useState(initialPreferences.targetModel);
+  const [tokenBudget, setTokenBudget] = useState(initialPreferences.tokenBudget);
   const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    writeWorkspacePreferences(workspace.activeWorkspaceId, "prepare", {
+      targetModel,
+      tokenBudget,
+    });
+  }, [workspace.activeWorkspaceId, targetModel, tokenBudget]);
 
   useEffect(() => {
     if (objective || !digestQuery.data) return;

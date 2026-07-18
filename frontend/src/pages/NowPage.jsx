@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowRight,
@@ -25,6 +25,11 @@ export default function NowPage() {
   const clearCurrentGoal = useClearCurrentGoal(workspace.activeWorkspaceId);
   const [choosingGoal, setChoosingGoal] = useState(false);
   const [customGoal, setCustomGoal] = useState("");
+
+  useEffect(() => {
+    setChoosingGoal(false);
+    setCustomGoal("");
+  }, [workspace.activeWorkspaceId]);
 
   if (!workspace.workspacesQuery.isLoading && !workspace.activeWorkspaceId) {
     return (

@@ -109,6 +109,31 @@ async def test_old_context_pack_is_not_inferred_as_current_goal(client, db_sessi
     assert digest.json()["oversight"]["current_focus"] is None
 
 
+async def test_new_workspace_starts_without_another_workspaces_goal(client):
+    first = await client.post("/api/workspaces", json={"name": "Configured Project"})
+    first_id = first.json()["id"]
+    selected = await client.put(
+        f"/api/workspaces/{first_id}/current-goal",
+        json={"title": "Keep this project's goal"},
+    )
+    assert selected.status_code == 200
+
+    fresh = await client.post("/api/workspaces", json={"name": "Fresh Project"})
+    fresh_id = fresh.json()["id"]
+    fresh_digest = await client.get(
+        "/api/context/digest", params={"workspace_id": fresh_id}
+    )
+    configured_digest = await client.get(
+        "/api/context/digest", params={"workspace_id": first_id}
+    )
+
+    assert fresh_digest.status_code == 200
+    assert fresh_digest.json()["current_goal"] is None
+    assert configured_digest.json()["current_goal"]["title"] == (
+        "Keep this project's goal"
+    )
+
+
 async def test_active_run_temporarily_overrides_selected_goal(client, db_session):
     workspace, task = await _project(db_session)
     response = await client.put(

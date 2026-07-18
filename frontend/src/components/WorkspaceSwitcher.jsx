@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Beaker, ChevronDown, FolderGit2, Plus, Settings2 } from "lucide-react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { useWorkspaces } from "../api/hooks";
 import { resolveWorkspaceId, useWorkspaceSelection } from "../context/WorkspaceContext";
 
@@ -17,7 +17,6 @@ export default function WorkspaceSwitcher({ variant = "header" }) {
   const rootRef = useRef(null);
   const qc = useQueryClient();
   const navigate = useNavigate();
-  const location = useLocation();
   const resolved = resolveWorkspaceId(workspaces, selectedId);
   const selected = workspaces.find((workspace) => workspace.id === resolved) || null;
   const projects = workspaces.filter((workspace) => !["demo", "sandbox"].includes(workspace.kind));
@@ -40,7 +39,7 @@ export default function WorkspaceSwitcher({ variant = "header" }) {
     setSelectedId(workspaceId);
     setOpen(false);
     qc.invalidateQueries();
-    if (location.pathname.startsWith("/app/model/")) navigate("/app/models");
+    navigate("/app");
   }
 
   function go(path) {
