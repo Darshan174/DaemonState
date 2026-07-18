@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Beaker, ChevronDown, FolderGit2, Plus, Settings2 } from "lucide-react";
+import { Beaker, Check, ChevronDown, FolderGit2, Plus, Settings2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useWorkspaces } from "../api/hooks";
 import { resolveWorkspaceId, useWorkspaceSelection } from "../context/WorkspaceContext";
@@ -31,8 +31,15 @@ export default function WorkspaceSwitcher({ variant = "header" }) {
     const closeOutside = (event) => {
       if (!rootRef.current?.contains(event.target)) setOpen(false);
     };
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") setOpen(false);
+    };
     document.addEventListener("mousedown", closeOutside);
-    return () => document.removeEventListener("mousedown", closeOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
   }, [open]);
 
   function selectWorkspace(workspaceId) {
@@ -48,13 +55,13 @@ export default function WorkspaceSwitcher({ variant = "header" }) {
   }
 
   if (isLoading) {
-    return <div className="h-9 w-full animate-pulse rounded-md bg-[#e8e8e0] dark:bg-[#1f1f1b]" />;
+    return <div className="h-11 w-full animate-pulse rounded-xl bg-[#e8e8e0] dark:bg-[#1f1f1b]" />;
   }
 
   return (
     <div ref={rootRef} className={`relative min-w-0 ${variant === "sidebar" ? "space-y-2" : "flex items-center gap-2"}`}>
-      <label className={variant === "sidebar" ? "block px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#8a8a80] dark:text-[#77776e]" : "sr-only"}>
-        Workspace
+      <label className={variant === "sidebar" ? "block px-2 text-[9px] font-bold uppercase tracking-[0.18em] text-[#8a8a80] dark:text-[#77776e]" : "sr-only"}>
+        Current project
       </label>
       <button
         type="button"
@@ -62,28 +69,30 @@ export default function WorkspaceSwitcher({ variant = "header" }) {
         aria-expanded={open}
         aria-haspopup="menu"
         onClick={() => setOpen((value) => !value)}
-        className={`${variant === "sidebar" ? "w-full" : "max-w-[190px] sm:max-w-[240px]"} flex h-10 min-w-0 items-center gap-2 rounded-md border border-[#d9d9d0] bg-[#fbfbf6] px-2.5 text-left transition hover:border-[#bdbdb4] focus:outline-none focus:ring-2 focus:ring-brand-500/40 dark:border-[#35352f] dark:bg-[#141411] dark:hover:border-[#505048]`}
+        className={`${variant === "sidebar" ? "w-full" : "max-w-[190px] sm:max-w-[240px]"} flex h-11 min-w-0 items-center gap-2.5 rounded-xl border border-[#d9d9d0] bg-[#fbfbf6]/90 px-3 text-left shadow-[0_1px_2px_rgba(23,23,19,0.03)] transition-all duration-200 hover:border-[#bdbdb4] hover:bg-white focus:outline-none focus:ring-2 focus:ring-[#9ebf35]/35 dark:border-[#35352f] dark:bg-[#171713]/90 dark:shadow-none dark:hover:border-[#505048] dark:hover:bg-[#1b1b18]`}
       >
-        {selected?.kind === "demo" || selected?.kind === "sandbox" ? (
-          <Beaker className="h-4 w-4 shrink-0 text-[#77776e]" />
-        ) : (
-          <FolderGit2 className="h-4 w-4 shrink-0 text-[#68685f] dark:text-[#a2a298]" />
-        )}
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#edede5] text-[#68685f] dark:bg-[#252521] dark:text-[#b8b8ae]">
+          {selected?.kind === "demo" || selected?.kind === "sandbox" ? (
+            <Beaker className="h-3.5 w-3.5" />
+          ) : (
+            <FolderGit2 className="h-3.5 w-3.5" />
+          )}
+        </span>
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-xs font-semibold text-[#383832] dark:text-[#d0d0c7]">
+          <span className="block truncate text-xs font-bold text-[#383832] dark:text-[#e1e1d8]">
             {selected?.name || (workspaces.length ? "Choose project" : "Add project")}
           </span>
           {variant === "sidebar" && selected ? (
-            <span className="block truncate text-[10px] text-[#8a8a80] dark:text-[#77776e]">{repoLabel(selected)}</span>
+            <span className="mt-0.5 block truncate text-[9px] text-[#8a8a80] dark:text-[#77776e]">{repoLabel(selected)}</span>
           ) : null}
         </span>
-        <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-[#8a8a80] transition ${open ? "rotate-180" : ""}`} />
+        <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-[#8a8a80] transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
       </button>
 
       {open ? (
         <div
           role="menu"
-          className={`absolute z-50 w-[min(320px,calc(100vw-2rem))] overflow-hidden rounded-xl border border-[#d9d9d0] bg-[#fbfbf6] shadow-2xl dark:border-[#35352f] dark:bg-[#141411] ${variant === "sidebar" ? "bottom-[calc(100%+8px)] left-0" : "right-0 top-[calc(100%+8px)]"}`}
+          className={`page-enter absolute z-50 w-[min(320px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-[#d9d9d0] bg-[#fbfbf6]/95 shadow-[0_18px_50px_rgba(23,23,19,0.16)] backdrop-blur-xl dark:border-[#35352f] dark:bg-[#141411]/95 dark:shadow-[0_18px_50px_rgba(0,0,0,0.4)] ${variant === "sidebar" ? "bottom-[calc(100%+8px)] left-0" : "right-0 top-[calc(100%+8px)]"}`}
         >
           {isError ? (
             <p className="px-3 py-4 text-xs font-semibold text-red-600 dark:text-red-400">Workspaces could not be loaded.</p>
@@ -96,11 +105,11 @@ export default function WorkspaceSwitcher({ variant = "header" }) {
               ) : null}
             </div>
           )}
-          <div className="grid grid-cols-2 gap-1 border-t border-[#d9d9d0] p-2 dark:border-[#292925]">
-            <button type="button" role="menuitem" onClick={() => go("/app/workspaces?new=1")} className="flex items-center gap-2 rounded-md px-2.5 py-2 text-xs font-bold text-[#4f4f48] hover:bg-[#e8e8e0] dark:text-[#d0d0c7] dark:hover:bg-[#1f1f1b]">
+          <div className="grid grid-cols-2 gap-1 border-t border-[#d9d9d0] bg-[#f5f5ee]/75 p-2 dark:border-[#292925] dark:bg-[#11110f]/60">
+            <button type="button" role="menuitem" onClick={() => go("/app/workspaces?new=1")} className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-bold text-[#4f4f48] transition hover:bg-white dark:text-[#d0d0c7] dark:hover:bg-[#1f1f1b]">
               <Plus className="h-3.5 w-3.5" /> Add project
             </button>
-            <button type="button" role="menuitem" onClick={() => go("/app/workspaces")} className="flex items-center gap-2 rounded-md px-2.5 py-2 text-xs font-bold text-[#4f4f48] hover:bg-[#e8e8e0] dark:text-[#d0d0c7] dark:hover:bg-[#1f1f1b]">
+            <button type="button" role="menuitem" onClick={() => go("/app/workspaces")} className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-bold text-[#4f4f48] transition hover:bg-white dark:text-[#d0d0c7] dark:hover:bg-[#1f1f1b]">
               <Settings2 className="h-3.5 w-3.5" /> Manage
             </button>
           </div>
@@ -122,14 +131,16 @@ function WorkspaceGroup({ label, workspaces, selectedId, onSelect, sample = fals
           role="menuitemradio"
           aria-checked={workspace.id === selectedId}
           onClick={() => onSelect(workspace.id)}
-          className={`flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left ${workspace.id === selectedId ? "bg-[#e8e8e0] dark:bg-[#24241f]" : "hover:bg-[#efefe8] dark:hover:bg-[#1f1f1b]"}`}
+          className={`group flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2.5 text-left transition ${workspace.id === selectedId ? "bg-[#e8e8e0] dark:bg-[#24241f]" : "hover:bg-[#efefe8] dark:hover:bg-[#1f1f1b]"}`}
         >
-          {sample ? <Beaker className="h-4 w-4 shrink-0 text-[#8a8a80]" /> : <FolderGit2 className="h-4 w-4 shrink-0 text-[#68685f] dark:text-[#a2a298]" />}
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/70 text-[#68685f] shadow-sm dark:bg-[#181815] dark:text-[#a2a298] dark:shadow-none">
+            {sample ? <Beaker className="h-3.5 w-3.5" /> : <FolderGit2 className="h-3.5 w-3.5" />}
+          </span>
           <span className="min-w-0 flex-1">
             <span className="block truncate text-xs font-bold text-[#383832] dark:text-[#e1e1d8]">{workspace.name}</span>
             <span className="block truncate text-[10px] text-[#8a8a80] dark:text-[#77776e]">{repoLabel(workspace)}</span>
           </span>
-          {sample ? <span className="rounded bg-[#e8e8e0] px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide text-[#77776e] dark:bg-[#292925]">sample</span> : null}
+          {workspace.id === selectedId ? <Check className="h-3.5 w-3.5 shrink-0 text-[#6f8427] dark:text-[#d9ff68]" /> : sample ? <span className="rounded bg-[#e8e8e0] px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide text-[#77776e] dark:bg-[#292925]">sample</span> : null}
         </button>
       ))}
     </section>

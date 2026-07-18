@@ -20,17 +20,18 @@ describe("Landing", () => {
     renderLanding();
 
     expect(
-      screen.getByRole("heading", { name: "Your next coding agent shouldn’t start from zero." }),
+      screen.getByRole("heading", { name: "Give every coding agent the context this project already earned." }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: /search/i })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Open your project/ })).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: /Explore the alpha/ })).toHaveLength(2);
     expect(screen.getByRole("link", { name: /View on GitHub/ })).toBeInTheDocument();
     expect(screen.getAllByText("context_pack.v2")).toHaveLength(2);
-    expect(screen.getByText("Continuity, without another pile of notes.")).toBeInTheDocument();
-    expect(screen.getByText("Keep the source")).toBeInTheDocument();
-    expect(screen.getByText("See the whole project")).toBeInTheDocument();
-    expect(screen.getByText("Continue with context")).toBeInTheDocument();
-    expect(screen.getByText("Unsupported providers stay visibly unsupported.", { exact: false })).toBeInTheDocument();
+    expect(screen.getByText("Project history in. Focused context out.")).toBeInTheDocument();
+    expect(screen.getByText("Preserve the evidence")).toBeInTheDocument();
+    expect(screen.getByText("Choose the current task")).toBeInTheDocument();
+    expect(screen.getByText("Compile only what matters")).toBeInTheDocument();
+    expect(screen.getByText("Every selected fact keeps its source. Missing evidence stays missing.")).toBeInTheDocument();
+    expect(screen.getByText("Compiled for agents. Explainable to people.")).toBeInTheDocument();
     expect(screen.queryByText("Recently indexed")).not.toBeInTheDocument();
     expect(screen.queryByText("Auth refactor")).not.toBeInTheDocument();
     expect(screen.queryByText("PR #184")).not.toBeInTheDocument();

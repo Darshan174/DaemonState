@@ -8,12 +8,34 @@ function digestPath(workspaceId) {
   return `/context/digest${query ? `?${query}` : ""}`;
 }
 
-export function useContextDigest(workspaceId) {
+export function useContextDigest(workspaceId, { poll = false } = {}) {
   return useQuery({
     queryKey: ["context-digest", workspaceId],
     queryFn: () => api.get(digestPath(workspaceId)),
     enabled: Boolean(workspaceId),
+    refetchInterval: poll ? 4000 : false,
+    refetchIntervalInBackground: false,
     retry: 1,
+  });
+}
+
+export function useLinkedAISessionRefresh(workspaceId) {
+  const queryClient = useQueryClient();
+  return useQuery({
+    queryKey: ["linked-ai-session-refresh", workspaceId],
+    queryFn: async () => {
+      const result = await api.post("/connectors/ai-session/refresh-linked", {
+        workspace_id: workspaceId,
+      });
+      if (Number(result?.changed || 0) > 0) {
+        await queryClient.invalidateQueries({ queryKey: ["context-digest", workspaceId] });
+      }
+      return result;
+    },
+    enabled: Boolean(workspaceId),
+    refetchInterval: 5000,
+    refetchIntervalInBackground: false,
+    retry: false,
   });
 }
 

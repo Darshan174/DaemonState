@@ -17,7 +17,7 @@ Context Engine is an open-source context and evidence layer for coding agents.
 It compiles verified project history into the minimum task-ready context an
 agent needs to continue real work on a long-running codebase.
 
-It is not another coding agent and it is not a generic knowledge graph. The
+Context Engine is not another coding agent or a generic knowledge graph. The
 context compiler is the core product. The graph is the human-readable
 explanation and navigation surface that shows where facts came from, how work is
 connected, and why specific context was selected.
@@ -38,7 +38,7 @@ plans, duplicated facts, and irrelevant history.
 
 Context Engine is built first for solo founders and tiny teams using coding
 agents every day. Developers get the exact sources, files, constraints, checks,
-and run evidence needed for the next task. Founders and collaborators get a
+and run evidence needed for the next task. Founders and non-technical users get a
 readable view of the same project state without living in terminal logs.
 
 ## What Context Engine changes
@@ -227,5 +227,4 @@ Some documents are implementation contracts rather than public guides. The code
 and tests are the authority for current behavior.
 
 ## License
-
 MIT. See [LICENSE](LICENSE).
