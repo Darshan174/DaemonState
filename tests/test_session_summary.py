@@ -1,4 +1,4 @@
-from app.services.session_summary import derive_session_topic
+from app.services.session_summary import derive_session_topic, derive_session_topics
 
 
 def test_derive_session_topic_skips_injected_bootstrap_blocks() -> None:
@@ -27,3 +27,31 @@ def test_derive_session_topic_preserves_a_meaningful_provider_title() -> None:
         tool="claude_code",
         session_id="session-1",
     ) == "Auth setup and callback repair"
+
+
+def test_derive_session_topics_keeps_multiple_user_subjects_and_project_anchor() -> None:
+    content = """
+[USER]
+Plan billing for the Alpha product.
+
+[ASSISTANT]
+I mapped the billing flow.
+
+[USER]
+Now review onboarding for the Beta product.
+"""
+
+    topics = derive_session_topics(
+        content,
+        explicit_title="Product planning",
+        cwd="/Users/example/work/context-engine",
+        tool="codex",
+        session_id="session-1",
+    )
+
+    assert topics == [
+        "Product planning",
+        "Context engine",
+        "Plan billing for the Alpha product",
+        "Review onboarding for the Beta product",
+    ]

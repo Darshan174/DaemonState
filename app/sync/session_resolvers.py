@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
-from app.services.session_summary import derive_session_topic
+from app.services.session_summary import derive_session_topic, derive_session_topics
 
 
 class SessionResolutionError(Exception):
@@ -21,6 +21,44 @@ class ResolvedSession:
     session_id: str
     content: str
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class SessionDiscoveryResult:
+    connector_type: str
+    sessions: list[ResolvedSession] = field(default_factory=list)
+    error: str | None = None
+
+
+def discover_local_ai_sessions(
+    connector_types: list[str] | tuple[str, ...] | None = None,
+) -> list[SessionDiscoveryResult]:
+    """Discover and fully resolve every readable local harness session.
+
+    Missing harnesses are reported independently so one unavailable provider
+    never prevents the others from syncing.
+    """
+
+    requested = connector_types or ("codex", "claude", "opencode")
+    results: list[SessionDiscoveryResult] = []
+    for raw_type in requested:
+        connector_type = raw_type.strip().lower()
+        try:
+            if connector_type == "codex":
+                sessions = _discover_codex_sessions()
+            elif connector_type == "claude":
+                sessions = _discover_claude_sessions()
+            elif connector_type == "opencode":
+                sessions = _discover_opencode_sessions()
+            else:
+                raise SessionResolutionError(
+                    f"Unsupported AI session connector: {connector_type}"
+                )
+        except SessionResolutionError as exc:
+            results.append(SessionDiscoveryResult(connector_type=connector_type, error=str(exc)))
+            continue
+        results.append(SessionDiscoveryResult(connector_type=connector_type, sessions=sessions))
+    return results
 
 
 def resolve_local_ai_session(connector_type: str, session_id: str) -> ResolvedSession:
@@ -53,6 +91,28 @@ def _resolve_codex_session(session_id: str) -> ResolvedSession:
     raise SessionResolutionError(f"Codex session not found locally: {session_id}")
 
 
+def _discover_codex_sessions() -> list[ResolvedSession]:
+    root = _home_path(settings.codex_home, "CODEX_HOME", ".codex")
+    sessions_dir = root / "sessions"
+    if not sessions_dir.exists():
+        raise SessionResolutionError(f"Codex session directory not found: {sessions_dir}")
+
+    sessions: list[ResolvedSession] = []
+    seen: set[str] = set()
+    for path in _recent_files(sessions_dir, "*.jsonl"):
+        session_id = _codex_session_id(path)
+        if not session_id or session_id in seen:
+            continue
+        try:
+            resolved = _read_codex_rollout(path, session_id, root=root)
+        except SessionResolutionError:
+            continue
+        if resolved is not None:
+            seen.add(session_id)
+            sessions.append(resolved)
+    return sessions
+
+
 def _read_codex_rollout(
     path: Path,
     session_id: str,
@@ -60,7 +120,11 @@ def _read_codex_rollout(
     root: Path,
 ) -> ResolvedSession | None:
     messages: list[tuple[str, str]] = []
-    metadata: dict[str, Any] = {"tool": "codex", "source_path": str(path)}
+    metadata: dict[str, Any] = {
+        "tool": "codex",
+        "source_path": str(path),
+        "source_modified_at": _path_modified_iso(path),
+    }
     matched = False
     try:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
@@ -99,13 +163,38 @@ def _read_codex_rollout(
     content = _format_turns(messages)
     if not content:
         raise SessionResolutionError(f"Codex session {session_id} had no readable message content.")
+    explicit_title = _codex_index_title(root, session_id)
     metadata["title"] = derive_session_topic(
         content,
-        explicit_title=_codex_index_title(root, session_id),
+        explicit_title=explicit_title,
+        tool="codex",
+        session_id=session_id,
+    )
+    metadata["topics"] = derive_session_topics(
+        content,
+        explicit_title=explicit_title,
+        cwd=metadata.get("cwd"),
         tool="codex",
         session_id=session_id,
     )
     return ResolvedSession("codex", session_id, content, metadata)
+
+
+def _codex_session_id(path: Path) -> str | None:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for raw in fh:
+                try:
+                    item = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if item.get("type") != "session_meta":
+                    continue
+                session_id = str((item.get("payload") or {}).get("id") or "").strip()
+                return session_id or None
+    except OSError:
+        return None
+    return None
 
 
 def _codex_index_title(root: Path, session_id: str) -> str | None:
@@ -145,9 +234,35 @@ def _resolve_claude_session(session_id: str) -> ResolvedSession:
     raise SessionResolutionError(f"Claude session not found locally: {session_id}")
 
 
+def _discover_claude_sessions() -> list[ResolvedSession]:
+    root = _home_path(settings.claude_home, "CLAUDE_HOME", ".claude")
+    projects_dir = root / "projects"
+    if not projects_dir.exists():
+        raise SessionResolutionError(f"Claude project history directory not found: {projects_dir}")
+
+    sessions: list[ResolvedSession] = []
+    seen: set[str] = set()
+    for path in _recent_files(projects_dir, "*.jsonl"):
+        session_id = _claude_session_id(path)
+        if not session_id or session_id in seen:
+            continue
+        try:
+            resolved = _read_claude_jsonl(path, session_id)
+        except SessionResolutionError:
+            continue
+        if resolved is not None:
+            seen.add(session_id)
+            sessions.append(resolved)
+    return sessions
+
+
 def _read_claude_jsonl(path: Path, session_id: str) -> ResolvedSession | None:
     messages: list[tuple[str, str]] = []
-    metadata: dict[str, Any] = {"tool": "claude_code", "source_path": str(path)}
+    metadata: dict[str, Any] = {
+        "tool": "claude_code",
+        "source_path": str(path),
+        "source_modified_at": _path_modified_iso(path),
+    }
     matched = path.stem == session_id
     try:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
@@ -162,9 +277,11 @@ def _read_claude_jsonl(path: Path, session_id: str) -> ResolvedSession | None:
                     matched = True
                 if not matched:
                     continue
+                if item.get("isMeta") is True:
+                    continue
                 message = item.get("message") if isinstance(item.get("message"), dict) else {}
                 role = message.get("role") or item.get("type")
-                text = _extract_content_text(message.get("content"))
+                text = _extract_claude_message_text(message.get("content"))
                 if not text:
                     continue
                 messages.append((role or "message", text))
@@ -189,7 +306,31 @@ def _read_claude_jsonl(path: Path, session_id: str) -> ResolvedSession | None:
         tool="claude_code",
         session_id=session_id,
     )
+    metadata["topics"] = derive_session_topics(
+        content,
+        explicit_title=metadata.get("title"),
+        cwd=metadata.get("cwd"),
+        tool="claude_code",
+        session_id=session_id,
+    )
     return ResolvedSession("claude", session_id, content, metadata)
+
+
+def _claude_session_id(path: Path) -> str | None:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for raw in fh:
+                try:
+                    item = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                session_id = str(item.get("sessionId") or "").strip()
+                if session_id:
+                    return session_id
+    except OSError:
+        return None
+    stem = path.stem.strip()
+    return stem or None
 
 
 def _resolve_opencode_session(session_id: str) -> ResolvedSession:
@@ -259,7 +400,44 @@ def _resolve_opencode_session(session_id: str) -> ResolvedSession:
         "started_at": _millis_to_iso(session_row["time_created"]),
         "ended_at": _millis_to_iso(session_row["time_updated"]),
     }
+    metadata["topics"] = derive_session_topics(
+        content,
+        explicit_title=metadata.get("title"),
+        cwd=metadata.get("cwd"),
+        tool="opencode",
+        session_id=session_id,
+    )
     return ResolvedSession("opencode", session_id, content, metadata)
+
+
+def _discover_opencode_sessions() -> list[ResolvedSession]:
+    root = _home_path(settings.opencode_home, "OPENCODE_HOME", ".local/share/opencode")
+    db_path = root / "opencode.db"
+    if not db_path.exists():
+        raise SessionResolutionError(f"OpenCode database not found: {db_path}")
+
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(str(db_path))
+        rows = conn.execute(
+            "select id from session order by time_updated desc, id desc"
+        ).fetchall()
+    except sqlite3.Error as exc:
+        raise SessionResolutionError(f"Could not read OpenCode database: {exc}") from exc
+    finally:
+        if conn is not None:
+            conn.close()
+
+    sessions: list[ResolvedSession] = []
+    for row in rows:
+        session_id = str(row[0] or "").strip()
+        if not session_id:
+            continue
+        try:
+            sessions.append(_resolve_opencode_session(session_id))
+        except SessionResolutionError:
+            continue
+    return sessions
 
 
 def _home_path(setting_value: str | None, env_name: str, default_relative: str) -> Path:
@@ -305,6 +483,29 @@ def _extract_content_text(value: Any) -> str:
     return ""
 
 
+def _extract_claude_message_text(value: Any) -> str:
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            if isinstance(item, dict) and item.get("type") in {
+                "tool_result",
+                "tool_use",
+                "thinking",
+            }:
+                continue
+            text = _extract_claude_message_text(item)
+            if text:
+                parts.append(text)
+        return "\n".join(parts).strip()
+    if isinstance(value, dict):
+        if value.get("type") == "text":
+            return str(value.get("text") or "").strip()
+        if "text" in value:
+            return str(value.get("text") or "").strip()
+        return ""
+    return str(value).strip() if isinstance(value, str) else ""
+
+
 def _format_turns(messages: list[tuple[str, str]]) -> str:
     parts = []
     for role, text in messages:
@@ -324,4 +525,13 @@ def _millis_to_iso(value: Any) -> str | None:
 
         return datetime.fromtimestamp(int(value) / 1000, tz=timezone.utc).isoformat()
     except (TypeError, ValueError, OSError):
+        return None
+
+
+def _path_modified_iso(path: Path) -> str | None:
+    try:
+        from datetime import datetime, timezone
+
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
+    except OSError:
         return None
