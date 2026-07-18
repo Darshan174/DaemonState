@@ -68,8 +68,9 @@ def test_readme_is_short_plain_language_and_uses_the_product_logo():
     assert '<img src="frontend/public/favicon.svg"' in readme
     assert "Founders and non-technical users" in readme
     assert "Developers" in readme
-    assert "task-specific files to inspect" in readme
-    assert "does **not** yet contain evidence of model parity" in " ".join(readme.split())
+    assert "task-sized brief" in readme
+    assert "We have not proven that yet" in " ".join(readme.split())
+    assert "Context Engine is not another coding agent" in readme
     assert "![" not in readme
     assert "docs/assets/board-inspector-demo.jpg" not in readme
     assert "docs/assets/query-trace-demo.jpg" not in readme
