@@ -3,6 +3,10 @@
 @tailwind utilities;
 
 @layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
   body {
     font-family:
       Inter,
@@ -12,7 +16,7 @@
       BlinkMacSystemFont,
       "Segoe UI",
       sans-serif;
-    font-weight: 500;
+    font-weight: 400;
     letter-spacing: 0;
     font-feature-settings: "calt", "kern", "liga", "ss03";
     -webkit-font-smoothing: antialiased;
@@ -22,6 +26,19 @@
     transition-property: background-color, border-color, color;
     transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
     transition-duration: 250ms;
+  }
+
+  button,
+  a,
+  input,
+  textarea,
+  select {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  button,
+  a {
+    touch-action: manipulation;
   }
 
   .dark body {
@@ -47,7 +64,7 @@
   }
 
   *:focus-visible {
-    @apply outline-none ring-2 ring-brand-500/60 ring-offset-2 ring-offset-white dark:ring-offset-black;
+    @apply outline-none ring-2 ring-[#9ebf35]/55 ring-offset-2 ring-offset-[#f7f7f2] dark:ring-[#d9ff68]/60 dark:ring-offset-[#0d0d0b];
   }
 
   ::selection {
@@ -56,8 +73,22 @@
 }
 
 @layer components {
+  .app-shell {
+    background-color: #f7f7f2;
+    background-image: radial-gradient(circle at 86% -10%, rgba(217, 255, 104, 0.16), transparent 28%);
+  }
+
+  .dark .app-shell {
+    background-color: #0d0d0b;
+    background-image: radial-gradient(circle at 84% -12%, rgba(217, 255, 104, 0.065), transparent 30%);
+  }
+
+  .app-main {
+    isolation: isolate;
+  }
+
   .card {
-    @apply rounded-md border bg-[#fbfbf6] dark:border-[#292925] dark:bg-[#141411];
+    @apply rounded-2xl border bg-[#fbfbf6] shadow-[0_1px_2px_rgba(23,23,19,0.035)] transition-[border-color,box-shadow,transform] duration-200 dark:border-[#292925] dark:bg-[#141411] dark:shadow-none;
     border-color: #d9d9d0;
   }
 
@@ -66,30 +97,65 @@
   }
 
   .btn-primary {
-    @apply inline-flex items-center gap-2 rounded-md bg-[#171713] px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-[#36362f] disabled:opacity-50 dark:bg-[#d9ff68] dark:text-[#171713] dark:hover:bg-[#e8ff9c];
+    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-[#171713] px-4 py-2.5 text-sm font-semibold text-white shadow-[0_1px_2px_rgba(23,23,19,0.2)] transition-all duration-200 hover:-translate-y-0.5 hover:bg-[#2b2b25] hover:shadow-[0_8px_20px_rgba(23,23,19,0.12)] active:translate-y-0 disabled:pointer-events-none disabled:opacity-50 dark:bg-[#d9ff68] dark:text-[#171713] dark:shadow-none dark:hover:bg-[#e8ff9c];
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-[#d8d8cf] bg-[#fbfbf6]/90 px-4 py-2.5 text-sm font-semibold text-[#4f4f48] shadow-[0_1px_2px_rgba(23,23,19,0.035)] transition-all duration-200 hover:-translate-y-0.5 hover:border-[#bdbdb4] hover:bg-white hover:text-[#171713] active:translate-y-0 dark:border-[#33332e] dark:bg-[#171713]/90 dark:text-[#d8d8cf] dark:shadow-none dark:hover:border-[#4a4a43] dark:hover:bg-[#1d1d19] dark:hover:text-white;
+  }
+
+  .icon-button {
+    @apply inline-flex h-9 w-9 items-center justify-center rounded-xl border border-[#d9d9d0] bg-[#fbfbf6] text-[#68685f] transition-all duration-200 hover:border-[#bdbdb4] hover:bg-white hover:text-[#171713] dark:border-[#30302b] dark:bg-[#171713] dark:text-[#aaa9a0] dark:hover:border-[#4a4a43] dark:hover:text-white;
   }
 
   .panel {
-    @apply rounded-md border bg-[#fbfbf6] dark:border-[#292925] dark:bg-[#141411];
+    @apply rounded-2xl border bg-[#fbfbf6] shadow-[0_1px_2px_rgba(23,23,19,0.035)] dark:border-[#292925] dark:bg-[#141411] dark:shadow-none;
     border-color: #d9d9d0;
   }
 
   .panel-subtle {
-    @apply rounded-md border bg-[#f2f2eb] dark:border-[#292925] dark:bg-[#1b1b18];
+    @apply rounded-xl border bg-[#f2f2eb] dark:border-[#292925] dark:bg-[#1b1b18];
     border-color: #e1e1d8;
   }
 
   .pill-control {
-    @apply rounded-md border bg-[#fbfbf6] text-[#68685f] transition-colors hover:border-[#68685f] hover:text-[#171713] dark:border-[#35352f] dark:bg-[#141411] dark:text-[#b3b3a9] dark:hover:border-[#77776e] dark:hover:text-[#f4f4ec];
+    @apply rounded-xl border bg-[#fbfbf6] text-[#68685f] transition-all duration-200 hover:border-[#8a8a80] hover:bg-white hover:text-[#171713] dark:border-[#35352f] dark:bg-[#141411] dark:text-[#b3b3a9] dark:hover:border-[#77776e] dark:hover:text-[#f4f4ec];
     border-color: #d9d9d0;
   }
 
   .app-page {
-    @apply mx-auto w-full max-w-6xl space-y-8;
+    @apply mx-auto w-full max-w-6xl space-y-7;
   }
 
   .eyebrow {
     @apply text-[11px] font-semibold uppercase tracking-[0.18em] text-[#68685f] dark:text-[#a2a298];
+  }
+
+  .app-surface {
+    @apply overflow-hidden rounded-2xl border border-[#d8d8cf] bg-[#fbfbf6]/95 shadow-[0_1px_2px_rgba(23,23,19,0.035),0_12px_32px_rgba(23,23,19,0.035)] backdrop-blur-sm transition-[border-color,box-shadow,transform] duration-300 dark:border-[#292925] dark:bg-[#141411]/95 dark:shadow-none;
+  }
+
+  .interactive-surface {
+    @apply hover:-translate-y-0.5 hover:border-[#c3c3ba] hover:shadow-[0_2px_4px_rgba(23,23,19,0.04),0_18px_40px_rgba(23,23,19,0.055)] dark:hover:border-[#3b3b35] dark:hover:shadow-none;
+  }
+
+  .status-chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-[#deded6] bg-[#f1f1ea] px-2.5 py-1.5 text-[10px] font-semibold text-[#68685f] dark:border-[#30302b] dark:bg-[#22221e] dark:text-[#aaa9a0];
+  }
+}
+
+.page-enter {
+  animation: page-enter 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 
@@ -119,6 +185,11 @@
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 
 @media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .page-enter,
   .context-visual *,
   .animate-marquee,
   .animate-shimmer,
@@ -127,6 +198,13 @@
   .source-icon-float {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+  }
+
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
   }
 }
 

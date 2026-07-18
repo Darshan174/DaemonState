@@ -28,6 +28,7 @@ vi.mock("./useProductWorkspace", () => ({
 
 vi.mock("../context-map/api", () => ({
   useContextDigest: () => mocks.digest,
+  useLinkedAISessionRefresh: () => ({ data: null }),
   useSetCurrentGoal: () => mocks.setGoal,
   useClearCurrentGoal: () => mocks.clearGoal,
   usePrepareContext: () => mocks.prepare,
@@ -54,7 +55,7 @@ beforeEach(() => {
 });
 
 describe("product loop pages", () => {
-  it("turns the digest into a concise current-state and next-action surface", () => {
+  it("turns observed run evidence into a concise current-work surface", () => {
     mocks.digest.data = {
       generated_at: "2026-07-17T10:00:00Z",
       scope: { included_source_count: 7, project_paths: ["/workspace/context-engine"] },
@@ -70,9 +71,27 @@ describe("product loop pages", () => {
         current_focus: { component_id: "task-1", title: "Harden the model adapter" },
         latest_outcome: { summary: "Compiler tests passed.", observed_at: "2026-07-17T09:30:00Z" },
       },
+      activity: {
+        primary: {
+          id: "run:run-1",
+          kind: "agent_run",
+          state: "completed",
+          evidence_level: "observed_run",
+          request: "Harden the model adapter",
+          latest_update: "Added capability-aware rendering and focused coverage.",
+          rationale: "The adapter needs conservative defaults because provider probing is not connected.",
+          tool: "codex",
+          model: "gpt-5",
+          branch: "codex/model-adapter",
+          updated_at: "2026-07-17T09:30:00Z",
+          changed_files: ["app/model_adapter.py", "tests/test_model_adapter.py"],
+          verification: { observed: 2, passed: 2, failed: 0 },
+          outcome: { summary: "Compiler tests passed.", observed_at: "2026-07-17T09:30:00Z" },
+        },
+      },
       cards: [
         { id: "component:task-1", category: "task", title: "Harden the model adapter", summary: "Implement capability-aware rendering.", next_action: "Add provider capability probing.", focus_eligible: true, attention_required: false },
-        { id: "risk-1", category: "risk", status: "active", title: "Model identity is self-reported", summary: "Provider identity is not independently verified.", attention_score: 95, attention_required: true },
+        { id: "risk-1", category: "risk", type: "risk", status: "active", title: "Model identity is self-reported", summary: "Provider identity is not independently verified.", attention_score: 95, attention_required: true, workspace_relevance: { status: "relevant" } },
         { id: "component:issue-2", category: "issue", status: "needs_review", title: "Issue #2: Add hybrid retrieval", summary: "Backlog work.", attention_score: 60, focus_eligible: true, attention_required: false },
       ],
     };
@@ -80,19 +99,25 @@ describe("product loop pages", () => {
     render(<MemoryRouter><NowPage /></MemoryRouter>);
 
     expect(screen.getByRole("heading", { name: "Harden the model adapter" })).toBeInTheDocument();
+    expect(screen.getByText("Added capability-aware rendering and focused coverage")).toBeInTheDocument();
+    expect(screen.getByText("2 files changed")).toBeInTheDocument();
+    expect(screen.getAllByText("2/2 passed")).toHaveLength(2);
+    expect(screen.getByText("Compiler tests passed")).toBeInTheDocument();
     expect(screen.getByText(/Model identity is self\s*-\s*reported/)).toBeInTheDocument();
     expect(screen.getByText("1 visible")).toBeInTheDocument();
-    expect(screen.getAllByText(/Issue 2: Add hybrid retrieval/).length).toBeGreaterThan(0);
-    expect(screen.getByRole("link", { name: /Prepare task/ })).toHaveAttribute("href", "/app/prepare?objective=Harden%20the%20model%20adapter");
+    expect(screen.getByRole("link", { name: /Model identity is self-reported/ })).toHaveAttribute("href", "/app/explain?card=risk-1");
+    expect(screen.queryByText(/Issue 2: Add hybrid retrieval/)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Prepare work/ })).toHaveAttribute("href", "/app/prepare?objective=Harden%20the%20model%20adapter");
     expect(screen.getByRole("link", { name: "Explain project" })).toHaveAttribute("href", "/app/explain");
   });
 
-  it("requires an explicit choice before a backlog issue becomes current", async () => {
+  it("does not present backlog as current work without observed activity", () => {
     mocks.digest.data = {
       generated_at: "2026-07-17T10:00:00Z",
       scope: { included_source_count: 2, project_paths: ["/workspace/context-engine"] },
       current_goal: null,
       oversight: {},
+      activity: { state: "empty", primary: null, recent_sessions: [] },
       cards: [{
         id: "component:issue-2",
         category: "issue",
@@ -108,15 +133,45 @@ describe("product loop pages", () => {
 
     render(<MemoryRouter><NowPage /></MemoryRouter>);
 
-    expect(screen.getByRole("heading", { name: "No current goal selected." })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "No agent work observed yet." })).toBeInTheDocument();
     expect(screen.getByText("0 visible")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Make current" }));
-    await waitFor(() => expect(mocks.setGoal.mutateAsync).toHaveBeenCalledWith({
-      title: "Issue 2: Add hybrid retrieval",
-      component_id: "issue-2",
-      source_kind: "suggested_card",
-      source_id: "source-2",
-    }));
+    expect(screen.queryByText(/Issue 2: Add hybrid retrieval/)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Prepare work/ })).toHaveAttribute("href", "/app/prepare");
+    expect(mocks.setGoal.mutateAsync).not.toHaveBeenCalled();
+  });
+
+  it("labels imported session updates as reported rather than verified", () => {
+    mocks.digest.data = {
+      generated_at: "2026-07-17T10:00:00Z",
+      scope: { included_source_count: 2, project_paths: ["/workspace/context-engine"] },
+      current_goal: null,
+      oversight: {},
+      activity: {
+        primary: {
+          id: "session:source-1",
+          kind: "agent_session",
+          state: "recent",
+          evidence_level: "session_reported",
+          request: "Fix the authentication redirect loop",
+          latest_update: "Updated the callback handler and added tests.",
+          tool: "claude_code",
+          updated_at: "2026-07-17T09:30:00Z",
+          changed_files: [],
+          verification: { observed: 0, passed: 0, failed: 0 },
+          outcome: null,
+          source_card_id: "component:session-1",
+        },
+      },
+      cards: [],
+    };
+
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+
+    expect(screen.getByRole("heading", { name: "Fix the authentication redirect loop" })).toBeInTheDocument();
+    expect(screen.getByText("Imported session")).toBeInTheDocument();
+    expect(screen.getByText(/repository changes were not observed/i)).toBeInTheDocument();
+    expect(screen.getByText("No verified result captured.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Open session evidence/ })).toHaveAttribute("href", "/app/explain?card=component%3Asession-1");
   });
 
   it("shows compiler selection, exclusions, model profile, and the exact brief", async () => {

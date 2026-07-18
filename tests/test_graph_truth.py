@@ -449,6 +449,66 @@ async def test_bracketed_session_transcripts_keep_real_message_counts():
     assert len(messages) == 3
 
 
+async def test_digest_exposes_relevant_session_as_reported_now_activity(client, db_session):
+    workspace = await _workspace(db_session, "Session activity")
+    connector = Connector(
+        workspace_id=workspace.id,
+        connector_type="github",
+        status="connected",
+        config_json=json.dumps({"repositories": ["acme/project"]}),
+    )
+    model = Model(id=uuid4(), name=f"Session activity {uuid4().hex}")
+    source = SourceDocument(
+        id=uuid4(),
+        workspace_id=workspace.id,
+        source_type="agent_session",
+        external_id="codex:session:activity",
+        content=(
+            "[USER]\nFix the authentication redirect loop.\n\n"
+            "[ASSISTANT]\nI updated the callback handler because redirect state was being lost."
+        ),
+        metadata_json=json.dumps({
+            "workspace_id": str(workspace.id),
+            "session_id": "activity",
+            "tool": "codex",
+            "repository": "acme/project",
+            "branch": "codex/auth-redirect",
+        }),
+    )
+    root = Component(
+        workspace_id=workspace.id,
+        model_id=model.id,
+        source_document_id=source.id,
+        name="Session: codex authentication redirect",
+        value=source.content[:500],
+        fact_type="session_root",
+        temporal="current",
+        confidence=0.93,
+        status="active",
+    )
+    db_session.add_all([connector, model, source, root])
+    await db_session.flush()
+
+    response = await client.get(
+        "/api/context/digest", params={"workspace_id": str(workspace.id)}
+    )
+    assert response.status_code == 200
+    activity = response.json()["activity"]
+
+    assert activity["state"] == "recent"
+    assert activity["primary"]["evidence_level"] == "session_reported"
+    assert activity["primary"]["request"] == "Fix the authentication redirect loop"
+    assert activity["primary"]["latest_update"] == (
+        "I updated the callback handler because redirect state was being lost"
+    )
+    assert activity["primary"]["rationale"] == (
+        "I updated the callback handler because redirect state was being lost"
+    )
+    assert activity["primary"]["changed_files"] == []
+    assert activity["primary"]["outcome"] is None
+    assert activity["primary"]["source_card_id"] == f"component:{root.id}"
+
+
 async def test_digest_session_relevance_uses_repo_path_and_commit_for_entire_source(
     client, db_session, tmp_path
 ):
@@ -729,3 +789,6 @@ async def test_non_github_connector_config_cannot_define_project_identity(
         card for card in digest["cards"] if card["category"] == "agent_session"
     )
     assert session_card["workspace_relevance"]["status"] == "unknown"
+    assert digest["activity"]["state"] == "unassigned"
+    assert digest["activity"]["primary"]["request"] == "Inspect the project"
+    assert digest["activity"]["primary"]["evidence_level"] == "session_unassigned"

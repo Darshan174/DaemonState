@@ -1,35 +1,26 @@
-import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowRight,
   Bot,
   CheckCircle2,
   Clock3,
+  FileCode2,
   GitBranch,
-  ListTodo,
-  Pencil,
+  History,
+  PlayCircle,
   ShieldAlert,
-  Sparkles,
-  X,
+  TestTube2,
 } from "lucide-react";
 
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
-import { useClearCurrentGoal, useContextDigest, useSetCurrentGoal } from "../context-map/api";
-import { cleanDisplayText, formatTimeAgo } from "../context-map/digest";
+import { useContextDigest, useLinkedAISessionRefresh } from "../context-map/api";
+import { cleanDisplayText, formatTimeAgo, sessionIdentity } from "../context-map/digest";
 import { useProductWorkspace } from "./useProductWorkspace";
 
 export default function NowPage() {
   const workspace = useProductWorkspace();
-  const digestQuery = useContextDigest(workspace.activeWorkspaceId);
-  const setCurrentGoal = useSetCurrentGoal(workspace.activeWorkspaceId);
-  const clearCurrentGoal = useClearCurrentGoal(workspace.activeWorkspaceId);
-  const [choosingGoal, setChoosingGoal] = useState(false);
-  const [customGoal, setCustomGoal] = useState("");
-
-  useEffect(() => {
-    setChoosingGoal(false);
-    setCustomGoal("");
-  }, [workspace.activeWorkspaceId]);
+  const digestQuery = useContextDigest(workspace.activeWorkspaceId, { poll: true });
+  useLinkedAISessionRefresh(workspace.activeWorkspaceId);
 
   if (!workspace.workspacesQuery.isLoading && !workspace.activeWorkspaceId) {
     return (
@@ -41,248 +32,382 @@ export default function NowPage() {
     );
   }
   if (workspace.workspacesQuery.isLoading || digestQuery.isLoading) {
-    return <PageState title="Loading the current project state…" />;
+    return <PageState title="Loading observed project activity…" />;
   }
   if (digestQuery.isError) {
-    return <PageState title="Could not load the project state" detail={digestQuery.error?.message} error />;
+    return <PageState title="Could not load project activity" detail={digestQuery.error?.message} error />;
   }
 
   const digest = digestQuery.data || {};
   const cards = digest.cards || [];
-  const goal = digest.current_goal || null;
-  const focusCard = goal?.component_id
-    ? cards.find((card) => card.id === `component:${goal.component_id}`)
-    : null;
-  const currentGoal = cleanDisplayText(goal?.title);
-  const focusDetail = distinctCardDetail(focusCard, "This goal was selected explicitly. Context Engine will not replace it with an inferred issue.");
+  const currentGoal = cleanDisplayText(digest.current_goal?.title);
+  const activity = digest.activity?.primary || fallbackActivity(digest);
   const attentionCards = cards
     .filter((card) => card.attention_required)
+    .filter((card) => card.workspace_relevance?.status !== "not_relevant")
     .sort((left, right) => (right.attention_score || 0) - (left.attention_score || 0))
-    .slice(0, 3);
-  const backlogCards = cards
-    .filter((card) => ["issue", "task"].includes(card.category))
-    .filter((card) => card.focus_eligible)
-    .filter((card) => !["resolved", "closed", "superseded", "stale"].includes(card.status))
-    .filter((card) => card.id !== `component:${goal?.component_id}`)
-    .sort((left, right) => (right.attention_score || 0) - (left.attention_score || 0));
-  const suggestedCard = backlogCards[0] || null;
-  const recommendedAction = cleanDisplayText(
-    suggestedCard?.title
-    || attentionCards[0]?.next_action,
+    .slice(0, 4);
+  const recentSessionCards = cards
+    .filter((card) => card.category === "agent_session")
+    .filter((card) => card.workspace_relevance?.status === "relevant")
+    .sort((left, right) => activityTimestamp(right) - activityTimestamp(left))
+    .slice(0, 4);
+  const unassignedSessionCards = cards.filter(
+    (card) => card.category === "agent_session" && card.workspace_relevance?.status === "unknown",
   );
-  const latestOutcome = digest.oversight?.latest_outcome;
-  const repoPath = digest.scope?.project_paths?.[0];
-  const sourceCount = Number(digest.scope?.included_source_count || 0);
-  const unassignedSessionCount = Number(digest.scope?.unknown_relevance_source_count || 0);
-
-  async function chooseCard(card) {
-    await setCurrentGoal.mutateAsync({
-      title: cleanDisplayText(card.title),
-      component_id: card.id.replace(/^component:/, ""),
-      source_kind: "suggested_card",
-      source_id: card.source_snapshot?.source_document_id || undefined,
-    });
-    setChoosingGoal(false);
-  }
-
-  async function submitCustomGoal(event) {
-    event.preventDefault();
-    const title = cleanDisplayText(customGoal);
-    if (title.length < 3) return;
-    await setCurrentGoal.mutateAsync({ title, source_kind: "user_selected" });
-    setCustomGoal("");
-    setChoosingGoal(false);
-  }
-
-  async function clearGoal() {
-    await clearCurrentGoal.mutateAsync();
-    setChoosingGoal(true);
-  }
+  const unassignedSessionCard = unassignedSessionCards[0];
+  const unassignedSessionCount = unassignedSessionCards.length;
+  const prepareUrl = `/app/prepare${currentGoal ? `?objective=${encodeURIComponent(currentGoal)}` : ""}`;
 
   return (
-    <div className="relative mx-auto w-full max-w-6xl space-y-6">
-      <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+    <div className="app-page relative">
+      <header className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-xs font-black uppercase tracking-[0.18em] text-[#85857c]">{workspace.activeWorkspace?.name || "Project"}</p>
-          <h1 className="mt-2 text-3xl font-black tracking-tight text-[#171713] dark:text-white">Now</h1>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
-            Current project truth, recent agent evidence, and the next useful action.
+          <p className="eyebrow">{workspace.activeWorkspace?.name || "Project"}</p>
+          <h1 className="mt-2 text-4xl font-semibold tracking-[-0.045em] text-[#171713] dark:text-white">Now</h1>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0] sm:text-[15px]">
+            What the agents are working on, what changed, and what needs your attention.
           </p>
+          {currentGoal ? (
+            <p className="mt-2 max-w-2xl truncate text-[10px] font-semibold text-[#85857c]">
+              Pinned for Prepare · {currentGoal}
+            </p>
+          ) : null}
         </div>
-        <div className="flex items-center gap-2">
-          <Link to="/app/explain" className="inline-flex h-10 items-center gap-2 rounded-lg border border-[#d8d8cf] bg-white px-4 text-xs font-black text-[#4f4f48] dark:border-[#33332e] dark:bg-[#171713] dark:text-[#d8d8cf]">
+        <div className="flex flex-wrap items-center gap-2">
+          <Link to="/app/explain" className="btn-secondary h-11 text-xs">
             Explain project
           </Link>
-          <Link to={`/app/prepare${currentGoal ? `?objective=${encodeURIComponent(currentGoal)}` : ""}`} className="inline-flex h-10 items-center gap-2 rounded-lg bg-[#171713] px-4 text-xs font-black text-white dark:bg-[#d9ff68] dark:text-[#171713]">
-            Prepare task <ArrowRight className="h-3.5 w-3.5" />
+          <Link to={prepareUrl} className="btn-primary h-11 text-xs">
+            Prepare work <ArrowRight className="h-3.5 w-3.5" />
           </Link>
         </div>
       </header>
 
-      {unassignedSessionCount > 0 ? (
-        <div className="flex flex-col justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-amber-950 dark:border-amber-900/60 dark:bg-amber-950/25 dark:text-amber-100 sm:flex-row sm:items-center">
-          <div>
-            <p className="text-xs font-black">{unassignedSessionCount} AI session{unassignedSessionCount === 1 ? " is" : "s are"} not assigned to this project</p>
-            <p className="mt-0.5 text-[11px] leading-5 opacity-75">Visible for review, but excluded from project health, goal suggestions, and compiled project truth until relevance is proven.</p>
-          </div>
-          <Link to="/app/explain" className="shrink-0 text-xs font-black underline underline-offset-4">Review evidence</Link>
-        </div>
-      ) : null}
+      {unassignedSessionCount > 0 ? <UnassignedSessions count={unassignedSessionCount} cardId={unassignedSessionCard?.id} /> : null}
 
-      <section className="grid gap-4 lg:grid-cols-[1.55fr_.95fr]">
-        <article className="rounded-2xl border border-[#d8d8cf] bg-[#fbfbf6] p-6 shadow-sm dark:border-[#292925] dark:bg-[#141411]">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.16em] text-[#85857c]">
-              <Sparkles className="h-3.5 w-3.5" /> Current goal
-            </div>
-            <div className="flex items-center gap-2">
-              {goal?.source_kind === "active_agent_run" ? (
-                <span className="text-[10px] font-black text-[#85857c]">Locked during run</span>
-              ) : (
-              <button type="button" onClick={() => setChoosingGoal((value) => !value)} className="inline-flex items-center gap-1.5 rounded-md border border-[#d8d8cf] px-2.5 py-1.5 text-[10px] font-black text-[#68685f] dark:border-[#33332e] dark:text-[#d8d8cf]">
-                {choosingGoal ? <X className="h-3 w-3" /> : <Pencil className="h-3 w-3" />}
-                {choosingGoal ? "Close" : currentGoal ? "Change" : "Choose goal"}
-              </button>
-              )}
-              {goal?.can_clear ? (
-                <button type="button" onClick={clearGoal} disabled={clearCurrentGoal.isPending} className="text-[10px] font-black text-[#85857c] underline underline-offset-4 disabled:opacity-50">Clear</button>
-              ) : null}
-            </div>
-          </div>
-          <h2 className="mt-5 max-w-3xl text-2xl font-black leading-tight text-[#171713] dark:text-white">
-            {currentGoal || "No current goal selected."}
-          </h2>
-          <p className="mt-4 text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
-            {currentGoal ? focusDetail : "Choose the work intentionally. Open issues remain backlog until you select one."}
+      <section className="grid items-stretch gap-4 lg:grid-cols-[1.48fr_.82fr]">
+        <ObservedWork activity={activity} />
+        <ObservedResult activity={activity} />
+      </section>
+
+      <AttentionPanel cards={attentionCards} />
+
+      {recentSessionCards.length ? <RecentSessions cards={recentSessionCards} /> : null}
+    </div>
+  );
+}
+
+function ObservedWork({ activity }) {
+  if (!activity) {
+    return (
+      <article className="app-surface relative overflow-hidden p-5 sm:p-6">
+        <SurfaceAccent />
+        <PanelLabel icon={PlayCircle}>Observed work</PanelLabel>
+        <div className="mt-8 max-w-2xl">
+          <h2 className="text-2xl font-semibold tracking-[-0.025em] text-[#171713] dark:text-white">No agent work observed yet.</h2>
+          <p className="mt-3 text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
+            Import a Codex, Claude Code, or OpenCode session to make the latest request and agent update visible here.
           </p>
-          {goal ? (
-            <p className="mt-3 text-[10px] font-bold uppercase tracking-[0.12em] text-[#85857c]">
-              {goalSourceLabel(goal)}{goal.selected_at ? ` · ${formatTimeAgo(goal.selected_at)}` : ""}
-            </p>
-          ) : null}
-          {choosingGoal ? (
-            <GoalChooser
-              backlogCards={backlogCards}
-              customGoal={customGoal}
-              error={setCurrentGoal.error?.message}
-              isPending={setCurrentGoal.isPending}
-              onChooseCard={chooseCard}
-              onCustomGoalChange={setCustomGoal}
-              onSubmit={submitCustomGoal}
-            />
-          ) : null}
-          <div className="mt-6 flex flex-wrap gap-2 text-[10px] font-bold text-[#68685f] dark:text-[#aaa9a0]">
-            <Metric icon={GitBranch} label={repoPath ? repoPath.split("/").filter(Boolean).pop() : "Repository not indexed"} />
-            <Metric icon={Bot} label={`${sourceCount} captured source${sourceCount === 1 ? "" : "s"}`} />
-            <Metric icon={Clock3} label={digest.generated_at ? `Updated ${formatTimeAgo(digest.generated_at)}` : "Update time unavailable"} />
-          </div>
-        </article>
-
-        <article className="rounded-2xl border border-[#d8d8cf] bg-[#fbfbf6] p-6 shadow-sm dark:border-[#292925] dark:bg-[#141411]">
-          <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.16em] text-[#85857c]">
-            <CheckCircle2 className="h-3.5 w-3.5" /> Latest observed result
-          </div>
-          {latestOutcome ? (
-            <>
-              <p className="mt-5 text-base font-black leading-6 text-[#171713] dark:text-white">{cleanDisplayText(latestOutcome.summary)}</p>
-              <p className="mt-3 text-xs font-semibold text-[#85857c]">Observed {formatTimeAgo(latestOutcome.observed_at)}</p>
-              <Link to="/app/runs" className="mt-6 inline-flex items-center gap-1.5 text-xs font-black text-[#171713] underline underline-offset-4 dark:text-[#d9ff68]">
-                Inspect recorded runs <ArrowRight className="h-3 w-3" />
-              </Link>
-            </>
-          ) : (
-            <p className="mt-5 text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">No agent outcome has been recorded for the current focus yet.</p>
-          )}
-        </article>
-      </section>
-
-      <section className="grid gap-4 lg:grid-cols-[1.2fr_.8fr]">
-        <article className="rounded-2xl border border-[#d8d8cf] bg-[#fbfbf6] p-6 dark:border-[#292925] dark:bg-[#141411]">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.16em] text-[#85857c]">
-              <ShieldAlert className="h-3.5 w-3.5" /> Needs attention
-            </div>
-            <span className="rounded-full bg-amber-100 px-2 py-1 text-[9px] font-black text-amber-800 dark:bg-amber-950/50 dark:text-amber-200">{attentionCards.length} visible</span>
-          </div>
-          {attentionCards.length ? (
-            <div className="mt-4 divide-y divide-[#e6e6de] dark:divide-[#292925]">
-              {attentionCards.map((card) => (
-                <div key={card.id} className="py-4 first:pt-0 last:pb-0">
-                  <p className="text-sm font-black text-[#171713] dark:text-white">{cleanDisplayText(card.title)}</p>
-                  <p className="mt-1.5 line-clamp-2 text-xs leading-5 text-[#68685f] dark:text-[#aaa9a0]">{distinctCardDetail(card, "Open the evidence record for the latest observed detail.")}</p>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="mt-4 text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">No blocker, conflict, stale evidence, or high-risk review is currently visible.</p>
-          )}
-        </article>
-
-        <article className="rounded-2xl border border-[#171713] bg-[#171713] p-6 text-white dark:border-[#d9ff68] dark:bg-[#d9ff68] dark:text-[#171713]">
-          <p className="text-[10px] font-black uppercase tracking-[0.16em] opacity-60">Suggested next · not selected</p>
-          <p className="mt-4 text-lg font-black leading-7">{recommendedAction || "No actionable backlog item is strong enough to suggest yet."}</p>
-          <p className="mt-3 text-xs leading-5 opacity-70">Suggestions are ranked from visible actionable cards. They never silently become the current goal.</p>
-          {suggestedCard ? (
-            <button type="button" onClick={() => chooseCard(suggestedCard)} disabled={setCurrentGoal.isPending} className="mt-6 inline-flex items-center gap-2 rounded-lg bg-white px-3.5 py-2.5 text-xs font-black text-[#171713] disabled:opacity-50 dark:bg-[#171713] dark:text-white">
-              Make current <ArrowRight className="h-3.5 w-3.5" />
-            </button>
-          ) : null}
-        </article>
-      </section>
-
-      <section className="rounded-2xl border border-[#d8d8cf] bg-[#fbfbf6] p-6 dark:border-[#292925] dark:bg-[#141411]">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.16em] text-[#85857c]"><ListTodo className="h-3.5 w-3.5" /> Backlog</div>
-          <span className="text-[10px] font-black text-[#85857c]">{backlogCards.length} available</span>
+          <Link to="/app/connectors" className="group mt-6 inline-flex items-center gap-1.5 text-xs font-bold text-[#171713] dark:text-[#d9ff68]">
+            Connect agent sessions <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
+          </Link>
         </div>
-        {backlogCards.length ? (
-          <div className="mt-4 grid gap-2 md:grid-cols-2">
-            {backlogCards.slice(0, 4).map((card) => (
-              <button key={card.id} type="button" onClick={() => chooseCard(card)} className="rounded-lg border border-[#e1e1d9] p-3 text-left transition hover:border-[#aaa99f] dark:border-[#2d2d28] dark:hover:border-[#57574f]">
-                <span className="block text-xs font-black text-[#171713] dark:text-white">{cleanDisplayText(card.title)}</span>
-                <span className="mt-1 block text-[10px] font-semibold text-[#85857c]">Select as current goal</span>
-              </button>
-            ))}
-          </div>
-        ) : <p className="mt-4 text-sm text-[#68685f] dark:text-[#aaa9a0]">No actionable issues or tasks are currently captured.</p>}
-      </section>
-    </div>
-  );
-}
+      </article>
+    );
+  }
 
-function GoalChooser({ backlogCards, customGoal, error, isPending, onChooseCard, onCustomGoalChange, onSubmit }) {
+  const observedRun = activity.evidence_level === "observed_run";
+  const unassigned = activity.evidence_level === "session_unassigned";
+  const changedFiles = activity.changed_files || [];
+  const verification = activity.verification || {};
+  const detailUrl = activity.source_card_id
+    ? explainCardUrl(activity.source_card_id)
+    : "/app/runs";
+
   return (
-    <div className="mt-5 rounded-xl border border-[#deded5] bg-white p-4 dark:border-[#30302b] dark:bg-[#10100e]">
-      <form onSubmit={onSubmit}>
-        <label htmlFor="current-goal-title" className="text-[10px] font-black uppercase tracking-[0.12em] text-[#85857c]">Describe current work</label>
-        <div className="mt-2 flex flex-col gap-2 sm:flex-row">
-          <input id="current-goal-title" value={customGoal} onChange={(event) => onCustomGoalChange(event.target.value)} placeholder="e.g. Fix workspace onboarding" className="min-w-0 flex-1 rounded-lg border border-[#d8d8cf] bg-[#fbfbf6] px-3 py-2.5 text-sm font-semibold outline-none focus:ring-2 focus:ring-brand-500/30 dark:border-[#33332e] dark:bg-[#171713]" />
-          <button type="submit" disabled={isPending || cleanDisplayText(customGoal).length < 3} className="rounded-lg bg-[#171713] px-4 py-2.5 text-xs font-black text-white disabled:opacity-40 dark:bg-[#d9ff68] dark:text-[#171713]">Set current</button>
-        </div>
-      </form>
-      {backlogCards.length ? (
-        <div className="mt-4 border-t border-[#e5e5dd] pt-4 dark:border-[#292925]">
-          <p className="text-[10px] font-black uppercase tracking-[0.12em] text-[#85857c]">Or choose from backlog</p>
-          <div className="mt-2 space-y-1.5">
-            {backlogCards.slice(0, 4).map((card) => (
-              <button key={card.id} type="button" onClick={() => onChooseCard(card)} disabled={isPending} className="block w-full rounded-md px-2.5 py-2 text-left text-xs font-bold text-[#4f4f48] hover:bg-[#f0f0e8] disabled:opacity-50 dark:text-[#d8d8cf] dark:hover:bg-[#23231f]">{cleanDisplayText(card.title)}</button>
-            ))}
-          </div>
+    <article className="app-surface relative overflow-hidden p-5 sm:p-6">
+      <SurfaceAccent />
+      <div className="relative flex flex-wrap items-center justify-between gap-3">
+        <PanelLabel icon={activity.live ? PlayCircle : History}>
+          {activity.live ? "Active work" : "Latest work"}
+        </PanelLabel>
+        <ActivityBadge activity={activity} />
+      </div>
+
+      <h2 className="relative mt-6 max-w-4xl text-2xl font-semibold leading-[1.2] tracking-[-0.025em] text-[#171713] dark:text-white sm:text-[28px]">
+        {cleanDisplayText(activity.request || activity.title) || "Agent request was not captured."}
+      </h2>
+
+      {activity.latest_update ? (
+        <div className="relative mt-6 border-l-2 border-[#c5d98a] pl-4 dark:border-[#4b5830]">
+          <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-[#85857c]">
+            {observedRun ? "Latest recorded update" : "Latest session update"}
+          </p>
+          <p className="mt-1.5 max-w-3xl text-sm leading-6 text-[#4f4f48] dark:text-[#d0d0c7]">
+            {cleanDisplayText(activity.latest_update)}
+          </p>
         </div>
       ) : null}
-      {error ? <p className="mt-3 text-xs font-bold text-red-600 dark:text-red-400">{error}</p> : null}
+
+      {activity.rationale ? (
+        <div className="relative mt-5 rounded-xl bg-[#f1f1e9] px-4 py-3 dark:bg-white/[0.035]">
+          <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-[#85857c]">
+            {observedRun ? "Recorded reason" : "Stated reason"}
+          </p>
+          <p className="mt-1.5 text-xs leading-5 text-[#5f5f57] dark:text-[#bdbdb4]">{cleanDisplayText(activity.rationale)}</p>
+        </div>
+      ) : null}
+
+      <div className="relative mt-6 flex flex-wrap gap-2">
+        <Metric icon={Bot} label={agentLabel(activity)} />
+        {activity.branch ? <Metric icon={GitBranch} label={activity.branch} /> : null}
+        {observedRun && changedFiles.length ? <Metric icon={FileCode2} label={`${changedFiles.length} file${changedFiles.length === 1 ? "" : "s"} changed`} /> : null}
+        {observedRun && verification.observed ? <Metric icon={TestTube2} label={verificationLabel(verification)} /> : null}
+        <Metric icon={Clock3} label={activity.updated_at ? `Updated ${formatTimeAgo(activity.updated_at)}` : "Update time unavailable"} />
+      </div>
+
+      <div className="relative mt-5 flex flex-col gap-3 border-t border-[#e5e5dd] pt-4 dark:border-[#292925] sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-[10px] font-medium leading-5 text-[#85857c]">
+          {observedRun
+            ? "Changes and checks come from recorded run evidence."
+            : unassigned
+              ? "This transcript is visible for review, but is not yet counted as project truth."
+              : "This update comes from an imported transcript; repository changes were not observed."}
+        </p>
+        <Link to={detailUrl} className="group inline-flex shrink-0 items-center gap-1.5 text-xs font-bold text-[#171713] dark:text-[#d9ff68]">
+          {activity.source_card_id ? "Open session evidence" : "Inspect recorded run"}
+          <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
+        </Link>
+      </div>
+    </article>
+  );
+}
+
+function ObservedResult({ activity }) {
+  const outcome = activity?.outcome || null;
+  const verification = activity?.verification || {};
+  const changedFiles = activity?.changed_files || [];
+
+  return (
+    <article className="app-surface p-5 sm:p-6">
+      <PanelLabel icon={CheckCircle2}>Latest observed result</PanelLabel>
+      {outcome ? (
+        <>
+          <p className="mt-7 text-lg font-semibold leading-7 tracking-[-0.012em] text-[#171713] dark:text-white">
+            {cleanDisplayText(outcome.summary) || "A terminal outcome was recorded."}
+          </p>
+          <div className="mt-6 space-y-2.5 border-t border-[#e5e5dd] pt-4 dark:border-[#292925]">
+            {changedFiles.length ? <EvidenceRow label="Changed" value={`${changedFiles.length} file${changedFiles.length === 1 ? "" : "s"}`} /> : null}
+            {verification.observed ? <EvidenceRow label="Checks" value={verificationLabel(verification)} /> : null}
+            <EvidenceRow label="Observed" value={formatTimeAgo(outcome.observed_at || activity?.updated_at)} />
+          </div>
+          <Link to="/app/runs" className="group mt-6 inline-flex items-center gap-1.5 text-xs font-bold text-[#171713] dark:text-[#d9ff68]">
+            View run evidence <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
+          </Link>
+        </>
+      ) : (
+        <>
+          <p className="mt-7 text-lg font-semibold leading-7 text-[#171713] dark:text-white">No verified result captured.</p>
+          <p className="mt-2 text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
+            {activity?.evidence_level?.startsWith("session_")
+              ? "The session contains an agent update, but no linked repository result or check evidence."
+              : "A result will appear after an observed run records its outcome and checks."}
+          </p>
+          {verification.observed ? (
+            <div className="mt-5 border-t border-[#e5e5dd] pt-4 dark:border-[#292925]">
+              <EvidenceRow label="Checks so far" value={verificationLabel(verification)} />
+            </div>
+          ) : null}
+        </>
+      )}
+    </article>
+  );
+}
+
+function AttentionPanel({ cards }) {
+  return (
+    <section className="app-surface p-5 sm:p-6">
+      <div className="flex items-center justify-between gap-3">
+        <PanelLabel icon={ShieldAlert}>Needs attention</PanelLabel>
+        <span className="rounded-full bg-amber-100/80 px-2.5 py-1 text-[9px] font-bold text-amber-800 dark:bg-amber-950/50 dark:text-amber-200">
+          {cards.length} visible
+        </span>
+      </div>
+      {cards.length ? (
+        <div className="mt-4 grid gap-2.5 md:grid-cols-2">
+          {cards.map((card) => (
+            <Link
+              key={card.id}
+              to={explainCardUrl(card.id)}
+              className="group flex min-h-[116px] flex-col rounded-xl border border-[#e1e1d9] bg-white/35 p-4 transition-all duration-200 hover:-translate-y-0.5 hover:border-[#b9b9af] hover:bg-white hover:shadow-[0_7px_20px_rgba(23,23,19,0.05)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#95b52f]/45 dark:border-[#2d2d28] dark:bg-white/[0.015] dark:hover:border-[#57574f] dark:hover:bg-white/[0.035] dark:hover:shadow-none"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-sm font-semibold leading-5 text-[#171713] dark:text-white">{cleanDisplayText(card.title)}</p>
+                <span className="shrink-0 rounded-full bg-amber-50 px-2 py-1 text-[8px] font-bold uppercase tracking-[0.1em] text-amber-700 dark:bg-amber-400/10 dark:text-amber-200">
+                  {attentionLabel(card)}
+                </span>
+              </div>
+              <p className="mt-2 line-clamp-2 text-xs leading-5 text-[#68685f] dark:text-[#aaa9a0]">
+                {distinctCardDetail(card, "Open the evidence record for the latest observed detail.")}
+              </p>
+              <span className="mt-auto flex items-center gap-1.5 pt-3 text-[10px] font-bold text-[#77776e] transition-colors group-hover:text-[#171713] dark:group-hover:text-[#d9ff68]">
+                Explain evidence <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
+              </span>
+            </Link>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-4 text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
+          No blocker, conflict, stale evidence, or high-risk review is currently visible.
+        </p>
+      )}
+    </section>
+  );
+}
+
+function RecentSessions({ cards }) {
+  return (
+    <section className="app-surface p-5 sm:p-6">
+      <div className="flex items-center justify-between gap-3">
+        <PanelLabel icon={History}>Recent coding sessions</PanelLabel>
+        <Link to="/app/explain" className="text-[10px] font-bold text-[#77776e] underline-offset-4 hover:underline dark:text-[#aaa9a0]">See all evidence</Link>
+      </div>
+      <div className="mt-4 divide-y divide-[#e5e5dd] dark:divide-[#292925]">
+        {cards.map((card) => {
+          const identity = sessionIdentity(card);
+          return (
+            <Link key={card.id} to={explainCardUrl(card.id)} className="group flex items-center gap-3 py-3.5 first:pt-1 last:pb-1">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#efefe7] text-[#68685f] dark:bg-[#252521] dark:text-[#c7c7bd]"><Bot className="h-4 w-4" /></span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-semibold text-[#171713] dark:text-white">{identity.title}</span>
+                <span className="mt-1 block truncate text-[10px] font-medium text-[#85857c]">{identity.source} · {card.updated_at ? formatTimeAgo(card.updated_at) : identity.detail}</span>
+              </span>
+              <ArrowRight className="h-3.5 w-3.5 shrink-0 text-[#aaa99f] transition-transform group-hover:translate-x-0.5 group-hover:text-[#171713] dark:group-hover:text-[#d9ff68]" />
+            </Link>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function UnassignedSessions({ count, cardId }) {
+  return (
+    <div className="flex flex-col justify-between gap-3 rounded-2xl border border-amber-200/80 bg-amber-50/80 px-4 py-3.5 text-amber-950 shadow-[0_1px_2px_rgba(120,53,15,0.04)] dark:border-amber-900/60 dark:bg-amber-950/25 dark:text-amber-100 sm:flex-row sm:items-center">
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-amber-100 dark:bg-amber-900/50"><ShieldAlert className="h-3.5 w-3.5" /></span>
+        <div>
+          <p className="text-xs font-bold">{count} AI session{count === 1 ? " is" : "s are"} waiting for project assignment</p>
+          <p className="mt-0.5 text-[11px] leading-5 opacity-75">It stays out of project health and compiled truth until its repository relevance is confirmed.</p>
+        </div>
+      </div>
+      <Link to={cardId ? explainCardUrl(cardId) : "/app/explain"} className="shrink-0 rounded-lg px-2 py-1 text-xs font-bold underline decoration-amber-400 underline-offset-4 transition hover:bg-amber-100/70 dark:hover:bg-amber-900/30">Review session</Link>
     </div>
   );
 }
 
-function goalSourceLabel(goal) {
-  if (goal.source_kind === "active_agent_run") return `Active ${goal.selected_by || "agent"} run`;
-  if (goal.source_kind === "suggested_card") return "Selected from project backlog";
-  return goal.selected_by && goal.selected_by !== "local" ? `Selected by ${goal.selected_by}` : "Selected by you";
+function PanelLabel({ icon: Icon, children }) {
+  return (
+    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#77776e] dark:text-[#929289]">
+      <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#edf3d7] text-[#708327] dark:bg-[#d9ff68]/10 dark:text-[#d9ff68]"><Icon className="h-3.5 w-3.5" /></span>
+      {children}
+    </div>
+  );
+}
+
+function SurfaceAccent() {
+  return (
+    <>
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[#accf3d] to-transparent opacity-80 dark:via-[#d9ff68]" />
+      <div className="pointer-events-none absolute -right-20 -top-24 h-52 w-52 rounded-full bg-[#d9ff68]/10 blur-3xl dark:bg-[#d9ff68]/[0.055]" />
+    </>
+  );
+}
+
+function ActivityBadge({ activity }) {
+  const label = activity.live
+    ? "Live"
+    : activity.evidence_level === "observed_run"
+      ? "Observed run"
+      : activity.evidence_level === "session_unassigned"
+        ? "Needs assignment"
+        : activity.refreshable ? "Auto-updating" : "Imported session";
+  return (
+    <span className={`rounded-full px-2.5 py-1 text-[9px] font-bold ${activity.live ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-400/10 dark:text-emerald-200" : "bg-[#efefe7] text-[#68685f] dark:bg-[#252521] dark:text-[#bdbdb4]"}`}>
+      {label}
+    </span>
+  );
+}
+
+function EvidenceRow({ label, value }) {
+  return (
+    <div className="flex items-center justify-between gap-4 text-xs">
+      <span className="font-medium text-[#85857c]">{label}</span>
+      <span className="text-right font-bold text-[#383832] dark:text-[#e0e0d8]">{value}</span>
+    </div>
+  );
 }
 
 function Metric({ icon: Icon, label }) {
-  return <span className="inline-flex items-center gap-1.5 rounded-full bg-[#efefe7] px-2.5 py-1.5 dark:bg-[#252521]"><Icon className="h-3 w-3" />{label}</span>;
+  return <span className="status-chip"><Icon className="h-3 w-3" />{label}</span>;
+}
+
+function agentLabel(activity) {
+  const rawTool = cleanDisplayText(activity.tool || "Agent").toLowerCase();
+  const tool = {
+    codex: "Codex",
+    claude: "Claude Code",
+    claude_code: "Claude Code",
+    opencode: "OpenCode",
+    agent: "Agent",
+  }[rawTool] || cleanDisplayText(activity.tool || "Agent");
+  const model = cleanDisplayText(activity.model);
+  return model ? `${tool} · ${model}` : tool;
+}
+
+function verificationLabel(verification = {}) {
+  const observed = Number(verification.observed || 0);
+  const passed = Number(verification.passed || 0);
+  const failed = Number(verification.failed || 0);
+  if (failed) return `${passed} passed · ${failed} failed`;
+  return `${passed}/${observed} passed`;
+}
+
+function attentionLabel(card) {
+  if (card.status === "conflict") return "Conflict";
+  if (card.status === "stale") return "Stale";
+  if (card.category === "blocker" || card.status === "blocked") return "Blocker";
+  if (card.type === "risk" || card.category === "risk") return "Risk";
+  return "Review";
+}
+
+function explainCardUrl(cardId) {
+  return `/app/explain?card=${encodeURIComponent(cardId)}`;
+}
+
+function activityTimestamp(card) {
+  const value = card?.updated_at || card?.source_snapshot?.ingested_at;
+  const parsed = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function fallbackActivity(digest) {
+  const outcome = digest?.oversight?.latest_outcome;
+  const goal = cleanDisplayText(digest?.current_goal?.title);
+  if (!outcome || !goal) return null;
+  return {
+    kind: "agent_run",
+    state: "completed",
+    evidence_level: "observed_run",
+    title: goal,
+    request: goal,
+    latest_update: cleanDisplayText(outcome.summary),
+    updated_at: outcome.observed_at,
+    changed_files: [],
+    verification: { observed: 0, passed: 0, failed: 0 },
+    outcome,
+  };
 }
 
 function distinctCardDetail(card, fallback) {
@@ -305,8 +430,8 @@ function distinctCardDetail(card, fallback) {
 
 function PageState({ title, detail, error = false }) {
   return (
-    <div className={`mx-auto max-w-xl rounded-2xl border p-8 text-center ${error ? "border-red-200 bg-red-50 dark:border-red-900/60 dark:bg-red-950/30" : "border-[#d8d8cf] bg-[#fbfbf6] dark:border-[#292925] dark:bg-[#141411]"}`}>
-      <h1 className="text-lg font-black">{title}</h1>
+    <div className={`mx-auto max-w-xl rounded-2xl border p-8 text-center shadow-[0_12px_36px_rgba(23,23,19,0.04)] dark:shadow-none ${error ? "border-red-200 bg-red-50 dark:border-red-900/60 dark:bg-red-950/30" : "border-[#d8d8cf] bg-[#fbfbf6] dark:border-[#292925] dark:bg-[#141411]"}`}>
+      <h1 className="text-lg font-semibold">{title}</h1>
       {detail ? <p className="mt-2 text-sm text-[#68685f] dark:text-[#aaa9a0]">{detail}</p> : null}
     </div>
   );

@@ -20,17 +20,20 @@ describe("Landing", () => {
     renderLanding();
 
     expect(
-      screen.getByRole("heading", { name: "Your next coding agent shouldn’t start from zero." }),
+      screen.getByRole("heading", { name: "Make every coding agent start with the project, not a blank chat." }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: /search/i })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Open your project/ })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /View on GitHub/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Open the local app/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Explore on GitHub/ })).toBeInTheDocument();
     expect(screen.getAllByText("context_pack.v2")).toHaveLength(2);
-    expect(screen.getByText("Continuity, without another pile of notes.")).toBeInTheDocument();
-    expect(screen.getByText("Keep the source")).toBeInTheDocument();
-    expect(screen.getByText("See the whole project")).toBeInTheDocument();
-    expect(screen.getByText("Continue with context")).toBeInTheDocument();
-    expect(screen.getByText("Unsupported providers stay visibly unsupported.", { exact: false })).toBeInTheDocument();
+    expect(screen.getByText("One project loop across every agent.")).toBeInTheDocument();
+    expect(screen.getByText("Capture the evidence")).toBeInTheDocument();
+    expect(screen.getByText("See work in motion")).toBeInTheDocument();
+    expect(screen.getByText("Prepare the handoff")).toBeInTheDocument();
+    expect(screen.getByText("Observe the result")).toBeInTheDocument();
+    expect(screen.getByText("It prepares the handoff. It does not replace or silently launch your coding agent.")).toBeInTheDocument();
+    expect(screen.getByText("The graph is an inspection surface", { exact: false })).toBeInTheDocument();
+    expect(screen.getByText("Discord, Zoom, and Wispr Flow remain marked coming soon. Notion is not catalogued.")).toBeInTheDocument();
     expect(screen.queryByText("Recently indexed")).not.toBeInTheDocument();
     expect(screen.queryByText("Auth refactor")).not.toBeInTheDocument();
     expect(screen.queryByText("PR #184")).not.toBeInTheDocument();

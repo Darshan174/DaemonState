@@ -23,6 +23,7 @@ from app.models import (
     ContextPack,
     EvidenceSpan,
     Relationship,
+    RunObservation,
     SourceDocument,
 )
 from app.services.workspace_scope import (
@@ -218,6 +219,7 @@ class ContextDigest(BaseModel):
     clusters: list[ContextCluster]
     links: list[DigestLink]
     recommended_actions: list[RecommendedAction]
+    activity: dict
     current_goal: dict | None
     oversight: dict
     open_loops: dict
@@ -467,6 +469,13 @@ async def get_context_digest(
         clusters=_clusters(project_cards),
         links=links,
         recommended_actions=_recommended_actions(project_cards, health),
+        activity=await _digest_activity(
+            session,
+            workspace_id=workspace_uuid,
+            cards=cards,
+            current_documents=current_documents,
+            accessible_source_ids=accessible_source_ids,
+        ),
         current_goal=current_goal,
         oversight=await _digest_oversight(
             session,
@@ -518,6 +527,344 @@ def _monitoring_summary(documents: list[SourceDocument]) -> dict | None:
         "snapshot_fingerprint": metadata.get("snapshot_fingerprint"),
         "source_document_id": str(latest.id),
     }
+
+
+async def _digest_activity(
+    session: AsyncSession,
+    *,
+    workspace_id: UUID | None,
+    cards: list[ContextCard],
+    current_documents: list[SourceDocument],
+    accessible_source_ids: set[UUID],
+) -> dict:
+    """Return the newest observed work without inventing a project objective.
+
+    Runtime observations are stronger than transcript claims. Imported sessions
+    are still useful for the latest request and stated rationale, but remain
+    explicitly marked as session-reported until repository/run evidence exists.
+    """
+    session_cards = [
+        card for card in cards
+        if card.category == "agent_session"
+        and (workspace_id is None or card.workspace_relevance.status != "not_relevant")
+    ]
+    documents_by_id = {str(document.id): document for document in current_documents}
+    session_items = [
+        _session_activity(
+            card,
+            documents_by_id.get(card.source_snapshot.source_document_id),
+            assigned=(workspace_id is None or card.workspace_relevance.status == "relevant"),
+        )
+        for card in session_cards
+    ]
+    session_items = [item for item in session_items if item is not None]
+    session_items.sort(key=_activity_sort_key, reverse=True)
+    assigned_session_items = [
+        item for item in session_items if item["state"] != "unassigned"
+    ]
+    unassigned_session_items = [
+        item for item in session_items if item["state"] == "unassigned"
+    ]
+
+    run_items: list[dict] = []
+    if workspace_id is not None:
+        runs = list(await session.scalars(
+            select(AgentRun)
+            .options(
+                selectinload(AgentRun.context_pack),
+                selectinload(AgentRun.observations).selectinload(
+                    RunObservation.source_document
+                )
+            )
+            .where(AgentRun.workspace_id == workspace_id)
+            .order_by(AgentRun.started_at.desc(), AgentRun.id.desc())
+            .limit(12)
+        ))
+        for run in runs:
+            observations = [
+                item for item in run.observations
+                if item.source_document_id is None
+                or item.source_document_id in accessible_source_ids
+            ]
+            run_items.append(_run_activity(run, observations))
+        run_items.sort(key=_activity_sort_key, reverse=True)
+
+    candidates = [*run_items, *assigned_session_items]
+    active_runs = [item for item in run_items if item["state"] == "active"]
+    primary = max(active_runs, key=_activity_sort_key) if active_runs else (
+        max(candidates, key=_activity_sort_key) if candidates
+        else (unassigned_session_items[0] if unassigned_session_items else None)
+    )
+    return {
+        "schema_version": "now_activity.v1",
+        "state": primary["state"] if primary else "empty",
+        "primary": primary,
+        "recent_sessions": assigned_session_items[:4],
+        "observation_note": (
+            "Repository changes and checks are observation-backed; transcript updates are agent-reported."
+            if primary else
+            "No agent run or relevant imported coding session has been observed for this project."
+        ),
+    }
+
+
+def _run_activity(run: AgentRun, observations: list[RunObservation]) -> dict:
+    ordered = sorted(observations, key=_observation_sort_key)
+    latest = ordered[-1] if ordered else None
+    outcomes = [item for item in ordered if item.event_type == "outcome"]
+    outcome = outcomes[-1] if outcomes else None
+    decisions = [item for item in ordered if item.event_type == "decision"]
+    verifications = [item for item in ordered if item.event_type == "verification"]
+    files = sorted({
+        path
+        for item in ordered
+        for path in _observation_files(item)
+    })
+    passed = sum(_verification_passed(item) is True for item in verifications)
+    failed = sum(_verification_passed(item) is False for item in verifications)
+    outcome_payload = _observation_payload(outcome) if outcome is not None else {}
+    outcome_summary = _compact_activity_text(
+        outcome_payload.get("summary")
+        or outcome_payload.get("content")
+        or (outcome.content if outcome is not None else None)
+    )
+    latest_update = outcome_summary or _observation_summary(latest)
+    raw_status = str(run.status or "running").strip().lower()
+    if run.ended_at is None and raw_status in {"running", "active", "started"}:
+        state = "active"
+    elif raw_status in {"failed", "cancelled", "blocked"}:
+        state = raw_status
+    else:
+        state = "completed" if outcome is not None or run.ended_at is not None else "recent"
+    updated_at = (
+        _observation_time(latest) if latest is not None
+        else run.ended_at or run.started_at
+    )
+    request = _compact_activity_text(
+        run.objective or (run.context_pack.objective if run.context_pack else None)
+    )
+    rationale = _observation_summary(decisions[-1]) if decisions else None
+    return {
+        "id": f"run:{run.id}",
+        "kind": "agent_run",
+        "state": state,
+        "live": state == "active",
+        "evidence_level": "observed_run",
+        "title": request or latest_update or "Observed agent run",
+        "request": request,
+        "latest_update": latest_update,
+        "rationale": rationale,
+        "tool": run.tool,
+        "model": run.model,
+        "branch": run.branch,
+        "started_at": run.started_at,
+        "updated_at": updated_at,
+        "ended_at": run.ended_at,
+        "changed_files": files,
+        "verification": {
+            "observed": len(verifications),
+            "passed": passed,
+            "failed": failed,
+        },
+        "outcome": ({
+            "summary": outcome_summary,
+            "status": str(outcome_payload.get("status") or raw_status),
+            "observed_at": _observation_time(outcome),
+            "source_document_id": (
+                str(outcome.source_document_id) if outcome.source_document_id else None
+            ),
+        } if outcome is not None else None),
+        "source_card_id": None,
+        "source_document_id": (
+            str(latest.source_document_id)
+            if latest is not None and latest.source_document_id else None
+        ),
+        "event_count": len(ordered),
+    }
+
+
+def _session_activity(
+    card: ContextCard,
+    source: SourceDocument | None,
+    *,
+    assigned: bool,
+) -> dict | None:
+    if source is None:
+        return None
+    metadata = metadata_dict(source)
+    turns = _session_turns(source.content)
+    user_turns = [text for role, text in turns if role in {"user", "human", "you"}]
+    assistant_turns = [
+        text for role, text in turns
+        if role in {"assistant", "ai", "codex", "claude", "opencode", "gpt"}
+    ]
+    request = next(
+        (
+            cleaned for text in reversed(user_turns)
+            if (cleaned := _compact_activity_text(text))
+        ),
+        None,
+    )
+    latest_assistant = next(
+        (
+            cleaned for text in reversed(assistant_turns)
+            if (cleaned := _compact_activity_text(text))
+        ),
+        None,
+    )
+    topic = _compact_activity_text(card.session.get("topic") if card.session else None, 140)
+    ended_at = _parse_datetime(
+        metadata.get("ended_at") or metadata.get("updated_at")
+    )
+    updated_at = ended_at or source.ingested_at
+    return {
+        "id": f"session:{source.id}",
+        "kind": "agent_session",
+        "state": "recent" if assigned else "unassigned",
+        "live": False,
+        "evidence_level": "session_reported" if assigned else "session_unassigned",
+        "refreshable": bool(metadata.get("source_path")),
+        "title": request or topic or "Imported coding session",
+        "request": request,
+        "latest_update": latest_assistant,
+        "rationale": _stated_rationale(assistant_turns),
+        "tool": metadata.get("tool") or metadata.get("agent_tool"),
+        "model": metadata.get("model") or metadata.get("agent_model"),
+        "branch": metadata.get("branch"),
+        "started_at": _parse_datetime(
+            metadata.get("started_at") or metadata.get("created_at")
+        ),
+        "updated_at": updated_at,
+        "ended_at": ended_at,
+        "changed_files": [],
+        "verification": {"observed": 0, "passed": 0, "failed": 0},
+        "outcome": None,
+        "source_card_id": card.id,
+        "source_document_id": str(source.id),
+        "event_count": len(turns),
+    }
+
+
+def _session_turns(content: str) -> list[tuple[str, str]]:
+    marker = re.compile(r"^\[([^\]]+)\]\s*$", re.MULTILINE)
+    matches = list(marker.finditer(content or ""))
+    if not matches:
+        return []
+    turns: list[tuple[str, str]] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(content)
+        text = content[match.end():end].strip()
+        if text:
+            turns.append((match.group(1).strip().lower(), text))
+    return turns
+
+
+def _compact_activity_text(value: object, max_chars: int = 240) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value
+    text = re.sub(
+        r"<(environment_context|recommended_plugins|permissions instructions|app-context|"
+        r"collaboration_mode|apps_instructions|plugins_instructions|skills_instructions)[^>]*>"
+        r"[\s\S]*?</\1>",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"```[\s\S]*?```", " ", text)
+    text = re.sub(r"^# Files mentioned by the user:[\s\S]*?(?=^#|\Z)", " ", text, flags=re.MULTILINE)
+    text = re.sub(r"<image[\s\S]*?</image>", " ", text, flags=re.IGNORECASE)
+    cleaned = _clean_digest_text(text)
+    if not cleaned or _looks_like_digest_noise(cleaned):
+        return None
+    if len(cleaned) <= max_chars:
+        return cleaned
+    sentence = re.split(r"(?<=[.!?])\s+", cleaned, maxsplit=1)[0].strip()
+    if 24 <= len(sentence) <= max_chars:
+        return sentence
+    return f"{cleaned[:max_chars - 3].rstrip()}..."
+
+
+def _stated_rationale(assistant_turns: list[str]) -> str | None:
+    for turn in reversed(assistant_turns):
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", turn):
+            if re.search(
+                r"\b(because|root cause|the reason|so that|to avoid|which means)\b",
+                sentence,
+                re.IGNORECASE,
+            ):
+                rationale = _compact_activity_text(sentence, 220)
+                if rationale:
+                    return rationale
+    return None
+
+
+def _observation_payload(observation: RunObservation | None) -> dict:
+    if observation is None:
+        return {}
+    try:
+        payload = json.loads(observation.payload_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        payload = {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _observation_files(observation: RunObservation) -> list[str]:
+    payload = _observation_payload(observation)
+    raw = payload.get("files")
+    if not isinstance(raw, list):
+        try:
+            raw = json.loads(observation.files_json or "[]")
+        except (TypeError, json.JSONDecodeError):
+            raw = []
+    return [path.strip() for path in raw if isinstance(path, str) and path.strip()]
+
+
+def _verification_passed(observation: RunObservation) -> bool | None:
+    payload = _observation_payload(observation)
+    exit_code = payload.get("exit_code", observation.exit_code)
+    if isinstance(exit_code, int) and not isinstance(exit_code, bool):
+        return exit_code == 0
+    status = str(payload.get("status") or "").strip().lower()
+    if status in {"passed", "pass", "success", "succeeded"}:
+        return True
+    if status in {"failed", "fail", "error"}:
+        return False
+    return None
+
+
+def _observation_summary(observation: RunObservation | None) -> str | None:
+    if observation is None:
+        return None
+    payload = _observation_payload(observation)
+    if observation.event_type == "verification":
+        command = _compact_activity_text(payload.get("command") or observation.command, 150)
+        passed = _verification_passed(observation)
+        if command and passed is not None:
+            return f"{command} {'passed' if passed else 'failed'}."
+    return _compact_activity_text(
+        payload.get("summary")
+        or payload.get("content")
+        or payload.get("blocker")
+        or observation.content
+    )
+
+
+def _observation_time(observation: RunObservation) -> datetime:
+    return observation.observed_at or observation.created_at
+
+
+def _observation_sort_key(observation: RunObservation) -> tuple[datetime, str]:
+    return (_observation_time(observation), str(observation.id))
+
+
+def _activity_sort_key(item: dict) -> tuple[datetime, str]:
+    timestamp = item.get("updated_at") or item.get("started_at") or datetime.min
+    if isinstance(timestamp, str):
+        timestamp = _parse_datetime(timestamp) or datetime.min
+    if isinstance(timestamp, datetime) and timestamp.tzinfo is not None:
+        timestamp = timestamp.replace(tzinfo=None)
+    return (timestamp if isinstance(timestamp, datetime) else datetime.min, str(item.get("id") or ""))
 
 
 def _id_list_accessible(raw: str, accessible_source_ids: set[UUID]) -> bool:

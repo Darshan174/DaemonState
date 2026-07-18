@@ -640,3 +640,8 @@ async def test_timeline_api_and_digest_expose_latest_focused_oversight(client, d
     }
     assert oversight["state"] == "verified"
     assert oversight["attention"] == {"blocked": 0, "unverified": 0, "stale": 0}
+    activity = digest_response.json()["activity"]["primary"]
+    assert activity["evidence_level"] == "observed_run"
+    assert activity["request"] == "Make runtime writes retry-safe"
+    assert activity["outcome"]["summary"] == "Founder oversight is source backed"
+    assert activity["verification"] == {"observed": 1, "passed": 1, "failed": 0}

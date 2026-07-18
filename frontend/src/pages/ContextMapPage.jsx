@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   Loader2,
 } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 import { useWorkspaces } from "../api/hooks";
 import { resolveWorkspaceId, useWorkspaceSelection } from "../context/WorkspaceContext";
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
@@ -26,6 +27,7 @@ export default function ContextMapPage() {
 }
 
 function ContextDigestSurface() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const { selectedId, setSelectedId } = useWorkspaceSelection();
   const workspacesQuery = useWorkspaces();
   const workspaces = workspacesQuery.data || [];
@@ -53,18 +55,33 @@ function ContextDigestSurface() {
     }
     return buildContext.mutateAsync({ mode });
   };
+  const selectCard = (card) => {
+    setOpenLoopsOpen(false);
+    setSelectedCardId(card.id);
+    const next = new URLSearchParams(searchParams);
+    next.set("card", card.id);
+    setSearchParams(next, { replace: true });
+  };
+  const clearCardSelection = () => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("card");
+    setSearchParams(next, { replace: true });
+    setSelectedCardId(null);
+  };
   const closeInspector = () => {
     const previousCardId = selectedCardId;
-    setSelectedCardId(null);
+    clearCardSelection();
     globalThis.requestAnimationFrame?.(() => {
       globalThis.document?.querySelector(`[data-graph-node="${previousCardId}"]`)?.focus();
     });
   };
 
   useEffect(() => {
-    setSelectedCardId(null);
+    const requestedCardId = searchParams.get("card");
+    const requestedCard = digest?.cards?.find((card) => card.id === requestedCardId);
+    setSelectedCardId(requestedCard?.id || null);
     setOpenLoopsOpen(false);
-  }, [activeWorkspaceId]);
+  }, [activeWorkspaceId, digest?.cards, searchParams]);
 
   if (!workspacesQuery.isLoading && !activeWorkspaceId) {
     return (
@@ -119,11 +136,8 @@ function ContextDigestSurface() {
                     ? indexProject.error
                     : buildContext.isError ? buildContext.error : null}
                   selectedCardId={selectedCardId}
-                  onSelectCard={(card) => {
-                    setOpenLoopsOpen(false);
-                    setSelectedCardId(card.id);
-                  }}
-                  onClearSelection={() => setSelectedCardId(null)}
+                  onSelectCard={selectCard}
+                  onClearSelection={clearCardSelection}
                   onIndexProject={(repoPath) => indexProject.mutate({ repo_path: repoPath })}
                   indexingProject={indexProject.isPending}
                   indexResult={indexProject.data}
@@ -140,7 +154,7 @@ function ContextDigestSurface() {
                     return result.markdown;
                   }}
                   onOpenLoops={() => {
-                    setSelectedCardId(null);
+                    clearCardSelection();
                     setOpenLoopsOpen(true);
                   }}
                 />
@@ -164,7 +178,7 @@ function ContextDigestSurface() {
                       const focusCard = digest.cards.find((card) => card.id === `component:${componentId}`);
                       if (!focusCard) return;
                       setOpenLoopsOpen(false);
-                      setSelectedCardId(focusCard.id);
+                      selectCard(focusCard);
                     }}
                     onUpdate={(input) => updateOpenLoop.mutateAsync(input)}
                     updating={updateOpenLoop.isPending}
