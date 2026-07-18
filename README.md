@@ -5,11 +5,22 @@
 <h1 align="center">Context Engine</h1>
 
 <p align="center">
-  Make every coding agent start with the project, not a blank chat.
+  Verified project history in. Minimum task-ready context out.
 </p>
 
 > **Active alpha.** Core workflows are implemented and tested locally, but public
 > setup, hosting, and production deployment guides are not ready yet.
+
+## What it is
+
+Context Engine is an open-source context and evidence layer for coding agents.
+It compiles verified project history into the minimum task-ready context an
+agent needs to continue real work on a long-running codebase.
+
+It is not another coding agent and it is not a generic knowledge graph. The
+context compiler is the core product. The graph is the human-readable
+explanation and navigation surface that shows where facts came from, how work is
+connected, and why specific context was selected.
 
 ## The problem
 
@@ -26,26 +37,23 @@ plans, duplicated facts, and irrelevant history.
 ## Who it is for
 
 Context Engine is built first for solo founders and tiny teams using coding
-agents every day. Founders and non-technical users get a readable view of the
-work without living in terminal logs. Developers get the exact sources, files,
-checks, and run evidence behind that view.
+agents every day. Developers get the exact sources, files, constraints, checks,
+and run evidence needed for the next task. Founders and collaborators get a
+readable view of the same project state without living in terminal logs.
 
 ## What Context Engine changes
 
-Context Engine turns your repository, issues, pull requests, agent sessions,
-decisions, blockers, documents, patches, and test results into durable project
-memory.
+Context Engine turns repository state, issues, pull requests, imported agent
+sessions, decisions, blockers, documents, patches, and test results into durable
+project memory.
 
-It tells you where the project stands, lets you choose the work that is current,
-and compiles a focused, source-backed brief for the next agent. After the run, it
-records what actually changed and whether the required checks passed. That result
-becomes evidence for the next session.
+It lets the user choose the current goal, compiles a focused source-backed brief
+for that task and target model, and records what actually changed after the run.
+Repository changes, checks, blockers, and outcomes become evidence for the next
+session instead of disappearing inside one chat history.
 
-The result is simple: AI sessions stop behaving like disconnected chats and start
-behaving like continuous work on one project.
-
-Context Engine is not another coding agent. It is the memory and evidence layer
-around the agents you already use.
+The result is simple: coding-agent sessions stop behaving like disconnected
+chats and start behaving like continuous work on one project.
 
 ## The bet
 
@@ -67,9 +75,10 @@ we need results from real projects, not demos.
 | Connect a project | Creates a clean boundary around one real repository and its evidence. |
 | Capture the work | Preserves code state, issues, decisions, AI sessions, changes, and checks. |
 | Choose the current goal | Keeps the user in control. Open issues stay backlog until selected. |
-| Prepare the next run | Compiles only the files, facts, constraints, risks, and checks relevant to that task. |
+| Prepare the next run | Compiles only the files, facts, constraints, risks, exclusions, and checks relevant to that task. |
+| Inspect the brief | Shows what was selected, why it was selected, and which sources support it. |
 | Observe the result | Records repository changes and verification evidence instead of trusting a completion claim. |
-| Explain what matters | Shows the sources and relationships behind the current project state. |
+| Explain what matters | Uses the graph to show the relationships behind the current project state and compiled context. |
 
 Every important fact keeps its source. Missing evidence stays missing instead of
 being replaced with a confident guess.
@@ -95,7 +104,7 @@ being replaced with a confident guess.
 | Now | Shows the explicit current goal, latest observed result, genuine blockers and risks, and backlog. |
 | Prepare | Builds a readable `context_pack.v2` brief and auditable manifest for one task and target-model profile. |
 | Runs | Shows recorded commands, changed files, checks, outcomes, and honest comparison readiness. |
-| Explain | Uses the knowledge graph to show why evidence and relationships matter without making the graph the product. |
+| Explain | Uses the project graph to show why evidence and relationships matter without making the graph a separate product. |
 | Sources and connectors | Keeps raw evidence, revision history, access boundaries, and provenance inspectable. |
 | Local harness | Wraps one user-supplied worker command and records bounded output, Git changes, checks, and outcome evidence. |
 
