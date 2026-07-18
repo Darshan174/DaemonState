@@ -7,9 +7,9 @@ import ThemeToggle from "../components/ThemeToggle";
 const GITHUB_URL = "https://github.com/Darshan174/Context-Engine";
 
 const PRINCIPLES = [
-  ["01", "Keep the source", "Sessions, pull requests, issues, documents, and test output are stored before anything is extracted."],
-  ["02", "See the whole project", "The project map connects current evidence so direction, delivery, and risks are visible together."],
-  ["03", "Continue with context", "The compiler selects current facts, relevant files, blockers, exclusions, and exact verification commands."],
+  ["01", "Preserve the evidence", "Repository state, sessions, pull requests, issues, documents, and test output are stored with provenance before context is compiled."],
+  ["02", "Choose the current task", "The user explicitly selects the goal. Backlog, stale plans, and unrelated history do not silently become instructions."],
+  ["03", "Compile only what matters", "The compiler selects current facts, relevant files, constraints, blockers, exclusions, and exact verification commands for one run."],
 ];
 
 const PACK_ROWS = [
@@ -28,13 +28,13 @@ export default function Landing() {
         <section className="mx-auto grid w-full max-w-6xl gap-14 px-5 pb-24 pt-16 sm:px-8 sm:pt-24 lg:grid-cols-[1.04fr_0.96fr] lg:items-center lg:gap-20 lg:pb-32 lg:pt-28">
           <div>
             <p className="mb-7 text-xs font-semibold uppercase tracking-[0.18em] text-[#68685f] dark:text-[#a2a298]">
-              Open source · self-hosted · agent-agnostic
+              Open source · active alpha · agent-agnostic
             </p>
             <h1 className="max-w-3xl text-[clamp(3rem,7vw,5.8rem)] font-semibold leading-[0.94] tracking-[-0.055em]">
-              Your next coding agent shouldn’t start from zero.
+              Give every coding agent the context this project already earned.
             </h1>
             <p className="mt-8 max-w-xl text-lg leading-8 text-[#5c5c54] dark:text-[#b3b3a9]">
-              Context Engine keeps a source-backed record of what changed, what is true, and what is blocked—then compiles only what the next run needs.
+              Context Engine compiles verified project history into the minimum task-ready context the next coding-agent run needs.
             </p>
 
             <div className="mt-9 flex flex-col gap-3 sm:flex-row">
@@ -42,7 +42,7 @@ export default function Landing() {
                 to="/app"
                 className="inline-flex h-12 items-center justify-center gap-2 rounded-md bg-[#171713] px-5 text-sm font-semibold text-white transition hover:bg-black focus:outline-none focus-visible:ring-2 focus-visible:ring-[#171713] focus-visible:ring-offset-4 focus-visible:ring-offset-[#f7f7f2] dark:bg-[#f4f4ec] dark:text-black dark:hover:bg-white dark:focus-visible:ring-[#f4f4ec] dark:focus-visible:ring-offset-[#0d0d0b]"
               >
-                Open your project <ArrowRight className="h-4 w-4" />
+                Explore the alpha <ArrowRight className="h-4 w-4" />
               </Link>
               <a
                 href={GITHUB_URL}
@@ -55,7 +55,7 @@ export default function Landing() {
             </div>
 
             <p className="mt-5 text-sm text-[#77776e] dark:text-[#929289]">
-              No opaque memory. Every selected fact keeps its source.
+              Every selected fact keeps its source. Missing evidence stays missing.
             </p>
           </div>
 
@@ -65,8 +65,8 @@ export default function Landing() {
         <section className="border-y border-[#d9d9d0] dark:border-[#292925]">
           <div className="mx-auto grid w-full max-w-6xl divide-y divide-[#d9d9d0] px-5 sm:px-8 md:grid-cols-3 md:divide-x md:divide-y-0 dark:divide-[#292925]">
             <Proof label="Raw evidence first" value="SourceDocument" />
-            <Proof label="One handoff format" value="context_pack.v2" />
-            <Proof label="Current behavior" value="Backed by tests" />
+            <Proof label="Task-ready output" value="context_pack.v2" />
+            <Proof label="Current status" value="Active alpha" />
           </div>
         </section>
 
@@ -75,7 +75,7 @@ export default function Landing() {
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#68685f] dark:text-[#a2a298]">How it works</p>
               <h2 className="mt-5 max-w-md text-4xl font-semibold leading-[1.05] tracking-[-0.04em] sm:text-5xl">
-                Continuity, without another pile of notes.
+                Project history in. Focused context out.
               </h2>
             </div>
             <div className="border-t border-[#bdbdb4] dark:border-[#3a3a34]">
@@ -93,16 +93,16 @@ export default function Landing() {
         <section className="bg-[#171713] text-white dark:bg-[#f1f1e9] dark:text-[#171713]">
           <div className="mx-auto grid w-full max-w-6xl gap-14 px-5 py-24 sm:px-8 lg:grid-cols-2 lg:items-center lg:gap-24 lg:py-28">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#a7a79e] dark:text-[#66665e]">One durable artifact</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#a7a79e] dark:text-[#66665e]">The core artifact</p>
               <h2 className="mt-5 text-4xl font-semibold leading-[1.02] tracking-[-0.04em] sm:text-5xl">
-                Review the context before the agent touches your code.
+                Review the brief before the agent touches your code.
               </h2>
             </div>
             <ul className="space-y-5 text-base text-[#d1d1c8] dark:text-[#45453f]">
               {[
-                "See what was selected and why.",
-                "Inspect citations, source revisions, and exclusions.",
-                "Carry the exact repo state and verification commands.",
+                "See what was selected, excluded, and why.",
+                "Inspect citations and source revisions.",
+                "Carry the relevant repo state, constraints, and verification commands.",
                 "Record the outcome as evidence for the next run.",
               ].map((item) => (
                 <li key={item} className="flex gap-3 border-b border-white/15 pb-5 last:border-b-0 dark:border-black/15">
@@ -117,15 +117,18 @@ export default function Landing() {
         <section className="mx-auto w-full max-w-6xl px-5 py-24 sm:px-8 lg:py-32">
           <div className="grid gap-12 lg:grid-cols-2 lg:gap-24">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#68685f] dark:text-[#a2a298]">Built for real project history</p>
-              <h2 className="mt-5 text-4xl font-semibold tracking-[-0.04em] sm:text-5xl">Evidence in. Focused context out.</h2>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#68685f] dark:text-[#a2a298]">One product, two views</p>
+              <h2 className="mt-5 text-4xl font-semibold tracking-[-0.04em] sm:text-5xl">Compiled for agents. Explainable to people.</h2>
             </div>
             <div className="space-y-8 text-[#62625a] dark:text-[#aaa9a0]">
               <p className="text-lg leading-8">
-                Ingest local files, coding sessions, GitHub activity, Slack threads, Gmail, and Google Drive. Unsupported providers stay visibly unsupported.
+                Context Engine can use local files, imported coding sessions, GitHub activity, Slack, Gmail, and Google Drive as source evidence when configured.
               </p>
               <p className="text-lg leading-8">
-                The knowledge graph is there to explain the evidence. The context pack is what the next agent actually uses.
+                The context pack is what the agent uses. The project graph helps people inspect the evidence, relationships, progress, and risks behind that pack.
+              </p>
+              <p className="text-sm leading-6 text-[#77776e] dark:text-[#929289]">
+                Public onboarding, hosted operation, and production deployment guidance are still unfinished.
               </p>
               <Link to="/app/sources" className="inline-flex items-center gap-2 border-b border-current pb-1 text-sm font-semibold text-[#171713] dark:text-[#f4f4ec]">
                 Inspect source evidence <ArrowRight className="h-4 w-4" />
@@ -137,10 +140,10 @@ export default function Landing() {
         <section className="border-t border-[#d9d9d0] dark:border-[#292925]">
           <div className="mx-auto flex w-full max-w-6xl flex-col items-start justify-between gap-8 px-5 py-20 sm:px-8 md:flex-row md:items-end">
             <h2 className="max-w-2xl text-4xl font-semibold leading-[1.02] tracking-[-0.04em] sm:text-5xl">
-              Give the next run the context this one earned.
+              Make the next agent continue the project—not rediscover it.
             </h2>
             <Link to="/app" className="inline-flex h-12 shrink-0 items-center gap-2 rounded-md bg-[#d9ff68] px-5 text-sm font-semibold text-black transition hover:bg-[#cfff3c]">
-              Open Context Engine <ArrowRight className="h-4 w-4" />
+              Explore the alpha <ArrowRight className="h-4 w-4" />
             </Link>
           </div>
         </section>
@@ -214,7 +217,7 @@ function Footer() {
   return (
     <footer className="border-t border-[#d9d9d0] dark:border-[#292925]">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-5 py-8 text-sm text-[#77776e] sm:flex-row sm:items-center sm:justify-between sm:px-8">
-        <span>Context Engine · Open source project context</span>
+        <span>Context Engine · Task-ready context for coding agents</span>
         <div className="flex gap-5">
           <Link to="/app">App</Link>
           <Link to="/app/sources">Sources</Link>
