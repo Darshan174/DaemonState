@@ -316,7 +316,7 @@ export default function Connectors() {
         <div>
           <p className="eyebrow">Data plane</p>
           <div className="flex items-center gap-3">
-            <h2 className="mt-2 text-3xl font-semibold text-slate-950 dark:text-white">Connectors</h2>
+            <h2 className="mt-2 text-3xl font-black tracking-tight text-slate-950 dark:text-white">Connectors</h2>
             {isMock && <MockBadge />}
           </div>
           <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-500 dark:text-neutral-400">

@@ -312,7 +312,7 @@ export default function SourceManager() {
         <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
           <div>
             <p className="eyebrow">Ingestion</p>
-            <h1 className="mt-2 text-3xl font-semibold text-slate-950 dark:text-white">Sources</h1>
+            <h1 className="mt-2 text-3xl font-black tracking-tight text-slate-950 dark:text-white">Sources</h1>
             <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-500 dark:text-neutral-400">Inspect the raw evidence behind graph claims and context packs.</p>
           </div>
           <button

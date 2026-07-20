@@ -9,16 +9,18 @@
 
   body {
     font-family:
-      Inter,
-      "Satoshi",
+      "Archivo Variable",
+      Archivo,
       system-ui,
       -apple-system,
       BlinkMacSystemFont,
-      "Segoe UI",
+      "Helvetica Neue",
+      Arial,
       sans-serif;
-    font-weight: 400;
+    font-weight: 450;
     letter-spacing: 0;
-    font-feature-settings: "calt", "kern", "liga", "ss03";
+    font-feature-settings: "calt", "kern", "liga";
+    font-synthesis: none;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     color: #171713;
@@ -33,6 +35,7 @@
   input,
   textarea,
   select {
+    font-family: inherit;
     -webkit-tap-highlight-color: transparent;
   }
 
@@ -51,9 +54,9 @@
     inset: 0;
     z-index: -1;
     pointer-events: none;
-    background-color: #0d0d0b;
+    background-color: #000000;
     background-image:
-      radial-gradient(ellipse 46% 32% at 80% -12%, rgba(217, 255, 104, 0.08), transparent 62%);
+      radial-gradient(ellipse 46% 32% at 80% -12%, rgba(217, 255, 104, 0.035), transparent 62%);
     background-size: auto;
   }
 
@@ -64,7 +67,7 @@
   }
 
   *:focus-visible {
-    @apply outline-none ring-2 ring-[#9ebf35]/55 ring-offset-2 ring-offset-[#f7f7f2] dark:ring-[#d9ff68]/60 dark:ring-offset-[#0d0d0b];
+    @apply outline-none ring-2 ring-[#9ebf35]/55 ring-offset-2 ring-offset-[#f7f7f2] dark:ring-[#d9ff68]/60 dark:ring-offset-black;
   }
 
   ::selection {
@@ -79,8 +82,8 @@
   }
 
   .dark .app-shell {
-    background-color: #0d0d0b;
-    background-image: radial-gradient(circle at 84% -12%, rgba(217, 255, 104, 0.065), transparent 30%);
+    background-color: #000000;
+    background-image: radial-gradient(circle at 84% -12%, rgba(217, 255, 104, 0.035), transparent 30%);
   }
 
   .app-main {
@@ -88,12 +91,12 @@
   }
 
   .card {
-    @apply rounded-2xl border bg-[#fbfbf6] shadow-[0_1px_2px_rgba(23,23,19,0.035)] transition-[border-color,box-shadow,transform] duration-200 dark:border-[#292925] dark:bg-[#141411] dark:shadow-none;
+    @apply rounded-2xl border bg-[#fbfbf6] shadow-[0_1px_2px_rgba(23,23,19,0.035)] transition-[border-color,box-shadow,transform] duration-200 dark:border-[#222222] dark:bg-[#080808] dark:shadow-[0_14px_36px_rgba(0,0,0,0.42)];
     border-color: #d9d9d0;
   }
 
   .input {
-    @apply w-full rounded-md border bg-[#fbfbf6] px-4 py-2.5 text-sm font-medium text-[#171713] transition-all placeholder:text-[#8a8a80] focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-300/70 dark:border-[#3a3a34] dark:bg-[#141411] dark:text-[#f4f4ec] dark:placeholder:text-[#77776e];
+    @apply w-full rounded-md border bg-[#fbfbf6] px-4 py-2.5 text-sm font-medium text-[#171713] transition-all placeholder:text-[#8a8a80] focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-300/70 dark:border-[#2b2b2b] dark:bg-[#0b0b0b] dark:text-[#f4f4ec] dark:placeholder:text-[#77776e];
   }
 
   .btn-primary {
@@ -101,25 +104,25 @@
   }
 
   .btn-secondary {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-[#d8d8cf] bg-[#fbfbf6]/90 px-4 py-2.5 text-sm font-semibold text-[#4f4f48] shadow-[0_1px_2px_rgba(23,23,19,0.035)] transition-all duration-200 hover:-translate-y-0.5 hover:border-[#bdbdb4] hover:bg-white hover:text-[#171713] active:translate-y-0 dark:border-[#33332e] dark:bg-[#171713]/90 dark:text-[#d8d8cf] dark:shadow-none dark:hover:border-[#4a4a43] dark:hover:bg-[#1d1d19] dark:hover:text-white;
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-[#d8d8cf] bg-[#fbfbf6]/90 px-4 py-2.5 text-sm font-semibold text-[#4f4f48] shadow-[0_1px_2px_rgba(23,23,19,0.035)] transition-all duration-200 hover:-translate-y-0.5 hover:border-[#bdbdb4] hover:bg-white hover:text-[#171713] active:translate-y-0 dark:border-[#292929] dark:bg-[#0b0b0b]/90 dark:text-[#d8d8cf] dark:shadow-none dark:hover:border-[#3b3b3b] dark:hover:bg-[#121212] dark:hover:text-white;
   }
 
   .icon-button {
-    @apply inline-flex h-9 w-9 items-center justify-center rounded-xl border border-[#d9d9d0] bg-[#fbfbf6] text-[#68685f] transition-all duration-200 hover:border-[#bdbdb4] hover:bg-white hover:text-[#171713] dark:border-[#30302b] dark:bg-[#171713] dark:text-[#aaa9a0] dark:hover:border-[#4a4a43] dark:hover:text-white;
+    @apply inline-flex h-9 w-9 items-center justify-center rounded-xl border border-[#d9d9d0] bg-[#fbfbf6] text-[#68685f] transition-all duration-200 hover:border-[#bdbdb4] hover:bg-white hover:text-[#171713] dark:border-[#292929] dark:bg-[#0c0c0c] dark:text-[#aaa9a0] dark:hover:border-[#3b3b3b] dark:hover:text-white;
   }
 
   .panel {
-    @apply rounded-2xl border bg-[#fbfbf6] shadow-[0_1px_2px_rgba(23,23,19,0.035)] dark:border-[#292925] dark:bg-[#141411] dark:shadow-none;
+    @apply rounded-2xl border bg-[#fbfbf6] shadow-[0_1px_2px_rgba(23,23,19,0.035)] dark:border-[#222222] dark:bg-[#080808] dark:shadow-[0_14px_36px_rgba(0,0,0,0.36)];
     border-color: #d9d9d0;
   }
 
   .panel-subtle {
-    @apply rounded-xl border bg-[#f2f2eb] dark:border-[#292925] dark:bg-[#1b1b18];
+    @apply rounded-xl border bg-[#f2f2eb] dark:border-[#242424] dark:bg-[#101010];
     border-color: #e1e1d8;
   }
 
   .pill-control {
-    @apply rounded-xl border bg-[#fbfbf6] text-[#68685f] transition-all duration-200 hover:border-[#8a8a80] hover:bg-white hover:text-[#171713] dark:border-[#35352f] dark:bg-[#141411] dark:text-[#b3b3a9] dark:hover:border-[#77776e] dark:hover:text-[#f4f4ec];
+    @apply rounded-xl border bg-[#fbfbf6] text-[#68685f] transition-all duration-200 hover:border-[#8a8a80] hover:bg-white hover:text-[#171713] dark:border-[#2b2b2b] dark:bg-[#0b0b0b] dark:text-[#b3b3a9] dark:hover:border-[#4a4a4a] dark:hover:text-[#f4f4ec];
     border-color: #d9d9d0;
   }
 
@@ -128,19 +131,19 @@
   }
 
   .eyebrow {
-    @apply text-[11px] font-semibold uppercase tracking-[0.18em] text-[#68685f] dark:text-[#a2a298];
+    @apply text-xs font-semibold text-[#68685f] dark:text-[#a2a298];
   }
 
   .app-surface {
-    @apply overflow-hidden rounded-2xl border border-[#d8d8cf] bg-[#fbfbf6]/95 shadow-[0_1px_2px_rgba(23,23,19,0.035),0_12px_32px_rgba(23,23,19,0.035)] backdrop-blur-sm transition-[border-color,box-shadow,transform] duration-300 dark:border-[#292925] dark:bg-[#141411]/95 dark:shadow-none;
+    @apply overflow-hidden rounded-2xl border border-[#d8d8cf] bg-[#fbfbf6]/95 shadow-[0_1px_2px_rgba(23,23,19,0.035),0_12px_32px_rgba(23,23,19,0.035)] backdrop-blur-sm transition-[border-color,box-shadow,transform] duration-300 dark:border-[#222222] dark:bg-[#080808]/95 dark:shadow-[0_16px_42px_rgba(0,0,0,0.4)];
   }
 
   .interactive-surface {
-    @apply hover:-translate-y-0.5 hover:border-[#c3c3ba] hover:shadow-[0_2px_4px_rgba(23,23,19,0.04),0_18px_40px_rgba(23,23,19,0.055)] dark:hover:border-[#3b3b35] dark:hover:shadow-none;
+    @apply hover:-translate-y-0.5 hover:border-[#c3c3ba] hover:shadow-[0_2px_4px_rgba(23,23,19,0.04),0_18px_40px_rgba(23,23,19,0.055)] dark:hover:border-[#343434] dark:hover:shadow-[0_20px_48px_rgba(0,0,0,0.55)];
   }
 
   .status-chip {
-    @apply inline-flex items-center gap-1.5 rounded-full border border-[#deded6] bg-[#f1f1ea] px-2.5 py-1.5 text-[10px] font-semibold text-[#68685f] dark:border-[#30302b] dark:bg-[#22221e] dark:text-[#aaa9a0];
+    @apply inline-flex items-center gap-1.5 rounded-full border border-[#deded6] bg-[#f1f1ea] px-2.5 py-1.5 text-[10px] font-semibold text-[#68685f] dark:border-[#292929] dark:bg-[#111111] dark:text-[#aaa9a0];
   }
 }
 
@@ -234,4 +237,148 @@
 @keyframes source-icon-float {
   0%, 100% { transform: translateY(0) rotate(-4deg); }
   50% { transform: translateY(-3px) rotate(6deg); }
+}
+
+/*
+ * Keep interface copy conversational. The previous all-caps, widely tracked
+ * label treatment made ordinary product language feel like system metadata.
+ * These safeguards also cover legacy utility classes across existing screens.
+ */
+.uppercase {
+  text-transform: none;
+}
+
+.tracking-wide,
+.tracking-wider,
+.tracking-widest,
+[class*="tracking-[0."] {
+  letter-spacing: 0;
+}
+
+/*
+ * Dark surfaces use a true-black canvas with deliberate elevation steps.
+ * The selectors remap legacy charcoal utilities without changing light mode.
+ */
+.dark [class*='dark:bg-[#07080a]'] {
+  background-color: #050505 !important;
+}
+
+.dark [class*='dark:bg-[#0b0b09]'],
+.dark [class*='dark:bg-[#0f0f0c]'] {
+  background-color: #070707 !important;
+}
+
+.dark [class*='dark:bg-[#0d0d0b]'] {
+  background-color: #000000 !important;
+}
+
+.dark [class*='dark:bg-[#10100e]'] {
+  background-color: #090909 !important;
+}
+
+.dark [class*='dark:bg-[#11110f]'] {
+  background-color: #030303 !important;
+}
+
+.dark [class*='dark:bg-[#141411]'] {
+  background-color: #080808 !important;
+}
+
+.dark [class*='dark:bg-[#171713]'] {
+  background-color: #0c0c0c !important;
+}
+
+.dark [class*='dark:bg-[#181815]'] {
+  background-color: #0d0d0d !important;
+}
+
+.dark [class*='dark:bg-[#1a1a17]'] {
+  background-color: #101010 !important;
+}
+
+.dark [class*='dark:bg-[#1b1b18]'] {
+  background-color: #111111 !important;
+}
+
+.dark [class*='dark:bg-[#1f1f1b]'] {
+  background-color: #141414 !important;
+}
+
+.dark [class*='dark:bg-[#22221e]'] {
+  background-color: #161616 !important;
+}
+
+.dark [class*='dark:bg-[#24241f]'],
+.dark [class*='dark:bg-[#242420]'] {
+  background-color: #181818 !important;
+}
+
+.dark [class*='dark:bg-[#252521]'] {
+  background-color: #1a1a1a !important;
+}
+
+.dark [class*='dark:bg-[#292925]'] {
+  background-color: #1e1e1e !important;
+}
+
+.dark [class*='dark:bg-[#33332e]'] {
+  background-color: #252525 !important;
+}
+
+.dark [class*='dark:hover:bg-[#1b1b18]']:hover,
+.dark [class*='dark:hover:bg-[#1c1c18]']:hover,
+.dark [class*='dark:hover:bg-[#1d1d19]']:hover {
+  background-color: #121212 !important;
+}
+
+.dark [class*='dark:hover:bg-[#1f1f1b]']:hover {
+  background-color: #141414 !important;
+}
+
+.dark [class*='dark:hover:bg-[#252521]']:hover {
+  background-color: #1a1a1a !important;
+}
+
+.dark [class*='dark:border-[#1d1d1a]'] {
+  border-color: #171717 !important;
+}
+
+.dark [class*='dark:border-[#292925]'] {
+  border-color: #222222 !important;
+}
+
+.dark [class*='dark:border-[#2d2d28]'],
+.dark [class*='dark:border-[#2e2e29]'],
+.dark [class*='dark:border-[#30302b]'] {
+  border-color: #272727 !important;
+}
+
+.dark [class*='dark:border-[#31312c]'],
+.dark [class*='dark:border-[#33332e]'],
+.dark [class*='dark:border-[#34342f]'],
+.dark [class*='dark:border-[#35352f]'] {
+  border-color: #2d2d2d !important;
+}
+
+.dark [class*='dark:border-[#383832]'],
+.dark [class*='dark:border-[#3a3a33]'],
+.dark [class*='dark:border-[#3a3a34]'],
+.dark [class*='dark:border-[#3b3b35]'],
+.dark [class*='dark:border-[#41413a]'] {
+  border-color: #363636 !important;
+}
+
+.dark [class*='dark:border-[#4a4a43]'] {
+  border-color: #424242 !important;
+}
+
+.dark [class*='dark:hover:border-[#3b3b35]']:hover {
+  border-color: #3b3b3b !important;
+}
+
+.dark [class*='dark:hover:border-[#4a4a43]']:hover,
+.dark [class*='dark:hover:border-[#505048]']:hover,
+.dark [class*='dark:hover:border-[#55554d]']:hover,
+.dark [class*='dark:hover:border-[#57574f]']:hover {
+  border-color: #484848 !important;
 }

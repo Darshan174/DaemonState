@@ -5,6 +5,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WorkspaceProvider } from "./context/WorkspaceContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import App from "./App";
+import "@fontsource-variable/archivo/wght.css";
+import "@fontsource-variable/archivo/wght-italic.css";
 import "./index.css";
 
 const queryClient = new QueryClient({
