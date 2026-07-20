@@ -48,6 +48,12 @@ from app.services.playbooks import (
     PlaybookService,
     playbook_to_dict,
 )
+from app.services.session_checkpoints import (
+    SessionCheckpointNotFoundError,
+    restore_session_checkpoint,
+)
+from app.services.session_summary import derive_session_topic
+from app.services.workspace_scope import metadata_dict
 
 router = APIRouter()
 
@@ -129,6 +135,8 @@ class ContextPrepareRequest(BaseModel):
     objective_origin: Literal[
         "trusted_human", "source_component", "project_snapshot"
     ] | None = None
+    checkpoint_source_document_id: UUID | None = None
+    checkpoint_id: str | None = Field(default=None, min_length=1, max_length=120)
 
     @model_validator(mode="after")
     def _has_objective(self) -> "ContextPrepareRequest":
@@ -137,6 +145,10 @@ class ContextPrepareRequest(BaseModel):
         )
         if origin == "trusted_human" and not (self.objective or self.goal):
             raise ValueError("objective is required")
+        if bool(self.checkpoint_source_document_id) != bool(self.checkpoint_id):
+            raise ValueError(
+                "checkpoint_source_document_id and checkpoint_id must be provided together"
+            )
         return self
 
 
@@ -414,6 +426,48 @@ async def prepare_context(
     session: AsyncSession = Depends(get_db_session),
     access_scope: AccessScope = Depends(get_access_scope),
 ) -> ContextPrepareResponse:
+    restored_checkpoint = None
+    if payload.checkpoint_source_document_id and payload.checkpoint_id:
+        checkpoint_document = await session.scalar(select(SourceDocument).where(
+            SourceDocument.id == payload.checkpoint_source_document_id,
+            SourceDocument.workspace_id == payload.workspace_id,
+            SourceDocument.source_type == "agent_session",
+            source_access_predicate(access_scope, workspace_id=payload.workspace_id),
+        ))
+        if checkpoint_document is None:
+            raise HTTPException(status_code=404, detail="Session checkpoint source not found")
+        checkpoint_metadata = metadata_dict(checkpoint_document)
+        connector_type = str(
+            checkpoint_metadata.get("connector_type")
+            or checkpoint_metadata.get("tool")
+            or "unknown"
+        ).strip().lower()
+        if connector_type == "claude_code":
+            connector_type = "claude"
+        session_id = str(
+            checkpoint_metadata.get("session_id")
+            or checkpoint_document.external_id.rsplit(":", 1)[-1]
+        ).strip()
+        session_title = derive_session_topic(
+            checkpoint_document.content,
+            explicit_title=checkpoint_metadata.get("title"),
+            tool=connector_type,
+            session_id=session_id,
+        ) or "Untitled session"
+        try:
+            restored_checkpoint = restore_session_checkpoint(
+                checkpoint_document.content,
+                checkpoint_metadata,
+                payload.checkpoint_id,
+                session_title=session_title,
+                source_document_id=str(checkpoint_document.id),
+                session_id=session_id,
+                harness=connector_type,
+                source_revision_number=int(checkpoint_document.revision_number or 1),
+                source_content_sha256=checkpoint_document.content_sha256,
+            )
+        except SessionCheckpointNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
     compiler = ContextCompiler(session)
     try:
         result = await compiler.compile_context_pack(
@@ -426,6 +480,7 @@ async def prepare_context(
             objective_kind=("project_snapshot" if payload.mode == "project_snapshot" else "observed"),
             focus_component_id=payload.focus_component_id,
             objective_origin=payload.objective_origin,
+            restored_checkpoint=restored_checkpoint,
             access_scope=access_scope,
         )
         await session.commit()

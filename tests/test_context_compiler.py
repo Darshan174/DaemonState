@@ -327,6 +327,80 @@ async def test_api_prepare_commits_pack_manifest_markdown_and_items(client, db_s
         await fresh.close()
 
 
+async def test_api_prepare_builds_handoff_from_explicit_pre_compaction_checkpoint(
+    client,
+    db_session,
+):
+    workspace = Workspace(
+        id=uuid4(),
+        name="Checkpoint handoff",
+        slug=f"checkpoint-handoff-{uuid4().hex}",
+    )
+    content = (
+        "[USER]\nKeep the session library automatic.\n\n"
+        "[ASSISTANT]\nThe adapter now discovers local Codex sessions.\n\n"
+        "[USER]\nFinish the restore context handoff."
+    )
+    source = SourceDocument(
+        id=uuid4(),
+        workspace_id=workspace.id,
+        source_type="agent_session",
+        external_id="codex:session:checkpoint-handoff",
+        content=content,
+        content_sha256=hashlib.sha256(content.encode()).hexdigest(),
+        metadata_json=json.dumps({
+            "session_id": "checkpoint-handoff",
+            "tool": "codex",
+            "title": "Build context restore",
+            "compaction_checkpoints": [{
+                "id": "checkpoint-handoff-1",
+                "kind": "provider_compaction",
+                "provider": "codex",
+                "occurred_at": "2026-07-19T10:00:00Z",
+                "turn_count": 3,
+                "user_turn_count": 2,
+                "assistant_turn_count": 1,
+                "window_id": 1,
+            }],
+        }),
+    )
+    db_session.add_all([workspace, source])
+    await db_session.commit()
+
+    response = await client.post(
+        "/api/context/prepare",
+        json={
+            "objective": "Finish the restore context handoff.",
+            "workspace_id": str(workspace.id),
+            "token_budget": 3500,
+            "checkpoint_source_document_id": str(source.id),
+            "checkpoint_id": "checkpoint-handoff-1",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    checkpoint_item = next(
+        item
+        for item in payload["selected_context"]
+        if item["item_type"] == "session_checkpoint"
+    )
+    assert checkpoint_item["inclusion_reason"] == "explicit_pre_compaction_restore"
+    assert checkpoint_item["truth_state"] == "reported"
+    assert checkpoint_item["provenance_verified"] is False
+    assert checkpoint_item["source_document_id"] == str(source.id)
+    assert "## Restored Session Checkpoint" in payload["markdown"]
+    assert "Finish the restore context handoff." in payload["markdown"]
+    assert "reported—not verified" in payload["markdown"]
+
+    stored_item = await db_session.scalar(select(ContextPackItem).where(
+        ContextPackItem.context_pack_id == UUID(payload["context_pack_id"]),
+        ContextPackItem.item_type == "session_checkpoint",
+    ))
+    assert stored_item is not None
+    assert stored_item.source_document_id == source.id
+
+
 async def test_project_snapshot_handoff_does_not_invent_a_supplied_objective(
     client, db_session
 ):

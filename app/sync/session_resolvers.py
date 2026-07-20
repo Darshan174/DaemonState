@@ -8,7 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
-from app.services.session_summary import derive_session_topic, derive_session_topics
+from app.services.session_checkpoints import build_compaction_checkpoint_descriptor
+from app.services.session_summary import (
+    derive_session_topic,
+    derive_session_topics,
+    is_internal_session_content,
+)
 
 
 class SessionResolutionError(Exception):
@@ -57,6 +62,10 @@ def discover_local_ai_sessions(
         except SessionResolutionError as exc:
             results.append(SessionDiscoveryResult(connector_type=connector_type, error=str(exc)))
             continue
+        sessions = [
+            item for item in sessions
+            if not is_internal_session_content(item.content)
+        ]
         results.append(SessionDiscoveryResult(connector_type=connector_type, sessions=sessions))
     return results
 
@@ -81,6 +90,7 @@ def _resolve_codex_session(session_id: str) -> ResolvedSession:
     for path in _recent_files(sessions_dir, "*.jsonl"):
         resolved = _read_codex_rollout(path, session_id, root=root)
         if resolved is not None:
+            _drop_codex_discovery_metadata(resolved)
             return resolved
 
     title = _codex_index_title(root, session_id)
@@ -110,6 +120,9 @@ def _discover_codex_sessions() -> list[ResolvedSession]:
         if resolved is not None:
             seen.add(session_id)
             sessions.append(resolved)
+    _annotate_codex_forks(sessions)
+    for resolved in sessions:
+        _drop_codex_discovery_metadata(resolved)
     return sessions
 
 
@@ -120,6 +133,9 @@ def _read_codex_rollout(
     root: Path,
 ) -> ResolvedSession | None:
     messages: list[tuple[str, str]] = []
+    compaction_checkpoints: list[dict[str, Any]] = []
+    provider_message_ids: list[str] = []
+    final_answers: list[str] = []
     metadata: dict[str, Any] = {
         "tool": "codex",
         "source_path": str(path),
@@ -137,24 +153,64 @@ def _read_codex_rollout(
                     continue
                 if item.get("type") == "session_meta":
                     payload = item.get("payload") or {}
-                    matched = payload.get("id") == session_id
-                    if matched:
+                    payload_session_id = str(payload.get("id") or "").strip()
+                    if not matched and payload_session_id == session_id:
+                        matched = True
+                    if payload_session_id == session_id:
                         metadata.update({
                             "session_id": session_id,
                             "started_at": payload.get("timestamp") or item.get("timestamp"),
+                            "updated_at": item.get("timestamp") or payload.get("timestamp"),
                             "cwd": payload.get("cwd"),
                             "model": payload.get("model"),
                             "source": payload.get("originator") or "Codex",
+                            "thread_source": payload.get("thread_source"),
+                            "parent_thread_id": payload.get("parent_thread_id"),
                         })
+                    elif (
+                        matched
+                        and payload_session_id
+                        and metadata.get("thread_source") != "subagent"
+                        and payload.get("thread_source") != "subagent"
+                        and not metadata.get("forked_from_session_id")
+                    ):
+                        # "Continue in new task" stores the new task metadata first,
+                        # followed by the copied parent rollout. That first embedded
+                        # user-session ID is the direct parent.
+                        metadata["forked_from_session_id"] = payload_session_id
+                        metadata["forked_from_title"] = _codex_index_title(
+                            root, payload_session_id
+                        )
                     continue
                 if not matched:
+                    continue
+                if item.get("timestamp"):
+                    metadata["updated_at"] = item["timestamp"]
+                if item.get("type") in {"compacted", "context_compaction", "contextCompaction"}:
+                    if messages:
+                        descriptor = build_compaction_checkpoint_descriptor(
+                            messages,
+                            item,
+                            provider="codex",
+                            ordinal=len(compaction_checkpoints) + 1,
+                        )
+                        if not any(
+                            current["id"] == descriptor["id"]
+                            for current in compaction_checkpoints
+                        ):
+                            compaction_checkpoints.append(descriptor)
                     continue
                 payload = item.get("payload") or {}
                 if item.get("type") == "response_item" and payload.get("type") == "message":
                     role = payload.get("role") or "assistant"
+                    provider_message_id = str(payload.get("id") or "").strip()
+                    if role in {"user", "assistant"} and provider_message_id:
+                        provider_message_ids.append(provider_message_id)
                     text = _extract_content_text(payload.get("content"))
                     if text:
                         messages.append((role, text))
+                        if role == "assistant" and payload.get("phase") == "final_answer":
+                            final_answers.append(text)
     except OSError:
         return None
 
@@ -163,7 +219,10 @@ def _read_codex_rollout(
     content = _format_turns(messages)
     if not content:
         raise SessionResolutionError(f"Codex session {session_id} had no readable message content.")
-    explicit_title = _codex_index_title(root, session_id)
+    index_titles = _codex_index_titles(root, session_id)
+    explicit_title = index_titles[-1] if index_titles else None
+    metadata["_provider_message_ids"] = provider_message_ids
+    metadata["_initial_index_title"] = index_titles[0] if index_titles else None
     metadata["title"] = derive_session_topic(
         content,
         explicit_title=explicit_title,
@@ -177,6 +236,14 @@ def _read_codex_rollout(
         tool="codex",
         session_id=session_id,
     )
+    if compaction_checkpoints:
+        metadata["compaction_checkpoints"] = compaction_checkpoints
+    if final_answers:
+        metadata.update({
+            "agent_reported_summary": final_answers[-1],
+            "agent_reported_summary_kind": "completion",
+            "agent_reported_summary_source": "provider_final_answer",
+        })
     return ResolvedSession("codex", session_id, content, metadata)
 
 
@@ -198,9 +265,15 @@ def _codex_session_id(path: Path) -> str | None:
 
 
 def _codex_index_title(root: Path, session_id: str) -> str | None:
+    titles = _codex_index_titles(root, session_id)
+    return titles[-1] if titles else None
+
+
+def _codex_index_titles(root: Path, session_id: str) -> list[str]:
     index_path = root / "session_index.jsonl"
     if not index_path.exists():
-        return None
+        return []
+    titles: list[str] = []
     try:
         with index_path.open("r", encoding="utf-8", errors="replace") as fh:
             for raw in fh:
@@ -211,10 +284,78 @@ def _codex_index_title(root: Path, session_id: str) -> str | None:
                 except json.JSONDecodeError:
                     continue
                 if item.get("id") == session_id:
-                    return item.get("thread_name") or item.get("title")
+                    title = str(item.get("thread_name") or item.get("title") or "").strip()
+                    if title and (not titles or titles[-1] != title):
+                        titles.append(title)
     except OSError:
-        return None
-    return None
+        return []
+    return titles
+
+
+def _annotate_codex_forks(sessions: list[ResolvedSession]) -> None:
+    """Attach user-task lineage without confusing Codex sub-agents for forks.
+
+    Codex currently replays provider message records when the user chooses
+    "Continue in new task", but user-created tasks do not always receive an
+    explicit ``parent_thread_id``. Exact provider message IDs let us recover
+    that relationship without guessing from similar titles or text.
+    """
+
+    for child in sessions:
+        metadata = child.metadata
+        if metadata.get("thread_source") == "subagent":
+            continue
+        if metadata.get("forked_from_session_id"):
+            continue
+        explicit_parent = str(metadata.get("parent_thread_id") or "").strip()
+        if explicit_parent and explicit_parent != child.session_id:
+            metadata["forked_from_session_id"] = explicit_parent
+            continue
+
+        child_ids = list(dict.fromkeys(metadata.get("_provider_message_ids") or []))
+        if len(child_ids) < 2:
+            continue
+        child_started_at = str(metadata.get("started_at") or "")
+        child_initial_title = str(metadata.get("_initial_index_title") or "").strip()
+        best: tuple[int, int, str, ResolvedSession] | None = None
+
+        for parent in sessions:
+            if parent.session_id == child.session_id:
+                continue
+            parent_started_at = str(parent.metadata.get("started_at") or "")
+            if child_started_at and parent_started_at and parent_started_at >= child_started_at:
+                continue
+            parent_ids = list(dict.fromkeys(
+                parent.metadata.get("_provider_message_ids") or []
+            ))
+            prefix_length = _shared_prefix_length(parent_ids, child_ids)
+            if prefix_length < 2:
+                continue
+            parent_title = str(parent.metadata.get("title") or "").strip()
+            title_match = int(bool(child_initial_title and child_initial_title == parent_title))
+            candidate = (prefix_length, title_match, parent_started_at, parent)
+            if best is None or candidate[:3] > best[:3]:
+                best = candidate
+
+        if best is None:
+            continue
+        parent = best[3]
+        metadata["forked_from_session_id"] = parent.session_id
+        metadata["forked_from_title"] = parent.metadata.get("title")
+
+
+def _shared_prefix_length(left: list[str], right: list[str]) -> int:
+    length = 0
+    for left_id, right_id in zip(left, right):
+        if left_id != right_id:
+            break
+        length += 1
+    return length
+
+
+def _drop_codex_discovery_metadata(session: ResolvedSession) -> None:
+    session.metadata.pop("_provider_message_ids", None)
+    session.metadata.pop("_initial_index_title", None)
 
 
 def _resolve_claude_session(session_id: str) -> ResolvedSession:
@@ -277,6 +418,8 @@ def _read_claude_jsonl(path: Path, session_id: str) -> ResolvedSession | None:
                     matched = True
                 if not matched:
                     continue
+                if item.get("timestamp"):
+                    metadata["updated_at"] = item["timestamp"]
                 if item.get("isMeta") is True:
                     continue
                 message = item.get("message") if isinstance(item.get("message"), dict) else {}
@@ -313,6 +456,13 @@ def _read_claude_jsonl(path: Path, session_id: str) -> ResolvedSession | None:
         tool="claude_code",
         session_id=session_id,
     )
+    latest_agent_message = _latest_agent_message(messages)
+    if latest_agent_message:
+        metadata.update({
+            "agent_reported_summary": latest_agent_message,
+            "agent_reported_summary_kind": "update",
+            "agent_reported_summary_source": "provider_message",
+        })
     return ResolvedSession("claude", session_id, content, metadata)
 
 
@@ -399,6 +549,7 @@ def _resolve_opencode_session(session_id: str) -> ResolvedSession:
         "model": session_row["model"],
         "started_at": _millis_to_iso(session_row["time_created"]),
         "ended_at": _millis_to_iso(session_row["time_updated"]),
+        "updated_at": _millis_to_iso(session_row["time_updated"]),
     }
     metadata["topics"] = derive_session_topics(
         content,
@@ -407,6 +558,13 @@ def _resolve_opencode_session(session_id: str) -> ResolvedSession:
         tool="opencode",
         session_id=session_id,
     )
+    latest_agent_message = _latest_agent_message(messages)
+    if latest_agent_message:
+        metadata.update({
+            "agent_reported_summary": latest_agent_message,
+            "agent_reported_summary_kind": "update",
+            "agent_reported_summary_source": "provider_message",
+        })
     return ResolvedSession("opencode", session_id, content, metadata)
 
 
@@ -504,6 +662,14 @@ def _extract_claude_message_text(value: Any) -> str:
             return str(value.get("text") or "").strip()
         return ""
     return str(value).strip() if isinstance(value, str) else ""
+
+
+def _latest_agent_message(messages: list[tuple[str, str]]) -> str | None:
+    agent_roles = {"assistant", "ai", "codex", "claude", "opencode", "gpt"}
+    for role, text in reversed(messages):
+        if str(role or "").strip().lower() in agent_roles and text.strip():
+            return text.strip()[:4000]
+    return None
 
 
 def _format_turns(messages: list[tuple[str, str]]) -> str:

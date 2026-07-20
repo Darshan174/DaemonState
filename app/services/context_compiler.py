@@ -286,6 +286,7 @@ class ContextCompiler:
         objective_origin: str | None = None,
         objective_source_document_id: str | UUID | None = None,
         objective_evidence_span_id: str | UUID | None = None,
+        restored_checkpoint: dict[str, Any] | None = None,
         access_scope: AccessScope | None = None,
     ) -> CompiledContextPack:
         access_scope = access_scope or AccessScope.local()
@@ -349,6 +350,8 @@ class ContextCompiler:
             profile,
             access_scope,
         )
+        if restored_checkpoint is not None:
+            candidates.append(_restored_checkpoint_candidate(restored_checkpoint))
         if focus["component_id"] is not None:
             focus_candidate = next(
                 (
@@ -1589,6 +1592,25 @@ def render_context_pack_markdown(
     else:
         sections.append("- No repository files were selected.")
 
+    restored_checkpoints = [
+        item for item in selected if item.get("item_type") == "session_checkpoint"
+    ]
+    if restored_checkpoints:
+        sections.extend(["", "## Restored Session Checkpoint", ""])
+        sections.append(
+            "This working state was captured from the session transcript immediately "
+            "before harness compaction. Agent claims remain reported—not verified—until "
+            "repository or check evidence confirms them."
+        )
+        for item in restored_checkpoints:
+            restored_lines = str(item.get("summary") or "").splitlines()
+            if restored_lines and restored_lines[0].startswith("# "):
+                restored_lines = restored_lines[1:]
+            sections.extend(
+                f"#{line}" if line.startswith("## ") else line
+                for line in restored_lines
+            )
+
     sections.extend(["", "## Non-Negotiable Decisions", ""])
     decisions = [
         item for item in selected
@@ -1687,6 +1709,85 @@ def render_context_pack_markdown(
 
 def estimate_tokens(text: str) -> int:
     return max(1, math.ceil(len(str(text or "")) / 4))
+
+
+def _restored_checkpoint_candidate(payload: dict[str, Any]) -> ContextCandidate:
+    checkpoint = payload.get("checkpoint") if isinstance(payload.get("checkpoint"), dict) else {}
+    restored = (
+        payload.get("restore_context")
+        if isinstance(payload.get("restore_context"), dict)
+        else {}
+    )
+    checkpoint_id = str(checkpoint.get("id") or "unknown-checkpoint")
+    source_document_id = str(restored.get("source_document_id") or "").strip() or None
+    session_title = str(
+        restored.get("session_title") or checkpoint.get("session_title") or "AI session"
+    ).strip()
+    harness = str(restored.get("harness") or checkpoint.get("harness") or "AI harness")
+    markdown = str(restored.get("markdown") or "").strip()
+    if not markdown:
+        raise InvalidGoalError("Restored checkpoint contains no usable transcript context")
+    source_revision_number = restored.get("source_revision_number")
+    try:
+        source_revision_number = int(source_revision_number) if source_revision_number else None
+    except (TypeError, ValueError):
+        source_revision_number = None
+    files = [
+        str(item) for item in restored.get("referenced_files") or []
+        if str(item).strip()
+    ][:20]
+    quote = _cap_text(
+        str(restored.get("agent_reported_state") or restored.get("objective") or markdown),
+        1200,
+    )
+    return ContextCandidate(
+        id=f"session_checkpoint:{source_document_id or 'source'}:{checkpoint_id}",
+        item_type="session_checkpoint",
+        title=f"Restored pre-compaction context · {session_title}",
+        summary=_cap_text(markdown, 6000),
+        status="active",
+        temporal="past_checkpoint",
+        token_cost=estimate_tokens(markdown),
+        inclusion_reason="explicit_pre_compaction_restore",
+        trust_zone="semi_trusted_tool",
+        confidence=0.75,
+        authority_weight=0.55,
+        prompt_injection_risk_score=_prompt_injection_risk(markdown),
+        source_document_id=source_document_id,
+        source_revision_id=(
+            f"{source_document_id}:revision:{source_revision_number}"
+            if source_document_id and source_revision_number
+            else None
+        ),
+        source_revision_number=source_revision_number,
+        source_content_sha256=(
+            str(restored.get("source_content_sha256") or "").strip() or None
+        ),
+        citations=[{
+            "citation_id": "",
+            "source_document_id": source_document_id,
+            "evidence_span_id": None,
+            "source_type": "agent_session_checkpoint",
+            "source_url": None,
+            "quote": quote,
+            "trust_zone": "semi_trusted_tool",
+            "validated": False,
+            "validation_reason": "transcript_reported_not_verified",
+        }],
+        files=files,
+        mandatory=True,
+        lane="instructions",
+        rank_features={
+            "explicit_checkpoint_restore": True,
+            "checkpoint_id": checkpoint_id,
+            "checkpoint_occurred_at": checkpoint.get("occurred_at"),
+            "checkpoint_turn_count": int(restored.get("turn_count") or 0),
+            "session_title": session_title,
+            "harness": harness,
+        },
+        provenance_verified=False,
+        truth_state="reported",
+    )
 
 
 def _core_candidates(
