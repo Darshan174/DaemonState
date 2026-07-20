@@ -156,13 +156,20 @@ export default function Landing() {
 
 function Nav() {
   return (
-    <header className="border-b border-[#d9d9d0] dark:border-[#292925]">
-      <div className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between px-5 sm:px-8">
-        <Link to="/" className="inline-flex items-center gap-2.5 font-semibold tracking-[-0.02em]">
-          <CeIcon size={24} />
-          Context Engine
+    <header>
+      <div className="mx-auto flex h-20 w-full max-w-6xl items-center justify-between gap-3 px-5 sm:h-24 sm:px-8">
+        <Link
+          to="/"
+          aria-label="Context Engine home"
+          className="group inline-flex min-w-0 items-center gap-3 text-lg font-bold tracking-[-0.03em] sm:gap-3.5 sm:text-xl"
+        >
+          <CeIcon
+            size={30}
+            className="shrink-0 transition-transform duration-300 group-hover:-rotate-3 group-hover:scale-105 sm:h-10 sm:w-10"
+          />
+          <span className="truncate">Context Engine</span>
         </Link>
-        <nav aria-label="Main navigation" className="flex items-center gap-2 sm:gap-5">
+        <nav aria-label="Main navigation" className="flex shrink-0 items-center gap-2 sm:gap-5">
           <a href={GITHUB_URL} target="_blank" rel="noreferrer" className="hidden text-sm text-[#62625a] transition hover:text-[#171713] sm:block dark:text-[#aaa9a0] dark:hover:text-white">
             GitHub
           </a>

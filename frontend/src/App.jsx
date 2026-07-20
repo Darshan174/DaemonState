@@ -86,7 +86,7 @@ function AdminShell() {
     <div className="app-shell flex h-screen overflow-hidden text-[#171713] transition-colors duration-300 dark:text-[#f4f4ec]">
       <aside
         id="desktop-sidebar"
-        className={`relative hidden shrink-0 flex-col border-r border-[#deded6]/90 bg-[#f1f1ea]/90 p-3 backdrop-blur-xl transition-[width] duration-300 ease-out dark:border-[#292925] dark:bg-[#11110f]/90 lg:flex ${sidebarCollapsed ? "w-[76px]" : "w-[248px]"}`}
+        className={`relative hidden shrink-0 flex-col border-r border-[#deded6]/90 bg-[#f1f1ea]/90 p-3 backdrop-blur-xl transition-[width] duration-300 ease-out dark:border-[#202020] dark:bg-[#030303]/95 lg:flex ${sidebarCollapsed ? "w-[76px]" : "w-[248px]"}`}
       >
         <button
           type="button"
@@ -95,7 +95,7 @@ function AdminShell() {
           aria-expanded={!sidebarCollapsed}
           aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
           title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-          className="absolute -right-3 top-[72px] z-40 flex h-7 w-7 items-center justify-center rounded-full border border-[#d9d9d0] bg-[#fbfbf6] text-[#68685f] shadow-[0_4px_12px_rgba(23,23,19,0.08)] transition-all duration-200 hover:scale-105 hover:border-[#bdbdb4] hover:text-[#171713] focus:outline-none focus:ring-2 focus:ring-brand-500/40 dark:border-[#35352f] dark:bg-[#1a1a17] dark:text-[#a2a298] dark:hover:border-[#55554d] dark:hover:text-white"
+          className="absolute -right-3 top-[72px] z-40 flex h-7 w-7 items-center justify-center rounded-full border border-[#d9d9d0] bg-[#fbfbf6] text-[#68685f] shadow-[0_4px_12px_rgba(23,23,19,0.08)] transition-all duration-200 hover:scale-105 hover:border-[#bdbdb4] hover:text-[#171713] focus:outline-none focus:ring-2 focus:ring-brand-500/40 dark:border-[#2b2b2b] dark:bg-[#0c0c0c] dark:text-[#a2a298] dark:hover:border-[#444444] dark:hover:text-white"
         >
           {sidebarCollapsed ? <PanelLeftOpen className="h-3.5 w-3.5" /> : <PanelLeftClose className="h-3.5 w-3.5" />}
         </button>
@@ -112,9 +112,9 @@ function AdminShell() {
           {NAV_ITEMS.map((item) => <ShellNavLink key={item.to} collapsed={sidebarCollapsed} {...item} />)}
         </nav>
 
-        <div className="space-y-3 border-t border-[#d9d9d0] pt-4 dark:border-[#292925]">
+        <div className="space-y-3 border-t border-[#d9d9d0] pt-4 dark:border-[#202020]">
           {sidebarCollapsed ? (
-            <button type="button" onClick={toggleSidebar} title="Expand to switch workspace" aria-label="Expand sidebar to switch workspace" className="flex h-9 w-full items-center justify-center rounded-md text-[#68685f] hover:bg-[#e8e8e0] dark:text-[#a2a298] dark:hover:bg-[#1f1f1b]">
+            <button type="button" onClick={toggleSidebar} title="Expand to switch workspace" aria-label="Expand sidebar to switch workspace" className="flex h-9 w-full items-center justify-center rounded-md text-[#68685f] hover:bg-[#e8e8e0] dark:text-[#a2a298] dark:hover:bg-[#121212]">
               <Database className="h-4 w-4" />
             </button>
           ) : <WorkspaceSwitcher variant="sidebar" />}
@@ -126,7 +126,7 @@ function AdminShell() {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="relative z-40 shrink-0 border-b border-[#d9d9d0]/90 bg-[#f7f7f2]/90 backdrop-blur-xl dark:border-[#292925] dark:bg-[#0d0d0b]/90 lg:hidden">
+        <header className="relative z-40 shrink-0 border-b border-[#d9d9d0]/90 bg-[#f7f7f2]/90 backdrop-blur-xl dark:border-[#202020] dark:bg-black/95 lg:hidden">
           <div className="flex items-center justify-between gap-3 px-4 py-3 sm:px-6">
             <Link to="/" className="flex min-w-0 items-center gap-2.5">
               <CeIcon size={30} />
@@ -137,14 +137,14 @@ function AdminShell() {
               <ThemeToggle />
             </div>
           </div>
-          <nav aria-label="Application" className="no-scrollbar flex gap-1 overflow-x-auto border-t border-[#e5e5dd] px-4 py-2 dark:border-[#1d1d1a] sm:px-6">
+          <nav aria-label="Application" className="no-scrollbar flex gap-1 overflow-x-auto border-t border-[#e5e5dd] px-4 py-2 dark:border-[#181818] sm:px-6">
             {NAV_ITEMS.map((item) => <ShellNavLink key={item.to} compact {...item} />)}
           </nav>
         </header>
 
         <main className={`app-main relative min-h-0 flex-1 dark:text-[#f4f4ec] ${isProjectPage ? "overflow-hidden" : "overflow-y-auto px-4 py-6 sm:px-7 sm:py-8 xl:px-10 xl:py-10"}`}>
         {!isProjectPage ? (
-          <div className="pointer-events-none absolute inset-x-0 top-0 h-48 border-b border-[#e7e7df]/70 bg-[radial-gradient(circle_at_75%_0%,rgba(217,255,104,0.14),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.7),rgba(247,247,242,0))] dark:border-[#1d1d1a] dark:bg-[radial-gradient(circle_at_75%_0%,rgba(217,255,104,0.06),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.025),rgba(13,13,11,0))]" />
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-48 border-b border-[#e7e7df]/70 bg-[radial-gradient(circle_at_75%_0%,rgba(217,255,104,0.14),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.7),rgba(247,247,242,0))] dark:border-[#171717] dark:bg-[radial-gradient(circle_at_75%_0%,rgba(217,255,104,0.035),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.018),rgba(0,0,0,0))]" />
         ) : null}
         <div
           className={`page-enter relative z-10 ${isProjectPage ? "h-full min-h-0" : ""}`}
@@ -188,7 +188,7 @@ function ShellNavLink({ to, label, icon: Icon, end, compact = false, collapsed =
           compact ? "h-9 px-3" : collapsed ? "h-10 px-0" : "h-10 px-3"
         } ${
           isActive
-            ? "bg-white text-[#171713] shadow-[0_1px_2px_rgba(23,23,19,0.06),0_4px_14px_rgba(23,23,19,0.04)] dark:bg-[#242420] dark:text-white dark:shadow-none"
+            ? "bg-white text-[#171713] shadow-[0_1px_2px_rgba(23,23,19,0.06),0_4px_14px_rgba(23,23,19,0.04)] dark:bg-[#141414] dark:text-white dark:shadow-[inset_0_0_0_1px_rgba(217,255,104,0.06)]"
             : "text-[#68685f] hover:bg-white/65 hover:text-[#171713] dark:text-[#a2a298] dark:hover:bg-white/[0.045] dark:hover:text-[#f4f4ec]"
         }`
       }
