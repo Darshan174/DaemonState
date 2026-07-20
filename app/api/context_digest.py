@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 from uuid import UUID
 
@@ -25,6 +25,7 @@ from app.models import (
     Relationship,
     RunObservation,
     SourceDocument,
+    Workspace,
 )
 from app.services.workspace_scope import (
     current_source_documents,
@@ -41,8 +42,19 @@ from app.services.founder_oversight import (
 from app.services.focus_policy import focus_eligibility
 from app.services.open_loops import OpenLoopService, open_loop_to_dict
 from app.services.playbooks import PlaybookService
-from app.services.session_summary import derive_session_topic
-from app.services.project_scope import workspace_references, workspace_relevance
+from app.services.session_summary import (
+    derive_latest_session_topic,
+    derive_session_attention_items,
+    derive_session_topic,
+    is_internal_session_content,
+)
+from app.services.session_library import selected_session_selection
+from app.services.project_scope import (
+    ProjectRelevance,
+    source_workspace_relevance,
+    workspace_references,
+    workspace_relevance,
+)
 from app.services.workspace_goals import resolve_current_goal
 from app.taxonomy import relationship_display_label, source_type_display
 from app.time import utc_now
@@ -239,6 +251,7 @@ async def get_context_digest(
 
     workspace_id_str = workspace_id
     workspace_uuid: UUID | None = None
+    workspace_kind: str | None = None
     if workspace_id:
         try:
             workspace_id_str, _ = await workspace_connector_types(session, workspace_id)
@@ -247,6 +260,9 @@ async def get_context_digest(
         if not await workspace_scope_exists(session, workspace_id_str):
             raise HTTPException(status_code=404, detail="Workspace not found")
         workspace_uuid = UUID(workspace_id_str)
+        workspace_kind = await session.scalar(
+            select(Workspace.kind).where(Workspace.id == workspace_uuid)
+        )
     scoped_documents = list(await session.scalars(
         select(SourceDocument)
         .where(source_access_predicate(access_scope, workspace_id=workspace_uuid))
@@ -256,6 +272,11 @@ async def get_context_digest(
         scoped_documents = filter_explicit_source_documents_for_workspace(
             scoped_documents, workspace_id_str
         )
+    if workspace_kind == "demo":
+        scoped_documents = [
+            document for document in scoped_documents
+            if document.source_type != "agent_session"
+        ]
 
     current_documents, _ = current_source_documents(scoped_documents)
     accessible_source_ids = {doc.id for doc in scoped_documents}
@@ -300,6 +321,19 @@ async def get_context_digest(
     workspace_repositories, workspace_paths, workspace_commits = await workspace_references(
         session, workspace_id_str
     )
+    selected_session = await selected_session_selection(
+        session, workspace_uuid
+    )
+    selected_session_external = selected_session.get("external_id")
+    selected_session_topic = selected_session.get("topic")
+    selected_document = next(
+        (
+            document for document in current_documents
+            if selected_session_external
+            and document.external_id == selected_session_external
+        ),
+        None,
+    )
 
     # Session roots are the durable representation of an imported agent run.
     # Their transcript preview can legitimately contain prompt-like language,
@@ -314,6 +348,10 @@ async def get_context_digest(
     cards: list[ContextCard] = []
     session_source_ids: set[UUID] = set()
     excluded_irrelevant_sources: set[UUID] = set()
+    selected_session_card_id: str | None = None
+    selected_session_source_id = (
+        str(selected_document.id) if selected_document is not None else None
+    )
     for component in components:
         if (component.fact_type or "").lower() in {"session_root", "ai_session"}:
             if component.source_document_id in session_source_ids:
@@ -327,6 +365,7 @@ async def get_context_digest(
             workspace_repositories=workspace_repositories,
             workspace_paths=workspace_paths,
             workspace_commits=workspace_commits,
+            selected_session_external_id=selected_session_external,
             conflict=component.id in conflict_component_ids,
             relationship_blocker=component.id in blocker_component_ids,
         )
@@ -343,6 +382,14 @@ async def get_context_digest(
             continue
         if card.workspace_relevance.status == "not_relevant":
             excluded_irrelevant_sources.add(component.source_document_id)
+        if (
+            is_session_root
+            and selected_session_external
+            and component.source_document
+            and component.source_document.external_id == selected_session_external
+        ):
+            selected_session_card_id = card.id
+            selected_session_source_id = str(component.source_document_id)
         cards.append(card)
     relevance_priority = {"relevant": 2, "unknown": 1, "not_relevant": 0}
     all_session_roots = [card for card in cards if card.category == "agent_session"]
@@ -358,6 +405,7 @@ async def get_context_digest(
     # ordered by attention/recency without using relevance as a visibility gate.
     all_session_roots.sort(
         key=lambda card: (
+            card.id == selected_session_card_id,
             card.attention_score,
             card.created_at or datetime.min,
         ),
@@ -475,6 +523,11 @@ async def get_context_digest(
             cards=cards,
             current_documents=current_documents,
             accessible_source_ids=accessible_source_ids,
+            workspace_repositories=workspace_repositories,
+            workspace_paths=workspace_paths,
+            workspace_commits=workspace_commits,
+            selected_session_source_id=selected_session_source_id,
+            selected_session_topic=selected_session_topic,
         ),
         current_goal=current_goal,
         oversight=await _digest_oversight(
@@ -536,6 +589,11 @@ async def _digest_activity(
     cards: list[ContextCard],
     current_documents: list[SourceDocument],
     accessible_source_ids: set[UUID],
+    workspace_repositories: set[str],
+    workspace_paths: set[str],
+    workspace_commits: set[str],
+    selected_session_source_id: str | None = None,
+    selected_session_topic: str | None = None,
 ) -> dict:
     """Return the newest observed work without inventing a project objective.
 
@@ -543,29 +601,79 @@ async def _digest_activity(
     are still useful for the latest request and stated rationale, but remain
     explicitly marked as session-reported until repository/run evidence exists.
     """
+    current_documents = [
+        document for document in current_documents
+        if document.source_type != "agent_session"
+        or not is_internal_session_content(document.content)
+    ]
     session_cards = [
         card for card in cards
         if card.category == "agent_session"
         and (workspace_id is None or card.workspace_relevance.status != "not_relevant")
     ]
     documents_by_id = {str(document.id): document for document in current_documents}
+    represented_session_source_ids = {
+        card.source_snapshot.source_document_id for card in session_cards
+    }
     session_items = [
         _session_activity(
             card,
             documents_by_id.get(card.source_snapshot.source_document_id),
             assigned=(workspace_id is None or card.workspace_relevance.status == "relevant"),
+            project_relevance=card.workspace_relevance,
+            selected=(
+                card.source_snapshot.source_document_id
+                == selected_session_source_id
+            ),
+            selected_topic=selected_session_topic,
         )
         for card in session_cards
     ]
+    for document in current_documents:
+        if (
+            document.source_type != "agent_session"
+            or str(document.id) in represented_session_source_ids
+        ):
+            continue
+        selected = str(document.id) == selected_session_source_id
+        relevance = source_workspace_relevance(
+            document.source_type,
+            metadata_dict(document),
+            workspace_repositories,
+            workspace_paths,
+            workspace_commits,
+        )
+        if selected:
+            relevance = ProjectRelevance(
+                status="relevant",
+                reasons=["Session was explicitly selected for this project."],
+            )
+        session_items.append(_session_activity(
+            None,
+            document,
+            assigned=(workspace_id is None or relevance.status == "relevant"),
+            project_relevance=relevance,
+            selected=selected,
+            selected_topic=selected_session_topic,
+        ))
     session_items = [item for item in session_items if item is not None]
     session_items.sort(key=_activity_sort_key, reverse=True)
+    deduplicated_session_items: list[dict] = []
+    seen_session_identities: set[str] = set()
+    for item in session_items:
+        session_id = str(item.get("session_id") or "").strip()
+        identity = (
+            f"{str(item.get('tool') or '').lower()}:{session_id}"
+            if session_id else str(item.get("source_document_id") or item["id"])
+        )
+        if identity in seen_session_identities:
+            continue
+        seen_session_identities.add(identity)
+        deduplicated_session_items.append(item)
+    session_items = deduplicated_session_items
     assigned_session_items = [
         item for item in session_items if item["state"] != "unassigned"
     ]
-    unassigned_session_items = [
-        item for item in session_items if item["state"] == "unassigned"
-    ]
-
     run_items: list[dict] = []
     if workspace_id is not None:
         runs = list(await session.scalars(
@@ -589,11 +697,18 @@ async def _digest_activity(
             run_items.append(_run_activity(run, observations))
         run_items.sort(key=_activity_sort_key, reverse=True)
 
-    candidates = [*run_items, *assigned_session_items]
+    selected_sessions = [
+        item for item in assigned_session_items if item["selected_for_now"]
+    ]
     active_runs = [item for item in run_items if item["state"] == "active"]
-    primary = max(active_runs, key=_activity_sort_key) if active_runs else (
-        max(candidates, key=_activity_sort_key) if candidates
-        else (unassigned_session_items[0] if unassigned_session_items else None)
+    # Without an explicit choice, Now is a preview of the genuinely newest
+    # activity. An unassigned session may appear here, but remains excluded from
+    # project truth until the user selects it.
+    candidates = [*run_items, *session_items]
+    primary = max(selected_sessions, key=_activity_sort_key) if selected_sessions else (
+        max(active_runs, key=_activity_sort_key) if active_runs else (
+            max(candidates, key=_activity_sort_key) if candidates else None
+        )
     )
     return {
         "schema_version": "now_activity.v1",
@@ -684,10 +799,13 @@ def _run_activity(run: AgentRun, observations: list[RunObservation]) -> dict:
 
 
 def _session_activity(
-    card: ContextCard,
+    card: ContextCard | None,
     source: SourceDocument | None,
     *,
     assigned: bool,
+    project_relevance: ProjectRelevance | None = None,
+    selected: bool = False,
+    selected_topic: str | None = None,
 ) -> dict | None:
     if source is None:
         return None
@@ -705,28 +823,70 @@ def _session_activity(
         ),
         None,
     )
-    latest_assistant = next(
-        (
-            cleaned for text in reversed(assistant_turns)
-            if (cleaned := _compact_activity_text(text))
-        ),
-        None,
+    latest_assistant = _latest_meaningful_assistant_update(assistant_turns)
+    provider_summary = _reported_summary_text(metadata.get("agent_reported_summary"))
+    if provider_summary:
+        summary_kind = str(
+            metadata.get("agent_reported_summary_kind") or "update"
+        ).strip().lower()
+        result_summary = {
+            "text": provider_summary,
+            "kind": summary_kind if summary_kind in {"completion", "update"} else "update",
+            "provenance": "agent_reported",
+            "source": str(
+                metadata.get("agent_reported_summary_source") or "provider_message"
+            ),
+        }
+    else:
+        result_summary = _agent_reported_summary(assistant_turns)
+    topic = _compact_activity_text(
+        card.session.get("topic") if card and card.session else None,
+        140,
+    ) or derive_session_topic(
+        source.content,
+        explicit_title=metadata.get("title"),
+        tool=str(metadata.get("tool") or metadata.get("agent_tool") or ""),
+        session_id=str(metadata.get("session_id") or source.external_id),
     )
-    topic = _compact_activity_text(card.session.get("topic") if card.session else None, 140)
-    ended_at = _parse_datetime(
-        metadata.get("ended_at") or metadata.get("updated_at")
+    latest_topic = derive_latest_session_topic(
+        source.content,
+        explicit_title=metadata.get("title"),
+        tool=str(metadata.get("tool") or metadata.get("agent_tool") or ""),
+        session_id=str(metadata.get("session_id") or source.external_id),
     )
-    updated_at = ended_at or source.ingested_at
+    ended_at = _parse_datetime(metadata.get("ended_at"))
+    updated_at = _latest_datetime(
+        metadata.get("updated_at"),
+        metadata.get("ended_at"),
+        metadata.get("source_modified_at"),
+        metadata.get("started_at"),
+    ) or _latest_datetime(metadata.get("ingested_at"), source.ingested_at) or source.ingested_at
+    session_title = topic or request or "Imported coding session"
+    chosen_topic = selected_topic if selected else None
+    live = bool(metadata.get("source_path")) and _is_recent_activity(updated_at)
+    relevance = project_relevance or ProjectRelevance(
+        status="relevant" if assigned else "unknown",
+        reasons=[],
+    )
     return {
         "id": f"session:{source.id}",
         "kind": "agent_session",
-        "state": "recent" if assigned else "unassigned",
-        "live": False,
+        "state": "active" if live else "recent" if assigned else "unassigned",
+        "live": live,
         "evidence_level": "session_reported" if assigned else "session_unassigned",
+        "selected_for_now": selected,
+        "selected_topic": chosen_topic,
+        "session_id": str(metadata.get("session_id") or source.external_id),
         "refreshable": bool(metadata.get("source_path")),
-        "title": request or topic or "Imported coding session",
+        "title": chosen_topic or latest_topic or session_title,
+        "session_title": session_title,
+        "latest_topic": latest_topic or session_title,
         "request": request,
         "latest_update": latest_assistant,
+        "result_summary": ({
+            **result_summary,
+            "reported_at": updated_at,
+        } if result_summary else None),
         "rationale": _stated_rationale(assistant_turns),
         "tool": metadata.get("tool") or metadata.get("agent_tool"),
         "model": metadata.get("model") or metadata.get("agent_model"),
@@ -739,8 +899,27 @@ def _session_activity(
         "changed_files": [],
         "verification": {"observed": 0, "passed": 0, "failed": 0},
         "outcome": None,
-        "source_card_id": card.id,
+        "source_card_id": card.id if card else None,
         "source_document_id": str(source.id),
+        "forked_from": ({
+            "session_id": str(metadata.get("forked_from_session_id")),
+            "title": _compact_activity_text(
+                metadata.get("forked_from_title"), 100
+            ) or "Previous task",
+        } if metadata.get("forked_from_session_id") else None),
+        "project_match": {
+            "status": relevance.status,
+            "reasons": relevance.reasons,
+            "automatic": relevance.status == "relevant" and not selected,
+        },
+        "attention_items": [
+            {
+                **item,
+                "id": f"session-attention:{source.id}:{index}",
+                "source_document_id": str(source.id),
+            }
+            for index, item in enumerate(derive_session_attention_items(source.content))
+        ],
         "event_count": len(turns),
     }
 
@@ -785,6 +964,57 @@ def _compact_activity_text(value: object, max_chars: int = 240) -> str | None:
     return f"{cleaned[:max_chars - 3].rstrip()}..."
 
 
+def _looks_like_process_narration(value: str) -> bool:
+    """Hide agent play-by-play that does not tell the user what changed."""
+
+    return bool(re.search(
+        r"^(?:got it[.!,:—\s-]+)?(?:"
+        r"(?:i|we)(?:['’]m| am|['’]re| are)\s+"
+        r"(?:checking|reviewing|inspecting|tracing|looking|testing|running|using|"
+        r"working|investigating|exploring|verifying|reading|opening)|"
+        r"(?:i|we)(?:['’]ll| will)\s+"
+        r"(?:check|review|inspect|trace|look|test|run|use|investigate|verify|read|open)|"
+        r"next[, :])\b",
+        value.strip(),
+        re.IGNORECASE,
+    ))
+
+
+def _latest_meaningful_assistant_update(assistant_turns: list[str]) -> str | None:
+    for turn in reversed(assistant_turns):
+        summary = _reported_summary_text(turn)
+        if summary and not _looks_like_process_narration(summary):
+            return summary
+    return None
+
+
+def _reported_summary_text(value: object, max_chars: int = 220) -> str | None:
+    summary = _compact_activity_text(value, max_chars + 80)
+    if not summary:
+        return None
+    summary = re.sub(
+        r"^(?:exactly|absolutely|yes|great)[.!,:—\s-]+",
+        "",
+        summary,
+        flags=re.IGNORECASE,
+    ).strip()
+    if len(summary) <= max_chars:
+        return summary
+
+    sentences = re.split(r"(?<=[.!?])\s+", summary)
+    selected: list[str] = []
+    for sentence in sentences:
+        candidate = " ".join([*selected, sentence]).strip()
+        if len(candidate) > max_chars:
+            break
+        selected.append(sentence)
+    if selected and len(" ".join(selected)) >= 48:
+        return " ".join(selected)
+
+    clipped = summary[: max_chars - 3].rsplit(" ", 1)[0].rstrip(" ,;:-")
+    return f"{clipped}..." if clipped else None
+
+
 def _stated_rationale(assistant_turns: list[str]) -> str | None:
     for turn in reversed(assistant_turns):
         for sentence in re.split(r"(?<=[.!?])\s+|\n+", turn):
@@ -797,6 +1027,46 @@ def _stated_rationale(assistant_turns: list[str]) -> str | None:
                 if rationale:
                     return rationale
     return None
+
+
+def _agent_reported_summary(assistant_turns: list[str]) -> dict[str, str] | None:
+    """Select a concise agent-reported result without invoking another model."""
+
+    candidates = [
+        summary
+        for turn in assistant_turns
+        if (summary := _reported_summary_text(turn))
+        and not _looks_like_process_narration(summary)
+    ]
+    if not candidates:
+        return None
+
+    completion_pattern = re.compile(
+        r"\b(corrected|completed|implemented|fixed|resolved|updated|added|removed|"
+        r"changed|created|built|shipped|verified|passed|successful|ready)\b|"
+        r"\bnow (?:uses|shows|defaults|supports|opens|returns|includes)\b",
+        re.IGNORECASE,
+    )
+    intent_pattern = re.compile(
+        r"^(?:got it|(?:i|we)(?:['’]m| am|['’]re| are) "
+        r"(?:checking|implementing|updating|finishing|using|working)|"
+        r"(?:i|we)(?:['’]ll| will)|next[, :])\b",
+        re.IGNORECASE,
+    )
+    for summary in reversed(candidates):
+        if completion_pattern.search(summary) and not intent_pattern.search(summary):
+            return {
+                "text": summary,
+                "kind": "completion",
+                "provenance": "agent_reported",
+                "source": "transcript_heuristic",
+            }
+    return {
+        "text": candidates[-1],
+        "kind": "update",
+        "provenance": "agent_reported",
+        "source": "transcript_heuristic",
+    }
 
 
 def _observation_payload(observation: RunObservation | None) -> dict:
@@ -1344,6 +1614,24 @@ def _parse_datetime(value: object) -> datetime | None:
         return None
 
 
+def _latest_datetime(*values: object) -> datetime | None:
+    parsed = [candidate for value in values if (candidate := _parse_datetime(value))]
+    if not parsed:
+        return None
+    # Source timestamps are stored and compared as naive UTC in the database,
+    # but API clients need an explicit offset. Without it, browsers interpret
+    # the value as local time and can make a current session look hours old.
+    return max(parsed).replace(tzinfo=timezone.utc)
+
+
+def _is_recent_activity(value: datetime | None, *, minutes: int = 10) -> bool:
+    if value is None:
+        return False
+    normalized = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    now = utc_now().replace(tzinfo=timezone.utc)
+    return now - normalized.astimezone(timezone.utc) <= timedelta(minutes=minutes)
+
+
 async def _digest_objective(
     session: AsyncSession,
     workspace_id: str | None,
@@ -1413,6 +1701,7 @@ def _component_to_card(
     workspace_repositories: set[str] | None = None,
     workspace_paths: set[str] | None = None,
     workspace_commits: set[str] | None = None,
+    selected_session_external_id: str | None = None,
     conflict: bool = False,
     relationship_blocker: bool = False,
 ) -> ContextCard:
@@ -1441,12 +1730,25 @@ def _component_to_card(
     if category != "blocker" and status == "blocked" and not conflict:
         status = "needs_review"
     score = _attention_score(component, card_type, status, relationship_ids)
-    project_relevance = workspace_relevance(
-        component,
-        metadata,
-        workspace_repositories or set(),
-        workspace_paths or set(),
-        workspace_commits or set(),
+    explicitly_selected = bool(
+        source
+        and selected_session_external_id
+        and source.external_id == selected_session_external_id
+        and _is_agent_source(component)
+    )
+    project_relevance = (
+        ProjectRelevance(
+            status="relevant",
+            reasons=["Session was explicitly selected for this project."],
+        )
+        if explicitly_selected
+        else workspace_relevance(
+            component,
+            metadata,
+            workspace_repositories or set(),
+            workspace_paths or set(),
+            workspace_commits or set(),
+        )
     )
     relevance = WorkspaceRelevance(
         status=project_relevance.status,

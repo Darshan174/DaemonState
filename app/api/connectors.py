@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import secrets
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID
@@ -1080,6 +1081,18 @@ async def refresh_linked_ai_sessions(
     from app.sync.session_resolvers import SessionResolutionError, resolve_local_ai_session
 
     workspace = await _get_workspace(body.workspace_id, session)
+    if workspace.kind == "demo":
+        return {
+            "workspace_id": str(workspace.id),
+            "linked_sessions": 0,
+            "refreshed": 0,
+            "changed": 0,
+            "metadata_updated": 0,
+            "unchanged": 0,
+            "errors": [],
+            "skipped_reason": "sample_workspace",
+            "refreshed_at": utc_now().isoformat(),
+        }
     documents = list(await session.scalars(
         select(SourceDocument)
         .where(
@@ -1089,7 +1102,7 @@ async def refresh_linked_ai_sessions(
         .order_by(SourceDocument.ingested_at.desc(), SourceDocument.id.desc())
     ))
     current, _ = current_source_documents(documents)
-    linked: list[tuple[SourceDocument, dict[str, Any], str, str]] = []
+    linked_candidates: list[tuple[SourceDocument, dict[str, Any], str, str]] = []
     seen: set[tuple[str, str]] = set()
     for document in current:
         metadata = _loads_json_dict(document.metadata_json)
@@ -1108,18 +1121,41 @@ async def refresh_linked_ai_sessions(
         ):
             continue
         seen.add(key)
-        linked.append((document, metadata, connector_type, session_id))
-        if len(linked) >= 8:
-            break
+        linked_candidates.append((document, metadata, connector_type, session_id))
+
+    # A session imported hours ago may be the one actively changing now. Rank
+    # linked sessions by their live transcript file before applying the small
+    # polling cap, instead of treating database ingestion order as freshness.
+    linked_candidates.sort(
+        key=lambda item: _linked_session_refresh_priority(item[1], item[0]),
+        reverse=True,
+    )
+    linked = linked_candidates[:8]
 
     refreshed = 0
     changed = 0
     unchanged = 0
     errors: list[dict[str, str]] = []
-    for document, _, connector_type, session_id in linked:
+    metadata_updated = 0
+    for document, current_metadata, connector_type, session_id in linked:
         try:
             resolved = resolve_local_ai_session(connector_type, session_id)
             if resolved.content.strip() == document.content.strip():
+                refreshed_metadata = {
+                    **current_metadata,
+                    **{
+                        key: value
+                        for key, value in resolved.metadata.items()
+                        if value not in (None, "", [])
+                    },
+                    "connector_type": connector_type,
+                    "tool": connector_type,
+                    "session_id": session_id,
+                }
+                if refreshed_metadata != current_metadata:
+                    document.metadata_json = json.dumps(refreshed_metadata)
+                    await session.flush()
+                    metadata_updated += 1
                 refreshed += 1
                 unchanged += 1
                 continue
@@ -1146,15 +1182,35 @@ async def refresh_linked_ai_sessions(
         )
         unchanged += int(ingest.get("documents_skipped") or ingest.get("unchanged") or 0)
 
+    if metadata_updated:
+        await session.commit()
+
     return {
         "workspace_id": str(workspace.id),
         "linked_sessions": len(linked),
         "refreshed": refreshed,
         "changed": changed,
+        "metadata_updated": metadata_updated,
         "unchanged": unchanged,
         "errors": errors,
         "refreshed_at": utc_now().isoformat(),
     }
+
+
+def _linked_session_refresh_priority(
+    metadata: dict[str, Any],
+    document: SourceDocument,
+) -> tuple[float, float, str]:
+    source_mtime = 0.0
+    source_path = str(metadata.get("source_path") or "").strip()
+    if source_path:
+        try:
+            source_mtime = Path(source_path).stat().st_mtime
+        except OSError:
+            pass
+    ingested_at = document.ingested_at
+    ingested_timestamp = ingested_at.timestamp() if ingested_at is not None else 0.0
+    return (source_mtime, ingested_timestamp, str(document.id))
 
 
 async def _ingest_ai_session_content(

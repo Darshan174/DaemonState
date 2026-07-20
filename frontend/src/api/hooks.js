@@ -1725,6 +1725,25 @@ export function useSyncSessionLibrary() {
   });
 }
 
+export function useSelectSessionFromLibrary() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ workspaceId, sourceDocumentId, topic }) => api.put("/session-library/selection", {
+      workspace_id: workspaceId,
+      source_document_id: sourceDocumentId,
+      ...(topic ? { topic } : {}),
+    }),
+    onSuccess: (result, variables) => {
+      if (result?.library) {
+        qc.setQueryData(["session-library", variables.workspaceId], result.library);
+      }
+      qc.invalidateQueries({ queryKey: ["session-library", variables.workspaceId] });
+      qc.invalidateQueries({ queryKey: ["context-digest", variables.workspaceId] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+}
+
 export function useSaveSlackOAuthSettings() {
   const qc = useQueryClient();
   return useMutation({

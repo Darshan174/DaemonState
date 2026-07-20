@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+from datetime import timedelta
 from pathlib import Path
 from tempfile import gettempdir
 from uuid import uuid4
@@ -21,6 +22,7 @@ from app.migrations import run_migrations
 from app.models import Base, Component, Connector, Model, SourceDocument, SyncJob, Workspace
 from app.processing.embedder import HashingEmbedder
 from app.services.source_revisions import ingest_source_document_revision
+from app.time import utc_now
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
@@ -965,6 +967,7 @@ class TestAISessionIngest:
         content = {
             "value": "[USER]\nFix the redirect.\n\n[ASSISTANT]\nI am inspecting the callback."
         }
+        provider_updated_at = {"value": "2026-07-19T10:00:00Z"}
 
         def _resolver(connector_type, session_id):
             return ResolvedSession(
@@ -975,6 +978,7 @@ class TestAISessionIngest:
                     "tool": "codex",
                     "source_path": "/tmp/codex-live.jsonl",
                     "cwd": "/workspace/live-project",
+                    "updated_at": provider_updated_at["value"],
                 },
             )
 
@@ -989,6 +993,7 @@ class TestAISessionIngest:
         )
         assert imported.status_code == 200
 
+        provider_updated_at["value"] = "2026-07-19T11:00:00Z"
         unchanged = await client.post(
             "/api/connectors/ai-session/refresh-linked",
             json={"workspace_id": str(workspace.id)},
@@ -996,7 +1001,16 @@ class TestAISessionIngest:
         assert unchanged.status_code == 200
         assert unchanged.json()["linked_sessions"] == 1
         assert unchanged.json()["changed"] == 0
+        assert unchanged.json()["metadata_updated"] == 1
         assert unchanged.json()["unchanged"] == 1
+
+        current_document = await db_session.scalar(
+            select(SourceDocument)
+            .where(SourceDocument.external_id == "codex:session:live-session")
+            .order_by(SourceDocument.revision_number.desc())
+        )
+        await db_session.refresh(current_document)
+        assert json.loads(current_document.metadata_json)["updated_at"] == "2026-07-19T11:00:00Z"
 
         content["value"] = (
             "[USER]\nFix the redirect.\n\n"
@@ -1017,6 +1031,79 @@ class TestAISessionIngest:
         ))
         assert [document.revision_number for document in revisions] == [1, 2]
         assert "preserves redirect state" in revisions[-1].content
+
+    async def test_linked_refresh_prioritizes_the_actively_changing_transcript(
+        self,
+        client,
+        db_session,
+        monkeypatch,
+    ):
+        from app.sync.session_resolvers import ResolvedSession
+
+        workspace = Workspace(
+            id=uuid4(),
+            name="Refresh priority",
+            slug=f"refresh-priority-{uuid4().hex}",
+        )
+        db_session.add(workspace)
+        await db_session.flush()
+        now = utc_now()
+        for index in range(9):
+            session_id = "active-session" if index == 8 else f"cold-session-{index}"
+            source_path = f"/tmp/{session_id}.jsonl"
+            db_session.add(SourceDocument(
+                workspace_id=workspace.id,
+                source_type="agent_session",
+                external_id=f"codex:session:{session_id}",
+                content=f"[USER]\nReview {session_id}.\n\n[ASSISTANT]\nReviewed.",
+                metadata_json=json.dumps({
+                    "connector_type": "codex",
+                    "tool": "codex",
+                    "session_id": session_id,
+                    "source_path": source_path,
+                }),
+                ingested_at=now - timedelta(minutes=index),
+            ))
+        await db_session.commit()
+
+        resolved_ids: list[str] = []
+
+        def _priority(metadata, _document):
+            session_id = str(metadata.get("session_id"))
+            return (1.0 if session_id == "active-session" else 0.0, 0.0, session_id)
+
+        def _resolver(connector_type, session_id):
+            resolved_ids.append(session_id)
+            return ResolvedSession(
+                connector_type=connector_type,
+                session_id=session_id,
+                content=f"[USER]\nReview {session_id}.\n\n[ASSISTANT]\nReviewed.",
+                metadata={
+                    "connector_type": "codex",
+                    "tool": "codex",
+                    "session_id": session_id,
+                    "source_path": f"/tmp/{session_id}.jsonl",
+                },
+            )
+
+        monkeypatch.setattr(
+            "app.api.connectors._linked_session_refresh_priority",
+            _priority,
+        )
+        monkeypatch.setattr(
+            "app.sync.session_resolvers.resolve_local_ai_session",
+            _resolver,
+        )
+
+        response = await client.post(
+            "/api/connectors/ai-session/refresh-linked",
+            json={"workspace_id": str(workspace.id)},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["linked_sessions"] == 8
+        assert len(resolved_ids) == 8
+        assert "active-session" in resolved_ids
 
 
 class TestProcessingSummary:

@@ -78,7 +78,28 @@ def workspace_relevance(
     workspace_paths: set[str],
     workspace_commits: set[str],
 ) -> ProjectRelevance:
-    if not is_agent_source(component):
+    source_type = (
+        component.source_document.source_type if component.source_document else ""
+    )
+    return source_workspace_relevance(
+        source_type,
+        metadata,
+        workspace_repositories,
+        workspace_paths,
+        workspace_commits,
+    )
+
+
+def source_workspace_relevance(
+    source_type: str,
+    metadata: dict,
+    workspace_repositories: set[str],
+    workspace_paths: set[str],
+    workspace_commits: set[str],
+) -> ProjectRelevance:
+    """Match a source to a workspace even before extraction creates cards."""
+
+    if not is_agent_source_type(source_type):
         return ProjectRelevance(
             status="relevant",
             reasons=["Source is explicitly assigned to this workspace."],
@@ -160,7 +181,12 @@ def workspace_relevance(
 def is_agent_source(component: Component) -> bool:
     source_type = (
         component.source_document.source_type if component.source_document else ""
-    ).lower()
+    )
+    return is_agent_source_type(source_type)
+
+
+def is_agent_source_type(source_type: str) -> bool:
+    source_type = (source_type or "").lower()
     return (
         source_type in {"agent_session", "codex", "claude", "opencode"}
         or source_type.startswith("ai_context")

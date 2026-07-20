@@ -67,6 +67,141 @@ _LEADING_REQUEST_RE = re.compile(
     r"work on\s+)",
     re.IGNORECASE,
 )
+_ATTACHMENT_FILE_RE = re.compile(
+    r"^(?:screenshot\s+\d{4}-\d{2}-\d{2}\s+at\s+\d{1,2}(?:[.:]\d{2}){0,2}|"
+    r"codex-clipboard-[a-z0-9-]+)(?:\.png|\.jpe?g|\.webp)?(?::.*)?$",
+    re.IGNORECASE,
+)
+_COMMAND_ONLY_RE = re.compile(
+    r"^/(?:model|help|compact|resume|status|clear|reset|init)(?:\s+.*)?$",
+    re.IGNORECASE,
+)
+_CORRECTION_PATTERNS = (
+    re.compile(r"\bstill\s+(?:displayed|showing|visible|there|broken|wrong|not\b)", re.IGNORECASE),
+    re.compile(r"\bwhat did (?:you|u) (?:remove|change|fix|do)\b", re.IGNORECASE),
+    re.compile(r"\b(?:isn't|isnt|wasn't|wasnt|didn't|didnt|doesn't|doesnt|not)\s+(?:fixed|removed|working|changed|gone|implemented)\b", re.IGNORECASE),
+    re.compile(r"\byou (?:said|claimed).{0,120}\bbut\b", re.IGNORECASE),
+    re.compile(r"\b(?:not actually|misunderstanding|incorrect|wrong result|does not match|doesn't match|didnt match)\b", re.IGNORECASE),
+)
+_TOPIC_SIGNAL_WORDS = (
+    "attention",
+    "banner",
+    "broken",
+    "duplicate",
+    "evidence",
+    "issue",
+    "session",
+    "text",
+    "topic",
+    "ui",
+    "wrong",
+)
+
+
+def is_internal_session_content(content: str | None) -> bool:
+    """Return True for harness-generated assessment sessions, not user work."""
+
+    user_turns = re.findall(
+        r"(?ms)^\[USER\]\n(.*?)(?=^\[[A-Z_]+\]\n|\Z)",
+        content or "",
+    )
+    # Internal review prompts appear at the start of their own session. Looking
+    # only at the opening user turns prevents a normal fork from being hidden
+    # merely because its copied history later mentions an assessment transcript.
+    lowered = "\n".join(user_turns[:3]).lower()
+    return (
+        "the following is the codex agent history whose request action you are assessing"
+        in lowered
+        and ">>> transcript start" in lowered
+    )
+
+
+def clean_session_message_text(value: str | None) -> str:
+    """Remove attachment transport markup while preserving the user's request."""
+
+    text = re.sub(r"(?is)<image\b.*?</image>", " ", value or "")
+    text = re.sub(
+        r"\[([^\]]+)\]\((?:/Users|/var|/private)/[^)]+\)",
+        r"\1",
+        text,
+    )
+    lines: list[str] = []
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        plain = re.sub(r"^[#>*\-\d.)\s]+", "", stripped).strip()
+        lowered = plain.lower()
+        if not plain:
+            if lines and lines[-1]:
+                lines.append("")
+            continue
+        if lowered in {"files mentioned by the user:", "my request for codex:"}:
+            continue
+        if lowered.startswith((
+            "referenced chatgpt conversation:",
+            "this is untrusted",
+        )):
+            continue
+        if _ATTACHMENT_FILE_RE.fullmatch(plain):
+            continue
+        if (
+            ("/var/folders/" in stripped or "/temporaryitems/" in lowered)
+            and re.search(r"\.(?:png|jpe?g|webp)(?:[\"'>:]|$)", stripped, re.IGNORECASE)
+        ):
+            continue
+        if lowered.startswith(("image name=", "path=", "[image #")):
+            continue
+        lines.append(raw_line.rstrip())
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def derive_session_attention_items(
+    content: str | None,
+    *,
+    max_items: int = 3,
+) -> list[dict[str, str | int]]:
+    """Find explicit user corrections after an agent result without using AI."""
+
+    turns = re.findall(
+        r"(?ms)^\[([A-Z_ -]+)\]\s*(.*?)(?=^\[[A-Z_ -]+\]\s*|\Z)",
+        content or "",
+    )
+    assistant_seen = False
+    items: list[dict[str, str | int]] = []
+    seen: set[str] = set()
+    last_user_index = max(
+        (
+            index
+            for index, (raw_role, _) in enumerate(turns)
+            if raw_role.strip().lower() in {"user", "human", "you"}
+        ),
+        default=-1,
+    )
+    for turn_index, (raw_role, raw_text) in enumerate(turns):
+        role = raw_role.strip().lower()
+        if role in {"assistant", "ai", "codex", "claude", "opencode", "gpt"}:
+            assistant_seen = True
+            continue
+        if role not in {"user", "human", "you"} or not assistant_seen:
+            continue
+        display = clean_session_message_text(raw_text)
+        compact = re.sub(r"\s+", " ", display).strip()
+        if not compact or not any(pattern.search(compact) for pattern in _CORRECTION_PATTERNS):
+            continue
+        topic = _shorten(_clean_candidate(raw_text), max_words=10, max_chars=72)
+        key = _topic_key(topic or compact)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        items.append({
+            "kind": "user_correction",
+            "title": topic or "User reported a mismatch with the visible result",
+            "summary": compact[:280].rstrip(),
+            "attention_score": 90,
+            "temporal_status": (
+                "current" if turn_index == last_user_index else "previous"
+            ),
+        })
+    return items[-max_items:]
 
 
 def derive_session_topic(
@@ -144,7 +279,7 @@ def derive_session_topics(
             continue
         cleaned = _clean_candidate(block)
         if cleaned:
-            candidates.append(_shorten(cleaned))
+            candidates.append(_shorten(cleaned, max_words=10, max_chars=72))
 
     topics: list[str] = []
     seen: set[str] = set()
@@ -157,6 +292,35 @@ def derive_session_topics(
         if len(topics) >= max_topics:
             break
     return topics
+
+
+def derive_latest_session_topic(
+    content: str | None,
+    *,
+    explicit_title: str | None = None,
+    tool: str | None = None,
+    session_id: str | None = None,
+) -> str | None:
+    """Return the newest meaningful user topic in a session."""
+
+    text = content or ""
+    user_blocks = re.findall(
+        r"(?ms)^\[(?:USER|HUMAN|YOU)\]\s*(.*?)(?=^\[[A-Z_ -]+\]\s*|\Z)",
+        text,
+    )
+    for block in reversed(user_blocks):
+        if _looks_like_bootstrap_noise(block):
+            continue
+        cleaned = _clean_candidate(block)
+        normalized = _topic_key(cleaned)
+        if cleaned and normalized and normalized not in _GENERIC_TOPIC_KEYS:
+            return _shorten(cleaned, max_words=10, max_chars=72)
+    return derive_session_topic(
+        content,
+        explicit_title=explicit_title,
+        tool=tool,
+        session_id=session_id,
+    )
 
 
 def _is_generic_title(title: str, *, tool: str | None, session_id: str | None) -> bool:
@@ -198,7 +362,10 @@ def _topic_key(value: str) -> str:
 
 
 def _clean_candidate(value: str) -> str:
-    text = re.sub(r"```.*?```", " ", value, flags=re.DOTALL)
+    text = clean_session_message_text(value)
+    if _COMMAND_ONLY_RE.fullmatch(text.strip()):
+        return ""
+    text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"https?://\S+", " ", text)
     text = re.sub(r"(?:/[\w. -]+){2,}", " ", text)
@@ -215,23 +382,61 @@ def _clean_candidate(value: str) -> str:
             continue
         if line.lower().startswith(("files mentioned", "image #")):
             continue
+        if _COMMAND_ONLY_RE.fullmatch(line):
+            continue
         if any(marker in line.lower() for marker in _NOISE_MARKERS):
             continue
         lines.append(line)
     if not lines:
         return ""
-    sentence = re.split(r"[.!?,;]", " ".join(lines), maxsplit=1)[0].strip()
+    joined = " ".join(lines)
+    clauses = [item.strip() for item in re.split(r"[.!?;,]+", joined) if item.strip()]
+    if not clauses:
+        return ""
+    sentence = clauses[0]
+    if re.match(
+        r"^(?:wait\b|what did\b|nope\b|but\b|also\b|i see\b|refer to (?:the )?(?:screenshot|image|file)\b)",
+        sentence,
+        re.IGNORECASE,
+    ):
+        sentence = max(clauses[1:] or clauses, key=_clause_topic_score)
     previous = None
     while sentence and sentence != previous:
         previous = sentence
         sentence = _LEADING_REQUEST_RE.sub("", sentence).strip()
     sentence = re.sub(r"\ba\s+oss\b", "an OSS", sentence, flags=re.IGNORECASE)
     sentence = re.sub(r"\boss\s+sucess\b", "OSS success", sentence, flags=re.IGNORECASE)
+    if (
+        "topic" in sentence.lower()
+        and "screenshot" in sentence.lower()
+        and any(marker in sentence.lower() for marker in ("actual", "instead", "not helpful", "misunderstan"))
+    ):
+        sentence = "Use the discussion topic instead of screenshot filenames"
+    replacements = {
+        r"\bi\b": "I",
+        r"\bu\b": "you",
+        r"\bdidnt\b": "didn't",
+        r"\bdispalyed\b": "displayed",
+        r"\bseesion\b": "session",
+    }
+    for pattern, replacement in replacements.items():
+        sentence = re.sub(pattern, replacement, sentence, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", sentence).strip(" :;,-")
 
 
+def _clause_topic_score(value: str) -> tuple[int, int]:
+    lowered = value.lower()
+    signals = sum(1 for word in _TOPIC_SIGNAL_WORDS if re.search(rf"\b{word}\b", lowered))
+    return signals, min(len(value), 160)
+
+
 def _shorten(value: str, max_words: int = 7, max_chars: int = 56) -> str:
-    shortened = " ".join(value.split()[:max_words]).strip()
+    words = value.split()
+    shortened = " ".join(words[:max_words]).strip()
+    truncated = len(words) > max_words
     if len(shortened) > max_chars:
         shortened = shortened[:max_chars].rsplit(" ", 1)[0]
+        truncated = True
+    if shortened and truncated:
+        shortened = f"{shortened.rstrip(' ,;:-')}..."
     return shortened[:1].upper() + shortened[1:] if shortened else ""

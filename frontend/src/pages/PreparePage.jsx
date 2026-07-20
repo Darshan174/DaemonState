@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, Clipboard, FileText, Loader2, PackageCheck, ShieldCheck, XCircle } from "lucide-react";
+import { Check, Clipboard, FileText, History, Loader2, PackageCheck, ShieldCheck, X, XCircle } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
@@ -12,7 +12,10 @@ export default function PreparePage() {
   const workspace = useProductWorkspace();
   const digestQuery = useContextDigest(workspace.activeWorkspaceId);
   const prepareContext = usePrepareContext();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const checkpointSource = searchParams.get("checkpoint_source");
+  const checkpointId = searchParams.get("checkpoint");
+  const hasCheckpoint = Boolean(checkpointSource && checkpointId);
   const initialPreferences = readWorkspacePreferences(
     workspace.activeWorkspaceId,
     "prepare",
@@ -51,6 +54,8 @@ export default function PreparePage() {
   const selectedTokens = result?.manifest?.token_accounting?.selected_item_tokens;
   const selectedItems = result?.selected_context || [];
   const excludedItems = result?.excluded_context || [];
+  const checkpointIncluded = selectedItems.some((item) => item.item_type === "session_checkpoint");
+  const checkpointExcluded = excludedItems.some((item) => item.item_type === "session_checkpoint");
   const exclusionSummary = useMemo(() => countBy(excludedItems, "reason"), [excludedItems]);
 
   const submit = async (event) => {
@@ -64,7 +69,18 @@ export default function PreparePage() {
       target_model: targetModel.trim() || undefined,
       token_budget: Number(tokenBudget),
       mode: "task",
+      ...(hasCheckpoint ? {
+        checkpoint_source_document_id: checkpointSource,
+        checkpoint_id: checkpointId,
+      } : {}),
     });
+  };
+
+  const removeCheckpoint = () => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("checkpoint_source");
+    next.delete("checkpoint");
+    setSearchParams(next, { replace: true });
   };
 
   const copyBrief = async () => {
@@ -82,6 +98,20 @@ export default function PreparePage() {
 
       <div className="grid items-start gap-5 lg:grid-cols-[.85fr_1.15fr]">
         <form onSubmit={submit} className="space-y-5 rounded-2xl border border-[#d8d8cf] bg-[#fbfbf6] p-6 dark:border-[#292925] dark:bg-[#141411]">
+          {hasCheckpoint ? (
+            <div className="rounded-xl border border-[#cfd9b0] bg-[#f3f8e7] p-3 dark:border-[#435026] dark:bg-[#18200d]">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex min-w-0 items-start gap-2.5">
+                  <History className="mt-0.5 h-4 w-4 shrink-0 text-[#6c8428]" />
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-[0.13em] text-[#58691c] dark:text-[#d9ff68]">Compaction checkpoint attached</p>
+                    <p className="mt-1 text-[10px] font-semibold leading-5 text-[#66704d] dark:text-[#bdc7a5]">The pre-compaction working state will be reviewed alongside current, verified project evidence.</p>
+                  </div>
+                </div>
+                <button type="button" onClick={removeCheckpoint} aria-label="Remove restored checkpoint" className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[#cfd9b0] dark:border-[#435026]"><X className="h-3.5 w-3.5" /></button>
+              </div>
+            </div>
+          ) : null}
           <label className="block">
             <span className="text-xs font-black">Task</span>
             <textarea aria-label="Task" required value={objective} onChange={(event) => setObjective(event.target.value)} rows={5} placeholder="Fix the authentication redirect loop and add focused tests" className="mt-2 w-full resize-none rounded-xl border border-[#d8d8cf] bg-white px-3.5 py-3 text-sm font-semibold leading-6 outline-none focus:border-[#77776e] dark:border-[#33332e] dark:bg-[#0f0f0c]" />
@@ -136,6 +166,17 @@ export default function PreparePage() {
               {readiness < 70 ? (
                 <div role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-[10px] font-semibold leading-5 text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100">
                   <strong>Do not hand this pack off blindly.</strong> {healthSummary(health)}
+                </div>
+              ) : null}
+
+              {checkpointIncluded ? (
+                <div role="status" className="rounded-xl border border-[#cfd9b0] bg-[#f3f8e7] p-3 text-[10px] font-semibold leading-5 text-[#58691c] dark:border-[#435026] dark:bg-[#18200d] dark:text-[#d9ff68]">
+                  <strong>Pre-compaction context included.</strong> It is labeled as agent-reported session state; verified repository evidence remains separate in this handoff.
+                </div>
+              ) : null}
+              {checkpointExcluded ? (
+                <div role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-[10px] font-semibold leading-5 text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100">
+                  <strong>The checkpoint was not included.</strong> Inspect the exclusion reason before handing this task to an agent.
                 </div>
               ) : null}
 

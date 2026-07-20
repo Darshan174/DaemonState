@@ -1,14 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
+  ArrowRight,
   ArrowUpRight,
   Check,
   ChevronRight,
   Copy,
   FileSearch,
   FolderGit2,
+  GitFork,
+  History,
   Loader2,
+  PackageCheck,
   Radio,
   RefreshCw,
   Search,
@@ -19,7 +24,7 @@ import {
 import imgOpenAI from "../assets/openai-icon.png";
 import imgOpenCode from "../assets/opencode-icon.png";
 import { api } from "../api/client";
-import { useSessionLibrary, useSyncSessionLibrary } from "../api/hooks";
+import { useSelectSessionFromLibrary, useSessionLibrary, useSyncSessionLibrary } from "../api/hooks";
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
 import { formatTimeAgo } from "../context-map/digest";
 import { useProductWorkspace } from "./useProductWorkspace";
@@ -60,9 +65,12 @@ const HARNESS_META = {
 
 
 export default function SessionLibrary() {
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const workspace = useProductWorkspace();
   const libraryQuery = useSessionLibrary(workspace.activeWorkspaceId);
   const syncMutation = useSyncSessionLibrary();
+  const selectMutation = useSelectSessionFromLibrary();
   const syncRef = useRef(syncMutation);
   const sessionsRef = useRef(null);
   const [selectedHarness, setSelectedHarness] = useState(null);
@@ -70,7 +78,11 @@ export default function SessionLibrary() {
   const [search, setSearch] = useState("");
   const [visibleSessionCount, setVisibleSessionCount] = useState(INITIAL_SESSION_COUNT);
   const [evidenceSelection, setEvidenceSelection] = useState(null);
-  const closeEvidence = useCallback(() => setEvidenceSelection(null), []);
+  const [selectingSessionId, setSelectingSessionId] = useState(null);
+  const closeEvidence = useCallback(() => {
+    setEvidenceSelection(null);
+    navigate("/app/library", { replace: true });
+  }, [navigate]);
 
   useEffect(() => {
     syncRef.current = syncMutation;
@@ -129,6 +141,42 @@ export default function SessionLibrary() {
   const visibleSessions = filteredSessions.slice(0, visibleSessionCount);
 
   useEffect(() => {
+    const requestedSourceId = searchParams.get("source");
+    if (!requestedSourceId || !sessions.length) return;
+    const requestedSession = sessions.find((item) => item.source_document_id === requestedSourceId);
+    if (!requestedSession) return;
+    const requestedTopic = searchParams.get("topic");
+    const topics = requestedSession.topics || [];
+    const topic = topics.includes(requestedTopic)
+      ? requestedTopic
+      : requestedSession.selected_topic || requestedSession.latest_topic || topics.at(-1) || requestedSession.title;
+    setSelectedHarness(requestedSession.connector_type);
+    setEvidenceSelection((current) => (
+      current?.session?.source_document_id === requestedSession.source_document_id && current.topic === topic
+        ? current
+        : { session: requestedSession, topic }
+    ));
+  }, [searchParams, sessions]);
+
+  const selectForNow = async (item, topic) => {
+    if (!workspace.activeWorkspaceId || selectMutation.isPending) return;
+    setSelectingSessionId(`${item.id}:${topic || "__latest__"}`);
+    try {
+      const selection = {
+        workspaceId: workspace.activeWorkspaceId,
+        sourceDocumentId: item.source_document_id,
+      };
+      if (topic) selection.topic = topic;
+      await selectMutation.mutateAsync(selection);
+      navigate("/app");
+    } catch {
+      // The inline notice keeps the user in the library with their search intact.
+    } finally {
+      setSelectingSessionId(null);
+    }
+  };
+
+  useEffect(() => {
     setSearch("");
     setVisibleSessionCount(INITIAL_SESSION_COUNT);
     if (selectedHarness) {
@@ -156,7 +204,7 @@ export default function SessionLibrary() {
           </div>
           <h1 className="mt-2 text-3xl font-black tracking-[-0.035em] sm:text-4xl">Session Library</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
-            Choose an AI harness, explore its sessions, and trace every topic back to source evidence.
+            The latest session topic appears on Now by default. Choose any session or topic when you want to override it.
           </p>
           {library ? (
             <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-[10px] font-black uppercase tracking-[0.13em] text-[#85857c]">
@@ -186,6 +234,9 @@ export default function SessionLibrary() {
         <Notice tone="warning">
           {syncMutation.data.sync.failed} session{syncMutation.data.sync.failed === 1 ? "" : "s"} could not be read; the remaining history was synced.
         </Notice>
+      ) : null}
+      {selectMutation.isError ? (
+        <Notice tone="error">Could not select this session: {selectMutation.error?.message}</Notice>
       ) : null}
 
       {libraryQuery.isLoading && !library ? (
@@ -251,7 +302,7 @@ export default function SessionLibrary() {
                       <span aria-label={`${filteredSessions.length} sessions`} className="rounded-full bg-[#ecece4] px-2.5 py-1 text-[9px] font-black dark:bg-[#252521]">{filteredSessions.length}</span>
                     </div>
                     <p className="mt-1 text-xs leading-5 text-[#68685f] dark:text-[#aaa9a0]">
-                      Topic names stay tucked away until you hover or focus a session card.
+                      Use Latest for the session’s newest topic, or open Topics to choose another. Evidence stays separate.
                     </p>
                   </div>
                   <label className="relative block">
@@ -273,6 +324,11 @@ export default function SessionLibrary() {
                       <SessionCard
                         key={item.id}
                         item={item}
+                        selected={item.selected_for_now}
+                        selectedTopic={item.selected_topic}
+                        selectingTopic={selectingSessionId?.startsWith(`${item.id}:`) ? selectingSessionId.slice(item.id.length + 1) : null}
+                        onSelectSession={() => selectForNow(item)}
+                        onSelectTopic={(topic) => selectForNow(item, topic)}
                         onOpen={(topic) => setEvidenceSelection({ session: item, topic })}
                       />
                     ))}
@@ -308,6 +364,8 @@ export default function SessionLibrary() {
           selection={evidenceSelection}
           workspaceId={workspace.activeWorkspaceId}
           onSelectTopic={(topic) => setEvidenceSelection((current) => ({ ...current, topic }))}
+          onUseTopic={(topic) => selectForNow(evidenceSelection.session, topic)}
+          selecting={selectingSessionId === `${evidenceSelection.session.id}:${evidenceSelection.topic}`}
           onClose={closeEvidence}
         />,
         document.body,
@@ -411,47 +469,70 @@ function HarnessCardArtwork({ type }) {
 }
 
 
-function SessionCard({ item, onOpen }) {
+function SessionCard({ item, selected, selectedTopic, selectingTopic, onSelectSession, onSelectTopic, onOpen }) {
   const [revealed, setRevealed] = useState(false);
   const folder = item.cwd ? item.cwd.split("/").filter(Boolean).at(-1) : null;
   const topics = item.topics || [];
+  const latestTopic = item.latest_topic || topics.at(-1) || item.title;
   const meta = HARNESS_META[item.connector_type] || HARNESS_META.codex;
-  const openFirstTopic = () => onOpen(topics[0] || item.title);
 
   return (
     <article
-      role="button"
-      tabIndex={0}
-      aria-label={`Open evidence for ${item.title}`}
-      aria-expanded={revealed}
       data-session-card={item.id}
+      data-selected={selected ? "true" : "false"}
       onMouseEnter={() => setRevealed(true)}
       onMouseLeave={() => setRevealed(false)}
-      onFocus={() => setRevealed(true)}
-      onBlur={(event) => {
+      onFocusCapture={() => setRevealed(true)}
+      onBlurCapture={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget)) setRevealed(false);
       }}
-      onClick={openFirstTopic}
-      onKeyDown={(event) => {
-        if (event.target !== event.currentTarget) return;
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          openFirstTopic();
-        }
-      }}
-      className="group relative min-h-56 cursor-pointer overflow-hidden rounded-2xl border border-[#d8d8cf] bg-[#fbfbf6] p-5 outline-none transition-all duration-300 hover:-translate-y-1 hover:shadow-[0_18px_40px_rgba(23,23,19,0.09)] focus-visible:ring-2 focus-visible:ring-[#b8dc45] dark:border-[#292925] dark:bg-[#141411]"
+      className="group relative min-h-56 overflow-hidden rounded-2xl border border-[#d8d8cf] bg-[#fbfbf6] p-5 outline-none transition-all duration-300 hover:-translate-y-1 hover:shadow-[0_18px_40px_rgba(23,23,19,0.09)] focus-within:ring-2 focus-within:ring-[#b8dc45] dark:border-[#292925] dark:bg-[#141411]"
       style={{ borderColor: revealed ? meta.accent : undefined }}
     >
       <span className="absolute inset-x-0 top-0 h-0.5 origin-left scale-x-0 transition-transform duration-500 group-hover:scale-x-100 group-focus-visible:scale-x-100" style={{ backgroundColor: meta.accent }} />
       <div className="flex items-start justify-between gap-3">
         <HarnessLogo type={item.connector_type} size="small" />
         <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.12em] text-[#85857c]">
+          {selected ? <span className="rounded-full bg-[#d9ff68] px-2 py-1 text-[#37420f]">On Now</span> : null}
+          {item.forked_from ? (
+            <span
+              aria-label={`Continued in a new task from ${item.forked_from.title}`}
+              title={`Continued in a new task from ${item.forked_from.title}`}
+              className="inline-flex items-center gap-1 rounded-full border border-[#d8d8cf] px-2 py-1 text-[#68685f] dark:border-[#3a3a34] dark:text-[#c7c7bd]"
+            >
+              <GitFork className="h-3 w-3" /> Fork
+            </span>
+          ) : null}
+          {(item.compaction_checkpoints || []).length ? (
+            <button
+              type="button"
+              aria-label={`Open ${item.compaction_checkpoints.length} context checkpoints for ${item.title}`}
+              title="Open context captured automatically before harness compaction"
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpen(selectedTopic || latestTopic);
+              }}
+              className="inline-flex items-center gap-1 rounded-full border border-[#b8ca7b] bg-[#f2f7df] px-2 py-1 text-[#58691c] transition hover:border-[#8aa62a] hover:bg-[#eaf3cb] dark:border-[#53602f] dark:bg-[#d9ff68]/[0.07] dark:text-[#d9ff68]"
+            >
+              <History className="h-3 w-3" /> {item.compaction_checkpoints.length} checkpoints
+            </button>
+          ) : null}
           {item.live ? <Radio className="h-3 w-3 text-emerald-600" /> : null}
           {item.updated_at ? formatTimeAgo(item.updated_at) : "Unknown time"}
         </div>
       </div>
 
-      <h3 className="mt-4 line-clamp-2 text-base font-black leading-6 tracking-[-0.015em]">{item.title}</h3>
+      <p className="mt-4 text-[8px] font-black uppercase tracking-[0.16em] text-[#85857c]">Session title</p>
+      <h3 className="mt-1 line-clamp-2 text-base font-black leading-6 tracking-[-0.015em]">{item.title}</h3>
+      {item.forked_from ? (
+        <p className="mt-1.5 flex min-w-0 items-center gap-1.5 text-[9px] font-semibold text-[#77776e] dark:text-[#aaa9a0]">
+          <GitFork className="h-3 w-3 shrink-0" aria-hidden="true" />
+          <span className="truncate">Continued from · {item.forked_from.title}</span>
+        </p>
+      ) : null}
+      {selectedTopic || latestTopic ? (
+        <p className="mt-2 line-clamp-1 text-[9px] font-bold text-[#58691c] dark:text-[#d9ff68]">{selectedTopic ? "On Now" : "Latest"} · {selectedTopic || latestTopic}</p>
+      ) : null}
       <div className="mt-3 flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2 text-[10px] font-semibold text-[#77776e] dark:text-[#aaa9a0]">
           {folder ? <><FolderGit2 className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{folder}</span></> : <span>Local session</span>}
@@ -459,6 +540,54 @@ function SessionCard({ item, onOpen }) {
         <div className="shrink-0 rounded-xl bg-[#efefe7] px-3 py-2 text-right dark:bg-[#252521]">
           <span className="block text-lg font-black leading-none">{topics.length}</span>
           <span className="mt-1 block text-[8px] font-black uppercase tracking-[0.13em] text-[#85857c]">topics</span>
+        </div>
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[#e1e1d8] pt-3 dark:border-[#30302b]">
+        <button
+          type="button"
+          aria-label={`Use latest topic from ${item.title} on Now`}
+          onClick={onSelectSession}
+          disabled={Boolean(selectingTopic)}
+          className="inline-flex items-center gap-1.5 text-[9px] font-black uppercase tracking-[0.12em] text-[#58691c] transition hover:text-[#171713] disabled:cursor-wait disabled:opacity-60 dark:text-[#d9ff68] dark:hover:text-white"
+        >
+          {selectingTopic === "__latest__" ? "Selecting…" : "Use latest"}
+          <ArrowRight className="h-3 w-3" />
+        </button>
+        <div className="flex items-center gap-3">
+          {(item.compaction_checkpoints || []).length ? (
+            <button
+              type="button"
+              aria-label={`Restore context from ${item.title}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpen(selectedTopic || latestTopic);
+              }}
+              className="inline-flex items-center gap-1 text-[8px] font-bold uppercase tracking-[0.12em] text-[#58691c] transition hover:text-[#171713] dark:text-[#d9ff68] dark:hover:text-white"
+            >
+              Checkpoints <History className="h-3 w-3" />
+            </button>
+          ) : null}
+          <button
+            type="button"
+            aria-label={`Choose a topic from ${item.title}`}
+            aria-expanded={revealed}
+            onClick={() => setRevealed(true)}
+            className="text-[8px] font-bold uppercase tracking-[0.12em] text-[#85857c] transition hover:text-[#171713] dark:hover:text-white"
+          >
+            Topics
+          </button>
+        <button
+          type="button"
+          aria-label={`Inspect evidence for ${item.title}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpen(selectedTopic || latestTopic);
+          }}
+          className="inline-flex items-center gap-1 text-[8px] font-bold uppercase tracking-[0.12em] text-[#85857c] transition hover:text-[#171713] dark:hover:text-white"
+        >
+          Evidence <ArrowUpRight className="h-3 w-3" />
+        </button>
         </div>
       </div>
 
@@ -474,19 +603,22 @@ function SessionCard({ item, onOpen }) {
                 type="button"
                 key={topic}
                 tabIndex={revealed ? 0 : -1}
+                aria-label={`Use ${topic} from ${item.title} on Now`}
                 onClick={(event) => {
                   event.stopPropagation();
-                  onOpen(topic);
+                  onSelectTopic(topic);
                 }}
-                className="rounded-lg border border-[#d8d8cf] bg-white/80 px-2.5 py-1.5 text-left text-[9px] font-bold leading-4 transition hover:border-transparent dark:border-[#3b3b35] dark:bg-black/20"
+                className="inline-flex items-center gap-1 rounded-lg border border-[#d8d8cf] bg-white/80 px-2.5 py-1.5 text-left text-[9px] font-bold leading-4 transition hover:border-transparent disabled:cursor-wait disabled:opacity-60 dark:border-[#3b3b35] dark:bg-black/20"
+                disabled={Boolean(selectingTopic)}
                 style={{ color: meta.accent }}
               >
-                {topic}
+                {selectingTopic === topic ? "Selecting…" : topic}
+                <ArrowRight className="h-2.5 w-2.5 shrink-0" />
               </button>
             )) : <span className="text-[10px] font-semibold text-[#85857c]">No distinct topics extracted.</span>}
           </div>
           <p className="mt-3 inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-[0.12em]" style={{ color: meta.accent }}>
-            Open evidence <ArrowUpRight className="h-3 w-3" />
+            Choose a topic for Now <ArrowRight className="h-3 w-3" />
           </p>
         </div>
       </div>
@@ -495,13 +627,15 @@ function SessionCard({ item, onOpen }) {
 }
 
 
-function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onClose }) {
+function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onUseTopic, selecting, onClose }) {
+  const navigate = useNavigate();
   const { session, topic } = selection;
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [copied, setCopied] = useState(false);
   const [launchState, setLaunchState] = useState({ status: "idle", message: "" });
+  const [restoreState, setRestoreState] = useState({ status: "idle", data: null, error: "", copied: false });
   const closeRef = useRef(null);
   const meta = HARNESS_META[session.connector_type] || HARNESS_META.codex;
 
@@ -510,6 +644,7 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onClose }) {
     setDetail(null);
     setError(null);
     setLoading(true);
+    setRestoreState({ status: "idle", data: null, error: "", copied: false });
     const params = new URLSearchParams();
     if (workspaceId) params.set("workspace_id", workspaceId);
     api.get(`/sources/${session.source_document_id}${params.size ? `?${params}` : ""}`)
@@ -530,6 +665,7 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onClose }) {
 
   const excerpts = useMemo(() => evidenceExcerpts(detail?.content, topic), [detail?.content, topic]);
   const components = useMemo(() => relevantComponents(detail?.components, topic), [detail?.components, topic]);
+  const checkpoints = session.compaction_checkpoints || [];
 
   const copySessionId = async () => {
     try {
@@ -558,6 +694,41 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onClose }) {
     }
   };
 
+  const restoreCheckpoint = async (checkpoint) => {
+    setRestoreState({ status: "loading", data: null, error: "", copied: false });
+    try {
+      const data = await api.post("/session-library/checkpoints/restore", {
+        workspace_id: workspaceId,
+        source_document_id: session.source_document_id,
+        checkpoint_id: checkpoint.id,
+      });
+      setRestoreState({ status: "success", data, error: "", copied: false });
+    } catch (reason) {
+      setRestoreState({ status: "error", data: null, error: reason?.message || "This checkpoint could not be restored.", copied: false });
+    }
+  };
+
+  const copyRestoredContext = async () => {
+    try {
+      await navigator.clipboard.writeText(restoreState.data?.restore_context?.markdown || "");
+      setRestoreState((current) => ({ ...current, copied: true }));
+    } catch {
+      setRestoreState((current) => ({ ...current, copied: false, error: "Clipboard access is unavailable." }));
+    }
+  };
+
+  const useCheckpointInHandoff = () => {
+    const restored = restoreState.data?.restore_context;
+    const checkpoint = restoreState.data?.checkpoint;
+    if (!restored || !checkpoint) return;
+    const params = new URLSearchParams({
+      objective: restored.objective,
+      checkpoint_source: session.source_document_id,
+      checkpoint: checkpoint.id,
+    });
+    navigate(`/app/prepare?${params.toString()}`);
+  };
+
   return (
     <div className="fixed inset-0 z-[100] flex justify-end bg-black/45 backdrop-blur-[3px]" role="presentation" onMouseDown={onClose}>
       <aside
@@ -575,6 +746,12 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onClose }) {
                 <p className="text-[9px] font-black uppercase tracking-[0.17em]" style={{ color: meta.accent }}>{meta.name} evidence</p>
                 <h2 id="evidence-title" className="mt-1 text-xl font-black leading-7 tracking-[-0.025em]">{session.title}</h2>
                 <p className="mt-1 text-[10px] font-semibold text-[#85857c]">Immutable source revision {session.revision_number} · {session.live ? "Live-linked" : "Imported"}</p>
+                {session.forked_from ? (
+                  <p className="mt-1.5 flex items-center gap-1.5 text-[10px] font-semibold text-[#77776e] dark:text-[#aaa9a0]">
+                    <GitFork className="h-3 w-3 shrink-0" aria-hidden="true" />
+                    <span className="truncate">Continued in a new task from {session.forked_from.title}</span>
+                  </p>
+                ) : null}
               </div>
             </div>
             <button ref={closeRef} type="button" aria-label="Close evidence" onClick={onClose} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[#d8d8cf] transition hover:bg-white dark:border-[#383832] dark:hover:bg-[#1c1c18]">
@@ -608,10 +785,79 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onClose }) {
           {error ? <Notice tone="error">{error}</Notice> : null}
           {!loading && !error ? (
             <div className="space-y-6">
+              {checkpoints.length ? (
+                <section aria-labelledby="checkpoint-heading" className="rounded-2xl border border-[#cfd9b0] bg-[#f3f8e7] p-4 dark:border-[#435026] dark:bg-[#18200d]">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-[9px] font-black uppercase tracking-[0.16em] text-[#668020]">03 · Restore context</p>
+                      <h3 id="checkpoint-heading" className="mt-1 text-base font-black">Compaction checkpoints</h3>
+                      <p className="mt-1 max-w-lg text-[10px] font-semibold leading-5 text-[#66704d] dark:text-[#bdc7a5]">
+                        Captured automatically before this harness compressed its context. Restoring creates a reviewable copy; it does not change the original session.
+                      </p>
+                    </div>
+                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#d9ff68] px-2.5 py-1 text-[8px] font-black uppercase tracking-wide text-[#37420f]">
+                      <History className="h-3 w-3" /> {checkpoints.length}
+                    </span>
+                  </div>
+
+                  <div className="mt-4 space-y-2">
+                    {checkpoints.map((checkpoint) => {
+                      const active = restoreState.data?.checkpoint?.id === checkpoint.id;
+                      const loadingCheckpoint = restoreState.status === "loading";
+                      return (
+                        <article key={checkpoint.id} className="rounded-xl border border-[#d6dfbd] bg-white/75 p-3 dark:border-[#3e4925] dark:bg-black/15">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="min-w-0">
+                              <p className="text-xs font-black">{checkpoint.label}</p>
+                              <p className="mt-1 line-clamp-2 text-[10px] font-semibold leading-4 text-[#66704d] dark:text-[#bdc7a5]">{checkpoint.objective_preview}</p>
+                              <p className="mt-1.5 text-[8px] font-black uppercase tracking-[0.12em] text-[#87936b]">
+                                {checkpoint.turn_count} turns · {checkpoint.occurred_at ? formatTimeAgo(checkpoint.occurred_at) : "Time unavailable"}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => restoreCheckpoint(checkpoint)}
+                              disabled={loadingCheckpoint}
+                              className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg bg-[#171713] px-3 text-[9px] font-black text-white disabled:cursor-wait disabled:opacity-60 dark:bg-[#d9ff68] dark:text-[#171713]"
+                            >
+                              {loadingCheckpoint ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : active ? <Check className="h-3.5 w-3.5" /> : <History className="h-3.5 w-3.5" />}
+                              {loadingCheckpoint ? "Restoring…" : active ? "Restored" : "Restore context"}
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+
+                  {restoreState.status === "error" ? <p role="alert" className="mt-3 text-[10px] font-bold text-red-700 dark:text-red-300">{restoreState.error}</p> : null}
+                  {restoreState.data ? (
+                    <div className="mt-3 rounded-xl border border-[#bfd16f] bg-white p-4 dark:border-[#596b26] dark:bg-[#10120b]">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full bg-[#edf3dc] px-2 py-1 text-[8px] font-black uppercase tracking-wide text-[#66751f] dark:bg-[#283315] dark:text-[#d9ff68]">Transcript-derived</span>
+                        <span className="text-[8px] font-bold uppercase tracking-wide text-[#85857c]">Reported state · not verified truth</span>
+                      </div>
+                      <p className="mt-3 text-[8px] font-black uppercase tracking-[0.15em] text-[#85857c]">Continue from</p>
+                      <p className="mt-1 text-xs font-black leading-5">{restoreState.data.restore_context.objective}</p>
+                      <p className="mt-3 text-[8px] font-black uppercase tracking-[0.15em] text-[#85857c]">Last agent-reported state</p>
+                      <p className="mt-1 line-clamp-4 whitespace-pre-wrap break-words text-[10px] font-semibold leading-5 text-[#68685f] [overflow-wrap:anywhere] dark:text-[#bdbdb4]">{restoreState.data.restore_context.agent_reported_state}</p>
+                      <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                        <button type="button" onClick={copyRestoredContext} className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-[#d6dfbd] text-[9px] font-black dark:border-[#3e4925]">
+                          {restoreState.copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                          {restoreState.copied ? "Context copied" : "Copy restored context"}
+                        </button>
+                        <button type="button" onClick={useCheckpointInHandoff} className="inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-[#d9ff68] px-3 text-[9px] font-black text-[#263008]">
+                          <PackageCheck className="h-3.5 w-3.5" /> Use in agent handoff
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
+
               <section>
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <p className="text-[9px] font-black uppercase tracking-[0.16em] text-[#85857c]">03 · Inspect the source</p>
+                    <p className="text-[9px] font-black uppercase tracking-[0.16em] text-[#85857c]">{checkpoints.length ? "04" : "03"} · Inspect the source</p>
                     <h3 className="mt-1 text-base font-black">Topic evidence</h3>
                   </div>
                   <span className="rounded-full px-2.5 py-1 text-[9px] font-black" style={{ color: meta.accent, backgroundColor: meta.accentSoft }}>{excerpts.length} excerpts</span>
@@ -620,7 +866,7 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onClose }) {
                   {excerpts.length ? excerpts.map((excerpt, index) => (
                     <article key={`${excerpt.role}:${index}`} className="rounded-2xl border border-[#d8d8cf] bg-[#fbfbf6] p-4 dark:border-[#2e2e29] dark:bg-[#141411]">
                       <p className="mb-2 text-[8px] font-black uppercase tracking-[0.16em]" style={{ color: excerpt.role === "USER" ? meta.accent : "#85857c" }}>{roleLabel(excerpt.role)}</p>
-                      <p className="whitespace-pre-wrap text-xs leading-6 text-[#4f4f48] dark:text-[#d5d5cc]"><HighlightedText text={excerpt.text} topic={topic} color={meta.accentSoft} /></p>
+                      <p className="max-w-full whitespace-pre-wrap break-words text-xs leading-6 text-[#4f4f48] [overflow-wrap:anywhere] dark:text-[#d5d5cc]"><HighlightedText text={excerpt.text} topic={topic} color={meta.accentSoft} /></p>
                     </article>
                   )) : (
                     <div className="rounded-2xl border border-dashed border-[#d8d8cf] p-6 text-center text-xs text-[#77776e] dark:border-[#30302b]">No transcript excerpt matched this topic exactly.</div>
@@ -657,6 +903,15 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onClose }) {
             </p>
           </div>
           <div className="grid w-full shrink-0 grid-cols-2 gap-2 sm:flex sm:w-auto">
+            <button
+              type="button"
+              onClick={() => onUseTopic(topic)}
+              disabled={selecting}
+              className="col-span-2 inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-[#d9ff68] px-3 text-[10px] font-black text-[#263008] shadow-sm transition hover:-translate-y-0.5 disabled:cursor-wait disabled:opacity-70 sm:col-span-1"
+            >
+              {selecting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowRight className="h-3.5 w-3.5" />}
+              {selecting ? "Selecting topic…" : "Use topic on Now"}
+            </button>
             <button type="button" onClick={copySessionId} className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-[#d8d8cf] px-3 text-[10px] font-black transition hover:bg-white dark:border-[#383832] dark:hover:bg-[#1d1d19]">
               {copied ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
               {copied ? "Copied" : "Copy ID"}
@@ -730,7 +985,7 @@ function evidenceExcerpts(content, topic) {
   const matches = [...String(content).matchAll(/\[([A-Z_ -]+)\]\n([\s\S]*?)(?=\n\n\[[A-Z_ -]+\]\n|$)/g)];
   const turns = matches.map((match, index) => ({
     role: match[1].trim(),
-    text: match[2].trim().slice(0, 1800),
+    text: cleanEvidenceTurn(match[2]).slice(0, 1800),
     index,
   })).filter((item) => item.text && !isEvidenceNoise(item.text));
   const keywords = topicKeywords(topic).map((value) => value.toLowerCase());
@@ -741,6 +996,25 @@ function evidenceExcerpts(content, topic) {
   const matched = scored.filter((turn) => turn.score > 0);
   if (matched.length) return matched.sort((left, right) => left.index - right.index).slice(0, 8);
   return scored.slice(0, 5);
+}
+
+
+function cleanEvidenceTurn(value) {
+  const withoutImages = String(value || "").replace(/<image\b[\s\S]*?<\/image>/gi, " ");
+  const lines = withoutImages.split("\n").filter((rawLine) => {
+    const plain = rawLine.replace(/^[#>*\-\d.)\s]+/, "").trim();
+    const lowered = plain.toLowerCase();
+    if (!plain) return true;
+    if (["files mentioned by the user:", "my request for codex:"].includes(lowered)) return false;
+    if (/^(?:screenshot\s+\d{4}-\d{2}-\d{2}\s+at\s+\d{1,2}(?:[.:]\d{2}){0,2}|codex-clipboard-[a-z0-9-]+)(?:\.png|\.jpe?g|\.webp)?(?::.*)?$/i.test(plain)) return false;
+    if ((rawLine.includes("/var/folders/") || lowered.includes("/temporaryitems/")) && /\.(?:png|jpe?g|webp)(?:["'>:]|$)/i.test(rawLine)) return false;
+    return !lowered.startsWith(("image name=", "path=", "[image #"));
+  });
+  return lines
+    .join("\n")
+    .replace(/\[([^\]]+)\]\((?:\/Users|\/var|\/private)\/[^)]+\)/g, "$1")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 

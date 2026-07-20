@@ -8,10 +8,12 @@ import httpx
 from sqlalchemy import select
 
 from app.api.context_digest import (
+    _agent_reported_summary,
     _clean_digest_text,
     _display_title,
     _excerpt,
     _is_digest_noise_component,
+    _reported_summary_text,
     _summary,
 )
 from app.models import (
@@ -32,6 +34,34 @@ from app.processing.source_extractors import extract_github_issue
 from app.sync.ai_session import _parse_session_content
 from app.sync import github
 from app.time import utc_now
+
+
+def test_agent_reported_summary_prefers_completion_over_newer_progress_update():
+    summary = _agent_reported_summary([
+        "Implemented the session result compiler and verified the focused tests.",
+        "I’m implementing this as a product-wide result compiler; verified evidence will stay separate.",
+    ])
+
+    assert summary == {
+        "text": "Implemented the session result compiler and verified the focused tests",
+        "kind": "completion",
+        "provenance": "agent_reported",
+        "source": "transcript_heuristic",
+    }
+
+
+def test_reported_summary_is_scannable_without_another_model():
+    summary = _reported_summary_text(
+        "Exactly. The adapter can extract the latest final answer and use it as the summary. "
+        "Verification remains a separate evidence layer for files, tests, builds, commits, and pull requests. "
+        "This trailing explanation should not make the card excessively tall.",
+        max_chars=200,
+    )
+
+    assert summary == (
+        "The adapter can extract the latest final answer and use it as the summary. "
+        "Verification remains a separate evidence layer for files, tests, builds, commits, and pull requests."
+    )
 
 
 async def _workspace(db_session, name: str = "Graph truth") -> Workspace:
@@ -449,7 +479,7 @@ async def test_bracketed_session_transcripts_keep_real_message_counts():
     assert len(messages) == 3
 
 
-async def test_digest_exposes_relevant_session_as_reported_now_activity(client, db_session):
+async def test_digest_defaults_to_latest_session_topic_until_user_selects_one(client, db_session):
     workspace = await _workspace(db_session, "Session activity")
     connector = Connector(
         workspace_id=workspace.id,
@@ -465,7 +495,9 @@ async def test_digest_exposes_relevant_session_as_reported_now_activity(client, 
         external_id="codex:session:activity",
         content=(
             "[USER]\nFix the authentication redirect loop.\n\n"
-            "[ASSISTANT]\nI updated the callback handler because redirect state was being lost."
+            "[ASSISTANT]\nI updated the callback handler because redirect state was being lost.\n\n"
+            "[USER]\nThe redirect is still broken in the app.\n\n"
+            "[ASSISTANT]\nI’m using the in-app browser to review the rendered page."
         ),
         metadata_json=json.dumps({
             "workspace_id": str(workspace.id),
@@ -496,8 +528,46 @@ async def test_digest_exposes_relevant_session_as_reported_now_activity(client, 
     activity = response.json()["activity"]
 
     assert activity["state"] == "recent"
+    assert activity["primary"]["selected_for_now"] is False
+    assert activity["primary"]["latest_topic"] == "The redirect is still broken in the app"
+    assert activity["primary"]["title"] == "The redirect is still broken in the app"
     assert activity["primary"]["evidence_level"] == "session_reported"
-    assert activity["primary"]["request"] == "Fix the authentication redirect loop"
+    assert activity["primary"]["result_summary"]["kind"] == "completion"
+    assert activity["primary"]["result_summary"]["provenance"] == "agent_reported"
+    assert activity["primary"]["result_summary"]["text"] == (
+        "I updated the callback handler because redirect state was being lost"
+    )
+    assert activity["primary"]["latest_update"] == (
+        "I updated the callback handler because redirect state was being lost"
+    )
+    assert activity["recent_sessions"][0]["request"] == "The redirect is still broken in the app"
+    assert activity["primary"]["attention_items"][0]["kind"] == "user_correction"
+    assert activity["primary"]["attention_items"][0]["title"] == (
+        "The redirect is still broken in the app"
+    )
+
+    selected = await client.put(
+        "/api/session-library/selection",
+        json={
+            "workspace_id": str(workspace.id),
+            "source_document_id": str(source.id),
+            "topic": "Fix the authentication redirect loop",
+        },
+    )
+    assert selected.status_code == 200
+
+    selected_response = await client.get(
+        "/api/context/digest", params={"workspace_id": str(workspace.id)}
+    )
+    assert selected_response.status_code == 200
+    activity = selected_response.json()["activity"]
+
+    assert activity["state"] == "recent"
+    assert activity["primary"]["evidence_level"] == "session_reported"
+    assert activity["primary"]["selected_for_now"] is True
+    assert activity["primary"]["selected_topic"] == "Fix the authentication redirect loop"
+    assert activity["primary"]["session_title"] == "Fix the authentication redirect loop"
+    assert activity["primary"]["request"] == "The redirect is still broken in the app"
     assert activity["primary"]["latest_update"] == (
         "I updated the callback handler because redirect state was being lost"
     )
@@ -507,6 +577,141 @@ async def test_digest_exposes_relevant_session_as_reported_now_activity(client, 
     assert activity["primary"]["changed_files"] == []
     assert activity["primary"]["outcome"] is None
     assert activity["primary"]["source_card_id"] == f"component:{root.id}"
+
+
+async def test_digest_default_preview_uses_newest_session_even_when_unassigned(
+    client, db_session
+):
+    workspace = await _workspace(db_session, "Newest session preview")
+    connector = Connector(
+        workspace_id=workspace.id,
+        connector_type="github",
+        status="connected",
+        config_json=json.dumps({"repositories": ["acme/project"]}),
+    )
+    model = Model(name=f"Newest session preview {uuid4().hex}")
+    older = SourceDocument(
+        workspace_id=workspace.id,
+        source_type="agent_session",
+        external_id="codex:session:older-relevant",
+        content="[USER]\nReview the older project session.\n\n[ASSISTANT]\nReviewed.",
+        metadata_json=json.dumps({
+            "session_id": "older-relevant",
+            "tool": "codex",
+            "repository": "acme/project",
+        }),
+        ingested_at=utc_now() - timedelta(hours=2),
+    )
+    newer_modified_at = utc_now() - timedelta(hours=5)
+    newer_observed_at = utc_now()
+    newer = SourceDocument(
+        workspace_id=workspace.id,
+        source_type="agent_session",
+        external_id="codex:session:newer-unassigned",
+        content=(
+            "[USER]\nStart the newer session.\n\n"
+            "[ASSISTANT]\nStarted.\n\n"
+            "[USER]\nShip the newest topic by default."
+        ),
+        metadata_json=json.dumps({
+            "session_id": "newer-unassigned",
+            "tool": "codex",
+            "source_modified_at": newer_modified_at.isoformat(),
+            "updated_at": newer_observed_at.isoformat(),
+        }),
+        ingested_at=newer_observed_at,
+    )
+    db_session.add_all([connector, model, older, newer])
+    await db_session.flush()
+    older_root = Component(
+        workspace_id=workspace.id,
+        model_id=model.id,
+        source_document_id=older.id,
+        name="Session: older relevant",
+        value=older.content,
+        fact_type="session_root",
+        temporal="current",
+        confidence=0.9,
+        status="active",
+    )
+    db_session.add(older_root)
+    await db_session.flush()
+
+    response = await client.get(
+        "/api/context/digest", params={"workspace_id": str(workspace.id)}
+    )
+
+    assert response.status_code == 200
+    primary = response.json()["activity"]["primary"]
+    assert primary["source_document_id"] == str(newer.id)
+    assert primary["latest_topic"] == "Ship the newest topic by default"
+    assert primary["selected_for_now"] is False
+    assert primary["evidence_level"] == "session_unassigned"
+    assert primary["source_card_id"] is None
+    assert primary["result_summary"]["kind"] == "update"
+    assert primary["result_summary"]["text"] == "Started"
+    assert primary["updated_at"].startswith(newer_observed_at.isoformat(timespec="seconds"))
+    assert primary["updated_at"].endswith(("Z", "+00:00"))
+
+
+async def test_digest_matches_a_new_session_before_extraction_creates_cards(
+    client, db_session
+):
+    workspace = await _workspace(db_session, "Direct session match")
+    connector = Connector(
+        workspace_id=workspace.id,
+        connector_type="github",
+        status="connected",
+        config_json=json.dumps({"repositories": ["acme/project"]}),
+    )
+    source = SourceDocument(
+        workspace_id=workspace.id,
+        source_type="agent_session",
+        external_id="codex:session:direct-match",
+        content=(
+            "[USER]\nFix automatic project matching.\n\n"
+            "[ASSISTANT]\nImplemented deterministic repository matching."
+        ),
+        metadata_json=json.dumps({
+            "session_id": "direct-match",
+            "tool": "codex",
+            "repository": "acme/project",
+            "updated_at": (utc_now() - timedelta(hours=1)).isoformat(),
+        }),
+    )
+    duplicate = SourceDocument(
+        workspace_id=workspace.id,
+        source_type="agent_session",
+        external_id="codex:session:direct-match:duplicate-import",
+        content="[USER]\nOld duplicate import.\n\n[ASSISTANT]\nImported.",
+        metadata_json=json.dumps({
+            "session_id": "direct-match",
+            "tool": "codex",
+            "repository": "acme/project",
+            "updated_at": (utc_now() - timedelta(hours=2)).isoformat(),
+        }),
+    )
+    db_session.add_all([connector, source, duplicate])
+    await db_session.flush()
+
+    response = await client.get(
+        "/api/context/digest", params={"workspace_id": str(workspace.id)}
+    )
+
+    assert response.status_code == 200
+    primary = response.json()["activity"]["primary"]
+    assert primary["source_document_id"] == str(source.id)
+    assert primary["source_card_id"] is None
+    assert primary["evidence_level"] == "session_reported"
+    assert primary["project_match"] == {
+        "status": "relevant",
+        "reasons": [
+            "Session repository matches a configured workspace repository."
+        ],
+        "automatic": True,
+    }
+    recent = response.json()["activity"]["recent_sessions"]
+    assert [item["session_id"] for item in recent] == ["direct-match"]
 
 
 async def test_digest_session_relevance_uses_repo_path_and_commit_for_entire_source(
@@ -790,5 +995,33 @@ async def test_non_github_connector_config_cannot_define_project_identity(
     )
     assert session_card["workspace_relevance"]["status"] == "unknown"
     assert digest["activity"]["state"] == "unassigned"
-    assert digest["activity"]["primary"]["request"] == "Inspect the project"
-    assert digest["activity"]["primary"]["evidence_level"] == "session_unassigned"
+    assert digest["activity"]["primary"]["latest_topic"] == "Inspect the project"
+    assert digest["activity"]["primary"]["selected_for_now"] is False
+
+    selected = await client.put(
+        "/api/session-library/selection",
+        json={
+            "workspace_id": str(workspace.id),
+            "source_document_id": str(document.id),
+            "topic": "Inspect the project",
+        },
+    )
+    assert selected.status_code == 200
+
+    selected_response = await client.get(
+        "/api/context/digest", params={"workspace_id": str(workspace.id)}
+    )
+    assert selected_response.status_code == 200
+    selected_digest = selected_response.json()
+    selected_card = next(
+        card for card in selected_digest["cards"]
+        if card["category"] == "agent_session"
+    )
+    assert selected_card["workspace_relevance"]["status"] == "relevant"
+    assert selected_card["workspace_relevance"]["reasons"] == [
+        "Session was explicitly selected for this project."
+    ]
+    assert selected_digest["activity"]["primary"]["request"] == "Inspect the project"
+    assert selected_digest["activity"]["primary"]["selected_for_now"] is True
+    assert selected_digest["activity"]["primary"]["selected_topic"] == "Inspect the project"
+    assert selected_digest["activity"]["primary"]["evidence_level"] == "session_reported"

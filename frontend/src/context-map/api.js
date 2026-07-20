@@ -19,7 +19,7 @@ export function useContextDigest(workspaceId, { poll = false } = {}) {
   });
 }
 
-export function useLinkedAISessionRefresh(workspaceId) {
+export function useLinkedAISessionRefresh(workspaceId, { enabled = true } = {}) {
   const queryClient = useQueryClient();
   return useQuery({
     queryKey: ["linked-ai-session-refresh", workspaceId],
@@ -27,15 +27,30 @@ export function useLinkedAISessionRefresh(workspaceId) {
       const result = await api.post("/connectors/ai-session/refresh-linked", {
         workspace_id: workspaceId,
       });
-      if (Number(result?.changed || 0) > 0) {
+      if (Number(result?.changed || 0) > 0 || Number(result?.metadata_updated || 0) > 0) {
         await queryClient.invalidateQueries({ queryKey: ["context-digest", workspaceId] });
       }
       return result;
     },
-    enabled: Boolean(workspaceId),
+    enabled: Boolean(workspaceId) && enabled,
     refetchInterval: 5000,
     refetchIntervalInBackground: false,
     retry: false,
+  });
+}
+
+export function useClearNowSession(workspaceId) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.delete(`/session-library/selection?workspace_id=${encodeURIComponent(workspaceId)}`),
+    onSuccess: (result) => {
+      if (result?.library) {
+        queryClient.setQueryData(["session-library", workspaceId], result.library);
+      }
+      queryClient.invalidateQueries({ queryKey: ["session-library", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["context-digest", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
   });
 }
 
