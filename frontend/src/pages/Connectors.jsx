@@ -305,7 +305,12 @@ export default function Connectors() {
   if (query.isLoading || query.isError) {
     return (
       <div className="max-w-5xl mx-auto">
-        <StatusView query={{ data, ...query }} empty="No connectors configured." />
+        <StatusView
+          query={{ data, ...query }}
+          empty="No connectors configured."
+          loading="Loading connectors…"
+          loadingStages={["Opening the connector catalog", "Checking connection health", "Preparing available integrations"]}
+        />
       </div>
     );
   }

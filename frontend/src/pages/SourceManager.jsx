@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Upload, FileText, FileCode, FileJson, X, ChevronRight, ChevronDown, CheckCircle, Clock, Layers, MessageSquare, HardDrive, Bot, Video, FolderOpen, Clipboard, AlertTriangle, Search } from "lucide-react";
 import { api } from "../api/client";
+import ProductLoadingState from "../components/ProductLoadingState";
 
 function GitHubIcon({ className }) {
   return (
@@ -297,12 +298,11 @@ export default function SourceManager() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-center">
-          <div className="h-8 w-8 animate-spin rounded-full border-4 border-brand-200 border-t-brand-600 mx-auto mb-3" />
-          <p className="text-sm font-medium text-slate-500">Loading sources…</p>
-        </div>
-      </div>
+      <ProductLoadingState
+        label="Loading sources…"
+        detail="Source revisions stay separate until their evidence is selected."
+        stages={["Opening the evidence catalog", "Reading source revisions", "Preparing the provenance view"]}
+      />
     );
   }
 

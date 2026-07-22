@@ -37,7 +37,7 @@ export default function Changes() {
     ), [sourceFiltered]);
 
   if (timelineQuery.isLoading || timelineQuery.isError) {
-    return <div className="max-w-3xl mx-auto"><StatusView query={timelineQuery} empty="No changes available yet." /></div>;
+    return <div className="max-w-3xl mx-auto"><StatusView query={timelineQuery} empty="No changes available yet." loading="Loading project changes…" loadingStages={["Opening the event timeline", "Reading evidence changes", "Preparing the audit view"]} /></div>;
   }
   if (!changes.length) {
     return <div className="max-w-3xl mx-auto"><ChangesEmptyState /></div>;
