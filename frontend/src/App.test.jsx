@@ -121,7 +121,9 @@ it("makes Now the default and exposes the complete product loop", async () => {
   expect(screen.queryByRole("link", { name: "Graph" })).not.toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "Ask" })).not.toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "Changes" })).not.toBeInTheDocument();
-  expect(screen.queryByRole("link", { name: "Prepare" })).not.toBeInTheDocument();
+  screen.getAllByRole("navigation", { name: "Application" }).forEach((navigation) => {
+    expect(navigation.querySelector('a[aria-label="Prepare"]')).not.toBeInTheDocument();
+  });
   expect(screen.queryByText("Work")).not.toBeInTheDocument();
   expect(screen.queryByText("Evidence")).not.toBeInTheDocument();
 });
