@@ -29,8 +29,12 @@ describe("Landing", () => {
     expect(screen.queryByRole("textbox", { name: /search/i })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Open your context/ })).toHaveAttribute("href", "/app");
     expect(screen.getByRole("link", { name: "See a real handoff" })).toHaveAttribute("href", "#handoff");
+    expect(screen.queryByRole("button", { name: /mode/i })).not.toBeInTheDocument();
+    expect(container.querySelector(".ce-landing")).toHaveAttribute("data-landing-theme", "fixed");
     expect(screen.getAllByRole("link", { name: "GitHub" })).toHaveLength(2);
     expect(screen.getByText("context_pack.v2")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Every source keeps its identity. The handoff keeps only what matters." })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Evidence becomes a verified handoff" })).toBeInTheDocument();
     expect(screen.getByText("A project should accumulate understanding—not lose it between runs.")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Connect" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Observe" })).toBeInTheDocument();
@@ -60,7 +64,7 @@ describe("Landing", () => {
     const pixelCurtains = container.querySelectorAll(".ce-pixel-curtain");
     expect(pixelCurtains).toHaveLength(4);
     pixelCurtains.forEach((curtain) => expect(curtain.children).toHaveLength(48));
-    expect(container.querySelectorAll('[data-ce-reveal][data-visible="true"]')).toHaveLength(11);
+    expect(container.querySelectorAll('[data-ce-reveal][data-visible="true"]')).toHaveLength(13);
   });
 
   it("reveals everything immediately when reduced motion is preferred", () => {
@@ -75,6 +79,6 @@ describe("Landing", () => {
 
     expect(Observer).not.toHaveBeenCalled();
     expect(landing).not.toHaveClass("ce-motion-ready");
-    expect(container.querySelectorAll('[data-ce-reveal][data-visible="true"]')).toHaveLength(11);
+    expect(container.querySelectorAll('[data-ce-reveal][data-visible="true"]')).toHaveLength(13);
   });
 });

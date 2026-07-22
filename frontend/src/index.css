@@ -686,6 +686,99 @@
   background: transparent;
 }
 
+.ce-flow-section {
+  position: relative;
+  background: transparent;
+}
+
+.ce-flow-viewport {
+  position: relative;
+  height: clamp(38rem, 55vw, 50rem);
+  margin-top: 2rem;
+  overflow: hidden;
+}
+
+.ce-flow-map {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.ce-flow-ghost-lines rect,
+.ce-flow-primary-lines path,
+.ce-flow-trace {
+  fill: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.ce-flow-ghost-lines rect {
+  stroke: rgba(36, 76, 255, 0.2);
+  stroke-width: 1.15;
+}
+
+.ce-flow-primary-lines path {
+  stroke: rgba(36, 76, 255, 0.68);
+  stroke-width: 1.35;
+}
+
+.ce-flow-trace {
+  stroke: #244cff;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 18 238;
+  animation: ce-flow-trace 7s linear infinite;
+}
+
+.ce-flow-labels text {
+  fill: #244cff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.ce-flow-labels .ce-flow-label-strong {
+  fill: #171713;
+  font-size: 15px;
+}
+
+.ce-flow-nodes circle {
+  fill: #244cff;
+  stroke: #d9ff68;
+  stroke-width: 5;
+  vector-effect: non-scaling-stroke;
+}
+
+.ce-flow-caption {
+  position: absolute;
+  right: clamp(1.25rem, 4vw, 4rem);
+  bottom: clamp(1.5rem, 4vw, 3.5rem);
+  left: clamp(1.25rem, 4vw, 4rem);
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 2rem;
+}
+
+.ce-flow-caption span {
+  color: #244cff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.ce-flow-caption p {
+  max-width: 34rem;
+  font-size: clamp(1.35rem, 2.5vw, 2.45rem);
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: -0.035em;
+  text-align: right;
+}
+
 .ce-loop-card {
   transition: background-color 280ms ease, transform 280ms ease;
 }
@@ -833,6 +926,107 @@
   font-size: 0.6875rem;
   font-weight: 650;
   opacity: 0.68;
+}
+
+/* The marketing page has one fixed visual identity, independent of app theme. */
+.dark .ce-landing {
+  --ce-field: #d9ff68;
+  --ce-field-text: #171713;
+  --ce-field-muted: #465212;
+  color-scheme: light;
+}
+
+.dark .ce-landing .ce-landing-nav {
+  background: rgba(217, 255, 104, 0.86);
+}
+
+.dark .ce-landing .ce-scroll-progress {
+  background: #171713;
+}
+
+.dark .ce-landing .ce-kicker {
+  color: #465212;
+}
+
+.dark .ce-landing .ce-cta-primary {
+  background: #171713;
+  color: white;
+  box-shadow: 0 8px 24px rgba(23, 23, 19, 0.14);
+}
+
+.dark .ce-landing .ce-cta-secondary {
+  border-color: #cecec5;
+  background: rgba(255, 255, 255, 0.42);
+  color: #3e3e38;
+}
+
+.dark .ce-landing .ce-cta-secondary:hover {
+  border-color: #999990;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.dark .ce-landing .ce-visual-grid {
+  opacity: 0.75;
+  background-image:
+    linear-gradient(rgba(23, 23, 19, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(23, 23, 19, 0.055) 1px, transparent 1px);
+}
+
+.dark .ce-landing .ce-source-row {
+  border-color: rgba(205, 205, 196, 0.92);
+  background: rgba(250, 250, 246, 0.86);
+}
+
+.dark .ce-landing .ce-source-row:hover {
+  border-color: #aeb3a0;
+}
+
+.dark .ce-landing .ce-source-line {
+  background: #c9c9bf;
+}
+
+.dark .ce-landing .ce-source-line span {
+  background: #9fbe3d;
+}
+
+.dark .ce-landing .ce-merge-stem {
+  background: linear-gradient(to bottom, #b8b8af, #9fbe3d);
+}
+
+.dark .ce-landing .ce-loop-card:hover {
+  background: rgba(255, 255, 255, 0.38);
+}
+
+.dark .ce-landing .ce-product-atlas::before {
+  opacity: 0.4;
+  background-image:
+    linear-gradient(rgba(23, 23, 19, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(23, 23, 19, 0.035) 1px, transparent 1px);
+}
+
+.dark .ce-landing .ce-atlas-row:not([data-open="true"]):hover {
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.dark .ce-landing .ce-atlas-row[data-open="true"] {
+  background: #171713;
+  color: #f7f7f2;
+}
+
+.dark .ce-landing .ce-atlas-row[data-open="true"] .ce-atlas-number {
+  color: #d9ff68;
+}
+
+.dark .ce-landing .ce-atlas-row[data-open="true"] .ce-atlas-toggle {
+  background: rgba(217, 255, 104, 0.12);
+}
+
+.dark .ce-landing .ce-atlas-link {
+  color: #d9ff68;
+}
+
+.dark .ce-landing .ce-atlas-payoff {
+  background: rgba(255, 255, 255, 0.055);
 }
 
 .ce-dark-stage {
@@ -994,6 +1188,11 @@
   100% { opacity: 0; transform: scale(0.08); }
 }
 
+@keyframes ce-flow-trace {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: -256; }
+}
+
 @keyframes ce-visual-arrive {
   from { opacity: 0; transform: translateY(28px) scale(0.975); }
   to { opacity: 1; transform: translateY(0) scale(1); }
@@ -1032,6 +1231,29 @@
 }
 
 @media (max-width: 639px) {
+  .ce-flow-viewport {
+    height: 34rem;
+    margin-top: 1.5rem;
+  }
+
+  .ce-flow-map {
+    left: 50%;
+    width: 68rem;
+    max-width: none;
+    transform: translateX(-50%);
+  }
+
+  .ce-flow-caption {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .ce-flow-caption p {
+    max-width: 19rem;
+    text-align: left;
+  }
+
   .ce-source-line {
     width: 2.2rem;
   }
@@ -1056,6 +1278,7 @@
   .ce-loop-card,
   .ce-handoff-row,
   .ce-live-dot::after,
+  .ce-flow-trace,
   .ce-atlas-row,
   .ce-atlas-trigger,
   .ce-atlas-toggle,
