@@ -25,6 +25,7 @@ import imgOpenAI from "../assets/openai-icon.png";
 import imgOpenCode from "../assets/opencode-icon.png";
 import { api } from "../api/client";
 import { useSelectSessionFromLibrary, useSessionLibrary, useSyncSessionLibrary } from "../api/hooks";
+import ProductLoadingState from "../components/ProductLoadingState";
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
 import { formatTimeAgo } from "../context-map/digest";
 import { useProductWorkspace } from "./useProductWorkspace";
@@ -1064,9 +1065,19 @@ function Notice({ children, tone }) {
 
 
 function EmptyState({ title, detail, error = false, loading = false }) {
+  if (loading) {
+    return (
+      <ProductLoadingState
+        label={title}
+        detail={detail}
+        stages={["Scanning supported session stores", "Grouping project workstreams", "Preparing the session archive"]}
+      />
+    );
+  }
+
   return (
     <div className={`rounded-3xl border p-12 text-center ${error ? "border-red-200 bg-red-50 dark:border-red-900/60 dark:bg-red-950/25" : "border-dashed border-[#d8d8cf] bg-[#fbfbf6] dark:border-[#292925] dark:bg-[#141411]"}`}>
-      {loading ? <Loader2 className="mx-auto h-5 w-5 animate-spin text-[#85857c]" /> : <FileSearch className="mx-auto h-5 w-5 text-[#85857c]" />}
+      <FileSearch className="mx-auto h-5 w-5 text-[#85857c]" />
       <h2 className="mt-3 text-base font-black">{title}</h2>
       {detail ? <p className="mx-auto mt-2 max-w-xl text-xs leading-5 text-[#68685f] dark:text-[#aaa9a0]">{detail}</p> : null}
     </div>

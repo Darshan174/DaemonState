@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import ProductLoadingState from "./ProductLoadingState";
 
 /**
  * Shared loading / error / empty-state overlay.
@@ -8,13 +9,10 @@ import { Link } from "react-router-dom";
  *   const q = useSomething();
  *   if (q.isLoading || q.isError || !q.data) return <StatusView query={q} empty="No items yet." />;
  */
-export default function StatusView({ query, empty = "Nothing here yet." }) {
+export default function StatusView({ query, empty = "Nothing here yet.", loading = "Loading product data…", loadingStages }) {
   if (query.isLoading) {
     return (
-      <div role="status" aria-live="polite" className="panel flex flex-col items-center justify-center px-6 py-20 text-[#77776e] dark:text-[#929289]">
-        <Spinner />
-        <p className="mt-3 text-sm">Loading...</p>
-      </div>
+      <ProductLoadingState compact label={loading} stages={loadingStages} />
     );
   }
 
@@ -70,19 +68,6 @@ export default function StatusView({ query, empty = "Nothing here yet." }) {
   }
 
   return null; // data is ready — caller renders it
-}
-
-function Spinner() {
-  return (
-    <svg className="animate-spin h-6 w-6 text-brand-600 dark:text-brand-400" viewBox="0 0 24 24" fill="none">
-      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-      <path
-        className="opacity-75"
-        fill="currentColor"
-        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-      />
-    </svg>
-  );
 }
 
 function EmptyIcon() {

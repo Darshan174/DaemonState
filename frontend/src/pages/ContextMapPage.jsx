@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import {
   AlertTriangle,
-  Loader2,
 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { useWorkspaces } from "../api/hooks";
 import { resolveWorkspaceId, useWorkspaceSelection } from "../context/WorkspaceContext";
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
+import ProductLoadingState from "../components/ProductLoadingState";
 import {
   useBuildContext,
   useContextDigest,
@@ -234,11 +234,13 @@ function focusComponentId(card) {
 
 function PageLoading({ label }) {
   return (
-    <div className="flex h-full items-center justify-center bg-[#f7f7f2] dark:bg-[#0d0d0b]">
-      <div className="text-center">
-        <Loader2 className="mx-auto mb-3 h-8 w-8 animate-spin text-slate-500 dark:text-neutral-300" />
-        <p className="text-sm font-bold text-slate-700 dark:text-neutral-300">{label}</p>
-      </div>
+    <div className="flex h-full items-center justify-center bg-[#f7f7f2] p-5 dark:bg-[#0d0d0b]">
+      <ProductLoadingState
+        label={label}
+        detail="Every relationship remains traceable to its originating evidence."
+        stages={["Reading source-backed claims", "Resolving project relationships", "Preparing the explanation"]}
+        className="w-full max-w-3xl"
+      />
     </div>
   );
 }

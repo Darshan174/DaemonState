@@ -18,6 +18,7 @@ import {
 
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
 import ResumeCheckpointDialog from "../components/ResumeCheckpointDialog";
+import ProductLoadingState from "../components/ProductLoadingState";
 import {
   useCaptureCheckpoint,
   useCheckpoints,
@@ -49,7 +50,13 @@ export default function NowPage() {
     );
   }
   if (workspace.workspacesQuery.isLoading || digestQuery.isLoading) {
-    return <PageState title="Loading observed project activity…" />;
+    return (
+      <ProductLoadingState
+        label="Loading observed project activity…"
+        detail="Current work remains separate from immutable checkpoint history."
+        stages={["Selecting the workspace", "Reading observed activity", "Resolving the latest checkpoint"]}
+      />
+    );
   }
   if (digestQuery.isError) {
     return <PageState title="Could not load project activity" detail={digestQuery.error?.message} error />;

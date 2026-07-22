@@ -14,6 +14,7 @@ import {
 
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
 import ResumeCheckpointDialog from "../components/ResumeCheckpointDialog";
+import ProductLoadingState from "../components/ProductLoadingState";
 import { useCheckpoints, useResumeCheckpoint, useVerifyCheckpoint } from "../api/hooks";
 import { cleanDisplayText, formatTimeAgo } from "../context-map/digest";
 import { useProductWorkspace } from "./useProductWorkspace";
@@ -54,15 +55,17 @@ export default function RunsPage() {
 
       <CheckpointGuide />
 
-      {checkpointsQuery.isLoading ? <EmptyState title="Loading checkpoint history…" /> : null}
+      {checkpointsQuery.isLoading ? (
+        <ProductLoadingState
+          label="Loading checkpoint history…"
+          detail="Captured boundaries are ordered without merging their claims."
+          stages={["Opening the checkpoint index", "Reading captured boundaries", "Ordering verification history"]}
+        />
+      ) : null}
       {checkpointsQuery.isError ? <EmptyState title="Could not load checkpoint evidence" detail={checkpointsQuery.error?.message} error /> : null}
       {!checkpointsQuery.isLoading && !checkpointsQuery.isError ? (
         checkpoints.length ? (
-          <div className="space-y-4">
-            {checkpoints.map((checkpoint) => (
-              <CheckpointCard key={checkpoint.id} checkpoint={checkpoint} workspaceId={workspace.activeWorkspaceId} />
-            ))}
-          </div>
+          <CheckpointTimeline checkpoints={checkpoints} workspaceId={workspace.activeWorkspaceId} />
         ) : (
           <EmptyState
             title="No structured checkpoints yet"
@@ -71,6 +74,21 @@ export default function RunsPage() {
         )
       ) : null}
     </div>
+  );
+}
+
+function CheckpointTimeline({ checkpoints, workspaceId }) {
+  return (
+    <ol aria-label="Checkpoint timeline" className="relative space-y-5 before:absolute before:bottom-6 before:left-[17px] before:top-6 before:w-px before:bg-gradient-to-b before:from-[#afca54] before:via-[#b8b8af] before:to-transparent dark:before:from-[#7d9535] dark:before:via-[#3a3a34]">
+      {checkpoints.map((checkpoint, index) => (
+        <li key={checkpoint.id} className="relative pl-12">
+          <span className="absolute left-0 top-6 z-10 flex h-9 w-9 items-center justify-center border border-[#b9c77c] bg-[#f7f7f2] font-mono text-[9px] font-bold tabular-nums text-[#5e6c27] shadow-[0_0_0_6px_rgba(247,247,242,0.94)] dark:border-[#65762e] dark:bg-[#11110f] dark:text-[#d9ff68] dark:shadow-[0_0_0_6px_rgba(17,17,15,0.94)]">
+            {String(index + 1).padStart(2, "0")}
+          </span>
+          <CheckpointCard checkpoint={checkpoint} workspaceId={workspaceId} />
+        </li>
+      ))}
+    </ol>
   );
 }
 

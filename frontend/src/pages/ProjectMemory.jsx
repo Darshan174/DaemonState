@@ -208,7 +208,7 @@ export default function ProjectMemory() {
                   <span className="h-px flex-1 bg-[#dfdfd7] dark:bg-[#252522]" />
                   <span className="text-[10px] font-medium text-[#8a8a80]">{group.types.length} {group.types.length === 1 ? "type" : "types"}</span>
                 </div>
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-4">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                   {group.types.map((type, index) => (
                     <MemoryTypeCard
                       key={type.id}
@@ -257,32 +257,69 @@ function MemoryStat({ value, label }) {
 function MemoryTypeCard({ type, items, index, loading, onOpen }) {
   const meta = AREA_META[type.area];
   const count = items.length;
+  const previews = items.slice(0, 2);
+  const Icon = type.icon;
   return (
     <button
       type="button"
       onClick={onOpen}
       aria-label={`Open ${type.title}`}
-      className="memory-card-enter group relative aspect-square w-full overflow-hidden rounded-[16px] border border-[#d7d7ce] bg-[#fbfbf6] p-3 text-left outline-none transition-[transform,border-color,box-shadow] duration-300 ease-out hover:-translate-y-1 hover:border-[var(--memory-accent)] hover:shadow-[0_14px_34px_rgba(23,23,19,0.08)] focus-visible:border-[var(--memory-accent)] dark:border-[#2c2c28] dark:bg-[#0f0f0d] dark:hover:shadow-[0_18px_40px_rgba(0,0,0,0.4)] sm:p-5"
+      className="memory-card-enter group relative min-h-[270px] w-full overflow-hidden rounded-[20px] border border-[#d7d7ce] bg-[#fbfbf6] p-5 text-left outline-none transition-[transform,border-color,box-shadow] duration-300 ease-out hover:-translate-y-1.5 hover:border-[var(--memory-accent)] hover:shadow-[0_18px_44px_rgba(23,23,19,0.1)] focus-visible:border-[var(--memory-accent)] focus-visible:ring-2 focus-visible:ring-[var(--memory-accent)] focus-visible:ring-offset-2 dark:border-[#2c2c28] dark:bg-[#0f0f0d] dark:focus-visible:ring-offset-[#090908] dark:hover:shadow-[0_20px_48px_rgba(0,0,0,0.46)]"
       style={{
         "--memory-accent": meta.accent,
         animationDelay: `${Math.min(index, 12) * 30}ms`,
       }}
     >
-      <span aria-hidden="true" className="absolute inset-x-0 top-0 h-[3px] origin-left scale-x-0 transition-transform duration-500 ease-out group-hover:scale-x-100 group-focus-visible:scale-x-100" style={{ backgroundColor: meta.accent }} />
-      <span className="flex h-full flex-col">
-        <span className="flex items-start justify-between gap-2">
-          <span className="text-[10px] font-medium text-[#8a8a80]">{meta.label}</span>
-          <span className="font-mono text-[9px] font-medium tabular-nums text-[#a1a198]">{String(index + 1).padStart(2, "0")}</span>
+      <span aria-hidden="true" className="pointer-events-none absolute -right-12 -top-16 h-48 w-48 rounded-full opacity-70 blur-3xl transition-transform duration-700 group-hover:scale-125" style={{ backgroundColor: meta.soft }} />
+      <span aria-hidden="true" className="absolute inset-y-5 left-0 w-[3px] origin-top scale-y-50 rounded-r-full opacity-70 transition-transform duration-500 group-hover:scale-y-100" style={{ backgroundColor: meta.accent }} />
+
+      <span className="relative flex h-full flex-col">
+        <span className="flex items-start justify-between gap-4">
+          <span className="flex min-w-0 items-center gap-3">
+            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[13px] border shadow-[0_6px_18px_rgba(23,23,19,0.06)] transition-transform duration-300 group-hover:-rotate-3 group-hover:scale-105 dark:shadow-none" style={{ borderColor: meta.accent, color: meta.accent, backgroundColor: meta.soft }}>
+              <Icon className="h-5 w-5" strokeWidth={1.8} />
+            </span>
+            <span className="min-w-0">
+              <span className="block text-[9px] font-semibold uppercase tracking-[0.13em] text-[#8a8a80]">{meta.label}</span>
+              <span className={`mt-1 flex items-center gap-1.5 text-[10px] font-medium ${count ? "text-[#57574f] dark:text-[#bdbdb4]" : "text-[#9a9a91] dark:text-[#707069]"}`}>
+                <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: count ? meta.accent : "currentColor" }} />
+                {loading ? "Reading memory" : count ? "In memory" : "Awaiting evidence"}
+              </span>
+            </span>
+          </span>
+          <span className="text-right">
+            <span className="block text-[26px] font-semibold tabular-nums leading-none tracking-[-0.06em] text-[#252520] dark:text-[#f1f1ea]">{loading ? "—" : count}</span>
+            <span className="mt-1 block text-[8px] font-semibold uppercase tracking-[0.12em] text-[#999990]">{count === 1 ? "record" : "records"}</span>
+          </span>
         </span>
 
-        <MemoryGlyph type={type} accent={meta.accent} soft={meta.soft} index={index} />
+        <span className="mt-5 block">
+          <span className="block text-[18px] font-semibold leading-tight tracking-[-0.035em] text-[#171713] dark:text-white">{type.title}</span>
+          <span className="mt-1.5 line-clamp-2 text-[11px] font-normal leading-[1.55] text-[#68685f] dark:text-[#aaa9a0]">{type.description}</span>
+        </span>
 
-        <span className="mt-auto">
-          <span className="block text-[15px] font-semibold leading-tight tracking-[-0.03em] sm:text-lg">{type.title}</span>
-          <span className="mt-1.5 hidden text-[10px] font-normal leading-[1.5] text-[#68685f] dark:text-[#aaa9a0] sm:line-clamp-2 sm:text-[11px]">{type.description}</span>
-          <span className="mt-3 flex items-center justify-between border-t border-[#dfdfd7] pt-2.5 text-[9px] font-medium dark:border-[#292925]">
-            <span className={count ? "text-[#4f4f48] dark:text-[#d0d0c8]" : "text-[#999990]"}>{loading ? "Loading" : count ? `${count} ${count === 1 ? "record" : "records"}` : "No records"}</span>
-            <ArrowRight className="h-3.5 w-3.5 text-[#8a8a80] transition-transform duration-300 group-hover:translate-x-1" />
+        <span className={`mt-5 block rounded-[13px] border px-3 py-2.5 ${previews.length ? "border-[#dfdfd7] bg-white/55 dark:border-[#292925] dark:bg-white/[0.025]" : "border-dashed border-[#d8d8cf] bg-[#f5f5ef]/65 dark:border-[#30302b] dark:bg-white/[0.015]"}`}>
+          {previews.length ? (
+            <span className="block space-y-2">
+              {previews.map((item, previewIndex) => (
+                <span key={`${item.id || item.title}-${previewIndex}`} className="flex items-center gap-2">
+                  <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: meta.accent }} />
+                  <span className="line-clamp-1 text-[10px] font-medium text-[#56564f] dark:text-[#c8c8bf]">{cleanDisplayText(item.title)}</span>
+                </span>
+              ))}
+            </span>
+          ) : (
+            <span className="flex items-center justify-between gap-3 text-[10px] text-[#8f8f86] dark:text-[#777770]">
+              <span>No observed records yet</span>
+              <span className="font-mono text-[8px] tabular-nums">{String(index + 1).padStart(2, "0")}</span>
+            </span>
+          )}
+        </span>
+
+        <span className="mt-auto flex items-center justify-between border-t border-[#dfdfd7] pt-3 text-[10px] font-semibold dark:border-[#292925]">
+          <span className="text-[#56564f] transition-colors group-hover:text-[#171713] dark:text-[#aaa9a0] dark:group-hover:text-white">Open memory</span>
+          <span className="flex h-7 w-7 items-center justify-center rounded-full border border-[#d7d7ce] text-[#77776e] transition-[transform,border-color,color,background-color] duration-300 group-hover:translate-x-0.5 group-hover:border-[var(--memory-accent)] group-hover:text-[var(--memory-accent)] dark:border-[#34342f]">
+            <ArrowRight className="h-3.5 w-3.5" />
           </span>
         </span>
       </span>

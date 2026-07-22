@@ -2,6 +2,8 @@ import { Suspense, lazy, useState } from "react";
 import { Routes, Route, NavLink, Navigate, Link, useLocation } from "react-router-dom";
 import ThemeToggle from "./components/ThemeToggle";
 import CeIcon from "./components/CeIcon";
+import ContinuityRail from "./components/ContinuityRail";
+import ProductLoadingState from "./components/ProductLoadingState";
 import WorkspaceSwitcher from "./components/WorkspaceSwitcher";
 import { useWorkspaceSelection } from "./context/WorkspaceContext";
 import {
@@ -39,23 +41,19 @@ const NAV_ITEMS = [
   { to: "/app/connectors", label: "Connectors", icon: Cable },
 ];
 
-function PageLoader() {
+function PageLoader({ fullScreen = false }) {
   return (
-    <div className="min-h-[300px] flex items-center justify-center">
-      <div className="flex flex-col items-center gap-3">
-        <div className="relative h-8 w-8">
-          <div className="absolute inset-0 rounded-full border border-[#d8d8cf] dark:border-[#35352f]" />
-          <div className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-[#171713] dark:border-t-[#d9ff68]" />
-        </div>
-        <p className="text-xs font-medium tracking-wide text-[#77776e] dark:text-[#929289]">Loading your project…</p>
-      </div>
-    </div>
+    <ProductLoadingState
+      label="Loading your project…"
+      stages={["Opening the workspace", "Loading the product surface", "Preparing the verified view"]}
+      fullScreen={fullScreen}
+    />
   );
 }
 
 export default function App() {
   return (
-    <Suspense fallback={<PageLoader />}>
+    <Suspense fallback={<PageLoader fullScreen />}>
       <Routes>
         <Route path="/"      element={<Landing />} />
         <Route path="/app/*" element={<AdminShell />} />
@@ -151,6 +149,7 @@ function AdminShell() {
           className={`page-enter relative z-10 ${isProjectPage ? "h-full min-h-0" : ""}`}
           key={`${selectedId || "unselected-workspace"}:${location.pathname}`}
         >
+          {!isProjectPage ? <ContinuityRail pathname={location.pathname} className="mb-6" /> : null}
           <Suspense fallback={<PageLoader />}>
             <Routes>
               <Route index                                  element={<NowPage />} />
