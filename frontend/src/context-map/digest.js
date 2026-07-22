@@ -70,8 +70,8 @@ export function confidenceLabel(value) {
 
 export function formatTimeAgo(value) {
   if (!value) return "Unknown";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Unknown";
+  const date = parseApiTimestamp(value);
+  if (!date) return "Unknown";
   const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
   if (seconds < 60) return "just now";
   const minutes = Math.floor(seconds / 60);
@@ -81,6 +81,21 @@ export function formatTimeAgo(value) {
   const days = Math.floor(hours / 24);
   if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`;
   return date.toLocaleDateString();
+}
+
+export function parseApiTimestamp(value) {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  // The database stores naive UTC. Older API responses omitted the UTC marker,
+  // which made browsers reinterpret fresh events as local time.
+  const normalized = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(raw)
+    ? `${raw}Z`
+    : raw;
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
 export function cardsById(cards = []) {

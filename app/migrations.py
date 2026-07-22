@@ -5,9 +5,10 @@ import json
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from app.models import Base
 from app.services.identity import identity_key_for_component_name, normalize_identity_text
 from app.services.vector_search import pgvector_index_dimension
 from app.source_identity import canonical_source_identity_sha256
@@ -38,7 +39,66 @@ async def run_migrations(conn: AsyncConnection) -> None:
     await _migrate_deterministic_project_compiler_schema(conn)
     await _migrate_truth_access_schema(conn)
     await _migrate_learning_loop_schema(conn)
+    await _migrate_work_checkpoint_schema(conn)
     await _migrate_query_and_sync_indexes(conn)
+
+
+async def _migrate_work_checkpoint_schema(conn: AsyncConnection) -> None:
+    """Create the append-only session checkpoint ledger on existing installations."""
+
+    required = {"workspaces", "source_documents", "run_observations"}
+    available = {
+        name for name in required if await _get_table_columns(conn, name)
+    }
+    if available != required:
+        return
+
+    def _create(sync_conn) -> None:
+        for table_name in (
+            "session_events",
+            "work_checkpoints",
+            "checkpoint_items",
+            "checkpoint_evidence",
+            "checkpoint_verifications",
+        ):
+            Base.metadata.tables[table_name].create(sync_conn, checkfirst=True)
+
+    await conn.run_sync(_create)
+    for table_name, index_name, columns in (
+        (
+            "session_events",
+            "uq_session_events_provider_session_event",
+            ("workspace_id", "provider", "session_id", "provider_event_id"),
+        ),
+        (
+            "work_checkpoints",
+            "uq_work_checkpoints_boundary_schema",
+            (
+                "workspace_id",
+                "provider",
+                "session_id",
+                "boundary_event_id",
+                "schema_version",
+            ),
+        ),
+    ):
+        existing_columns = await conn.run_sync(
+            lambda sync_conn, table=table_name, index=index_name: next(
+                (
+                    tuple(item.get("column_names") or ())
+                    for item in inspect(sync_conn).get_indexes(table)
+                    if item.get("name") == index
+                ),
+                (),
+            )
+        )
+        if existing_columns and existing_columns != columns:
+            await conn.execute(text(f"DROP INDEX IF EXISTS {index_name}"))
+        joined = ", ".join(columns)
+        await conn.execute(text(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} "
+            f"ON {table_name} ({joined})"
+        ))
 
 
 async def _migrate_workspace_lifecycle_schema(conn: AsyncConnection) -> None:

@@ -9,7 +9,7 @@ import {
   Cable,
   Database,
   LibraryBig,
-  PackageCheck,
+  BrainCircuit,
   PanelLeftClose,
   PanelLeftOpen,
   PlayCircle,
@@ -21,6 +21,7 @@ const NowPage        = lazy(() => import("./pages/NowPage"));
 const PreparePage    = lazy(() => import("./pages/PreparePage"));
 const RunsPage       = lazy(() => import("./pages/RunsPage"));
 const SessionLibrary = lazy(() => import("./pages/SessionLibrary"));
+const ProjectMemory  = lazy(() => import("./pages/ProjectMemory"));
 const QueryView    = lazy(() => import("./pages/QueryView"));
 const SourceManager = lazy(() => import("./pages/SourceManager"));
 const Landing      = lazy(() => import("./pages/Landing"));
@@ -30,9 +31,9 @@ const WorkspacesPage = lazy(() => import("./pages/WorkspacesPage"));
 
 const NAV_ITEMS = [
   { to: "/app", label: "Now", icon: Activity, end: true },
-  { to: "/app/prepare", label: "Prepare", icon: PackageCheck },
   { to: "/app/runs", label: "Runs", icon: PlayCircle },
   { to: "/app/library", label: "Library", icon: LibraryBig },
+  { to: "/app/memory", label: "Memory", icon: BrainCircuit },
   { to: "/app/explain", label: "Explain", icon: Waypoints },
   { to: "/app/sources", label: "Sources", icon: Database },
   { to: "/app/connectors", label: "Connectors", icon: Cable },
@@ -156,6 +157,7 @@ function AdminShell() {
               <Route path="prepare"                         element={<PreparePage />} />
               <Route path="runs"                            element={<RunsPage />} />
               <Route path="library"                         element={<SessionLibrary />} />
+              <Route path="memory"                          element={<ProjectMemory />} />
               <Route path="explain"                         element={<ContextMapPage />} />
               <Route path="dashboard"                       element={<Navigate to="/app" replace />} />
               <Route path="graph"                           element={<Navigate to="/app/explain" replace />} />

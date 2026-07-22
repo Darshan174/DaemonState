@@ -135,7 +135,11 @@ async def sync_local_session_library(
             try:
                 external_id = f"{result.connector_type}:session:{resolved.session_id}"
                 existing = current_by_external_id.get(external_id)
-                if existing is not None and existing.content.strip() == resolved.content.strip():
+                if (
+                    existing is not None
+                    and existing.content.strip() == resolved.content.strip()
+                    and not resolved.events
+                ):
                     current_metadata = _loads_dict(existing.metadata_json)
                     refreshed_metadata = {
                         **current_metadata,
@@ -161,6 +165,7 @@ async def sync_local_session_library(
                     resolved.content,
                     workspace_id=str(workspace_id),
                     metadata_extra=resolved.metadata,
+                    normalized_events=resolved.events,
                 )
                 revised = int(ingest_result.get("documents_updated") or 0)
                 created = max(

@@ -28,6 +28,7 @@ _NOISE_MARKERS = (
     "all agents in the team",
     "child agents can also spawn",
     "they may be addressed as to=/root",
+    "collaboration tools cannot be called from inside functions.exec",
     "# agents.md instructions",
     "permanent repository rules for codex",
     "read agents.md",
@@ -65,6 +66,27 @@ _LEADING_REQUEST_RE = re.compile(
     r"^(?:/goal\s+|now\s+|please\s+|can you\s+|could you\s+|would you\s+|"
     r"i (?:now )?want you to\s+|i need you to\s+|help me(?: to)?\s+|go ahead and\s+|"
     r"work on\s+)",
+    re.IGNORECASE,
+)
+_CONTINUATION_CONTROLS = {
+    "carry on",
+    "continue",
+    "continue please",
+    "go ahead",
+    "go ahead now",
+    "go on",
+    "keep going",
+    "next",
+    "now continue",
+    "okay continue",
+    "please continue",
+    "proceed",
+    "resume",
+    "yes continue",
+}
+_CONTINUATION_SENTENCE_RE = re.compile(
+    r"^continue if you have (?:any )?next steps(?: or stop and ask for clarification "
+    r"if you are unsure how to proceed)?$",
     re.IGNORECASE,
 )
 _ATTACHMENT_FILE_RE = re.compile(
@@ -342,6 +364,49 @@ def _is_generic_title(title: str, *, tool: str | None, session_id: str | None) -
 def _looks_like_bootstrap_noise(value: str) -> bool:
     lowered = value.lower()
     return any(marker in lowered for marker in _NOISE_MARKERS)
+
+
+def is_session_instruction_noise(value: str | None) -> bool:
+    """Return whether transcript text is agent-runtime guidance, not user work."""
+
+    return bool(value and _looks_like_bootstrap_noise(value))
+
+
+def is_continuation_control(value: str | None) -> bool:
+    """Return whether a user turn controls continuation without defining new work."""
+
+    normalized = re.sub(r"[^a-z0-9']+", " ", str(value or "").lower()).strip()
+    return bool(
+        normalized in _CONTINUATION_CONTROLS
+        or _CONTINUATION_SENTENCE_RE.fullmatch(normalized)
+    )
+
+
+def is_substantive_user_request(value: str | None) -> bool:
+    """Accept user work only when it is neither runtime policy nor a control turn."""
+
+    text = str(value or "").strip()
+    return bool(
+        len(text) >= 4
+        and not is_session_instruction_noise(text)
+        and not is_continuation_control(text)
+    )
+
+
+def extract_delegated_user_request(value: str | None) -> str | None:
+    """Extract the user-owned task sentence from a Codex delegation envelope."""
+
+    text = str(value or "")
+    if "<codex_delegation" not in text.lower():
+        return None
+    match = re.search(r"<input>([\s\S]*?)</input>", text, re.IGNORECASE)
+    if not match:
+        return None
+    for paragraph in re.split(r"\n\s*\n", match.group(1).strip()):
+        candidate = re.sub(r"\s+", " ", paragraph).strip()
+        if is_substantive_user_request(candidate):
+            return candidate
+    return None
 
 
 def _project_name_from_cwd(cwd: str | None) -> str | None:

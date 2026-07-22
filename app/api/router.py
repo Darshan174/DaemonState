@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from app.api import (
     agents_api,
+    checkpoints,
     connectors,
     context,
     context_digest,
@@ -19,6 +20,7 @@ from app.api import (
 )
 
 api_router = APIRouter()
+api_router.include_router(checkpoints.router, prefix="", tags=["checkpoints"])
 api_router.include_router(sources.router, prefix="", tags=["sources"])
 api_router.include_router(graph.router, prefix="", tags=["graph"])
 api_router.include_router(context_digest.router, prefix="", tags=["context"])

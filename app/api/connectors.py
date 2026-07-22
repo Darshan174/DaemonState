@@ -1062,6 +1062,7 @@ async def import_ai_session_by_id(
         session_id=body.session_id.strip(),
         content=resolved.content,
         metadata_extra=resolved.metadata,
+        normalized_events=resolved.events,
     )
     result["resolved_from"] = resolved.metadata.get("source_path")
     return result
@@ -1135,12 +1136,13 @@ async def refresh_linked_ai_sessions(
     refreshed = 0
     changed = 0
     unchanged = 0
+    checkpoints_created = 0
     errors: list[dict[str, str]] = []
     metadata_updated = 0
     for document, current_metadata, connector_type, session_id in linked:
         try:
             resolved = resolve_local_ai_session(connector_type, session_id)
-            if resolved.content.strip() == document.content.strip():
+            if resolved.content.strip() == document.content.strip() and not resolved.events:
                 refreshed_metadata = {
                     **current_metadata,
                     **{
@@ -1156,6 +1158,15 @@ async def refresh_linked_ai_sessions(
                     document.metadata_json = json.dumps(refreshed_metadata)
                     await session.flush()
                     metadata_updated += 1
+                from app.services.checkpoints import capture_checkpoint_schema_upgrades
+
+                checkpoints_created += await capture_checkpoint_schema_upgrades(
+                    session,
+                    workspace_id=workspace.id,
+                    provider=connector_type,
+                    session_id=session_id,
+                )
+                await session.commit()
                 refreshed += 1
                 unchanged += 1
                 continue
@@ -1166,6 +1177,7 @@ async def refresh_linked_ai_sessions(
                 session_id=session_id,
                 content=resolved.content,
                 metadata_extra=resolved.metadata,
+                normalized_events=resolved.events,
             )
         except SessionResolutionError as exc:
             errors.append({
@@ -1181,6 +1193,7 @@ async def refresh_linked_ai_sessions(
             int(ingest.get("documents_updated") or 0),
         )
         unchanged += int(ingest.get("documents_skipped") or ingest.get("unchanged") or 0)
+        checkpoints_created += int(ingest.get("compaction_checkpoints") or 0)
 
     if metadata_updated:
         await session.commit()
@@ -1192,6 +1205,7 @@ async def refresh_linked_ai_sessions(
         "changed": changed,
         "metadata_updated": metadata_updated,
         "unchanged": unchanged,
+        "checkpoints_created": checkpoints_created,
         "errors": errors,
         "refreshed_at": utc_now().isoformat(),
     }
@@ -1221,6 +1235,7 @@ async def _ingest_ai_session_content(
     session_id: str,
     content: str,
     metadata_extra: dict[str, Any] | None = None,
+    normalized_events: list[Any] | None = None,
 ) -> dict:
     from app.sync.ai_session import ingest_ai_session as _ingest
     from app.services.ingest import IngestionService
@@ -1240,6 +1255,7 @@ async def _ingest_ai_session_content(
         content,
         workspace_id=str(ws.id),
         metadata_extra=metadata_extra,
+        normalized_events=normalized_events,
     )
 
     external_id = f"{connector_type}:session:{session_id}"

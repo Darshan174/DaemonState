@@ -31,16 +31,16 @@ vi.mock("./pages/NowPage", async () => {
   };
 });
 
-vi.mock("./pages/PreparePage", () => ({
-  default: () => <h1>Prepare page</h1>,
-}));
-
 vi.mock("./pages/RunsPage", () => ({
   default: () => <h1>Runs page</h1>,
 }));
 
 vi.mock("./pages/SessionLibrary", () => ({
   default: () => <h1>Session library</h1>,
+}));
+
+vi.mock("./pages/ProjectMemory", () => ({
+  default: () => <h1>Project memory</h1>,
 }));
 
 beforeEach(() => {
@@ -111,9 +111,9 @@ it("makes Now the default and exposes the complete product loop", async () => {
     links.forEach((link) => expect(link).toHaveAttribute("href", href));
   };
   expectResponsiveLinks("Now", "/app");
-  expectResponsiveLinks("Prepare", "/app/prepare");
   expectResponsiveLinks("Runs", "/app/runs");
   expectResponsiveLinks("Library", "/app/library");
+  expectResponsiveLinks("Memory", "/app/memory");
   expectResponsiveLinks("Explain", "/app/explain");
   expectResponsiveLinks("Sources", "/app/sources");
   expectResponsiveLinks("Connectors", "/app/connectors");
@@ -121,8 +121,26 @@ it("makes Now the default and exposes the complete product loop", async () => {
   expect(screen.queryByRole("link", { name: "Graph" })).not.toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "Ask" })).not.toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "Changes" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Prepare" })).not.toBeInTheDocument();
   expect(screen.queryByText("Work")).not.toBeInTheDocument();
   expect(screen.queryByText("Evidence")).not.toBeInTheDocument();
+});
+
+it("redirects legacy Prepare URLs to Now", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider>
+        <WorkspaceProvider>
+          <MemoryRouter initialEntries={["/app/prepare?objective=Fix%20the%20redirect"]}>
+            <App />
+          </MemoryRouter>
+        </WorkspaceProvider>
+      </ThemeProvider>
+    </QueryClientProvider>,
+  );
+
+  expect(await screen.findByRole("heading", { name: "Now page" })).toBeInTheDocument();
 });
 
 it("redirects legacy dashboard and graph routes to their replacement surfaces", async () => {

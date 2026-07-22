@@ -30,6 +30,9 @@ export function useLinkedAISessionRefresh(workspaceId, { enabled = true } = {}) 
       if (Number(result?.changed || 0) > 0 || Number(result?.metadata_updated || 0) > 0) {
         await queryClient.invalidateQueries({ queryKey: ["context-digest", workspaceId] });
       }
+      if (Number(result?.checkpoints_created || 0) > 0) {
+        await queryClient.invalidateQueries({ queryKey: ["checkpoints", workspaceId] });
+      }
       return result;
     },
     enabled: Boolean(workspaceId) && enabled,

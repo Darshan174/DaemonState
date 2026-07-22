@@ -151,6 +151,14 @@
   animation: page-enter 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+.memory-card-enter {
+  animation: memory-card-enter 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.memory-drawer-enter {
+  animation: memory-drawer-enter 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
 @keyframes page-enter {
   from {
     opacity: 0;
@@ -159,6 +167,28 @@
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes memory-card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes memory-drawer-enter {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
   }
 }
 
@@ -193,6 +223,8 @@
   }
 
   .page-enter,
+  .memory-card-enter,
+  .memory-drawer-enter,
   .context-visual *,
   .animate-marquee,
   .animate-shimmer,

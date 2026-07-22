@@ -24,6 +24,7 @@ from app.models import (
     EvidenceSpan,
     Relationship,
     RunObservation,
+    SessionEvent,
     SourceDocument,
     Workspace,
 )
@@ -46,7 +47,10 @@ from app.services.session_summary import (
     derive_latest_session_topic,
     derive_session_attention_items,
     derive_session_topic,
+    extract_delegated_user_request,
     is_internal_session_content,
+    is_session_instruction_noise,
+    is_substantive_user_request,
 )
 from app.services.session_library import selected_session_selection
 from app.services.project_scope import (
@@ -520,7 +524,7 @@ async def get_context_digest(
         activity=await _digest_activity(
             session,
             workspace_id=workspace_uuid,
-            cards=cards,
+            cards=all_session_roots,
             current_documents=current_documents,
             accessible_source_ids=accessible_source_ids,
             workspace_repositories=workspace_repositories,
@@ -615,6 +619,19 @@ async def _digest_activity(
     represented_session_source_ids = {
         card.source_snapshot.source_document_id for card in session_cards
     }
+    session_source_ids = {
+        document.id
+        for document in current_documents
+        if document.source_type == "agent_session"
+    }
+    normalized_events = list(await session.scalars(
+        select(SessionEvent)
+        .where(SessionEvent.source_document_id.in_(session_source_ids))
+        .order_by(SessionEvent.sequence_number, SessionEvent.id)
+    )) if session_source_ids else []
+    events_by_source: dict[str, list[SessionEvent]] = {}
+    for event in normalized_events:
+        events_by_source.setdefault(str(event.source_document_id), []).append(event)
     session_items = [
         _session_activity(
             card,
@@ -626,6 +643,7 @@ async def _digest_activity(
                 == selected_session_source_id
             ),
             selected_topic=selected_session_topic,
+            events=events_by_source.get(card.source_snapshot.source_document_id, []),
         )
         for card in session_cards
     ]
@@ -655,6 +673,7 @@ async def _digest_activity(
             project_relevance=relevance,
             selected=selected,
             selected_topic=selected_session_topic,
+            events=events_by_source.get(str(document.id), []),
         ))
     session_items = [item for item in session_items if item is not None]
     session_items.sort(key=_activity_sort_key, reverse=True)
@@ -806,24 +825,67 @@ def _session_activity(
     project_relevance: ProjectRelevance | None = None,
     selected: bool = False,
     selected_topic: str | None = None,
+    events: list[SessionEvent] | None = None,
 ) -> dict | None:
     if source is None:
         return None
+
     metadata = metadata_dict(source)
     turns = _session_turns(source.content)
-    user_turns = [text for role, text in turns if role in {"user", "human", "you"}]
     assistant_turns = [
         text for role, text in turns
         if role in {"assistant", "ai", "codex", "claude", "opencode", "gpt"}
     ]
-    request = next(
+    normalized = events or []
+    if normalized:
+        request_candidate = next(
+            (
+                (event, text) for event in reversed(normalized)
+                if (text := _activity_user_request(event)) is not None
+                and _compact_activity_text(text)
+            ),
+            None,
+        )
+        request_event = request_candidate[0] if request_candidate else None
+        request = _compact_activity_text(request_candidate[1]) if request_candidate else None
+        request_sequence = request_event.sequence_number if request_event else -1
+        scoped_assistant_turns = [
+            str(event.content)
+            for event in normalized
+            if event.event_type == "assistant_update"
+            and event.sequence_number > request_sequence
+            and event.content
+            and not is_session_instruction_noise(event.content)
+        ]
+        event_count = len(normalized)
+    else:
+        indexed_turns = list(enumerate(turns))
+        request_turn = next(
+            (
+                (index, text) for index, (role, text) in reversed(indexed_turns)
+                if role in {"user", "human", "you"}
+                and is_substantive_user_request(text)
+                and _compact_activity_text(text)
+            ),
+            None,
+        )
+        request_index = request_turn[0] if request_turn else -1
+        request = _compact_activity_text(request_turn[1]) if request_turn else None
+        scoped_assistant_turns = [
+            text for index, (role, text) in indexed_turns
+            if index > request_index
+            and role in {"assistant", "ai", "codex", "claude", "opencode", "gpt"}
+            and not is_session_instruction_noise(text)
+        ]
+        event_count = len(turns)
+
+    latest_assistant = next(
         (
-            cleaned for text in reversed(user_turns)
+            cleaned for text in reversed(scoped_assistant_turns)
             if (cleaned := _compact_activity_text(text))
         ),
         None,
     )
-    latest_assistant = _latest_meaningful_assistant_update(assistant_turns)
     provider_summary = _reported_summary_text(metadata.get("agent_reported_summary"))
     if provider_summary:
         summary_kind = str(
@@ -838,7 +900,8 @@ def _session_activity(
             ),
         }
     else:
-        result_summary = _agent_reported_summary(assistant_turns)
+        result_summary = _agent_reported_summary(scoped_assistant_turns or assistant_turns)
+
     topic = _compact_activity_text(
         card.session.get("topic") if card and card.session else None,
         140,
@@ -848,6 +911,8 @@ def _session_activity(
         tool=str(metadata.get("tool") or metadata.get("agent_tool") or ""),
         session_id=str(metadata.get("session_id") or source.external_id),
     )
+    if topic and is_session_instruction_noise(topic):
+        topic = None
     latest_topic = derive_latest_session_topic(
         source.content,
         explicit_title=metadata.get("title"),
@@ -855,15 +920,21 @@ def _session_activity(
         session_id=str(metadata.get("session_id") or source.external_id),
     )
     ended_at = _parse_datetime(metadata.get("ended_at"))
-    updated_at = _latest_datetime(
+    source_activity_at = _latest_datetime(
         metadata.get("updated_at"),
         metadata.get("ended_at"),
         metadata.get("source_modified_at"),
         metadata.get("started_at"),
-    ) or _latest_datetime(metadata.get("ingested_at"), source.ingested_at) or source.ingested_at
+        source.source_created_at,
+    )
+    updated_at = (
+        source_activity_at
+        or _latest_datetime(metadata.get("ingested_at"), source.ingested_at)
+        or source.ingested_at
+    )
+    recency_basis = "source_activity" if source_activity_at else "imported_at_fallback"
     session_title = topic or request or "Imported coding session"
     chosen_topic = selected_topic if selected else None
-    live = bool(metadata.get("source_path")) and _is_recent_activity(updated_at)
     relevance = project_relevance or ProjectRelevance(
         status="relevant" if assigned else "unknown",
         reasons=[],
@@ -871,14 +942,14 @@ def _session_activity(
     return {
         "id": f"session:{source.id}",
         "kind": "agent_session",
-        "state": "active" if live else "recent" if assigned else "unassigned",
-        "live": live,
+        "state": "snapshot" if assigned else "unassigned",
+        "live": False,
         "evidence_level": "session_reported" if assigned else "session_unassigned",
         "selected_for_now": selected,
         "selected_topic": chosen_topic,
         "session_id": str(metadata.get("session_id") or source.external_id),
         "refreshable": bool(metadata.get("source_path")),
-        "title": chosen_topic or latest_topic or session_title,
+        "title": chosen_topic or request or latest_topic or session_title,
         "session_title": session_title,
         "latest_topic": latest_topic or session_title,
         "request": request,
@@ -887,7 +958,8 @@ def _session_activity(
             **result_summary,
             "reported_at": updated_at,
         } if result_summary else None),
-        "rationale": _stated_rationale(assistant_turns),
+        "rationale": _stated_rationale(scoped_assistant_turns),
+        "provider": metadata.get("tool") or metadata.get("agent_tool"),
         "tool": metadata.get("tool") or metadata.get("agent_tool"),
         "model": metadata.get("model") or metadata.get("agent_model"),
         "branch": metadata.get("branch"),
@@ -896,6 +968,18 @@ def _session_activity(
         ),
         "updated_at": updated_at,
         "ended_at": ended_at,
+        "imported_at": source.ingested_at,
+        "source_activity_at": source_activity_at,
+        "recency_basis": recency_basis,
+        "currentness": {
+            "state": "imported_snapshot" if source_activity_at else "unknown_source_time",
+            "is_live": False,
+            "reason": (
+                "Ordered by source activity time, not by when the transcript was imported."
+                if source_activity_at
+                else "The source supplied no activity time; import time is only a fallback."
+            ),
+        },
         "changed_files": [],
         "verification": {"observed": 0, "passed": 0, "failed": 0},
         "outcome": None,
@@ -920,8 +1004,15 @@ def _session_activity(
             }
             for index, item in enumerate(derive_session_attention_items(source.content))
         ],
-        "event_count": len(turns),
+        "event_count": event_count,
     }
+
+def _activity_user_request(event: SessionEvent) -> str | None:
+    if event.event_type == "user_request" and is_substantive_user_request(event.content):
+        return str(event.content).strip()
+    if event.event_type == "runtime_instruction" and event.role == "user":
+        return extract_delegated_user_request(event.content)
+    return None
 
 
 def _session_turns(content: str) -> list[tuple[str, str]]:
@@ -1128,13 +1219,18 @@ def _observation_sort_key(observation: RunObservation) -> tuple[datetime, str]:
     return (_observation_time(observation), str(observation.id))
 
 
-def _activity_sort_key(item: dict) -> tuple[datetime, str]:
+def _activity_sort_key(item: dict) -> tuple[int, datetime, str]:
     timestamp = item.get("updated_at") or item.get("started_at") or datetime.min
     if isinstance(timestamp, str):
         timestamp = _parse_datetime(timestamp) or datetime.min
     if isinstance(timestamp, datetime) and timestamp.tzinfo is not None:
         timestamp = timestamp.replace(tzinfo=None)
-    return (timestamp if isinstance(timestamp, datetime) else datetime.min, str(item.get("id") or ""))
+    recency_rank = 0 if item.get("recency_basis") == "imported_at_fallback" else 1
+    return (
+        recency_rank,
+        timestamp if isinstance(timestamp, datetime) else datetime.min,
+        str(item.get("id") or ""),
+    )
 
 
 def _id_list_accessible(raw: str, accessible_source_ids: set[UUID]) -> bool:
