@@ -7,7 +7,7 @@ from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -17,11 +17,13 @@ from app.api.dependencies import get_access_scope
 from app.services.access import AccessScope, source_access_predicate
 from app.models import (
     AgentRun,
+    Claim,
     ClaimRevision,
     Component,
     Connector,
     ContextPack,
     EvidenceSpan,
+    MemoryReviewEvent,
     Relationship,
     RunObservation,
     SessionEvent,
@@ -83,6 +85,9 @@ CardStatus = Literal[
     "stale",
     "verified",
     "conflict",
+    "resolved",
+    "superseded",
+    "rejected",
 ]
 CardTemporal = Literal["past", "current", "future", "unknown"]
 BadgeTone = Literal["gray", "blue", "green", "amber", "red", "violet"]
@@ -149,6 +154,7 @@ class CardEvidence(BaseModel):
     end_char: int | None = None
     excerpt: str | None = None
     verification_status: Literal["verified", "needs_review", "unavailable"]
+    reviewed_by_human: bool = False
 
 
 class DigestObjective(BaseModel):
@@ -232,6 +238,7 @@ class ContextDigest(BaseModel):
     freshness: dict
     health: DigestHealth
     cards: list[ContextCard]
+    history_cards: list[ContextCard]
     clusters: list[ContextCluster]
     links: list[DigestLink]
     recommended_actions: list[RecommendedAction]
@@ -241,6 +248,147 @@ class ContextDigest(BaseModel):
     open_loops: dict
     playbooks: dict
     monitoring: dict | None = None
+
+
+class MemoryRecordReviewRequest(BaseModel):
+    workspace_id: UUID
+    action: Literal["confirm", "dismiss", "resolve", "supersede", "reopen"]
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+@router.patch("/context/memory/{component_id}")
+async def review_memory_record(
+    component_id: UUID,
+    payload: MemoryRecordReviewRequest,
+    session: AsyncSession = Depends(get_db_session),
+    access_scope: AccessScope = Depends(get_access_scope),
+) -> dict:
+    if not access_scope.allows_workspace(payload.workspace_id):
+        raise HTTPException(status_code=404, detail="Memory record not found")
+    component = await session.scalar(
+        select(Component)
+        .options(selectinload(Component.source_document))
+        .join(SourceDocument, Component.source_document_id == SourceDocument.id)
+        .where(
+            Component.id == component_id,
+            source_access_predicate(access_scope, workspace_id=payload.workspace_id),
+        )
+    )
+    if component is None:
+        raise HTTPException(status_code=404, detail="Memory record not found")
+
+    historical_statuses = {"resolved", "superseded", "rejected"}
+    if payload.action == "reopen" and component.status not in historical_statuses:
+        raise HTTPException(status_code=409, detail="Only historical records can be reopened")
+    if payload.action != "reopen" and component.status in historical_statuses:
+        raise HTTPException(status_code=409, detail="Reopen this historical record first")
+    if payload.action == "resolve" and (component.fact_type or "").lower() not in {
+        "blocker", "ai_blocker",
+    }:
+        raise HTTPException(status_code=422, detail="Only blockers can be resolved")
+
+    next_status = {
+        # Human confirmation verifies the exact evidence. The Component remains
+        # active so it stays eligible for context compilation.
+        "confirm": "active",
+        "dismiss": "rejected",
+        "resolve": "resolved",
+        "supersede": "superseded",
+        "reopen": "active",
+    }[payload.action]
+    previous_component_status = component.status
+    component.status = next_status
+
+    claim = None
+    evidence = None
+    evidence_status = None
+    previous_claim_status = None
+    previous_evidence_status = None
+    if component.claim_id is not None:
+        claim = await session.get(Claim, component.claim_id)
+        if claim is not None:
+            previous_claim_status = claim.status
+            claim.status = "active" if payload.action in {"confirm", "reopen"} else next_status
+        revision = (
+            await session.get(ClaimRevision, claim.current_revision_id)
+            if claim is not None and claim.current_revision_id is not None
+            else None
+        )
+        if revision is None:
+            revision = await session.scalar(
+                select(ClaimRevision)
+                .where(ClaimRevision.claim_id == component.claim_id)
+                .order_by(ClaimRevision.created_at.desc(), ClaimRevision.id.desc())
+                .limit(1)
+            )
+        if revision is not None:
+            evidence = await session.get(EvidenceSpan, revision.evidence_span_id)
+            if evidence is not None:
+                previous_evidence_status = evidence.review_status
+                if payload.action in {"confirm", "reopen"}:
+                    if not _exact_evidence_span(component.source_document, evidence):
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                "This record cannot be confirmed without exact source evidence"
+                                if payload.action == "confirm"
+                                else "This record cannot be reopened without exact source evidence"
+                            ),
+                        )
+                if payload.action == "confirm":
+                    evidence.review_status = "verified"
+                    evidence.trust_zone = "trusted_human"
+                    evidence.authority_weight = max(float(evidence.authority_weight or 0), 0.9)
+                evidence_status = evidence.review_status
+
+    if payload.action in {"confirm", "reopen"} and evidence is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This record cannot be confirmed without exact source evidence"
+                if payload.action == "confirm"
+                else "This record cannot be reopened without exact source evidence"
+            ),
+        )
+
+    event = MemoryReviewEvent(
+        workspace_id=payload.workspace_id,
+        component_id=component.id,
+        action=payload.action,
+        previous_component_status=previous_component_status,
+        next_component_status=component.status,
+        previous_claim_status=previous_claim_status,
+        next_claim_status=claim.status if claim is not None else None,
+        previous_evidence_status=previous_evidence_status,
+        next_evidence_status=evidence.review_status if evidence is not None else None,
+        reviewed_by=access_scope.principal_id,
+        reason=" ".join(payload.reason.split()) if payload.reason else None,
+    )
+    session.add(event)
+
+    await session.commit()
+    return {
+        "component_id": str(component.id),
+        "action": payload.action,
+        "status": "verified" if payload.action == "confirm" else component.status,
+        "component_status": component.status,
+        "evidence_status": evidence_status,
+        "review_event_id": str(event.id),
+    }
+
+
+def _exact_evidence_span(source: SourceDocument | None, evidence: EvidenceSpan) -> bool:
+    if source is None or evidence.start_char is None or evidence.end_char is None:
+        return False
+    content = source.content or ""
+    excerpt = evidence.text or ""
+    return bool(
+        evidence.source_document_id == source.id
+        and
+        0 <= evidence.start_char < evidence.end_char <= len(content)
+        and content[evidence.start_char:evidence.end_char] == excerpt
+        and sha256_text(excerpt) == evidence.text_sha256
+    )
 
 
 @router.get("/context/digest", response_model=ContextDigest)
@@ -293,6 +441,17 @@ async def get_context_digest(
         .order_by(Component.created_at.desc())
     )
     components = list(await session.scalars(stmt)) if current_source_ids else []
+    history_stmt = (
+        select(Component)
+        .options(selectinload(Component.model), selectinload(Component.source_document))
+        .where(Component.status.in_(["resolved", "superseded", "rejected"]))
+        .where(Component.source_document_id.in_(accessible_source_ids))
+        .order_by(Component.created_at.desc())
+        .limit(limit)
+    )
+    history_components = (
+        list(await session.scalars(history_stmt)) if accessible_source_ids else []
+    )
 
     comp_ids = {component.id for component in components}
     components_by_id = {component.id: component for component in components}
@@ -320,7 +479,9 @@ async def get_context_digest(
         {"conflicts_with", "contradicts"},
     )
     blocker_component_ids = _blocked_component_ids(factual_relationships)
-    evidence_by_component = await _evidence_by_component(session, components)
+    evidence_by_component = await _evidence_by_component(
+        session, [*components, *history_components]
+    )
     github_last_sync = await _github_last_sync(session, workspace_id_str)
     workspace_repositories, workspace_paths, workspace_commits = await workspace_references(
         session, workspace_id_str
@@ -348,8 +509,15 @@ async def get_context_digest(
         if (component.fact_type or "").lower() in {"session_root", "ai_session"}
         or not _is_digest_noise_component(component)
     ]
+    history_components = [
+        component
+        for component in history_components
+        if (component.fact_type or "").lower() in {"session_root", "ai_session"}
+        or not _is_digest_noise_component(component)
+    ]
 
     cards: list[ContextCard] = []
+    history_cards: list[ContextCard] = []
     session_source_ids: set[UUID] = set()
     excluded_irrelevant_sources: set[UUID] = set()
     selected_session_card_id: str | None = None
@@ -395,6 +563,25 @@ async def get_context_digest(
             selected_session_card_id = card.id
             selected_session_source_id = str(component.source_document_id)
         cards.append(card)
+    for component in history_components:
+        card = _component_to_card(
+            component,
+            [],
+            evidence=evidence_by_component.get(component.id),
+            github_last_sync=github_last_sync,
+            workspace_repositories=workspace_repositories,
+            workspace_paths=workspace_paths,
+            workspace_commits=workspace_commits,
+            selected_session_external_id=selected_session_external,
+        )
+        if workspace_id_str and card.workspace_relevance.status != "relevant":
+            continue
+        history_cards.append(card)
+    history_cards.sort(
+        key=lambda card: card.updated_at or card.created_at or datetime.min,
+        reverse=True,
+    )
+    history_cards = history_cards[:limit]
     relevance_priority = {"relevant": 2, "unknown": 1, "not_relevant": 0}
     all_session_roots = [card for card in cards if card.category == "agent_session"]
     candidate_session_count = len(all_session_roots)
@@ -518,6 +705,7 @@ async def get_context_digest(
         freshness=_freshness_summary(project_cards),
         health=health,
         cards=cards,
+        history_cards=history_cards,
         clusters=_clusters(project_cards),
         links=links,
         recommended_actions=_recommended_actions(project_cards, health),
@@ -1507,6 +1695,8 @@ def _evidence_read(source: SourceDocument, evidence: EvidenceSpan | None) -> Car
     if evidence is None:
         return CardEvidence(verification_status="unavailable")
     exact = (
+        evidence.source_document_id == source.id
+        and
         evidence.start_char is not None
         and evidence.end_char is not None
         and 0 <= evidence.start_char < evidence.end_char <= len(source.content or "")
@@ -1520,6 +1710,9 @@ def _evidence_read(source: SourceDocument, evidence: EvidenceSpan | None) -> Car
         end_char=evidence.end_char,
         excerpt=evidence.text,
         verification_status="verified" if verified else "needs_review",
+        reviewed_by_human=(
+            verified and (evidence.trust_zone or "").lower() == "trusted_human"
+        ),
     )
 
 
@@ -1569,6 +1762,7 @@ def _classify_component(
     human_confirmed = bool(
         metadata.get("verified_by_human") is True
         or str(metadata.get("verification_status") or "").lower() == "human_verified"
+        or evidence.reviewed_by_human
     )
     if (
         fact_type in {"decision", "ai_decision"}
@@ -1745,7 +1939,12 @@ async def _digest_objective(
             .order_by(AgentRun.started_at.desc(), AgentRun.id.desc())
             .limit(1)
         )
-        if run and run.objective and run.objective.strip():
+        if (
+            run
+            and run.objective
+            and run.objective.strip()
+            and not is_session_instruction_noise(run.objective)
+        ):
             return DigestObjective(
                 status="supplied",
                 text=run.objective.strip(),
@@ -1767,7 +1966,11 @@ async def _digest_objective(
                 manifest = {}
             if manifest.get("objective_kind") == "project_snapshot":
                 continue
-            if pack.objective and pack.objective.strip():
+            if (
+                pack.objective
+                and pack.objective.strip()
+                and not is_session_instruction_noise(pack.objective)
+            ):
                 return DigestObjective(
                     status="supplied",
                     text=pack.objective.strip(),
@@ -1822,6 +2025,7 @@ def _component_to_card(
         "blocker" if category == "blocker" else card_type,
         conflict,
         relationship_blocker and category == "blocker",
+        evidence_read.verification_status,
     )
     if category != "blocker" and status == "blocked" and not conflict:
         status = "needs_review"
@@ -1935,17 +2139,20 @@ def _card_status(
     card_type: CardType,
     conflict: bool,
     relationship_blocker: bool,
+    evidence_status: str = "unavailable",
 ) -> CardStatus:
     raw_status = (component.status or "active").lower()
+    if raw_status in {"resolved", "superseded", "rejected"}:
+        return raw_status
     if conflict:
         return "conflict"
     if card_type == "blocker" or relationship_blocker:
         return "blocked"
-    if raw_status in {"stale", "deprecated", "superseded"}:
+    if raw_status in {"stale", "deprecated"}:
         return "stale"
     if raw_status in {"needs_review", "proposed"} or float(component.confidence or 0) < 0.6:
         return "needs_review"
-    if float(component.confidence or 0) >= 0.85 and float(component.authority_weight or 0) >= 0.7:
+    if evidence_status == "verified":
         return "verified"
     return "active"
 

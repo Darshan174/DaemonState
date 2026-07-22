@@ -19,6 +19,44 @@ export function useContextDigest(workspaceId, { poll = false } = {}) {
   });
 }
 
+function memoryPath(workspaceId, { query = "", section = null, limit = 3 } = {}) {
+  const params = new URLSearchParams({
+    workspace_id: workspaceId,
+    limit_per_section: String(limit),
+  });
+  if (query.trim()) params.set("query", query.trim());
+  if (section) params.set("section", section);
+  return `/context/memory?${params}`;
+}
+
+export function useProjectMemory(workspaceId, options = {}) {
+  const query = options.query || "";
+  const section = options.section || null;
+  const limit = options.limit || 3;
+  return useQuery({
+    queryKey: ["project-memory", workspaceId, query.trim(), section, limit],
+    queryFn: () => api.get(memoryPath(workspaceId, { query, section, limit })),
+    enabled: Boolean(workspaceId),
+    retry: 1,
+  });
+}
+
+export function useReviewMemoryRecord(workspaceId) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ componentId, action, reason = undefined }) => api.patch(`/context/memory/${componentId}`, {
+      workspace_id: workspaceId,
+      action,
+      ...(reason ? { reason } : {}),
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["context-digest", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["project-memory", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["checkpoints", workspaceId] });
+    },
+  });
+}
+
 export function useLinkedAISessionRefresh(workspaceId, { enabled = true } = {}) {
   const queryClient = useQueryClient();
   return useQuery({
@@ -61,7 +99,10 @@ export function useSetCurrentGoal(workspaceId) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (goal) => api.put(`/workspaces/${workspaceId}/current-goal`, goal),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["context-digest", workspaceId] }),
+    onSuccess: () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["context-digest", workspaceId] }),
+      queryClient.invalidateQueries({ queryKey: ["project-memory", workspaceId] }),
+    ]),
   });
 }
 
@@ -69,7 +110,10 @@ export function useClearCurrentGoal(workspaceId) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () => api.delete(`/workspaces/${workspaceId}/current-goal`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["context-digest", workspaceId] }),
+    onSuccess: () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["context-digest", workspaceId] }),
+      queryClient.invalidateQueries({ queryKey: ["project-memory", workspaceId] }),
+    ]),
   });
 }
 

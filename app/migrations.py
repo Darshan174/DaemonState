@@ -36,6 +36,7 @@ async def run_migrations(conn: AsyncConnection) -> None:
     await _migrate_postgres_text_search_schema(conn)
     await _migrate_founder_oversight_schema(conn)
     await _migrate_workspace_goals_schema(conn)
+    await _migrate_memory_review_schema(conn)
     await _migrate_deterministic_project_compiler_schema(conn)
     await _migrate_truth_access_schema(conn)
     await _migrate_learning_loop_schema(conn)
@@ -167,6 +168,37 @@ async def _migrate_workspace_goals_schema(conn: AsyncConnection) -> None:
     await conn.execute(text(
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_workspace_goals_one_active "
         "ON workspace_goals (workspace_id) WHERE status = 'active'"
+    ))
+
+
+async def _migrate_memory_review_schema(conn: AsyncConnection) -> None:
+    """Create the append-only audit ledger used by Memory review actions."""
+    timestamp = "TIMESTAMP" if conn.dialect.name == "postgresql" else "DATETIME"
+    uuid_type = "UUID" if conn.dialect.name == "postgresql" else "CHAR(32)"
+    await conn.execute(text(f"""
+        CREATE TABLE IF NOT EXISTS memory_review_events (
+            id {uuid_type} PRIMARY KEY,
+            workspace_id {uuid_type} NOT NULL REFERENCES workspaces(id),
+            component_id {uuid_type} NOT NULL REFERENCES components(id),
+            action VARCHAR(32) NOT NULL,
+            previous_component_status VARCHAR(50),
+            next_component_status VARCHAR(50),
+            previous_claim_status VARCHAR(50),
+            next_claim_status VARCHAR(50),
+            previous_evidence_status VARCHAR(50),
+            next_evidence_status VARCHAR(50),
+            reviewed_by VARCHAR(255) NOT NULL,
+            reason TEXT,
+            created_at {timestamp} NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_memory_review_events_workspace_created "
+        "ON memory_review_events (workspace_id, created_at)"
+    ))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_memory_review_events_component_created "
+        "ON memory_review_events (component_id, created_at)"
     ))
 
 
