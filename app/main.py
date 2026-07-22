@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
+import re
 
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
@@ -24,6 +25,34 @@ from app.services.auth import (
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
+_NAIVE_ISO_DATETIME = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?$"
+)
+
+
+def _serialize_utc_timestamps(value, *, field_name: str | None = None):
+    """Mark UTC database timestamps as UTC instead of browser-local time."""
+    if isinstance(value, dict):
+        return {
+            key: _serialize_utc_timestamps(item, field_name=str(key))
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_serialize_utc_timestamps(item, field_name=field_name) for item in value]
+    if (
+        isinstance(value, str)
+        and field_name
+        and (field_name.endswith("_at") or field_name.endswith("At"))
+        and _NAIVE_ISO_DATETIME.fullmatch(value)
+    ):
+        return f"{value}Z"
+    return value
+
+
+class UTCJSONResponse(JSONResponse):
+    def render(self, content) -> bytes:
+        return super().render(_serialize_utc_timestamps(content))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -33,7 +62,11 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Context Engine", lifespan=lifespan)
+app = FastAPI(
+    title="Context Engine",
+    lifespan=lifespan,
+    default_response_class=UTCJSONResponse,
+)
 
 
 @app.middleware("http")

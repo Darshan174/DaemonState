@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildEvidenceGraph, buildSessionKnowledgeMap, cardDisplayText, cleanDisplayText, sessionTopic } from "./digest";
+import { buildEvidenceGraph, buildSessionKnowledgeMap, cardDisplayText, cleanDisplayText, parseApiTimestamp, sessionTopic } from "./digest";
 
 function card(overrides) {
   return {
@@ -17,6 +17,11 @@ function card(overrides) {
 }
 
 describe("context digest adapter", () => {
+  it("treats timezone-less API datetimes as UTC", () => {
+    expect(parseApiTimestamp("2026-07-22T07:04:49")?.toISOString()).toBe("2026-07-22T07:04:49.000Z");
+    expect(parseApiTimestamp("2026-07-22T07:04:49Z")?.toISOString()).toBe("2026-07-22T07:04:49.000Z");
+  });
+
   it("returns full readable text for expanded digest cards", () => {
     const item = card({
       summary: "Decision: keep the FastAPI auth path for OAuth because it matches the existing backend contract and current test coverage.",

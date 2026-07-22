@@ -75,9 +75,9 @@ we need results from real projects, not demos.
 | Connect a project | Creates a clean boundary around one real repository and its evidence. |
 | Capture the work | Preserves code state, issues, decisions, AI sessions, changes, and checks. |
 | Choose the current goal | Keeps the user in control. Open issues stay backlog until selected. |
-| Prepare the next run | Compiles only the files, facts, constraints, risks, exclusions, and checks relevant to that task. |
-| Inspect the brief | Shows what was selected, why it was selected, and which sources support it. |
-| Observe the result | Records repository changes and verification evidence instead of trusting a completion claim. |
+| Capture a checkpoint | Automatically preserves the goal, progress, decisions, failures, files, blockers, checks, and exact next action at compaction boundaries. |
+| Verify the checkpoint | Checks its structure, event evidence, repository fingerprint, relevant files, and captured test commands. |
+| Resume the work | Copies one deterministic, evidence-linked continuation bundle instead of rebuilding context by hand. |
 | Explain what matters | Uses the graph to show the relationships behind the current project state and compiled context. |
 
 Every important fact keeps its source. Missing evidence stays missing instead of
@@ -101,9 +101,8 @@ being replaced with a confident guess.
 
 | Surface | Actual job |
 |---|---|
-| Now | Shows the explicit current goal, latest observed result, genuine blockers and risks, and backlog. |
-| Prepare | Builds a readable `context_pack.v2` brief and auditable manifest for one task and target-model profile. |
-| Runs | Shows recorded commands, changed files, checks, outcomes, and honest comparison readiness. |
+| Now | Shows current work plus the latest structured checkpoint, verification state, and exact next action. |
+| Runs | Shows real session checkpoints, event evidence, repository freshness, checks, blockers, and resume actions. |
 | Explain | Uses the project graph to show why evidence and relationships matter without making the graph a separate product. |
 | Sources and connectors | Keeps raw evidence, revision history, access boundaries, and provenance inspectable. |
 | Local harness | Wraps one user-supplied worker command and records bounded output, Git changes, checks, and outcome evidence. |

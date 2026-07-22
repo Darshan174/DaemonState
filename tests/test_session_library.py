@@ -215,6 +215,66 @@ def test_codex_discovery_marks_continued_tasks_as_forks(tmp_path: Path, monkeypa
     assert "_provider_message_ids" not in child.metadata
 
 
+def test_codex_parser_preserves_commands_results_and_compaction_boundaries(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    codex_home = tmp_path / "codex-home"
+    sessions_dir = codex_home / "sessions" / "2026" / "07" / "21"
+    sessions_dir.mkdir(parents=True)
+    session_id = "checkpoint-session"
+    (sessions_dir / "rollout.jsonl").write_text("\n".join([
+        json.dumps({
+            "type": "session_meta",
+            "timestamp": "2026-07-21T08:00:00Z",
+            "payload": {"id": session_id, "cwd": "/workspace/product"},
+        }),
+        json.dumps({
+            "type": "response_item",
+            "timestamp": "2026-07-21T08:01:00Z",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "text", "text": "Fix checkpoint capture"}],
+            },
+        }),
+        json.dumps({
+            "type": "response_item",
+            "timestamp": "2026-07-21T08:02:00Z",
+            "payload": {
+                "type": "custom_tool_call",
+                "call_id": "call-1",
+                "name": "exec",
+                "input": 'await tools.exec_command({cmd: "pytest -q", workdir: "/workspace/product"})',
+            },
+        }),
+        json.dumps({
+            "type": "response_item",
+            "timestamp": "2026-07-21T08:03:00Z",
+            "payload": {
+                "type": "custom_tool_call_output",
+                "call_id": "call-1",
+                "output": "Script completed\nOutput:\n3 passed",
+            },
+        }),
+        json.dumps({
+            "type": "compacted",
+            "timestamp": "2026-07-21T08:04:00Z",
+            "payload": {"window_id": "window-2", "window_number": 2},
+        }),
+    ]), encoding="utf-8")
+    monkeypatch.setattr(settings, "codex_home", str(codex_home))
+
+    resolved = discover_local_ai_sessions(["codex"])[0].sessions[0]
+    by_type = {event.event_type: event for event in resolved.events}
+
+    assert resolved.metadata["compaction_count"] == 1
+    assert by_type["command_call"].payload["command"] == "pytest -q"
+    assert by_type["command_result"].payload["exit_code"] == 0
+    assert by_type["command_result"].payload["passed"] is True
+    assert by_type["compaction_boundary"].payload["window_id"] == "window-2"
+
+
 async def test_library_sync_discovers_ingests_and_groups_sessions(
     client,
     db_session,

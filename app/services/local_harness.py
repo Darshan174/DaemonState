@@ -122,6 +122,41 @@ class LocalHarnessResult:
         }
 
 
+async def capture_repository_snapshot(repo_path: str | Path) -> RepositorySnapshot:
+    """Return a bounded, content-aware snapshot for checkpoint freshness checks."""
+
+    root = await _resolve_git_root(repo_path)
+    return await _repository_snapshot(root)
+
+
+async def run_repository_command(
+    repo_path: str | Path,
+    command: Sequence[str],
+    *,
+    cwd: str | Path | None = None,
+    timeout_seconds: float = DEFAULT_VERIFICATION_TIMEOUT_SECONDS,
+    output_limit_bytes: int = DEFAULT_OUTPUT_LIMIT_BYTES,
+) -> CommandResult:
+    """Run an explicit argv inside one repository for opt-in checkpoint verification."""
+
+    root = await _resolve_git_root(repo_path)
+    workdir = Path(cwd).expanduser() if cwd not in (None, "") else root
+    if not workdir.is_absolute():
+        workdir = root / workdir
+    workdir = workdir.resolve()
+    if workdir != root and root not in workdir.parents:
+        raise ValueError("verification cwd must stay inside the checkpoint repository")
+    if not workdir.is_dir():
+        raise ValueError("verification cwd does not exist")
+    return await _run_command(
+        _explicit_argv(command),
+        cwd=workdir,
+        env=os.environ,
+        output_limit_bytes=output_limit_bytes,
+        timeout_seconds=timeout_seconds,
+    )
+
+
 class LocalHarnessRunner:
     """Wrap one explicit local command and persist observed run evidence.
 

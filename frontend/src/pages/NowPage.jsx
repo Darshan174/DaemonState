@@ -2,35 +2,42 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowRight,
-  ArrowUpRight,
   Bot,
   CheckCircle2,
+  Clipboard,
   Clock3,
   FileCode2,
   GitBranch,
-  GitFork,
   History,
-  ListFilter,
-  Loader2,
   PlayCircle,
-  Radio,
-  RotateCcw,
+  RefreshCw,
   ShieldAlert,
+  ShieldCheck,
   TestTube2,
 } from "lucide-react";
 
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
-import { api } from "../api/client";
-import { useClearNowSession, useContextDigest, useLinkedAISessionRefresh } from "../context-map/api";
-import { cleanDisplayText, formatTimeAgo } from "../context-map/digest";
+import ResumeCheckpointDialog from "../components/ResumeCheckpointDialog";
+import {
+  useCaptureCheckpoint,
+  useCheckpoints,
+  useLatestCheckpoint,
+  useResumeCheckpoint,
+  useSessionLibrary,
+  useVerifyCheckpoint,
+} from "../api/hooks";
+import { useContextDigest, useLinkedAISessionRefresh } from "../context-map/api";
+import { cleanDisplayText, formatTimeAgo, sessionIdentity } from "../context-map/digest";
 import { useProductWorkspace } from "./useProductWorkspace";
 
 export default function NowPage() {
   const workspace = useProductWorkspace();
   const digestQuery = useContextDigest(workspace.activeWorkspaceId, { poll: true });
-  const sampleWorkspace = workspace.activeWorkspace?.kind === "demo";
-  useLinkedAISessionRefresh(workspace.activeWorkspaceId, { enabled: !sampleWorkspace });
-  const clearNowSession = useClearNowSession(workspace.activeWorkspaceId);
+  const checkpointQuery = useLatestCheckpoint(workspace.activeWorkspaceId);
+  const checkpointHistoryQuery = useCheckpoints(workspace.activeWorkspaceId, 100);
+  const libraryQuery = useSessionLibrary(workspace.activeWorkspaceId);
+  const captureCheckpoint = useCaptureCheckpoint();
+  useLinkedAISessionRefresh(workspace.activeWorkspaceId);
 
   if (!workspace.workspacesQuery.isLoading && !workspace.activeWorkspaceId) {
     return (
@@ -50,137 +57,317 @@ export default function NowPage() {
 
   const digest = digestQuery.data || {};
   const cards = digest.cards || [];
-  const currentGoal = cleanDisplayText(digest.current_goal?.title);
-  const activity = digest.activity?.primary || fallbackActivity(digest);
-  const visibleTopic = activityTitle(activity);
-  const recordedAttentionCards = cards
+  const checkpoint = checkpointQuery.data || null;
+  // Now is current observed activity. A checkpoint is a separate immutable
+  // recovery boundary and must never replace newer session state.
+  const observedActivity = digest.activity?.primary || fallbackActivity(digest);
+  const checkpointIsCurrent = !["superseded", "historical"].includes(
+    checkpoint?.currentness?.state,
+  );
+  const activity = observedActivity || (checkpointIsCurrent ? checkpoint?.activity : null);
+  const currentGoal = prepareTaskCandidate(digest.current_goal?.title);
+  const attentionCards = cards
     .filter((card) => card.attention_required)
     .filter((card) => card.workspace_relevance?.status !== "not_relevant")
-  const sessionAttentionCards = (activity?.attention_items || [])
-    .filter((item) => (
-      item.source_document_id === activity?.source_document_id
-      && (
-        item.temporal_status !== "previous"
-        || activity?.selected_for_now === true
-      )
-    ))
-    .map((item) => ({
-      ...item,
-      href: sessionLibraryUrl({
-        ...activity,
-        source_document_id: item.source_document_id,
-        selected_topic: item.title,
-      }),
-    }));
-  const attentionCards = [...sessionAttentionCards, ...recordedAttentionCards]
-    .sort((left, right) => (
-      attentionTemporalRank(left) - attentionTemporalRank(right)
-      || (right.attention_score || 0) - (left.attention_score || 0)
-    ))
+    .sort((left, right) => (right.attention_score || 0) - (left.attention_score || 0))
     .slice(0, 4);
-  const recentSessions = (digest.activity?.recent_sessions || [])
-    .filter((session) => session.source_document_id !== activity?.source_document_id)
+  const recentSessionCards = cards
+    .filter((card) => card.category === "agent_session")
+    .filter((card) => card.workspace_relevance?.status === "relevant")
     .sort((left, right) => activityTimestamp(right) - activityTimestamp(left))
     .slice(0, 4);
-  const prepareObjective = currentGoal || visibleTopic;
-  const prepareUrl = `/app/prepare${prepareObjective ? `?objective=${encodeURIComponent(prepareObjective)}` : ""}`;
+  const unassignedSessionCards = cards.filter(
+    (card) => card.category === "agent_session" && card.workspace_relevance?.status === "unknown",
+  );
+  const unassignedSessionCard = unassignedSessionCards[0];
+  const unassignedSessionCount = unassignedSessionCards.length;
+  const activitySession = (
+    activity?.session_id
+    && activity?.state !== "unassigned"
+    && (activity?.provider || activity?.tool)
+  ) ? {
+      connector_type: activity.provider || activity.tool,
+      session_id: activity.session_id,
+    } : null;
+  const latestSession = activitySession || libraryQuery.data?.sessions?.[0] || null;
+  const sessionCompactions = (checkpointHistoryQuery.data?.checkpoints || [])
+    .filter((item) => (
+      checkpoint
+      && item.provider === checkpoint.provider
+      && item.session_id === checkpoint.session_id
+      && item.boundary?.snapshot_phase === "pre_compaction"
+    ))
+    .sort((left, right) => (
+      Number(left.boundary?.sequence_number || 0)
+      - Number(right.boundary?.sequence_number || 0)
+    ));
+  const saveCheckpoint = () => {
+    if (!latestSession) return;
+    captureCheckpoint.mutate({
+      workspaceId: workspace.activeWorkspaceId,
+      provider: latestSession.connector_type,
+      sessionId: latestSession.session_id,
+    });
+  };
 
   return (
     <div className="app-page relative">
       <header className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="eyebrow">{sampleWorkspace ? "Sample workspace" : workspace.activeWorkspace?.name || "Project"}</p>
-          <h1 className="mt-2 text-3xl font-black tracking-tight text-[#171713] dark:text-white">Now</h1>
+          <p className="eyebrow">{workspace.activeWorkspace?.name || "Project"}</p>
+          <h1 className="mt-2 text-4xl font-semibold tracking-[-0.045em] text-[#171713] dark:text-white">Now</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0] sm:text-[15px]">
-            {sampleWorkspace
-              ? "Explore the product with sample evidence. Your real project activity stays separate."
-              : "What changed, what needs attention, and where to continue."}
+            What the agents are working on, what changed, and what needs your attention.
           </p>
           {currentGoal ? (
             <p className="mt-2 max-w-2xl truncate text-[10px] font-semibold text-[#85857c]">
-              Pinned for Prepare · {currentGoal}
+              Pinned goal · {currentGoal}
             </p>
           ) : null}
         </div>
-        {sampleWorkspace ? (
-          <div className="flex flex-wrap items-center gap-2">
-            <Link to="/app/workspaces" className="btn-secondary h-11 text-xs">Choose project</Link>
-            <Link to={prepareUrl} className="btn-primary h-11 text-xs">Explore Prepare <ArrowRight className="h-3.5 w-3.5" /></Link>
-          </div>
-        ) : activity?.kind === "agent_session" && activity?.refreshable ? (
-          <div className="flex flex-col items-end gap-1.5">
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              <Link to={prepareUrl} className="btn-secondary h-11 text-xs">Prepare handoff</Link>
-              <ContinueInHarness
-                activity={activity}
-                workspaceId={workspace.activeWorkspaceId}
-              />
-            </div>
-          </div>
-        ) : (
-          <div className="flex flex-wrap items-center gap-2">
-            <Link to="/app/explain" className="btn-secondary h-11 text-xs">Project overview</Link>
-            <Link to={prepareUrl} className="btn-primary h-11 text-xs">
-              {prepareObjective ? "Prepare this work" : "Prepare work"} <ArrowRight className="h-3.5 w-3.5" />
+        <div className="flex flex-wrap items-center gap-2">
+          <Link to="/app/explain" className="btn-secondary h-11 text-xs">
+            Explain project
+          </Link>
+          {latestSession ? (
+            <button type="button" onClick={saveCheckpoint} disabled={captureCheckpoint.isPending} className="btn-primary h-11 text-xs disabled:cursor-wait disabled:opacity-60">
+              {captureCheckpoint.isPending ? "Saving checkpoint…" : "Save checkpoint"}
+              <RefreshCw className={`h-3.5 w-3.5 ${captureCheckpoint.isPending ? "animate-spin" : ""}`} />
+            </button>
+          ) : (
+            <Link to="/app/library" className="btn-primary h-11 text-xs">
+              Choose work <ArrowRight className="h-3.5 w-3.5" />
             </Link>
-          </div>
-        )}
+          )}
+        </div>
       </header>
 
+      {unassignedSessionCount > 0 ? <UnassignedSessions count={unassignedSessionCount} cardId={unassignedSessionCard?.id} /> : null}
+
       <section className="grid items-stretch gap-4 lg:grid-cols-[1.48fr_.82fr]">
-        <ObservedWork activity={activity} clearSelection={clearNowSession} />
+        <ObservedWork activity={activity} />
         <ObservedResult activity={activity} />
       </section>
 
-      <AttentionPanel cards={attentionCards} activity={activity} />
+      <CheckpointPanel
+        checkpoint={checkpoint}
+        sessionCompactions={sessionCompactions}
+        isLoading={checkpointQuery.isLoading}
+        error={checkpointQuery.error || captureCheckpoint.error}
+        latestSession={latestSession}
+        workspaceId={workspace.activeWorkspaceId}
+        onCapture={saveCheckpoint}
+        capturePending={captureCheckpoint.isPending}
+      />
 
-      {recentSessions.length ? <RecentSessions sessions={recentSessions} /> : null}
+      <AttentionPanel cards={attentionCards} />
+
+      {recentSessionCards.length ? <RecentSessions cards={recentSessionCards} /> : null}
+
     </div>
   );
 }
 
-function ContinueInHarness({ activity, workspaceId }) {
-  const [launchState, setLaunchState] = useState({ status: "idle", message: "" });
-  const harness = agentLabel({ ...activity, model: null });
+function CheckpointPanel({ checkpoint, sessionCompactions, isLoading, error, latestSession, workspaceId, onCapture, capturePending }) {
+  const verifyCheckpoint = useVerifyCheckpoint();
+  const resumeCheckpoint = useResumeCheckpoint();
+  const [copyState, setCopyState] = useState("idle");
+  const [resumeNotice, setResumeNotice] = useState("");
+  const [confirmResume, setConfirmResume] = useState(false);
 
-  const openSession = async () => {
-    setLaunchState({ status: "loading", message: "" });
+  const verify = () => {
+    if (checkpoint) {
+      verifyCheckpoint.mutate({ workspaceId, checkpointId: checkpoint.id, executeCommands: true });
+    }
+  };
+  const resume = async () => {
+    if (!checkpoint) return;
+    setConfirmResume(false);
+    setCopyState("idle");
+    setResumeNotice("");
     try {
-      const result = await api.post("/session-library/open", {
-        workspace_id: workspaceId,
-        source_document_id: activity.source_document_id,
-        topic: activity.selected_topic || activity.latest_topic || activity.title,
-      });
-      setLaunchState({ status: "success", message: result?.message || `${harness} opened.` });
-    } catch (reason) {
-      setLaunchState({
-        status: reason?.detail?.code === "desktop_app_missing" ? "missing" : "error",
-        message: reason?.message || `Could not open ${harness}.`,
-      });
+      const bundle = await resumeCheckpoint.mutateAsync({ workspaceId, checkpointId: checkpoint.id, launchSession: true });
+      await navigator.clipboard.writeText(bundle.content);
+      if (bundle.launch?.launched === false) {
+        setCopyState("copied_only");
+        setResumeNotice(bundle.launch.message || "The resume bundle was copied, but the desktop session could not be opened.");
+      } else {
+        setCopyState("copied");
+      }
+    } catch {
+      setCopyState("error");
     }
   };
 
-  return (
-    <div className="flex flex-col items-end gap-1.5">
-      <button
-        type="button"
-        onClick={openSession}
-        disabled={launchState.status === "loading"}
-        className="btn-primary h-11 text-xs disabled:cursor-wait disabled:opacity-65"
-      >
-        {launchState.status === "loading" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlayCircle className="h-3.5 w-3.5" />}
-        {launchState.status === "loading" ? "Opening…" : `Continue in ${harness}`}
-      </button>
-      {launchState.status !== "idle" && launchState.status !== "loading" ? (
-        <p className={`max-w-xs text-right text-[10px] font-semibold ${launchState.status === "success" ? "text-emerald-700 dark:text-emerald-300" : "text-red-700 dark:text-red-300"}`}>
-          {launchState.message}
+  if (isLoading) {
+    return <section className="app-surface p-5 text-sm text-[#68685f] dark:text-[#aaa9a0]">Loading structured checkpoint…</section>;
+  }
+  if (!checkpoint) {
+    return (
+      <section className="app-surface p-5 sm:p-6">
+        <PanelLabel icon={ShieldCheck}>Continuity checkpoint</PanelLabel>
+        <h2 className="mt-5 text-xl font-semibold">No structured checkpoint captured yet.</h2>
+        <p className="mt-2 max-w-2xl text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
+          Checkpoints are created automatically at context compaction boundaries. Save one now to capture the latest goal, progress, decisions, failures, files, blockers, checks, and exact next action.
         </p>
+        {latestSession ? (
+          <button type="button" onClick={onCapture} disabled={capturePending} className="btn-primary mt-5 h-10 text-xs disabled:opacity-60">
+            {capturePending ? "Capturing…" : "Capture latest session"}
+          </button>
+        ) : <Link to="/app/library" className="mt-5 inline-flex text-xs font-bold underline">Import an agent session</Link>}
+        {error ? <p role="alert" className="mt-3 text-xs font-semibold text-red-600">{error.message}</p> : null}
+      </section>
+    );
+  }
+
+  const sections = checkpoint.sections || {};
+  const goal = sections.goal?.[0]?.statement || "Goal was not captured.";
+  const nextAction = sections.exact_next_action?.[0]?.statement || "Exact next action is missing.";
+  const verification = checkpoint.verification;
+  const status = verification?.status || "not_run";
+  const currentness = checkpoint.currentness || {};
+  const boundary = checkpoint.boundary || {};
+  const snapshotPhaseLabel = boundary.snapshot_phase_label || (
+    checkpoint.trigger === "compaction" ? "Pre-compaction snapshot" : "Session-tip snapshot"
+  );
+  const snapshotPhaseDescription = boundary.snapshot_phase_description || (
+    checkpoint.trigger === "compaction"
+      ? "Captures session state immediately before context compaction and excludes later events."
+      : "Captures session state through the selected latest event."
+  );
+  const outdated = currentness.state === "superseded" || currentness.state === "historical";
+  const eventsBehind = checkpointEventsBehind(checkpoint);
+  const statusTone = checkpointStatusTone(status, checkpoint.capture_status);
+  const evidenceCount = checkpoint.payload?.sections
+    ? Object.values(checkpoint.payload.sections)
+      .flat()
+      .reduce((count, item) => count + (item.evidence_event_ids?.length || 0), 0)
+    : 0;
+  return (
+    <>
+    <section className="app-surface relative overflow-hidden p-5 sm:p-6">
+      <SurfaceAccent />
+      <div className="relative flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0 max-w-4xl">
+          <div className="flex flex-wrap items-center gap-2">
+            <PanelLabel icon={outdated ? History : ShieldCheck}>{outdated ? "Last recovery checkpoint" : "Continuity checkpoint"}</PanelLabel>
+            <span className={`rounded-full px-2.5 py-1 text-[9px] font-bold uppercase tracking-wide ${statusTone}`}>{status.replaceAll("_", " ")}</span>
+            <span className="rounded-full bg-[#efefe7] px-2.5 py-1 text-[9px] font-bold text-[#68685f] dark:bg-[#252521] dark:text-[#bdbdb4]">{checkpoint.trigger}</span>
+            <span className="rounded-full bg-sky-50 px-2.5 py-1 text-[9px] font-bold text-sky-800 dark:bg-sky-950/40 dark:text-sky-200">{snapshotPhaseLabel}</span>
+            <span className="rounded-full bg-amber-50 px-2.5 py-1 text-[9px] font-bold text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">{currentness.label || "Captured boundary"}</span>
+          </div>
+          <p className="mt-3 max-w-3xl text-[10px] leading-5 text-[#77776e] dark:text-[#aaa9a0]">
+            {boundary.occurred_at ? `Boundary ${formatBoundaryTime(boundary.occurred_at)}` : "Boundary time unavailable"}
+            {boundary.sequence_number ? ` · event ${boundary.sequence_number}` : ""}
+            {boundary.captured_at ? ` · saved ${formatBoundaryTime(boundary.captured_at)}` : ""}. {currentness.reason || "This is an immutable checkpoint, not live session truth."}
+          </p>
+          <p className="mt-2 max-w-3xl text-[11px] font-semibold leading-5 text-sky-800 dark:text-sky-200">{snapshotPhaseDescription}</p>
+          {outdated ? (
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/25 dark:text-amber-100">
+              <p className="text-xs font-bold">Not the latest session state{eventsBehind ? ` · ${eventsBehind} events behind` : ""}</p>
+              <p className="mt-1 text-[11px] leading-5 opacity-80">This remains available as a recovery point. Save a new checkpoint before resuming if you need the current state.</p>
+              {latestSession ? (
+                <button type="button" onClick={onCapture} disabled={capturePending} className="mt-3 rounded-lg border border-amber-300 bg-white/70 px-3 py-2 text-[10px] font-bold transition hover:bg-white disabled:cursor-wait disabled:opacity-60 dark:border-amber-800 dark:bg-black/15 dark:hover:bg-black/25">
+                  {capturePending ? "Saving latest checkpoint…" : "Save latest checkpoint"}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+          <p className="mt-5 text-[9px] font-bold uppercase tracking-[0.15em] text-[#85857c]">Goal</p>
+          <h2 className="mt-2 text-xl font-semibold leading-7 tracking-[-0.02em]">{cleanDisplayText(goal)}</h2>
+          <div className="mt-5 rounded-xl border border-[#d9dfc6] bg-[#f2f6e6] p-4 dark:border-[#384125] dark:bg-[#d9ff68]/[0.055]">
+            <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-[#71802f] dark:text-[#d9ff68]">Exact next action</p>
+            <p className="mt-1.5 text-sm font-semibold leading-6">{cleanDisplayText(nextAction)}</p>
+          </div>
+        </div>
+        <div className="flex shrink-0 flex-wrap gap-2">
+          <button type="button" onClick={verify} disabled={verifyCheckpoint.isPending} className="btn-secondary h-10 text-xs disabled:cursor-wait disabled:opacity-60">
+            {verifyCheckpoint.isPending ? "Running checks…" : "Verify now"}
+          </button>
+          <button type="button" onClick={() => setConfirmResume(true)} disabled={resumeCheckpoint.isPending} className="btn-primary h-10 text-xs disabled:opacity-60">
+            <Clipboard className="h-3.5 w-3.5" />{copyState === "copied" ? "Session opened" : copyState === "copied_only" ? "Resume copied" : "Resume session"}
+          </button>
+        </div>
+      </div>
+      {sessionCompactions?.length ? (
+        <SessionCompactions checkpoints={sessionCompactions} displayedCheckpointId={checkpoint.id} />
       ) : null}
-    </div>
+      <div className="relative mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+        <CheckpointMetric label="Progress" value={sections.progress?.length || 0} />
+        <CheckpointMetric label="Decisions" value={sections.decisions?.length || 0} />
+        <CheckpointMetric label="Failures" value={sections.failed_attempts?.length || 0} />
+        <CheckpointMetric label="Files" value={sections.relevant_files?.length || 0} />
+        <CheckpointMetric label="Blockers" value={sections.blockers?.length || 0} />
+        <CheckpointMetric label="Checks" value={sections.verification?.length || 0} />
+        <CheckpointMetric label="Evidence" value={evidenceCount} />
+      </div>
+      <p className="relative mt-4 break-all text-[9px] font-semibold text-[#85857c]">
+        {checkpoint.provider} · {checkpoint.session_id} · {checkpoint.repo?.branch || "branch unavailable"}
+      </p>
+      {(verifyCheckpoint.error || resumeCheckpoint.error || copyState === "error") ? (
+        <p role="alert" className="relative mt-3 text-xs font-semibold text-red-600">{verifyCheckpoint.error?.message || resumeCheckpoint.error?.message || "Clipboard access is unavailable."}</p>
+      ) : null}
+      {resumeNotice ? <p role="status" className="relative mt-3 text-xs font-semibold text-amber-700 dark:text-amber-300">{resumeNotice}</p> : null}
+    </section>
+    {confirmResume ? (
+      <ResumeCheckpointDialog
+        checkpoint={checkpoint}
+        isPending={resumeCheckpoint.isPending}
+        onCancel={() => setConfirmResume(false)}
+        onConfirm={resume}
+      />
+    ) : null}
+    </>
   );
 }
 
-function ObservedWork({ activity, clearSelection }) {
+function SessionCompactions({ checkpoints, displayedCheckpointId }) {
+  return (
+    <section className="relative mt-6 rounded-xl border border-[#e1e1d9] bg-white/40 p-4 dark:border-[#30302b] dark:bg-black/10">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#77776e]">Captured compactions for this session · {checkpoints.length}</p>
+          <p className="mt-1 text-[11px] leading-5 text-[#68685f] dark:text-[#aaa9a0]">Every entry is the session state immediately before that compaction—not the work that happened after it.</p>
+        </div>
+        <Link to="/app/runs" className="text-[10px] font-bold underline underline-offset-4">Inspect all evidence</Link>
+      </div>
+      <div className="mt-4 space-y-2">
+        {checkpoints.map((item, index) => {
+          const itemBoundary = item.boundary || {};
+          const itemGoal = item.sections?.goal?.[0]?.statement || "Goal was not captured.";
+          const displayed = item.id === displayedCheckpointId;
+          return (
+            <div key={item.id} className={`rounded-lg border px-3 py-3 ${displayed ? "border-[#b9cc73] bg-[#f2f6e6] dark:border-[#516127] dark:bg-[#d9ff68]/[0.055]" : "border-[#e5e5dd] bg-white/50 dark:border-[#292925] dark:bg-white/[0.02]"}`}>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-[10px] font-bold">Compaction {index + 1}{displayed ? " · displayed checkpoint" : ""}</p>
+                <span className="text-[9px] font-semibold text-[#85857c]">
+                  {itemBoundary.occurred_at ? formatBoundaryTime(itemBoundary.occurred_at) : "Time unavailable"}
+                  {itemBoundary.sequence_number ? ` · event ${itemBoundary.sequence_number}` : ""}
+                </span>
+              </div>
+              <p className="mt-1.5 line-clamp-2 text-xs font-semibold leading-5">{cleanDisplayText(itemGoal)}</p>
+              <p className="mt-1 text-[9px] font-bold text-sky-700 dark:text-sky-300">{itemBoundary.snapshot_phase_label || "Pre-compaction snapshot"}</p>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function CheckpointMetric({ label, value }) {
+  return <div className="rounded-xl bg-[#efefe7] p-3 text-center dark:bg-[#252521]"><p className="text-lg font-semibold">{value}</p><p className="mt-0.5 text-[8px] font-bold uppercase tracking-wide text-[#85857c]">{label}</p></div>;
+}
+
+function checkpointStatusTone(status, captureStatus) {
+  if (status === "verified") return "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-200";
+  if (status === "failed") return "bg-red-100 text-red-800 dark:bg-red-950/50 dark:text-red-200";
+  if (status === "stale") return "bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-200";
+  if (captureStatus === "incomplete") return "bg-red-100 text-red-800 dark:bg-red-950/50 dark:text-red-200";
+  return "bg-[#efefe7] text-[#68685f] dark:bg-[#252521] dark:text-[#bdbdb4]";
+}
+
+function ObservedWork({ activity }) {
   if (!activity) {
     return (
       <article className="app-surface relative overflow-hidden p-5 sm:p-6">
@@ -189,10 +376,10 @@ function ObservedWork({ activity, clearSelection }) {
         <div className="mt-8 max-w-2xl">
           <h2 className="text-2xl font-semibold tracking-[-0.025em] text-[#171713] dark:text-white">No agent work observed yet.</h2>
           <p className="mt-3 text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
-            Choose the session that matters from Library, or record an agent run. Now will not guess from unrelated session history.
+            Import a Codex, Claude Code, or OpenCode session to make the latest request and agent update visible here.
           </p>
-          <Link to="/app/library" className="group mt-6 inline-flex items-center gap-1.5 text-xs font-bold text-[#171713] dark:text-[#d9ff68]">
-            Choose from Session Library <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
+          <Link to="/app/connectors" className="group mt-6 inline-flex items-center gap-1.5 text-xs font-bold text-[#171713] dark:text-[#d9ff68]">
+            Connect agent sessions <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
           </Link>
         </div>
       </article>
@@ -200,107 +387,55 @@ function ObservedWork({ activity, clearSelection }) {
   }
 
   const observedRun = activity.evidence_level === "observed_run";
+  const checkpointBoundary = activity.evidence_level === "checkpoint_boundary";
   const unassigned = activity.evidence_level === "session_unassigned";
-  const projectMatched = activity.project_match?.status === "relevant";
-  const importedSession = activity.kind === "agent_session";
-  const selectedSession = importedSession && activity.selected_for_now;
-  const historicalSelection = selectedSession && isHistoricalActivity(activity);
   const changedFiles = activity.changed_files || [];
   const verification = activity.verification || {};
-  const latestUpdate = cleanDisplayText(activity.latest_update);
-  const latestUpdatePreview = previewText(latestUpdate, 170);
-  const reportedResult = cleanDisplayText(activity.result_summary?.text);
-  const showLatestUpdate = latestUpdate && latestUpdate.toLowerCase() !== reportedResult?.toLowerCase();
-  const detailUrl = importedSession
-    ? sessionLibraryUrl(activity)
-    : activity.source_card_id ? explainCardUrl(activity.source_card_id) : "/app/runs";
+  const detailUrl = activity.source_card_id
+    ? explainCardUrl(activity.source_card_id)
+    : "/app/runs";
 
   return (
-    <article className={`app-surface relative overflow-hidden p-5 sm:p-6 ${historicalSelection ? "border-indigo-200/80 bg-indigo-50/30 dark:border-indigo-900/60 dark:bg-indigo-950/10" : ""}`}>
-      <SurfaceAccent historical={historicalSelection} />
+    <article className="app-surface relative overflow-hidden p-5 sm:p-6">
+      <SurfaceAccent />
       <div className="relative flex flex-wrap items-center justify-between gap-3">
         <PanelLabel icon={activity.live ? PlayCircle : History}>
-          {selectedSession ? "Selected topic" : importedSession ? "Latest topic" : activity.live ? "Active work" : "Latest work"}
+          {activity.live
+            ? "Active work"
+            : checkpointBoundary
+              ? "Work at checkpoint"
+              : observedRun
+                ? "Recorded work"
+                : "Imported session snapshot"}
         </PanelLabel>
-        <div className="flex items-center gap-2">
-          {importedSession ? (
-            <Link
-              to={detailUrl}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-[#d8d8cf] bg-white/55 px-2.5 py-1.5 text-[9px] font-bold text-[#5f5f57] transition hover:border-[#a9c54a] hover:bg-white hover:text-[#171713] dark:border-[#34342f] dark:bg-white/[0.025] dark:text-[#bdbdb4] dark:hover:border-[#718a2c] dark:hover:text-[#d9ff68]"
-            >
-              <ListFilter className="h-3 w-3" /> Choose topic
-            </Link>
-          ) : null}
-          <ActivityBadge activity={activity} historical={historicalSelection} />
-        </div>
+        <ActivityBadge activity={activity} />
       </div>
 
       <h2 className="relative mt-6 max-w-4xl text-2xl font-semibold leading-[1.2] tracking-[-0.025em] text-[#171713] dark:text-white sm:text-[28px]">
-        {activityTitle(activity) || "Agent request was not captured."}
+        {cleanDisplayText(activity.request || activity.title) || "Agent request was not captured."}
       </h2>
-      {importedSession ? (
-        <Link
-          to={detailUrl}
-          aria-label={`From session: ${cleanDisplayText(activity.session_title) || "Imported session"}`}
-          className="relative mt-3 inline-flex max-w-full items-center gap-1.5 text-[10px] font-bold text-[#77776e] transition hover:text-[#171713] dark:text-[#aaa9a0] dark:hover:text-[#d9ff68]"
-        >
-          <span>From session</span>
-          <span aria-hidden="true">·</span>
-          <span className="truncate text-[#4f4f48] dark:text-[#d0d0c7]">{cleanDisplayText(activity.session_title) || "Imported session"}</span>
-          <ArrowUpRight className="h-3 w-3 shrink-0" />
-        </Link>
-      ) : null}
 
-      {selectedSession ? (
-        <div className={`relative mt-5 flex flex-col gap-3 rounded-xl border px-4 py-3 sm:flex-row sm:items-center sm:justify-between ${historicalSelection ? "border-indigo-200 bg-indigo-50/80 dark:border-indigo-900/70 dark:bg-indigo-950/30" : "border-[#d8e4ad] bg-[#f4f8e5] dark:border-[#465226] dark:bg-[#d9ff68]/[0.055]"}`}>
-          <div className="flex min-w-0 items-start gap-3">
-            <span className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${historicalSelection ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-400/10 dark:text-indigo-200" : "bg-[#e4efbc] text-[#64771e] dark:bg-[#d9ff68]/10 dark:text-[#d9ff68]"}`}>
-              {historicalSelection ? <History className="h-3.5 w-3.5" /> : <Radio className="h-3.5 w-3.5" />}
-            </span>
-            <div className="min-w-0">
-              <p className={`text-[10px] font-black uppercase tracking-[0.12em] ${historicalSelection ? "text-indigo-800 dark:text-indigo-200" : "text-[#64771e] dark:text-[#d9ff68]"}`}>
-                {historicalSelection ? "Historical selection" : "Pinned selection"}
-              </p>
-              <p className="mt-1 text-xs leading-5 text-[#5f5f57] dark:text-[#bdbdb4]">
-                {historicalSelection
-                  ? `Updated ${formatTimeAgo(activity.updated_at)}. This remains pinned for reference and is not live activity.`
-                  : "This topic is pinned for reference. Return to latest activity whenever you are done reviewing it."}
-              </p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => clearSelection.mutate()}
-            disabled={clearSelection.isPending}
-            className={`inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-3 text-[10px] font-black transition disabled:cursor-wait disabled:opacity-60 ${historicalSelection ? "border-indigo-300 bg-white text-indigo-800 hover:border-indigo-500 dark:border-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-100" : "border-[#bdce7e] bg-white/75 text-[#4e5c1b] hover:border-[#8aa62a] dark:border-[#59682d] dark:bg-black/10 dark:text-[#d9ff68]"}`}
-          >
-            <RotateCcw className={`h-3 w-3 ${clearSelection.isPending ? "animate-spin" : ""}`} />
-            {clearSelection.isPending ? "Returning…" : "Return to latest activity"}
-          </button>
-          {clearSelection.isError ? (
-            <p className="text-[10px] font-semibold text-red-700 dark:text-red-300">Could not clear this selection. Try again.</p>
-          ) : null}
-        </div>
-      ) : null}
-
-      {showLatestUpdate ? (
+      {activity.latest_update ? (
         <div className="relative mt-6 border-l-2 border-[#c5d98a] pl-4 dark:border-[#4b5830]">
           <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-[#85857c]">
-            {observedRun ? "Latest recorded update" : "Latest update"}
+            {checkpointBoundary
+              ? "Last update before boundary"
+              : observedRun
+                ? "Latest recorded update"
+                : "Session update at source time"}
           </p>
-          <p
-            title={latestUpdate}
-            className="mt-1.5 line-clamp-3 max-w-3xl break-words text-sm leading-6 text-[#4f4f48] [overflow-wrap:anywhere] dark:text-[#d0d0c7]"
-          >
-            {latestUpdatePreview}
+          <p className="mt-1.5 max-w-3xl text-sm leading-6 text-[#4f4f48] dark:text-[#d0d0c7]">
+            {cleanDisplayText(activity.latest_update)}
           </p>
         </div>
       ) : null}
 
-      {observedRun && activity.rationale && cleanDisplayText(activity.rationale) !== latestUpdate ? (
+      {activity.rationale ? (
         <div className="relative mt-5 rounded-xl bg-[#f1f1e9] px-4 py-3 dark:bg-white/[0.035]">
-          <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-[#85857c]">Why this approach</p>
-          <p className="mt-1.5 line-clamp-2 text-xs leading-5 text-[#5f5f57] dark:text-[#bdbdb4]">{cleanDisplayText(activity.rationale)}</p>
+          <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-[#85857c]">
+            {observedRun ? "Recorded reason" : "Stated reason"}
+          </p>
+          <p className="mt-1.5 text-xs leading-5 text-[#5f5f57] dark:text-[#bdbdb4]">{cleanDisplayText(activity.rationale)}</p>
         </div>
       ) : null}
 
@@ -315,15 +450,15 @@ function ObservedWork({ activity, clearSelection }) {
       <div className="relative mt-5 flex flex-col gap-3 border-t border-[#e5e5dd] pt-4 dark:border-[#292925] sm:flex-row sm:items-center sm:justify-between">
         <p className="text-[10px] font-medium leading-5 text-[#85857c]">
           {observedRun
-            ? "Repository-backed activity and checks."
+            ? "Changes and checks come from recorded run evidence."
+            : checkpointBoundary
+              ? "This work is scoped to the same provider, session, and event boundary as the checkpoint above."
             : unassigned
-              ? "Harness transcript · project match pending."
-              : projectMatched
-                ? "Harness transcript · automatically matched to this project · repository not verified."
-                : "Harness transcript · agent-reported until repository evidence confirms it."}
+              ? "This transcript is visible for review, but is not yet counted as project truth."
+              : "This update comes from an imported transcript; repository changes were not observed."}
         </p>
         <Link to={detailUrl} className="group inline-flex shrink-0 items-center gap-1.5 text-xs font-bold text-[#171713] dark:text-[#d9ff68]">
-          {importedSession ? "Review session evidence" : "Open run evidence"}
+          {activity.source_card_id ? "Open session evidence" : checkpointBoundary ? "Inspect checkpoint evidence" : "Inspect recorded run"}
           <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
         </Link>
       </div>
@@ -333,21 +468,15 @@ function ObservedWork({ activity, clearSelection }) {
 
 function ObservedResult({ activity }) {
   const outcome = activity?.outcome || null;
-  const reportedSummary = activity?.result_summary || null;
   const verification = activity?.verification || {};
   const changedFiles = activity?.changed_files || [];
-  const importedSession = activity?.kind === "agent_session";
-  const detailUrl = importedSession
-    ? sessionLibraryUrl(activity)
-    : activity?.source_card_id ? explainCardUrl(activity.source_card_id) : "/app/runs";
 
   return (
     <article className="app-surface p-5 sm:p-6">
-      <PanelLabel icon={CheckCircle2}>{importedSession ? "Latest session result" : "Latest result"}</PanelLabel>
+      <PanelLabel icon={CheckCircle2}>{activity?.evidence_level === "checkpoint_boundary" ? "Result at checkpoint" : "Latest observed result"}</PanelLabel>
       {outcome ? (
         <>
-          <ResultProvenance label="Observed outcome" verified />
-          <p className="mt-4 text-lg font-semibold leading-7 tracking-[-0.012em] text-[#171713] dark:text-white">
+          <p className="mt-7 text-lg font-semibold leading-7 tracking-[-0.012em] text-[#171713] dark:text-white">
             {cleanDisplayText(outcome.summary) || "A terminal outcome was recorded."}
           </p>
           <div className="mt-6 space-y-2.5 border-t border-[#e5e5dd] pt-4 dark:border-[#292925]">
@@ -359,33 +488,13 @@ function ObservedResult({ activity }) {
             View run evidence <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
           </Link>
         </>
-      ) : reportedSummary?.text ? (
-        <>
-          <ResultProvenance label={reportedSummary.kind === "completion" ? "Agent-reported result" : "Agent-reported update"} />
-          <p
-            title={cleanDisplayText(reportedSummary.text)}
-            className="mt-4 line-clamp-6 break-words text-lg font-semibold leading-7 tracking-[-0.012em] text-[#171713] [overflow-wrap:anywhere] dark:text-white"
-          >
-            {cleanDisplayText(reportedSummary.text)}
-          </p>
-          <div className="mt-6 space-y-2.5 border-t border-[#e5e5dd] pt-4 dark:border-[#292925]">
-            {changedFiles.length ? <EvidenceRow label="Changed" value={`${changedFiles.length} file${changedFiles.length === 1 ? "" : "s"}`} /> : null}
-            {verification.observed ? <EvidenceRow label="Checks" value={verificationLabel(verification)} /> : null}
-            <EvidenceRow label="Verification" value={changedFiles.length || verification.observed ? "Partially observed" : "Session-only"} />
-            <EvidenceRow label="Reported" value={formatTimeAgo(reportedSummary.reported_at || activity?.updated_at)} />
-          </div>
-          <p className="mt-5 text-[10px] leading-5 text-[#85857c]">From the harness session · not repository-verified.</p>
-          <Link to={detailUrl} className="group mt-4 inline-flex items-center gap-1.5 text-xs font-bold text-[#171713] dark:text-[#d9ff68]">
-            {importedSession ? "Review result evidence" : "View run evidence"} <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
-          </Link>
-        </>
       ) : (
         <>
-          <p className="mt-7 text-lg font-semibold leading-7 text-[#171713] dark:text-white">Work is still in progress.</p>
+          <p className="mt-7 text-lg font-semibold leading-7 text-[#171713] dark:text-white">No verified result captured.</p>
           <p className="mt-2 text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
             {activity?.evidence_level?.startsWith("session_")
-              ? "No meaningful agent summary or independently verified outcome has been captured yet."
-              : "A summary will appear after the run reports progress or records an outcome."}
+              ? "The session contains an agent update, but no linked repository result or check evidence."
+              : "A result will appear after an observed run records its outcome and checks."}
           </p>
           {verification.observed ? (
             <div className="mt-5 border-t border-[#e5e5dd] pt-4 dark:border-[#292925]">
@@ -398,80 +507,63 @@ function ObservedResult({ activity }) {
   );
 }
 
-function ResultProvenance({ label, verified = false }) {
-  return (
-    <span className={`mt-6 inline-flex rounded-full px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.11em] ${verified ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-400/10 dark:text-emerald-200" : "bg-[#efefe7] text-[#68685f] dark:bg-[#252521] dark:text-[#bdbdb4]"}`}>
-      {label}
-    </span>
-  );
-}
-
-function AttentionPanel({ cards, activity }) {
-  const currentCount = cards.filter((card) => card.temporal_status !== "previous").length;
-  const previousCount = cards.length - currentCount;
+function AttentionPanel({ cards }) {
   return (
     <section className="app-surface p-5 sm:p-6">
       <div className="flex items-center justify-between gap-3">
         <PanelLabel icon={ShieldAlert}>Needs attention</PanelLabel>
-        <span className={`rounded-full px-2.5 py-1 text-[9px] font-bold ${currentCount ? "bg-amber-100/80 text-amber-800 dark:bg-amber-950/50 dark:text-amber-200" : "bg-slate-100 text-slate-600 dark:bg-slate-800/60 dark:text-slate-300"}`}>
-          {currentCount ? `${currentCount} current` : activity?.kind === "agent_session" ? "No session issues" : "No current items"}{previousCount ? ` · ${previousCount} previous` : ""}
+        <span className="rounded-full bg-amber-100/80 px-2.5 py-1 text-[9px] font-bold text-amber-800 dark:bg-amber-950/50 dark:text-amber-200">
+          {cards.length} visible
         </span>
       </div>
       {cards.length ? (
         <div className="mt-4 grid gap-2.5 md:grid-cols-2">
-          {cards.map((card) => {
-            const previous = card.temporal_status === "previous";
-            return (
+          {cards.map((card) => (
             <Link
               key={card.id}
-              to={card.href || explainCardUrl(card.id)}
-              className={`group flex min-h-[116px] flex-col rounded-xl border p-4 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_7px_20px_rgba(23,23,19,0.05)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#95b52f]/45 dark:hover:shadow-none ${previous ? "border-slate-200 bg-slate-50/55 hover:border-slate-300 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900/20 dark:hover:border-slate-700 dark:hover:bg-slate-900/35" : "border-amber-200/80 bg-amber-50/35 hover:border-amber-300 hover:bg-amber-50/60 dark:border-amber-900/50 dark:bg-amber-950/10 dark:hover:border-amber-800 dark:hover:bg-amber-950/20"}`}
+              to={explainCardUrl(card.id)}
+              className="group flex min-h-[116px] flex-col rounded-xl border border-[#e1e1d9] bg-white/35 p-4 transition-all duration-200 hover:-translate-y-0.5 hover:border-[#b9b9af] hover:bg-white hover:shadow-[0_7px_20px_rgba(23,23,19,0.05)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#95b52f]/45 dark:border-[#2d2d28] dark:bg-white/[0.015] dark:hover:border-[#57574f] dark:hover:bg-white/[0.035] dark:hover:shadow-none"
             >
               <div className="flex items-start justify-between gap-3">
                 <p className="text-sm font-semibold leading-5 text-[#171713] dark:text-white">{cleanDisplayText(card.title)}</p>
-                <span className={`shrink-0 rounded-full px-2 py-1 text-[8px] font-bold uppercase tracking-[0.1em] ${previous ? "bg-slate-200/70 text-slate-600 dark:bg-slate-700/50 dark:text-slate-300" : "bg-amber-100 text-amber-800 dark:bg-amber-400/10 dark:text-amber-200"}`}>
-                  {previous ? `Previous ${attentionLabel(card).toLowerCase()}` : attentionLabel(card)}
+                <span className="shrink-0 rounded-full bg-amber-50 px-2 py-1 text-[8px] font-bold uppercase tracking-[0.1em] text-amber-700 dark:bg-amber-400/10 dark:text-amber-200">
+                  {attentionLabel(card)}
                 </span>
               </div>
-              <p className="mt-2 line-clamp-2 break-words text-xs leading-5 text-[#68685f] [overflow-wrap:anywhere] dark:text-[#aaa9a0]">
+              <p className="mt-2 line-clamp-2 text-xs leading-5 text-[#68685f] dark:text-[#aaa9a0]">
                 {distinctCardDetail(card, "Open the evidence record for the latest observed detail.")}
               </p>
               <span className="mt-auto flex items-center gap-1.5 pt-3 text-[10px] font-bold text-[#77776e] transition-colors group-hover:text-[#171713] dark:group-hover:text-[#d9ff68]">
-                {card.kind === "user_correction" ? "Review session evidence" : "Explain evidence"} <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
+                Explain evidence <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
               </span>
             </Link>
-            );
-          })}
+          ))}
         </div>
       ) : (
         <p className="mt-4 text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
-          {activity?.kind === "agent_session"
-            ? "No issues were detected in this session. Repository checks have not confirmed the project state."
-            : "No blocker, conflict, stale evidence, or high-risk review is currently visible."}
+          No blocker, conflict, stale evidence, or high-risk review is currently visible.
         </p>
       )}
     </section>
   );
 }
 
-function RecentSessions({ sessions }) {
+function RecentSessions({ cards }) {
   return (
     <section className="app-surface p-5 sm:p-6">
       <div className="flex items-center justify-between gap-3">
         <PanelLabel icon={History}>Recent coding sessions</PanelLabel>
-        <Link to="/app/library" className="text-[10px] font-bold text-[#77776e] underline-offset-4 hover:underline dark:text-[#aaa9a0]">View session library</Link>
+        <Link to="/app/explain" className="text-[10px] font-bold text-[#77776e] underline-offset-4 hover:underline dark:text-[#aaa9a0]">See all evidence</Link>
       </div>
       <div className="mt-4 divide-y divide-[#e5e5dd] dark:divide-[#292925]">
-        {sessions.map((session) => {
+        {cards.map((card) => {
+          const identity = sessionIdentity(card);
           return (
-            <Link key={session.id} to={sessionLibraryUrl(session)} className="group flex items-center gap-3 py-3.5 first:pt-1 last:pb-1">
+            <Link key={card.id} to={explainCardUrl(card.id)} className="group flex items-center gap-3 py-3.5 first:pt-1 last:pb-1">
               <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#efefe7] text-[#68685f] dark:bg-[#252521] dark:text-[#c7c7bd]"><Bot className="h-4 w-4" /></span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-semibold text-[#171713] dark:text-white">{activityTitle(session) || "Imported coding session"}</span>
-                <span className="mt-1 flex min-w-0 items-center gap-1.5 truncate text-[10px] font-medium text-[#85857c]">
-                  {session.forked_from ? <GitFork className="h-3 w-3 shrink-0" aria-label="Continued in a new task" /> : null}
-                  <span className="truncate">{session.forked_from ? `Continued from ${cleanDisplayText(session.forked_from.title)} · ` : ""}{agentLabel({ ...session, model: null })} · {session.updated_at ? formatTimeAgo(session.updated_at) : "Time unavailable"}</span>
-                </span>
+                <span className="block truncate text-sm font-semibold text-[#171713] dark:text-white">{identity.title}</span>
+                <span className="mt-1 block truncate text-[10px] font-medium text-[#85857c]">{identity.source} · {card.updated_at ? formatTimeAgo(card.updated_at) : identity.detail}</span>
               </span>
               <ArrowRight className="h-3.5 w-3.5 shrink-0 text-[#aaa99f] transition-transform group-hover:translate-x-0.5 group-hover:text-[#171713] dark:group-hover:text-[#d9ff68]" />
             </Link>
@@ -479,6 +571,21 @@ function RecentSessions({ sessions }) {
         })}
       </div>
     </section>
+  );
+}
+
+function UnassignedSessions({ count, cardId }) {
+  return (
+    <div className="flex flex-col justify-between gap-3 rounded-2xl border border-amber-200/80 bg-amber-50/80 px-4 py-3.5 text-amber-950 shadow-[0_1px_2px_rgba(120,53,15,0.04)] dark:border-amber-900/60 dark:bg-amber-950/25 dark:text-amber-100 sm:flex-row sm:items-center">
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-amber-100 dark:bg-amber-900/50"><ShieldAlert className="h-3.5 w-3.5" /></span>
+        <div>
+          <p className="text-xs font-bold">{count} AI session{count === 1 ? " is" : "s are"} waiting for project assignment</p>
+          <p className="mt-0.5 text-[11px] leading-5 opacity-75">It stays out of project health and compiled truth until its repository relevance is confirmed.</p>
+        </div>
+      </div>
+      <Link to={cardId ? explainCardUrl(cardId) : "/app/explain"} className="shrink-0 rounded-lg px-2 py-1 text-xs font-bold underline decoration-amber-400 underline-offset-4 transition hover:bg-amber-100/70 dark:hover:bg-amber-900/30">Review session</Link>
+    </div>
   );
 }
 
@@ -491,31 +598,25 @@ function PanelLabel({ icon: Icon, children }) {
   );
 }
 
-function SurfaceAccent({ historical = false }) {
+function SurfaceAccent() {
   return (
     <>
-      <div className={`pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent to-transparent opacity-80 ${historical ? "via-indigo-400 dark:via-indigo-500" : "via-[#accf3d] dark:via-[#d9ff68]"}`} />
-      <div className={`pointer-events-none absolute -right-20 -top-24 h-52 w-52 rounded-full blur-3xl ${historical ? "bg-indigo-300/15 dark:bg-indigo-500/[0.06]" : "bg-[#d9ff68]/10 dark:bg-[#d9ff68]/[0.055]"}`} />
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[#accf3d] to-transparent opacity-80 dark:via-[#d9ff68]" />
+      <div className="pointer-events-none absolute -right-20 -top-24 h-52 w-52 rounded-full bg-[#d9ff68]/10 blur-3xl dark:bg-[#d9ff68]/[0.055]" />
     </>
   );
 }
 
-function ActivityBadge({ activity, historical = false }) {
+function ActivityBadge({ activity }) {
   const label = activity.live
-    ? "Live session"
-    : historical
-      ? "Historical selection"
-    : activity.selected_for_now
-      ? "Selected for Now"
-      : activity.evidence_level === "observed_run"
-        ? "Observed run"
-        : activity.evidence_level === "session_unassigned"
-          ? "Project match pending"
-          : activity.project_match?.status === "relevant"
-            ? "Project matched"
-          : activity.refreshable ? "Auto-updating" : "Imported session";
+    ? "Live"
+    : activity.evidence_level === "observed_run"
+      ? "Observed run"
+      : activity.evidence_level === "session_unassigned"
+        ? "Needs assignment"
+        : activity.refreshable ? "Auto-updating" : "Imported session";
   return (
-    <span className={`rounded-full px-2.5 py-1 text-[9px] font-bold ${activity.live ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-400/10 dark:text-emerald-200" : historical ? "bg-indigo-100 text-indigo-800 dark:bg-indigo-400/10 dark:text-indigo-200" : "bg-[#efefe7] text-[#68685f] dark:bg-[#252521] dark:text-[#bdbdb4]"}`}>
+    <span className={`rounded-full px-2.5 py-1 text-[9px] font-bold ${activity.live ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-400/10 dark:text-emerald-200" : "bg-[#efefe7] text-[#68685f] dark:bg-[#252521] dark:text-[#bdbdb4]"}`}>
       {label}
     </span>
   );
@@ -547,20 +648,6 @@ function agentLabel(activity) {
   return model ? `${tool} · ${model}` : tool;
 }
 
-function activityTitle(activity) {
-  if (!activity) return "";
-  const importedSession = activity.kind === "agent_session";
-  if (importedSession && activity.selected_for_now) {
-    return cleanDisplayText(activity.selected_topic || activity.title);
-  }
-  if (importedSession) {
-    return cleanDisplayText(
-      activity.latest_topic || activity.title || activity.session_title || activity.request,
-    );
-  }
-  return cleanDisplayText(activity.request || activity.title);
-}
-
 function verificationLabel(verification = {}) {
   const observed = Number(verification.observed || 0);
   const passed = Number(verification.passed || 0);
@@ -570,7 +657,6 @@ function verificationLabel(verification = {}) {
 }
 
 function attentionLabel(card) {
-  if (card.kind === "user_correction") return "User correction";
   if (card.status === "conflict") return "Conflict";
   if (card.status === "stale") return "Stale";
   if (card.category === "blocker" || card.status === "blocked") return "Blocker";
@@ -578,29 +664,8 @@ function attentionLabel(card) {
   return "Review";
 }
 
-function attentionTemporalRank(card) {
-  return card?.temporal_status === "previous" ? 1 : 0;
-}
-
-function isHistoricalActivity(activity) {
-  if (!activity || activity.live || !activity.updated_at) return false;
-  const updatedAt = new Date(activity.updated_at).getTime();
-  if (!Number.isFinite(updatedAt)) return false;
-  return Date.now() - updatedAt > 2 * 60 * 60 * 1000;
-}
-
 function explainCardUrl(cardId) {
   return `/app/explain?card=${encodeURIComponent(cardId)}`;
-}
-
-function sessionLibraryUrl(activity) {
-  const sourceDocumentId = activity?.source_document_id
-    || (String(activity?.id || "").startsWith("session:") ? String(activity.id).slice("session:".length) : "");
-  if (!sourceDocumentId) return "/app/library";
-  const params = new URLSearchParams({ source: sourceDocumentId });
-  const topic = cleanDisplayText(activity?.selected_topic || activity?.latest_topic || activity?.title);
-  if (topic) params.set("topic", topic);
-  return `/app/library?${params.toString()}`;
 }
 
 function activityTimestamp(card) {
@@ -609,14 +674,23 @@ function activityTimestamp(card) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function previewText(value, maxChars = 170) {
-  const text = cleanDisplayText(value);
-  if (!text || text.length <= maxChars) return text;
-  const clipped = text.slice(0, maxChars - 3).replace(/\s+\S*$/, "");
-  const safe = clipped && clipped.length > maxChars * 0.6
-    ? clipped
-    : text.slice(0, maxChars - 3);
-  return `${safe.trim().replace(/[,:;\-]+$/, "")}...`;
+function formatBoundaryTime(value) {
+  const parsed = value ? new Date(value) : null;
+  if (!parsed || Number.isNaN(parsed.getTime())) return "time unavailable";
+  return parsed.toLocaleString([], {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function checkpointEventsBehind(checkpoint) {
+  const boundary = Number(checkpoint?.boundary?.sequence_number);
+  const tip = Number(checkpoint?.boundary?.session_tip_sequence);
+  if (!Number.isFinite(boundary) || !Number.isFinite(tip) || tip <= boundary) return 0;
+  return tip - boundary;
 }
 
 function fallbackActivity(digest) {
@@ -635,6 +709,21 @@ function fallbackActivity(digest) {
     verification: { observed: 0, passed: 0, failed: 0 },
     outcome,
   };
+}
+
+function prepareTaskCandidate(value) {
+  const task = cleanDisplayText(value);
+  if (!task) return "";
+  const lowered = task.toLowerCase();
+  const runtimeMarkers = [
+    "collaboration tools cannot be called from inside functions.exec",
+    "request_user_input availability",
+    "permissions instructions",
+    "developer instructions",
+    "sandbox_permissions",
+    "internal_chat_message_metadata",
+  ];
+  return runtimeMarkers.some((marker) => lowered.includes(marker)) ? "" : task;
 }
 
 function distinctCardDetail(card, fallback) {

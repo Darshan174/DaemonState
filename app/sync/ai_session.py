@@ -8,6 +8,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.source_revisions import ingest_source_document_revision
+from app.services.session_events import NormalizedSessionEvent, persist_session_events
 from app.time import utc_now
 
 
@@ -76,6 +77,7 @@ async def ingest_ai_session(
     content: str,
     workspace_id: str | None = None,
     metadata_extra: dict[str, Any] | None = None,
+    normalized_events: list[NormalizedSessionEvent] | None = None,
 ) -> dict[str, Any]:
     messages = _parse_session_content(content)
 
@@ -113,6 +115,25 @@ async def ingest_ai_session(
         content=full_text,
         metadata_json=meta,
     )
+    event_result = {"created": 0, "unchanged": 0}
+    checkpoint_count = 0
+    if workspace_uuid is not None and normalized_events:
+        event_result = await persist_session_events(
+            session,
+            workspace_id=workspace_uuid,
+            source_document=result.document,
+            provider=connector_type,
+            session_id=session_id,
+            events=normalized_events,
+        )
+        from app.services.checkpoints import capture_checkpoint_schema_upgrades
+
+        checkpoint_count = await capture_checkpoint_schema_upgrades(
+            session,
+            workspace_id=workspace_uuid,
+            provider=connector_type,
+            session_id=session_id,
+        )
     await session.commit()
     return {
         "documents_fetched": len(messages),
@@ -121,6 +142,9 @@ async def ingest_ai_session(
         "unchanged": int(result.unchanged),
         "documents_updated": int(result.revised),
         "document_id": str(result.document.id),
+        "session_events_created": event_result["created"],
+        "session_events_unchanged": event_result["unchanged"],
+        "compaction_checkpoints": checkpoint_count,
     }
 
 

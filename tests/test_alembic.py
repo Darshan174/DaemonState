@@ -29,8 +29,13 @@ def test_alembic_upgrade_bootstraps_current_sqlite_schema(tmp_path):
             "retrieval_events",
             "open_loops",
             "verified_playbooks",
-            "workspace_goals",
-            "alembic_version",
+                "workspace_goals",
+                "session_events",
+                "work_checkpoints",
+                "checkpoint_items",
+                "checkpoint_evidence",
+                "checkpoint_verifications",
+                "alembic_version",
         } <= tables
 
         component_columns = {column["name"] for column in inspector.get_columns("components")}
@@ -71,6 +76,6 @@ def test_alembic_upgrade_bootstraps_current_sqlite_schema(tmp_path):
         workspace_columns = {column["name"] for column in inspector.get_columns("workspaces")}
         assert {"kind", "status", "archived_at"} <= workspace_columns
 
-        assert version == "0007_workspace_lifecycle"
+        assert version == "0008_work_checkpoints"
     finally:
         engine.dispose()

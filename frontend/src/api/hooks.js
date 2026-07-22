@@ -1705,6 +1705,79 @@ export function useSessionLibrary(workspaceId) {
   });
 }
 
+export function useLatestCheckpoint(workspaceId) {
+  return useQuery({
+    queryKey: ["checkpoints", workspaceId, "latest"],
+    enabled: Boolean(workspaceId),
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
+    queryFn: async () => {
+      try {
+        return await api.get(`/checkpoints/latest?workspace_id=${encodeURIComponent(workspaceId)}`);
+      } catch (error) {
+        if (error.status === 404) return null;
+        throw error;
+      }
+    },
+  });
+}
+
+export function useCheckpoints(workspaceId, limit = 50) {
+  return useQuery({
+    queryKey: ["checkpoints", workspaceId, "list", limit],
+    enabled: Boolean(workspaceId),
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
+    queryFn: () => api.get(
+      `/checkpoints?workspace_id=${encodeURIComponent(workspaceId)}&limit=${limit}`,
+    ),
+  });
+}
+
+export function useCaptureCheckpoint() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ workspaceId, provider, sessionId, boundaryEventId = null }) =>
+      api.post("/checkpoints/capture", {
+        workspace_id: workspaceId,
+        provider,
+        session_id: sessionId,
+        ...(boundaryEventId ? { boundary_event_id: boundaryEventId } : {}),
+      }),
+    onSuccess: (checkpoint, variables) => {
+      qc.setQueryData(["checkpoints", variables.workspaceId, "latest"], checkpoint);
+      qc.invalidateQueries({ queryKey: ["checkpoints", variables.workspaceId] });
+    },
+  });
+}
+
+export function useVerifyCheckpoint() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ workspaceId, checkpointId, executeCommands = true }) =>
+      api.post(`/checkpoints/${checkpointId}/verify`, {
+        workspace_id: workspaceId,
+        execute_commands: executeCommands,
+      }),
+    onSuccess: (checkpoint, variables) => {
+      qc.setQueryData(["checkpoints", variables.workspaceId, "latest"], (current) =>
+        current?.id === checkpoint.id ? checkpoint : current,
+      );
+      qc.invalidateQueries({ queryKey: ["checkpoints", variables.workspaceId] });
+    },
+  });
+}
+
+export function useResumeCheckpoint() {
+  return useMutation({
+    mutationFn: ({ workspaceId, checkpointId, launchSession = true }) =>
+      api.post(`/checkpoints/${checkpointId}/resume`, {
+        workspace_id: workspaceId,
+        launch_session: launchSession,
+      }),
+  });
+}
+
 export function useSyncSessionLibrary() {
   const qc = useQueryClient();
   return useMutation({

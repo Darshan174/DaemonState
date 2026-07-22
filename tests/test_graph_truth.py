@@ -30,6 +30,7 @@ from app.models import (
 )
 from app.services.source_revisions import ingest_source_document_revision
 from app.services.context_compiler import ContextCompiler
+from app.services.session_events import NormalizedSessionEvent, persist_session_events
 from app.processing.source_extractors import extract_github_issue
 from app.sync.ai_session import _parse_session_content
 from app.sync import github
@@ -527,18 +528,14 @@ async def test_digest_defaults_to_latest_session_topic_until_user_selects_one(cl
     assert response.status_code == 200
     activity = response.json()["activity"]
 
-    assert activity["state"] == "recent"
+    assert activity["state"] == "snapshot"
     assert activity["primary"]["selected_for_now"] is False
     assert activity["primary"]["latest_topic"] == "The redirect is still broken in the app"
     assert activity["primary"]["title"] == "The redirect is still broken in the app"
     assert activity["primary"]["evidence_level"] == "session_reported"
-    assert activity["primary"]["result_summary"]["kind"] == "completion"
-    assert activity["primary"]["result_summary"]["provenance"] == "agent_reported"
-    assert activity["primary"]["result_summary"]["text"] == (
-        "I updated the callback handler because redirect state was being lost"
-    )
+    assert activity["primary"]["result_summary"] is None
     assert activity["primary"]["latest_update"] == (
-        "I updated the callback handler because redirect state was being lost"
+        "I’m using the in-app browser to review the rendered page"
     )
     assert activity["recent_sessions"][0]["request"] == "The redirect is still broken in the app"
     assert activity["primary"]["attention_items"][0]["kind"] == "user_correction"
@@ -562,18 +559,16 @@ async def test_digest_defaults_to_latest_session_topic_until_user_selects_one(cl
     assert selected_response.status_code == 200
     activity = selected_response.json()["activity"]
 
-    assert activity["state"] == "recent"
+    assert activity["state"] == "snapshot"
     assert activity["primary"]["evidence_level"] == "session_reported"
     assert activity["primary"]["selected_for_now"] is True
     assert activity["primary"]["selected_topic"] == "Fix the authentication redirect loop"
     assert activity["primary"]["session_title"] == "Fix the authentication redirect loop"
     assert activity["primary"]["request"] == "The redirect is still broken in the app"
     assert activity["primary"]["latest_update"] == (
-        "I updated the callback handler because redirect state was being lost"
+        "I’m using the in-app browser to review the rendered page"
     )
-    assert activity["primary"]["rationale"] == (
-        "I updated the callback handler because redirect state was being lost"
-    )
+    assert activity["primary"]["rationale"] is None
     assert activity["primary"]["changed_files"] == []
     assert activity["primary"]["outcome"] is None
     assert activity["primary"]["source_card_id"] == f"component:{root.id}"
@@ -1025,3 +1020,110 @@ async def test_non_github_connector_config_cannot_define_project_identity(
     assert selected_digest["activity"]["primary"]["selected_for_now"] is True
     assert selected_digest["activity"]["primary"]["selected_topic"] == "Inspect the project"
     assert selected_digest["activity"]["primary"]["evidence_level"] == "session_reported"
+
+
+async def test_digest_never_uses_runtime_instructions_as_session_work(client, db_session):
+    workspace = await _workspace(db_session, "Clean session activity")
+    model = Model(id=uuid4(), name=f"Clean session activity {uuid4().hex}")
+    source = SourceDocument(
+        id=uuid4(),
+        workspace_id=workspace.id,
+        source_type="agent_session",
+        external_id="codex:session:runtime-noise",
+        content=(
+            "[USER]\nFix Prepare so it uses the actual user task.\n\n"
+            "[ASSISTANT]\nI will inspect the session handoff.\n\n"
+            "[USER]\nNote that collaboration tools cannot be called from inside functions.exec"
+        ),
+        metadata_json=json.dumps({
+            "workspace_id": str(workspace.id),
+            "session_id": "runtime-noise",
+            "tool": "codex",
+            "cwd": "/tmp/clean-session-activity",
+            "title": "Prepare handoff behavior",
+        }),
+    )
+    root = Component(
+        workspace_id=workspace.id,
+        model_id=model.id,
+        source_document_id=source.id,
+        name="Session: codex Prepare handoff behavior",
+        value=source.content[:500],
+        fact_type="session_root",
+        temporal="current",
+        confidence=0.93,
+        status="active",
+    )
+    db_session.add_all([model, source, root])
+    await db_session.flush()
+    offending = "Note that collaboration tools cannot be called from inside functions.exec"
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=source,
+        provider="codex",
+        session_id="runtime-noise",
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id="developer-policy",
+                sequence_number=1,
+                event_type="runtime_instruction",
+                role="developer",
+                content=offending,
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="real-request",
+                sequence_number=2,
+                event_type="user_request",
+                role="user",
+                content="Fix Prepare so it uses the actual user task.",
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="real-update",
+                sequence_number=3,
+                event_type="assistant_update",
+                role="assistant",
+                content="I will inspect the session handoff because the request boundary was wrong.",
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="mislabelled-policy",
+                sequence_number=4,
+                event_type="user_request",
+                role="user",
+                content=offending,
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="delegated-user-task",
+                sequence_number=5,
+                event_type="runtime_instruction",
+                role="user",
+                content=(
+                    "<codex_delegation><input>Continue the checkpoint repair; the live "
+                    "product is wrong.\n\nObserved defect: "
+                    f"{offending}</input></codex_delegation>"
+                ),
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="delegated-update",
+                sequence_number=6,
+                event_type="assistant_update",
+                role="assistant",
+                content="I traced the coherent session boundary because the selector was wrong.",
+            ),
+        ],
+    )
+
+    response = await client.get(
+        "/api/context/digest", params={"workspace_id": str(workspace.id)}
+    )
+
+    assert response.status_code == 200
+    primary = response.json()["activity"]["primary"]
+    assert primary["request"] == (
+        "Continue the checkpoint repair; the live product is wrong"
+    )
+    for field in ("title", "request", "latest_update", "rationale"):
+        assert "collaboration tools" not in (primary[field] or "").lower()
+    assert primary["provider"] == "codex"
+    assert primary["session_id"] == "runtime-noise"
+    assert primary["recency_basis"] == "imported_at_fallback"

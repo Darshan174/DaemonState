@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,10 +10,13 @@ from typing import Any
 
 from app.config import settings
 from app.services.session_checkpoints import build_compaction_checkpoint_descriptor
+from app.services.session_events import NormalizedSessionEvent
 from app.services.session_summary import (
     derive_session_topic,
     derive_session_topics,
+    extract_delegated_user_request,
     is_internal_session_content,
+    is_session_instruction_noise,
 )
 
 
@@ -26,6 +30,7 @@ class ResolvedSession:
     session_id: str
     content: str
     metadata: dict[str, Any] = field(default_factory=dict)
+    events: list[NormalizedSessionEvent] = field(default_factory=list)
 
 
 @dataclass
@@ -136,15 +141,20 @@ def _read_codex_rollout(
     compaction_checkpoints: list[dict[str, Any]] = []
     provider_message_ids: list[str] = []
     final_answers: list[str] = []
+    events: list[NormalizedSessionEvent] = []
+    tool_calls: dict[str, dict[str, Any]] = {}
     metadata: dict[str, Any] = {
         "tool": "codex",
         "source_path": str(path),
         "source_modified_at": _path_modified_iso(path),
     }
     matched = False
+    source_cursor = 0
     try:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
-            for raw in fh:
+            for line_number, raw in enumerate(fh, start=1):
+                line_cursor = source_cursor
+                source_cursor += len(raw)
                 if session_id not in raw and not matched:
                     continue
                 try:
@@ -184,9 +194,13 @@ def _read_codex_rollout(
                     continue
                 if not matched:
                     continue
-                if item.get("timestamp"):
-                    metadata["updated_at"] = item["timestamp"]
-                if item.get("type") in {"compacted", "context_compaction", "contextCompaction"}:
+                timestamp = item.get("timestamp")
+                if timestamp:
+                    metadata["updated_at"] = timestamp
+                item_type = str(item.get("type") or "")
+                if item_type in {"compacted", "context_compaction", "contextCompaction"}:
+                    payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+                    window_id = payload.get("window_id")
                     if messages:
                         descriptor = build_compaction_checkpoint_descriptor(
                             messages,
@@ -199,10 +213,31 @@ def _read_codex_rollout(
                             for current in compaction_checkpoints
                         ):
                             compaction_checkpoints.append(descriptor)
+                    events.append(NormalizedSessionEvent(
+                        provider_event_id=_provider_event_id(
+                            item,
+                            fallback=f"compaction:{window_id or line_number}",
+                        ),
+                        sequence_number=line_number,
+                        event_type="compaction_boundary",
+                        occurred_at=timestamp,
+                        payload={
+                            "window_id": window_id,
+                            "window_number": payload.get("window_number"),
+                            "previous_window_id": payload.get("previous_window_id"),
+                            "first_window_id": payload.get("first_window_id"),
+                            "turn_count": len(messages),
+                            "user_turn_count": sum(role == "user" for role, _ in messages),
+                            "assistant_turn_count": sum(
+                                role == "assistant" for role, _ in messages
+                            ),
+                        },
+                        source_cursor=line_cursor,
+                    ))
                     continue
                 payload = item.get("payload") or {}
-                if item.get("type") == "response_item" and payload.get("type") == "message":
-                    role = payload.get("role") or "assistant"
+                if item_type == "response_item" and payload.get("type") == "message":
+                    role = str(payload.get("role") or "assistant").strip().lower()
                     provider_message_id = str(payload.get("id") or "").strip()
                     if role in {"user", "assistant"} and provider_message_id:
                         provider_message_ids.append(provider_message_id)
@@ -211,6 +246,83 @@ def _read_codex_rollout(
                         messages.append((role, text))
                         if role == "assistant" and payload.get("phase") == "final_answer":
                             final_answers.append(text)
+                        event_text = _message_event_content(role, text)
+                        event_type = _message_event_type(role, event_text)
+                        events.append(NormalizedSessionEvent(
+                            provider_event_id=_provider_event_id(
+                                payload,
+                                fallback=f"message:{line_number}",
+                            ),
+                            sequence_number=line_number,
+                            event_type=event_type,
+                            role=role,
+                            occurred_at=timestamp,
+                            content=event_text,
+                            payload={"message_id": payload.get("id")},
+                            source_cursor=line_cursor,
+                        ))
+                    continue
+                if item_type == "response_item" and payload.get("type") in {
+                    "custom_tool_call",
+                    "function_call",
+                }:
+                    call_id = str(payload.get("call_id") or payload.get("id") or line_number)
+                    name = str(payload.get("name") or "tool").strip()
+                    tool_input = payload.get("input") or payload.get("arguments") or ""
+                    parsed = _parse_codex_tool_input(tool_input)
+                    tool_calls[call_id] = {"name": name, **parsed}
+                    command_like = name in {"exec", "exec_command", "shell"}
+                    events.append(NormalizedSessionEvent(
+                        provider_event_id=_provider_event_id(
+                            payload,
+                            fallback=f"tool-call:{call_id}",
+                            suffix="call",
+                        ),
+                        sequence_number=line_number,
+                        event_type="command_call" if command_like else "tool_call",
+                        role="assistant",
+                        occurred_at=timestamp,
+                        content=parsed.get("command") or None,
+                        payload={
+                            "call_id": call_id,
+                            "tool_name": name,
+                            "command": parsed.get("command"),
+                            "cwd": parsed.get("cwd"),
+                            "input": str(tool_input),
+                        },
+                        source_cursor=line_cursor,
+                    ))
+                    continue
+                if item_type == "response_item" and payload.get("type") in {
+                    "custom_tool_call_output",
+                    "function_call_output",
+                }:
+                    call_id = str(payload.get("call_id") or payload.get("id") or line_number)
+                    call = tool_calls.get(call_id, {})
+                    output = _extract_content_text(payload.get("output"))
+                    exit_code = _infer_exit_code(output)
+                    command_like = call.get("name") in {"exec", "exec_command", "shell"}
+                    events.append(NormalizedSessionEvent(
+                        provider_event_id=_provider_event_id(
+                            payload,
+                            fallback=f"tool-result:{call_id}",
+                            suffix="result",
+                        ),
+                        sequence_number=line_number,
+                        event_type="command_result" if command_like else "tool_result",
+                        role="tool",
+                        occurred_at=timestamp,
+                        content=output,
+                        payload={
+                            "call_id": call_id,
+                            "tool_name": call.get("name"),
+                            "command": call.get("command"),
+                            "cwd": call.get("cwd"),
+                            "exit_code": exit_code,
+                            "passed": exit_code == 0 if exit_code is not None else None,
+                        },
+                        source_cursor=line_cursor,
+                    ))
     except OSError:
         return None
 
@@ -244,7 +356,11 @@ def _read_codex_rollout(
             "agent_reported_summary_kind": "completion",
             "agent_reported_summary_source": "provider_final_answer",
         })
-    return ResolvedSession("codex", session_id, content, metadata)
+    metadata["normalized_event_count"] = len(events)
+    metadata["compaction_count"] = sum(
+        event.event_type == "compaction_boundary" for event in events
+    )
+    return ResolvedSession("codex", session_id, content, metadata, events)
 
 
 def _codex_session_id(path: Path) -> str | None:
@@ -399,15 +515,20 @@ def _discover_claude_sessions() -> list[ResolvedSession]:
 
 def _read_claude_jsonl(path: Path, session_id: str) -> ResolvedSession | None:
     messages: list[tuple[str, str]] = []
+    events: list[NormalizedSessionEvent] = []
+    tool_calls: dict[str, dict[str, Any]] = {}
     metadata: dict[str, Any] = {
         "tool": "claude_code",
         "source_path": str(path),
         "source_modified_at": _path_modified_iso(path),
     }
     matched = path.stem == session_id
+    source_cursor = 0
     try:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
-            for raw in fh:
+            for line_number, raw in enumerate(fh, start=1):
+                line_cursor = source_cursor
+                source_cursor += len(raw)
                 if session_id not in raw and not matched:
                     continue
                 try:
@@ -420,14 +541,131 @@ def _read_claude_jsonl(path: Path, session_id: str) -> ResolvedSession | None:
                     continue
                 if item.get("timestamp"):
                     metadata["updated_at"] = item["timestamp"]
+                item_type = str(item.get("type") or "").strip().lower()
+                subtype = str(item.get("subtype") or "").strip().lower()
+                if item_type == "summary" or "compact" in subtype:
+                    events.append(NormalizedSessionEvent(
+                        provider_event_id=_provider_event_id(
+                            item,
+                            fallback=f"compaction:{line_number}",
+                        ),
+                        sequence_number=line_number * 1000,
+                        event_type="compaction_boundary",
+                        occurred_at=item.get("timestamp"),
+                        content=_none_if_blank(item.get("summary")),
+                        payload={
+                            "subtype": subtype or None,
+                            "leaf_uuid": item.get("leafUuid"),
+                            "turn_count": len(messages),
+                        },
+                        source_cursor=line_cursor,
+                    ))
+                    continue
                 if item.get("isMeta") is True:
                     continue
                 message = item.get("message") if isinstance(item.get("message"), dict) else {}
-                role = message.get("role") or item.get("type")
+                role = str(message.get("role") or item.get("type") or "message").lower()
+                message_content = message.get("content")
+                if isinstance(message_content, list):
+                    for block_index, block in enumerate(message_content, start=1):
+                        if not isinstance(block, dict):
+                            continue
+                        block_type = str(block.get("type") or "")
+                        sequence = line_number * 1000 + block_index
+                        if block_type == "tool_use":
+                            call_id = str(block.get("id") or f"{line_number}:{block_index}")
+                            name = str(block.get("name") or "tool")
+                            tool_input = block.get("input") if isinstance(block.get("input"), dict) else {}
+                            command = _none_if_blank(
+                                tool_input.get("command") or tool_input.get("cmd")
+                            )
+                            cwd = _none_if_blank(tool_input.get("cwd") or item.get("cwd"))
+                            command_like = bool(command) or name.lower() in {
+                                "bash", "shell", "exec", "exec_command"
+                            }
+                            tool_calls[call_id] = {
+                                "name": name,
+                                "command": command,
+                                "cwd": cwd,
+                                "command_like": command_like,
+                            }
+                            events.append(NormalizedSessionEvent(
+                                provider_event_id=_provider_event_id(
+                                    block,
+                                    fallback=f"tool-call:{call_id}",
+                                    suffix="call",
+                                ),
+                                sequence_number=sequence,
+                                event_type="command_call" if command_like else "tool_call",
+                                role="assistant",
+                                occurred_at=item.get("timestamp"),
+                                content=command,
+                                payload={
+                                    "call_id": call_id,
+                                    "tool_name": name,
+                                    "command": command,
+                                    "cwd": cwd,
+                                    "input": tool_input,
+                                },
+                                source_cursor=line_cursor,
+                            ))
+                        elif block_type == "tool_result":
+                            call_id = str(
+                                block.get("tool_use_id")
+                                or block.get("id")
+                                or f"{line_number}:{block_index}"
+                            )
+                            call = tool_calls.get(call_id, {})
+                            output = _extract_content_text(block.get("content"))
+                            is_error = block.get("is_error") is True
+                            exit_code = _infer_exit_code(output)
+                            if call.get("command_like") and exit_code is None:
+                                exit_code = 1 if is_error else 0
+                            events.append(NormalizedSessionEvent(
+                                provider_event_id=_provider_event_id(
+                                    block,
+                                    fallback=f"tool-result:{call_id}",
+                                    suffix="result",
+                                ),
+                                sequence_number=sequence,
+                                event_type=(
+                                    "command_result"
+                                    if call.get("command_like")
+                                    else "tool_result"
+                                ),
+                                role="tool",
+                                occurred_at=item.get("timestamp"),
+                                content=output,
+                                payload={
+                                    "call_id": call_id,
+                                    "tool_name": call.get("name"),
+                                    "command": call.get("command"),
+                                    "cwd": call.get("cwd"),
+                                    "exit_code": exit_code,
+                                    "passed": (
+                                        exit_code == 0 if exit_code is not None else not is_error
+                                    ),
+                                },
+                                source_cursor=line_cursor,
+                            ))
                 text = _extract_claude_message_text(message.get("content"))
                 if not text:
                     continue
                 messages.append((role or "message", text))
+                event_text = _message_event_content(role, text)
+                events.append(NormalizedSessionEvent(
+                    provider_event_id=_provider_event_id(
+                        message,
+                        fallback=f"message:{line_number}",
+                    ),
+                    sequence_number=line_number * 1000,
+                    event_type=_message_event_type(role, event_text),
+                    role=role,
+                    occurred_at=item.get("timestamp"),
+                    content=event_text,
+                    payload={"message_uuid": item.get("uuid")},
+                    source_cursor=line_cursor,
+                ))
                 metadata.setdefault("started_at", item.get("timestamp"))
                 metadata.update({
                     "session_id": session_id,
@@ -463,7 +701,11 @@ def _read_claude_jsonl(path: Path, session_id: str) -> ResolvedSession | None:
             "agent_reported_summary_kind": "update",
             "agent_reported_summary_source": "provider_message",
         })
-    return ResolvedSession("claude", session_id, content, metadata)
+    metadata["normalized_event_count"] = len(events)
+    metadata["compaction_count"] = sum(
+        event.event_type == "compaction_boundary" for event in events
+    )
+    return ResolvedSession("claude", session_id, content, metadata, events)
 
 
 def _claude_session_id(path: Path) -> str | None:
@@ -501,7 +743,8 @@ def _resolve_opencode_session(session_id: str) -> ResolvedSession:
             raise SessionResolutionError(f"OpenCode session not found locally: {session_id}")
         rows = conn.execute(
             """
-            select m.data as message_data, p.data as part_data, p.time_created as part_time
+            select p.id as part_id, m.id as message_id, m.data as message_data,
+                   p.data as part_data, p.time_created as part_time
             from part p
             left join message m on m.id = p.message_id
             where p.session_id = ?
@@ -516,8 +759,10 @@ def _resolve_opencode_session(session_id: str) -> ResolvedSession:
             conn.close()
 
     messages: list[tuple[str, str]] = []
-    for row in rows:
+    events: list[NormalizedSessionEvent] = []
+    for index, row in enumerate(rows, start=1):
         role = "message"
+        message_data: dict[str, Any] = {}
         try:
             message_data = json.loads(row["message_data"] or "{}")
             role = message_data.get("role") or role
@@ -527,9 +772,75 @@ def _resolve_opencode_session(session_id: str) -> ResolvedSession:
             part_data = json.loads(row["part_data"] or "{}")
         except json.JSONDecodeError:
             continue
+        part_type = str(part_data.get("type") or "").strip().lower()
+        occurred_at = _millis_to_iso(row["part_time"])
+        provider_event_id = str(row["part_id"] or f"part:{index}")
+        if part_type in {"compaction", "summary"}:
+            events.append(NormalizedSessionEvent(
+                provider_event_id=provider_event_id,
+                sequence_number=index,
+                event_type="compaction_boundary",
+                occurred_at=occurred_at,
+                content=_none_if_blank(part_data.get("summary")),
+                payload={"part_type": part_type, "turn_count": len(messages)},
+            ))
+            continue
+        if part_type in {"tool", "tool_use", "tool_result"}:
+            state = part_data.get("state") if isinstance(part_data.get("state"), dict) else {}
+            tool_input = state.get("input") if isinstance(state.get("input"), dict) else {}
+            name = str(part_data.get("tool") or part_data.get("name") or "tool")
+            call_id = str(part_data.get("callID") or part_data.get("call_id") or provider_event_id)
+            command = _none_if_blank(tool_input.get("command") or tool_input.get("cmd"))
+            cwd = _none_if_blank(tool_input.get("cwd") or session_row["directory"])
+            output = _extract_content_text(state.get("output") or part_data.get("output"))
+            status = str(state.get("status") or part_data.get("status") or "").lower()
+            is_result = bool(output) or status in {"completed", "error", "failed"}
+            command_like = bool(command) or name.lower() in {
+                "bash", "shell", "exec", "exec_command"
+            }
+            exit_code = _infer_exit_code(output)
+            if is_result and command_like and exit_code is None:
+                exit_code = 1 if status in {"error", "failed"} else 0
+            events.append(NormalizedSessionEvent(
+                provider_event_id=provider_event_id,
+                sequence_number=index,
+                event_type=(
+                    "command_result"
+                    if is_result and command_like
+                    else "tool_result"
+                    if is_result
+                    else "command_call"
+                    if command_like
+                    else "tool_call"
+                ),
+                role="tool" if is_result else "assistant",
+                occurred_at=occurred_at,
+                content=output if is_result else command,
+                payload={
+                    "call_id": call_id,
+                    "tool_name": name,
+                    "command": command,
+                    "cwd": cwd,
+                    "exit_code": exit_code,
+                    "passed": exit_code == 0 if exit_code is not None else None,
+                    "status": status or None,
+                    "input": tool_input,
+                },
+            ))
+            continue
         text = _extract_content_text(part_data)
         if text:
             messages.append((role, text))
+            event_text = _message_event_content(str(role).lower(), text)
+            events.append(NormalizedSessionEvent(
+                provider_event_id=provider_event_id,
+                sequence_number=index,
+                event_type=_message_event_type(str(role).lower(), event_text),
+                role=str(role).lower(),
+                occurred_at=occurred_at,
+                content=event_text,
+                payload={"message_id": row["message_id"], "part_type": part_type or None},
+            ))
 
     content = _format_turns(messages)
     if not content:
@@ -565,7 +876,11 @@ def _resolve_opencode_session(session_id: str) -> ResolvedSession:
             "agent_reported_summary_kind": "update",
             "agent_reported_summary_source": "provider_message",
         })
-    return ResolvedSession("opencode", session_id, content, metadata)
+    metadata["normalized_event_count"] = len(events)
+    metadata["compaction_count"] = sum(
+        event.event_type == "compaction_boundary" for event in events
+    )
+    return ResolvedSession("opencode", session_id, content, metadata, events)
 
 
 def _discover_opencode_sessions() -> list[ResolvedSession]:
@@ -670,6 +985,107 @@ def _latest_agent_message(messages: list[tuple[str, str]]) -> str | None:
         if str(role or "").strip().lower() in agent_roles and text.strip():
             return text.strip()[:4000]
     return None
+
+
+def _message_event_type(role: str, text: str) -> str:
+    if role in {"system", "developer"} or is_session_instruction_noise(text):
+        return "runtime_instruction"
+    if role in {"user", "human", "you"}:
+        return "user_request"
+    if role in {"assistant", "ai", "codex", "claude", "opencode", "gpt"}:
+        return "assistant_update"
+    return "session_message"
+
+
+def _message_event_content(role: str, text: str) -> str:
+    if role in {"user", "human", "you"}:
+        return extract_delegated_user_request(text) or text
+    return text
+
+
+def _provider_event_id(
+    payload: dict[str, Any],
+    *,
+    fallback: str,
+    suffix: str | None = None,
+) -> str:
+    native = str(
+        payload.get("id")
+        or payload.get("call_id")
+        or payload.get("event_id")
+        or fallback
+    ).strip()
+    if suffix:
+        native = f"{native}:{suffix}"
+    if len(native) <= 255:
+        return native
+    import hashlib
+
+    return f"event-{hashlib.sha256(native.encode('utf-8')).hexdigest()}"
+
+
+def _parse_codex_tool_input(value: Any) -> dict[str, str | None]:
+    if isinstance(value, dict):
+        return {
+            "command": _none_if_blank(value.get("cmd") or value.get("command")),
+            "cwd": _none_if_blank(value.get("workdir") or value.get("cwd")),
+        }
+    raw = str(value or "")
+    try:
+        loaded = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        loaded = None
+    if isinstance(loaded, dict):
+        return _parse_codex_tool_input(loaded)
+    return {
+        "command": _js_property(raw, "cmd") or _js_property(raw, "command"),
+        "cwd": _js_property(raw, "workdir") or _js_property(raw, "cwd"),
+    }
+
+
+def _js_property(value: str, key: str) -> str | None:
+    match = re.search(
+        rf"\b{re.escape(key)}\s*:\s*(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*')",
+        value,
+        re.DOTALL,
+    )
+    if not match:
+        return None
+    literal = match.group(1)
+    if literal.startswith('"'):
+        try:
+            return _none_if_blank(json.loads(literal))
+        except json.JSONDecodeError:
+            return _none_if_blank(literal[1:-1])
+    inner = literal[1:-1]
+    return _none_if_blank(
+        inner.replace("\\'", "'").replace("\\n", "\n").replace("\\\\", "\\")
+    )
+
+
+def _infer_exit_code(output: str) -> int | None:
+    lowered = output.lower()
+    for pattern in (
+        r'"exit_code"\s*:\s*(-?\d+)',
+        r"(?:exit|exited with)\s+code\s*[:=]?\s*(-?\d+)",
+        r"process exited with code\s+(-?\d+)",
+    ):
+        match = re.search(pattern, lowered)
+        if match:
+            try:
+                return int(match.group(1))
+            except ValueError:
+                pass
+    if "script completed" in lowered:
+        return 0
+    if "script failed" in lowered or "command failed" in lowered:
+        return 1
+    return None
+
+
+def _none_if_blank(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
 
 
 def _format_turns(messages: list[tuple[str, str]]) -> str:

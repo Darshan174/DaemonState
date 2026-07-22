@@ -4,7 +4,10 @@ from app.services.session_summary import (
     derive_session_attention_items,
     derive_session_topic,
     derive_session_topics,
+    extract_delegated_user_request,
+    is_continuation_control,
     is_internal_session_content,
+    is_substantive_user_request,
 )
 
 
@@ -168,3 +171,46 @@ def test_truncated_topic_is_visibly_marked_as_incomplete() -> None:
     assert derive_latest_session_topic(
         "[USER]\nLook at the overall project and tell me whether the current implementation is trustworthy"
     ) == "Look at the overall project and tell me whether the..."
+
+
+def test_derive_session_topic_skips_collaboration_runtime_instruction() -> None:
+    content = """
+[USER]
+Note that collaboration tools cannot be called from inside functions.exec
+
+[USER]
+Fix Prepare so it uses the actual user task.
+"""
+
+    assert derive_session_topic(content) == "Fix Prepare so it uses the actual..."
+    topics = derive_session_topics(content)
+    assert "Fix Prepare so it uses the actual user task" in topics
+    assert all("collaboration tools" not in topic.lower() for topic in topics)
+
+
+def test_continuation_controls_are_not_substantive_goals() -> None:
+    for value in (
+        "continue",
+        "Please continue.",
+        "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+    ):
+        assert is_continuation_control(value) is True
+        assert is_substantive_user_request(value) is False
+
+    assert is_continuation_control("Continue implementing checkpoint selection") is False
+    assert is_substantive_user_request("Continue implementing checkpoint selection") is True
+
+
+def test_delegation_extracts_user_task_without_runtime_text() -> None:
+    envelope = """
+<codex_delegation>
+  <input>
+Continue the existing checkpoint implementation task; the live product is wrong.
+
+Observed defect: Note that collaboration tools cannot be called from inside functions.exec
+  </input>
+</codex_delegation>
+"""
+    assert extract_delegated_user_request(envelope) == (
+        "Continue the existing checkpoint implementation task; the live product is wrong."
+    )

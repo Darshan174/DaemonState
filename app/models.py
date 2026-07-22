@@ -68,6 +68,10 @@ class Workspace(Base):
     )
     context_packs: Mapped[list["ContextPack"]] = orm_relationship(back_populates="workspace")
     agent_runs: Mapped[list["AgentRun"]] = orm_relationship(back_populates="workspace")
+    session_events: Mapped[list["SessionEvent"]] = orm_relationship(back_populates="workspace")
+    work_checkpoints: Mapped[list["WorkCheckpoint"]] = orm_relationship(
+        back_populates="workspace"
+    )
     open_loops: Mapped[list["OpenLoop"]] = orm_relationship(back_populates="workspace")
     verified_playbooks: Mapped[list["VerifiedPlaybook"]] = orm_relationship(
         back_populates="workspace"
@@ -1011,6 +1015,232 @@ class RunObservation(Base):
 
     agent_run: Mapped["AgentRun"] = orm_relationship(back_populates="observations")
     source_document: Mapped["SourceDocument | None"] = orm_relationship()
+
+
+class SessionEvent(Base):
+    """One normalized, append-only event from a local AI-agent session."""
+
+    __tablename__ = "session_events"
+    __table_args__ = (
+        Index(
+            "uq_session_events_provider_session_event",
+            "workspace_id",
+            "provider",
+            "session_id",
+            "provider_event_id",
+            unique=True,
+        ),
+        Index(
+            "ix_session_events_workspace_session_sequence",
+            "workspace_id",
+            "provider",
+            "session_id",
+            "sequence_number",
+        ),
+        Index("ix_session_events_source_document", "source_document_id"),
+        Index("ix_session_events_event_type", "event_type"),
+        Index("ix_session_events_occurred_at", "occurred_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id"), nullable=False, index=True
+    )
+    source_document_id: Mapped[UUID] = mapped_column(
+        ForeignKey("source_documents.id"), nullable=False, index=True
+    )
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    session_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    sequence_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    role: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    source_cursor: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    workspace: Mapped["Workspace"] = orm_relationship(back_populates="session_events")
+    source_document: Mapped["SourceDocument"] = orm_relationship()
+    checkpoint_evidence: Mapped[list["CheckpointEvidence"]] = orm_relationship(
+        back_populates="session_event"
+    )
+
+
+class WorkCheckpoint(Base):
+    """Immutable structured state captured at a session continuity boundary."""
+
+    __tablename__ = "work_checkpoints"
+    __table_args__ = (
+        Index(
+            "uq_work_checkpoints_boundary_schema",
+            "workspace_id",
+            "provider",
+            "session_id",
+            "boundary_event_id",
+            "schema_version",
+            unique=True,
+        ),
+        Index("ix_work_checkpoints_workspace_created", "workspace_id", "created_at"),
+        Index("ix_work_checkpoints_session_created", "provider", "session_id", "created_at"),
+        Index("ix_work_checkpoints_source_document", "source_document_id"),
+        Index("ix_work_checkpoints_supersedes", "supersedes_checkpoint_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id"), nullable=False, index=True
+    )
+    source_document_id: Mapped[UUID] = mapped_column(
+        ForeignKey("source_documents.id"), nullable=False, index=True
+    )
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    session_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    boundary_event_id: Mapped[UUID] = mapped_column(
+        ForeignKey("session_events.id"), nullable=False, index=True
+    )
+    trigger: Mapped[str] = mapped_column(String(50), nullable=False)
+    schema_version: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="work_checkpoint.v5"
+    )
+    capture_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="complete"
+    )
+    continuation_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="review_required"
+    )
+    repo_root: Mapped[str | None] = mapped_column(Text, nullable=True)
+    branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    head_commit: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    worktree_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    supersedes_checkpoint_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("work_checkpoints.id"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    workspace: Mapped["Workspace"] = orm_relationship(back_populates="work_checkpoints")
+    source_document: Mapped["SourceDocument"] = orm_relationship()
+    boundary_event: Mapped["SessionEvent"] = orm_relationship()
+    items: Mapped[list["CheckpointItem"]] = orm_relationship(
+        back_populates="checkpoint", cascade="all, delete-orphan"
+    )
+    verifications: Mapped[list["CheckpointVerification"]] = orm_relationship(
+        back_populates="checkpoint", cascade="all, delete-orphan"
+    )
+    supersedes_checkpoint: Mapped["WorkCheckpoint | None"] = orm_relationship(
+        remote_side="WorkCheckpoint.id", foreign_keys=[supersedes_checkpoint_id]
+    )
+
+
+class CheckpointItem(Base):
+    __tablename__ = "checkpoint_items"
+    __table_args__ = (
+        Index("ix_checkpoint_items_checkpoint_category", "checkpoint_id", "category"),
+        Index(
+            "uq_checkpoint_items_checkpoint_item_key",
+            "checkpoint_id",
+            "item_key",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    checkpoint_id: Mapped[UUID] = mapped_column(
+        ForeignKey("work_checkpoints.id"), nullable=False, index=True
+    )
+    item_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    category: Mapped[str] = mapped_column(String(50), nullable=False)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    statement: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    truth_state: Mapped[str] = mapped_column(String(32), nullable=False, default="reported")
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    checkpoint: Mapped["WorkCheckpoint"] = orm_relationship(back_populates="items")
+    evidence: Mapped[list["CheckpointEvidence"]] = orm_relationship(
+        back_populates="item", cascade="all, delete-orphan"
+    )
+
+
+class CheckpointEvidence(Base):
+    __tablename__ = "checkpoint_evidence"
+    __table_args__ = (
+        Index("ix_checkpoint_evidence_item", "checkpoint_item_id"),
+        Index("ix_checkpoint_evidence_session_event", "session_event_id"),
+        Index("ix_checkpoint_evidence_source_document", "source_document_id"),
+        Index("ix_checkpoint_evidence_run_observation", "run_observation_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    checkpoint_item_id: Mapped[UUID] = mapped_column(
+        ForeignKey("checkpoint_items.id"), nullable=False, index=True
+    )
+    evidence_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    session_event_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("session_events.id"), nullable=True, index=True
+    )
+    source_document_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("source_documents.id"), nullable=True, index=True
+    )
+    run_observation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("run_observations.id"), nullable=True, index=True
+    )
+    supports: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    locator_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    evidence_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    item: Mapped["CheckpointItem"] = orm_relationship(back_populates="evidence")
+    session_event: Mapped["SessionEvent | None"] = orm_relationship(
+        back_populates="checkpoint_evidence"
+    )
+    source_document: Mapped["SourceDocument | None"] = orm_relationship()
+    run_observation: Mapped["RunObservation | None"] = orm_relationship()
+
+
+class CheckpointVerification(Base):
+    """Append-only verification of a checkpoint at one exact repository state."""
+
+    __tablename__ = "checkpoint_verifications"
+    __table_args__ = (
+        Index("ix_checkpoint_verifications_checkpoint_created", "checkpoint_id", "created_at"),
+        Index("ix_checkpoint_verifications_fingerprint", "worktree_fingerprint"),
+        Index("uq_checkpoint_verifications_idempotency", "idempotency_key", unique=True),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    checkpoint_id: Mapped[UUID] = mapped_column(
+        ForeignKey("work_checkpoints.id"), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    worktree_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    policy_version: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="checkpoint_verifier.v1"
+    )
+    results_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    verified_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, server_default=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    checkpoint: Mapped["WorkCheckpoint"] = orm_relationship(back_populates="verifications")
 
 
 class OpenLoop(Base):
