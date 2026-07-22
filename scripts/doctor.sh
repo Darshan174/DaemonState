@@ -130,14 +130,19 @@ PY
 
   if command -v node >/dev/null 2>&1; then
     NODE_VERSION="$(node --version 2>/dev/null || true)"
-    if node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 18 ? 0 : 1)' >/dev/null 2>&1; then
+    if node -e '
+const [major, minor] = process.versions.node.split(".").map(Number);
+const supported = (major === 20 && minor >= 19) ||
+  (major === 22 && minor >= 13) || major >= 24;
+process.exit(supported ? 0 : 1);
+' >/dev/null 2>&1; then
       ok "Node.js ${NODE_VERSION} found"
     else
-      warn "Node.js 18+ required for bare-metal setup; found ${NODE_VERSION:-unknown}"
+      warn "Node.js 20.19+ (20.x), 22.13+ (22.x), or 24+ required for bare-metal setup; found ${NODE_VERSION:-unknown}"
       BARE_METAL_READY=0
     fi
   else
-    warn "node not found; bare-metal setup requires Node.js 18+"
+    warn "node not found; bare-metal setup requires Node.js 20.19+ (20.x), 22.13+ (22.x), or 24+"
     BARE_METAL_READY=0
   fi
 

@@ -6,8 +6,11 @@ import tomllib
 
 
 README = Path("README.md")
+ENV_EXAMPLE = Path(".env.example")
+GITIGNORE = Path(".gitignore")
 PYPROJECT = Path("pyproject.toml")
 DOCKERFILE = Path("Dockerfile")
+FRONTEND_PACKAGE = Path("frontend/package.json")
 DOCTOR_SCRIPT = Path("scripts/doctor.sh")
 SMOKE_SCRIPT = Path("scripts/smoke.sh")
 DEMO_DOC = Path("docs/demo.md")
@@ -17,17 +20,41 @@ BOARD_DEMO_IMAGE = Path("docs/assets/board-inspector-demo.jpg")
 QUERY_DEMO_IMAGE = Path("docs/assets/query-trace-demo.jpg")
 
 
-def test_readme_marks_setup_and_deployment_as_coming_soon():
+def test_readme_documents_honest_setup_deployment_and_contributing_paths():
     text = README.read_text(encoding="utf-8")
+    env_example = ENV_EXAMPLE.read_text(encoding="utf-8")
+    gitignore = GITIGNORE.read_text(encoding="utf-8")
 
     assert "github.com/your-org/context-engine.git" not in text
-    assert "## Setup\n\nComing soon." in text
-    assert "## Deployment\n\nComing soon." in text
-    assert "## Contributing\n\nComing soon." in text
-    assert "git clone https://github.com/Darshan174/Context-Engine.git context-engine" not in text
-    assert "docker compose up --build" not in text
-    assert "bash scripts/setup.sh" not in text
+    assert "git clone https://github.com/Darshan174/Context-Engine.git context-engine" in text
+    assert "cp .env.example .env" in text
+    assert "bash scripts/doctor.sh --docker" in text
+    assert "docker compose up --build" in text
+    assert "bash scripts/doctor.sh --bare-metal" in text
+    assert "bash scripts/setup.sh" in text
+    assert "Node.js 20.19+ on the 20.x line" in text
+    assert "22.13+ on the 22.x line, or 24+" in text
+    assert "[CONTRIBUTING.md](CONTRIBUTING.md)" in text
+    assert "It is not a production hardening guide" in text
+    assert "There are no built-in Codex" not in text
+    assert "reopen an exact Codex task" in text
+    assert "There is no system-wide agent monitor" in text
+    assert "local harness is the path that independently inspects Git state" in " ".join(text.split())
+    assert "When a supported local session is synced" in text
+    assert "Explain and agent brief" in text
+    assert "rather than every UI" in " ".join(text.split())
+    assert "The API preserves revisions and enforces access scopes" in text
+    assert "| Library |" in text
+    assert "| Memory |" in text
     assert "fly launch" not in text
+
+    assert "DATABASE_URL=sqlite+aiosqlite:///data/context.db" in env_example
+    assert "POSTGRES_PASSWORD=contextengine" in env_example
+    assert "LITELLM_API_KEY=" in env_example
+    assert "ENCRYPTION_KEY=" in env_example
+    assert "GOOGLE_CLIENT_ID=" in env_example
+    assert "SLACK_CLIENT_ID=" in env_example
+    assert "!.env.example" in gitignore
 
 
 def test_pyproject_exposes_oss_metadata():
@@ -42,10 +69,18 @@ def test_pyproject_exposes_oss_metadata():
     assert "Framework :: FastAPI" in project["classifiers"]
     assert project["urls"]["Repository"] == "https://github.com/Darshan174/Context-Engine"
     assert project["urls"]["Issues"] == "https://github.com/Darshan174/Context-Engine/issues"
+    assert any(
+        dependency.startswith("sqlalchemy[asyncio]")
+        for dependency in project["dependencies"]
+    )
 
 
 def test_dockerfile_copies_license_before_package_install():
     lines = DOCKERFILE.read_text(encoding="utf-8").splitlines()
+    package = json.loads(FRONTEND_PACKAGE.read_text(encoding="utf-8"))
+
+    assert lines[1] == "FROM node:24-slim AS frontend-builder"
+    assert package["engines"]["node"] == "^20.19.0 || ^22.13.0 || >=24.0.0"
     copy_line_number = next(
         index for index, line in enumerate(lines)
         if line.startswith("COPY ") and "pyproject.toml" in line
@@ -64,7 +99,7 @@ def test_readme_is_short_plain_language_and_uses_the_product_logo():
     readme = README.read_text(encoding="utf-8")
     demo_doc = DEMO_DOC.read_text(encoding="utf-8")
 
-    assert len(readme.splitlines()) <= 230
+    assert len(readme.splitlines()) <= 280
     assert '<img src="frontend/public/favicon.svg"' in readme
     assert "Founders and non-technical users" in readme
     assert "Developers" in readme
@@ -115,8 +150,8 @@ def test_doctor_script_is_documented_and_read_only():
     script = DOCTOR_SCRIPT.read_text(encoding="utf-8")
     smoke = SMOKE_SCRIPT.read_text(encoding="utf-8")
 
-    assert "public setup path will" in readme
-    assert "Coming soon." in readme
+    assert "bash scripts/doctor.sh --docker" in readme
+    assert "bash scripts/doctor.sh --bare-metal" in readme
     assert "bash scripts/doctor.sh --docker" in demo_doc
 
     assert "Usage:" in script

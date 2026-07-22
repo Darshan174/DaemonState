@@ -20,18 +20,25 @@ echo -e "\n${BOLD}Context Engine — Setup${RESET}\n"
 info "Checking prerequisites…"
 
 command -v python3 >/dev/null 2>&1 || error "Python 3.12+ is required. Install from https://python.org"
-command -v node    >/dev/null 2>&1 || error "Node.js 18+ is required. Install from https://nodejs.org"
+command -v node    >/dev/null 2>&1 || error "Node.js 20.19+ (20.x), 22.13+ (22.x), or 24+ is required. Install from https://nodejs.org"
 command -v npm     >/dev/null 2>&1 || error "npm is required (comes with Node.js)"
 
 PYTHON_VERSION=$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')
-NODE_VERSION=$(node --version | sed 's/v//' | cut -d. -f1)
+NODE_VERSION=$(node --version | sed 's/^v//')
 
 python3 - <<'PY' >/dev/null || error "Python 3.12+ required (got ${PYTHON_VERSION})"
 import sys
 
 raise SystemExit(0 if sys.version_info >= (3, 12) else 1)
 PY
-[[ "${NODE_VERSION}" -lt 18 ]]     && error "Node.js 18+ required (got ${NODE_VERSION})"
+if ! node -e '
+const [major, minor] = process.versions.node.split(".").map(Number);
+const supported = (major === 20 && minor >= 19) ||
+  (major === 22 && minor >= 13) || major >= 24;
+process.exit(supported ? 0 : 1);
+' >/dev/null 2>&1; then
+  error "Node.js 20.19+ (20.x), 22.13+ (22.x), or 24+ required (got ${NODE_VERSION})"
+fi
 
 success "Python ${PYTHON_VERSION}, Node.js $(node --version)"
 

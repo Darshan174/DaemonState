@@ -35,20 +35,21 @@ When running in Docker, the local-path importer sees container paths. Compose
 mounts the current checkout read-only at `/workspace` by default. To inspect a
 different host project, start with
 `CONTEXT_ENGINE_PROJECT_PATH=/absolute/host/path docker compose up --build`,
-then enter `/workspace` in the Project screen.
+then enter `/workspace` when connecting the project.
 
 ## What To Inspect
 
-1. Open **Project**. The map places sessions, direction, delivery, and risks in
+1. Open **Explain**. The map places sessions, direction, delivery, and risks in
    one selected-workspace view.
 2. Select a node. The inspector shows value, source metadata, provenance,
    confidence, evidence, relationship state, and session relevance reasons.
 3. Only source-backed relationships are drawn. Unknown or different-project
    sessions remain visually subdued instead of driving the project story.
-4. Open `/app/query` and run `What is blocking our launch?`. The answer includes
+4. Open **Memory** to review active, needs-review, and historical project facts.
+5. Open `/app/query` and run `What is blocking our launch?`. The answer includes
    retrieval controls, a stable `query.v1` response shape, facts used, and
    relationship expansion evidence.
-5. Open **Connectors**. Launch connectors expose backend-backed actions;
+6. Open **Connectors**. Launch connectors expose backend-backed actions;
    coming-soon providers stay disabled instead of creating fake connected state.
 
 ## Verification
