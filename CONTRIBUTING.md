@@ -6,7 +6,12 @@ facts second, relationships only with evidence, and honest connector states.
 
 ## Local Setup
 
+Prerequisites: Python 3.12+, npm, and Node.js 20.19+ on the 20.x line,
+22.13+ on the 22.x line, or 24+.
+
 ```bash
+cp .env.example .env
+bash scripts/doctor.sh --bare-metal
 bash scripts/setup.sh
 bash scripts/dev.sh
 ```
@@ -18,6 +23,10 @@ Frontend: <http://localhost:5000>
 uses `npm ci` for the frontend, and builds the production frontend bundle.
 `scripts/dev.sh` and `scripts/smoke.sh` automatically use `.venv/bin/python`
 when it exists.
+
+For the PostgreSQL/pgvector path, run `bash scripts/doctor.sh --docker` and
+`docker compose up --build`. Provider credentials are optional for the seeded
+demo and should stay in the untracked `.env` file.
 
 ## Before Opening A PR
 
@@ -50,5 +59,5 @@ If a check cannot be run locally, call that out in the PR.
 - Backend: FastAPI, async SQLAlchemy, Pydantic, and the existing service/router
   split.
 - Frontend: React, TanStack Query patterns, Tailwind utility classes, and
-  existing graph helpers in `frontend/src/graph`.
+  existing project-map helpers in `frontend/src/context-map`.
 - Tests should be focused and close to the behavior changed.

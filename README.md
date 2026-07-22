@@ -8,8 +8,9 @@
   Verified project history in. Minimum task-ready context out.
 </p>
 
-> **Active alpha.** Core workflows are implemented and tested locally, but public
-> setup, hosting, and production deployment guides are not ready yet.
+> **Active alpha.** Core workflows are implemented and tested locally. Bare-metal
+> and Docker setup tooling is included; hosted operation and production
+> deployment guidance are not ready yet.
 
 ## What it is
 
@@ -43,17 +44,19 @@ readable view of the same project state without living in terminal logs.
 
 ## What Context Engine changes
 
-Context Engine turns repository state, issues, pull requests, imported agent
+Context Engine can turn repository state, issues, pull requests, imported agent
 sessions, decisions, blockers, documents, patches, and test results into durable
-project memory.
+project memory after those sources are imported, connected, or reported by an
+integration.
 
 It lets the user choose the current goal, compiles a focused source-backed brief
-for that task and target model, and records what actually changed after the run.
-Repository changes, checks, blockers, and outcomes become evidence for the next
-session instead of disappearing inside one chat history.
+for that task and target model, and stores run evidence reported through HTTP or
+MCP. The local harness also observes repository changes and command results
+directly. Those records can become evidence for the next session instead of
+disappearing inside one chat history.
 
-The result is simple: coding-agent sessions stop behaving like disconnected
-chats and start behaving like continuous work on one project.
+The intended result is that supported coding-agent sessions behave less like
+disconnected chats and more like continuous work on one project.
 
 ## The bet
 
@@ -73,15 +76,16 @@ we need results from real projects, not demos.
 | Step | What it does for the user |
 |---|---|
 | Connect a project | Creates a clean boundary around one real repository and its evidence. |
-| Capture the work | Preserves code state, issues, decisions, AI sessions, changes, and checks. |
+| Capture the work | Imports or syncs code state, issues, decisions, AI sessions, changes, and checks from supported sources. |
 | Choose the current goal | Keeps the user in control. Open issues stay backlog until selected. |
-| Capture a checkpoint | Automatically preserves the goal, progress, decisions, failures, files, blockers, checks, and exact next action at compaction boundaries. |
-| Verify the checkpoint | Checks its structure, event evidence, repository fingerprint, relevant files, and captured test commands. |
-| Resume the work | Copies one deterministic, evidence-linked continuation bundle instead of rebuilding context by hand. |
+| Capture a checkpoint | When a supported local session is synced and exposes a compaction boundary, preserves its pre-compaction goal, progress, decisions, failures, files, blockers, checks, and next action. A session-tip checkpoint can also be saved manually. |
+| Verify the checkpoint | On request, checks its structure, event evidence, repository fingerprint, relevant files, and captured test commands. |
+| Resume the work | Copies one deterministic, evidence-linked continuation bundle and, from the local macOS app, attempts to open the linked desktop agent. |
 | Explain what matters | Uses the graph to show the relationships behind the current project state and compiled context. |
 
-Every important fact keeps its source. Missing evidence stays missing instead of
-being replaced with a confident guess.
+Extracted facts retain their source and provenance; explicit user choices are
+labeled separately. Missing evidence stays missing instead of being replaced
+with a confident guess.
 
 ## What this gives you
 
@@ -103,13 +107,15 @@ being replaced with a confident guess.
 |---|---|
 | Now | Shows current work plus the latest structured checkpoint, verification state, and exact next action. |
 | Runs | Shows real session checkpoints, event evidence, repository freshness, checks, blockers, and resume actions. |
-| Explain | Uses the project graph to show why evidence and relationships matter without making the graph a separate product. |
-| Sources and connectors | Keeps raw evidence, revision history, access boundaries, and provenance inspectable. |
+| Library | Scans local Codex, Claude Code, and OpenCode history while the page is open or when requested, then keeps sessions, topics, and project selection inspectable. |
+| Memory | Organizes active, needs-review, and historical project facts with their evidence. |
+| Explain and agent brief | Uses the project graph to explain evidence and relationships; eligible task records can compile and copy a source-backed brief. |
+| Sources and connectors | Shows raw source previews, extracted components, connection state, and sync results. The API preserves revisions and enforces access scopes. |
 | Local harness | Wraps one user-supplied worker command and records bounded output, Git changes, checks, and outcome evidence. |
 
-The product is available through the React app, FastAPI API, `ctxe` CLI, and MCP
-server. Local development uses SQLite; Docker deployments can use
-PostgreSQL/pgvector.
+The React app uses the FastAPI API. The `ctxe` CLI and MCP server expose core
+prepare, query, repository, and run-evidence workflows rather than every UI
+view. Local development uses SQLite; Docker can use PostgreSQL/pgvector.
 
 ## Local agent harness
 
@@ -149,22 +155,29 @@ Demo data never marks a connector as authenticated or connected.
 
 ## Honest limits
 
-- The product UI prepares and copies an agent brief; it does not send it
-  automatically.
+- The product UI prepares and copies agent and resume briefs; it never sends or
+  pastes them automatically.
+- There is no system-wide agent monitor. Library scans while its page is open;
+  Now refreshes linked local histories; other integrations must report events.
+- HTTP and MCP run records contain observations supplied by their caller. The
+  local harness is the path that independently inspects Git state and commands.
 - The CLI harness runs only the explicit local command supplied by the user.
-- There are no built-in Codex, Claude Code, Hermes, or OpenCode launch adapters.
+- On macOS, checkpoint resume can reopen an exact Codex task; Claude opens its
+  desktop app, and OpenCode opens the project when its path is available. Exact
+  Claude/OpenCode session reopening, Hermes, and other platforms are unsupported.
 - Scrutiny uses deterministic evidence rules. It is not an autonomous code review.
 - Live retrieval is limited to the local repository and configured manual-token
   GitHub access.
 - Captured command output and repository inspection are deliberately bounded.
 - Model-lift reports describe observed runs. They do not yet prove that an older
   model matches a newer one because of Context Engine.
-- Public setup, hosted operation, and production deployment guidance are unfinished.
+- Hosted operation and production deployment guidance are unfinished.
 
 ## Developer surface
 
 The backend is FastAPI with async SQLAlchemy. The frontend is React, Vite, and
-React Query. The same project state is available through HTTP, CLI, and MCP.
+React Query. HTTP is the full service surface; CLI and MCP expose the core
+prepare, query, repository, and run-evidence workflows.
 
 Main API routes:
 
@@ -196,19 +209,56 @@ edit code, run shell commands, push commits, or write to external providers. See
 
 ## Setup
 
-Coming soon.
+Prerequisites: Git, Python 3.12+, npm, and Node.js 20.19+ on the 20.x line,
+22.13+ on the 22.x line, or 24+. Provider credentials are optional for local
+exploration and the seeded demo.
 
-The repository contains development scripts, Docker files, environment templates,
-and smoke checks, but the public setup path will be published only after it is
-verified from a clean clone.
+### Docker
+
+```bash
+git clone https://github.com/Darshan174/Context-Engine.git context-engine
+cd context-engine
+cp .env.example .env
+bash scripts/doctor.sh --docker
+docker compose up --build
+```
+
+Open <http://localhost:8000>. This path runs the app, sync worker, PostgreSQL,
+and pgvector.
+
+### Bare metal
+
+```bash
+git clone https://github.com/Darshan174/Context-Engine.git context-engine
+cd context-engine
+cp .env.example .env
+bash scripts/doctor.sh --bare-metal
+bash scripts/setup.sh
+bash scripts/start.sh
+```
+
+Open <http://localhost:8000>. For backend and frontend hot reload, use
+`bash scripts/dev.sh`; the frontend dev server runs at <http://localhost:5000>.
+See the [demo walkthrough](docs/demo.md) to seed a workspace without provider
+credentials.
 
 ## Deployment
 
-Coming soon.
+`docker-compose.yml` is the supported local PostgreSQL/pgvector deployment path.
+It is not a production hardening guide. Before any non-local deployment, replace
+the default database password, configure API and credential encryption keys,
+terminate TLS, plan backups, and validate migrations and provider callback URLs.
+Hosted-service, high-availability, and upgrade procedures are still unfinished.
 
 ## Contributing
 
-Coming soon.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Run the local CI-equivalent checks with:
+
+```bash
+bash scripts/smoke.sh
+```
+
+Maintainers should also run `bash scripts/smoke.sh --docker` before release tags.
 
 ## Documentation
 
@@ -221,6 +271,7 @@ Coming soon.
 - [MCP](docs/mcp.md)
 - [AI session imports](docs/ai-context.md)
 - [Demo walkthrough](docs/demo.md)
+- [OSS readiness](docs/oss-readiness.md)
 
 Some documents are implementation contracts rather than public guides. The code
 and tests are the authority for current behavior.

@@ -1,7 +1,7 @@
 # OSS Readiness Review
 
-Last updated: 2026-07-13
-Reviewed: 2026-05-01 by Xiaomi MiMo V2.5 Pro; refreshed 2026-07-13 for the project-map simplification pass.
+Last updated: 2026-07-22
+Reviewed: 2026-05-01 by Xiaomi MiMo V2.5 Pro; refreshed 2026-07-22 after the checkpoint, session-library, project-memory, and setup documentation passes.
 
 ## Score
 
@@ -26,8 +26,8 @@ still calling out final hardening gaps below.
 - Demo seed endpoint creates source-backed GitHub, Slack, Gmail, Google Drive, and Codex documents without faking connector auth state.
 - Frontend tests guard the project-first routes, repository intake, visual
   session relevance, landing claims, source flows, and connector honesty.
-- Launch-facing docs now cover architecture, connectors, AI Context, the
-  Project map, MCP, and the seeded demo walkthrough.
+- Launch-facing docs now cover setup, contributing, architecture, connectors,
+  AI Context, the project map, MCP, and the seeded demo walkthrough.
 - MCP examples now include copy-paste installed/local checkout configs and an
   agent grounding prompt tied to `query_context` and `trace.facts_used`.
 - The Project map replaces the older Cytoscape Board/Explore implementation,
@@ -53,9 +53,9 @@ still calling out final hardening gaps below.
   interpreter automatically.
 - CLI ingest now carries `--sync` through to both single-source and bulk-source
   HTTP paths, and the bulk source API processes synchronously when requested.
-- README quick-start clone commands use the real GitHub remote with an explicit
-  `context-engine` checkout directory, and docs coverage guards against
-  placeholder clone URLs.
+- README and demo quick-start commands use the real GitHub remote with an
+  explicit `context-engine` checkout directory, and docs coverage guards
+  against placeholder clone URLs.
 - Package metadata now advertises the MIT license, repository/issues URLs,
   relevant keywords, and PyPI classifiers; the package metadata dry run passes,
   and Docker copies `LICENSE` before `pip install .` prepares metadata.
@@ -78,9 +78,10 @@ still calling out final hardening gaps below.
   cover recall, precision, evidence coverage against final citation fields,
   stale leakage, conflict detection, token efficiency, and verification-command
   presence on fixtures.
-- Implemented in this branch: `/app` is the project-first visual map. The manual
-  Prepare form is removed; persisted `context_pack.v2` preparation remains
-  available through the HTTP API, CLI, and MCP bridge.
+- Implemented in this branch: `/app` is the current-work and checkpoint view.
+  Library, Memory, Explain, Sources, and Connectors are primary navigation
+  surfaces. The legacy `/app/prepare` route redirects to Now; persisted
+  `context_pack.v2` preparation remains available through HTTP, CLI, and MCP.
 - Implemented in this branch: source objects use workspace-scoped append-only
   revisions, and MCP `record_agent_run_finish` links an exact pack to terminal
   repository and verification observations without claiming causal lift.
@@ -92,11 +93,11 @@ pytest -q
 cd frontend && npm run build
 ```
 
-Latest verified result from the 2026-07-13 project-map and graph-truth pass:
+Latest verified result from the 2026-07-22 documentation synchronization pass:
 
-- `pytest -q`: 480 passed, 1 SQLite datetime deprecation warning.
+- `pytest -q`: 609 passed, 1 SQLite datetime deprecation warning.
 - `ruff check app tests`: passed.
-- `cd frontend && npm test -- --run`: 8 files, 48 tests passed.
+- `cd frontend && npm test`: 18 files, 112 tests passed.
 - `cd frontend && npm run build`: passed.
 
 Not verified in this pass:
@@ -143,6 +144,7 @@ Observed current SQLAlchemy tables:
 - `workspaces`
 - `source_documents`
 - `evidence_spans`
+- `source_read_grants`
 - `claims`
 - `claim_revisions`
 - `models`
@@ -157,9 +159,17 @@ Observed current SQLAlchemy tables:
 - `sync_jobs`
 - `retrieval_events`
 - `context_packs`
+- `workspace_goals`
 - `context_pack_items`
 - `agent_runs`
 - `run_observations`
+- `session_events`
+- `work_checkpoints`
+- `checkpoint_items`
+- `checkpoint_evidence`
+- `checkpoint_verifications`
+- `open_loops`
+- `verified_playbooks`
 - `code_files`
 - `code_symbols`
 - `code_edges`
