@@ -33,3 +33,61 @@ jobs:
         run: docker build -t context-engine .
       - name: Validate smoke compose
         run: docker compose -f docker-compose.smoke.yml -p context-engine-smoke config --quiet
+      - name: Validate production compose
+        env:
+          CONTEXT_ENGINE_IMAGE: context-engine:test
+          POSTGRES_IMAGE: pgvector/pgvector:pg16
+          REDIS_IMAGE: redis:7-alpine
+          CADDY_IMAGE: caddy:2-alpine
+          RELEASE_SHA: ${{ github.sha }}
+          CONTEXT_ENGINE_DOMAIN: context.example.test
+          ACME_EMAIL: ops@example.test
+          CONTEXT_ENGINE_PROJECT_PATH: /tmp/context-engine-workspace
+          POSTGRES_ADMIN_PASSWORD_FILE: /tmp/context-engine-secret
+          POSTGRES_APP_PASSWORD_FILE: /tmp/context-engine-secret
+          SERVER_API_KEY_FILE: /tmp/context-engine-secret
+          ENCRYPTION_KEY_FILE: /tmp/context-engine-secret
+          METRICS_BEARER_TOKEN_FILE: /tmp/context-engine-secret
+        run: |
+          mkdir -p /tmp/context-engine-workspace
+          printf 'ci-placeholder-secret\n' >/tmp/context-engine-secret
+          docker compose -f docker-compose.production.yml config --quiet
+
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: context_engine_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d context_engine_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/context_engine_test
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/context_engine_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+      - name: Reconcile and stamp schema
+        run: ctxe db deploy --database-url "$TEST_DATABASE_URL"
+      - name: Verify production database paths
+        run: >-
+          pytest -q
+          tests/test_auth.py
+          tests/test_context_compiler.py
+          tests/test_mcp.py
+          tests/test_sync_worker.py
+          tests/test_production_runtime.py
+          tests/test_truth_access.py
+          tests/test_graph_api.py
