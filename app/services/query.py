@@ -27,6 +27,12 @@ from app.services.live_retrieval import (
     LiveRetrievalLane,
     retrieve_live_context,
 )
+from app.services.memory_trust import (
+    MemoryTrustAssessment,
+    assess_memory_trust,
+    load_component_evidence,
+)
+from app.services.provider_freshness import load_provider_freshness
 
 
 @dataclass
@@ -245,6 +251,7 @@ class QueryService:
             .options(
                 selectinload(Component.model),
                 selectinload(Component.source_document),
+                selectinload(Component.claim),
                 selectinload(Component.outgoing_relationships).selectinload(Relationship.target_component),
                 selectinload(Component.incoming_relationships).selectinload(Relationship.source_component),
             )
@@ -275,6 +282,51 @@ class QueryService:
                 workspace_scope[1],
             )
         scoped_component_count = len(components)
+        superseded_document_ids = {
+            document_id
+            for document_id in await self.session.scalars(
+                select(SourceDocument.supersedes_source_document_id).where(
+                    SourceDocument.supersedes_source_document_id.is_not(None),
+                    source_access_predicate(
+                        access_scope,
+                        workspace_id=requested_workspace_id,
+                    ),
+                )
+            )
+            if document_id is not None
+        }
+        evidence_by_component = await load_component_evidence(
+            self.session,
+            components,
+        )
+        provider_freshness_by_source = await load_provider_freshness(
+            self.session,
+            (
+                component.source_document
+                for component in components
+                if component.source_document is not None
+            ),
+        )
+        components = [
+            component
+            for component in components
+            if _indexed_query_eligible(
+                component,
+                assess_memory_trust(
+                    component,
+                    evidence_by_component.get(component.id),
+                    source=component.source_document,
+                    source_is_current=(
+                        component.source_document_id
+                        not in superseded_document_ids
+                    ),
+                    provider_fresh=(
+                        component.source_document_id
+                        in provider_freshness_by_source
+                    ),
+                ),
+            )
+        ]
 
         scored: list[tuple[float, RerankFeatures, Component]] = []
         for c in components:
@@ -363,7 +415,11 @@ class QueryService:
         if related_ids:
             related = list(await self.session.scalars(
                 select(Component)
-                .options(selectinload(Component.model), selectinload(Component.source_document))
+                .options(
+                    selectinload(Component.model),
+                    selectinload(Component.source_document),
+                    selectinload(Component.claim),
+                )
                 .join(SourceDocument, Component.source_document_id == SourceDocument.id)
                 .where(Component.id.in_(related_ids))
                 .where(source_access_predicate(
@@ -377,6 +433,38 @@ class QueryService:
                     workspace_scope[0],
                     workspace_scope[1],
                 )
+            related_evidence = await load_component_evidence(
+                self.session,
+                related,
+            )
+            related_provider_freshness_by_source = await load_provider_freshness(
+                self.session,
+                (
+                    component.source_document
+                    for component in related
+                    if component.source_document is not None
+                ),
+            )
+            related = [
+                component
+                for component in related
+                if _indexed_query_eligible(
+                    component,
+                    assess_memory_trust(
+                        component,
+                        related_evidence.get(component.id),
+                        source=component.source_document,
+                        source_is_current=(
+                            component.source_document_id
+                            not in superseded_document_ids
+                        ),
+                        provider_fresh=(
+                            component.source_document_id
+                            in related_provider_freshness_by_source
+                        ),
+                    ),
+                )
+            ]
         else:
             related = []
 
@@ -924,4 +1012,20 @@ def _relationship_is_safe_for_expansion(relationship: Relationship) -> bool:
         relationship.status == "active"
         and relationship.origin in {"deterministic", "extracted", "human_verified"}
         and str(relationship.evidence or "").strip()
+    )
+
+
+def _indexed_query_eligible(
+    component: Component,
+    assessment: MemoryTrustAssessment,
+) -> bool:
+    if assessment.current_truth:
+        return True
+    # Keep pre-claim local and external rows readable during the graph migration.
+    # Agent assertions, hostile fixtures, and claim-backed provider snapshots
+    # still go through the current-truth gate.
+    return bool(
+        component.claim_id is None
+        and not assessment.source_is_agent
+        and assessment.trust_zone != "hostile_test"
     )

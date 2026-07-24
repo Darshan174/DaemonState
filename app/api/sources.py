@@ -11,11 +11,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config import settings
 from app.database import get_db_session
 from app.api.dependencies import get_access_scope
 from app.services.access import AccessScope, source_access_predicate
 from app.models import Component, SourceDocument
-from app.services.ingest import IngestionService
+from app.services.source_ingestion_worker import (
+    process_source_document_inline,
+    run_enqueued_source_document,
+)
 from app.services.source_revisions import ingest_source_document_revision
 from app.services.workspace_scope import (
     source_matches_workspace,
@@ -78,15 +82,8 @@ class SourceDetailRead(SourceRead):
     components: list[SourceComponentRead] = Field(default_factory=list)
 
 
-async def _run_ingestion(doc_id: UUID, database_url: str) -> None:
-    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-    engine = create_async_engine(database_url)
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as session:
-        svc = IngestionService(session)
-        await svc.process_document(doc_id)
-        await session.commit()
-    await engine.dispose()
+def _requires_durable_ingestion() -> bool:
+    return settings.environment.strip().lower() == "production"
 
 
 @router.post("/sources", response_model=SourceRead, status_code=201)
@@ -115,15 +112,18 @@ async def create_source(
     )
     doc = result.document
 
-    if sync and result.created:
-        svc = IngestionService(session)
-        await svc.process_document(doc.id)
+    # Persist the immutable raw revision first. If projection is interrupted,
+    # the sync worker can recover every row whose processed_at remains null.
+    await session.commit()
+    if doc.processed_at is None and sync and not _requires_durable_ingestion():
+        await process_source_document_inline(session, doc.id)
         await session.commit()
-    else:
-        await session.commit()
-        from app.config import settings
-        if result.created:
-            background_tasks.add_task(_run_ingestion, doc.id, settings.database_url)
+    elif doc.processed_at is None and not _requires_durable_ingestion():
+        background_tasks.add_task(
+            run_enqueued_source_document,
+            doc.id,
+            settings.database_url,
+        )
 
     return doc
 
@@ -159,16 +159,18 @@ async def create_sources_bulk(
         if result.created:
             created_ids.append(result.document.id)
 
-    if sync:
-        svc = IngestionService(session)
+    await session.commit()
+    if sync and not _requires_durable_ingestion():
+        for doc_id in doc_ids:
+            await process_source_document_inline(session, doc_id)
+            await session.commit()
+    elif not _requires_durable_ingestion():
         for doc_id in created_ids:
-            await svc.process_document(doc_id)
-        await session.commit()
-    else:
-        await session.commit()
-        from app.config import settings
-        for doc_id in created_ids:
-            background_tasks.add_task(_run_ingestion, doc_id, settings.database_url)
+            background_tasks.add_task(
+                run_enqueued_source_document,
+                doc_id,
+                settings.database_url,
+            )
 
     return {
         "created": len(created_ids),
@@ -202,9 +204,12 @@ async def upload_source(
     doc = result.document
     await session.commit()
 
-    from app.config import settings
-    if result.created:
-        background_tasks.add_task(_run_ingestion, doc.id, settings.database_url)
+    if doc.processed_at is None and not _requires_durable_ingestion():
+        background_tasks.add_task(
+            run_enqueued_source_document,
+            doc.id,
+            settings.database_url,
+        )
     return SourceRead(
         id=doc.id,
         workspace_id=doc.workspace_id,

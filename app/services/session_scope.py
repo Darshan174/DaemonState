@@ -104,12 +104,17 @@ class WorkspaceSessionScope:
 async def workspace_session_scope(
     session: AsyncSession,
     workspace_id: UUID,
+    *,
+    session_key: tuple[str, str] | None = None,
+    source_document_ids: set[UUID] | None = None,
 ) -> WorkspaceSessionScope:
     repositories, paths, commits = await workspace_references(session, workspace_id)
     observed_matches = await _observed_project_session_keys(
         session,
         workspace_id,
         paths,
+        session_key=session_key,
+        source_document_ids=source_document_ids,
     )
     return WorkspaceSessionScope(
         repositories=repositories,
@@ -228,28 +233,71 @@ def normalize_session_key(
     return normalized_provider, normalized_session_id
 
 
+def normalize_optional_session_key(
+    provider: str | None,
+    session_id: str | None,
+) -> tuple[str, str] | None:
+    """Normalize an optional provider/session filter while requiring a complete pair."""
+
+    if (provider is None) != (session_id is None):
+        raise ValueError("provider and session_id must be provided together")
+    if provider is None and session_id is None:
+        return None
+    normalized = normalize_session_key(provider, session_id)
+    if normalized is None:
+        raise ValueError("provider and session_id must be non-empty")
+    return normalized
+
+
+def session_provider_values(provider: str) -> tuple[str, ...]:
+    """Return persisted spellings that represent one normalized provider."""
+
+    normalized = str(provider or "").strip().lower()
+    if normalized == "claude_code":
+        normalized = "claude"
+    if not normalized:
+        return ()
+    if normalized == "claude":
+        return ("claude", "claude_code")
+    return (normalized,)
+
+
 async def _observed_project_session_keys(
     session: AsyncSession,
     workspace_id: UUID,
     workspace_paths: set[str],
+    *,
+    session_key: tuple[str, str] | None = None,
+    source_document_ids: set[UUID] | None = None,
 ) -> set[tuple[str, str]]:
-    if not workspace_paths:
+    if (
+        not workspace_paths
+        or (source_document_ids is not None and not source_document_ids)
+    ):
         return set()
 
     predicates = [
         SessionEvent.payload_json.contains(f'"{field}"', autoescape=True)
         for field in SESSION_CWD_FIELDS
     ]
+    conditions = [
+        SessionEvent.workspace_id == workspace_id,
+        or_(*predicates),
+    ]
+    if session_key is not None:
+        provider, session_id = session_key
+        conditions.extend((
+            SessionEvent.provider.in_(session_provider_values(provider)),
+            SessionEvent.session_id == session_id,
+        ))
+    if source_document_ids is not None:
+        conditions.append(SessionEvent.source_document_id.in_(source_document_ids))
     rows = await session.execute(
         select(
             SessionEvent.provider,
             SessionEvent.session_id,
             SessionEvent.payload_json,
-        )
-        .where(
-            SessionEvent.workspace_id == workspace_id,
-            or_(*predicates),
-        )
+        ).where(*conditions)
     )
     matches: set[tuple[str, str]] = set()
     for provider, session_id, payload_json in rows:

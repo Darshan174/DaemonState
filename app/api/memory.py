@@ -26,19 +26,28 @@ from app.models import (
     Workspace,
 )
 from app.services.access import AccessScope, source_access_predicate
-from app.services.evidence import sha256_text
+from app.services.memory_trust import (
+    assess_memory_trust,
+    is_agent_source_type,
+    is_remote_source,
+)
 from app.services.project_scope import (
     source_workspace_relevance,
     workspace_references,
     workspace_relevance,
 )
+from app.services.provider_freshness import (
+    ProviderFreshnessStatus,
+    load_provider_freshness,
+)
+from app.services.session_library import selected_session_selection
 from app.services.workspace_goals import resolve_current_goal
 from app.services.workspace_scope import (
     current_source_documents,
     filter_explicit_source_documents_for_workspace,
     metadata_dict,
 )
-from app.taxonomy import AGENT_SESSION_SOURCE_TYPES, source_type_display
+from app.taxonomy import source_type_display
 from app.time import utc_now
 
 
@@ -59,10 +68,40 @@ MemorySectionId = Literal[
     "owners",
     "milestones",
     "resolved",
+    "completed",
     "superseded",
     "dismissed",
     "revisions",
 ]
+MemorySemanticSection = Literal[
+    "goal",
+    "requirements",
+    "decisions",
+    "work",
+    "blockers",
+    "risks",
+    "learnings",
+    "deliveries",
+    "owners",
+    "milestones",
+]
+MemoryScopeMode = Literal["agenda", "workspace"]
+MemorySourceGroup = Literal[
+    "all",
+    "documents",
+    "repository",
+    "sessions",
+    "integrations",
+]
+MemoryVerificationFilter = Literal[
+    "all",
+    "verified",
+    "observed",
+    "reported",
+    "needs_review",
+    "unavailable",
+]
+MemoryTemporalFilter = Literal["all", "current", "future", "past", "unknown"]
 
 SECTION_ORDER: tuple[str, ...] = (
     "goal",
@@ -79,18 +118,24 @@ SECTION_ORDER: tuple[str, ...] = (
     "owners",
     "milestones",
     "resolved",
+    "completed",
     "superseded",
     "dismissed",
     "revisions",
 )
 ACTIVE_SECTIONS = frozenset({
-    "goal", "requirements", "decisions", "work", "blockers", "risks",
+    "requirements", "decisions", "work", "blockers", "risks",
     "learnings", "deliveries",
 })
-REVIEW_SECTIONS = frozenset({"unverified", "conflicts", "stale"})
+REVIEW_SECTIONS = frozenset({"unverified", "conflicts"})
+FRESHNESS_SECTIONS = frozenset({"stale"})
 PEOPLE_SECTIONS = frozenset({"owners", "milestones"})
-HISTORY_SECTIONS = frozenset({"resolved", "superseded", "dismissed", "revisions"})
-HISTORICAL_COMPONENT_STATUSES = frozenset({"resolved", "superseded", "rejected"})
+HISTORY_SECTIONS = frozenset({
+    "resolved", "completed", "superseded", "dismissed", "revisions",
+})
+HISTORICAL_COMPONENT_STATUSES = frozenset({
+    "resolved", "superseded", "rejected", "deprecated",
+})
 CURRENT_COMPONENT_STATUSES = frozenset({
     "active", "needs_review", "proposed", "stale", "verified", "contested",
 })
@@ -113,8 +158,6 @@ FACT_ROUTES: dict[str, tuple[str, str]] = {
     "lesson": ("learnings", "Lesson"),
     "failed_attempt": ("learnings", "Failed attempt"),
     "changed_file": ("deliveries", "Changed file"),
-    "code_area": ("deliveries", "Code area"),
-    "repo_root": ("deliveries", "Repository"),
     "commit_reference": ("deliveries", "Commit"),
     "pr": ("deliveries", "Pull request"),
     "github_pr": ("deliveries", "Pull request"),
@@ -174,9 +217,17 @@ class MemoryReviewSummary(BaseModel):
     reviewed_at: datetime
 
 
+class MemoryResolution(BaseModel):
+    summary: str
+    source: MemorySource | None = None
+    evidence: MemoryEvidence | None = None
+    occurred_at: datetime | None = None
+
+
 class MemoryRecord(BaseModel):
     id: str
     section: MemorySectionId
+    semantic_section: MemorySectionId
     kind: str
     title: str
     summary: str
@@ -188,9 +239,14 @@ class MemoryRecord(BaseModel):
     origin: Literal[
         "workspace_goal", "component", "relationship", "source_metadata"
     ]
+    source_group: Literal[
+        "documents", "repository", "sessions", "integrations"
+    ]
+    relevance: str
     component_id: str | None = None
     source: MemorySource | None = None
     evidence: MemoryEvidence | None = None
+    resolution: MemoryResolution | None = None
     explanation: str
     allowed_actions: list[Literal["confirm", "dismiss", "resolve", "supersede", "reopen"]]
     last_review: MemoryReviewSummary | None = None
@@ -207,15 +263,32 @@ class MemorySection(BaseModel):
     has_more: bool
 
 
+class MemoryFacets(BaseModel):
+    sections: dict[str, int]
+    kinds: dict[str, int]
+    source_groups: dict[str, int]
+    verification: dict[str, int]
+    temporal: dict[str, int]
+    review_semantic_sections: dict[str, int]
+    reviewable_semantic_sections: dict[str, int]
+    stale_semantic_sections: dict[str, int]
+    kinds_by_section: dict[str, dict[str, int]]
+
+
 class ProjectMemoryResponse(BaseModel):
     workspace_id: str
     generated_at: datetime
     query: str
     selected_section: MemorySectionId | None = None
+    selected_semantic_section: MemorySemanticSection | None = None
     current_goal: dict | None
+    agenda: dict | None
+    filters: dict[str, str | None]
+    facets: MemoryFacets
+    matches: int
     totals: dict[str, int]
     sections: list[MemorySection]
-    scope: dict[str, int]
+    scope: dict[str, Any]
 
 
 @router.get("/context/memory", response_model=ProjectMemoryResponse)
@@ -223,6 +296,12 @@ async def get_project_memory(
     workspace_id: UUID,
     query: str = Query(default="", max_length=200),
     section: MemorySectionId | None = None,
+    semantic_section: MemorySemanticSection | None = None,
+    scope_mode: MemoryScopeMode = Query(default="agenda", alias="scope"),
+    source_group: MemorySourceGroup = "all",
+    verification: MemoryVerificationFilter = "all",
+    temporal: MemoryTemporalFilter = "all",
+    kind: str | None = Query(default=None, max_length=80),
     limit_per_section: int = Query(default=3, ge=1, le=500),
     session: AsyncSession = Depends(get_db_session),
     access_scope: AccessScope = Depends(get_access_scope),
@@ -242,8 +321,25 @@ async def get_project_memory(
         documents, str(workspace_id)
     )
     current_documents, _ = current_source_documents(documents)
+    provider_freshness_by_source = await load_provider_freshness(
+        session,
+        current_documents,
+    )
     current_document_ids = {item.id for item in current_documents}
     accessible_document_ids = {item.id for item in documents}
+    selected_session = await selected_session_selection(session, workspace_id)
+    selected_session_external_id = selected_session.get("external_id")
+    selected_session_document = next(
+        (
+            item for item in current_documents
+            if selected_session_external_id
+            and item.external_id == selected_session_external_id
+        ),
+        None,
+    )
+    selected_session_document_id = (
+        selected_session_document.id if selected_session_document is not None else None
+    )
 
     components: list[Component] = []
     if accessible_document_ids:
@@ -281,6 +377,9 @@ async def get_project_memory(
         if source is None or not _agent_source(source.source_type):
             visible_components.append(component)
             continue
+        if source.id == selected_session_document_id:
+            visible_components.append(component)
+            continue
         relevance = workspace_relevance(
             component,
             metadata_dict(source),
@@ -295,42 +394,97 @@ async def get_project_memory(
         else:
             excluded_irrelevant_sessions += 1
 
-    visible_components, occurrence_count_by_component, excluded_duplicate_claims = (
-        _canonical_current_components(visible_components)
+    human_superseded_component_ids = set(await session.scalars(
+        select(MemoryReviewEvent.component_id).where(
+            MemoryReviewEvent.workspace_id == workspace_id,
+            MemoryReviewEvent.action == "supersede",
+        )
+    ))
+    semantic_superseded_component_ids = set(await session.scalars(
+        select(Relationship.target_component_id).where(
+            Relationship.relationship_type == "supersedes",
+            Relationship.status.not_in(["rejected", "superseded"]),
+        )
+    ))
+
+    def is_mechanical_source_supersession(item: Component) -> bool:
+        return (
+            item.status == "superseded"
+            and item.id not in human_superseded_component_ids
+            and item.id not in semantic_superseded_component_ids
+        )
+
+    collapsed_source_revision_components = sum(
+        1 for item in visible_components if is_mechanical_source_supersession(item)
     )
+    visible_components = [
+        item
+        for item in visible_components
+        if not is_mechanical_source_supersession(item)
+    ]
 
     evidence_by_component = await _evidence_by_component(
         session, visible_components
     )
+    relationship_components = list(visible_components)
+    (
+        visible_components,
+        occurrence_count_by_component,
+        excluded_duplicate_claims,
+        canonical_component_ids,
+    ) = (
+        _canonical_current_components(
+            visible_components,
+            evidence_by_component=evidence_by_component,
+            provider_freshness_by_source=provider_freshness_by_source,
+        )
+    )
+    visible_component_ids = {item.id for item in visible_components}
+    evidence_by_component = {
+        component_id: evidence
+        for component_id, evidence in evidence_by_component.items()
+        if component_id in visible_component_ids
+    }
     reviews_by_component = await _latest_reviews_by_component(
         session, visible_components
     )
-    component_by_id = {item.id: item for item in visible_components}
+    component_by_id = {item.id: item for item in relationship_components}
+    record_by_component_id: dict[UUID, dict[str, Any]] = {}
     records: list[dict[str, Any]] = []
     conflict_component_ids: set[UUID] = set()
     excluded_unconfirmable_agent_components = 0
 
-    current_component_ids = {
-        item.id for item in visible_components
+    relationship_component_ids = {
+        item.id for item in relationship_components
         if item.source_document_id in current_document_ids
         and item.status not in HISTORICAL_COMPONENT_STATUSES
     }
     relationships: list[Relationship] = []
-    if current_component_ids:
+    if relationship_component_ids:
         relationships = list(await session.scalars(
             select(Relationship)
             .where(
-                Relationship.source_component_id.in_(current_component_ids),
-                Relationship.target_component_id.in_(current_component_ids),
+                Relationship.source_component_id.in_(relationship_component_ids),
+                Relationship.target_component_id.in_(relationship_component_ids),
                 Relationship.status.not_in(["rejected", "superseded"]),
             )
             .order_by(Relationship.created_at.desc(), Relationship.id.desc())
         ))
     for relationship in relationships:
-        if relationship.relationship_type in {"conflicts_with", "contradicts"}:
+        if (
+            relationship.relationship_type in {"conflicts_with", "contradicts"}
+            and relationship.status == "active"
+            and relationship.origin in {"deterministic", "human_verified"}
+        ):
             conflict_component_ids.update({
-                relationship.source_component_id,
-                relationship.target_component_id,
+                canonical_component_ids.get(
+                    relationship.source_component_id,
+                    relationship.source_component_id,
+                ),
+                canonical_component_ids.get(
+                    relationship.target_component_id,
+                    relationship.target_component_id,
+                ),
             })
 
     for component in visible_components:
@@ -339,7 +493,11 @@ async def get_project_memory(
             component.status not in HISTORICAL_COMPONENT_STATUSES
             and component.source_document is not None
             and _agent_source(component.source_document.source_type)
-            and not _exact_evidence(component.source_document, evidence)
+            and not assess_memory_trust(
+                component,
+                evidence,
+                source=component.source_document,
+            ).evidence_exact
         ):
             excluded_unconfirmable_agent_components += 1
             continue
@@ -349,17 +507,78 @@ async def get_project_memory(
             reviews_by_component.get(component.id),
             conflict=component.id in conflict_component_ids,
             occurrence_count=occurrence_count_by_component.get(component.id, 1),
+            provider_freshness=provider_freshness_by_source.get(
+                component.source_document_id
+            ),
         )
         if record is not None:
             records.append(record)
+            record_by_component_id[component.id] = record
+    for component_id, canonical_id in canonical_component_ids.items():
+        canonical_record = record_by_component_id.get(canonical_id)
+        if canonical_record is not None:
+            record_by_component_id[component_id] = canonical_record
 
-    records.extend(_relationship_records(relationships, component_by_id))
+    resolved_blocker_ids = {
+        component.id
+        for component in visible_components
+        if (
+            component.status == "resolved"
+            and (component.fact_type or "").lower() in {"blocker", "ai_blocker"}
+        )
+    }
+    if resolved_blocker_ids:
+        resolution_relationships = list(await session.scalars(
+            select(Relationship)
+            .where(
+                Relationship.source_component_id.in_(resolved_blocker_ids),
+                Relationship.target_component_id.in_(
+                    set(canonical_component_ids) | visible_component_ids
+                ),
+                Relationship.relationship_type == "resolved_by",
+                Relationship.status == "active",
+                Relationship.origin.in_(["deterministic", "human_verified"]),
+            )
+            .order_by(Relationship.created_at.desc(), Relationship.id.desc())
+        ))
+        for relationship in resolution_relationships:
+            blocker_record = record_by_component_id.get(
+                relationship.source_component_id
+            )
+            resolution_record = record_by_component_id.get(
+                relationship.target_component_id
+            )
+            if (
+                blocker_record is None
+                or resolution_record is None
+                or blocker_record.get("resolution") is not None
+            ):
+                continue
+            blocker_record["resolution"] = {
+                "summary": _clean_text(relationship.evidence),
+                "source": resolution_record.get("source"),
+                "evidence": resolution_record.get("evidence"),
+                "occurred_at": (
+                    resolution_record.get("occurred_at")
+                    or relationship.created_at
+                ),
+            }
+
+    relationship_records, excluded_untrusted_relationships = _relationship_records(
+        relationships,
+        component_by_id,
+        record_by_component_id,
+        canonical_component_ids,
+        provider_freshness_by_source=provider_freshness_by_source,
+    )
+    records.extend(relationship_records)
     records.extend(
         _source_metadata_records(
             current_documents,
             repositories,
             paths,
             commits,
+            provider_freshness_by_source=provider_freshness_by_source,
         )
     )
 
@@ -372,18 +591,68 @@ async def get_project_memory(
     current_goal = await resolve_current_goal(
         session,
         workspace_id=workspace_id,
-        allowed_component_ids=current_component_ids,
+        allowed_component_ids=relationship_component_ids,
     )
+    if current_goal is not None and current_goal.get("component_id"):
+        try:
+            goal_component_id = UUID(str(current_goal["component_id"]))
+        except ValueError:
+            goal_component_id = None
+        if goal_component_id is not None:
+            current_goal["component_id"] = str(
+                canonical_component_ids.get(
+                    goal_component_id,
+                    goal_component_id,
+                )
+            )
     if current_goal is not None:
         records.append(_goal_record(current_goal))
 
-    records = _dedupe_records(records)
+    workspace_records = _dedupe_records(records)
+    scoped_records, agenda, effective_scope = _apply_memory_scope(
+        workspace_records,
+        requested_scope=scope_mode,
+        current_goal=current_goal,
+        selected_session=selected_session,
+        selected_session_document=selected_session_document,
+        relationships=relationships,
+        canonical_component_ids=canonical_component_ids,
+    )
+    workspace_record_count = len(workspace_records)
+    agenda_record_count = len(scoped_records) if agenda is not None else 0
+    records = scoped_records
+
     normalized_query = " ".join(query.split()).casefold()
     if normalized_query:
         records = [
             record for record in records
             if normalized_query in _record_search_text(record)
         ]
+    normalized_kind = " ".join((kind or "").split()).casefold()
+    records = [
+        record for record in records
+        if (
+            (source_group == "all" or record["source_group"] == source_group)
+            and (verification == "all" or record["verification"] == verification)
+            and (temporal == "all" or record["temporal"] == temporal)
+            and (
+                semantic_section is None
+                or record["semantic_section"] == semantic_section
+            )
+        )
+    ]
+    facet_records = (
+        [record for record in records if record["section"] == section]
+        if section is not None else records
+    )
+    facets = _memory_facets(facet_records)
+    records = [
+        record for record in records
+        if (
+            not normalized_kind
+            or str(record.get("kind") or "").casefold() == normalized_kind
+        )
+    ]
 
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for record in records:
@@ -407,16 +676,54 @@ async def get_project_memory(
     totals = {
         "active": sum(counts[item] for item in ACTIVE_SECTIONS),
         "needs_review": sum(counts[item] for item in REVIEW_SECTIONS),
+        "ready_to_review": sum(
+            1
+            for record in records
+            if (
+                record["section"] == "unverified"
+                and "confirm" in record.get("allowed_actions", [])
+            )
+        ),
+        "conflicts": counts["conflicts"],
+        "needs_refresh": sum(counts[item] for item in FRESHNESS_SECTIONS),
         "people_and_dates": sum(counts[item] for item in PEOPLE_SECTIONS),
         "history": sum(counts[item] for item in HISTORY_SECTIONS),
+        "reported_activity": sum(
+            1
+            for record in records
+            if (
+                record["section"] == "completed"
+                and record["status"] == "reported"
+            )
+        ),
+        "source_revisions": counts["revisions"],
         "all": sum(counts.values()),
     }
+    totals["attention"] = totals["needs_review"] + totals["needs_refresh"]
+    matches = (
+        counts.get(section, 0)
+        if section is not None
+        else totals["all"]
+    )
     return ProjectMemoryResponse(
         workspace_id=str(workspace_id),
         generated_at=utc_now(),
         query=" ".join(query.split()),
         selected_section=section,
+        selected_semantic_section=semantic_section,
         current_goal=current_goal,
+        agenda=agenda,
+        filters={
+            "scope": scope_mode,
+            "effective_scope": effective_scope,
+            "source_group": source_group,
+            "verification": verification,
+            "temporal": temporal,
+            "kind": " ".join((kind or "").split()) or None,
+            "semantic_section": semantic_section,
+        },
+        facets=facets,
+        matches=matches,
         totals=totals,
         sections=sections,
         scope={
@@ -427,36 +734,101 @@ async def get_project_memory(
             "excluded_unknown_session_components": excluded_unknown_sessions,
             "excluded_irrelevant_session_components": excluded_irrelevant_sessions,
             "excluded_unconfirmable_agent_components": excluded_unconfirmable_agent_components,
+            "excluded_untrusted_relationships": excluded_untrusted_relationships,
             "collapsed_duplicate_current_claims": excluded_duplicate_claims,
+            "collapsed_source_revision_components": collapsed_source_revision_components,
+            "requested_mode": scope_mode,
+            "effective_mode": effective_scope,
+            "workspace_records": workspace_record_count,
+            "agenda_records": agenda_record_count,
+            "selected_session_document_id": (
+                str(selected_session_document_id)
+                if selected_session_document_id is not None else None
+            ),
         },
     )
 
 
 def _canonical_current_components(
     components: list[Component],
-) -> tuple[list[Component], dict[UUID, int], int]:
-    """Keep one current component per canonical claim; retain all explicit history."""
-    result: list[Component] = []
-    representative_by_claim: dict[UUID, Component] = {}
+    *,
+    evidence_by_component: dict[UUID, EvidenceSpan] | None = None,
+    provider_freshness_by_source: (
+        dict[UUID, ProviderFreshnessStatus] | None
+    ) = None,
+) -> tuple[list[Component], dict[UUID, int], int, dict[UUID, UUID]]:
+    """Keep the strongest current evidence per claim; retain explicit history."""
+    evidence_by_component = evidence_by_component or {}
+    provider_freshness_by_source = provider_freshness_by_source or {}
+    passthrough_ids: set[UUID] = set()
+    components_by_claim: dict[UUID, list[Component]] = defaultdict(list)
     occurrence_count: dict[UUID, int] = {}
-    collapsed = 0
+    canonical_component_ids: dict[UUID, UUID] = {}
     for component in components:
         if (
             component.status in HISTORICAL_COMPONENT_STATUSES
             or component.claim_id is None
         ):
-            result.append(component)
+            passthrough_ids.add(component.id)
             occurrence_count[component.id] = 1
+            canonical_component_ids[component.id] = component.id
             continue
-        representative = representative_by_claim.get(component.claim_id)
-        if representative is None:
-            representative_by_claim[component.claim_id] = component
-            result.append(component)
-            occurrence_count[component.id] = 1
-            continue
-        occurrence_count[representative.id] += 1
-        collapsed += 1
-    return result, occurrence_count, collapsed
+        components_by_claim[component.claim_id].append(component)
+
+    representative_ids: set[UUID] = set()
+    collapsed = 0
+    for claim_components in components_by_claim.values():
+        representative = max(
+            claim_components,
+            key=lambda item: _component_evidence_rank(
+                item,
+                evidence_by_component.get(item.id),
+                provider_fresh=(
+                    item.source_document_id in provider_freshness_by_source
+                ),
+            ),
+        )
+        representative_ids.add(representative.id)
+        occurrence_count[representative.id] = len(claim_components)
+        collapsed += len(claim_components) - 1
+        for component in claim_components:
+            canonical_component_ids[component.id] = representative.id
+
+    retained_ids = passthrough_ids | representative_ids
+    result = [item for item in components if item.id in retained_ids]
+    return result, occurrence_count, collapsed, canonical_component_ids
+
+
+def _component_evidence_rank(
+    component: Component,
+    evidence: EvidenceSpan | None,
+    *,
+    provider_fresh: bool = False,
+) -> tuple[int, int, int, int, float, float, datetime, str]:
+    """Prefer exact human/system evidence over recency for duplicate claims."""
+    source = component.source_document
+    assessment = assess_memory_trust(
+        component,
+        evidence,
+        source=source,
+        provider_fresh=provider_fresh,
+    )
+    return (
+        int(
+            assessment.current_truth
+            and assessment.verification == "verified"
+        ),
+        int(
+            assessment.current_truth
+            and assessment.verification == "observed"
+        ),
+        int(assessment.evidence_exact),
+        int(assessment.verification in {"verified", "observed", "reported"}),
+        float(component.authority_weight or 0),
+        float(component.confidence or 0),
+        component.created_at,
+        str(component.id),
+    )
 
 
 async def _evidence_by_component(
@@ -521,6 +893,7 @@ def _component_record(
     *,
     conflict: bool,
     occurrence_count: int = 1,
+    provider_freshness: ProviderFreshnessStatus | None = None,
 ) -> dict[str, Any] | None:
     fact_type = (component.fact_type or "fact").lower()
     if fact_type in {"session_root", "ai_session", "ai_step"}:
@@ -529,52 +902,73 @@ def _component_record(
     if route is None:
         return None
     semantic_section, kind = route
-    exact = _exact_evidence(component.source_document, evidence)
+    temporal = (component.temporal or "unknown").lower()
+    if semantic_section == "blockers" and temporal == "future":
+        semantic_section = "risks"
+        kind = "Potential blocker"
     source = component.source_document
-    source_metadata = metadata_dict(source) if source is not None else {}
-    agent_derived = bool(source and _agent_source(source.source_type))
-    remote_source = _remote_source(source)
-    human_confirmed = bool(
-        evidence
-        and (evidence.trust_zone or "").lower() == "trusted_human"
-    ) or bool(
-        source_metadata.get("verified_by_human") is True
-        or str(source_metadata.get("verification_status") or "").lower()
-        == "human_verified"
+    provider_fresh = bool(
+        provider_freshness is not None and provider_freshness.fresh
     )
-    evidence_zone = (evidence.trust_zone or "").lower() if evidence else ""
+    assessment = assess_memory_trust(
+        component,
+        evidence,
+        source=source,
+        provider_fresh=provider_fresh,
+        conflict=conflict,
+    )
+    exact = assessment.evidence_exact
+    remote_source = assessment.source_is_remote
     verified = bool(
-        evidence
-        and exact
-        and evidence.review_status == "verified"
-        and evidence_zone in {"trusted_human", "trusted_repo", "trusted_system"}
-        and (not agent_derived or human_confirmed)
+        assessment.current_truth
+        and assessment.verification == "verified"
     )
     provider_observed = bool(
-        evidence
-        and exact
-        and evidence.review_status == "verified"
-        and not agent_derived
-        and evidence_zone == "semi_trusted_tool"
+        assessment.current_truth
+        and assessment.verification == "observed"
     )
-    accepted = verified or provider_observed
+    accepted = assessment.current_truth
+    agent_reported_activity = assessment.reported_activity
     raw_status = (component.status or "active").lower()
-    if raw_status == "resolved" and kind == "Blocker":
-        section = "resolved"
+    if raw_status == "resolved":
+        section = (
+            "resolved"
+            if fact_type in {"blocker", "ai_blocker"}
+            else "completed"
+        )
         status = "resolved"
     elif raw_status == "superseded":
         section = "superseded"
         status = "superseded"
+    elif raw_status == "deprecated":
+        section = "superseded"
+        status = "deprecated"
     elif raw_status == "rejected":
         section = "dismissed"
         status = "dismissed"
+    elif agent_reported_activity:
+        # Test summaries, outcomes, and delivery prose written by an assistant
+        # are useful as a point-in-time activity trail. Re-reading the same
+        # prose cannot establish durable project truth, so it must not create
+        # human review work or become compiler-eligible Current Memory.
+        section = "completed"
+        status = "reported"
     elif raw_status in {"stale", "deprecated"}:
         section = "stale"
         status = "stale"
     elif conflict or raw_status == "contested":
         section = "conflicts"
         status = "conflict"
-    elif remote_source:
+    elif remote_source and not provider_fresh:
+        section = "stale"
+        status = "stale"
+    elif raw_status in {"needs_review", "proposed"}:
+        section = "unverified"
+        status = raw_status
+    elif (
+        temporal == "past"
+        and semantic_section in {"requirements", "work", "blockers", "risks"}
+    ):
         section = "stale"
         status = "stale"
     elif not accepted:
@@ -582,16 +976,22 @@ def _component_record(
         status = "needs_review"
     else:
         section = semantic_section
-        status = "verified" if verified else "observed"
+        status = "active"
 
     actions: list[str]
-    if raw_status in HISTORICAL_COMPONENT_STATUSES:
+    if agent_reported_activity:
+        actions = []
+    elif raw_status in HISTORICAL_COMPONENT_STATUSES:
         actions = ["reopen"] if exact else []
     else:
         actions = []
-        if exact and not verified:
+        if (
+            section == "unverified"
+            and exact
+            and (not verified or raw_status in {"needs_review", "proposed"})
+        ):
             actions.append("confirm")
-        if kind == "Blocker":
+        if kind == "Blocker" and section in {"blockers", "unverified"}:
             actions.append("resolve")
         actions.extend(["supersede", "dismiss"])
 
@@ -604,20 +1004,30 @@ def _component_record(
             "end_char": evidence.end_char,
             "text_sha256": evidence.text_sha256,
             "review_status": (
-                "verified" if verified else ("observed" if provider_observed else "needs_review")
+                assessment.verification
+                if evidence is not None
+                else "unavailable"
             ),
             "stored_review_status": evidence.review_status,
             "trust_zone": evidence.trust_zone,
             "extraction_method": evidence.extraction_method,
             "exact": exact,
         }
-    if section == "stale" and remote_source:
+    if agent_reported_activity:
         explanation = (
-            f"Typed `{fact_type}` record from a provider snapshot whose current remote "
-            "state has not been refreshed."
+            "Assistant-reported activity retained as point-in-time history. "
+            "It is not a durable project claim and does not require confirmation."
+        )
+    elif section == "stale" and remote_source:
+        explanation = (
+            f"Typed `{fact_type}` record from a provider snapshot. Refresh the source "
+            "before treating it as current; confirming the captured quote is not enough."
         )
     elif verified:
-        explanation = f"Typed `{fact_type}` record with exact verified evidence."
+        explanation = (
+            f"A person or trusted system confirmed this source-backed `{fact_type}` "
+            "claim as current project memory."
+        )
     elif provider_observed:
         explanation = (
             f"Typed `{fact_type}` record observed in exact provider evidence; remote "
@@ -625,35 +1035,48 @@ def _component_record(
         )
     elif exact:
         explanation = (
-            f"Typed `{fact_type}` record awaiting human confirmation of its exact evidence."
+            f"Exact source evidence is attached to this `{fact_type}` claim. A person "
+            "must decide whether it is correct, relevant, and still current."
         )
     else:
         explanation = f"Typed `{fact_type}` record without confirmable exact evidence."
     return {
         "id": f"component:{component.id}",
         "section": section,
+        "semantic_section": semantic_section,
         "kind": kind,
         "title": _clean_text(component.name) or _clean_text(component.value),
         "summary": _clean_text(component.value) or _clean_text(component.name),
         "status": status,
         "verification": (
-            "verified" if verified else (
-                "observed" if provider_observed else (
-                    "needs_review" if evidence is not None else "unavailable"
-                )
-            )
+            assessment.verification
+            if evidence is not None
+            else "unavailable"
         ),
-        "temporal": component.temporal or "unknown",
+        "temporal": temporal,
         "origin": "component",
+        "source_group": _source_group_for_source(source),
+        "relevance": "Included because its source belongs to this workspace.",
         "component_id": str(component.id),
-        "source": _source_payload(source, stale=section == "stale"),
+        "source": _source_payload(
+            source,
+            stale=section == "stale",
+            provider_fresh=provider_fresh,
+        ),
         "evidence": evidence_payload,
         "explanation": explanation,
         "allowed_actions": actions,
         "last_review": _review_payload(review),
         "occurred_at": component.created_at,
         "first_observed_at": component.valid_from,
-        "last_observed_at": source.ingested_at if source else component.created_at,
+        "last_observed_at": (
+            (
+                provider_freshness.observed_at
+                if provider_freshness is not None
+                else None
+            )
+            or (source.ingested_at if source else component.created_at)
+        ),
         "occurrence_count": occurrence_count,
     }
 
@@ -670,8 +1093,17 @@ def _explicit_route(component: Component) -> tuple[str, str] | None:
 def _relationship_records(
     relationships: list[Relationship],
     components: dict[UUID, Component],
-) -> list[dict[str, Any]]:
+    component_records: dict[UUID, dict[str, Any]],
+    canonical_component_ids: dict[UUID, UUID],
+    *,
+    provider_freshness_by_source: (
+        dict[UUID, ProviderFreshnessStatus] | None
+    ) = None,
+) -> tuple[list[dict[str, Any]], int]:
+    provider_freshness_by_source = provider_freshness_by_source or {}
     result: list[dict[str, Any]] = []
+    excluded_untrusted = 0
+    seen_relationships: set[tuple[str, str, str, str]] = set()
     routes = {
         "depends_on": ("blockers", "Dependency"),
         "blocked_by": ("blockers", "Dependency"),
@@ -691,11 +1123,47 @@ def _relationship_records(
         target_component = components.get(relationship.target_component_id)
         if source_component is None or target_component is None:
             continue
+        source_record = component_records.get(source_component.id)
+        target_record = component_records.get(target_component.id)
+        if source_record is None or target_record is None:
+            excluded_untrusted += 1
+            continue
         section, kind = route
         is_conflict = section == "conflicts"
+        endpoints_are_current = all(
+            record.get("section") in ACTIVE_SECTIONS | PEOPLE_SECTIONS
+            and record.get("verification") in {"verified", "observed"}
+            for record in (source_record, target_record)
+        )
+        relationship_is_trusted = (
+            relationship.status == "active"
+            and relationship.origin in {"deterministic", "human_verified"}
+            and endpoints_are_current
+        )
+        if not is_conflict and not relationship_is_trusted:
+            excluded_untrusted += 1
+            continue
+        canonical_source_id = canonical_component_ids.get(
+            source_component.id,
+            source_component.id,
+        )
+        canonical_target_id = canonical_component_ids.get(
+            target_component.id,
+            target_component.id,
+        )
+        semantic_key = (
+            str(canonical_source_id),
+            str(canonical_target_id),
+            relationship.relationship_type,
+            _clean_text(relationship.evidence).casefold(),
+        )
+        if semantic_key in seen_relationships:
+            continue
+        seen_relationships.add(semantic_key)
         result.append({
             "id": f"relationship:{relationship.id}",
             "section": section,
+            "semantic_section": section,
             "kind": kind,
             "title": (
                 f"{_clean_text(source_component.name)} "
@@ -704,14 +1172,28 @@ def _relationship_records(
             ),
             "summary": _clean_text(relationship.evidence),
             "status": "conflict" if is_conflict else "observed",
-            "verification": "observed",
+            "verification": (
+                "observed" if relationship_is_trusted else "needs_review"
+            ),
             "temporal": "current",
             "origin": "relationship",
+            "source_group": _source_group_for_source(
+                source_component.source_document
+            ),
+            "relevance": "Included because both linked records belong to this workspace.",
             "component_id": None,
-            "source": _source_payload(source_component.source_document),
+            "source": _source_payload(
+                source_component.source_document,
+                provider_fresh=(
+                    source_component.source_document_id
+                    in provider_freshness_by_source
+                ),
+            ),
             "evidence": {
                 "excerpt": relationship.evidence,
-                "review_status": "observed",
+                "review_status": (
+                    "observed" if relationship_is_trusted else "needs_review"
+                ),
                 "exact": False,
             },
             "explanation": (
@@ -721,8 +1203,12 @@ def _relationship_records(
             "allowed_actions": [],
             "occurred_at": relationship.created_at,
             "last_observed_at": relationship.created_at,
+            "_related_component_ids": {
+                str(canonical_source_id),
+                str(canonical_target_id),
+            },
         })
-    return result
+    return result, excluded_untrusted
 
 
 def _source_metadata_records(
@@ -730,7 +1216,12 @@ def _source_metadata_records(
     repositories: set[str],
     paths: set[str],
     commits: set[str],
+    *,
+    provider_freshness_by_source: (
+        dict[UUID, ProviderFreshnessStatus] | None
+    ) = None,
 ) -> list[dict[str, Any]]:
+    provider_freshness_by_source = provider_freshness_by_source or {}
     records: list[dict[str, Any]] = []
     for document in documents:
         metadata = metadata_dict(document)
@@ -746,14 +1237,30 @@ def _source_metadata_records(
                 continue
         item_type = str(metadata.get("item_type") or "").lower()
         if item_type in {"issue", "pull_request"}:
+            provider_freshness = provider_freshness_by_source.get(document.id)
+            provider_fresh = bool(
+                provider_freshness is not None
+                and provider_freshness.fresh
+            )
+            provider_section = "owners" if provider_fresh else "stale"
+            provider_status = "observed" if provider_fresh else "stale"
             for assignee in _metadata_people(metadata.get("assignees")):
                 records.append(_metadata_record(
                     document,
-                    section="owners",
+                    section=provider_section,
+                    semantic_section="owners",
                     kind="Owner",
                     title=assignee,
                     summary=f"Assigned to {document.external_id}",
-                    explanation="Observed from typed provider assignee metadata.",
+                    explanation=(
+                        "Observed from typed provider assignee metadata during a "
+                        "recent successful refresh."
+                        if provider_fresh
+                        else "Observed from typed provider assignee metadata whose "
+                        "current remote state has not been refreshed."
+                    ),
+                    status=provider_status,
+                    provider_freshness=provider_freshness,
                 ))
             milestone = metadata.get("milestone")
             milestone_title = (
@@ -764,11 +1271,20 @@ def _source_metadata_records(
             if milestone_title:
                 records.append(_metadata_record(
                     document,
-                    section="milestones",
+                    section="milestones" if provider_fresh else "stale",
+                    semantic_section="milestones",
                     kind="Milestone",
                     title=milestone_title,
                     summary=f"Milestone for {document.external_id}",
-                    explanation="Observed from typed provider milestone metadata.",
+                    explanation=(
+                        "Observed from typed provider milestone metadata during a "
+                        "recent successful refresh."
+                        if provider_fresh
+                        else "Observed from typed provider milestone metadata whose "
+                        "current remote state has not been refreshed."
+                    ),
+                    status=provider_status,
+                    provider_freshness=provider_freshness,
                 ))
         revision_number = int(document.revision_number or 1)
         if revision_number > 1:
@@ -783,6 +1299,7 @@ def _source_metadata_records(
                 ),
                 explanation="Derived from the source ledger's immutable revision number.",
                 status="historical",
+                provider_freshness=provider_freshness_by_source.get(document.id),
             ))
     return records
 
@@ -791,24 +1308,36 @@ def _metadata_record(
     document: SourceDocument,
     *,
     section: str,
+    semantic_section: str | None = None,
     kind: str,
     title: str,
     summary: str,
     explanation: str,
     status: str = "observed",
+    provider_freshness: ProviderFreshnessStatus | None = None,
 ) -> dict[str, Any]:
+    provider_fresh = bool(
+        provider_freshness is not None and provider_freshness.fresh
+    )
     return {
         "id": f"metadata:{section}:{document.id}:{_slug(title)}",
         "section": section,
+        "semantic_section": semantic_section or section,
         "kind": kind,
         "title": _clean_text(title),
         "summary": _clean_text(summary),
         "status": status,
         "verification": "observed",
-        "temporal": "current" if status == "observed" else "past",
+        "temporal": "current" if status == "observed" else "unknown",
         "origin": "source_metadata",
+        "source_group": _source_group_for_source(document),
+        "relevance": "Included because its source belongs to this workspace.",
         "component_id": None,
-        "source": _source_payload(document),
+        "source": _source_payload(
+            document,
+            stale=status == "stale",
+            provider_fresh=provider_fresh,
+        ),
         "evidence": {
             "excerpt": None,
             "review_status": "provider_observed",
@@ -817,7 +1346,14 @@ def _metadata_record(
         "explanation": explanation,
         "allowed_actions": [],
         "occurred_at": document.ingested_at,
-        "last_observed_at": document.ingested_at,
+        "last_observed_at": (
+            (
+                provider_freshness.observed_at
+                if provider_freshness is not None
+                else None
+            )
+            or document.ingested_at
+        ),
     }
 
 
@@ -842,20 +1378,23 @@ def _goal_record(goal: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": f"goal:{goal['id']}",
         "section": "goal",
+        "semantic_section": "goal",
         "kind": "Active run objective" if active_run else "Selected goal",
         "title": _clean_text(goal.get("title")),
         "summary": (
             "Controls the currently running agent session and cannot be cleared here."
             if active_run
             else (
-                "Display-only workspace focus shown in Memory and Now. It does not start "
-                "work, edit files, or change agent context by itself."
+                "Scopes Current Memory and is also shown in Now. It does not start work, "
+                "edit files, or change agent context by itself."
             )
         ),
         "status": "active",
         "verification": "observed" if active_run else "verified",
         "temporal": "current",
         "origin": "workspace_goal",
+        "source_group": "documents",
+        "relevance": "This is the workspace's selected agenda.",
         "component_id": goal.get("component_id"),
         "source": MemorySource(
             label="Active agent run" if active_run else "User-selected workspace goal",
@@ -874,18 +1413,286 @@ def _goal_record(goal: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _apply_memory_scope(
+    records: list[dict[str, Any]],
+    *,
+    requested_scope: MemoryScopeMode,
+    current_goal: dict[str, Any] | None,
+    selected_session: dict[str, str | None],
+    selected_session_document: SourceDocument | None,
+    relationships: list[Relationship],
+    canonical_component_ids: dict[UUID, UUID],
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None, str]:
+    agenda: dict[str, Any] | None = None
+    if current_goal is not None:
+        agenda = {
+            "kind": "current_goal",
+            "title": _clean_text(current_goal.get("title")),
+            "source_kind": current_goal.get("source_kind"),
+            "component_id": current_goal.get("component_id"),
+            "source_document_id": None,
+            "topic": None,
+            "match_mode": (
+                "linked_component"
+                if current_goal.get("component_id")
+                else "text_match"
+            ),
+        }
+    elif selected_session_document is not None:
+        metadata = metadata_dict(selected_session_document)
+        topic = _clean_text(selected_session.get("topic"))
+        agenda = {
+            "kind": "selected_session",
+            "title": (
+                topic
+                or _clean_text(metadata.get("title"))
+                or _clean_text(selected_session_document.external_id)
+            ),
+            "source_kind": "selected_session",
+            "component_id": None,
+            "source_document_id": str(selected_session_document.id),
+            "topic": topic or None,
+            "match_mode": "selected_source",
+        }
+
+    if requested_scope == "workspace" or agenda is None:
+        return (
+            [
+                {
+                    **record,
+                    "relevance": (
+                        record["relevance"]
+                        if record.get("origin") == "workspace_goal"
+                        else "Included because its source belongs to this workspace."
+                    ),
+                }
+                for record in records
+            ],
+            agenda,
+            "workspace",
+        )
+
+    if agenda["kind"] == "selected_session":
+        source_document_id = agenda["source_document_id"]
+        scoped = []
+        for record in records:
+            source = record.get("source") or {}
+            if source.get("document_id") != source_document_id:
+                continue
+            scoped.append({
+                **record,
+                "relevance": "Shown because it comes from the session selected for this workspace.",
+            })
+        return scoped, agenda, "agenda"
+
+    component_id = str(agenda.get("component_id") or "").strip()
+    related_component_ids = {component_id} if component_id else set()
+    if component_id:
+        for relationship in relationships:
+            if (
+                relationship.status != "active"
+                or relationship.origin not in {"deterministic", "human_verified"}
+            ):
+                continue
+            source_id = str(canonical_component_ids.get(
+                relationship.source_component_id,
+                relationship.source_component_id,
+            ))
+            target_id = str(canonical_component_ids.get(
+                relationship.target_component_id,
+                relationship.target_component_id,
+            ))
+            if component_id == source_id:
+                related_component_ids.add(target_id)
+            elif component_id == target_id:
+                related_component_ids.add(source_id)
+    focus_source_document_id = next(
+        (
+            str((record.get("source") or {}).get("document_id") or "")
+            for record in records
+            if str(record.get("component_id") or "") == component_id
+        ),
+        "",
+    )
+    agenda_terms = _agenda_terms(agenda.get("title"))
+    scoped: list[dict[str, Any]] = []
+    for record in records:
+        if record.get("origin") == "workspace_goal":
+            scoped.append({
+                **record,
+                "relevance": "This is the workspace's selected agenda.",
+            })
+            continue
+        record_component_id = str(record.get("component_id") or "")
+        relationship_component_ids = {
+            str(value) for value in record.get("_related_component_ids", set())
+        }
+        if component_id and (
+            record_component_id in related_component_ids
+            or bool(relationship_component_ids & related_component_ids)
+        ):
+            scoped.append({
+                **record,
+                "relevance": "Directly linked to the selected agenda record.",
+            })
+            continue
+        source_document_id = str((record.get("source") or {}).get("document_id") or "")
+        if (
+            focus_source_document_id
+            and source_document_id == focus_source_document_id
+        ):
+            scoped.append({
+                **record,
+                "relevance": "Backed by the same source as the selected agenda.",
+            })
+            continue
+        matched_terms = _matching_agenda_terms(record, agenda_terms)
+        if matched_terms:
+            scoped.append({
+                **record,
+                "relevance": (
+                    "Matches the selected agenda terms: "
+                    f"{', '.join(matched_terms)}."
+                ),
+            })
+    return (
+        scoped,
+        agenda,
+        "agenda" if component_id else "agenda_match",
+    )
+
+
+def _agenda_terms(value: Any) -> list[str]:
+    stop_words = {
+        "about", "after", "again", "against", "also", "and", "are", "build",
+        "current", "for", "from", "goal", "into", "make", "project", "that",
+        "the", "this", "through", "with", "work", "workspace",
+    }
+    terms: list[str] = []
+    for term in _normalized_search_terms(value):
+        if term in stop_words or term in terms:
+            continue
+        terms.append(term)
+    return terms[:12]
+
+
+def _matching_agenda_terms(
+    record: dict[str, Any],
+    agenda_terms: list[str],
+) -> list[str]:
+    if not agenda_terms:
+        return []
+    evidence = record.get("evidence") or {}
+    text = " ".join(str(value or "") for value in (
+        record.get("title"),
+        record.get("summary"),
+        record.get("kind"),
+        evidence.get("excerpt"),
+    ))
+    record_terms = set(_normalized_search_terms(text))
+    matched = [term for term in agenda_terms if term in record_terms]
+    required = 1 if len(agenda_terms) == 1 else 2
+    return matched if len(matched) >= required else []
+
+
+def _normalized_search_terms(value: Any) -> list[str]:
+    terms: list[str] = []
+    for raw in re.findall(
+        r"[a-z0-9][a-z0-9_-]{2,}",
+        str(value or "").casefold(),
+    ):
+        for term in (raw, *re.split(r"[-_]+", raw)):
+            if len(term) >= 3 and term not in terms:
+                terms.append(term)
+    return terms
+
+
+def _memory_facets(records: list[dict[str, Any]]) -> dict[str, Any]:
+    facet_fields = {
+        "sections": "section",
+        "kinds": "kind",
+        "source_groups": "source_group",
+        "verification": "verification",
+        "temporal": "temporal",
+    }
+    result: dict[str, dict[str, int]] = {}
+    for facet_name, field_name in facet_fields.items():
+        counts: dict[str, int] = defaultdict(int)
+        for record in records:
+            value = str(record.get(field_name) or "unknown")
+            counts[value] += 1
+        result[facet_name] = dict(sorted(counts.items()))
+    review_semantic_counts: dict[str, int] = defaultdict(int)
+    reviewable_semantic_counts: dict[str, int] = defaultdict(int)
+    stale_semantic_counts: dict[str, int] = defaultdict(int)
+    for record in records:
+        if record.get("section") in REVIEW_SECTIONS:
+            semantic_section = str(
+                record.get("semantic_section") or "unknown"
+            )
+            review_semantic_counts[semantic_section] += 1
+            if (
+                record.get("section") == "unverified"
+                and "confirm" in record.get("allowed_actions", [])
+            ):
+                reviewable_semantic_counts[semantic_section] += 1
+        if record.get("section") in FRESHNESS_SECTIONS:
+            stale_semantic_counts[
+                str(record.get("semantic_section") or "unknown")
+            ] += 1
+    result["review_semantic_sections"] = dict(
+        sorted(review_semantic_counts.items())
+    )
+    result["reviewable_semantic_sections"] = dict(
+        sorted(reviewable_semantic_counts.items())
+    )
+    result["stale_semantic_sections"] = dict(
+        sorted(stale_semantic_counts.items())
+    )
+    kinds_by_section: dict[str, dict[str, int]] = defaultdict(
+        lambda: defaultdict(int)
+    )
+    for record in records:
+        section_id = str(record.get("section") or "unknown")
+        kind = str(record.get("kind") or "unknown")
+        kinds_by_section[section_id][kind] += 1
+    result["kinds_by_section"] = {
+        section_id: dict(sorted(counts.items()))
+        for section_id, counts in sorted(kinds_by_section.items())
+    }
+    return result
+
+
+def _source_group_for_source(
+    source: SourceDocument | None,
+) -> Literal["documents", "repository", "sessions", "integrations"]:
+    if source is None:
+        return "documents"
+    source_type = (source.source_type or "").lower()
+    if _agent_source(source_type):
+        return "sessions"
+    if source_type in {
+        "local_repository", "repository", "repo", "git", "code_index",
+    }:
+        return "repository"
+    if source_type in {
+        "github", "github_issue", "github_pr", "github_pull_request", "slack",
+        "discord", "gmail", "gdrive", "google_drive", "zoom", "notion",
+    }:
+        return "integrations"
+    return "documents"
+
+
 def _source_payload(
     source: SourceDocument | None,
     *,
     stale: bool = False,
     label: str | None = None,
+    provider_fresh: bool = False,
 ) -> dict[str, Any] | None:
     if source is None:
         return None
-    remote = source.source_type in {
-        "github", "github_issue", "github_pr", "slack", "discord", "gmail",
-        "gdrive", "zoom", "notion",
-    }
+    remote = _remote_source(source)
     return {
         "label": label or f"{source_type_display(source.source_type)} · {source.external_id}",
         "source_type": source.source_type,
@@ -893,7 +1700,15 @@ def _source_payload(
         "external_id": source.external_id,
         "url": source.source_url,
         "revision_number": int(source.revision_number or 1),
-        "freshness": "stale" if stale else ("unknown" if remote else "not_remote"),
+        "freshness": (
+            "stale"
+            if stale
+            else "observed"
+            if remote and provider_fresh
+            else "unknown"
+            if remote
+            else "not_remote"
+        ),
     }
 
 
@@ -906,24 +1721,6 @@ def _review_payload(review: MemoryReviewEvent | None) -> dict[str, Any] | None:
         "reason": review.reason,
         "reviewed_at": review.created_at,
     }
-
-
-def _exact_evidence(source: SourceDocument | None, evidence: EvidenceSpan | None) -> bool:
-    if (
-        source is None
-        or evidence is None
-        or evidence.start_char is None
-        or evidence.end_char is None
-    ):
-        return False
-    content = source.content or ""
-    excerpt = evidence.text or ""
-    return bool(
-        0 <= evidence.start_char < evidence.end_char <= len(content)
-        and evidence.source_document_id == source.id
-        and content[evidence.start_char:evidence.end_char] == excerpt
-        and sha256_text(excerpt) == evidence.text_sha256
-    )
 
 
 def _dedupe_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -946,6 +1743,8 @@ def _record_search_text(record: dict[str, Any]) -> str:
         record.get("kind"),
         record.get("status"),
         record.get("verification"),
+        record.get("source_group"),
+        record.get("relevance"),
         source.get("label"),
         source.get("external_id"),
         evidence.get("excerpt"),
@@ -977,19 +1776,11 @@ def _metadata_people(value: Any) -> list[str]:
 
 
 def _agent_source(source_type: str | None) -> bool:
-    raw = (source_type or "").lower()
-    return raw in AGENT_SESSION_SOURCE_TYPES or raw.startswith("ai_context")
+    return is_agent_source_type(source_type)
 
 
 def _remote_source(source: SourceDocument | None) -> bool:
-    if source is None:
-        return False
-    metadata = metadata_dict(source)
-    item_type = str(metadata.get("item_type") or "").lower()
-    source_type = (source.source_type or "").lower()
-    return item_type in {"issue", "pull_request"} or source_type in {
-        "github", "slack", "notion", "gmail", "google_drive",
-    }
+    return is_remote_source(source)
 
 
 def _clean_text(value: Any) -> str:
