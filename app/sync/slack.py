@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-import logging
 import asyncio
+import logging
+from datetime import datetime
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Connector
+from app.models import Connector, SyncJob
 from app.services.credentials import load_credentials
+from app.services.provider_freshness import record_provider_observation
 from app.services.source_revisions import ingest_source_document_revision
+from app.time import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +23,13 @@ MAX_SLACK_RETRIES = 2
 SLACK_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
-async def sync_slack(connector: Connector, session: AsyncSession) -> dict:
+async def sync_slack(
+    connector: Connector,
+    session: AsyncSession,
+    *,
+    sync_job: SyncJob | None = None,
+) -> dict:
+    sync_observed_at = utc_now()
     creds = load_credentials(connector.credentials_json)
     token = creds.get("access_token", "")
     if not token:
@@ -130,6 +139,8 @@ async def sync_slack(connector: Connector, session: AsyncSession) -> dict:
                     headers,
                     channel_id,
                     channel_name,
+                    sync_job=sync_job,
+                    observed_at=sync_observed_at,
                 )
                 if result == "persisted":
                     docs_persisted += 1
@@ -180,6 +191,8 @@ async def sync_slack(connector: Connector, session: AsyncSession) -> dict:
                         channel_id,
                         channel_name,
                         parent_ts=msg["ts"],
+                        sync_job=sync_job,
+                        observed_at=sync_observed_at,
                     )
                     if result == "persisted":
                         docs_persisted += 1
@@ -232,6 +245,8 @@ async def _persist_slack_message(
     channel_id: str,
     channel_name: str,
     parent_ts: str | None = None,
+    sync_job: SyncJob | None = None,
+    observed_at: datetime | None = None,
 ) -> str:
     text = (msg.get("text") or "").strip()
     # Skip empty messages, system subtypes (joins, leaves, etc.), and bot messages.
@@ -259,6 +274,7 @@ async def _persist_slack_message(
         "parent_ts": parent_ts,
         "is_thread_reply": is_thread_reply,
         "reply_count": msg.get("reply_count", 0),
+        "edited_ts": (msg.get("edited") or {}).get("ts"),
         "permalink": permalink,
     }
     result = await ingest_source_document_revision(
@@ -270,6 +286,16 @@ async def _persist_slack_message(
         author=author_name or msg.get("user", ""),
         source_url=permalink,
         metadata_json={k: v for k, v in metadata.items() if v is not None},
+        revision_on_metadata_change=True,
+    )
+    await record_provider_observation(
+        session,
+        connector=connector,
+        source=result.document,
+        sync_job=sync_job,
+        observed_at=observed_at or utc_now(),
+        provider_version=str((msg.get("edited") or {}).get("ts") or ts),
+        observation_kind="not_modified" if result.unchanged else "fetched",
     )
     if result.unchanged:
         return "duplicate"

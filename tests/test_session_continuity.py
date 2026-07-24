@@ -4,7 +4,7 @@ import json
 from uuid import uuid4
 
 from app.models import CodeFile, SessionEvent, SourceDocument, Workspace
-from app.services.session_ledger import build_session_ledger
+from app.services.session_ledger import build_session_ledger, render_session_ledger_markdown
 from app.services.session_events import NormalizedSessionEvent, persist_session_events
 
 
@@ -187,16 +187,18 @@ async def test_session_continuity_builds_one_truthful_ledger_per_session(
     )
     assert any(item["kind"] == "progress" for item in ledger["added"])
     assert any(item["kind"] == "decision" for item in ledger["added"])
-    assert any(item["kind"] == "file" for item in ledger["added"])
+    assert not any(item["kind"] == "file" for item in ledger["added"])
     assert not any(item["kind"] == "check" for item in ledger["added"])
     assert "frontend/src/pages/RunsPage.jsx" in {
-        item["text"] for item in ledger["added"] if item["kind"] == "file"
+        item["text"] for item in ledger["files"]
     }
     assert any(
         item["text"] == "app/services/observed_edit.py"
         and item["truth_state"] == "observed"
-        for item in ledger["added"]
+        for item in ledger["files"]
     )
+    assert ledger["counts"]["files"] == 2
+    assert ledger["truncated"]["files"] == 0
     assert any(
         item["text"] == "Remove the checkpoint label from the card."
         for item in ledger["added"]
@@ -212,7 +214,7 @@ async def test_session_continuity_builds_one_truthful_ledger_per_session(
     assert ledger["counts"]["missing"] is None
     assert len(ledger["compactions"]) == 1
     assert "hashlib.sh" not in {
-        item["text"] for item in ledger["added"] if item["kind"] == "file"
+        item["text"] for item in ledger["files"]
     }
 
     uncompacted = next(
@@ -301,6 +303,12 @@ async def test_session_continuation_returns_a_reviewable_source_backed_bundle(
     assert "# Continue with recovered session context" in payload["content"]
     assert "Preserve the original request." in payload["content"]
     assert "Status: unmeasured" in payload["content"]
+    assert "## Original request" in payload["content"]
+    assert "## Since your request" in payload["content"]
+    assert "## Updated requests" in payload["content"]
+    assert "## No longer applies" in payload["content"]
+    assert "## Context gaps" in payload["content"]
+    assert "event 1" not in payload["content"].lower()
 
 
 def test_session_ledger_reports_when_a_section_is_windowed() -> None:
@@ -334,3 +342,193 @@ def test_session_ledger_reports_when_a_section_is_windowed() -> None:
     assert len(ledger["added"]) == 18
     assert ledger["truncated"]["added"] == 6
     assert ledger["added"][0]["text"] == "Add independently captured requirement 8."
+
+
+def test_session_ledger_separates_and_windows_file_evidence() -> None:
+    workspace_id = uuid4()
+    source_document_id = uuid4()
+    events = [
+        SessionEvent(
+            id=uuid4(),
+            workspace_id=workspace_id,
+            source_document_id=source_document_id,
+            provider="codex",
+            session_id="file-heavy-session",
+            provider_event_id="base",
+            sequence_number=1,
+            event_type="user_request",
+            role="user",
+            content="Build the resume experience.",
+            payload_json="{}",
+            content_sha256="1" * 64,
+        ),
+        *[
+            SessionEvent(
+                id=uuid4(),
+                workspace_id=workspace_id,
+                source_document_id=source_document_id,
+                provider="codex",
+                session_id="file-heavy-session",
+                provider_event_id=f"file-{sequence}",
+                sequence_number=sequence,
+                event_type="tool_call",
+                role="assistant",
+                payload_json=json.dumps({
+                    "tool_name": "apply_patch",
+                    "input": (
+                        "*** Begin Patch\n"
+                        f"*** Update File: /workspace/context-engine/tests/test_{sequence}.py\n"
+                        "@@\n"
+                        "+updated = True\n"
+                        "*** End Patch"
+                    ),
+                }),
+                content_sha256=f"{sequence:064x}",
+            )
+            for sequence in range(2, 27)
+        ],
+        SessionEvent(
+            id=uuid4(),
+            workspace_id=workspace_id,
+            source_document_id=source_document_id,
+            provider="codex",
+            session_id="file-heavy-session",
+            provider_event_id="meaningful-progress",
+            sequence_number=27,
+            event_type="assistant_update",
+            role="assistant",
+            content="Implemented keyboard navigation for every resume card.",
+            payload_json="{}",
+            content_sha256="f" * 64,
+        ),
+    ]
+
+    ledger = build_session_ledger(events)
+
+    assert [item["text"] for item in ledger["added"]] == [
+        "Implemented keyboard navigation for every resume card."
+    ]
+    assert ledger["counts"]["files"] == 25
+    assert len(ledger["files"]) == 18
+    assert ledger["truncated"]["files"] == 7
+    assert ledger["files"][-1]["text"] == (
+        "/workspace/context-engine/tests/test_26.py"
+    )
+    assert all(item["kind"] == "file" for item in ledger["files"])
+
+
+def test_session_ledger_filters_low_signal_updates_and_cli_auth_transcripts() -> None:
+    workspace_id = uuid4()
+    source_document_id = uuid4()
+
+    def event(
+        sequence_number: int,
+        event_type: str,
+        content: str,
+        *,
+        role: str,
+    ) -> SessionEvent:
+        return SessionEvent(
+            id=uuid4(),
+            workspace_id=workspace_id,
+            source_document_id=source_document_id,
+            provider="codex",
+            session_id="signal-session",
+            provider_event_id=f"event-{sequence_number}",
+            sequence_number=sequence_number,
+            event_type=event_type,
+            role=role,
+            content=content,
+            payload_json="{}",
+            content_sha256=f"{sequence_number:064x}",
+        )
+
+    ledger = build_session_ledger([
+        event(1, "user_request", "Improve the resume cards.", role="user"),
+        event(
+            2,
+            "assistant_update",
+            (
+                "Implemented.\n"
+                "Authentication is fixed.\n"
+                "Authentication is working.\n"
+                "Implemented normalized session events.\n"
+                "- Added scoped ledger grouping\n"
+                "- Tests passed across backend"
+            ),
+            role="assistant",
+        ),
+        event(
+            3,
+            "user_request",
+            (
+                "✓ Authentication complete. — gh config set -h github.com "
+                "git_protocol https ✓ Configured git protocol ✓ Logged in as "
+                "Darshan174! You were already logged in to this account."
+            ),
+            role="user",
+        ),
+        event(
+            4,
+            "user_request",
+            "Add keyboard navigation to the expanded ledger.",
+            role="user",
+        ),
+    ])
+
+    assert [item["text"] for item in ledger["added"]] == [
+        "Implemented normalized session events.",
+        "Added scoped ledger grouping",
+        "Tests passed across backend",
+        "Add keyboard navigation to the expanded ledger.",
+    ]
+
+
+def test_session_ledger_markdown_uses_user_facing_sections_without_event_numbers() -> None:
+    workspace_id = uuid4()
+    source_document_id = uuid4()
+    events = [
+        SessionEvent(
+            id=uuid4(),
+            workspace_id=workspace_id,
+            source_document_id=source_document_id,
+            provider="codex",
+            session_id="markdown-session",
+            provider_event_id="base",
+            sequence_number=9,
+            event_type="user_request",
+            role="user",
+            content="Build useful resume cards.",
+            payload_json="{}",
+            content_sha256="1" * 64,
+        ),
+        SessionEvent(
+            id=uuid4(),
+            workspace_id=workspace_id,
+            source_document_id=source_document_id,
+            provider="codex",
+            session_id="markdown-session",
+            provider_event_id="progress",
+            sequence_number=1771,
+            event_type="assistant_update",
+            role="assistant",
+            content="Implemented meaningful progress summaries.",
+            payload_json="{}",
+            content_sha256="2" * 64,
+        ),
+    ]
+
+    content = render_session_ledger_markdown(
+        build_session_ledger(events),
+        session_title="Resume cards",
+    )
+
+    assert "## Original request" in content
+    assert "## Since your request" in content
+    assert "## Updated requests" in content
+    assert "## No longer applies" in content
+    assert "## Context gaps" in content
+    assert "[You asked] Build useful resume cards." in content
+    assert "[Agent reported] Implemented meaningful progress summaries." in content
+    assert "event 9" not in content.lower()
+    assert "event 1771" not in content.lower()

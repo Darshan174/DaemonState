@@ -66,6 +66,9 @@ class Workspace(Base):
     source_read_grants: Mapped[list["SourceReadGrant"]] = orm_relationship(
         back_populates="workspace"
     )
+    source_sync_observations: Mapped[list["SourceSyncObservation"]] = orm_relationship(
+        back_populates="workspace"
+    )
     context_packs: Mapped[list["ContextPack"]] = orm_relationship(back_populates="workspace")
     agent_runs: Mapped[list["AgentRun"]] = orm_relationship(back_populates="workspace")
     session_events: Mapped[list["SessionEvent"]] = orm_relationship(back_populates="workspace")
@@ -109,6 +112,9 @@ class Connector(Base):
 
     workspace: Mapped["Workspace"] = orm_relationship(back_populates="connectors")
     sync_jobs: Mapped[list["SyncJob"]] = orm_relationship(back_populates="connector")
+    source_sync_observations: Mapped[list["SourceSyncObservation"]] = orm_relationship(
+        back_populates="connector"
+    )
 
     @property
     def items_synced(self) -> int:
@@ -140,8 +146,14 @@ class SyncJob(Base):
             "uq_sync_jobs_active_idempotency_key",
             "idempotency_key",
             unique=True,
-            sqlite_where=text("idempotency_key IS NOT NULL AND status IN ('pending','running')"),
-            postgresql_where=text("idempotency_key IS NOT NULL AND status IN ('pending','running')"),
+            sqlite_where=text(
+                "idempotency_key IS NOT NULL "
+                "AND status IN ('pending','retrying','running')"
+            ),
+            postgresql_where=text(
+                "idempotency_key IS NOT NULL "
+                "AND status IN ('pending','retrying','running')"
+            ),
         ),
     )
 
@@ -164,6 +176,8 @@ class SyncJob(Base):
     available_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     locked_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    claim_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     dead_lettered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -172,6 +186,9 @@ class SyncJob(Base):
     )
 
     connector: Mapped["Connector"] = orm_relationship(back_populates="sync_jobs")
+    source_sync_observations: Mapped[list["SourceSyncObservation"]] = orm_relationship(
+        back_populates="sync_job"
+    )
 
 
 class RetrievalEvent(Base):
@@ -224,6 +241,13 @@ class SourceDocument(Base):
             "source_type",
             "external_id",
             "revision_number",
+        ),
+        Index(
+            "ix_source_documents_workspace_type_ingested",
+            "workspace_id",
+            "source_type",
+            "ingested_at",
+            "id",
         ),
         Index(
             "ix_source_documents_supersedes_source_document_id",
@@ -282,6 +306,57 @@ class SourceDocument(Base):
     )
     read_grants: Mapped[list["SourceReadGrant"]] = orm_relationship(
         back_populates="source_document", cascade="all, delete-orphan"
+    )
+    sync_observations: Mapped[list["SourceSyncObservation"]] = orm_relationship(
+        back_populates="source_document", cascade="all, delete-orphan"
+    )
+
+
+class SourceIngestionJob(Base):
+    __tablename__ = "source_ingestion_jobs"
+    __table_args__ = (
+        Index(
+            "uq_source_ingestion_jobs_source_document_id",
+            "source_document_id",
+            unique=True,
+        ),
+        Index(
+            "ix_source_ingestion_jobs_queue_due",
+            "status",
+            "available_at",
+            "created_at",
+        ),
+        Index(
+            "ix_source_ingestion_jobs_lease_expires_at",
+            "lease_expires_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    source_document_id: Mapped[UUID] = mapped_column(
+        ForeignKey("source_documents.id", ondelete="CASCADE"), nullable=False
+    )
+    workspace_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("workspaces.id"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    available_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    locked_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    claim_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    error_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    queued_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    dead_lettered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
     )
 
 
@@ -367,6 +442,76 @@ class SourceReadGrant(Base):
 
     workspace: Mapped["Workspace"] = orm_relationship(back_populates="source_read_grants")
     source_document: Mapped["SourceDocument"] = orm_relationship(back_populates="read_grants")
+
+
+class SourceSyncObservation(Base):
+    """Append-only proof that one provider item was read at one exact revision."""
+
+    __tablename__ = "source_sync_observations"
+    __table_args__ = (
+        Index(
+            "ix_source_sync_observations_source_observed",
+            "source_document_id",
+            "observed_at",
+        ),
+        Index(
+            "ix_source_sync_observations_connector_observed",
+            "connector_id",
+            "observed_at",
+        ),
+        Index(
+            "ix_source_sync_observations_job_attempt",
+            "sync_job_id",
+            "sync_attempt_count",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id"), nullable=False, index=True
+    )
+    connector_id: Mapped[UUID] = mapped_column(
+        ForeignKey("connectors.id"), nullable=False, index=True
+    )
+    sync_job_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("sync_jobs.id"), nullable=True, index=True
+    )
+    sync_attempt_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_document_id: Mapped[UUID] = mapped_column(
+        ForeignKey("source_documents.id"), nullable=False, index=True
+    )
+    source_identity_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    provider_object_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    provider_version: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    scope_snapshot_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_account_fingerprint: Mapped[str] = mapped_column(
+        String(64), nullable=False
+    )
+    observation_kind: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="fetched",
+        server_default="fetched",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    workspace: Mapped["Workspace"] = orm_relationship(
+        back_populates="source_sync_observations"
+    )
+    connector: Mapped["Connector"] = orm_relationship(
+        back_populates="source_sync_observations"
+    )
+    sync_job: Mapped["SyncJob | None"] = orm_relationship(
+        back_populates="source_sync_observations"
+    )
+    source_document: Mapped["SourceDocument"] = orm_relationship(
+        back_populates="sync_observations"
+    )
 
 
 class Model(Base):
@@ -1085,6 +1230,12 @@ class SessionEvent(Base):
             "workspace_id",
             "provider",
             "session_id",
+            "sequence_number",
+        ),
+        Index(
+            "ix_session_events_source_type_sequence",
+            "source_document_id",
+            "event_type",
             "sequence_number",
         ),
         Index("ix_session_events_source_document", "source_document_id"),

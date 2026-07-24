@@ -4,7 +4,6 @@ import json
 import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -15,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import CodeFile, Connector
 from app.services.credentials import load_credentials
 from app.services.ingest import IngestionService
+from app.services.repo_paths import RepositoryPathNotAllowed, validated_repository_path
 from app.services.source_revisions import ingest_source_document_revision
 
 
@@ -170,8 +170,18 @@ async def _retrieve_local_repo(
             "live_repo_ambiguous",
             "This workspace does not have one active local repository root.",
         )
-    root = Path(roots[0]).resolve()
-    if repo_path is not None and Path(repo_path).expanduser().resolve() != root:
+    try:
+        root = validated_repository_path(roots[0])
+    except RepositoryPathNotAllowed as exc:
+        raise LiveRetrievalError("live_repo_unavailable", str(exc)) from exc
+    if repo_path is not None:
+        try:
+            requested_root = validated_repository_path(repo_path)
+        except RepositoryPathNotAllowed as exc:
+            raise LiveRetrievalError("live_repo_scope_mismatch", str(exc)) from exc
+    else:
+        requested_root = None
+    if requested_root is not None and requested_root != root:
         raise LiveRetrievalError(
             "live_repo_scope_mismatch",
             "The requested repository is not the workspace's active indexed root.",
@@ -366,6 +376,7 @@ async def _persist_github_live_item(
         },
         source_created_at=_parse_datetime(updated_at),
         permission_source="github_connector_scope",
+        revision_on_metadata_change=True,
     )
     if revision.document.processed_at is None:
         await IngestionService(session).process_document(revision.document.id)

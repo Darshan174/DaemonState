@@ -171,11 +171,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     sync_worker_parser.add_argument("--retry-base-seconds", type=int, default=None)
     sync_worker_parser.add_argument("--retry-max-seconds", type=int, default=None)
     sync_worker_parser.add_argument("--worker-id", default=None)
+    sync_worker_parser.add_argument(
+        "--redrive-dead-letter",
+        action="store_true",
+        help="Requeue unfinished source-ingestion dead letters before polling.",
+    )
     sync_worker_parser.add_argument("--json", action="store_true", dest="json_output")
     sync_worker_parser.set_defaults(func=run_sync_worker)
 
     db_parser = subparsers.add_parser("db", help="Manage database migrations.")
     db_subparsers = db_parser.add_subparsers(dest="db_command", required=True)
+    db_deploy_parser = db_subparsers.add_parser(
+        "deploy",
+        help=(
+            "Acquire the migration lock, reconcile legacy installations, and "
+            "upgrade or stamp the database at the current schema head."
+        ),
+    )
+    db_deploy_parser.add_argument("--database-url", default=None)
+    db_deploy_parser.set_defaults(func=run_db)
     db_upgrade_parser = db_subparsers.add_parser("upgrade", help="Run Alembic migrations.")
     db_upgrade_parser.add_argument("revision", nargs="?", default="head")
     db_upgrade_parser.add_argument("--database-url", default=None)
@@ -708,36 +722,198 @@ async def _harness_outcome_report(args: argparse.Namespace) -> dict:
 
 def run_sync_worker(args: argparse.Namespace) -> int:
     import asyncio
-    from app.config import settings
+    import logging
+    import random
+    import signal
+
+    from sqlalchemy import text
+
+    from app.config import settings, validate_runtime_configuration
+    from app.database import create_database_engine, schema_is_current
+    from app.observability import (
+        configure_logging,
+        record_sync_worker_result,
+    )
+    from app.services.credentials import validate_connector_credentials
     from app.services.sync_worker import run_pending_sync_jobs
 
-    async def _run_once():
+    configure_logging()
+    validate_runtime_configuration()
+    logger = logging.getLogger("context-engine.sync-worker")
+
+    async def _verify_schema() -> None:
+        if settings.auto_migrate:
+            return
+        check_engine = create_database_engine(
+            settings.database_url,
+            application_name="context-engine-worker-schema-check",
+        )
+        try:
+            async with check_engine.connect() as conn:
+                if not await schema_is_current(conn):
+                    raise RuntimeError(
+                        "Database schema is not current; run `ctxe db deploy` first"
+                    )
+                if settings.environment.strip().lower() == "production":
+                    await validate_connector_credentials(conn)
+        finally:
+            await check_engine.dispose()
+
+    async def _run_once(shutdown_event: asyncio.Event | None = None):
+        worker_options = {
+            "limit": args.limit,
+            "worker_id": args.worker_id,
+            "lease_seconds": args.lease_seconds,
+            "retry_base_seconds": args.retry_base_seconds,
+            "retry_max_seconds": args.retry_max_seconds,
+        }
+        if shutdown_event is not None:
+            worker_options["shutdown_event"] = shutdown_event
         return await run_pending_sync_jobs(
-            limit=args.limit,
-            worker_id=args.worker_id,
-            lease_seconds=args.lease_seconds,
-            retry_base_seconds=args.retry_base_seconds,
-            retry_max_seconds=args.retry_max_seconds,
+            **worker_options,
         )
 
+    async def _redrive_dead_letters() -> int:
+        from app.database import create_database_engine
+        from app.services.source_ingestion_worker import (
+            redrive_dead_letter_source_ingestion_jobs,
+        )
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+        redrive_engine = create_database_engine(
+            settings.database_url,
+            application_name="context-engine-source-redrive",
+        )
+        try:
+            factory = async_sessionmaker(
+                redrive_engine,
+                class_=AsyncSession,
+                expire_on_commit=False,
+            )
+            async with factory() as session:
+                count = await redrive_dead_letter_source_ingestion_jobs(session)
+                await session.commit()
+                return count
+        finally:
+            await redrive_engine.dispose()
+
+    async def _health_heartbeat(
+        stop: asyncio.Event,
+        poll_healthy: asyncio.Event,
+    ) -> None:
+        health_path = Path(settings.sync_worker_health_file)
+        health_engine = create_database_engine(
+            settings.database_url,
+            application_name="context-engine-worker-health",
+        )
+        interval = max(1.0, settings.sync_worker_health_interval_seconds)
+        try:
+            while not stop.is_set():
+                if poll_healthy.is_set():
+                    try:
+                        async with health_engine.connect() as conn:
+                            await conn.execute(text("SELECT 1"))
+                            schema_current = (
+                                True
+                                if settings.auto_migrate
+                                else await schema_is_current(conn)
+                            )
+                            if (
+                                schema_current
+                                and settings.environment.strip().lower()
+                                == "production"
+                            ):
+                                await validate_connector_credentials(conn)
+                        if schema_current:
+                            health_path.touch()
+                    except Exception:
+                        logger.warning("sync_worker_health_check_failed")
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=interval)
+                except TimeoutError:
+                    pass
+        finally:
+            await health_engine.dispose()
+
     async def _run_watch() -> int:
+        Path(settings.sync_worker_health_file).unlink(missing_ok=True)
+        await _verify_schema()
         poll_interval = (
             args.poll_interval
             if args.poll_interval is not None
             else settings.sync_worker_poll_interval_seconds
         )
-        while True:
-            result = await _run_once()
-            _print_sync_worker_result(result.to_dict(), json_output=args.json_output)
-            await asyncio.sleep(max(0.1, poll_interval))
+        stop = asyncio.Event()
+        poll_healthy = asyncio.Event()
+        poll_healthy.set()
+        loop = asyncio.get_running_loop()
+        for handled_signal in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(handled_signal, stop.set)
+            except (NotImplementedError, RuntimeError):
+                pass
+
+        if settings.sync_worker_metrics_port > 0:
+            from prometheus_client import start_http_server
+
+            start_http_server(settings.sync_worker_metrics_port)
+            logger.info(
+                "worker_metrics_started",
+                extra={"metrics_port": settings.sync_worker_metrics_port},
+            )
+
+        backoff = 1.0
+        logger.info("sync_worker_started")
+        health_task = asyncio.create_task(
+            _health_heartbeat(stop, poll_healthy),
+            name="sync-worker-health",
+        )
+        try:
+            while not stop.is_set():
+                try:
+                    result = await _run_once(stop)
+                except Exception:
+                    poll_healthy.clear()
+                    logger.exception("sync_worker_poll_failed")
+                    delay = min(60.0, backoff) * random.uniform(0.8, 1.2)
+                    backoff = min(60.0, backoff * 2)
+                else:
+                    poll_healthy.set()
+                    data = result.to_dict()
+                    record_sync_worker_result(data)
+                    _print_sync_worker_result(data, json_output=args.json_output)
+                    backoff = 1.0
+                    delay = max(0.1, poll_interval)
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=delay)
+                except TimeoutError:
+                    pass
+        finally:
+            stop.set()
+            await health_task
+        logger.info("sync_worker_stopped")
+        return 0
 
     if args.watch:
         return asyncio.run(_run_watch())
 
-    result = asyncio.run(_run_once())
+    async def _checked_once():
+        await _verify_schema()
+        if args.redrive_dead_letter:
+            count = await _redrive_dead_letters()
+            logger.info("source_ingestion_dead_letters_redriven", extra={"count": count})
+        return await _run_once()
+
+    result = asyncio.run(_checked_once())
     data = result.to_dict()
+    record_sync_worker_result(data)
     _print_sync_worker_result(data, json_output=args.json_output)
-    return 0 if data["failed"] == 0 and data.get("dead_lettered", 0) == 0 else 1
+    return 0 if (
+        data["failed"] == 0
+        and data.get("dead_lettered", 0) == 0
+        and data.get("source_failed", 0) == 0
+        and data.get("source_dead_lettered", 0) == 0
+    ) else 1
 
 
 def _print_sync_worker_result(data: dict, *, json_output: bool) -> None:
@@ -751,12 +927,27 @@ def _print_sync_worker_result(data: dict, *, json_output: bool) -> None:
         f"completed={data['completed']} "
         f"retried={data.get('retried', 0)} "
         f"failed={data['failed']} "
-        f"dead_lettered={data.get('dead_lettered', 0)}",
+        f"dead_lettered={data.get('dead_lettered', 0)} "
+        f"sources_completed={data.get('source_completed', 0)} "
+        f"sources_retried={data.get('source_retried', 0)} "
+        f"sources_dead_lettered={data.get('source_dead_lettered', 0)} "
+        f"sources_enqueued={data.get('source_enqueued', 0)}",
         flush=True,
     )
 
 
 def run_db(args: argparse.Namespace) -> int:
+    if args.db_command == "deploy":
+        import asyncio
+
+        result = asyncio.run(_deploy_database(args.database_url))
+        print(
+            "database deployment complete: "
+            f"mode={result['mode']} revisions={','.join(result['revisions'])} "
+            f"credentials_rotated={result['credentials']['updated']} "
+            f"credentials_populated={result['credentials']['populated']}"
+        )
+        return 0
     config = _alembic_config(args.database_url)
     if args.db_command == "upgrade":
         revision = args.revision or "head"
@@ -847,12 +1038,83 @@ def _api_key(args: argparse.Namespace) -> str | None:
 
 def _alembic_config(database_url: str | None = None):
     from alembic.config import Config
+    from app.config import settings
 
     root = Path(__file__).resolve().parents[2]
     config = Config(str(root / "alembic.ini"))
-    if database_url:
-        config.set_main_option("sqlalchemy.url", database_url)
+    config.set_main_option("sqlalchemy.url", database_url or settings.database_url)
     return config
+
+
+async def _deploy_database(database_url: str | None = None) -> dict:
+    """Run the one-per-release schema deployment under a database lock.
+
+    Unversioned installations are reconciled through the legacy runtime
+    migrator once, then stamped. Versioned databases use immutable Alembic
+    revisions from that point forward.
+    """
+    from alembic import command
+    from sqlalchemy import text
+
+    from app.config import settings
+    from app.database import (
+        create_database_engine,
+        current_schema_revisions,
+        expected_schema_revisions,
+        schema_is_current,
+    )
+    from app.migrations import run_migrations
+    from app.models import Base
+    from app.services.credentials import rotate_connector_credentials
+
+    configured_url = database_url or settings.database_url
+    migration_engine = create_database_engine(
+        configured_url,
+        application_name="context-engine-migrator",
+        statement_timeout_ms=settings.migration_statement_timeout_ms,
+        lock_timeout_ms=settings.migration_lock_timeout_ms,
+    )
+    config = _alembic_config(configured_url)
+    lock_key = 1_128_618_565
+    mode = "upgrade"
+    try:
+        async with migration_engine.begin() as conn:
+            postgres = conn.dialect.name == "postgresql"
+            if postgres:
+                await conn.execute(
+                    text("SELECT pg_advisory_xact_lock(:lock_key)"),
+                    {"lock_key": lock_key},
+                )
+            try:
+                revisions = await current_schema_revisions(conn)
+                if not revisions:
+                    mode = "legacy_reconcile"
+                    await conn.run_sync(Base.metadata.create_all)
+                    await run_migrations(conn)
+
+                    def _stamp(sync_conn) -> None:
+                        config.attributes["connection"] = sync_conn
+                        command.stamp(config, "head")
+
+                    await conn.run_sync(_stamp)
+                else:
+                    def _upgrade(sync_conn) -> None:
+                        config.attributes["connection"] = sync_conn
+                        command.upgrade(config, "head")
+
+                    await conn.run_sync(_upgrade)
+                if not await schema_is_current(conn):
+                    raise RuntimeError("Database did not reach the expected schema revision")
+                credential_result = await rotate_connector_credentials(conn)
+            finally:
+                config.attributes.pop("connection", None)
+        return {
+            "mode": mode,
+            "revisions": sorted(expected_schema_revisions()),
+            "credentials": credential_result,
+        }
+    finally:
+        await migration_engine.dispose()
 
 
 def _run_alembic_command(name: str, config, revision: str | None = None) -> None:

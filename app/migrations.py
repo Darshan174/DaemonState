@@ -42,6 +42,46 @@ async def run_migrations(conn: AsyncConnection) -> None:
     await _migrate_learning_loop_schema(conn)
     await _migrate_work_checkpoint_schema(conn)
     await _migrate_query_and_sync_indexes(conn)
+    await _migrate_source_ingestion_jobs(conn)
+
+
+async def _migrate_source_ingestion_jobs(conn: AsyncConnection) -> None:
+    """Install the durable source-projection queue and recover legacy rows."""
+    source_columns = await _get_table_columns(conn, "source_documents")
+    if not {"id", "workspace_id", "processed_at", "ingested_at"} <= source_columns:
+        return
+    jobs_table = Base.metadata.tables["source_ingestion_jobs"]
+    await conn.run_sync(
+        lambda sync_conn: jobs_table.create(sync_conn, checkfirst=True)
+    )
+    result = await conn.execute(text("""
+        SELECT source.id, source.workspace_id
+        FROM source_documents AS source
+        WHERE source.processed_at IS NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM source_ingestion_jobs AS job
+              WHERE replace(CAST(job.source_document_id AS TEXT), '-', '') =
+                    replace(CAST(source.id AS TEXT), '-', '')
+          )
+        ORDER BY source.ingested_at, source.id
+    """))
+    while rows := result.fetchmany(500):
+        await conn.execute(
+            jobs_table.insert(),
+            [
+                {
+                    "id": uuid4(),
+                    "source_document_id": UUID(str(row[0])),
+                    "workspace_id": (
+                        UUID(str(row[1])) if row[1] is not None else None
+                    ),
+                    "status": "pending",
+                    "attempt_count": 0,
+                    "max_attempts": 5,
+                }
+                for row in rows
+            ],
+        )
 
 
 async def _migrate_work_checkpoint_schema(conn: AsyncConnection) -> None:
@@ -1042,6 +1082,12 @@ async def _migrate_sync_jobs_durable_schema(conn: AsyncConnection) -> None:
         )
     if "locked_by" not in columns:
         await conn.execute(text("ALTER TABLE sync_jobs ADD COLUMN locked_by VARCHAR(255)"))
+    if "claim_token" not in columns:
+        await conn.execute(text("ALTER TABLE sync_jobs ADD COLUMN claim_token VARCHAR(64)"))
+    if "heartbeat_at" not in columns:
+        await conn.execute(
+            text(f"ALTER TABLE sync_jobs ADD COLUMN heartbeat_at {datetime_type}")
+        )
     if "dead_lettered_at" not in columns:
         await conn.execute(
             text(f"ALTER TABLE sync_jobs ADD COLUMN dead_lettered_at {datetime_type}")
@@ -1126,6 +1172,8 @@ async def _rebuild_sync_jobs_table(conn: AsyncConnection, columns: set[str]) -> 
         "available_at": "available_at" if "available_at" in columns else "NULL",
         "lease_expires_at": "lease_expires_at" if "lease_expires_at" in columns else "NULL",
         "locked_by": "locked_by" if "locked_by" in columns else "NULL",
+        "claim_token": "claim_token" if "claim_token" in columns else "NULL",
+        "heartbeat_at": "heartbeat_at" if "heartbeat_at" in columns else "NULL",
         "dead_lettered_at": "dead_lettered_at" if "dead_lettered_at" in columns else "NULL",
         "started_at": "started_at" if "started_at" in columns else "NULL",
         "completed_at": "completed_at" if "completed_at" in columns else "NULL",
@@ -1149,6 +1197,8 @@ async def _rebuild_sync_jobs_table(conn: AsyncConnection, columns: set[str]) -> 
             available_at DATETIME,
             lease_expires_at DATETIME,
             locked_by VARCHAR(255),
+            claim_token VARCHAR(64),
+            heartbeat_at DATETIME,
             dead_lettered_at DATETIME,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
             started_at DATETIME,
@@ -1165,7 +1215,8 @@ async def _rebuild_sync_jobs_table(conn: AsyncConnection, columns: set[str]) -> 
             id, workspace_id, connector_id, job_type, idempotency_key,
             status, attempt_count, max_attempts, error_type, error_message,
             result_metadata_json, queued_at, available_at, lease_expires_at,
-            locked_by, dead_lettered_at, created_at, started_at, completed_at
+            locked_by, claim_token, heartbeat_at, dead_lettered_at,
+            created_at, started_at, completed_at
         )
         SELECT
             {exprs["id"]},
@@ -1183,6 +1234,8 @@ async def _rebuild_sync_jobs_table(conn: AsyncConnection, columns: set[str]) -> 
             {exprs["available_at"]},
             {exprs["lease_expires_at"]},
             {exprs["locked_by"]},
+            {exprs["claim_token"]},
+            {exprs["heartbeat_at"]},
             {exprs["dead_lettered_at"]},
             {exprs["created_at"]},
             {exprs["started_at"]},
@@ -2644,6 +2697,11 @@ async def _migrate_query_and_sync_indexes(conn: AsyncConnection) -> None:
         ),
         (
             "source_documents",
+            "ix_source_documents_workspace_type_ingested",
+            ("workspace_id", "source_type", "ingested_at", "id"),
+        ),
+        (
+            "source_documents",
             "ix_source_documents_supersedes_source_document_id",
             ("supersedes_source_document_id",),
         ),
@@ -2791,6 +2849,11 @@ async def _migrate_query_and_sync_indexes(conn: AsyncConnection) -> None:
         ),
         ("run_observations", "ix_run_observations_source_document", ("source_document_id",)),
         ("run_observations", "ix_run_observations_event_type", ("event_type",)),
+        (
+            "session_events",
+            "ix_session_events_source_type_sequence",
+            ("source_document_id", "event_type", "sequence_number"),
+        ),
         ("code_files", "ix_code_files_workspace_path", ("workspace_id", "path")),
         ("code_files", "ix_code_files_sha256", ("sha256",)),
         ("code_symbols", "ix_code_symbols_file", ("code_file_id",)),
@@ -2820,11 +2883,11 @@ async def _migrate_query_and_sync_indexes(conn: AsyncConnection) -> None:
             UPDATE sync_jobs AS candidate
             SET status = 'failed'
             WHERE candidate.idempotency_key IS NOT NULL
-              AND candidate.status IN ('pending', 'running')
+              AND candidate.status IN ('pending', 'retrying', 'running')
               AND EXISTS (
                   SELECT 1 FROM sync_jobs AS winner
                   WHERE winner.idempotency_key = candidate.idempotency_key
-                    AND winner.status IN ('pending', 'running')
+                    AND winner.status IN ('pending', 'retrying', 'running')
                     AND (
                         winner.created_at < candidate.created_at
                         OR (
@@ -2834,10 +2897,14 @@ async def _migrate_query_and_sync_indexes(conn: AsyncConnection) -> None:
                     )
               )
         """))
+        await conn.execute(text(
+            "DROP INDEX IF EXISTS uq_sync_jobs_active_idempotency_key"
+        ))
         await conn.execute(text("""
             CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_jobs_active_idempotency_key
             ON sync_jobs (idempotency_key)
-            WHERE idempotency_key IS NOT NULL AND status IN ('pending', 'running')
+            WHERE idempotency_key IS NOT NULL
+              AND status IN ('pending', 'retrying', 'running')
         """))
     pack_columns = await _get_table_columns(conn, "context_packs")
     if "idempotency_key" in pack_columns:

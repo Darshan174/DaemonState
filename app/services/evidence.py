@@ -152,6 +152,21 @@ async def create_evidence_span_for_fact(
     fact: Any,
     extraction_method: str,
 ) -> EvidenceSpanResult:
+    excerpt_start = getattr(fact, "excerpt_start_char", None)
+    excerpt_end = getattr(fact, "excerpt_end_char", None)
+    if excerpt_start is not None and excerpt_end is not None:
+        excerpt = (source_document.content or "")[excerpt_start:excerpt_end]
+        return await create_evidence_span(
+            session,
+            source_document=source_document,
+            text=excerpt,
+            start_char=excerpt_start,
+            end_char=excerpt_end,
+            evidence_type=getattr(fact, "fact_type", None) or "extracted_fact",
+            authority_weight=float(getattr(fact, "confidence", 0.5) or 0.5),
+            extraction_method=extraction_method,
+        )
+
     candidates = [
         getattr(fact, "excerpt", None),
         getattr(fact, "value", None),

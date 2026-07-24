@@ -19,8 +19,18 @@ from app.api.connectors import DEFAULT_WORKSPACE_ID
 from app.database import _ensure_sqlite_parent_dir, get_db_session
 from app.main import app
 from app.migrations import run_migrations
-from app.models import Base, Component, Connector, Model, SourceDocument, SyncJob, Workspace
+from app.models import (
+    Base,
+    Component,
+    Connector,
+    Model,
+    SourceDocument,
+    SourceSyncObservation,
+    SyncJob,
+    Workspace,
+)
 from app.processing.embedder import HashingEmbedder
+from app.services.provider_freshness import load_provider_freshness
 from app.services.source_revisions import ingest_source_document_revision
 from app.time import utc_now
 
@@ -338,7 +348,7 @@ class TestConnectorSetupStatus:
         for t in ["gdrive", "gmail"]:
             entry = next(s for s in data if s["connector_type"] == t)
             assert entry["redirect_uri"] is not None
-            assert entry["redirect_uri"].endswith(f"/api/connectors/{t}/callback")
+            assert entry["redirect_uri"].endswith("/api/connectors/google/callback")
 
     async def test_google_redirect_uri_override_from_env(self, client, monkeypatch):
         monkeypatch.setenv("GOOGLE_CLIENT_ID", "client-id.apps.googleusercontent.com")
@@ -362,7 +372,7 @@ class TestConnectorSetupStatus:
         for t in ["gdrive", "gmail"]:
             entry = next(s for s in data["setupStatus"] if s["connector_type"] == t)
             assert entry["redirect_uri"] is not None
-            assert entry["redirect_uri"].endswith(f"/api/connectors/{t}/callback")
+            assert entry["redirect_uri"].endswith("/api/connectors/google/callback")
 
     async def test_ai_context_configured(self, client):
         response = await client.get("/api/connectors/setup-status")
@@ -378,6 +388,29 @@ class TestConnectorSetupStatus:
         slack = next(s for s in data if s["connector_type"] == "slack")
         assert slack["configured"] is False
         assert slack["status"] == "disconnected"
+
+    async def test_managed_slack_is_available_without_self_hosted_credentials(
+        self,
+        client,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(
+            "app.config.settings.slack_managed_install_url",
+            "https://installer.example.test/slack",
+        )
+
+        response = await client.get("/api/connectors/setup-status")
+
+        assert response.status_code == 200
+        slack = next(
+            item
+            for item in response.json()
+            if item["connector_type"] == "slack"
+        )
+        assert slack["configured"] is True
+        assert slack["self_hosted_configured"] is False
+        assert slack["managed_available"] is True
+        assert slack["managed_install_url"] == "/api/connectors/slack/managed/install"
 
 
 class TestConnectorConnect:
@@ -1450,7 +1483,17 @@ class TestProviderSyncReporting:
                 source_type="slack",
                 external_id="slack:C123:1.0",
                 content="Already imported",
-                metadata_json="{}",
+                metadata_json=json.dumps({
+                    "workspace_id": str(DEFAULT_WORKSPACE_ID),
+                    "channel_id": "C123",
+                    "channel_name": "general",
+                    "user_id": "U1",
+                    "author_name": "",
+                    "ts": "1.0",
+                    "thread_ts": "1.0",
+                    "is_thread_reply": False,
+                    "reply_count": 0,
+                }),
             ),
         ])
         await db_session.flush()
@@ -1752,28 +1795,75 @@ class TestProviderSyncReporting:
             credentials_json=json.dumps({"access_token": "github-token"}),
             config_json=json.dumps({"repositories": ["acme/project"]}),
         )
+        sync_job = SyncJob(
+            id=uuid4(),
+            workspace_id=DEFAULT_WORKSPACE_ID,
+            connector_id=connector.id,
+            status="running",
+            attempt_count=1,
+            started_at=utc_now() - timedelta(seconds=1),
+        )
+        source = SourceDocument(
+            id=uuid4(),
+            workspace_id=DEFAULT_WORKSPACE_ID,
+            source_type="github",
+            external_id="github:acme/project:issue:7",
+            content=(
+                "[Issue] #7: Already imported issue\n\n"
+                "State: open\nLabels: none\n\nExisting body"
+            ),
+            metadata_json=json.dumps({
+                "workspace_id": str(DEFAULT_WORKSPACE_ID),
+                "item_type": "issue",
+                "repo_full_name": "acme/project",
+                "number": 7,
+                "title": "Already imported issue",
+                "state": "open",
+                "draft": False,
+                "merged": False,
+                "labels": [],
+                "assignees": [],
+                "created_at": "2026-05-07T10:00:00Z",
+                "updated_at": None,
+                "closed_at": None,
+                "merged_at": None,
+                "source_type": "github_issue",
+            }),
+        )
         db_session.add_all([
             connector,
-            SourceDocument(
-                id=uuid4(),
-                workspace_id=DEFAULT_WORKSPACE_ID,
-                source_type="github",
-                external_id="github:acme/project:issue:7",
-                content=(
-                    "[Issue] #7: Already imported issue\n\n"
-                    "State: open\nLabels: none\n\nExisting body"
-                ),
-                metadata_json="{}",
-            ),
+            sync_job,
+            source,
         ])
         await db_session.flush()
 
-        result = await github.sync_github(connector, db_session)
+        result = await github.sync_github(
+            connector,
+            db_session,
+            sync_job=sync_job,
+        )
 
         assert result["documents_fetched"] == 1
         assert result["documents_persisted"] == 0
         assert result["documents_skipped"] == 1
         assert result["duplicates_skipped"] == 1
+        observation = await db_session.scalar(
+            select(SourceSyncObservation).where(
+                SourceSyncObservation.sync_job_id == sync_job.id
+            )
+        )
+        assert observation is not None
+        assert observation.source_document_id == source.id
+        assert observation.observation_kind == "not_modified"
+        sync_job.status = "completed"
+        sync_job.completed_at = utc_now()
+        await db_session.flush()
+        freshness = await load_provider_freshness(
+            db_session,
+            [source],
+            now=sync_job.completed_at,
+        )
+        assert freshness[source.id].fresh is True
 
     async def test_github_sync_appends_changed_issue_revision(self, db_session, monkeypatch):
         from app.sync import github
@@ -2211,7 +2301,19 @@ class TestGoogleSync:
                     "[Gmail] (no subject)\nFrom: unknown\nTo: unknown\n"
                     "Date: unknown\n\nDuplicate snippet"
                 ),
-                metadata_json="{}",
+                metadata_json=json.dumps({
+                    "workspace_id": str(DEFAULT_WORKSPACE_ID),
+                    "message_id": "msg-1",
+                    "thread_id": "thread-1",
+                    "history_id": None,
+                    "internal_date": None,
+                    "snippet": "Duplicate snippet",
+                    "subject": "",
+                    "from": "",
+                    "to": "",
+                    "date": "",
+                    "label_ids": [],
+                }),
             ),
         ])
         await db_session.flush()
@@ -2269,7 +2371,16 @@ class TestGoogleSync:
                 source_type="gdrive",
                 external_id="gdrive:file-1",
                 content="Already imported file",
-                metadata_json=json.dumps({"modified_time": "2026-05-07T10:00:00Z"}),
+                metadata_json=json.dumps({
+                    "workspace_id": str(DEFAULT_WORKSPACE_ID),
+                    "file_id": "file-1",
+                    "name": "Roadmap",
+                    "mime_type": "application/vnd.google-apps.document",
+                    "modified_time": "2026-05-07T10:00:00Z",
+                    "owner": None,
+                    "owner_email": None,
+                    "web_view_link": None,
+                }),
             ),
         ])
         await db_session.flush()

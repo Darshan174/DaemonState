@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import httpx
 from sqlalchemy import select
 
+from app.api import context_digest as context_digest_module
 from app.api.context_digest import (
     _agent_reported_summary,
     _clean_digest_text,
@@ -1265,3 +1266,103 @@ async def test_digest_never_uses_runtime_instructions_as_session_work(client, db
     assert primary["provider"] == "codex"
     assert primary["session_id"] == "runtime-noise"
     assert primary["recency_basis"] == "imported_at_fallback"
+
+
+async def test_digest_counts_bulky_events_without_materializing_them(
+    client,
+    db_session,
+    monkeypatch,
+):
+    workspace = await _workspace(db_session, "Projected session activity")
+    model = Model(id=uuid4(), name=f"Projected activity {uuid4().hex}")
+    source = SourceDocument(
+        id=uuid4(),
+        workspace_id=workspace.id,
+        source_type="agent_session",
+        external_id="codex:session:projected-events",
+        content="[USER]\nFix the slow Now page.\n\n[ASSISTANT]\nImplemented the focused query.",
+        metadata_json=json.dumps({
+            "workspace_id": str(workspace.id),
+            "session_id": "projected-events",
+            "tool": "codex",
+            "updated_at": utc_now().isoformat(),
+        }),
+    )
+    root = Component(
+        workspace_id=workspace.id,
+        model_id=model.id,
+        source_document_id=source.id,
+        name="Session: projected events",
+        value=source.content,
+        fact_type="session_root",
+        temporal="current",
+        confidence=0.93,
+        status="active",
+    )
+    db_session.add_all([model, source, root])
+    await db_session.flush()
+    bulky_payload = "unused command output " * 10_000
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=source,
+        provider="codex",
+        session_id="projected-events",
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id="request",
+                sequence_number=1,
+                event_type="user_request",
+                role="user",
+                content="Fix the slow Now page.",
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="command-result",
+                sequence_number=2,
+                event_type="command_result",
+                role="tool",
+                content=bulky_payload,
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="tool-result",
+                sequence_number=3,
+                event_type="tool_result",
+                role="tool",
+                content=bulky_payload,
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="update",
+                sequence_number=4,
+                event_type="assistant_update",
+                role="assistant",
+                content="Implemented the focused query because event payloads were too large.",
+            ),
+        ],
+    )
+
+    materialized_event_types: list[str] = []
+    event_projection = context_digest_module._SessionActivityEvent
+
+    def capture_projected_event(**kwargs):
+        materialized_event_types.append(kwargs["event_type"])
+        return event_projection(**kwargs)
+
+    monkeypatch.setattr(
+        context_digest_module,
+        "_SessionActivityEvent",
+        capture_projected_event,
+    )
+    response = await client.get(
+        "/api/context/digest",
+        params={"workspace_id": str(workspace.id)},
+    )
+
+    assert response.status_code == 200
+    primary = response.json()["activity"]["primary"]
+    assert primary["event_count"] == 4
+    assert primary["request"] == "Fix the slow Now page"
+    assert primary["latest_update"] == (
+        "Implemented the focused query because event payloads were too large"
+    )
+    assert set(materialized_event_types) == {"assistant_update", "user_request"}
+    assert len(materialized_event_types) == 2

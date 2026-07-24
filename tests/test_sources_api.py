@@ -5,8 +5,10 @@ from uuid import UUID
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
 
-from app.models import SourceDocument, Workspace
+from app.config import settings
+from app.models import SourceDocument, SourceIngestionJob, Workspace
 
 
 @pytest.mark.asyncio
@@ -39,6 +41,42 @@ async def test_bulk_source_create_sync_processes_documents_before_return(client,
         doc = await db_session.get(SourceDocument, UUID(raw_id))
         assert doc is not None
         assert doc.processed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_production_source_create_never_uses_volatile_background_task(
+    client,
+    db_session,
+    monkeypatch,
+):
+    scheduled = []
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr(
+        "fastapi.BackgroundTasks.add_task",
+        lambda self, task, *args, **kwargs: scheduled.append((task, args, kwargs)),
+    )
+
+    response = await client.post(
+        "/api/sources",
+        json={
+            "source_type": "local",
+            "external_id": f"production-{uuid4().hex}.md",
+            "content": "Decision: persist the source before projection.",
+        },
+    )
+
+    assert response.status_code == 201
+    assert scheduled == []
+    doc = await db_session.get(SourceDocument, UUID(response.json()["id"]))
+    assert doc is not None
+    assert doc.processed_at is None
+    job = await db_session.scalar(
+        select(SourceIngestionJob).where(
+            SourceIngestionJob.source_document_id == doc.id
+        )
+    )
+    assert job is not None
+    assert job.status == "pending"
 
 
 @pytest.mark.asyncio

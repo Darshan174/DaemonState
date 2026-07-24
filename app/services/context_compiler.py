@@ -5,7 +5,6 @@ import json
 import math
 import re
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -31,9 +30,12 @@ from app.services.model_profiles import (
 )
 from app.services.access import AccessScope, source_access_predicate
 from app.services.focus_policy import focus_eligibility
+from app.services.memory_trust import assess_memory_trust
 from app.services.playbooks import PlaybookService
 from app.services.project_scope import workspace_references, workspace_relevance
+from app.services.provider_freshness import load_provider_freshness
 from app.services.repo_indexer import RANKING_VERSION, RepoFrame, RepoIndexer
+from app.services.repo_paths import RepositoryPathNotAllowed, validated_repository_path
 from app.services.workspace_scope import metadata_dict
 from app.taxonomy import canonical_trust_zone
 from app.time import utc_now
@@ -312,9 +314,10 @@ class ContextCompiler:
             raise InvalidGoalError("token_budget is too small for mandatory context-pack sections")
         workspace_uuid = _uuid_or_none(workspace_id)
         if repo_path is not None and str(repo_path).strip():
-            root = Path(repo_path).expanduser().resolve()
-            if not root.exists() or not root.is_dir():
-                raise InvalidRepoPathError(f"repo_path must be an existing directory: {root}")
+            try:
+                root = validated_repository_path(repo_path)
+            except RepositoryPathNotAllowed as exc:
+                raise InvalidRepoPathError(str(exc)) from exc
             repo_frame = await self.inspect_repo(
                 str(root),
                 workspace_id=workspace_uuid,
@@ -818,6 +821,20 @@ class ContextCompiler:
             for revision in revisions_by_id.values()
             if revision.contradicts_claim_id is not None
         }
+        provider_sources = [
+            component.source_document
+            for component in components
+            if component.source_document is not None
+        ]
+        provider_sources.extend(
+            revision.evidence_span.source_document
+            for revision in revisions_by_id.values()
+            if revision.evidence_span.source_document is not None
+        )
+        provider_freshness_by_source = await load_provider_freshness(
+            self.session,
+            provider_sources,
+        )
 
         superseded_document_ids: set[UUID] = set()
         supersedes_column = getattr(SourceDocument, "supersedes_source_document_id", None)
@@ -859,7 +876,6 @@ class ContextCompiler:
                 )
                 if relevance.status != "relevant":
                     continue
-            trust_zone = _source_trust_zone(doc)
             summary = revision.value if revision is not None else component.value
             quote = _first_non_empty(
                 evidence.text if evidence is not None else None,
@@ -888,6 +904,24 @@ class ContextCompiler:
                 )
                 else "none"
             )
+            trust_assessment = assess_memory_trust(
+                component,
+                evidence,
+                source=doc,
+                source_is_current=bool(
+                    doc is None or doc.id not in superseded_document_ids
+                ),
+                # Only a successful provider read bound to this exact immutable
+                # revision can make structured provider state current.
+                provider_fresh=bool(
+                    doc is not None
+                    and doc.id in provider_freshness_by_source
+                ),
+                conflict=conflict_state == "unresolved",
+            )
+            # The evidence ledger may carry a human confirmation that is more
+            # specific than the source document's default trust zone.
+            trust_zone = trust_assessment.trust_zone
             files = _extract_file_paths(" ".join([
                 component.name or "",
                 component.value or "",
@@ -913,26 +947,18 @@ class ContextCompiler:
                 "validated": evidence_verified,
                 "validation_reason": evidence_reason,
             }
-            if revision is not None and evidence_verified:
+            if revision is not None and trust_assessment.current_truth:
                 inclusion_reason = "current_verified_claim_revision"
             elif revision is not None:
-                inclusion_reason = f"current_claim_{evidence_reason}"
+                inclusion_reason = (
+                    f"current_claim_{trust_assessment.basis}"
+                )
             elif doc is not None:
                 inclusion_reason = "source_backed_component_without_evidence_span"
             else:
                 inclusion_reason = "legacy_component_without_evidence"
-            status = claim.status if claim is not None else component.status
-            if revision is not None and not evidence_verified:
-                status = "needs_review"
-            elif doc is not None and doc.id in superseded_document_ids:
-                status = "stale"
-            truth_state = _derive_truth_state(
-                claim_status=claim.status if claim is not None else None,
-                has_current_revision=revision is not None,
-                evidence_verified=evidence_verified,
-                source_is_superseded=bool(doc is not None and doc.id in superseded_document_ids),
-                conflict_state=conflict_state,
-            )
+            status = trust_assessment.effective_status
+            truth_state = trust_assessment.truth_state
             candidates.append(ContextCandidate(
                 id=f"component:{component.id}",
                 item_type=item_type,
@@ -974,8 +1000,11 @@ class ContextCompiler:
                     "evidence_verified": evidence_verified,
                     "evidence_validation_reason": evidence_reason,
                     "current_claim_revision": revision is not None,
+                    "trust_basis": trust_assessment.basis,
+                    "trust_verification": trust_assessment.verification,
+                    "current_truth": trust_assessment.current_truth,
                 },
-                provenance_verified=evidence_verified if revision is not None else False,
+                provenance_verified=trust_assessment.current_truth,
                 truth_state=truth_state,
             ))
         return candidates
@@ -2267,7 +2296,7 @@ def _exclusion_for(candidate: ContextCandidate) -> ExcludedContextCandidate | No
     explicit_source_focus = bool(candidate.rank_features.get("explicit_focus"))
     if candidate.prompt_injection_risk_score >= 0.70:
         return _exclude(candidate, "prompt_injection_risk", "Prompt-injection-like evidence is quoted only and excluded from instructions.")
-    if candidate.status == "stale":
+    if candidate.status == "stale" and not explicit_source_focus:
         return _exclude(candidate, "stale", "Candidate is stale.")
     if candidate.status == "superseded":
         return _exclude(candidate, "superseded", "Candidate is superseded.")
@@ -2278,6 +2307,22 @@ def _exclusion_for(candidate: ContextCandidate) -> ExcludedContextCandidate | No
             candidate,
             candidate.truth_state,
             f"Candidate truth state is {candidate.truth_state}; only current truth is selected.",
+        )
+    if (
+        candidate.truth_state == "reported"
+        and candidate.item_type != "session_checkpoint"
+        and not explicit_source_focus
+    ):
+        return _exclude(
+            candidate,
+            "reported",
+            "Agent-reported activity is inspectable evidence, not current verified truth.",
+        )
+    if candidate.conflict_state == "unresolved":
+        return _exclude(
+            candidate,
+            "contradiction_unresolved",
+            "Candidate participates in an unresolved contradiction or relationship gap.",
         )
     if (
         candidate.truth_state == "unknown"
@@ -2297,8 +2342,6 @@ def _exclusion_for(candidate: ContextCandidate) -> ExcludedContextCandidate | No
         )
     if candidate.status == "rejected":
         return _exclude(candidate, "superseded", "Candidate was rejected in the graph.")
-    if candidate.conflict_state == "unresolved":
-        return _exclude(candidate, "contradiction_unresolved", "Candidate participates in an unresolved contradiction or relationship gap.")
     if candidate.confidence < 0.25:
         return _exclude(candidate, "low_confidence", "Candidate confidence is too low for a default context pack.")
     if (

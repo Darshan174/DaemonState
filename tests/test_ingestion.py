@@ -7,13 +7,18 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from app.models import (
+    AgentRun,
+    Claim,
+    ClaimRevision,
     Component,
     Entity,
     EntityAlias,
+    EvidenceSpan,
     Fact,
     Mention,
     Model,
     Relationship,
+    RunObservation,
     SourceDocument,
     UnresolvedRelationship,
     Workspace,
@@ -31,7 +36,371 @@ class _StaticExtractor:
         return list(self.facts)
 
 
+class TestRuntimeObservationProjection:
+    async def test_verification_projects_as_verification_not_metric(self, db_session):
+        workspace = Workspace(
+            id=uuid4(),
+            name="Runtime verification",
+            slug=f"runtime-verification-{uuid4().hex}",
+        )
+        run = AgentRun(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            tool="codex",
+            status="running",
+        )
+        payload = {
+            "schema_version": "run_observation.v1",
+            "event_type": "verification",
+            "content": "Focused ingestion tests passed.",
+            "files": [],
+            "command": "pytest -q tests/test_ingestion.py",
+            "exit_code": 0,
+        }
+        document = SourceDocument(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            source_type="agent_run_observation",
+            external_id=f"agent_runtime:{run.id}:verification-1",
+            content=(
+                "Verification: pytest -q tests/test_ingestion.py passed with exit code 0.\n"
+                f"Structured payload: {json.dumps(payload, sort_keys=True)}"
+            ),
+            metadata_json=json.dumps({
+                "workspace_id": str(workspace.id),
+                "run_id": str(run.id),
+                "event_type": "verification",
+                "payload": payload,
+            }),
+        )
+        observation = RunObservation(
+            id=uuid4(),
+            agent_run_id=run.id,
+            source_document_id=document.id,
+            event_type="verification",
+            event_key="verification-1",
+            payload_json=json.dumps(payload, sort_keys=True),
+            content=payload["content"],
+            command=payload["command"],
+            exit_code=0,
+        )
+        db_session.add_all([workspace, run, document, observation])
+        await db_session.flush()
+
+        created = await IngestionService(db_session).process_document(document.id)
+
+        components = list(await db_session.scalars(
+            select(Component).where(Component.source_document_id == document.id)
+        ))
+        assert created == 1
+        assert len(components) == 1
+        assert components[0].fact_type == "verification"
+        assert components[0].status == "active"
+        assert all(component.fact_type != "metric" for component in components)
+
+    async def test_blocker_resolution_closes_exact_runtime_blocker(
+        self,
+        db_session,
+    ):
+        workspace = Workspace(
+            id=uuid4(),
+            name="Runtime blocker lifecycle",
+            slug=f"runtime-blocker-{uuid4().hex}",
+        )
+        run = AgentRun(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            tool="codex",
+            status="running",
+        )
+        blocker_payload = {
+            "schema_version": "run_observation.v1",
+            "event_type": "blocker",
+            "content": "Database credentials are missing.",
+            "files": [],
+            "command": None,
+            "exit_code": None,
+            "severity": "blocking",
+        }
+        blocker_document = SourceDocument(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            source_type="agent_run_observation",
+            external_id=f"agent_runtime:{run.id}:blocker-1",
+            content=(
+                "Blocker: Database credentials are missing.\n"
+                f"Structured payload: {json.dumps(blocker_payload, sort_keys=True)}"
+            ),
+            metadata_json=json.dumps({
+                "workspace_id": str(workspace.id),
+                "run_id": str(run.id),
+                "event_type": "blocker",
+                "payload": blocker_payload,
+            }),
+        )
+        blocker_observation = RunObservation(
+            id=uuid4(),
+            agent_run_id=run.id,
+            source_document_id=blocker_document.id,
+            event_type="blocker",
+            event_key="blocker-1",
+            payload_json=json.dumps(blocker_payload, sort_keys=True),
+            content=blocker_payload["content"],
+        )
+        db_session.add_all([
+            workspace,
+            run,
+            blocker_document,
+            blocker_observation,
+        ])
+        await db_session.flush()
+        service = IngestionService(db_session)
+        assert await service.process_document(blocker_document.id) == 1
+        blocker_component = await db_session.scalar(
+            select(Component).where(
+                Component.source_document_id == blocker_document.id,
+                Component.fact_type == "blocker",
+            )
+        )
+        assert blocker_component is not None
+        assert blocker_component.status == "needs_review"
+
+        resolution_payload = {
+            "schema_version": "run_observation.v1",
+            "event_type": "blocker_resolution",
+            "content": "Database credentials were configured.",
+            "files": [],
+            "command": None,
+            "exit_code": None,
+            "resolves_event_key": "blocker-1",
+        }
+        resolution_document = SourceDocument(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            source_type="agent_run_observation",
+            external_id=f"agent_runtime:{run.id}:resolve-blocker-1",
+            content=(
+                "Blocker resolution: Database credentials were configured.\n"
+                f"Structured payload: {json.dumps(resolution_payload, sort_keys=True)}"
+            ),
+            metadata_json=json.dumps({
+                "workspace_id": str(workspace.id),
+                "run_id": str(run.id),
+                "event_type": "blocker_resolution",
+                "payload": resolution_payload,
+            }),
+        )
+        resolution_observation = RunObservation(
+            id=uuid4(),
+            agent_run_id=run.id,
+            source_document_id=resolution_document.id,
+            event_type="blocker_resolution",
+            event_key="resolve-blocker-1",
+            payload_json=json.dumps(resolution_payload, sort_keys=True),
+            content=resolution_payload["content"],
+        )
+        db_session.add_all([resolution_document, resolution_observation])
+        await db_session.flush()
+
+        assert await service.process_document(resolution_document.id) == 1
+        await db_session.refresh(blocker_component)
+        claim = await db_session.get(Claim, blocker_component.claim_id)
+        resolution_components = list(await db_session.scalars(
+            select(Component).where(
+                Component.source_document_id == resolution_document.id
+            )
+        ))
+
+        assert blocker_component.status == "resolved"
+        assert blocker_component.valid_to is not None
+        assert claim is not None
+        assert claim.status == "resolved"
+        assert len(resolution_components) == 1
+        assert resolution_components[0].fact_type == "verification"
+        assert resolution_components[0].excerpt == resolution_document.content
+        resolved_by = await db_session.scalar(
+            select(Relationship).where(
+                Relationship.source_component_id == blocker_component.id,
+                Relationship.target_component_id == resolution_components[0].id,
+                Relationship.relationship_type == "resolved_by",
+            )
+        )
+        assert resolved_by is not None
+        assert resolved_by.origin == "deterministic"
+        assert resolved_by.status == "active"
+        assert resolved_by.evidence == "Database credentials were configured."
+        assert await db_session.scalar(
+            select(Component).where(
+                Component.workspace_id == workspace.id,
+                Component.fact_type == "risk",
+                Component.status == "active",
+            )
+        ) is None
+
+        # Rebuilds commonly replay newest documents first. Replaying the
+        # resolution and then its older blocker must not resurrect the blocker
+        # or create a second live projection.
+        assert await service.process_document(resolution_document.id, force=True) == 1
+        assert await service.process_document(blocker_document.id, force=True) == 1
+        blocker_components = list(await db_session.scalars(
+            select(Component).where(
+                Component.source_document_id == blocker_document.id,
+                Component.fact_type == "blocker",
+            )
+        ))
+        assert len(blocker_components) == 1
+        assert blocker_components[0].id == blocker_component.id
+        assert blocker_components[0].status == "resolved"
+        rebuilt_claim = await db_session.get(Claim, blocker_components[0].claim_id)
+        assert rebuilt_claim is not None
+        assert rebuilt_claim.status == "resolved"
+        assert not any(
+            component.status in {"active", "needs_review", "proposed"}
+            for component in blocker_components
+        )
+
+        # A non-chronological rebuild can project the resolution before the
+        # blocker. Processing either side must reconcile the same lifecycle.
+        late_blocker_payload = {
+            **blocker_payload,
+            "content": "The signing key is missing.",
+        }
+        late_blocker_document = SourceDocument(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            source_type="agent_run_observation",
+            external_id=f"agent_runtime:{run.id}:blocker-2",
+            content=(
+                "Blocker: The signing key is missing.\n"
+                f"Structured payload: {json.dumps(late_blocker_payload, sort_keys=True)}"
+            ),
+            metadata_json=json.dumps({
+                "workspace_id": str(workspace.id),
+                "run_id": str(run.id),
+                "event_type": "blocker",
+                "payload": late_blocker_payload,
+            }),
+        )
+        late_blocker_observation = RunObservation(
+            id=uuid4(),
+            agent_run_id=run.id,
+            source_document_id=late_blocker_document.id,
+            event_type="blocker",
+            event_key="blocker-2",
+            payload_json=json.dumps(late_blocker_payload, sort_keys=True),
+            content=late_blocker_payload["content"],
+        )
+        early_resolution_payload = {
+            **resolution_payload,
+            "content": "The signing key was provisioned.",
+            "resolves_event_key": "blocker-2",
+        }
+        early_resolution_document = SourceDocument(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            source_type="agent_run_observation",
+            external_id=f"agent_runtime:{run.id}:resolve-blocker-2",
+            content=(
+                "Blocker resolution: The signing key was provisioned.\n"
+                f"Structured payload: {json.dumps(early_resolution_payload, sort_keys=True)}"
+            ),
+            metadata_json=json.dumps({
+                "workspace_id": str(workspace.id),
+                "run_id": str(run.id),
+                "event_type": "blocker_resolution",
+                "payload": early_resolution_payload,
+            }),
+        )
+        early_resolution_observation = RunObservation(
+            id=uuid4(),
+            agent_run_id=run.id,
+            source_document_id=early_resolution_document.id,
+            event_type="blocker_resolution",
+            event_key="resolve-blocker-2",
+            payload_json=json.dumps(early_resolution_payload, sort_keys=True),
+            content=early_resolution_payload["content"],
+        )
+        db_session.add_all([
+            late_blocker_document,
+            late_blocker_observation,
+            early_resolution_document,
+            early_resolution_observation,
+        ])
+        await db_session.flush()
+
+        assert await service.process_document(early_resolution_document.id) == 1
+        assert await service.process_document(late_blocker_document.id) == 1
+        late_blocker_component = await db_session.scalar(
+            select(Component).where(
+                Component.source_document_id == late_blocker_document.id,
+                Component.fact_type == "blocker",
+            )
+        )
+        assert late_blocker_component is not None
+        assert late_blocker_component.status == "resolved"
+        assert await db_session.scalar(
+            select(Relationship).where(
+                Relationship.source_component_id == late_blocker_component.id,
+                Relationship.relationship_type == "resolved_by",
+            )
+        ) is not None
+
+
 class TestPrePersistenceExtractionQuality:
+    async def test_agent_session_evidence_targets_the_assistant_occurrence(
+        self,
+        db_session,
+    ):
+        workspace = Workspace(
+            id=uuid4(),
+            name="Assistant evidence offsets",
+            slug=f"assistant-evidence-{uuid4().hex}",
+        )
+        content = (
+            "[USER]\n"
+            "Decision: Use Postgres for durable memory.\n"
+            "[ASSISTANT]\n"
+            "Decision: Use Postgres for durable memory.\n"
+        )
+        document = SourceDocument(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            source_type="agent_session",
+            external_id=f"agent-session:{uuid4().hex}",
+            content=content,
+            metadata_json=json.dumps({
+                "workspace_id": str(workspace.id),
+                "tool": "codex",
+                "session_id": "evidence-offsets",
+            }),
+        )
+        db_session.add_all([workspace, document])
+        await db_session.flush()
+
+        await IngestionService(db_session).process_document(document.id)
+
+        decision = await db_session.scalar(
+            select(Component).where(
+                Component.source_document_id == document.id,
+                Component.fact_type == "decision",
+            )
+        )
+        assert decision is not None
+        revision = await db_session.get(
+            ClaimRevision,
+            (await db_session.get(Claim, decision.claim_id)).current_revision_id,
+        )
+        evidence = await db_session.get(EvidenceSpan, revision.evidence_span_id)
+        assistant_start = content.rindex(
+            "Decision: Use Postgres for durable memory."
+        )
+        assert evidence.start_char == assistant_start
+        assert evidence.end_char == assistant_start + len(
+            "Decision: Use Postgres for durable memory."
+        )
+        assert content[evidence.start_char:evidence.end_char] == evidence.text
+        assert evidence.review_status == "verified"
+
     async def test_semantic_slop_is_rejected_without_changing_raw_source(self, db_session):
         raw_content = (
             "Use PostgreSQL for the evidence ledger.\n"

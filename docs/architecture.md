@@ -32,31 +32,41 @@ commands, stop conditions, and rendering metadata.
 ## Runtime Shape
 
 ```text
-Browser / CLI / MCP
+Agent / Browser / CLI
         |
-        | HTTP or stdio
+        | authenticated HTTP
         v
-FastAPI app
-  - API routers: sources, graph, query, connectors, agents, models, repo, demo
-  - Static frontend when frontend/dist exists
-        |
-        v
-Services
-  - ingestion and extraction
-  - query and retrieval trace
-  - legacy context pack generation
-  - v2 compiler service, when Agent 3 lands
-  - agent run observation bridge
-  - connector sync/import jobs
-        |
-        v
-SQLite for bare-metal dev, PostgreSQL/pgvector by default in Docker Compose
+TLS proxy -> FastAPI app
+                    |
+                    +-> PostgreSQL/pgvector (durable project state)
+                    +-> Redis (distributed request limits and OAuth nonces)
+                    +-> sync workers (leased, fenced, retryable jobs)
+
+Trusted local agent -> MCP stdio -> the same application services
 ```
 
 The app is intentionally deployable as one process for bare-metal development.
 SQLite remains the zero-setup local path; Docker Compose and production
 deployments use PostgreSQL with pgvector so indexed vector and full-text search
 are available.
+
+The production profile is a fail-closed, single-tenant substrate. API startup is
+gated on explicit configuration and the current Alembic schema; migrations run
+separately under a PostgreSQL advisory lock. Requests have bounded bodies,
+authentication, distributed rate limits, request IDs, security headers, JSON
+logs, health probes, and Prometheus metrics. OAuth state is encrypted,
+connector-bound, short-lived, and single-use. Local repository reads are
+restricted to canonical allow-listed roots.
+
+Connector jobs use database leases, heartbeats, claim tokens, bounded execution,
+and conditional completion so a stale worker cannot finalize a reclaimed job.
+Delivery remains at-least-once, so provider ingestion must stay idempotent.
+
+The supplied Compose production profile has a single-host failure domain and
+does not claim multi-tenant authorization or high availability. MCP is a trusted
+local stdio interface and is not a public network listener. See the
+[production runbook](production-runbook.md) for the deployment and scaling
+boundary.
 
 ## Data Model
 

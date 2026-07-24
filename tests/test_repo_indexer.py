@@ -190,6 +190,33 @@ def test_git_output_preserves_leading_porcelain_status_column(monkeypatch, tmp_p
     assert output.splitlines()[0] == " M app/api/connectors.py"
 
 
+def test_git_commands_trust_only_the_validated_repository(
+    monkeypatch,
+    tmp_path,
+):
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("value = 1\n", encoding="utf-8")
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        assert command[:4] == [
+            "git",
+            "-c",
+            f"safe.directory={tmp_path}",
+            "-C",
+        ]
+        assert command[4] == str(tmp_path)
+        stdout = "true\n" if kwargs.get("text") else b"tracked.py\0"
+        return SimpleNamespace(returncode=0, stdout=stdout)
+
+    monkeypatch.setattr(repo_indexer.subprocess, "run", fake_run)
+
+    assert repo_indexer._git(tmp_path, "rev-parse", "--is-inside-work-tree") == "true"
+    assert repo_indexer._git_visible_files(tmp_path) == [tracked]
+    assert len(commands) == 2
+
+
 async def test_repo_index_endpoint_persists_workspace_files_and_exposes_project_path(
     client, db_session, tmp_path
 ):
