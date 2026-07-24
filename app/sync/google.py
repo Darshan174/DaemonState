@@ -9,13 +9,15 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.connectors import _get_env, _get_google_client_id
-from app.models import Connector
+from app.models import Connector, SyncJob
 from app.services.credentials import dump_credentials, load_credentials
 from app.services.evidence import metadata_dict
+from app.services.provider_freshness import record_provider_observation
 from app.services.source_revisions import (
     get_current_source_document,
     ingest_source_document_revision,
 )
+from app.time import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,13 @@ GMAIL_BASE_URL = "https://gmail.googleapis.com/gmail/v1"
 DRIVE_BASE_URL = "https://www.googleapis.com/drive/v3"
 
 
-async def sync_gmail(connector: Connector, session: AsyncSession) -> dict:
+async def sync_gmail(
+    connector: Connector,
+    session: AsyncSession,
+    *,
+    sync_job: SyncJob | None = None,
+) -> dict:
+    sync_observed_at = utc_now()
     token = await _access_token(connector, session)
     docs_fetched = 0
     docs_persisted = 0
@@ -86,6 +94,20 @@ async def sync_gmail(connector: Connector, session: AsyncSession) -> dict:
                 author=str(metadata.get("from") or "") or None,
                 source_url=f"https://mail.google.com/mail/u/0/#all/{message_id}",
                 metadata_json=metadata,
+                revision_on_metadata_change=True,
+            )
+            await record_provider_observation(
+                session,
+                connector=connector,
+                source=result.document,
+                sync_job=sync_job,
+                observed_at=sync_observed_at,
+                provider_version=str(
+                    message.get("historyId") or message.get("internalDate") or ""
+                ) or None,
+                observation_kind=(
+                    "not_modified" if result.unchanged else "fetched"
+                ),
             )
             if result.created:
                 docs_persisted += 1
@@ -107,7 +129,13 @@ async def sync_gmail(connector: Connector, session: AsyncSession) -> dict:
     }
 
 
-async def sync_gdrive(connector: Connector, session: AsyncSession) -> dict:
+async def sync_gdrive(
+    connector: Connector,
+    session: AsyncSession,
+    *,
+    sync_job: SyncJob | None = None,
+) -> dict:
+    sync_observed_at = utc_now()
     token = await _access_token(connector, session)
     docs_fetched = 0
     docs_persisted = 0
@@ -148,30 +176,7 @@ async def sync_gdrive(connector: Connector, session: AsyncSession) -> dict:
                 continue
             docs_fetched += 1
             external_id = f"gdrive:{file_id}"
-            current = await get_current_source_document(
-                session,
-                workspace_id=connector.workspace_id,
-                source_type="gdrive",
-                external_id=external_id,
-            )
-            current_metadata = metadata_dict(current.metadata_json) if current else {}
-            modified_time = item.get("modifiedTime")
-            if current and modified_time and current_metadata.get("modified_time") == modified_time:
-                duplicates_skipped += 1
-                continue
-
             mime_type = item.get("mimeType", "")
-            try:
-                content = await _download_drive_text(http, headers, file_id, mime_type)
-            except Exception as exc:
-                errors.append(f"{item.get('name', file_id)}: {exc}")
-                continue
-
-            text = content.strip()
-            if not text:
-                empty_skipped += 1
-                continue
-
             owners = item.get("owners") or []
             owner = owners[0] if owners else {}
             metadata = {
@@ -184,6 +189,53 @@ async def sync_gdrive(connector: Connector, session: AsyncSession) -> dict:
                 "owner_email": owner.get("emailAddress"),
                 "web_view_link": item.get("webViewLink"),
             }
+            current = await get_current_source_document(
+                session,
+                workspace_id=connector.workspace_id,
+                source_type="gdrive",
+                external_id=external_id,
+            )
+            current_metadata = metadata_dict(current.metadata_json) if current else {}
+            modified_time = item.get("modifiedTime")
+            if current and modified_time and current_metadata.get("modified_time") == modified_time:
+                result = await ingest_source_document_revision(
+                    session,
+                    workspace_id=connector.workspace_id,
+                    source_type="gdrive",
+                    external_id=external_id,
+                    content=current.content,
+                    author=str(metadata.get("owner") or "") or None,
+                    source_url=str(item.get("webViewLink") or "") or None,
+                    metadata_json=metadata,
+                    revision_on_metadata_change=True,
+                )
+                await record_provider_observation(
+                    session,
+                    connector=connector,
+                    source=result.document,
+                    sync_job=sync_job,
+                    observed_at=sync_observed_at,
+                    provider_version=str(modified_time),
+                    observation_kind="not_modified",
+                )
+                if result.created:
+                    docs_persisted += 1
+                    documents_revised += int(result.revised)
+                else:
+                    duplicates_skipped += 1
+                continue
+
+            try:
+                content = await _download_drive_text(http, headers, file_id, mime_type)
+            except Exception as exc:
+                errors.append(f"{item.get('name', file_id)}: {exc}")
+                continue
+
+            text = content.strip()
+            if not text:
+                empty_skipped += 1
+                continue
+
             result = await ingest_source_document_revision(
                 session,
                 workspace_id=connector.workspace_id,
@@ -193,6 +245,18 @@ async def sync_gdrive(connector: Connector, session: AsyncSession) -> dict:
                 author=str(metadata.get("owner") or "") or None,
                 source_url=str(item.get("webViewLink") or "") or None,
                 metadata_json=metadata,
+                revision_on_metadata_change=True,
+            )
+            await record_provider_observation(
+                session,
+                connector=connector,
+                source=result.document,
+                sync_job=sync_job,
+                observed_at=sync_observed_at,
+                provider_version=str(modified_time or "") or None,
+                observation_kind=(
+                    "not_modified" if result.unchanged else "fetched"
+                ),
             )
             if result.created:
                 docs_persisted += 1
@@ -289,6 +353,8 @@ def _gmail_metadata(message: dict[str, object], connector: Connector) -> dict[st
         "workspace_id": str(connector.workspace_id),
         "message_id": message.get("id"),
         "thread_id": message.get("threadId"),
+        "history_id": message.get("historyId"),
+        "internal_date": message.get("internalDate"),
         "snippet": message.get("snippet"),
         "subject": header_map.get("subject", ""),
         "from": header_map.get("from", ""),

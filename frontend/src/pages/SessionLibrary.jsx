@@ -21,10 +21,14 @@ import {
   X,
 } from "lucide-react";
 
-import imgOpenAI from "../assets/openai-icon.png";
-import imgOpenCode from "../assets/opencode-icon.png";
 import { api } from "../api/client";
 import { useSelectSessionFromLibrary, useSessionLibrary, useSyncSessionLibrary } from "../api/hooks";
+import {
+  HARNESS_META,
+  HARNESS_ORDER,
+  HarnessArtwork,
+  HarnessLogo,
+} from "../components/HarnessBrand";
 import ProductLoadingState from "../components/ProductLoadingState";
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
 import { formatTimeAgo } from "../context-map/digest";
@@ -33,36 +37,6 @@ import { useProductWorkspace } from "./useProductWorkspace";
 
 const AUTO_SYNC_INTERVAL_MS = 60_000;
 const INITIAL_SESSION_COUNT = 24;
-const HARNESS_ORDER = ["codex", "claude", "opencode"];
-const HARNESS_META = {
-  codex: {
-    name: "Codex",
-    company: "OpenAI",
-    description: "Implementation sessions, code decisions, plans, and verified outcomes.",
-    accent: "#10a37f",
-    accentSoft: "rgba(16,163,127,0.12)",
-    glow: "rgba(16,163,127,0.22)",
-    launchText: "#ffffff",
-  },
-  claude: {
-    name: "Claude Code",
-    company: "Anthropic",
-    description: "Architecture explorations, codebase research, and long-running implementation threads.",
-    accent: "#D97757",
-    accentSoft: "rgba(217,119,87,0.13)",
-    glow: "rgba(217,119,87,0.22)",
-    launchText: "#ffffff",
-  },
-  opencode: {
-    name: "OpenCode",
-    company: "Open source",
-    description: "Terminal-native coding sessions, model experiments, and project conversations.",
-    accent: "#b9dc4a",
-    accentSoft: "rgba(185,220,74,0.12)",
-    glow: "rgba(185,220,74,0.18)",
-    launchText: "#171713",
-  },
-};
 
 
 export default function SessionLibrary() {
@@ -199,11 +173,7 @@ export default function SessionLibrary() {
     <div className="relative mx-auto w-full max-w-7xl space-y-8 pb-14">
       <header className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
         <div>
-          <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#77776e] dark:text-[#929289]">
-            <Radio className="h-3.5 w-3.5 text-emerald-600" />
-            Live session archive
-          </div>
-          <h1 className="mt-2 text-3xl font-black tracking-[-0.035em] sm:text-4xl">Session Library</h1>
+          <h1 className="text-3xl font-black tracking-[-0.035em] sm:text-4xl">Session Library</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
             The latest session topic appears on Now by default. Choose any session or topic when you want to override it.
           </p>
@@ -413,7 +383,7 @@ function HarnessCard({ item, index, hovered, selected, translateX, translateY, o
         aria-hidden="true"
         className="absolute -right-[19%] top-[10%] h-[53%] w-[86%] origin-center opacity-[0.16] transition-all duration-700 group-hover:-translate-x-3 group-hover:scale-110 group-hover:opacity-[0.24] group-focus-visible:-translate-x-3 group-focus-visible:scale-110 group-focus-visible:opacity-[0.24]"
       >
-        <HarnessCardArtwork type={item.connector_type} />
+        <HarnessArtwork type={item.connector_type} />
       </span>
 
       <span className="absolute inset-x-0 top-0 flex items-start justify-between px-4 pt-4 sm:px-5 sm:pt-5">
@@ -451,21 +421,6 @@ function HarnessCard({ item, index, hovered, selected, translateX, translateY, o
         {cardNumber}
       </span>
     </button>
-  );
-}
-
-
-function HarnessCardArtwork({ type }) {
-  if (type === "codex") {
-    return <img src={imgOpenAI} alt="" className="h-full w-full scale-[1.18] object-contain dark:invert" />;
-  }
-  if (type === "claude") {
-    return <AnthropicIcon className="h-full w-full scale-[1.12]" decorative />;
-  }
-  return (
-    <span className="flex h-full w-full items-center justify-center overflow-hidden rounded-[30%] bg-[#171713]">
-      <img src={imgOpenCode} alt="" className="h-full w-full scale-[2.45] object-contain" />
-    </span>
   );
 }
 
@@ -934,37 +889,6 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onUseTopic, sel
         </footer>
       </aside>
     </div>
-  );
-}
-
-
-function HarnessLogo({ type, size }) {
-  const sizes = {
-    small: "h-9 w-9 rounded-xl",
-    medium: "h-11 w-11 rounded-xl",
-    large: "h-14 w-14 rounded-2xl sm:h-16 sm:w-16",
-  };
-  const iconSizes = {
-    small: "h-5 w-5",
-    medium: "h-6 w-6",
-    large: "h-8 w-8 sm:h-9 sm:w-9",
-  };
-  const meta = HARNESS_META[type] || HARNESS_META.codex;
-  return (
-    <span className={`relative flex shrink-0 items-center justify-center overflow-hidden border border-black/10 bg-white shadow-[0_8px_20px_rgba(23,23,19,0.09)] dark:border-white/10 ${sizes[size]}`} style={{ boxShadow: `0 10px 25px ${meta.glow}` }}>
-      {type === "codex" ? <img src={imgOpenAI} alt="Codex" className={`${iconSizes[size]} object-contain`} /> : null}
-      {type === "claude" ? <AnthropicIcon className={iconSizes[size]} /> : null}
-      {type === "opencode" ? <img src={imgOpenCode} alt="OpenCode" className={`${iconSizes[size]} object-contain`} /> : null}
-    </span>
-  );
-}
-
-
-function AnthropicIcon({ className, decorative = false }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="#D97757" aria-label={decorative ? undefined : "Claude Code"} aria-hidden={decorative || undefined}>
-      <path d="M13.827 3.52h3.603L24 20h-3.603l-6.57-16.48zm-7.258 0h3.767L16.906 20h-3.674l-1.343-3.461H5.017L3.674 20H0L6.57 3.52zm2.285 5.357l-2.07 5.675h4.14l-2.07-5.675z" />
-    </svg>
   );
 }
 

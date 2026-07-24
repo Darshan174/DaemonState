@@ -25,6 +25,7 @@ from app.services.session_checkpoints import (
     SessionCheckpointNotFoundError,
     restore_session_checkpoint,
 )
+from app.services.session_scope import session_document_is_in_scope
 from app.services.session_summary import derive_session_topic
 
 
@@ -63,7 +64,11 @@ async def get_session_library(
     if not access_scope.allows_workspace(workspace_id):
         raise HTTPException(status_code=404, detail="Workspace not found")
     try:
-        return await build_session_library(session, workspace_id)
+        return await build_session_library(
+            session,
+            workspace_id,
+            access_scope=access_scope,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -89,7 +94,11 @@ async def sync_session_library(
             body.workspace_id,
             connector_types=body.connector_types,
         )
-        library = await build_session_library(session, body.workspace_id)
+        library = await build_session_library(
+            session,
+            body.workspace_id,
+            access_scope=access_scope,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"sync": sync_result, "library": library}
@@ -113,8 +122,12 @@ async def open_session_in_harness(
         SourceDocument.id == body.source_document_id,
         SourceDocument.workspace_id == body.workspace_id,
         SourceDocument.source_type == "agent_session",
+        source_access_predicate(access_scope, workspace_id=body.workspace_id),
     ))
-    if document is None:
+    if (
+        document is None
+        or not await session_document_is_in_scope(session, body.workspace_id, document)
+    ):
         raise HTTPException(status_code=404, detail="Session source not found")
 
     metadata = _metadata_dict(document.metadata_json)
@@ -166,7 +179,10 @@ async def restore_session_context_checkpoint(
         SourceDocument.source_type == "agent_session",
         source_access_predicate(access_scope, workspace_id=body.workspace_id),
     ))
-    if document is None:
+    if (
+        document is None
+        or not await session_document_is_in_scope(session, body.workspace_id, document)
+    ):
         raise HTTPException(status_code=404, detail="Session source not found")
 
     metadata = _metadata_dict(document.metadata_json)
@@ -213,8 +229,17 @@ async def select_session_for_project_now(
         SourceDocument.id == body.source_document_id,
         SourceDocument.workspace_id == body.workspace_id,
         SourceDocument.source_type == "agent_session",
+        source_access_predicate(access_scope, workspace_id=body.workspace_id),
     ))
-    if document is None:
+    if (
+        document is None
+        or not await session_document_is_in_scope(
+            session,
+            body.workspace_id,
+            document,
+            allow_unbounded=True,
+        )
+    ):
         raise HTTPException(status_code=404, detail="Session source not found")
 
     try:
@@ -226,7 +251,11 @@ async def select_session_for_project_now(
             selected_by=access_scope.principal_id,
         )
         await session.commit()
-        library = await build_session_library(session, body.workspace_id)
+        library = await build_session_library(
+            session,
+            body.workspace_id,
+            access_scope=access_scope,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"selection": selection, "library": library}
@@ -243,7 +272,11 @@ async def clear_session_for_project_now(
 
     result = await clear_session_selection(session, workspace_id)
     await session.commit()
-    library = await build_session_library(session, workspace_id)
+    library = await build_session_library(
+        session,
+        workspace_id,
+        access_scope=access_scope,
+    )
     return {**result, "selection": None, "library": library}
 
 

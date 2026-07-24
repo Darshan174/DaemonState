@@ -28,6 +28,7 @@ from app.models import (
     RetrievalEvent,
     RunObservation,
     SourceDocument,
+    SourceIngestionJob,
     SourceReadGrant,
     SyncJob,
     UnresolvedRelationship,
@@ -190,6 +191,11 @@ async def delete_workspace_graph(session: AsyncSession, workspace_id: UUID) -> W
 
     await session.execute(delete(EvidenceSpan).where(EvidenceSpan.workspace_id == workspace_id))
     await session.execute(delete(SourceReadGrant).where(SourceReadGrant.workspace_id == workspace_id))
+    await session.execute(
+        delete(SourceIngestionJob).where(
+            SourceIngestionJob.workspace_id == workspace_id
+        )
+    )
     await session.execute(update(SourceDocument).where(
         SourceDocument.supersedes_source_document_id.in_(source_ids)
     ).values(supersedes_source_document_id=None))

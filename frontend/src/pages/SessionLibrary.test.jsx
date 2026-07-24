@@ -101,6 +101,15 @@ function PrepareDestination() {
 }
 
 
+it("uses the shared page-title scale without the archive eyebrow", () => {
+  renderLibrary();
+
+  const heading = screen.getByRole("heading", { name: "Session Library" });
+  expect(heading).toHaveClass("text-3xl", "font-black", "tracking-[-0.035em]", "sm:text-4xl");
+  expect(screen.queryByText("Live session archive")).not.toBeInTheDocument();
+});
+
+
 it("opens a linked session topic directly in the library evidence drawer", async () => {
   renderLibrary("/app/library?source=doc-1&topic=Alpha+billing");
 

@@ -94,6 +94,50 @@ async def test_append_only_revisions_are_content_aware_and_workspace_scoped(db_s
     assert stored_evidence.source_document_id == first.document.id
 
 
+async def test_provider_metadata_changes_create_canonical_revisions(db_session):
+    workspace = Workspace(
+        id=uuid4(),
+        name="Provider metadata",
+        slug=f"provider-metadata-{uuid4().hex}",
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+
+    first = await ingest_source_document_revision(
+        db_session,
+        workspace_id=workspace.id,
+        source_type="github",
+        external_id="github:acme/repo:issue:11",
+        content="State: open",
+        metadata_json={"state": "open", "assignees": ["alice"]},
+        revision_on_metadata_change=True,
+    )
+    reordered = await ingest_source_document_revision(
+        db_session,
+        workspace_id=workspace.id,
+        source_type="github",
+        external_id="github:acme/repo:issue:11",
+        content="State: open",
+        metadata_json='{"assignees":["alice"],"state":"open"}',
+        revision_on_metadata_change=True,
+    )
+    reassigned = await ingest_source_document_revision(
+        db_session,
+        workspace_id=workspace.id,
+        source_type="github",
+        external_id="github:acme/repo:issue:11",
+        content="State: open",
+        metadata_json={"state": "open", "assignees": ["bob"]},
+        revision_on_metadata_change=True,
+    )
+
+    assert reordered.unchanged is True
+    assert reordered.document.id == first.document.id
+    assert reassigned.revised is True
+    assert reassigned.document.revision_number == 2
+    assert reassigned.document.supersedes_source_document_id == first.document.id
+
+
 async def test_ai_session_sync_appends_changed_content_and_skips_unchanged(db_session):
     workspace = Workspace(id=uuid4(), name="AI revisions", slug=f"ai-revisions-{uuid4().hex}")
     db_session.add(workspace)
