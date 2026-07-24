@@ -28,6 +28,9 @@ function applyTheme(nextTheme) {
 
   root.classList.toggle("dark", resolvedTheme === "dark");
   root.style.colorScheme = resolvedTheme;
+  document
+    .querySelector('meta[name="theme-color"]')
+    ?.setAttribute("content", resolvedTheme === "dark" ? "#000000" : "#ffffff");
 
   try {
     localStorage.setItem(THEME_STORAGE_KEY, resolvedTheme);
