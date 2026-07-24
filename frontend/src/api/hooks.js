@@ -1695,25 +1695,48 @@ export function useImportAISessionById() {
   });
 }
 
-export function useSessionLibrary(workspaceId) {
+export function useSessionLibrary(workspaceId, { enabled = true } = {}) {
   return useQuery({
     queryKey: ["session-library", workspaceId],
     queryFn: () => api.get(`/session-library?workspace_id=${encodeURIComponent(workspaceId)}`),
-    enabled: Boolean(workspaceId),
+    enabled: Boolean(workspaceId) && enabled,
     refetchInterval: 30_000,
     refetchIntervalInBackground: false,
   });
 }
 
-export function useSessionContinuity(workspaceId) {
+export function useSessionContinuity(
+  workspaceId,
+  { enabled = true, provider = null, sessionId = null } = {},
+) {
+  const normalizedProvider = normalizeCheckpointProvider(provider);
+  const normalizedSessionId = String(sessionId || "").trim();
+  const scoped = Boolean(normalizedProvider && normalizedSessionId);
+  const invalidScope = Boolean(normalizedProvider || normalizedSessionId) && !scoped;
+  const queryKey = invalidScope
+    ? [
+        "session-continuity",
+        workspaceId,
+        "invalid-scope",
+        normalizedProvider || null,
+        normalizedSessionId || null,
+      ]
+    : scoped
+      ? ["session-continuity", workspaceId, normalizedProvider, normalizedSessionId]
+      : ["session-continuity", workspaceId];
   return useQuery({
-    queryKey: ["session-continuity", workspaceId],
-    enabled: Boolean(workspaceId),
+    queryKey,
+    enabled: Boolean(workspaceId) && enabled && !invalidScope,
     refetchInterval: 30_000,
     refetchIntervalInBackground: false,
-    queryFn: () => api.get(
-      `/session-continuity?workspace_id=${encodeURIComponent(workspaceId)}`,
-    ),
+    queryFn: () => {
+      const params = new URLSearchParams({ workspace_id: workspaceId });
+      if (scoped) {
+        params.set("provider", normalizedProvider);
+        params.set("session_id", normalizedSessionId);
+      }
+      return api.get(`/session-continuity?${params}`);
+    },
   });
 }
 
@@ -1728,15 +1751,39 @@ export function useContinueSession() {
   });
 }
 
-export function useLatestCheckpoint(workspaceId) {
+export function useLatestCheckpoint(
+  workspaceId,
+  { provider = null, sessionId = null, enabled = true } = {},
+) {
+  const normalizedProvider = normalizeCheckpointProvider(provider);
+  const normalizedSessionId = String(sessionId || "").trim();
+  const scoped = Boolean(normalizedProvider && normalizedSessionId);
+  const invalidScope = Boolean(normalizedProvider || normalizedSessionId) && !scoped;
+  const queryKey = invalidScope
+    ? [
+        "checkpoints",
+        workspaceId,
+        "latest",
+        "invalid-scope",
+        normalizedProvider || null,
+        normalizedSessionId || null,
+      ]
+    : scoped
+      ? ["checkpoints", workspaceId, "latest", normalizedProvider, normalizedSessionId]
+      : ["checkpoints", workspaceId, "latest"];
   return useQuery({
-    queryKey: ["checkpoints", workspaceId, "latest"],
-    enabled: Boolean(workspaceId),
+    queryKey,
+    enabled: Boolean(workspaceId) && enabled && !invalidScope,
     refetchInterval: 15_000,
     refetchIntervalInBackground: false,
     queryFn: async () => {
+      const params = new URLSearchParams({ workspace_id: workspaceId });
+      if (scoped) {
+        params.set("provider", normalizedProvider);
+        params.set("session_id", normalizedSessionId);
+      }
       try {
-        return await api.get(`/checkpoints/latest?workspace_id=${encodeURIComponent(workspaceId)}`);
+        return await api.get(`/checkpoints/latest?${params}`);
       } catch (error) {
         if (error.status === 404) return null;
         throw error;
@@ -1745,16 +1792,57 @@ export function useLatestCheckpoint(workspaceId) {
   });
 }
 
-export function useCheckpoints(workspaceId, limit = 50) {
+export function useCheckpoints(
+  workspaceId,
+  limit = 50,
+  { enabled = true, provider = null, sessionId = null } = {},
+) {
+  const normalizedProvider = normalizeCheckpointProvider(provider);
+  const normalizedSessionId = String(sessionId || "").trim();
+  const scoped = Boolean(normalizedProvider && normalizedSessionId);
+  const invalidScope = Boolean(normalizedProvider || normalizedSessionId) && !scoped;
+  const queryKey = invalidScope
+    ? [
+        "checkpoints",
+        workspaceId,
+        "list",
+        limit,
+        "invalid-scope",
+        normalizedProvider || null,
+        normalizedSessionId || null,
+      ]
+    : scoped
+      ? [
+          "checkpoints",
+          workspaceId,
+          "list",
+          limit,
+          normalizedProvider,
+          normalizedSessionId,
+        ]
+      : ["checkpoints", workspaceId, "list", limit];
   return useQuery({
-    queryKey: ["checkpoints", workspaceId, "list", limit],
-    enabled: Boolean(workspaceId),
+    queryKey,
+    enabled: Boolean(workspaceId) && enabled && !invalidScope,
     refetchInterval: 15_000,
     refetchIntervalInBackground: false,
-    queryFn: () => api.get(
-      `/checkpoints?workspace_id=${encodeURIComponent(workspaceId)}&limit=${limit}`,
-    ),
+    queryFn: () => {
+      const params = new URLSearchParams({
+        workspace_id: workspaceId,
+        limit: String(limit),
+      });
+      if (scoped) {
+        params.set("provider", normalizedProvider);
+        params.set("session_id", normalizedSessionId);
+      }
+      return api.get(`/checkpoints?${params}`);
+    },
   });
+}
+
+function normalizeCheckpointProvider(value) {
+  return String(value || "").trim().toLocaleLowerCase()
+    .replace(/^claude_code$/, "claude");
 }
 
 export function useCaptureCheckpoint() {
@@ -1769,6 +1857,16 @@ export function useCaptureCheckpoint() {
       }),
     onSuccess: (checkpoint, variables) => {
       qc.setQueryData(["checkpoints", variables.workspaceId, "latest"], checkpoint);
+      qc.setQueryData(
+        [
+          "checkpoints",
+          variables.workspaceId,
+          "latest",
+          String(variables.provider || "").trim().toLocaleLowerCase().replace(/^claude_code$/, "claude"),
+          String(variables.sessionId || "").trim(),
+        ],
+        checkpoint,
+      );
       qc.invalidateQueries({ queryKey: ["checkpoints", variables.workspaceId] });
     },
   });

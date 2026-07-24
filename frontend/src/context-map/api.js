@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 
@@ -19,24 +20,72 @@ export function useContextDigest(workspaceId, { poll = false } = {}) {
   });
 }
 
-function memoryPath(workspaceId, { query = "", section = null, limit = 3 } = {}) {
+function memoryPath(workspaceId, {
+  query = "",
+  section = null,
+  semanticSection = null,
+  scope = "agenda",
+  sourceGroup = "all",
+  verification = "all",
+  temporal = "all",
+  kind = null,
+  limit = 3,
+} = {}) {
   const params = new URLSearchParams({
     workspace_id: workspaceId,
+    scope,
+    source_group: sourceGroup,
+    verification,
+    temporal,
     limit_per_section: String(limit),
   });
   if (query.trim()) params.set("query", query.trim());
   if (section) params.set("section", section);
+  if (semanticSection) params.set("semantic_section", semanticSection);
+  if (kind?.trim()) params.set("kind", kind.trim());
   return `/context/memory?${params}`;
 }
 
 export function useProjectMemory(workspaceId, options = {}) {
   const query = options.query || "";
   const section = options.section || null;
+  const semanticSection = options.semanticSection || null;
+  const scope = options.scope || "agenda";
+  const sourceGroup = options.sourceGroup || "all";
+  const verification = options.verification || "all";
+  const temporal = options.temporal || "all";
+  const kind = options.kind || null;
   const limit = options.limit || 3;
+  const poll = Boolean(options.poll);
+  const enabled = options.enabled !== false;
   return useQuery({
-    queryKey: ["project-memory", workspaceId, query.trim(), section, limit],
-    queryFn: () => api.get(memoryPath(workspaceId, { query, section, limit })),
-    enabled: Boolean(workspaceId),
+    queryKey: [
+      "project-memory",
+      workspaceId,
+      query.trim(),
+      section,
+      semanticSection,
+      scope,
+      sourceGroup,
+      verification,
+      temporal,
+      kind,
+      limit,
+    ],
+    queryFn: () => api.get(memoryPath(workspaceId, {
+      query,
+      section,
+      semanticSection,
+      scope,
+      sourceGroup,
+      verification,
+      temporal,
+      kind,
+      limit,
+    })),
+    enabled: Boolean(workspaceId) && enabled,
+    refetchInterval: poll ? 15_000 : false,
+    refetchIntervalInBackground: false,
     retry: 1,
   });
 }
@@ -57,8 +106,34 @@ export function useReviewMemoryRecord(workspaceId) {
   });
 }
 
-export function useLinkedAISessionRefresh(workspaceId, { enabled = true } = {}) {
+export function useLinkedAISessionRefresh(
+  workspaceId,
+  { enabled = true, initialDelayMs = 0 } = {},
+) {
   const queryClient = useQueryClient();
+  const [delayReadyWorkspaceId, setDelayReadyWorkspaceId] = useState(
+    initialDelayMs > 0 ? null : workspaceId || null,
+  );
+
+  useEffect(() => {
+    if (!workspaceId || !enabled) {
+      setDelayReadyWorkspaceId(null);
+      return undefined;
+    }
+    if (initialDelayMs <= 0) {
+      setDelayReadyWorkspaceId(workspaceId);
+      return undefined;
+    }
+
+    setDelayReadyWorkspaceId(null);
+    const timeoutId = globalThis.setTimeout(
+      () => setDelayReadyWorkspaceId(workspaceId),
+      initialDelayMs,
+    );
+    return () => globalThis.clearTimeout(timeoutId);
+  }, [enabled, initialDelayMs, workspaceId]);
+
+  const delayElapsed = initialDelayMs <= 0 || delayReadyWorkspaceId === workspaceId;
   return useQuery({
     queryKey: ["linked-ai-session-refresh", workspaceId],
     queryFn: async () => {
@@ -67,14 +142,15 @@ export function useLinkedAISessionRefresh(workspaceId, { enabled = true } = {}) 
       });
       if (Number(result?.changed || 0) > 0 || Number(result?.metadata_updated || 0) > 0) {
         await queryClient.invalidateQueries({ queryKey: ["context-digest", workspaceId] });
+        await queryClient.invalidateQueries({ queryKey: ["project-memory", workspaceId] });
       }
       if (Number(result?.checkpoints_created || 0) > 0) {
         await queryClient.invalidateQueries({ queryKey: ["checkpoints", workspaceId] });
       }
       return result;
     },
-    enabled: Boolean(workspaceId) && enabled,
-    refetchInterval: 5000,
+    enabled: Boolean(workspaceId) && enabled && delayElapsed,
+    refetchInterval: 30_000,
     refetchIntervalInBackground: false,
     retry: false,
   });
@@ -90,6 +166,7 @@ export function useClearNowSession(workspaceId) {
       }
       queryClient.invalidateQueries({ queryKey: ["session-library", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["context-digest", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["project-memory", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
   });
@@ -227,6 +304,7 @@ export function useBuildContext(workspaceId) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["context-digest", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["project-memory", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["knowledge-graph"] });
     },
   });
@@ -242,6 +320,7 @@ export function useIndexProject(workspaceId) {
     }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["context-digest", workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ["project-memory", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["knowledge-graph"] });
       queryClient.invalidateQueries({ queryKey: ["workspaces"] });
     },

@@ -5,7 +5,6 @@ import {
   CheckCircle2,
   ChevronDown,
   Clipboard,
-  Clock3,
   FileCode2,
   FolderGit2,
   GitBranch,
@@ -17,8 +16,6 @@ import {
   Search,
   ShieldCheck,
   Sparkles,
-  TestTube2,
-  XCircle,
 } from "lucide-react";
 
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
@@ -35,7 +32,6 @@ import {
   useContinueSession,
   useSessionContinuity,
   useSessionLibrary,
-  useVerifyCheckpoint,
 } from "../api/hooks";
 import { cleanDisplayText, formatTimeAgo } from "../context-map/digest";
 import { useProductWorkspace } from "./useProductWorkspace";
@@ -113,13 +109,6 @@ export default function RunsPage() {
   ));
   const visibleCards = matchingCards.slice(0, visibleCount);
   const totalCompactions = cards.reduce((total, card) => total + card.compactionCount, 0);
-  const recoveredItemCount = cards.reduce(
-    (total, card) => total + ledgerSections(card.ledger).reduce(
-      (sectionTotal, section) => sectionTotal + (Number.isFinite(section.count) ? section.count : 0),
-      0,
-    ),
-    0,
-  );
   const loading = libraryQuery.isLoading || continuityQuery.isLoading;
   const error = libraryQuery.isError ? libraryQuery.error : continuityQuery.isError ? continuityQuery.error : null;
 
@@ -175,14 +164,13 @@ export default function RunsPage() {
             </div>
             <h1 className="mt-4 text-3xl font-black tracking-[-0.045em] sm:text-4xl lg:text-5xl">Resume sessions</h1>
             <p className="mt-4 max-w-2xl text-sm font-medium leading-6 text-[#68685f] dark:text-[#aaa9a0]">
-              Every card is one agent session: what it started with, what accumulated, what explicitly changed, and what compaction still leaves unmeasured.
+              Review what you asked for, what happened since, and any context gaps before resuming a task.
             </p>
           </div>
           {!loading && cards.length ? (
-            <dl className="grid grid-cols-3 overflow-hidden rounded-2xl border border-[#d8d8cf] bg-white/70 backdrop-blur-sm dark:border-[#34342f] dark:bg-black/25">
+            <dl className="grid grid-cols-2 overflow-hidden rounded-2xl border border-[#d8d8cf] bg-white/70 backdrop-blur-sm dark:border-[#34342f] dark:bg-black/25">
               <HeaderMetric value={cards.length} label="Sessions" />
               <HeaderMetric value={totalCompactions} label="Compactions" />
-              <HeaderMetric value={recoveredItemCount} label="Items" />
             </dl>
           ) : null}
         </div>
@@ -191,8 +179,8 @@ export default function RunsPage() {
       {loading ? (
         <ProductLoadingState
           label="Reconstructing session context…"
-          detail="Reading source-backed events and arranging one continuity ledger per session."
-          stages={["Finding agent sessions", "Rebuilding context ledgers", "Linking safe continuation actions"]}
+          detail="Reading source-backed history and preparing one resume card per session."
+          stages={["Finding agent sessions", "Rebuilding session history", "Linking resume actions"]}
         />
       ) : null}
       {error ? <EmptyState title="Could not reconstruct session context" detail={error.message} error /> : null}
@@ -210,7 +198,7 @@ export default function RunsPage() {
                   setSearch(event.target.value);
                   setVisibleCount(INITIAL_SESSION_COUNT);
                 }}
-                placeholder="Search requests, decisions, files, or progress"
+                placeholder="Search requests, decisions, or progress"
                 className="h-11 w-full rounded-xl border border-[#d5d5cc] bg-[#fbfbf6] pl-10 pr-4 text-sm font-semibold outline-none transition placeholder:font-normal placeholder:text-[#85857c] focus:border-[#7f983d] focus:ring-2 focus:ring-[#c9ec70]/35 dark:border-[#363630] dark:bg-black dark:focus:border-[#d8ff73]"
               />
             </label>
@@ -247,7 +235,7 @@ export default function RunsPage() {
           <section aria-labelledby="session-ledger-heading">
             <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
               <div>
-                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-[#77776e] dark:text-[#aaa9a0]">Context ledgers</p>
+                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-[#77776e] dark:text-[#aaa9a0]">Resume history</p>
                 <h2 id="session-ledger-heading" className="mt-1 text-xl font-black tracking-[-0.025em]">One card. One session.</h2>
               </div>
               <p role="status" className="text-xs font-semibold text-[#68685f] dark:text-[#aaa9a0]">
@@ -262,7 +250,6 @@ export default function RunsPage() {
                     <SessionLedgerCard
                       card={card}
                       index={index}
-                      workspaceId={workspace.activeWorkspaceId}
                       onContinue={openContinue}
                     />
                   </li>
@@ -288,7 +275,7 @@ export default function RunsPage() {
       {!loading && !error && !cards.length ? (
         <EmptyState
           title="No agent sessions yet"
-          detail="Sync Codex, Claude Code, or OpenCode from Library. A source-backed context ledger will appear here for every session."
+          detail="Sync Codex, Claude Code, or OpenCode from Library. A source-backed resume card will appear here for every session."
         />
       ) : null}
 
@@ -321,47 +308,21 @@ export default function RunsPage() {
   );
 }
 
-function SessionLedgerCard({ card, index, workspaceId, onContinue }) {
+function SessionLedgerCard({ card, index, onContinue }) {
   const [expanded, setExpanded] = useState(false);
   const [activeSection, setActiveSection] = useState("added");
-  const [verificationNotice, setVerificationNotice] = useState("");
-  const verifyCheckpoint = useVerifyCheckpoint();
   const sections = ledgerSections(card.ledger);
   const active = sections.find((section) => section.key === activeSection) || sections[0];
   const meta = harnessMeta(card.provider);
-  const cardNumber = String(index + 1).padStart(2, "0");
   const titleId = `session-ledger-${safeId(card.key)}`;
   const panelId = `${titleId}-panel`;
   const baseText = card.ledger?.base?.[0]?.text;
-  const checkpointStateValue = checkpointState(
-    card.checkpoint?.verification?.status,
-    card.checkpoint?.capture_status,
-  );
-  const CheckpointIcon = checkpointStateValue.icon;
+  const readiness = resumeReadiness(card);
+  const ReadinessIcon = readiness.icon;
 
   const selectSection = (key) => {
     setActiveSection(key);
     setExpanded(true);
-  };
-  const runSavedChecks = () => {
-    if (!card.checkpoint) return;
-    setVerificationNotice("");
-    verifyCheckpoint.mutate(
-      {
-        workspaceId,
-        checkpointId: card.checkpoint.id,
-        executeCommands: true,
-      },
-      {
-        onSuccess: (result) => {
-          const resultState = checkpointState(
-            result?.verification?.status,
-            result?.capture_status,
-          );
-          setVerificationNotice(`Check finished: ${resultState.label}.`);
-        },
-      },
-    );
   };
 
   return (
@@ -392,8 +353,7 @@ function SessionLedgerCard({ card, index, workspaceId, onContinue }) {
               </div>
             </div>
             <div className="text-right">
-              <p className="font-mono text-xl font-black leading-none" style={{ color: meta.accent }}>{cardNumber}</p>
-              <div className="mt-2 flex items-center justify-end gap-1.5 text-[9px] font-black uppercase tracking-[0.12em] text-[#77776e] dark:text-[#aaa9a0]">
+              <div className="flex items-center justify-end gap-1.5 text-[9px] font-black uppercase tracking-[0.12em] text-[#77776e] dark:text-[#aaa9a0]">
                 {card.live ? <Radio className="h-3 w-3 text-emerald-600" aria-hidden="true" /> : null}
                 {card.live ? "Live-linked" : "Imported"}
               </div>
@@ -417,17 +377,12 @@ function SessionLedgerCard({ card, index, workspaceId, onContinue }) {
             </div>
           </div>
 
-          <div className="mt-5 overflow-hidden rounded-2xl bg-[#171713] text-white dark:bg-[#e9e9df] dark:text-[#171713]">
-            <div className="grid grid-cols-[auto_minmax(0,1fr)]">
-              <div className="flex w-12 items-center justify-center border-r border-white/15 bg-white/[0.04] font-mono text-lg font-black text-[#d9ff68] dark:border-black/10 dark:bg-black/[0.035] dark:text-[#57711a]">
-                B
-              </div>
-              <div className="flex min-h-[7.5rem] min-w-0 flex-col justify-center px-4 py-4">
-                <p className="text-[8px] font-black uppercase tracking-[0.17em] text-white/55 dark:text-black/50">Base · original request</p>
-                <p className="mt-2 line-clamp-3 text-sm font-bold leading-6">
-                  {baseText ? cleanDisplayText(baseText) : "The original request was not available in normalized session evidence."}
-                </p>
-              </div>
+          <div className="mt-5 overflow-hidden rounded-2xl bg-[#171713] px-5 py-5 text-white dark:bg-[#e9e9df] dark:text-[#171713]">
+            <div className="flex min-h-[5.5rem] min-w-0 flex-col justify-center">
+              <p className="text-[8px] font-black uppercase tracking-[0.17em] text-white/55 dark:text-black/50">Original request</p>
+              <p className="mt-2 line-clamp-3 text-sm font-bold leading-6">
+                {baseText ? cleanDisplayText(baseText) : "The original request is not available in this session history."}
+              </p>
             </div>
           </div>
         </div>
@@ -461,12 +416,12 @@ function SessionLedgerCard({ card, index, workspaceId, onContinue }) {
               className="inline-flex min-h-10 items-center gap-2 text-xs font-black transition hover:text-[#64801d]"
             >
               <ChevronDown className={`h-4 w-4 transition-transform duration-500 ${expanded ? "rotate-180" : ""}`} aria-hidden="true" />
-              {expanded ? "Close context ledger" : "Review context ledger"}
+              {expanded ? "Close session history" : "Review session history"}
             </button>
             <span className="hidden h-4 w-px bg-[#d8d8cf] dark:bg-[#34342f] sm:block" aria-hidden="true" />
             <span className="inline-flex items-center gap-1.5 text-[10px] font-bold text-[#68685f] dark:text-[#aaa9a0]">
-              <CheckpointIcon className="h-3.5 w-3.5" aria-hidden="true" />
-              {card.checkpoint ? checkpointStateValue.label : "No saved checks"}
+              <ReadinessIcon className="h-3.5 w-3.5" aria-hidden="true" />
+              {readiness.label}
             </span>
             {card.branch ? (
               <span className="inline-flex min-w-0 items-center gap-1.5 text-[10px] font-bold text-[#68685f] dark:text-[#aaa9a0]">
@@ -477,44 +432,19 @@ function SessionLedgerCard({ card, index, workspaceId, onContinue }) {
           </div>
 
           <div className="ce-session-ledger__actions flex min-h-[4.5rem] flex-wrap items-center justify-end gap-2 border-t border-[#deded5] bg-[#f5f5ef] px-4 py-3 dark:border-[#292925] dark:bg-[#0c0c09]">
-            {card.checkpoint ? (
-              <button
-                type="button"
-                onClick={runSavedChecks}
-                disabled={verifyCheckpoint.isPending}
-                aria-label={`Run saved checks for ${card.title}`}
-                className="btn-secondary h-11 shrink-0 whitespace-nowrap px-3 text-[10px] disabled:cursor-wait disabled:opacity-50"
-              >
-                <TestTube2 className="h-3.5 w-3.5" aria-hidden="true" />
-                {verifyCheckpoint.isPending ? "Running…" : "Run checks"}
-              </button>
-            ) : null}
             <button
               type="button"
               onClick={() => onContinue(card)}
-              disabled={!card.canRepair}
-              aria-label={`Repair context and continue: ${card.title}`}
+              disabled={!card.canResume}
+              aria-label={`Resume task: ${card.title}`}
               className="btn-primary h-11 min-w-40 shrink-0 whitespace-nowrap px-4 text-[10px] disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Clipboard className="h-3.5 w-3.5" aria-hidden="true" />
-              {card.canRepair ? "Repair & continue" : "Context unavailable"}
+              {card.canResume ? "Resume task" : "Resume unavailable"}
               <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
             </button>
           </div>
         </div>
-
-        {verificationNotice || verifyCheckpoint.error ? (
-          <p
-            role={verifyCheckpoint.error ? "alert" : "status"}
-            className={`border-t px-5 py-3 text-[10px] font-bold sm:px-6 ${
-              verifyCheckpoint.error
-                ? "border-red-200 bg-red-50 text-red-700 dark:border-red-900/70 dark:bg-red-950/30 dark:text-red-200"
-                : "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/70 dark:bg-emerald-950/30 dark:text-emerald-200"
-            }`}
-          >
-            {verifyCheckpoint.error?.message || verificationNotice}
-          </p>
-        ) : null}
       </div>
     </article>
   );
@@ -523,7 +453,7 @@ function SessionLedgerCard({ card, index, workspaceId, onContinue }) {
 function LedgerRail({ sections, activeSection, expanded, onSelect }) {
   return (
     <div className="overflow-x-auto border-t border-[#deded5] bg-white/50 dark:border-[#292925] dark:bg-black/10">
-      <div className="grid min-w-[28rem] grid-cols-5 sm:min-w-0" aria-label="Session context ledger">
+      <div className="grid min-w-[28rem] grid-cols-5 sm:min-w-0" aria-label="Session resume history">
         {sections.map((section) => {
           const tone = LEDGER_TONES[section.key];
           const Icon = tone.icon;
@@ -542,7 +472,7 @@ function LedgerRail({ sections, activeSection, expanded, onSelect }) {
                   <Icon className="h-3.5 w-3.5" aria-hidden="true" />
                 </span>
                 <span className="font-mono text-sm font-black text-[#77776e] dark:text-[#aaa9a0]">
-                  {section.count === null ? "—" : String(section.count).padStart(2, "0")}
+                  {section.count === null ? "—" : section.count}
                 </span>
               </span>
               <span className="mt-2 block text-[9px] font-black uppercase tracking-[0.13em]">{section.label}</span>
@@ -562,6 +492,8 @@ function LedgerRail({ sections, activeSection, expanded, onSelect }) {
 function ContextLedgerPanel({ id, section, card }) {
   const tone = LEDGER_TONES[section.key];
   const Icon = tone.icon;
+  const displayItems = userFacingItems(section.items);
+  const technicalItemsHidden = displayItems.length !== section.items.length;
   return (
     <section id={id} className={`border-t p-5 dark:border-[#292925] sm:p-6 ${tone.panel}`} aria-labelledby={`${id}-heading`}>
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -571,67 +503,41 @@ function ContextLedgerPanel({ id, section, card }) {
           </span>
           <div>
             <p className="text-[9px] font-black uppercase tracking-[0.16em]" style={{ color: tone.accent }}>
-              {section.symbol} · {section.label}
+              {section.label}
             </p>
             <h4 id={`${id}-heading`} className="mt-1 text-base font-black">{section.description}</h4>
           </div>
         </div>
         <span className="rounded-full border border-current/15 bg-white/60 px-2.5 py-1 font-mono text-[9px] font-black uppercase tracking-[0.12em] dark:bg-black/15" style={{ color: tone.accent }}>
-          {section.count === null ? section.statusLabel : `${section.count} captured`}
+          {sectionCountLabel(section)}
         </span>
       </div>
 
       {section.key === "missing" ? (
         <div className="mt-5 rounded-xl border border-[#e3b7b3] bg-white/70 p-4 dark:border-[#5a302c] dark:bg-black/15">
           <p className="text-xs font-black">
-            {section.status === "not_applicable" ? "No compaction to compare" : "Not a fake zero"}
+            {section.status === "not_applicable" ? "No compaction occurred" : "What was lost is unknown"}
           </p>
           <p className="mt-1 text-xs leading-5 text-[#6f4f4b] dark:text-[#d9aaa5]">
-            {section.reason || "The provider does not expose the post-compaction active prompt, so missing information cannot be measured truthfully."}
+            {section.status === "not_applicable"
+              ? "This session was not compacted, so there is no compaction gap to review."
+              : "This session was compacted, but its history cannot show exactly what the agent stopped carrying forward."}
           </p>
         </div>
-      ) : section.items.length ? (
+      ) : displayItems.length ? (
         <>
-          {section.hiddenCount ? (
+          {section.hiddenCount || technicalItemsHidden ? (
             <p className="mt-5 rounded-xl border border-dashed border-current/20 bg-white/45 px-3.5 py-3 text-[10px] font-bold dark:bg-black/10">
-              Showing the latest {section.items.length} of {section.count} captured items. Earlier evidence remains in the source session history.
+              {section.key === "added"
+                ? section.hiddenCount
+                  ? `Showing the latest ${displayItems.length} of ${section.count} session updates, grouped as follow-up requests, decisions, and progress. Older updates remain in the source session; technical file references stay out of this view.`
+                  : "Showing follow-up requests, decisions, and progress. Technical file references stay out of this view."
+                : `Showing the latest ${displayItems.length} of ${section.count} captured updates. Earlier history remains available in the source session.`}
             </p>
           ) : null}
-          <ol className="mt-3 space-y-2.5">
-            {section.items.map((item, itemIndex) => (
-              <li
-                key={item.id || `${section.key}-${itemIndex}`}
-                className="ce-ledger-row rounded-xl border border-black/10 bg-white/75 p-3.5 dark:border-white/10 dark:bg-black/15"
-                style={{ "--row-delay": `${Math.min(itemIndex, 8) * 42}ms` }}
-              >
-                <div className="flex items-start gap-3">
-                  <span className="mt-0.5 flex h-6 min-w-6 items-center justify-center rounded-md bg-black/[0.055] px-1 font-mono text-[9px] font-black dark:bg-white/[0.08]">
-                    {String(itemIndex + 1).padStart(2, "0")}
-                  </span>
-                  <div className="min-w-0">
-                    <p className={`text-xs leading-5 ${
-                      item.kind === "file" || item.kind === "check"
-                        ? "break-all font-mono font-semibold"
-                        : "font-semibold"
-                    }`}>
-                      {ledgerItemText(item)}
-                    </p>
-                    <div className="mt-2 flex flex-wrap gap-2 text-[8px] font-black uppercase tracking-[0.1em] text-[#77776e] dark:text-[#aaa9a0]">
-                      <span>{itemKindLabel(item.kind)}</span>
-                      <span>·</span>
-                      <span>{truthLabel(item.truth_state)}</span>
-                      {Number.isFinite(item.sequence_number) ? (
-                        <>
-                          <span>·</span>
-                          <span>Event {item.sequence_number}</span>
-                        </>
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
-              </li>
-            ))}
-          </ol>
+          {section.key === "added"
+            ? <SinceThenGroups items={displayItems} />
+            : <LedgerItemList items={displayItems} sectionKey={section.key} />}
         </>
       ) : (
         <div className="mt-5 rounded-xl border border-dashed border-black/15 bg-white/45 p-4 text-xs font-semibold text-[#68685f] dark:border-white/15 dark:bg-black/10 dark:text-[#aaa9a0]">
@@ -646,18 +552,80 @@ function ContextLedgerPanel({ id, section, card }) {
         </p>
         <p className="inline-flex items-center gap-2 sm:justify-end">
           <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
-          Source-backed session events
+          Source-backed session history
         </p>
       </div>
     </section>
   );
 }
 
+function SinceThenGroups({ items }) {
+  const groups = [
+    {
+      key: "requests",
+      label: "Follow-up requests",
+      items: items.filter((item) => item.kind === "instruction"),
+    },
+    {
+      key: "decisions",
+      label: "Decisions",
+      items: items.filter((item) => item.kind === "decision"),
+    },
+    {
+      key: "progress",
+      label: "Progress",
+      items: items.filter((item) => item.kind === "progress"),
+    },
+    {
+      key: "other",
+      label: "Other updates",
+      items: items.filter((item) => !["instruction", "decision", "progress"].includes(item.kind)),
+    },
+  ].filter((group) => group.items.length);
+
+  return (
+    <div className="mt-5 space-y-5">
+      {groups.map((group) => (
+        <section key={group.key} aria-label={group.label}>
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <h5 className="text-[10px] font-black uppercase tracking-[0.14em]">{group.label}</h5>
+            <span className="text-[9px] font-bold text-[#68685f] dark:text-[#aaa9a0]">{group.items.length}</span>
+          </div>
+          <LedgerItemList items={group.items} sectionKey={`added-${group.key}`} compact />
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function LedgerItemList({ items, sectionKey, compact = false }) {
+  return (
+    <ul className={compact ? "space-y-2.5" : "mt-3 space-y-2.5"}>
+      {items.map((item, itemIndex) => (
+        <li
+          key={item.id || `${sectionKey}-${itemIndex}`}
+          className="ce-ledger-row rounded-xl border border-black/10 bg-white/75 p-3.5 dark:border-white/10 dark:bg-black/15"
+          style={{ "--row-delay": `${Math.min(itemIndex, 8) * 42}ms` }}
+        >
+          <p className="text-xs font-semibold leading-5">
+            {ledgerItemText(item)}
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2 text-[8px] font-black uppercase tracking-[0.1em] text-[#77776e] dark:text-[#aaa9a0]">
+            <span>{itemKindLabel(item.kind)}</span>
+            <span>·</span>
+            <span>{truthLabel(item.truth_state)}</span>
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function HarnessDeckBackdrop() {
   const cards = [
-    { type: "codex", number: "01", left: "3.5rem", top: "4.5rem", rotation: "-10deg", delay: "0ms" },
-    { type: "claude", number: "02", left: "12.5rem", top: "1.25rem", rotation: "-1deg", delay: "750ms" },
-    { type: "opencode", number: "03", left: "21.5rem", top: "4rem", rotation: "9deg", delay: "1500ms" },
+    { type: "codex", left: "3.5rem", top: "4.5rem", rotation: "-10deg", delay: "0ms" },
+    { type: "claude", left: "12.5rem", top: "1.25rem", rotation: "-1deg", delay: "750ms" },
+    { type: "opencode", left: "21.5rem", top: "4rem", rotation: "9deg", delay: "1500ms" },
   ];
   return (
     <div
@@ -669,7 +637,7 @@ function HarnessDeckBackdrop() {
         WebkitMaskImage: "linear-gradient(to right, transparent 0%, black 25%, black 100%)",
       }}
     >
-      {cards.map(({ type, number, left, top, rotation, delay }) => {
+      {cards.map(({ type, left, top, rotation, delay }) => {
         const meta = harnessMeta(type);
         return (
           <span
@@ -687,8 +655,7 @@ function HarnessDeckBackdrop() {
             <span className="absolute -right-[24%] top-[14%] h-[48%] w-[94%] opacity-45">
               <HarnessArtwork type={type} monochrome />
             </span>
-            <span className="absolute inset-x-0 top-0 flex items-start justify-between px-4 pt-4">
-              <span className="font-mono text-lg font-black">{number}</span>
+            <span className="absolute inset-x-0 top-0 flex items-start justify-end px-4 pt-4">
               <span className="text-[7px] font-black uppercase tracking-[0.15em]">{meta.company}</span>
             </span>
             <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-[#efefe9] via-[#efefe9]/95 to-transparent px-4 pb-5 pt-16">
@@ -715,48 +682,55 @@ function HeaderMetric({ value, label }) {
   );
 }
 
-function checkpointState(status = "not_run", captureStatus) {
-  if (status === "verified") return { label: "Saved checks passed", icon: CheckCircle2 };
-  if (status === "failed") return { label: "Saved checks failed", icon: XCircle };
-  if (status === "stale") return { label: "Checks may be stale", icon: AlertTriangle };
-  if (captureStatus === "incomplete") return { label: "Saved context needs review", icon: XCircle };
-  return { label: status === "partial" ? "Partly checked" : "Checks not rerun", icon: Clock3 };
+function resumeReadiness(card) {
+  if (!card.canResume) {
+    return { label: "Resume unavailable", icon: AlertTriangle };
+  }
+  if (card.hasUnknownContextGaps) {
+    return { label: "Ready to resume — review context gaps", icon: AlertTriangle };
+  }
+  return { label: "Ready to resume", icon: CheckCircle2 };
+}
+
+function sectionCountLabel(section) {
+  if (section.count === null) return section.statusLabel;
+  const noun = section.key === "added" ? "update" : "request";
+  return `${section.count} ${noun}${section.count === 1 ? "" : "s"}`;
+}
+
+function userFacingItems(items = []) {
+  return items.filter((item) => item.kind !== "file" && item.kind !== "check");
 }
 
 function itemKindLabel(kind) {
   return {
     original_request: "Original request",
-    instruction: "Instruction",
-    amendment: "User amendment",
-    cancellation: "User cancellation",
-    decision: "Reported decision",
-    progress: "Reported progress",
-    file: "Referenced file",
-    check: "Observed check",
-  }[kind] || "Context item";
+    instruction: "Follow-up request",
+    amendment: "Updated request",
+    cancellation: "No longer applies",
+    decision: "Decision",
+    progress: "Progress",
+  }[kind] || "Session update";
 }
 
 function truthLabel(value) {
   return {
-    user_stated: "User stated",
+    user_stated: "From you",
     observed: "Observed",
     reported: "Agent reported",
-  }[value] || "Source linked";
+  }[value] || "From session history";
 }
 
 function ledgerItemText(item) {
-  if (item?.kind === "file" || item?.kind === "check") {
-    return String(item.text || "").trim();
-  }
   return cleanDisplayText(item?.text);
 }
 
 function emptySectionCopy(key) {
   return {
-    base: "The original request was not available in normalized session evidence.",
-    added: "No later instructions, decisions, files, or progress were captured.",
-    changed: "No explicit user amendment was captured.",
-    removed: "No explicit cancellation of an earlier requirement was captured.",
+    base: "The original request is not available in this session history.",
+    added: "No follow-up requests, decisions, or progress were captured.",
+    changed: "You did not explicitly update an earlier request.",
+    removed: "You did not explicitly cancel an earlier request.",
   }[key] || "Nothing captured in this section.";
 }
 
