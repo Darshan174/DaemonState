@@ -1,21 +1,22 @@
-import { Suspense, lazy, useState } from "react";
+import { Suspense, lazy, useEffect, useState } from "react";
 import { Routes, Route, NavLink, Navigate, Link, useLocation } from "react-router-dom";
 import ThemeToggle from "./components/ThemeToggle";
 import CeIcon from "./components/CeIcon";
-import ContinuityRail from "./components/ContinuityRail";
 import ProductLoadingState from "./components/ProductLoadingState";
 import WorkspaceSwitcher from "./components/WorkspaceSwitcher";
 import { useWorkspaceSelection } from "./context/WorkspaceContext";
 import {
   Activity,
-  Cable,
   Database,
   LibraryBig,
   BrainCircuit,
+  Ellipsis,
+  History,
   PanelLeftClose,
   PanelLeftOpen,
-  PlayCircle,
+  PlugZap,
   Waypoints,
+  X,
 } from "lucide-react";
 
 const ContextMapPage = lazy(() => import("./pages/ContextMapPage"));
@@ -31,31 +32,35 @@ const Connectors   = lazy(() => import("./pages/Connectors"));
 const Changes      = lazy(() => import("./pages/Changes"));
 const WorkspacesPage = lazy(() => import("./pages/WorkspacesPage"));
 
+const WORKSPACE_NAV_ITEMS = [
+  { to: "/app", label: "Now", icon: Activity, end: true },
+  { to: "/app/library", label: "Library", icon: LibraryBig },
+  { to: "/app/runs", label: "Resume", icon: History },
+  { to: "/app/memory", label: "Memory", icon: BrainCircuit },
+  { to: "/app/explain", label: "Evidence", icon: Waypoints },
+];
+
+const MOBILE_PRIMARY_ITEMS = WORKSPACE_NAV_ITEMS.filter(({ to }) => to !== "/app/explain");
+
+const SETUP_NAV_ITEMS = [
+  { to: "/app/sources", label: "Sources", icon: Database },
+  { to: "/app/connectors", label: "Integrations", icon: PlugZap },
+];
+
 const NAV_GROUPS = [
   {
-    label: "Operate",
-    items: [
-      { to: "/app", label: "Now", icon: Activity, end: true },
-      { to: "/app/runs", label: "Runs", icon: PlayCircle },
-    ],
+    label: "Workspace",
+    items: WORKSPACE_NAV_ITEMS,
   },
   {
-    label: "Understand",
-    items: [
-      { to: "/app/library", label: "Library", icon: LibraryBig },
-      { to: "/app/memory", label: "Memory", icon: BrainCircuit },
-      { to: "/app/explain", label: "Explain", icon: Waypoints },
-    ],
-  },
-  {
-    label: "Configure",
-    items: [
-      { to: "/app/sources", label: "Sources", icon: Database },
-      { to: "/app/connectors", label: "Connectors", icon: Cable },
-    ],
+    label: "Setup",
+    items: SETUP_NAV_ITEMS,
   },
 ];
-const NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items);
+const MOBILE_MORE_ITEMS = [
+  WORKSPACE_NAV_ITEMS.find(({ to }) => to === "/app/explain"),
+  ...SETUP_NAV_ITEMS,
+];
 
 function PageLoader({ fullScreen = false }) {
   return (
@@ -99,10 +104,10 @@ function AdminShell() {
   };
 
   return (
-    <div className="app-shell ce-app-shell flex h-screen overflow-hidden text-[#171713] transition-colors duration-300 dark:text-[#f4f4ec]">
+    <div className="app-shell ce-app-shell flex h-screen h-[100dvh] overflow-hidden text-ink transition-colors duration-300">
       <aside
         id="desktop-sidebar"
-        className={`ce-app-sidebar relative hidden shrink-0 flex-col border-r border-[#deded6]/80 p-3 backdrop-blur-xl transition-[width] duration-300 ease-out dark:border-[#202020] lg:flex ${sidebarCollapsed ? "w-[76px]" : "w-[248px]"}`}
+        className={`ce-app-sidebar relative hidden shrink-0 flex-col border-r border-line p-3 transition-[width] duration-300 ease-out lg:flex ${sidebarCollapsed ? "w-[76px]" : "w-[248px]"}`}
       >
         <button
           type="button"
@@ -115,11 +120,10 @@ function AdminShell() {
         >
           {sidebarCollapsed ? <PanelLeftOpen className="h-3.5 w-3.5" /> : <PanelLeftClose className="h-3.5 w-3.5" />}
         </button>
-        <Link to="/" title={sidebarCollapsed ? "Context Engine" : undefined} className={`group flex h-14 items-center rounded-2xl transition-colors hover:bg-white/60 dark:hover:bg-white/[0.03] ${sidebarCollapsed ? "justify-center px-0" : "gap-3 px-2"}`}>
+        <Link to="/" title={sidebarCollapsed ? "Context Engine" : undefined} className={`group flex h-16 items-center rounded-2xl text-[#171713] transition-colors hover:bg-[#f6f6f3] dark:text-white dark:hover:bg-white/[0.04] ${sidebarCollapsed ? "justify-center px-0" : "gap-3 px-2"}`}>
           <span className="transition-transform duration-300 ease-out group-hover:-rotate-3 group-hover:scale-105"><CeIcon size={34} /></span>
           <span className={sidebarCollapsed ? "sr-only" : "min-w-0"}>
-            <span className="block truncate text-sm font-bold leading-tight tracking-[-0.015em]">Context Engine</span>
-            <span className="mt-1 block text-[11px] font-medium text-[#77776e] dark:text-[#929289]">Verified continuity</span>
+            <span className="block truncate text-[17px] font-semibold leading-none tracking-[-0.025em]">Context Engine</span>
           </span>
         </Link>
 
@@ -129,7 +133,7 @@ function AdminShell() {
           ))}
         </nav>
 
-        <div className="space-y-3 border-t border-[#d9d9d0] pt-4 dark:border-[#202020]">
+        <div className="space-y-3 border-t border-line pt-4">
           {sidebarCollapsed ? (
             <button type="button" onClick={toggleSidebar} title="Expand to switch workspace" aria-label="Expand sidebar to switch workspace" className="flex h-9 w-full items-center justify-center rounded-md text-[#68685f] hover:bg-[#e8e8e0] dark:text-[#a2a298] dark:hover:bg-[#121212]">
               <Database className="h-4 w-4" />
@@ -143,23 +147,20 @@ function AdminShell() {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="relative z-40 shrink-0 border-b border-[#d9d9d0]/90 bg-[#f7f7f2]/90 backdrop-blur-xl dark:border-[#202020] dark:bg-black/95 lg:hidden">
+        <header className="ce-mobile-header relative z-40 shrink-0 border-b border-line backdrop-blur-xl lg:hidden">
           <div className="flex items-center justify-between gap-3 px-4 py-3 sm:px-6">
-            <Link to="/" className="flex min-w-0 items-center gap-2.5">
+            <Link to="/" aria-label="Context Engine home" className="flex min-w-0 items-center gap-2.5">
               <CeIcon size={30} />
-              <span className="truncate text-sm font-semibold">Context Engine</span>
+              <span className="hidden truncate text-sm font-semibold sm:block">Context Engine</span>
             </Link>
             <div className="flex min-w-0 items-center gap-2">
               <WorkspaceSwitcher />
               <ThemeToggle />
             </div>
           </div>
-          <nav aria-label="Application" className="no-scrollbar flex gap-1 overflow-x-auto border-t border-[#e5e5dd] px-4 py-2 dark:border-[#181818] sm:px-6">
-            {NAV_ITEMS.map((item) => <ShellNavLink key={item.to} compact {...item} />)}
-          </nav>
         </header>
 
-        <main className={`app-main ${isLibraryPage ? "" : "ce-app-canvas"} relative min-h-0 flex-1 dark:text-[#f4f4ec] ${isProjectPage ? "overflow-hidden" : "overflow-y-auto px-4 py-6 sm:px-7 sm:py-8 xl:px-10 xl:py-10"}`}>
+        <main className={`app-main ${isLibraryPage ? "" : "ce-app-canvas"} relative min-h-0 flex-1 ${isProjectPage ? "overflow-hidden" : "overflow-y-auto px-4 py-6 sm:px-7 sm:py-8 xl:px-10 xl:py-10"}`}>
         {!isProjectPage ? (
           <div className={isLibraryPage
             ? "pointer-events-none absolute inset-x-0 top-0 h-48 border-b border-[#e7e7df]/70 bg-[radial-gradient(circle_at_75%_0%,rgba(217,255,104,0.14),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.7),rgba(247,247,242,0))] dark:border-[#171717] dark:bg-[radial-gradient(circle_at_75%_0%,rgba(217,255,104,0.035),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.018),rgba(0,0,0,0))]"
@@ -170,12 +171,6 @@ function AdminShell() {
           className={`page-enter relative z-10 ${isProjectPage ? "h-full min-h-0" : ""}`}
           key={`${selectedId || "unselected-workspace"}:${location.pathname}`}
         >
-          {!isProjectPage ? (
-            <ContinuityRail
-              pathname={location.pathname}
-              className={isLibraryPage ? "mx-4 mb-4 mt-4 sm:mx-7" : "mb-6"}
-            />
-          ) : null}
           <Suspense fallback={<PageLoader />}>
             <Routes>
               <Route index                                  element={<NowPage />} />
@@ -198,6 +193,7 @@ function AdminShell() {
           </Suspense>
         </div>
         </main>
+        <MobileNavigation pathname={location.pathname} />
       </div>
     </div>
   );
@@ -218,7 +214,7 @@ function ShellNavGroup({ group, collapsed }) {
   );
 }
 
-function ShellNavLink({ to, label, icon: Icon, end, compact = false, collapsed = false }) {
+function ShellNavLink({ to, label, icon: Icon, end, collapsed = false }) {
   return (
     <NavLink
       to={to}
@@ -227,19 +223,135 @@ function ShellNavLink({ to, label, icon: Icon, end, compact = false, collapsed =
       aria-label={collapsed ? label : undefined}
       className={({ isActive }) =>
         `group relative flex items-center whitespace-nowrap rounded-xl text-[13px] font-semibold transition-all duration-200 ${collapsed ? "justify-center gap-0" : "gap-3"} ${
-          compact ? "h-9 px-3" : collapsed ? "h-10 px-0" : "h-10 px-3"
+          collapsed ? "h-10 px-0" : "h-10 px-3"
         } ${
           isActive
-            ? "bg-[#171713] text-white shadow-[0_8px_24px_rgba(23,23,19,0.13)] dark:bg-[#d9ff68] dark:text-[#171713] dark:shadow-[0_8px_24px_rgba(217,255,104,0.08)]"
-            : "text-[#68685f] hover:bg-white/65 hover:text-[#171713] dark:text-[#a2a298] dark:hover:bg-white/[0.045] dark:hover:text-[#f4f4ec]"
+            ? "bg-ink text-canvas shadow-elevation-1"
+            : "text-ink-muted hover:bg-surface-muted hover:text-ink"
+        }`
+      }
+    >
+      <Icon className="h-4 w-4 shrink-0 transition-transform duration-200 group-hover:scale-105" />
+      <span className={collapsed ? "sr-only" : undefined}>{label}</span>
+    </NavLink>
+  );
+}
+
+function MobileNavigation({ pathname }) {
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreRouteActive = MOBILE_MORE_ITEMS.some(({ to }) => pathname === to || pathname.startsWith(`${to}/`));
+
+  useEffect(() => {
+    setMoreOpen(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!moreOpen) return undefined;
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") setMoreOpen(false);
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [moreOpen]);
+
+  return (
+    <div className="relative z-50 shrink-0 lg:hidden">
+      {moreOpen ? (
+        <>
+          <button
+            type="button"
+            aria-label="Close more menu"
+            onClick={() => setMoreOpen(false)}
+            className="fixed inset-0 z-0 cursor-default bg-black/30 backdrop-blur-[1px]"
+          />
+          <section
+            id="mobile-more-destinations"
+            aria-label="More destinations"
+            className="ce-mobile-more-panel absolute inset-x-3 bottom-[calc(100%+0.75rem)] z-10 overflow-hidden rounded-stage border border-line bg-surface shadow-elevation-3"
+          >
+            <div className="flex items-center justify-between border-b border-line px-4 py-3">
+              <div>
+                <p className="text-sm font-semibold text-ink">More</p>
+                <p className="mt-0.5 text-xs text-ink-muted">Evidence and setup</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMoreOpen(false)}
+                aria-label="Close more destinations"
+                className="flex h-9 w-9 items-center justify-center rounded-control text-ink-muted transition hover:bg-surface-muted hover:text-ink"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="grid gap-1 p-2">
+              {MOBILE_MORE_ITEMS.map(({ to, label, icon: Icon }) => (
+                <NavLink
+                  key={to}
+                  to={to}
+                  onClick={() => setMoreOpen(false)}
+                  className={({ isActive }) =>
+                    `flex min-h-12 items-center gap-3 rounded-control px-3 py-2.5 text-sm font-semibold transition ${
+                      isActive
+                        ? "bg-ink text-canvas"
+                        : "text-ink-muted hover:bg-surface-muted hover:text-ink"
+                    }`
+                  }
+                >
+                  <Icon className="h-[18px] w-[18px] shrink-0" />
+                  <span>{label}</span>
+                </NavLink>
+              ))}
+            </div>
+          </section>
+        </>
+      ) : null}
+
+      <nav aria-label="Mobile navigation" className="ce-mobile-navigation relative z-20 grid grid-cols-5 border-t border-line bg-surface">
+        {MOBILE_PRIMARY_ITEMS.map((item) => (
+          <MobileNavLink key={item.to} {...item} />
+        ))}
+        <button
+          type="button"
+          aria-label="More destinations"
+          aria-controls="mobile-more-destinations"
+          aria-expanded={moreOpen}
+          aria-current={moreRouteActive ? "page" : undefined}
+          onClick={() => setMoreOpen((current) => !current)}
+          className={`group flex min-h-16 min-w-0 flex-col items-center justify-center gap-1 px-1 text-[10px] font-semibold transition ${
+            moreOpen || moreRouteActive ? "text-ink" : "text-ink-muted hover:text-ink"
+          }`}
+        >
+          <span className={`flex h-7 w-9 items-center justify-center rounded-control transition ${
+            moreOpen || moreRouteActive ? "bg-accent text-accent-ink" : "group-hover:bg-surface-muted"
+          }`}>
+            <Ellipsis className="h-[18px] w-[18px]" />
+          </span>
+          <span className="truncate">More</span>
+        </button>
+      </nav>
+    </div>
+  );
+}
+
+function MobileNavLink({ to, label, icon: Icon, end }) {
+  return (
+    <NavLink
+      to={to}
+      end={end || to === "/app"}
+      className={({ isActive }) =>
+        `group flex min-h-16 min-w-0 flex-col items-center justify-center gap-1 px-1 text-[10px] font-semibold transition ${
+          isActive ? "text-ink" : "text-ink-muted hover:text-ink"
         }`
       }
     >
       {({ isActive }) => (
         <>
-          <Icon className={`h-4 w-4 shrink-0 transition-transform duration-200 group-hover:scale-105 ${isActive ? "text-[#d9ff68] dark:text-[#171713]" : ""}`} />
-          <span className={collapsed ? "sr-only" : undefined}>{label}</span>
-          {isActive ? <span className={`absolute h-1.5 w-1.5 rounded-full bg-[#d9ff68] dark:bg-[#171713] ${collapsed ? "right-1.5" : "right-3"}`} /> : null}
+          <span className={`flex h-7 w-9 items-center justify-center rounded-control transition ${
+            isActive ? "bg-accent text-accent-ink" : "group-hover:bg-surface-muted"
+          }`}>
+            <Icon className="h-[18px] w-[18px]" />
+          </span>
+          <span className="max-w-full truncate">{label}</span>
         </>
       )}
     </NavLink>

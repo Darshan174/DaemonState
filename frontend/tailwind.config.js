@@ -8,6 +8,27 @@ export default {
         sans: ["Archivo Variable", "Archivo", "system-ui", "-apple-system", "BlinkMacSystemFont", "Helvetica Neue", "Arial", "sans-serif"],
       },
       colors: {
+        canvas: "var(--ce-color-canvas)",
+        surface: {
+          DEFAULT: "var(--ce-color-surface)",
+          raised: "var(--ce-color-surface-raised)",
+          muted: "var(--ce-color-surface-muted)",
+        },
+        ink: {
+          DEFAULT: "var(--ce-color-ink)",
+          muted: "var(--ce-color-ink-muted)",
+          subtle: "var(--ce-color-ink-subtle)",
+        },
+        line: {
+          DEFAULT: "var(--ce-color-border)",
+          strong: "var(--ce-color-border-strong)",
+        },
+        accent: {
+          DEFAULT: "var(--ce-color-accent)",
+          ink: "var(--ce-color-accent-ink)",
+        },
+        evidence: "var(--ce-color-evidence)",
+        attention: "var(--ce-color-attention)",
         slate: {
           50: "#f7f7f2",
           100: "#f2f2eb",
@@ -33,6 +54,16 @@ export default {
           800: "#3d3d33",
           900: "#545449",
         },
+      },
+      borderRadius: {
+        control: "var(--ce-radius-control)",
+        surface: "var(--ce-radius-surface)",
+        stage: "var(--ce-radius-stage)",
+      },
+      boxShadow: {
+        "elevation-1": "var(--ce-shadow-1)",
+        "elevation-2": "var(--ce-shadow-2)",
+        "elevation-3": "var(--ce-shadow-3)",
       },
       animation: {
         shimmer: "shimmer 2.5s linear infinite",

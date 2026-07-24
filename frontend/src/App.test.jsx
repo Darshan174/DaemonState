@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 import App from "./App";
@@ -88,7 +88,7 @@ it("remounts transient product state when the workspace changes", async () => {
   expect(screen.getByRole("textbox", { name: "Transient goal draft" })).toHaveValue("");
 });
 
-it("makes Now the default and exposes the complete product loop", async () => {
+it("makes Now the default and exposes a focused product navigation", async () => {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -111,21 +111,38 @@ it("makes Now the default and exposes the complete product loop", async () => {
     links.forEach((link) => expect(link).toHaveAttribute("href", href));
   };
   expectResponsiveLinks("Now", "/app");
-  expectResponsiveLinks("Runs", "/app/runs");
   expectResponsiveLinks("Library", "/app/library");
+  expectResponsiveLinks("Resume", "/app/runs");
   expectResponsiveLinks("Memory", "/app/memory");
-  expectResponsiveLinks("Explain", "/app/explain");
+  expectResponsiveLinks("Evidence", "/app/explain");
   expectResponsiveLinks("Sources", "/app/sources");
-  expectResponsiveLinks("Connectors", "/app/connectors");
+  expectResponsiveLinks("Integrations", "/app/connectors");
+  expect(screen.queryByRole("link", { name: "Runs" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Explain" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Connectors" })).not.toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "Dashboard" })).not.toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "Graph" })).not.toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "Ask" })).not.toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "Changes" })).not.toBeInTheDocument();
-  screen.getAllByRole("navigation", { name: "Application" }).forEach((navigation) => {
-    expect(navigation.querySelector('a[aria-label="Prepare"]')).not.toBeInTheDocument();
-  });
-  expect(screen.queryByText("Work")).not.toBeInTheDocument();
-  expect(screen.queryByText("Evidence")).not.toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Continuity loop" })).not.toBeInTheDocument();
+
+  const mobileNavigation = screen.getByRole("navigation", { name: "Mobile navigation" });
+  expect(within(mobileNavigation).getAllByRole("link")).toHaveLength(4);
+  expect(within(mobileNavigation).getByRole("link", { name: "Now" })).toHaveAttribute("href", "/app");
+  expect(within(mobileNavigation).getByRole("link", { name: "Library" })).toHaveAttribute("href", "/app/library");
+  expect(within(mobileNavigation).getByRole("link", { name: "Resume" })).toHaveAttribute("href", "/app/runs");
+  expect(within(mobileNavigation).getByRole("link", { name: "Memory" })).toHaveAttribute("href", "/app/memory");
+  expect(within(mobileNavigation).queryByRole("link", { name: "Evidence" })).not.toBeInTheDocument();
+
+  const more = within(mobileNavigation).getByRole("button", { name: "More destinations" });
+  expect(more).toHaveAttribute("aria-expanded", "false");
+  fireEvent.click(more);
+
+  expect(more).toHaveAttribute("aria-expanded", "true");
+  const moreDestinations = screen.getByRole("region", { name: "More destinations" });
+  expect(within(moreDestinations).getByRole("link", { name: "Evidence" })).toHaveAttribute("href", "/app/explain");
+  expect(within(moreDestinations).getByRole("link", { name: "Sources" })).toHaveAttribute("href", "/app/sources");
+  expect(within(moreDestinations).getByRole("link", { name: "Integrations" })).toHaveAttribute("href", "/app/connectors");
 });
 
 it("redirects legacy Prepare URLs to Now", async () => {

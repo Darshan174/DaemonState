@@ -11,13 +11,12 @@ export default function ContinuityRail({ pathname, className = "" }) {
   const activeStage = stageForPath(pathname);
 
   return (
-    <section aria-label="Continuity loop" className={`no-scrollbar w-fit max-w-full overflow-x-auto rounded-[14px] border border-[#d8d8cf]/90 bg-[#fbfbf6]/90 p-1.5 shadow-[0_8px_24px_rgba(23,23,19,0.04)] backdrop-blur-sm dark:border-[#292925] dark:bg-[#10100e]/90 dark:shadow-[0_10px_30px_rgba(0,0,0,0.2)] ${className}`}>
-      <div className="flex min-w-max items-center gap-1">
-        <p className="hidden h-8 shrink-0 items-center gap-2 border-r border-[#dfdfd7] px-2.5 pr-3 font-mono text-[8px] font-semibold uppercase tracking-[0.14em] text-[#77776e] dark:border-[#30302b] dark:text-[#929289] sm:flex">
-          <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-[#afca54] shadow-[0_0_0_3px_rgba(175,202,84,0.14)] dark:bg-[#d9ff68]" />
+    <section aria-label="Continuity loop" className={`no-scrollbar w-fit max-w-full overflow-x-auto rounded-2xl border border-[#e1e1dc] bg-white p-1.5 shadow-[0_10px_32px_rgba(23,23,19,0.055)] dark:border-[#242424] dark:bg-black dark:shadow-none ${className}`}>
+      <div className="flex min-w-max items-center">
+        <p className="hidden h-9 shrink-0 items-center border-r border-[#e5e5e0] px-3 pr-4 text-[11px] font-semibold text-[#4f4f48] dark:border-[#292929] dark:text-[#c7c7bd] sm:flex">
           Continuity
         </p>
-        <ol className="flex items-center gap-1">
+        <ol className="flex items-center gap-0.5 pl-1">
           {STAGES.map((stage, index) => {
             const active = stage.key === activeStage;
             return (
@@ -26,9 +25,9 @@ export default function ContinuityRail({ pathname, className = "" }) {
                   to={stage.to}
                   aria-label={stage.label}
                   title={stage.title}
-                  className={`flex h-8 items-center gap-2 rounded-[9px] px-2.5 text-[10px] font-semibold outline-none transition-[background-color,color,box-shadow,transform] focus-visible:ring-2 focus-visible:ring-[#9bb83d] focus-visible:ring-offset-2 focus-visible:ring-offset-[#fbfbf6] dark:focus-visible:ring-[#d9ff68] dark:focus-visible:ring-offset-[#10100e] ${active ? "bg-[#171713] text-white shadow-[0_4px_12px_rgba(23,23,19,0.14)] dark:bg-[#d9ff68] dark:text-[#171713]" : "text-[#85857c] hover:bg-[#edede6] hover:text-[#30302b] active:scale-[0.98] dark:text-[#929289] dark:hover:bg-[#20201c] dark:hover:text-white"}`}
+                  className={`flex h-9 items-center gap-2 rounded-xl px-3 text-[11px] font-semibold outline-none transition-[background-color,color,box-shadow,transform] focus-visible:ring-2 focus-visible:ring-[#77776e] focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-[#bdbdb4] dark:focus-visible:ring-offset-black ${active ? "bg-[#171713] text-white shadow-[0_5px_14px_rgba(23,23,19,0.16)] dark:bg-white dark:text-black dark:shadow-none" : "text-[#77776e] hover:bg-[#f3f3f0] hover:text-[#171713] active:scale-[0.98] dark:text-[#929289] dark:hover:bg-[#171717] dark:hover:text-white"}`}
                 >
-                  <span className={`font-mono text-[8px] tabular-nums ${active ? "opacity-70" : "text-[#adada4] dark:text-[#5e5e57]"}`}>{String(index + 1).padStart(2, "0")}</span>
+                  <span className={`font-mono text-[9px] tabular-nums ${active ? "opacity-60" : "text-[#adada4] dark:text-[#62625c]"}`}>{String(index + 1).padStart(2, "0")}</span>
                   {stage.label}
                 </Link>
               </li>
