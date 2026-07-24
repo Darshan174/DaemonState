@@ -755,6 +755,11 @@ class ContextCompiler:
             )
             .where(Component.status.in_([
                 "active",
+                # Legacy Memory confirmations used this Component status. New
+                # confirmations keep Components active and verify evidence, but
+                # retaining this value prevents already-confirmed records from
+                # disappearing during migration.
+                "verified",
                 "contested",
                 "needs_review",
                 "proposed",

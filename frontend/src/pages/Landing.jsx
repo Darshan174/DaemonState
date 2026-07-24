@@ -589,7 +589,7 @@ function Footer() {
   return (
     <footer className="ce-landing-footer border-t border-[#9fb64a]">
       <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-5 px-5 py-10 text-sm text-[#465212] sm:flex-row sm:items-center sm:justify-between sm:px-8 lg:px-12">
-        <span>Context Engine · Verified continuity for coding agents</span>
+        <span>Context Engine · Context that moves with the work</span>
         <div className="flex flex-wrap gap-5">
           <Link to="/app">App</Link>
           <Link to="/app/sources">Sources</Link>

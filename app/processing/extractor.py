@@ -81,7 +81,7 @@ Return JSON with this exact schema:
       "model_name": "one of the canonical entity types above",
       "name": "short unique identifier (max 8 words) — be specific, e.g. 'Rate limit auth decision Q1-2025'",
       "value": "full description or exact quote from the source",
-      "fact_type": "decision | task | blocker | risk | metric | feature | meeting_note | ai_step | fact",
+      "fact_type": "decision | task | blocker | risk | requirement | constraint | assumption | alternative | open_question | lesson | failed_attempt | outcome | release | verification | owner | milestone | metric | feature | meeting_note | ai_step | fact",
       "temporal": "current | past | future | unknown",
       "confidence": 0.0,
       "relationships": [
@@ -258,8 +258,43 @@ class Extractor:
                     temporal_hint=detect_temporal(text),
                 ))
 
+        # Explicit project-memory records. These require a labelled statement;
+        # ordinary keyword mentions are deliberately not promoted to memory.
+        memory_patterns = (
+            (r"requirements?", "Document", "Requirement", "requirement", 0.82, None),
+            (r"constraints?", "Document", "Constraint", "constraint", 0.82, None),
+            (r"assumptions?", "Decision", "Assumption", "assumption", 0.78, None),
+            (r"(?:alternative|option)s?", "Decision", "Alternative", "alternative", 0.78, None),
+            (r"open questions?", "Risk", "Open question", "open_question", 0.80, None),
+            (r"(?:lesson|learning|takeaway)s?", "Document", "Lesson", "lesson", 0.80, "past"),
+            (r"failed attempts?", "Agent Session", "Failed attempt", "failed_attempt", 0.82, "past"),
+            (r"(?:release|deployment)s?", "Feature", "Release", "release", 0.82, None),
+            (r"(?:test|verification|check)s?", "Document", "Verification", "verification", 0.80, None),
+            (r"owners?", "Person", "Owner", "owner", 0.78, None),
+            (r"(?:milestone|deadline|target date)s?", "Metric", "Milestone", "milestone", 0.80, None),
+        )
+        for pattern, model_name, label, fact_type, confidence, fixed_temporal in memory_patterns:
+            for match in re.finditer(
+                rf"(?:^|\n)\s*{pattern}\s*:\s*(.+?)(?:\n|$)",
+                content,
+                re.IGNORECASE,
+            ):
+                text = match.group(1).strip()
+                if not text:
+                    continue
+                temporal = fixed_temporal or detect_temporal(text)
+                facts.append(ExtractedFact(
+                    model_name=model_name,
+                    name=f"{label}: {text[:120]}",
+                    value=text,
+                    fact_type=fact_type,
+                    confidence=confidence,
+                    temporal=temporal,
+                    temporal_hint=temporal,
+                ))
+
         # Meeting outcomes
-        for m in re.finditer(r"(?:outcome|meeting outcome|conclusion|agreed)\s*:\s*(.+?)(?:\n|$)", content, re.IGNORECASE):
+        for m in re.finditer(r"(?:meeting outcome|conclusion|agreed)\s*:\s*(.+?)(?:\n|$)", content, re.IGNORECASE):
             text = m.group(1).strip()
             if text:
                 facts.append(ExtractedFact(
@@ -268,8 +303,17 @@ class Extractor:
                     confidence=0.77, temporal="past", temporal_hint="past",
                 ))
 
+        for m in re.finditer(r"(?:^|\n)\s*(?:outcome|result)\s*:\s*(.+?)(?:\n|$)", content, re.IGNORECASE):
+            text = m.group(1).strip()
+            if text:
+                facts.append(ExtractedFact(
+                    model_name="Decision", name=f"Outcome: {text[:120]}",
+                    value=text, fact_type="outcome",
+                    confidence=0.82, temporal="past", temporal_hint="past",
+                ))
+
         # Agent session steps
-        for m in re.finditer(r"(?:agent|ai session|claude|codex|next step|failed attempt)\s*:\s*(.+?)(?:\n|$)", content, re.IGNORECASE):
+        for m in re.finditer(r"(?:agent|ai session|claude|codex|next step)\s*:\s*(.+?)(?:\n|$)", content, re.IGNORECASE):
             text = m.group(1).strip()
             if text:
                 facts.append(ExtractedFact(

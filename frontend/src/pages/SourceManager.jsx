@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Upload, FileText, FileCode, FileJson, X, ChevronRight, ChevronDown, CheckCircle, Clock, Layers, MessageSquare, HardDrive, Bot, Video, FolderOpen, Clipboard, AlertTriangle, Search } from "lucide-react";
 import { api } from "../api/client";
 import ProductLoadingState from "../components/ProductLoadingState";
+import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
+import { useProductWorkspace } from "./useProductWorkspace";
 
 function GitHubIcon({ className }) {
   return (
@@ -139,6 +141,8 @@ function groupIdForSource(source) {
 }
 
 export default function SourceManager() {
+  const workspace = useProductWorkspace();
+  const activeWorkspaceId = workspace.activeWorkspaceId;
   const [sources, setSources] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -152,8 +156,14 @@ export default function SourceManager() {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [sourceQuery, setSourceQuery] = useState("");
   const fileInputRef = useRef(null);
+  const activeWorkspaceIdRef = useRef(activeWorkspaceId);
+  const sourceRequestRef = useRef(0);
+  const detailRequestRef = useRef(0);
+  activeWorkspaceIdRef.current = activeWorkspaceId;
 
-  const fetchSources = useCallback(async () => {
+  const fetchSources = useCallback(async (workspaceId) => {
+    if (!workspaceId) return;
+    const requestId = ++sourceRequestRef.current;
     try {
       setLoading(true);
       setError(null);
@@ -161,19 +171,60 @@ export default function SourceManager() {
       const all = [];
       let cursor = null;
       for (let page = 0; page < 40; page++) {
-        const params = new URLSearchParams({ limit: "100" });
+        const params = new URLSearchParams({
+          workspace_id: workspaceId,
+          limit: "100",
+        });
         if (cursor) params.set("cursor", cursor);
         const data = await api.get(`/source-documents?${params}`);
         all.push(...(data.items || []));
         if (!data.has_more || !data.next_cursor) break;
         cursor = data.next_cursor;
       }
-      setSources(all);
-    } catch (err) { setError(err.message); }
-    finally { setLoading(false); }
+      if (
+        activeWorkspaceIdRef.current === workspaceId
+        && sourceRequestRef.current === requestId
+      ) {
+        setSources(all);
+      }
+    } catch (err) {
+      if (
+        activeWorkspaceIdRef.current === workspaceId
+        && sourceRequestRef.current === requestId
+      ) {
+        setError(err.message);
+      }
+    } finally {
+      if (
+        activeWorkspaceIdRef.current === workspaceId
+        && sourceRequestRef.current === requestId
+      ) {
+        setLoading(false);
+      }
+    }
   }, []);
 
-  useEffect(() => { fetchSources(); }, [fetchSources]);
+  useEffect(() => {
+    sourceRequestRef.current += 1;
+    detailRequestRef.current += 1;
+    setSources([]);
+    setError(null);
+    setUploadError(null);
+    setUploading(false);
+    setUploadOpen(false);
+    setSelectedSource(null);
+    setSelectedComponents(null);
+    setLoadingComponents(false);
+    setExpandedGroupId(null);
+    setSourceQuery("");
+    setDragOver(false);
+
+    if (!activeWorkspaceId) {
+      setLoading(workspace.workspacesQuery.isLoading);
+      return;
+    }
+    fetchSources(activeWorkspaceId);
+  }, [activeWorkspaceId, fetchSources, workspace.workspacesQuery.isLoading]);
 
   const groupedSources = useMemo(() => {
     const buckets = Object.fromEntries(SOURCE_GROUPS.map((g) => [g.id, []]));
@@ -212,36 +263,77 @@ export default function SourceManager() {
   }
 
   async function handleFiles(files) {
-    if (!files?.length) return;
+    const workspaceId = activeWorkspaceIdRef.current;
+    if (!files?.length || !workspaceId) return;
     setUploading(true);
     setUploadError(null);
     try {
       for (const file of files) {
+        if (activeWorkspaceIdRef.current !== workspaceId) return;
         const content = await file.text();
+        if (activeWorkspaceIdRef.current !== workspaceId) return;
         const ext = file.name.split(".").pop()?.toLowerCase() || "";
         const sourceType = { md: "markdown", markdown: "markdown", txt: "text", text: "text", json: "json", csv: "csv", html: "html", htm: "html", pdf: "pdf" }[ext] || "text";
         await api.post("/sources", {
+          workspace_id: workspaceId,
           source_type: sourceType,
           external_id: file.name,
           content,
-          metadata: { file_name: file.name, file_size: file.size },
+          metadata: {
+            file_name: file.name,
+            file_size: file.size,
+            workspace_id: workspaceId,
+          },
         });
       }
-      await fetchSources();
-    } catch (err) { setUploadError(err.message); }
-    finally { setUploading(false); }
+      if (activeWorkspaceIdRef.current === workspaceId) {
+        await fetchSources(workspaceId);
+      }
+    } catch (err) {
+      if (activeWorkspaceIdRef.current === workspaceId) {
+        setUploadError(err.message);
+      }
+    } finally {
+      if (activeWorkspaceIdRef.current === workspaceId) {
+        setUploading(false);
+      }
+    }
   }
 
   async function handleSourceClick(source) {
+    const workspaceId = activeWorkspaceIdRef.current;
+    if (!workspaceId) return;
+    const requestId = ++detailRequestRef.current;
     setSelectedSource(source);
     setSelectedComponents(null);
     setLoadingComponents(true);
     try {
-      const detail = await api.get(`/sources/${source.id}`);
-      setSelectedSource({ ...source, ...detail });
-      setSelectedComponents(detail.components || []);
-    } catch { setSelectedComponents([]); }
-    finally { setLoadingComponents(false); }
+      const params = new URLSearchParams({ workspace_id: workspaceId });
+      const detail = await api.get(
+        `/sources/${encodeURIComponent(source.id)}?${params}`,
+      );
+      if (
+        activeWorkspaceIdRef.current === workspaceId
+        && detailRequestRef.current === requestId
+      ) {
+        setSelectedSource({ ...source, ...detail });
+        setSelectedComponents(detail.components || []);
+      }
+    } catch {
+      if (
+        activeWorkspaceIdRef.current === workspaceId
+        && detailRequestRef.current === requestId
+      ) {
+        setSelectedComponents([]);
+      }
+    } finally {
+      if (
+        activeWorkspaceIdRef.current === workspaceId
+        && detailRequestRef.current === requestId
+      ) {
+        setLoadingComponents(false);
+      }
+    }
   }
 
   function renderSourceRow(source) {
@@ -251,6 +343,7 @@ export default function SourceManager() {
     return (
       <button
         key={source.id}
+        type="button"
         onClick={() => handleSourceClick(source)}
         className={`group w-full rounded-lg border px-3 py-2.5 text-left transition-all ${
           isSelected
@@ -296,6 +389,26 @@ export default function SourceManager() {
     );
   }
 
+  if (workspace.workspacesQuery.isLoading) {
+    return (
+      <ProductLoadingState
+        label="Selecting workspace…"
+        detail="Sources remain inside their project boundary."
+        stages={["Reading project access", "Selecting the workspace", "Preparing the evidence catalog"]}
+      />
+    );
+  }
+
+  if (!activeWorkspaceId) {
+    return (
+      <WorkspaceTopicGate
+        workspaces={workspace.workspaces}
+        selectedId={workspace.selectedId}
+        onSelect={workspace.setSelectedId}
+      />
+    );
+  }
+
   if (loading) {
     return (
       <ProductLoadingState
@@ -316,14 +429,29 @@ export default function SourceManager() {
             <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-500 dark:text-neutral-400">Inspect the raw evidence behind graph claims and context packs.</p>
           </div>
           <button
+            type="button"
             onClick={() => setUploadOpen((current) => !current)}
             aria-expanded={uploadOpen}
+            aria-controls="source-import-dropzone"
             className="btn-primary"
           >
             <Upload className="w-4 h-4" />
             {uploadOpen ? "Close import" : "Import files"}
           </button>
-          <input ref={fileInputRef} type="file" multiple accept=".md,.txt,.json,.csv,.html,.htm,.pdf" className="hidden" onChange={(e) => handleFiles(e.target.files)} />
+          <input
+            ref={fileInputRef}
+            id="source-file-input"
+            type="file"
+            multiple
+            accept=".md,.txt,.json,.csv,.html,.htm,.pdf"
+            className="hidden"
+            disabled={uploading}
+            onChange={(event) => {
+              const files = Array.from(event.target.files || []);
+              event.target.value = "";
+              handleFiles(files);
+            }}
+          />
         </div>
 
         <div className="grid grid-cols-3 overflow-hidden rounded-md border border-[#d9d9d0] bg-[#fbfbf6] dark:border-[#292925] dark:bg-[#141411]">
@@ -340,34 +468,39 @@ export default function SourceManager() {
         )}
 
         {/* File import is progressive disclosure, not permanent page chrome. */}
-        {uploadOpen && <div
+        {uploadOpen && <button
+          id="source-import-dropzone"
+          type="button"
           onDrop={(e) => { e.preventDefault(); setDragOver(false); handleFiles(e.dataTransfer.files); }}
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
           onClick={() => fileInputRef.current?.click()}
-          className={`cursor-pointer rounded-md border border-dashed p-7 text-center transition-all ${
+          disabled={uploading}
+          aria-busy={uploading}
+          aria-describedby="source-import-formats"
+          className={`w-full rounded-md border border-dashed p-7 text-center transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 disabled:cursor-wait ${
             dragOver
               ? "scale-[1.01] border-brand-500 bg-brand-500/10"
               : "border-slate-200/90 bg-white/55 hover:border-brand-400/60 hover:bg-white/80 dark:border-white/[0.08] dark:bg-white/[0.025] dark:hover:border-brand-500/60 dark:hover:bg-white/[0.045]"
           }`}
         >
           {uploading ? (
-            <div className="flex items-center justify-center gap-3">
-              <div className="w-5 h-5 border-2 border-brand-200 border-t-brand-600 rounded-full animate-spin" />
+            <span role="status" className="flex items-center justify-center gap-3">
+              <span aria-hidden="true" className="w-5 h-5 border-2 border-brand-200 border-t-brand-600 rounded-full animate-spin" />
               <span className="text-sm font-medium text-slate-600 dark:text-neutral-400">Uploading…</span>
-            </div>
+            </span>
           ) : (
             <>
-              <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200/80 bg-white dark:border-white/[0.08] dark:bg-white/[0.045]">
-                <Upload className="w-5 h-5 text-slate-400" />
-              </div>
-              <p className="text-sm font-medium text-slate-600 dark:text-neutral-400">
+              <span className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200/80 bg-white dark:border-white/[0.08] dark:bg-white/[0.045]">
+                <Upload aria-hidden="true" className="w-5 h-5 text-slate-400" />
+              </span>
+              <span className="block text-sm font-medium text-slate-600 dark:text-neutral-400">
                 Drop files here or <span className="font-semibold text-brand-600 dark:text-brand-400">browse</span>
-              </p>
-              <p className="text-xs text-slate-400 mt-1">MD · TXT · JSON · CSV · HTML · PDF</p>
+              </span>
+              <span id="source-import-formats" className="mt-1 block text-xs text-slate-400">MD · TXT · JSON · CSV · HTML · PDF</span>
             </>
           )}
-        </div>}
+        </button>}
 
         {/* Grouped source list */}
         <div className="panel overflow-hidden">
@@ -408,6 +541,7 @@ export default function SourceManager() {
               return (
                 <div key={group.id} className={isExpanded ? "bg-[#f7f7f2] dark:bg-[#10100e]" : ""}>
                   <button
+                    type="button"
                     onClick={() => toggleGroup(group.id)}
                     aria-expanded={isExpanded}
                     className="flex w-full items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-[#f2f2eb] dark:hover:bg-[#1b1b18]"
@@ -448,7 +582,14 @@ export default function SourceManager() {
               </p>
             </div>
             <button
-              onClick={() => { setSelectedSource(null); setSelectedComponents(null); }}
+              type="button"
+              aria-label="Close source details"
+              onClick={() => {
+                detailRequestRef.current += 1;
+                setSelectedSource(null);
+                setSelectedComponents(null);
+                setLoadingComponents(false);
+              }}
               className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-white/[0.055]"
             >
               <X className="w-4 h-4" />

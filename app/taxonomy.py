@@ -66,6 +66,18 @@ VALID_FACT_TYPES = {
     "open_question",
     "session_root",
     "review_finding",
+    "requirement",
+    "constraint",
+    "assumption",
+    "alternative",
+    "lesson",
+    "failed_attempt",
+    "outcome",
+    "release",
+    "verification",
+    "test",
+    "owner",
+    "milestone",
 }
 
 VALID_TEMPORAL_STATES = {"current", "past", "future", "unknown"}

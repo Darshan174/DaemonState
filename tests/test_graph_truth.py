@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import timedelta
 from uuid import UUID, uuid4
 
@@ -18,6 +19,8 @@ from app.api.context_digest import (
 )
 from app.models import (
     AgentRun,
+    Claim,
+    ClaimRevision,
     CodeFile,
     Component,
     Connector,
@@ -177,6 +180,84 @@ async def test_digest_links_preserve_stored_origin_and_evidence(client, db_sessi
     assert link["source_component_document_id"] == str(document.id)
 
 
+async def test_memory_review_moves_resolved_records_to_recoverable_history(client, db_session):
+    workspace = await _workspace(db_session, "Memory review")
+    model = Model(id=uuid4(), name="Memory review model")
+    document = SourceDocument(
+        id=uuid4(), workspace_id=workspace.id, source_type="local",
+        external_id="memory-review", content="Blocker: staging credentials are missing.",
+        metadata_json=json.dumps({"workspace_id": str(workspace.id)}),
+    )
+    evidence_text = "staging credentials are missing."
+    evidence = EvidenceSpan(
+        workspace_id=workspace.id,
+        source_document_id=document.id,
+        start_char=document.content.index(evidence_text),
+        end_char=document.content.index(evidence_text) + len(evidence_text),
+        text=evidence_text,
+        text_sha256=hashlib.sha256(evidence_text.encode()).hexdigest(),
+        review_status="verified",
+        trust_zone="trusted_human",
+        extraction_method="deterministic",
+    )
+    claim = Claim(
+        workspace_id=workspace.id,
+        identity_key=f"blocker:{uuid4().hex}",
+        scope_identity_sha256=hashlib.sha256(uuid4().bytes).hexdigest(),
+        claim_type="blocker",
+        status="active",
+        temporal="current",
+    )
+    db_session.add_all([model, document, evidence, claim])
+    await db_session.flush()
+    revision = ClaimRevision(
+        claim_id=claim.id,
+        evidence_span_id=evidence.id,
+        value=evidence_text,
+        operation="create",
+        status_after="active",
+    )
+    db_session.add(revision)
+    await db_session.flush()
+    claim.current_revision_id = revision.id
+    blocker = Component(
+        id=uuid4(), workspace_id=workspace.id, model_id=model.id,
+        source_document_id=document.id, claim_id=claim.id,
+        identity_key=claim.identity_key, name="Staging credentials are missing",
+        value="Staging credentials are missing", fact_type="blocker",
+        confidence=0.9, authority_weight=0.8, status="active",
+    )
+    db_session.add(blocker)
+    await db_session.flush()
+
+    active = (await client.get(
+        "/api/context/digest", params={"workspace_id": str(workspace.id)}
+    )).json()
+    card_id = f"component:{blocker.id}"
+    assert any(card["id"] == card_id for card in active["cards"])
+
+    resolved = await client.patch(
+        f"/api/context/memory/{blocker.id}",
+        json={"workspace_id": str(workspace.id), "action": "resolve"},
+    )
+    assert resolved.status_code == 200
+    assert resolved.json()["status"] == "resolved"
+
+    historical = (await client.get(
+        "/api/context/digest", params={"workspace_id": str(workspace.id)}
+    )).json()
+    assert all(card["id"] != card_id for card in historical["cards"])
+    history_card = next(card for card in historical["history_cards"] if card["id"] == card_id)
+    assert history_card["status"] == "resolved"
+
+    reopened = await client.patch(
+        f"/api/context/memory/{blocker.id}",
+        json={"workspace_id": str(workspace.id), "action": "reopen"},
+    )
+    assert reopened.status_code == 200
+    assert reopened.json()["status"] == "active"
+
+
 async def test_new_source_revision_supersedes_old_projection(client, db_session):
     workspace = await _workspace(db_session, "Revision projection")
     first = await ingest_source_document_revision(
@@ -224,6 +305,11 @@ async def test_new_source_revision_supersedes_old_projection(client, db_session)
     assert any(
         card["source_snapshot"]["source_document_id"] == str(second.document.id)
         for card in digest["cards"]
+    )
+    assert any(
+        card["source_snapshot"]["source_document_id"] == str(first.document.id)
+        and card["status"] == "superseded"
+        for card in digest["history_cards"]
     )
 
 
@@ -453,6 +539,32 @@ async def test_digest_objective_comes_from_persisted_execution_context(client, d
     assert digest["objective"]["source_kind"] == "context_pack"
     assert digest["objective"]["source_id"] is not None
     assert digest["objective"]["recorded_at"] is not None
+
+
+async def test_digest_objective_skips_internal_runtime_instructions(client, db_session):
+    workspace = await _workspace(db_session, "Objective noise")
+    db_session.add(ContextPack(
+        workspace_id=workspace.id,
+        objective="Ship trustworthy project memory",
+        markdown="",
+        manifest="{}",
+        repo_state_json="{}",
+        created_at=utc_now() - timedelta(minutes=5),
+    ))
+    db_session.add(ContextPack(
+        workspace_id=workspace.id,
+        objective="Note that collaboration tools cannot be called from inside functions.exec",
+        markdown="",
+        manifest="{}",
+        repo_state_json="{}",
+        created_at=utc_now(),
+    ))
+    await db_session.flush()
+
+    digest = (await client.get(
+        "/api/context/digest", params={"workspace_id": str(workspace.id)}
+    )).json()
+    assert digest["objective"]["text"] == "Ship trustworthy project memory"
 
 
 async def test_closed_issue_children_are_historical_not_current_blockers():

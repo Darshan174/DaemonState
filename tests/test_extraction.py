@@ -49,9 +49,31 @@ class TestRegexExtractor:
 
         assert len(facts) >= 1
         outcome = facts[0]
-        assert outcome.model_name == "Meeting"
-        assert outcome.fact_type == "meeting_note"
+        assert outcome.model_name == "Decision"
+        assert outcome.fact_type == "outcome"
         assert "MVP" in outcome.value
+
+    def test_extracts_only_explicitly_labelled_memory_types(self):
+        ext = Extractor()
+        facts = ext._regex_extract(
+            "Requirement: Every memory row must cite its source.\n"
+            "Constraint: Never promote a reported agent claim as verified.\n"
+            "Assumption: The source revision is still current.\n"
+            "Open question: Who owns the migration?\n"
+            "Lesson: Exact evidence prevents false confidence.\n"
+            "Failed attempt: Keyword buckets mixed unrelated sessions.\n"
+            "Milestone: Finish the trust audit by Friday."
+        )
+
+        assert {fact.fact_type for fact in facts} >= {
+            "requirement",
+            "constraint",
+            "assumption",
+            "open_question",
+            "lesson",
+            "failed_attempt",
+            "milestone",
+        }
 
     def test_extracts_section_headings(self):
         ext = Extractor()

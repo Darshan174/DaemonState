@@ -118,34 +118,45 @@ export default function NowPage() {
   };
 
   return (
-    <div className="app-page relative">
-      <header className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p className="eyebrow">{workspace.activeWorkspace?.name || "Project"}</p>
-          <h1 className="mt-2 text-4xl font-semibold tracking-[-0.045em] text-[#171713] dark:text-white">Now</h1>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0] sm:text-[15px]">
-            What the agents are working on, what changed, and what needs your attention.
-          </p>
-          {currentGoal ? (
-            <p className="mt-2 max-w-2xl truncate text-[10px] font-semibold text-[#85857c]">
-              Pinned goal · {currentGoal}
+    <div className="app-page ce-now-page relative">
+      <header className="ce-now-hero relative overflow-hidden rounded-[1.75rem] border border-black/10 bg-[#171713] p-5 text-white shadow-[0_24px_70px_rgba(23,23,19,0.16)] sm:p-7 lg:p-8 dark:border-[#292929]">
+        <div className="ce-now-grid pointer-events-none absolute inset-0" aria-hidden="true" />
+        <div className="ce-now-orbit pointer-events-none absolute -right-24 -top-40 h-80 w-80 rounded-full border border-[#d9ff68]/20" aria-hidden="true" />
+        <div className="relative flex flex-col gap-7 lg:flex-row lg:items-end lg:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-3">
+              <p className="text-xs font-semibold text-[#c5c5bc]">{workspace.activeWorkspace?.name || "Project"}</p>
+              <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.055] px-2.5 py-1 text-[11px] font-semibold text-[#d0d0c8]">
+                <span className="ce-now-status-dot h-1.5 w-1.5 rounded-full bg-[#d9ff68]" aria-hidden="true" />
+                {activity ? "Observing activity" : "Ready for activity"}
+              </span>
+            </div>
+            <h1 className="mt-5 text-5xl font-semibold leading-none tracking-[-0.055em] text-white sm:text-6xl">Now</h1>
+            <p className="mt-4 max-w-2xl text-sm leading-6 text-[#b8b8af] sm:text-[15px]">
+              The current work, its latest result, and the safest verified point to continue from.
             </p>
-          ) : null}
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Link to="/app/explain" className="btn-secondary h-11 text-xs">
-            Explain project
-          </Link>
-          {latestSession ? (
-            <button type="button" onClick={saveCheckpoint} disabled={captureCheckpoint.isPending} className="btn-primary h-11 text-xs disabled:cursor-wait disabled:opacity-60">
-              {captureCheckpoint.isPending ? "Saving checkpoint…" : "Save checkpoint"}
-              <RefreshCw className={`h-3.5 w-3.5 ${captureCheckpoint.isPending ? "animate-spin" : ""}`} />
-            </button>
-          ) : (
-            <Link to="/app/library" className="btn-primary h-11 text-xs">
-              Choose work <ArrowRight className="h-3.5 w-3.5" />
+            {currentGoal ? (
+              <div className="mt-6 max-w-3xl rounded-2xl border border-[#d9ff68]/20 bg-[#d9ff68]/[0.07] px-4 py-3">
+                <p className="text-[11px] font-semibold text-[#d9ff68]">Selected goal</p>
+                <p className="mt-1 truncate text-sm font-semibold text-white">{currentGoal}</p>
+              </div>
+            ) : null}
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <Link to="/app/explain" className="inline-flex h-11 items-center justify-center rounded-xl border border-white/15 bg-white/[0.055] px-4 text-xs font-semibold text-white transition hover:-translate-y-0.5 hover:bg-white/10">
+              Explain project
             </Link>
-          )}
+            {latestSession ? (
+              <button type="button" onClick={saveCheckpoint} disabled={captureCheckpoint.isPending} className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-[#d9ff68] px-4 text-xs font-semibold text-[#171713] transition hover:-translate-y-0.5 hover:bg-[#e4ff91] disabled:cursor-wait disabled:opacity-60">
+                {captureCheckpoint.isPending ? "Saving checkpoint…" : "Save checkpoint"}
+                <RefreshCw className={`h-3.5 w-3.5 ${captureCheckpoint.isPending ? "animate-spin" : ""}`} />
+              </button>
+            ) : (
+              <Link to="/app/library" className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-[#d9ff68] px-4 text-xs font-semibold text-[#171713] transition hover:-translate-y-0.5 hover:bg-[#e4ff91]">
+                Choose work <ArrowRight className="h-3.5 w-3.5" />
+              </Link>
+            )}
+          </div>
         </div>
       </header>
 

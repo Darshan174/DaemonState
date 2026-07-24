@@ -10,6 +10,7 @@ from app.api import (
     context_digest,
     demo,
     graph,
+    memory,
     models_api,
     query,
     repo,
@@ -24,6 +25,7 @@ api_router.include_router(checkpoints.router, prefix="", tags=["checkpoints"])
 api_router.include_router(sources.router, prefix="", tags=["sources"])
 api_router.include_router(graph.router, prefix="", tags=["graph"])
 api_router.include_router(context_digest.router, prefix="", tags=["context"])
+api_router.include_router(memory.router, prefix="", tags=["memory"])
 api_router.include_router(context.router, prefix="", tags=["context"])
 api_router.include_router(workspace_goals.router, prefix="", tags=["workspaces"])
 api_router.include_router(workspaces.router, prefix="", tags=["workspaces"])

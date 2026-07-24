@@ -77,6 +77,9 @@ class Workspace(Base):
         back_populates="workspace"
     )
     goals: Mapped[list["WorkspaceGoal"]] = orm_relationship(back_populates="workspace")
+    memory_review_events: Mapped[list["MemoryReviewEvent"]] = orm_relationship(
+        back_populates="workspace"
+    )
     unresolved_relationships: Mapped[list["UnresolvedRelationship"]] = orm_relationship(
         back_populates="workspace"
     )
@@ -877,6 +880,53 @@ class WorkspaceGoal(Base):
 
     workspace: Mapped["Workspace"] = orm_relationship(back_populates="goals")
     component: Mapped["Component | None"] = orm_relationship()
+
+
+class MemoryReviewEvent(Base):
+    """Append-only human review history for one source-backed memory record."""
+
+    __tablename__ = "memory_review_events"
+    __table_args__ = (
+        Index(
+            "ix_memory_review_events_workspace_created",
+            "workspace_id",
+            "created_at",
+        ),
+        Index(
+            "ix_memory_review_events_component_created",
+            "component_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id"), nullable=False, index=True
+    )
+    component_id: Mapped[UUID] = mapped_column(
+        ForeignKey("components.id"), nullable=False, index=True
+    )
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    previous_component_status: Mapped[str | None] = mapped_column(
+        String(50), nullable=True
+    )
+    next_component_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    previous_claim_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    next_claim_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    previous_evidence_status: Mapped[str | None] = mapped_column(
+        String(50), nullable=True
+    )
+    next_evidence_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    reviewed_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, server_default=func.now()
+    )
+
+    workspace: Mapped["Workspace"] = orm_relationship(
+        back_populates="memory_review_events"
+    )
+    component: Mapped["Component"] = orm_relationship()
 
 
 class ContextPackItem(Base):
