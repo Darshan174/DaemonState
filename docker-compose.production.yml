@@ -1,0 +1,567 @@
+x-app-environment: &app-environment
+  ENVIRONMENT: production
+  RELEASE_SHA: ${RELEASE_SHA:?Set RELEASE_SHA}
+  POSTGRES_HOST: db
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: ${POSTGRES_DB:-context_engine}
+  POSTGRES_APP_USER: ${POSTGRES_APP_USER:-ce_app}
+  DATA_DIR: /data
+  AUTO_MIGRATE: "false"
+  APP_WORKERS: ${APP_WORKERS:-1}
+  SERVE_FRONTEND: "false"
+  REDIS_URL: redis://redis:6379/0
+  RATE_LIMIT_FAIL_OPEN: "false"
+  ALLOWED_HOSTS: ${CONTEXT_ENGINE_DOMAIN:?Set CONTEXT_ENGINE_DOMAIN},127.0.0.1,localhost,app
+  CORS_ALLOWED_ORIGINS: https://${CONTEXT_ENGINE_DOMAIN:?Set CONTEXT_ENGINE_DOMAIN}
+  TRUST_PROXY_HEADERS: "true"
+  ALLOWED_REPO_ROOTS: /workspace
+  API_DOCS_ENABLED: "false"
+  DEMO_ENDPOINTS_ENABLED: "false"
+  METRICS_ENABLED: "true"
+  LOG_FORMAT: json
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  MAX_REQUEST_BODY_BYTES: ${MAX_REQUEST_BODY_BYTES:-16777216}
+  DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-5}
+  DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-10}
+  DATABASE_POOL_TIMEOUT_SECONDS: ${DATABASE_POOL_TIMEOUT_SECONDS:-30}
+  DATABASE_POOL_RECYCLE_SECONDS: ${DATABASE_POOL_RECYCLE_SECONDS:-1800}
+  DATABASE_CONNECT_TIMEOUT_SECONDS: ${DATABASE_CONNECT_TIMEOUT_SECONDS:-10}
+  DATABASE_STATEMENT_TIMEOUT_MS: ${DATABASE_STATEMENT_TIMEOUT_MS:-30000}
+  MIGRATION_STATEMENT_TIMEOUT_MS: ${MIGRATION_STATEMENT_TIMEOUT_MS:-0}
+  MIGRATION_LOCK_TIMEOUT_MS: ${MIGRATION_LOCK_TIMEOUT_MS:-30000}
+  EXTRACTION_MODEL: ${EXTRACTION_MODEL:-}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+  EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-}
+  ENABLE_LOCAL_EMBEDDER: ${ENABLE_LOCAL_EMBEDDER:-false}
+  ALLOW_HASHING_EMBEDDER: ${ALLOW_HASHING_EMBEDDER:-false}
+  PGVECTOR_INDEX_DIMENSION: ${PGVECTOR_INDEX_DIMENSION:-1024}
+  PGVECTOR_CANDIDATE_LIMIT: ${PGVECTOR_CANDIDATE_LIMIT:-200}
+  API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-120}
+  AUTH_FAILURE_RATE_LIMIT_PER_MINUTE: ${AUTH_FAILURE_RATE_LIMIT_PER_MINUTE:-20}
+  SYNC_WORKER_LEASE_SECONDS: ${SYNC_WORKER_LEASE_SECONDS:-300}
+  SYNC_WORKER_RETRY_BASE_SECONDS: ${SYNC_WORKER_RETRY_BASE_SECONDS:-30}
+  SYNC_WORKER_RETRY_MAX_SECONDS: ${SYNC_WORKER_RETRY_MAX_SECONDS:-900}
+  SYNC_WORKER_POLL_INTERVAL_SECONDS: ${SYNC_WORKER_POLL_INTERVAL_SECONDS:-2}
+  SYNC_WORKER_JOB_TIMEOUT_SECONDS: ${SYNC_WORKER_JOB_TIMEOUT_SECONDS:-1800}
+  SYNC_WORKER_METRICS_PORT: ${SYNC_WORKER_METRICS_PORT:-9101}
+  SYNC_WORKER_HEALTH_FILE: /tmp/context-engine-sync-worker.ready
+  SYNC_WORKER_HEALTH_INTERVAL_SECONDS: ${SYNC_WORKER_HEALTH_INTERVAL_SECONDS:-15}
+  SOURCE_INGESTION_SWEEP_LIMIT: ${SOURCE_INGESTION_SWEEP_LIMIT:-10}
+  SOURCE_INGESTION_TIMEOUT_SECONDS: ${SOURCE_INGESTION_TIMEOUT_SECONDS:-300}
+  SOURCE_INGESTION_MAX_ATTEMPTS: ${SOURCE_INGESTION_MAX_ATTEMPTS:-5}
+  CONTEXT_DIGEST_CACHE_TTL_SECONDS: ${CONTEXT_DIGEST_CACHE_TTL_SECONDS:-30}
+  CONTEXT_DIGEST_CACHE_MAX_ENTRIES: ${CONTEXT_DIGEST_CACHE_MAX_ENTRIES:-128}
+  PUBLIC_BASE_URL: https://${CONTEXT_ENGINE_DOMAIN:?Set CONTEXT_ENGINE_DOMAIN}
+  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+  GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+  SLACK_CLIENT_ID: ${SLACK_CLIENT_ID:-}
+  SLACK_REDIRECT_URI: ${SLACK_REDIRECT_URI:-}
+  SLACK_MANAGED_INSTALL_URL: ${SLACK_MANAGED_INSTALL_URL:-}
+  ZOOM_CLIENT_ID: ${ZOOM_CLIENT_ID:-}
+  ZOOM_REDIRECT_URI: ${ZOOM_REDIRECT_URI:-}
+
+x-app-secrets: &app-secrets
+  - postgres_app_password
+  - server_api_key
+  - encryption_key
+  - metrics_bearer_token
+  - previous_encryption_keys
+  - principal_api_keys
+  - litellm_api_key
+  - google_client_secret
+  - slack_client_secret
+  - zoom_client_secret
+
+x-json-logging: &json-logging
+  driver: json-file
+  options:
+    max-size: ${LOG_MAX_SIZE:-10m}
+    max-file: ${LOG_MAX_FILES:-5}
+    compress: "true"
+
+x-app-security: &app-security
+  init: true
+  # Compose file-backed secrets retain host ownership. The production
+  # entrypoint starts as root only to read operator-owned 0600 secrets, then
+  # irreversibly drops to 10001:10001 before importing or executing the app.
+  user: "0:0"
+  read_only: true
+  cap_drop:
+    - ALL
+  cap_add:
+    - DAC_READ_SEARCH
+    - SETGID
+    - SETUID
+  security_opt:
+    - no-new-privileges:true
+  pids_limit: 256
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=128m
+
+services:
+  db:
+    image: ${POSTGRES_IMAGE:?Set POSTGRES_IMAGE to an immutable pgvector image reference}
+    pull_policy: ${PULL_POLICY:-always}
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-context_engine}
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:-ce_admin}
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER:-ce_app}
+      POSTGRES_PASSWORD_FILE: /run/context-engine-secrets/postgres_admin_password
+      POSTGRES_INITDB_ARGS: >-
+        --auth-host=scram-sha-256
+        --data-checksums
+    entrypoint:
+      - /usr/local/bin/production-postgres-entrypoint.sh
+    command:
+      - postgres
+      - -c
+      - password_encryption=scram-sha-256
+      - -c
+      - max_connections=${POSTGRES_MAX_CONNECTIONS:-100}
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-256MB}
+      - -c
+      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-768MB}
+      - -c
+      - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-128MB}
+      - -c
+      - work_mem=${POSTGRES_WORK_MEM:-8MB}
+      - -c
+      - wal_compression=on
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - idle_in_transaction_session_timeout=${POSTGRES_IDLE_TX_TIMEOUT_MS:-60000}
+      - -c
+      - statement_timeout=${POSTGRES_STATEMENT_TIMEOUT_MS:-120000}
+      - -c
+      - lock_timeout=${POSTGRES_LOCK_TIMEOUT_MS:-10000}
+      - -c
+      - log_min_duration_statement=${POSTGRES_LOG_MIN_DURATION_MS:-1000}
+      - -c
+      - log_parameter_max_length=0
+      - -c
+      - log_parameter_max_length_on_error=0
+      - -c
+      - log_lock_waits=on
+    secrets:
+      - postgres_admin_password
+      - postgres_app_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deploy/production/postgres-entrypoint.sh:/usr/local/bin/production-postgres-entrypoint.sh:ro
+      - ./deploy/production/postgres-init-app-role.sh:/docker-entrypoint-initdb.d/10-create-app-role.sh:ro
+    networks:
+      - backend
+    restart: unless-stopped
+    stop_grace_period: 60s
+    shm_size: ${POSTGRES_SHM_SIZE:-256mb}
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    tmpfs:
+      - /run/context-engine-secrets:rw,noexec,nosuid,nodev,size=1m,mode=0700
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          pg_isready
+          --username "$${POSTGRES_USER}"
+          --dbname "$${POSTGRES_DB}"
+          --timeout 5
+      interval: 10s
+      timeout: 6s
+      retries: 12
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: ${POSTGRES_CPU_LIMIT:-2.0}
+          memory: ${POSTGRES_MEMORY_LIMIT:-2G}
+          pids: 256
+        reservations:
+          cpus: ${POSTGRES_CPU_RESERVATION:-0.5}
+          memory: ${POSTGRES_MEMORY_RESERVATION:-512M}
+    logging: *json-logging
+
+  redis:
+    image: ${REDIS_IMAGE:?Set REDIS_IMAGE to an immutable Redis image reference}
+    pull_policy: ${PULL_POLICY:-always}
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-256mb}
+      - --maxmemory-policy
+      - noeviction
+    networks:
+      - backend
+    restart: unless-stopped
+    stop_grace_period: 20s
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    tmpfs:
+      - /data:rw,noexec,nosuid,nodev,size=16m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: ${REDIS_CPU_LIMIT:-0.5}
+          memory: ${REDIS_MEMORY_LIMIT:-384M}
+          pids: 128
+        reservations:
+          cpus: ${REDIS_CPU_RESERVATION:-0.1}
+          memory: ${REDIS_MEMORY_RESERVATION:-64M}
+    logging: *json-logging
+
+  data-init:
+    image: ${CONTEXT_ENGINE_IMAGE:?Set CONTEXT_ENGINE_IMAGE to an immutable image reference}
+    pull_policy: ${PULL_POLICY:-always}
+    user: "0:0"
+    read_only: true
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - install -d -o 10001 -g 10001 -m 0750 /data
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    network_mode: none
+    volumes:
+      - app_data:/data
+    restart: "no"
+    logging: *json-logging
+
+  migrate:
+    <<: *app-security
+    image: ${CONTEXT_ENGINE_IMAGE:?Set CONTEXT_ENGINE_IMAGE to an immutable image reference}
+    pull_policy: ${PULL_POLICY:-always}
+    entrypoint:
+      - python
+      - /opt/context-engine/production-entrypoint.py
+    command:
+      - ctxe
+      - db
+      - deploy
+    environment: *app-environment
+    secrets: *app-secrets
+    volumes:
+      - app_data:/data
+      - ./deploy/production/container-entrypoint.py:/opt/context-engine/production-entrypoint.py:ro
+    networks:
+      - backend
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      data-init:
+        condition: service_completed_successfully
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+          pids: 256
+    logging: *json-logging
+
+  app:
+    <<: *app-security
+    image: ${CONTEXT_ENGINE_IMAGE:?Set CONTEXT_ENGINE_IMAGE to an immutable image reference}
+    pull_policy: ${PULL_POLICY:-always}
+    entrypoint:
+      - python
+      - /opt/context-engine/production-entrypoint.py
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --workers
+      - ${APP_WORKERS:-1}
+      - --proxy-headers
+      - --forwarded-allow-ips=*
+      - --limit-concurrency
+      - ${APP_MAX_CONCURRENCY:-200}
+      - --backlog
+      - ${APP_BACKLOG:-512}
+      - --timeout-keep-alive
+      - ${APP_KEEPALIVE_SECONDS:-10}
+      - --timeout-graceful-shutdown
+      - ${APP_GRACEFUL_SHUTDOWN_SECONDS:-30}
+    environment: *app-environment
+    secrets: *app-secrets
+    volumes:
+      - app_data:/data
+      - ${CONTEXT_ENGINE_PROJECT_PATH:?Set CONTEXT_ENGINE_PROJECT_PATH}:/workspace:ro
+      - ./deploy/production/container-entrypoint.py:/opt/context-engine/production-entrypoint.py:ro
+    networks:
+      - backend
+      - egress
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    stop_grace_period: 45s
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - /opt/context-engine/production-entrypoint.py
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5).read()
+      interval: 15s
+      timeout: 6s
+      retries: 5
+      start_period: 30s
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    deploy:
+      resources:
+        limits:
+          cpus: ${APP_CPU_LIMIT:-2.0}
+          memory: ${APP_MEMORY_LIMIT:-2G}
+          pids: 256
+        reservations:
+          cpus: ${APP_CPU_RESERVATION:-0.25}
+          memory: ${APP_MEMORY_RESERVATION:-256M}
+    logging: *json-logging
+
+  worker:
+    <<: *app-security
+    image: ${CONTEXT_ENGINE_IMAGE:?Set CONTEXT_ENGINE_IMAGE to an immutable image reference}
+    pull_policy: ${PULL_POLICY:-always}
+    entrypoint:
+      - python
+      - /opt/context-engine/production-entrypoint.py
+    command:
+      - ctxe
+      - worker
+      - sync
+      - --watch
+    environment: *app-environment
+    secrets: *app-secrets
+    volumes:
+      - app_data:/data
+      - ${CONTEXT_ENGINE_PROJECT_PATH:?Set CONTEXT_ENGINE_PROJECT_PATH}:/workspace:ro
+      - ./deploy/production/container-entrypoint.py:/opt/context-engine/production-entrypoint.py:ro
+    networks:
+      - backend
+      - egress
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 60s
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - /opt/context-engine/production-entrypoint.py
+        - python
+        - -c
+        - >-
+          import os,time;
+          from pathlib import Path;
+          path=Path(os.environ['SYNC_WORKER_HEALTH_FILE']);
+          assert path.is_file() and time.time() - path.stat().st_mtime < 60
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    deploy:
+      resources:
+        limits:
+          cpus: ${WORKER_CPU_LIMIT:-2.0}
+          memory: ${WORKER_MEMORY_LIMIT:-2G}
+          pids: 256
+        reservations:
+          cpus: ${WORKER_CPU_RESERVATION:-0.25}
+          memory: ${WORKER_MEMORY_RESERVATION:-256M}
+    logging: *json-logging
+
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:?Set PROMETHEUS_IMAGE to an immutable Prometheus image reference}
+    pull_policy: ${PULL_POLICY:-always}
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION_TIME:-15d}
+      - --storage.tsdb.retention.size=${PROMETHEUS_RETENTION_SIZE:-8GB}
+    ports:
+      - name: prometheus
+        target: 9090
+        published: ${PROMETHEUS_PORT:-9090}
+        host_ip: ${PROMETHEUS_BIND_ADDRESS:-127.0.0.1}
+        protocol: tcp
+    volumes:
+      - ./deploy/production/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    secrets:
+      - metrics_bearer_token
+    networks:
+      - backend
+    depends_on:
+      app:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    deploy:
+      resources:
+        limits:
+          cpus: ${PROMETHEUS_CPU_LIMIT:-0.5}
+          memory: ${PROMETHEUS_MEMORY_LIMIT:-512M}
+          pids: 128
+        reservations:
+          cpus: ${PROMETHEUS_CPU_RESERVATION:-0.1}
+          memory: ${PROMETHEUS_MEMORY_RESERVATION:-128M}
+    logging: *json-logging
+
+  proxy:
+    image: ${CADDY_IMAGE:?Set CADDY_IMAGE to an immutable Caddy image reference}
+    pull_policy: ${PULL_POLICY:-always}
+    environment:
+      CONTEXT_ENGINE_DOMAIN: ${CONTEXT_ENGINE_DOMAIN:?Set CONTEXT_ENGINE_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL}
+      MAX_REQUEST_BODY_SIZE: ${MAX_REQUEST_BODY_SIZE:-16MB}
+    ports:
+      - name: http
+        target: 80
+        published: "80"
+        host_ip: ${BIND_ADDRESS:-0.0.0.0}
+        protocol: tcp
+      - name: https
+        target: 443
+        published: "443"
+        host_ip: ${BIND_ADDRESS:-0.0.0.0}
+        protocol: tcp
+      - name: http3
+        target: 443
+        published: "443"
+        host_ip: ${BIND_ADDRESS:-0.0.0.0}
+        protocol: udp
+    volumes:
+      - ./deploy/production/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - edge
+      - backend
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 20s
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    healthcheck:
+      test:
+        - CMD
+        - caddy
+        - validate
+        - --config
+        - /etc/caddy/Caddyfile
+        - --adapter
+        - caddyfile
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: ${PROXY_CPU_LIMIT:-0.5}
+          memory: ${PROXY_MEMORY_LIMIT:-256M}
+          pids: 128
+        reservations:
+          cpus: ${PROXY_CPU_RESERVATION:-0.1}
+          memory: ${PROXY_MEMORY_RESERVATION:-64M}
+    logging: *json-logging
+
+networks:
+  edge:
+    driver: bridge
+  backend:
+    driver: bridge
+    internal: true
+  egress:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  app_data:
+  caddy_data:
+  caddy_config:
+  prometheus_data:
+
+secrets:
+  postgres_admin_password:
+    file: ${POSTGRES_ADMIN_PASSWORD_FILE:?Set POSTGRES_ADMIN_PASSWORD_FILE}
+  postgres_app_password:
+    file: ${POSTGRES_APP_PASSWORD_FILE:?Set POSTGRES_APP_PASSWORD_FILE}
+  server_api_key:
+    file: ${SERVER_API_KEY_FILE:?Set SERVER_API_KEY_FILE}
+  encryption_key:
+    file: ${ENCRYPTION_KEY_FILE:?Set ENCRYPTION_KEY_FILE}
+  metrics_bearer_token:
+    file: ${METRICS_BEARER_TOKEN_FILE:?Set METRICS_BEARER_TOKEN_FILE}
+  previous_encryption_keys:
+    file: ${PREVIOUS_ENCRYPTION_KEYS_FILE:-./deploy/production/empty-secret}
+  principal_api_keys:
+    file: ${PRINCIPAL_API_KEYS_FILE:-./deploy/production/empty-secret}
+  litellm_api_key:
+    file: ${LITELLM_API_KEY_FILE:-./deploy/production/empty-secret}
+  google_client_secret:
+    file: ${GOOGLE_CLIENT_SECRET_FILE:-./deploy/production/empty-secret}
+  slack_client_secret:
+    file: ${SLACK_CLIENT_SECRET_FILE:-./deploy/production/empty-secret}
+  zoom_client_secret:
+    file: ${ZOOM_CLIENT_SECRET_FILE:-./deploy/production/empty-secret}

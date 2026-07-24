@@ -8,55 +8,43 @@
   Verified project history in. Minimum task-ready context out.
 </p>
 
-> **Active alpha.** Core workflows are implemented and tested locally. Bare-metal
-> and Docker setup tooling is included; hosted operation and production
-> deployment guidance are not ready yet.
+> **Active alpha.** Core workflows are implemented and tested locally. A hardened, single-host production profile is
+> included for self-hosting; it is not a hosted service, multi-tenant control plane, or high-availability deployment.
 
 ## What it is
 
-Context Engine is an open-source context and evidence layer for coding agents.
-It compiles verified project history into the minimum task-ready context an
-agent needs to continue real work on a long-running codebase.
+Context Engine is an open-source context and evidence layer for coding agents. It compiles verified project history
+into the minimum task-ready context an agent needs to continue real work on a long-running codebase.
 
-Context Engine is not another coding agent or a generic knowledge graph. The
-context compiler is the core product. The graph is the human-readable
-explanation and navigation surface that shows where facts came from, how work is
-connected, and why specific context was selected.
+Context Engine is not another coding agent or a generic knowledge graph. The context compiler is the core product.
+The graph explains where facts came from, how work is connected, and why specific context was selected.
 
 ## The problem
 
 AI coding feels fast until the next session starts.
 
-The agent has forgotten the decision you made yesterday. It cannot tell which
-issue is actually current. It reads stale files, repeats an abandoned approach,
-or says the work is done without seeing the failed check. You spend the first
-part of every session rebuilding context the project already has.
+The agent has forgotten yesterday's decision. It reads stale files, repeats an abandoned approach, or says the work is
+done without seeing the failed check. You spend the first part of each session rebuilding context the project has.
 
-A larger context window does not fix this by itself. More text can mean more old
-plans, duplicated facts, and irrelevant history.
+A larger context window does not fix this. More text can mean more old plans, duplicated facts, and irrelevant history.
 
 ## Who it is for
 
-Context Engine is built first for solo founders and tiny teams using coding
-agents every day. Developers get the exact sources, files, constraints, checks,
-and run evidence needed for the next task. Founders and non-technical users get a
-readable view of the same project state without living in terminal logs.
+Context Engine is built first for solo founders and tiny teams using coding agents every day. Developers get the exact
+sources, files, constraints, checks, and run evidence for the next task. Founders and non-technical users get a readable
+view of the same project state without living in terminal logs.
 
 ## What Context Engine changes
 
-Context Engine can turn repository state, issues, pull requests, imported agent
-sessions, decisions, blockers, documents, patches, and test results into durable
-project memory after those sources are imported, connected, or reported by an
-integration.
+Context Engine can turn repository state, issues, pull requests, imported agent sessions, decisions, blockers,
+documents, patches, and test results into durable project memory after an integration reports them.
 
-It lets the user choose the current goal, compiles a focused source-backed brief
-for that task and target model, and stores run evidence reported through HTTP or
-MCP. The local harness also observes repository changes and command results
-directly. Those records can become evidence for the next session instead of
-disappearing inside one chat history.
+It lets the user choose the current goal, compiles a focused source-backed brief, and stores run evidence reported
+through HTTP or MCP. The local harness also observes repository changes and command results directly. Those records can
+become evidence for the next session instead of disappearing inside one chat history.
 
-The intended result is that supported coding-agent sessions behave less like
-disconnected chats and more like continuous work on one project.
+The intended result is that supported coding-agent sessions behave less like disconnected chats and more like
+continuous work on one project.
 
 ## The bet
 
@@ -171,7 +159,11 @@ Demo data never marks a connector as authenticated or connected.
 - Captured command output and repository inspection are deliberately bounded.
 - Model-lift reports describe observed runs. They do not yet prove that an older
   model matches a newer one because of Context Engine.
-- Hosted operation and production deployment guidance are unfinished.
+- The production profile is deliberately single-tenant. Per-principal API keys are rejected until action-level
+  authorization covers every HTTP and MCP operation.
+- MCP is a trusted local stdio surface; expose the authenticated HTTP API, not the MCP process, across a network.
+- The production deployment has one Docker host as its failure domain. Multi-host failover, managed storage, and
+  multi-region recovery remain operator responsibilities.
 
 ## Developer surface
 
@@ -201,6 +193,7 @@ ctxe harness run
 ctxe harness report
 ctxe eval harness
 ctxe mcp
+ctxe db deploy
 ```
 
 The MCP server can prepare or query context and record run evidence. It cannot
@@ -244,11 +237,17 @@ credentials.
 
 ## Deployment
 
-`docker-compose.yml` is the supported local PostgreSQL/pgvector deployment path.
-It is not a production hardening guide. Before any non-local deployment, replace
-the default database password, configure API and credential encryption keys,
-terminate TLS, plan backups, and validate migrations and provider callback URLs.
-Hosted-service, high-availability, and upgrade procedures are still unfinished.
+`docker-compose.yml` is the supported local PostgreSQL/pgvector deployment path. It is not a production hardening guide.
+
+For a hardened single-host deployment, use `docker-compose.production.yml` and follow the
+[production runbook](docs/production-runbook.md). It fails closed on invalid settings, gates startup on migrations,
+exposes only a TLS proxy, keeps PostgreSQL/pgvector and Redis internal, drops runtime privileges, bounds requests and
+resources, and includes backup and guarded restore tooling.
+
+The production profile requires immutable image references, file-backed
+secrets, an explicit read-only repository root, and `ctxe db deploy` before API
+startup. Validate it in staging and complete the runbook's load, restore, and
+security checks against your own SLO/RPO/RTO before serving real traffic.
 
 ## Contributing
 
@@ -271,6 +270,7 @@ Maintainers should also run `bash scripts/smoke.sh --docker` before release tags
 - [MCP](docs/mcp.md)
 - [AI session imports](docs/ai-context.md)
 - [Demo walkthrough](docs/demo.md)
+- [Production runbook](docs/production-runbook.md)
 - [OSS readiness](docs/oss-readiness.md)
 
 Some documents are implementation contracts rather than public guides. The code
