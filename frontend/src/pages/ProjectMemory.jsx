@@ -1,15 +1,21 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
   Archive,
   ArrowRight,
+  BookOpenCheck,
   Calendar,
   CheckCheck,
   CheckCircle2,
+  ChevronDown,
   ClipboardCheck,
   Clock3,
+  Database,
+  Filter,
   Fingerprint,
+  FolderGit2,
   GitMerge,
   GraduationCap,
   HelpCircle,
@@ -19,6 +25,7 @@ import {
   Rocket,
   Search,
   ShieldAlert,
+  SlidersHorizontal,
   Target,
   UserRound,
   X,
@@ -48,10 +55,12 @@ const AREA_META = {
 };
 
 const MEMORY_VIEWS = [
-  { id: "active", label: "Current memory", description: "Human-verified and directly observed project records. Reported claims stay in review." },
-  { id: "review", label: "Needs review", description: "Unverified, conflicting, or stale context that needs a human decision." },
+  { id: "overview", label: "Overview", description: "Current project truth and the source-backed claims that can become reusable memory." },
+  { id: "active", label: "Current", description: "Claims a person or trusted system has confirmed as current project truth." },
+  { id: "review", label: "Review queue", description: "Assistant-derived claims that need a human judgment before agents may reuse them." },
+  { id: "freshness", label: "Source health", description: "Provider snapshots that must be refreshed before they can describe the project now." },
   { id: "people", label: "People & dates", description: "Responsibility and important delivery boundaries." },
-  { id: "history", label: "History", description: "Resolved, superseded, dismissed, and revised context." },
+  { id: "history", label: "History", description: "Reported activity, resolved work, review decisions, and immutable source revisions." },
 ];
 
 const MEMORY_TYPES = [
@@ -64,74 +73,286 @@ const MEMORY_TYPES = [
   { id: "learnings", view: "active", sources: ["failed_attempts", "lessons"], area: "learning", title: "Learnings", description: "Failed attempts and reusable lessons worth carrying forward.", capture: "Observed failures and explicit lessons", icon: GraduationCap },
   { id: "deliveries", view: "active", sources: ["changes", "files", "commits_prs", "releases", "tests", "outcomes"], area: "delivery", title: "Deliveries & outcomes", description: "What changed, how it was verified, and what shipped.", capture: "Typed releases, tests, changes, verification, and factual outcomes", icon: Rocket },
 
-  { id: "unverified", view: "review", sources: ["needs_review"], area: "uncertainty", title: "Unverified memory", description: "Extracted context that has not been confirmed by a person.", capture: "Needs-review records and evidence", icon: HelpCircle },
+  { id: "unverified", view: "review_state", sources: ["needs_review"], area: "uncertainty", title: "Ready to decide", description: "Source-backed claims that can be added to current memory or ruled out.", capture: "Human-judgment claims with exact evidence", icon: HelpCircle },
   { id: "conflicts", view: "review", sources: ["conflicts"], area: "uncertainty", title: "Conflicts", description: "Claims or directions that disagree with each other.", capture: "Conflict statuses and contradiction links", icon: GitMerge },
-  { id: "stale", view: "review", sources: ["stale_context"], area: "uncertainty", title: "Stale context", description: "Information that may no longer describe the project.", capture: "Stale facts and provider snapshots", icon: Clock3 },
+  { id: "stale", view: "freshness", sources: ["stale_context"], area: "uncertainty", title: "Refresh needed", description: "Provider snapshots that may no longer describe the project.", capture: "Stale facts and provider snapshots", icon: Clock3 },
 
   { id: "owners", view: "people", sources: ["owners"], area: "ownership", title: "Owners", description: "People responsible for moving project records forward.", capture: "Assignment and ownership links", icon: UserRound },
   { id: "milestones", view: "people", sources: ["milestones"], area: "ownership", title: "Milestones", description: "Important deadlines and delivery boundaries.", capture: "Explicit milestone, deadline, and target-date evidence", icon: Calendar },
 
   { id: "resolved", view: "history", sources: ["resolved_blockers"], area: "history", title: "Resolved blockers", description: "Past obstacles and the evidence that cleared them.", capture: "Resolved blocker records", icon: CheckCheck },
+  { id: "completed", view: "history", sources: ["completed"], area: "history", title: "Completed & reported activity", description: "Point-in-time outcomes, checks, and work preserved without treating assistant prose as durable truth.", capture: "Completed records and reported session activity", icon: CheckCircle2 },
   { id: "superseded", view: "history", sources: ["superseded"], area: "history", title: "Superseded memory", description: "Old context preserved without treating it as current truth.", capture: "Superseded project records", icon: Archive },
   { id: "dismissed", view: "history", sources: ["dismissed"], area: "history", title: "Dismissed memory", description: "Extracted records a person decided were not useful or correct.", capture: "Human-dismissed project records", icon: XCircle },
   { id: "revisions", view: "history", sources: ["version_history"], area: "history", title: "Source revisions", description: "Records backed by revised sources or marked as historical.", capture: "Source revision and temporal history", icon: History },
 ];
 
+const SOURCE_FILTERS = [
+  { id: "all", label: "All sources" },
+  { id: "documents", label: "Docs & goals" },
+  { id: "repository", label: "Repository" },
+  { id: "sessions", label: "Agent sessions" },
+  { id: "integrations", label: "Integrations" },
+];
+
+const VERIFICATION_FILTERS = [
+  { id: "all", label: "All evidence" },
+  { id: "verified", label: "Verified" },
+  { id: "observed", label: "Observed" },
+  { id: "reported", label: "Reported activity" },
+  { id: "needs_review", label: "Needs review" },
+  { id: "unavailable", label: "No exact evidence" },
+];
+
+const TEMPORAL_FILTERS = [
+  { id: "all", label: "Any time" },
+  { id: "current", label: "Current" },
+  { id: "future", label: "Planned" },
+  { id: "past", label: "Past" },
+  { id: "unknown", label: "Unknown" },
+];
+
+const VIEW_SECTION_IDS = {
+  overview: [
+    "requirements", "decisions", "work", "blockers", "risks", "learnings",
+    "deliveries", "unverified", "conflicts",
+  ],
+  active: [
+    "requirements", "decisions", "work", "blockers", "risks", "learnings",
+    "deliveries",
+  ],
+  review: ["unverified", "conflicts"],
+  freshness: ["stale"],
+  people: ["owners", "milestones"],
+  history: ["resolved", "completed", "superseded", "dismissed", "revisions"],
+};
+
 
 export default function ProjectMemory() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const workspace = useProductWorkspace();
   const reviewMemory = useReviewMemoryRecord(workspace.activeWorkspaceId);
   const setCurrentGoal = useSetCurrentGoal(workspace.activeWorkspaceId);
   const clearCurrentGoal = useClearCurrentGoal(workspace.activeWorkspaceId);
-  const [view, setView] = useState("active");
-  const [search, setSearch] = useState("");
-  const [selectedType, setSelectedType] = useState(null);
+  const requestedView = searchParams.get("view");
+  const view = MEMORY_VIEWS.some((item) => item.id === requestedView) ? requestedView : "overview";
+  const requestedScope = searchParams.get("scope");
+  const scopeMode = requestedScope === "workspace" ? "workspace" : "agenda";
+  const semanticTypes = MEMORY_TYPES.filter(
+    (type) => type.view === "active" && type.id !== "goal",
+  );
+  const requestedCategory = searchParams.get("category");
+  const selectedCategory = (
+    ["overview", "active", "review"].includes(view)
+    && semanticTypes.some((type) => type.id === requestedCategory)
+  ) ? requestedCategory : null;
+  const requestedSection = searchParams.get("section");
+  const selectedSection = MEMORY_TYPES.some((item) => item.id === requestedSection && item.view === view)
+    ? requestedSection
+    : null;
+  const requestedSource = searchParams.get("source");
+  const sourceGroup = SOURCE_FILTERS.some((item) => item.id === requestedSource) ? requestedSource : "all";
+  const requestedVerification = searchParams.get("verification");
+  const verification = VERIFICATION_FILTERS.some((item) => item.id === requestedVerification)
+    ? requestedVerification
+    : "all";
+  const requestedTemporal = searchParams.get("temporal");
+  const temporal = TEMPORAL_FILTERS.some((item) => item.id === requestedTemporal)
+    ? requestedTemporal
+    : "all";
+  const kind = searchParams.get("kind") || "";
+  const search = searchParams.get("q") || "";
+  const deferredSearch = useDeferredValue(search);
+  const [drawerType, setDrawerType] = useState(null);
   const [reviewingId, setReviewingId] = useState(null);
   const [reviewError, setReviewError] = useState(null);
+  const [reviewNotice, setReviewNotice] = useState("");
+  const [skippedReviewIds, setSkippedReviewIds] = useState([]);
   const [detailLimit, setDetailLimit] = useState(50);
+  const requestSection = drawerType?.id || selectedSection;
+  const requestSemanticSection = drawerType ? null : selectedCategory;
+  const goalDrawerOpen = drawerType?.id === "goal";
   const memoryQuery = useProjectMemory(workspace.activeWorkspaceId, {
-    query: search,
-    section: selectedType?.id || null,
-    limit: selectedType ? detailLimit : 3,
+    query: deferredSearch,
+    section: requestSection,
+    semanticSection: requestSemanticSection,
+    scope: scopeMode,
+    sourceGroup: goalDrawerOpen ? "all" : sourceGroup,
+    verification: goalDrawerOpen ? "all" : verification,
+    temporal: goalDrawerOpen ? "all" : temporal,
+    kind: goalDrawerOpen ? null : kind || null,
+    limit: drawerType
+      ? detailLimit
+      : view === "review"
+        ? detailLimit
+        : (selectedSection || selectedCategory) ? 50 : 6,
   });
   const sectionsById = useMemo(() => Object.fromEntries(
     (memoryQuery.data?.sections || []).map((section) => [section.id, section]),
   ), [memoryQuery.data]);
-  const visibleTypes = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return MEMORY_TYPES.filter((type) => {
-      if (type.view !== view) return false;
-      if (!query) return true;
-      return Number(sectionsById[type.id]?.total || 0) > 0;
-    });
-  }, [view, search, sectionsById]);
+  const visibleTypes = ["overview", "active", "review"].includes(view)
+    ? semanticTypes
+    : MEMORY_TYPES.filter((type) => type.view === view && type.id !== "goal");
+  const displayedTypes = selectedCategory
+    ? visibleTypes.filter((type) => type.id === selectedCategory)
+    : view === "overview"
+      ? [...visibleTypes].sort((left, right) => {
+        const leftTotal = Number(sectionsById[left.id]?.total || 0)
+          + Number(memoryQuery.data?.facets?.reviewable_semantic_sections?.[left.id] || 0);
+        const rightTotal = Number(sectionsById[right.id]?.total || 0)
+          + Number(memoryQuery.data?.facets?.reviewable_semantic_sections?.[right.id] || 0);
+        return rightTotal - leftTotal;
+      })
+      : visibleTypes;
   const selectedView = MEMORY_VIEWS.find((item) => item.id === view) || MEMORY_VIEWS[0];
   const activeRecordCount = memoryQuery.data?.totals?.active || 0;
   const reviewRecordCount = memoryQuery.data?.totals?.needs_review || 0;
+  const readyReviewCount = memoryQuery.data?.totals?.ready_to_review || 0;
+  const conflictCount = memoryQuery.data?.totals?.conflicts || 0;
+  const refreshRecordCount = memoryQuery.data?.totals?.needs_refresh || 0;
+  const reportedActivityCount = memoryQuery.data?.totals?.reported_activity || 0;
   const peopleRecordCount = memoryQuery.data?.totals?.people_and_dates || 0;
   const historyRecordCount = memoryQuery.data?.totals?.history || 0;
   const currentGoal = memoryQuery.data?.current_goal || null;
+  const agenda = memoryQuery.data?.agenda || null;
+  const effectiveScope = memoryQuery.data?.filters?.effective_scope
+    || memoryQuery.data?.scope?.effective_mode
+    || "workspace";
   const goalType = MEMORY_TYPES.find((type) => type.id === "goal");
-  const displayedTypes = visibleTypes.filter(
-    (type) => !(view === "active" && type.id === "goal" && !search.trim()),
-  );
   const viewCounts = {
+    overview: activeRecordCount + reviewRecordCount,
     active: activeRecordCount,
     review: reviewRecordCount,
+    freshness: refreshRecordCount,
     people: peopleRecordCount,
     history: historyRecordCount,
   };
   const excludedSessionCount = Number(memoryQuery.data?.scope?.excluded_unknown_session_components || 0)
     + Number(memoryQuery.data?.scope?.excluded_irrelevant_session_components || 0);
   const excludedLowIntegrityCount = Number(memoryQuery.data?.scope?.excluded_unconfirmable_agent_components || 0)
-    + Number(memoryQuery.data?.scope?.collapsed_duplicate_current_claims || 0);
+    + Number(memoryQuery.data?.scope?.collapsed_duplicate_current_claims || 0)
+    + Number(memoryQuery.data?.scope?.excluded_untrusted_relationships || 0);
+  const collapsedRevisionCount = Number(
+    memoryQuery.data?.scope?.collapsed_source_revision_components || 0,
+  );
+  const reviewSemanticCounts = memoryQuery.data?.facets?.review_semantic_sections || {};
+  const reviewableSemanticCounts = memoryQuery.data?.facets?.reviewable_semantic_sections || {};
+  const workspaceName = workspace.activeWorkspace?.name || "Current workspace";
+  const selectedType = MEMORY_TYPES.find(
+    (type) => type.id === (selectedCategory || selectedSection),
+  ) || null;
+  const typeForRecord = (record) => (
+    semanticTypes.find((type) => type.id === record.semantic_section)
+    || MEMORY_TYPES.find((type) => type.id === record.section)
+    || MEMORY_TYPES.find((type) => type.id === "unverified")
+  );
+  const currentPreviewRecords = semanticTypes.flatMap((type) => (
+    (sectionsById[type.id]?.records || []).map((record) => ({ record, type }))
+  ));
+  const reviewPreviewRecords = [
+    ...(sectionsById.unverified?.records || []),
+    ...(sectionsById.conflicts?.records || []),
+  ].map((record) => ({ record, type: typeForRecord(record) }));
+  const previewRecords = (
+    view === "overview"
+      ? [...reviewPreviewRecords, ...currentPreviewRecords]
+      : view === "active"
+        ? currentPreviewRecords
+        : view === "review"
+          ? reviewPreviewRecords
+          : visibleTypes.flatMap((type) => (
+            (sectionsById[type.id]?.records || []).map((record) => ({ record, type }))
+          ))
+  ).slice(0, selectedType ? 50 : 18);
+  const kindSections = selectedSection
+    ? [selectedSection]
+    : VIEW_SECTION_IDS[view] || [];
+  const facetKindCounts = kindSections.reduce((counts, sectionId) => {
+    for (const [recordKind, count] of Object.entries(
+      memoryQuery.data?.facets?.kinds_by_section?.[sectionId] || {},
+    )) {
+      counts[recordKind] = (counts[recordKind] || 0) + Number(count || 0);
+    }
+    return counts;
+  }, {});
+  const previewKindCounts = previewRecords.reduce((counts, { record }) => ({
+    ...counts,
+    [record.kind]: (counts[record.kind] || 0) + 1,
+  }), {});
+  const availableKinds = Object.entries(
+    Object.keys(facetKindCounts).length ? facetKindCounts : previewKindCounts,
+  )
+    .sort(([left], [right]) => left.localeCompare(right));
+  const viewMatchCount = selectedSection
+    ? Number(memoryQuery.data?.matches || 0)
+    : view === "overview"
+      ? activeRecordCount + reviewRecordCount
+      : view === "active"
+        ? activeRecordCount
+        : view === "review"
+          ? reviewRecordCount
+          : view === "freshness"
+            ? refreshRecordCount
+            : view === "people"
+              ? peopleRecordCount
+              : historyRecordCount;
+  const reviewableRecords = (sectionsById.unverified?.records || []).filter(
+    (record) => record.evidence?.exact && (record.allowed_actions || []).includes("confirm"),
+  );
+  const evidenceGapRecords = (sectionsById.unverified?.records || []).filter(
+    (record) => !record.evidence?.exact || !(record.allowed_actions || []).includes("confirm"),
+  );
+  const currentReviewCandidate = reviewableRecords.find(
+    (record) => !skippedReviewIds.includes(record.id),
+  ) || null;
+  const evidenceGapCount = Math.max(
+    0,
+    reviewRecordCount - readyReviewCount - conflictCount,
+  );
+  const reviewHasMore = Boolean(
+    sectionsById.unverified?.has_more || sectionsById.conflicts?.has_more,
+  );
+  const activeFilterCount = [
+    search.trim(),
+    selectedSection,
+    selectedCategory,
+    sourceGroup !== "all",
+    verification !== "all",
+    temporal !== "all",
+    kind,
+  ].filter(Boolean).length;
+  const advancedFilterCount = [
+    sourceGroup !== "all",
+    verification !== "all",
+    temporal !== "all",
+    kind,
+  ].filter(Boolean).length;
+
+  useEffect(() => {
+    setSkippedReviewIds([]);
+    setReviewNotice("");
+  }, [selectedCategory, scopeMode, sourceGroup, verification, temporal, kind, deferredSearch]);
 
   const handleReview = async (item, action) => {
     if (!item.component_id) return;
     setReviewingId(item.component_id);
     setReviewError(null);
     try {
-      await reviewMemory.mutateAsync({ componentId: item.component_id, action });
+      const result = await reviewMemory.mutateAsync({
+        componentId: item.component_id,
+        action,
+      });
+      setSkippedReviewIds((current) => (
+        current.includes(item.id) ? current : [...current, item.id]
+      ));
+      const affected = Number(result?.affected_components || item.occurrence_count || 1);
+      setReviewNotice(action === "confirm"
+        ? `Added to Current ${typeForRecord(item)?.title || "memory"}. ${affected > 1 ? `${affected} matching occurrences were updated.` : "Future agent briefs may now reuse it."}`
+        : action === "supersede"
+          ? "Marked not current and preserved in History."
+          : action === "dismiss"
+            ? "Kept out of project memory and preserved in History."
+            : "Memory updated.");
     } catch (error) {
       setReviewError(error?.message || "Could not update this memory record.");
     } finally {
@@ -161,12 +382,57 @@ export default function ProjectMemory() {
   const openMemoryType = (type) => {
     setReviewError(null);
     setDetailLimit(50);
-    setSelectedType(type);
+    setDrawerType(type);
   };
 
   const selectView = (nextView) => {
-    setView(nextView);
-    setSelectedType(null);
+    const next = new URLSearchParams(searchParams);
+    if (nextView === "overview") next.delete("view");
+    else next.set("view", nextView);
+    next.delete("section");
+    next.delete("category");
+    next.delete("kind");
+    setDetailLimit(50);
+    setDrawerType(null);
+    setSearchParams(next, { replace: true });
+  };
+
+  const updateFilter = (key, value, defaultValue = "") => {
+    const next = new URLSearchParams(searchParams);
+    if (!value || value === defaultValue) next.delete(key);
+    else next.set(key, value);
+    if (key === "section" || key === "category") next.delete("kind");
+    setDetailLimit(50);
+    setDrawerType(null);
+    setSearchParams(next, { replace: true });
+  };
+
+  const filterByType = (type) => {
+    if (["overview", "active", "review"].includes(view)) {
+      updateFilter("category", selectedCategory === type.id ? "" : type.id);
+      return;
+    }
+    updateFilter("section", selectedSection === type.id ? "" : type.id);
+  };
+
+  const openCategory = (nextView, type) => {
+    const next = new URLSearchParams(searchParams);
+    if (nextView === "overview") next.delete("view");
+    else next.set("view", nextView);
+    next.set("category", type.id);
+    next.delete("section");
+    next.delete("kind");
+    setDetailLimit(50);
+    setDrawerType(null);
+    setSearchParams(next, { replace: true });
+  };
+
+  const clearFilters = () => {
+    const next = new URLSearchParams(searchParams);
+    ["q", "section", "category", "source", "verification", "temporal", "kind"].forEach((key) => next.delete(key));
+    setDetailLimit(50);
+    setDrawerType(null);
+    setSearchParams(next, { replace: true });
   };
 
   if (!workspace.workspacesQuery.isLoading && !workspace.activeWorkspaceId) {
@@ -180,175 +446,388 @@ export default function ProjectMemory() {
   }
 
   return (
-    <div className="relative mx-auto w-full max-w-7xl pb-16">
-      <header className="border-b border-[#d8d8cf] pb-8 dark:border-[#252522] sm:pb-10">
-        <div className="grid gap-8 lg:grid-cols-[minmax(0,1.4fr)_minmax(300px,0.6fr)] lg:items-end">
-          <div className="max-w-3xl">
-            <h1 className="text-3xl font-black tracking-[-0.035em] text-[#171713] dark:text-white sm:text-4xl">Project memory</h1>
-            <p className="mt-4 max-w-2xl text-sm leading-6 text-[#5f5f57] dark:text-[#b7b7ae] sm:text-[15px] sm:leading-7">
-              The project’s trusted knowledge base—what is current, where it came from, and what still needs a human decision.
-            </p>
+    <div className="relative mx-auto w-full max-w-7xl space-y-6 pb-16">
+      <header className="flex flex-col gap-5 border-b border-line pb-7 lg:flex-row lg:items-end lg:justify-between">
+        <div className="max-w-3xl">
+          <div className="mb-3 flex flex-wrap items-center gap-2 text-xs font-semibold text-ink-muted">
+            <span className="inline-flex items-center gap-2 rounded-full border border-line bg-surface-raised px-3 py-1.5">
+              <FolderGit2 className="h-3.5 w-3.5" aria-hidden="true" />
+              {workspaceName}
+            </span>
+            <span aria-hidden="true" className="text-ink-subtle">/</span>
+            <span>Memory</span>
           </div>
-          <div className="border-l-2 border-[#a7b74d] pl-4 dark:border-[#d9ff68] sm:pl-5">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#77776e] dark:text-[#929289]">Trust rule</p>
-            <p className="mt-2 text-sm font-medium leading-6 text-[#30302b] dark:text-[#deded6]">
-              Reported claims do not become current memory until their evidence is verified.
-            </p>
-          </div>
+          <h1 className="text-3xl font-black tracking-[-0.035em] text-ink sm:text-4xl">Project memory</h1>
+          <p className="mt-3 max-w-2xl text-sm leading-6 text-ink-muted sm:text-[15px]">
+            Trusted project knowledge, narrowed to the work that matters now and always traceable to its source.
+          </p>
+        </div>
+        <div className="grid grid-cols-3 overflow-hidden rounded-surface border border-line bg-surface shadow-elevation-1">
+          <MemoryStat label="Current" value={activeRecordCount} />
+          <MemoryStat label="To decide" value={readyReviewCount} attention={readyReviewCount > 0} />
+          <MemoryStat label="Refresh" value={refreshRecordCount} />
         </div>
       </header>
 
-      <section aria-labelledby="memory-priorities-heading" className="grid border-b border-[#d8d8cf] dark:border-[#252522] lg:grid-cols-[minmax(0,1.6fr)_minmax(320px,0.8fr)]">
-        <div className="border-b border-[#d8d8cf] py-7 dark:border-[#252522] lg:border-b-0 lg:border-r lg:pr-8 dark:lg:border-[#252522] sm:py-8">
-          <div className="flex items-center justify-between gap-4">
-            <p id="memory-priorities-heading" className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#77776e] dark:text-[#929289]">Current project goal</p>
-            <span className="inline-flex items-center gap-1.5 text-[10px] font-medium text-[#68721f] dark:text-[#d9ff68]">
-              <span className="h-1.5 w-1.5 rounded-full bg-current" />
-              {currentGoal?.source_kind === "active_agent_run" ? "Controlled by active run" : currentGoal ? "Explicitly selected" : "Not selected"}
-            </span>
+      <section aria-labelledby="workspace-agenda-heading" className="app-surface">
+        <div className="grid lg:grid-cols-[minmax(0,1fr)_auto]">
+          <div className="p-5 sm:p-6 lg:p-7">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-2 rounded-full bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink">
+                <Target className="h-3.5 w-3.5" aria-hidden="true" />
+                Workspace agenda
+              </span>
+              <span className="text-xs font-medium text-ink-subtle">
+                {agenda?.kind === "selected_session" ? "Selected in Library" : currentGoal ? "Explicit focus" : "No focus selected"}
+              </span>
+            </div>
+            <h2 id="workspace-agenda-heading" className="mt-4 max-w-3xl text-xl font-semibold leading-7 tracking-[-0.03em] text-ink sm:text-2xl">
+              {agenda?.title || `All trusted knowledge in ${workspaceName}`}
+            </h2>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-ink-muted">
+              {scopeExplanation({ scopeMode, effectiveScope, agenda, workspaceName })}
+            </p>
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                aria-label="Open Current goal"
+                onClick={() => openMemoryType(goalType)}
+                className="btn-secondary min-h-11 px-4 text-xs"
+              >
+                {currentGoal ? "Edit agenda" : "Set agenda"}
+                <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+              {effectiveScope === "agenda_match" ? (
+                <span className="inline-flex items-center gap-2 text-xs text-attention">
+                  <HelpCircle className="h-3.5 w-3.5" aria-hidden="true" />
+                  Text-matched scope; every record shows why it matched.
+                </span>
+              ) : null}
+            </div>
           </div>
-          <h2 className="mt-5 max-w-3xl text-2xl font-semibold leading-tight tracking-[-0.04em] text-[#171713] dark:text-white sm:text-3xl">
-            {currentGoal?.title || "No current goal selected"}
-          </h2>
-          <p className="mt-3 max-w-2xl text-xs leading-5 text-[#68685f] dark:text-[#aaa9a0]">
-            {currentGoal
-              ? "Shown as the workspace focus in Memory and Now, and used only when you explicitly prepare context."
-              : "Set a display-only workspace focus for Memory, Now, and context you explicitly prepare."}
-          </p>
-          <button
-            type="button"
-            aria-label="Open Current goal"
-            onClick={() => openMemoryType(goalType)}
-            className="mt-5 inline-flex items-center gap-2 text-xs font-semibold text-[#31312c] outline-none underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-[#68721f] focus-visible:ring-offset-4 dark:text-[#e0e0d8] dark:focus-visible:ring-[#d9ff68] dark:focus-visible:ring-offset-[#090908]"
-          >
-            {currentGoal ? "Review project goal" : "Set project goal"}
-            <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
-          </button>
-        </div>
-
-        <div className="py-7 lg:pl-8 sm:py-8">
-          <h2 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#77776e] dark:text-[#929289]">Memory health</h2>
-          <dl className="mt-5 divide-y divide-[#deded6] border-y border-[#deded6] dark:divide-[#30302c] dark:border-[#30302c]">
-            <MemoryHealthStat
-              value={activeRecordCount}
-              label="Trusted current memory"
-              description="Verified or directly observed"
-              tone="trusted"
-            />
-            <MemoryHealthStat
-              value={reviewRecordCount}
-              label="Needs human review"
-              description={reviewRecordCount ? "Waiting for a decision" : "Nothing waiting"}
-              tone={reviewRecordCount ? "review" : "neutral"}
-            />
-          </dl>
-          {reviewRecordCount ? (
-            <button
-              type="button"
-              onClick={() => selectView("review")}
-              className="mt-4 inline-flex items-center gap-2 text-xs font-semibold text-[#8a4d2d] outline-none underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-[#9a5e38] focus-visible:ring-offset-4 dark:text-[#e4ab85] dark:focus-visible:ring-offset-[#090908]"
-            >
-              Review {reviewRecordCount.toLocaleString()} {reviewRecordCount === 1 ? "item" : "items"}
-              <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
-            </button>
-          ) : null}
-        </div>
-      </section>
-
-      {memoryQuery.isError ? (
-        <div role="alert" className="mt-6 border-y border-amber-300 py-3 text-xs font-medium text-amber-900 dark:border-amber-900/70 dark:text-amber-200">
-          Project memory could not be loaded. No cached or inferred records are being shown.
-        </div>
-      ) : null}
-
-      {!memoryQuery.isError && excludedSessionCount > 0 ? (
-        <p className="mt-4 text-[10px] leading-4 text-[#77776e] dark:text-[#999990]">
-          {excludedSessionCount.toLocaleString()} session-derived {excludedSessionCount === 1 ? "record is" : "records are"} outside this project scope or cannot be tied to it, so {excludedSessionCount === 1 ? "it is" : "they are"} excluded from these counts.
-        </p>
-      ) : null}
-      {!memoryQuery.isError && excludedLowIntegrityCount > 0 ? (
-        <p className="mt-1 text-[10px] leading-4 text-[#77776e] dark:text-[#999990]">
-          {excludedLowIntegrityCount.toLocaleString()} unconfirmable or duplicate current {excludedLowIntegrityCount === 1 ? "record is" : "records are"} also hidden rather than presented as memory.
-        </p>
-      ) : null}
-
-      <section aria-labelledby="memory-browser-heading" className="mt-10">
-        <div className="grid gap-5 border-b border-[#d8d8cf] pb-5 dark:border-[#252522] lg:grid-cols-[minmax(0,1fr)_minmax(260px,0.38fr)] lg:items-end">
-          <div className="min-w-0">
-            <h2 id="memory-browser-heading" className="text-lg font-semibold tracking-[-0.03em]">Browse project knowledge</h2>
-            <nav aria-label="Memory views" className="no-scrollbar mt-4 flex min-w-0 gap-2 overflow-x-auto pb-1">
-              {MEMORY_VIEWS.map((memoryView) => (
-                <button
-                  type="button"
-                  key={memoryView.id}
-                  aria-label={memoryView.label}
-                  aria-pressed={view === memoryView.id}
-                  onClick={() => selectView(memoryView.id)}
-                  className={`inline-flex min-h-9 shrink-0 items-center gap-2 rounded-full border px-3.5 text-[10px] font-semibold outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[#68721f] focus-visible:ring-offset-2 dark:focus-visible:ring-[#d9ff68] dark:focus-visible:ring-offset-[#090908] ${
-                    view === memoryView.id
-                      ? "border-[#24241f] bg-[#24241f] text-white dark:border-[#d9ff68] dark:bg-[#d9ff68] dark:text-[#11110f]"
-                      : "border-[#d4d4cb] text-[#68685f] hover:border-[#99998f] hover:text-[#24241f] dark:border-[#34342f] dark:text-[#aaa9a0] dark:hover:border-[#62625b] dark:hover:text-white"
-                  }`}
-                >
-                  {memoryView.label}
-                  <span className={`tabular-nums ${view === memoryView.id ? "opacity-70" : "text-[#929289]"}`}>{viewCounts[memoryView.id].toLocaleString()}</span>
-                </button>
-              ))}
-            </nav>
-          </div>
-          <div>
-            <label htmlFor="memory-search" className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#77776e] dark:text-[#929289]">Search this workspace</label>
-            <div className="relative mt-2">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#85857c]" aria-hidden="true" />
-              <input
-                id="memory-search"
-                type="search"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Records, evidence, sources…"
-                className="h-10 w-full rounded-lg border border-[#d4d4cb] bg-[#fbfbf6] pl-9 pr-3 text-xs font-medium text-[#171713] outline-none transition-colors placeholder:text-[#9b9b92] focus:border-[#68721f] focus:ring-2 focus:ring-[#68721f]/20 dark:border-[#34342f] dark:bg-[#11110f] dark:text-white dark:focus:border-[#d9ff68] dark:focus:ring-[#d9ff68]/15"
+          <div className="border-t border-line bg-surface-raised p-4 lg:flex lg:min-w-[260px] lg:flex-col lg:justify-center lg:border-l lg:border-t-0">
+            <p className="mb-2 text-xs font-semibold text-ink-muted">Memory scope</p>
+            <div className="grid grid-cols-2 gap-2 lg:grid-cols-1" role="group" aria-label="Memory scope">
+              <ScopeButton
+                active={scopeMode === "agenda"}
+                label="Current agenda"
+                detail={agenda ? "Focused records" : "Falls back safely"}
+                onClick={() => updateFilter("scope", "agenda", "agenda")}
+              />
+              <ScopeButton
+                active={scopeMode === "workspace"}
+                label={`All ${workspaceName}`}
+                detail="Entire workspace"
+                onClick={() => updateFilter("scope", "workspace", "agenda")}
               />
             </div>
           </div>
         </div>
+      </section>
 
-        {displayedTypes.length ? (
-          <div>
-            <div className="flex items-end justify-between gap-6 py-6">
-              <div>
-                <h3 className="text-base font-semibold tracking-[-0.025em]">{selectedView.label}</h3>
-                <p className="mt-1 max-w-2xl text-xs leading-5 text-[#74746b] dark:text-[#aaa9a0]">{selectedView.description}</p>
+      {memoryQuery.isError ? (
+        <div role="alert" className="rounded-control border border-attention/40 bg-attention/10 px-4 py-3 text-sm font-medium text-ink">
+          Project memory could not be loaded. No cached or inferred records are being shown.
+        </div>
+      ) : null}
+
+      {view === "overview" ? (
+        <MemoryReadinessPanel
+          currentCount={activeRecordCount}
+          readyCount={readyReviewCount}
+          conflictCount={conflictCount}
+          refreshCount={refreshRecordCount}
+          evidenceGapCount={evidenceGapCount}
+          reportedCount={reportedActivityCount}
+          hasGoal={Boolean(currentGoal)}
+          loading={memoryQuery.isLoading}
+          onReview={() => selectView("review")}
+          onSetGoal={() => openMemoryType(goalType)}
+        />
+      ) : null}
+
+      <section aria-labelledby="memory-filter-heading" className="app-surface p-4 sm:p-5">
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <div className="flex items-center gap-2">
+                <SlidersHorizontal className="h-4 w-4 text-ink-muted" aria-hidden="true" />
+                <h2 id="memory-filter-heading" className="text-sm font-semibold text-ink">Find memory</h2>
+                {activeFilterCount ? (
+                  <span className="rounded-full bg-accent px-2 py-0.5 text-[11px] font-semibold text-accent-ink">{activeFilterCount}</span>
+                ) : null}
               </div>
-              <span className="shrink-0 text-[10px] font-medium text-[#8a8a80]">{displayedTypes.length} {displayedTypes.length === 1 ? "area" : "areas"}</span>
+              <p className="mt-1 text-xs leading-5 text-ink-muted">Search first; open advanced filters only when you need them.</p>
             </div>
-            <div className="border-t border-[#cfcfc5] dark:border-[#353530]">
-              {displayedTypes.map((type, index) => (
-                <MemoryTypeRow
-                  key={type.id}
-                  type={type}
-                  index={index}
-                  loading={memoryQuery.isLoading}
-                  count={sectionsById[type.id]?.total || 0}
-                  items={sectionsById[type.id]?.records || []}
-                  onOpen={() => openMemoryType(type)}
-                />
-              ))}
+            <label className="relative block w-full lg:max-w-sm">
+              <span className="sr-only">Search memory</span>
+              <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-subtle" aria-hidden="true" />
+              <input
+                type="search"
+                value={search}
+                onChange={(event) => updateFilter("q", event.target.value)}
+                placeholder={`Search ${workspaceName} memory`}
+                className="h-11 w-full rounded-control border border-line bg-surface-raised pl-10 pr-4 text-sm font-medium text-ink outline-none placeholder:text-ink-subtle focus:border-line-strong"
+              />
+            </label>
+          </div>
+
+          <nav aria-label="Memory views" className="no-scrollbar flex min-w-0 gap-2 overflow-x-auto pb-1">
+            {MEMORY_VIEWS.map((memoryView) => (
+              <button
+                type="button"
+                key={memoryView.id}
+                aria-label={memoryView.label}
+                aria-pressed={view === memoryView.id}
+                onClick={() => selectView(memoryView.id)}
+                className={`inline-flex min-h-10 shrink-0 items-center gap-2 rounded-control border px-3.5 text-xs font-semibold transition ${
+                  view === memoryView.id
+                    ? "border-ink bg-ink text-canvas"
+                    : "border-line bg-surface text-ink-muted hover:border-line-strong hover:text-ink"
+                }`}
+              >
+                {memoryView.label}
+                <span className="tabular-nums opacity-70">{viewCounts[memoryView.id].toLocaleString()}</span>
+              </button>
+            ))}
+          </nav>
+
+          <details className="group border-t border-line pt-3" open={advancedFilterCount > 0 ? true : undefined}>
+            <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between rounded-control px-2 text-xs font-semibold text-ink-muted marker:hidden hover:bg-surface-muted hover:text-ink">
+              <span className="inline-flex items-center gap-2">
+                <Filter className="h-3.5 w-3.5" aria-hidden="true" />
+                Advanced filters
+                {advancedFilterCount ? <span className="rounded-full bg-accent px-2 py-0.5 text-[10px] text-accent-ink">{advancedFilterCount}</span> : null}
+              </span>
+              <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" aria-hidden="true" />
+            </summary>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <FilterSelect
+                label="Source"
+                value={sourceGroup}
+                options={SOURCE_FILTERS}
+                onChange={(value) => updateFilter("source", value, "all")}
+              />
+              <FilterSelect
+                label="Evidence"
+                value={verification}
+                options={VERIFICATION_FILTERS}
+                onChange={(value) => updateFilter("verification", value, "all")}
+              />
+              <FilterSelect
+                label="Time"
+                value={temporal}
+                options={TEMPORAL_FILTERS}
+                onChange={(value) => updateFilter("temporal", value, "all")}
+              />
+              <FilterSelect
+                label="Subtype"
+                value={kind}
+                options={[
+                  { id: "", label: "All subtypes" },
+                  ...availableKinds.map(([value, count]) => ({ id: value, label: `${value} (${count})` })),
+                ]}
+                onChange={(value) => updateFilter("kind", value)}
+                disabled={!availableKinds.length}
+              />
             </div>
+          </details>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3">
+            <p role="status" aria-live="polite" className="text-xs font-medium text-ink-muted">
+              {memoryQuery.isLoading ? "Reading source-backed memory…" : `${viewMatchCount.toLocaleString()} matching ${viewMatchCount === 1 ? "record" : "records"} in ${selectedType ? selectedType.title : selectedView.label}`}
+            </p>
+            {activeFilterCount ? (
+              <button type="button" onClick={clearFilters} className="inline-flex min-h-10 items-center gap-2 rounded-control px-3 text-xs font-semibold text-ink-muted hover:bg-surface-muted hover:text-ink">
+                <Filter className="h-3.5 w-3.5" aria-hidden="true" />
+                Clear filters
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </section>
+
+      <section aria-labelledby="memory-categories-heading">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-xs font-semibold text-ink-subtle">{selectedView.label}</p>
+            <h2 id="memory-categories-heading" className="mt-1 text-xl font-semibold tracking-[-0.03em] text-ink">
+              {view === "overview" ? "Working memory by type" : view === "review" ? "Review by project meaning" : "Choose a memory type"}
+            </h2>
+            <p className="mt-1 max-w-2xl text-sm leading-6 text-ink-muted">{selectedView.description}</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {view === "freshness" && refreshRecordCount > 0 ? (
+              <Link to="/app/connectors" className="btn-secondary min-h-10 px-3 text-xs">
+                Open Integrations to refresh
+                <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+              </Link>
+            ) : null}
+            {selectedSection || selectedCategory ? (
+              <button
+                type="button"
+                onClick={() => updateFilter(selectedCategory ? "category" : "section", "")}
+                className="min-h-10 self-start rounded-control px-3 text-xs font-semibold text-ink-muted hover:bg-surface-muted hover:text-ink"
+              >
+                Show all types
+              </button>
+            ) : null}
+          </div>
+        </div>
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {displayedTypes.map((type, index) => view === "overview" ? (
+            <MemoryCategoryCard
+              key={type.id}
+              type={type}
+              currentCount={Number(sectionsById[type.id]?.total || 0)}
+              candidateCount={Number(reviewableSemanticCounts[type.id] || 0)}
+              loading={memoryQuery.isLoading}
+              index={index}
+              onViewCurrent={() => openCategory("active", type)}
+              onReview={() => openCategory("review", type)}
+            />
+          ) : (
+            <MemoryTypeCard
+              key={type.id}
+              type={type}
+              count={view === "review"
+                ? Number(reviewSemanticCounts[type.id] || 0)
+                : Number(sectionsById[type.id]?.total || 0)}
+              items={view === "review"
+                ? reviewPreviewRecords
+                  .filter(({ record }) => record.semantic_section === type.id)
+                  .map(({ record }) => record)
+                : sectionsById[type.id]?.records || []}
+              loading={memoryQuery.isLoading}
+              selected={(selectedCategory || selectedSection) === type.id}
+              reviewCount={view === "active"
+                ? Number(reviewableSemanticCounts[type.id] || 0)
+                : 0}
+              countLabel={view === "review" ? "to decide" : "records"}
+              emptyLabel={view === "active" ? "No confirmed records in this scope" : undefined}
+              index={index}
+              onSelect={() => filterByType(type)}
+            />
+          ))}
+        </div>
+      </section>
+
+      {view === "review" ? (
+        <ReviewWorkspace
+          candidate={currentReviewCandidate}
+          remaining={readyReviewCount}
+          shownRemaining={reviewableRecords.filter((record) => !skippedReviewIds.includes(record.id)).length}
+          conflictCount={conflictCount}
+          conflictRecords={sectionsById.conflicts?.records || []}
+          evidenceGapCount={evidenceGapCount}
+          evidenceGapRecords={evidenceGapRecords}
+          selectedType={selectedType}
+          reviewingId={reviewingId}
+          error={reviewError}
+          notice={reviewNotice}
+          onReview={handleReview}
+          onSkip={(item) => {
+            setSkippedReviewIds((current) => (
+              current.includes(item.id) ? current : [...current, item.id]
+            ));
+            setReviewNotice("Skipped for this visit. Nothing was changed.");
+          }}
+          onResetSkipped={() => {
+            setSkippedReviewIds([]);
+            setReviewNotice("");
+          }}
+          onOpenSourceHealth={() => selectView("freshness")}
+          refreshCount={refreshRecordCount}
+          hasMore={reviewHasMore}
+          onLoadMore={() => setDetailLimit((value) => Math.min(500, value + 50))}
+        />
+      ) : (
+      <section aria-labelledby="matching-memory-heading" className="app-surface">
+        <header className="flex flex-col gap-2 border-b border-line px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+          <div>
+            <p className="text-xs font-semibold text-ink-subtle">{selectedType ? selectedType.title : selectedView.label}</p>
+            <h2 id="matching-memory-heading" className="mt-0.5 text-lg font-semibold tracking-[-0.025em] text-ink">
+              {view === "overview" ? "What deserves attention next" : "Source-backed records"}
+            </h2>
+          </div>
+          <span className="text-xs font-medium tabular-nums text-ink-muted">{previewRecords.length} shown</span>
+        </header>
+        {previewRecords.length ? (
+          <div className="grid lg:grid-cols-2">
+            {previewRecords.map(({ record, type }, index) => (
+              <RecordPreview
+                key={record.id}
+                item={record}
+                type={type}
+                index={index}
+                onOpen={() => {
+                  if (view === "overview" && ["unverified", "conflicts"].includes(record.section)) {
+                    openCategory("review", type);
+                  } else if (view === "overview" && semanticTypes.some((item) => item.id === type.id)) {
+                    openCategory("active", type);
+                  } else {
+                    openMemoryType(type);
+                  }
+                }}
+              />
+            ))}
           </div>
         ) : (
-          <div className="border-y border-[#d8d8cf] py-16 text-center dark:border-[#30302b]">
-            <p className="text-sm font-semibold">No matching memory type</p>
-            <button type="button" onClick={() => setSearch("")} className="mt-3 text-xs font-semibold text-[#686d35] dark:text-[#d9ff68]">Clear search</button>
+          <div className="px-6 py-14 text-center">
+            <Database className="mx-auto h-6 w-6 text-ink-subtle" aria-hidden="true" />
+            <p className="mt-3 text-sm font-semibold text-ink">
+              {view === "active" && readyReviewCount > 0 ? "No confirmed memory yet" : "No matching source-backed records"}
+            </p>
+            <p className="mx-auto mt-2 max-w-lg text-xs leading-5 text-ink-muted">
+              {view === "active" && readyReviewCount > 0
+                ? `Current stays empty until you decide which of the ${readyReviewCount.toLocaleString()} source-backed candidates still describe the project.`
+                : scopeMode === "agenda" && agenda
+                ? "Nothing in this truth state is linked to the current agenda and the active filters."
+                : "Try another memory type or clear one of the filters above."}
+            </p>
+            <div className="mt-4 flex flex-wrap justify-center gap-2">
+              {view === "active" && readyReviewCount > 0 ? (
+                <button type="button" onClick={() => selectView("review")} className="btn-secondary min-h-11 text-xs">
+                  Review {readyReviewCount.toLocaleString()} {readyReviewCount === 1 ? "candidate" : "candidates"}
+                </button>
+              ) : null}
+              {activeFilterCount ? <button type="button" onClick={clearFilters} className="btn-secondary min-h-11 text-xs">Clear filters</button> : null}
+            </div>
           </div>
         )}
       </section>
+      )}
 
-      {selectedType ? createPortal(
+      {!memoryQuery.isError && (excludedSessionCount > 0 || excludedLowIntegrityCount > 0 || collapsedRevisionCount > 0) ? (
+        <details className="group rounded-control border border-line bg-surface-raised">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-4 py-2.5 text-xs font-semibold text-ink-muted marker:hidden hover:text-ink">
+            <span className="inline-flex items-center gap-2">
+              <Fingerprint className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              Memory hygiene
+            </span>
+            <span className="inline-flex items-center gap-2 text-[11px] font-medium text-ink-subtle">
+              {(
+                excludedSessionCount
+                + excludedLowIntegrityCount
+                + collapsedRevisionCount
+              ).toLocaleString()} records kept out of the working view
+              <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" aria-hidden="true" />
+            </span>
+          </summary>
+          <div className="grid gap-2 border-t border-line px-4 py-3 text-xs leading-5 text-ink-muted sm:grid-cols-3">
+            {excludedSessionCount > 0 ? <p><span className="font-semibold text-ink">{excludedSessionCount.toLocaleString()}</span> session records did not deterministically match this workspace.</p> : null}
+            {excludedLowIntegrityCount > 0 ? <p><span className="font-semibold text-ink">{excludedLowIntegrityCount.toLocaleString()}</span> unconfirmable, duplicate, or untrusted records were hidden.</p> : null}
+            {collapsedRevisionCount > 0 ? <p><span className="font-semibold text-ink">{collapsedRevisionCount.toLocaleString()}</span> mechanical projections were collapsed; immutable source revisions remain in History.</p> : null}
+          </div>
+        </details>
+      ) : null}
+
+      {drawerType ? createPortal(
         <MemoryDrawer
-          type={selectedType}
-          items={sectionsById[selectedType.id]?.records || []}
-          total={sectionsById[selectedType.id]?.total || 0}
-          hasMore={sectionsById[selectedType.id]?.has_more || false}
+          type={drawerType}
+          items={sectionsById[drawerType.id]?.records || []}
+          total={sectionsById[drawerType.id]?.total || 0}
+          hasMore={sectionsById[drawerType.id]?.has_more || false}
           loading={memoryQuery.isLoading}
           reviewingId={reviewingId}
           reviewError={reviewError}
@@ -357,8 +836,11 @@ export default function ProjectMemory() {
           onSetGoal={handleSetGoal}
           onClearGoal={handleClearGoal}
           currentGoal={memoryQuery.data?.current_goal || null}
+          hasSelectedSession={Boolean(
+            memoryQuery.data?.scope?.selected_session_document_id,
+          )}
           onLoadMore={() => setDetailLimit((value) => Math.min(500, value + 50))}
-          onClose={() => setSelectedType(null)}
+          onClose={() => setDrawerType(null)}
         />,
         document.body,
       ) : null}
@@ -367,80 +849,532 @@ export default function ProjectMemory() {
 }
 
 
-function MemoryHealthStat({ value, label, description, tone }) {
-  const toneClass = tone === "trusted"
-    ? "text-[#68721f] dark:text-[#d9ff68]"
-    : tone === "review"
-      ? "text-[#9a5e38] dark:text-[#e4ab85]"
-      : "text-[#77776e] dark:text-[#aaa9a0]";
+function MemoryStat({ value, label, attention = false }) {
   return (
-    <div className="grid grid-cols-[1fr_auto] items-center gap-4 py-3">
-      <dt className="text-xs font-semibold text-[#34342f] dark:text-[#d8d8cf]">
-        <span className="block">{label}</span>
-        <span className="mt-0.5 block text-[10px] font-normal text-[#85857c]">{description}</span>
-      </dt>
-      <dd className={`text-2xl font-semibold tabular-nums tracking-[-0.04em] ${toneClass}`}>{value}</dd>
+    <div className="min-w-[76px] border-r border-line px-3 py-3 text-center last:border-r-0 sm:min-w-[92px]">
+      <p className={`text-xl font-semibold tabular-nums tracking-[-0.035em] ${attention ? "text-attention" : "text-ink"}`}>{value}</p>
+      <p className="mt-0.5 text-[11px] font-medium text-ink-muted">{label}</p>
     </div>
   );
 }
 
 
-function MemoryTypeRow({ type, count, items, index, loading, onOpen }) {
+function MemoryReadinessPanel({
+  currentCount,
+  readyCount,
+  conflictCount,
+  refreshCount,
+  evidenceGapCount,
+  reportedCount,
+  hasGoal,
+  loading,
+  onReview,
+  onSetGoal,
+}) {
+  const bootstrap = !loading && currentCount === 0 && readyCount > 0;
+  const ready = (
+    !loading
+    && currentCount > 0
+    && readyCount === 0
+    && conflictCount === 0
+  );
+  return (
+    <section aria-labelledby="memory-readiness-heading" className="overflow-hidden rounded-surface border border-line bg-ink text-canvas shadow-elevation-1">
+      <div className="grid lg:grid-cols-[minmax(0,1fr)_auto]">
+        <div className="p-5 sm:p-7">
+          <div className="flex items-center gap-2 text-xs font-semibold text-accent">
+            <BookOpenCheck className="h-4 w-4" aria-hidden="true" />
+            Memory readiness
+          </div>
+          <h2 id="memory-readiness-heading" className="mt-3 max-w-2xl text-2xl font-semibold tracking-[-0.035em]">
+            {loading
+              ? "Checking what agents can safely reuse…"
+              : bootstrap
+                ? "Your memory isn’t empty — it needs your judgment"
+                : currentCount === 0 && conflictCount > 0
+                  ? "Current is empty while conflicts remain"
+                  : currentCount === 0 && refreshCount > 0
+                    ? "Current is empty until sources are refreshed"
+                    : currentCount === 0 && evidenceGapCount > 0
+                      ? "Current is empty because evidence is incomplete"
+                : ready
+                  ? "Current memory is ready to reuse"
+                  : currentCount > 0
+                    ? "Keep reusable project truth small and current"
+                    : "No reusable memory yet"}
+          </h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-canvas/70">
+            {bootstrap
+              ? `Context Engine found ${readyCount.toLocaleString()} source-backed ${readyCount === 1 ? "claim" : "claims"}, but none has been accepted as current project truth.`
+              : currentCount === 0 && conflictCount > 0
+                ? "Conflicting claims stay out of Current until you compare them and rule out the version that should not remain current."
+                : currentCount === 0 && refreshCount > 0
+                  ? "Provider snapshots stay out of Current until a successful source refresh proves which exact remote revision was observed."
+                  : currentCount === 0 && evidenceGapCount > 0
+                    ? "Some extracted records lack an exact source span. They cannot be verified or reused until extraction captures traceable evidence."
+              : "Current memory is the source-backed set Context Engine may place in future agent briefs. The review queue contains suggestions, not facts."}
+          </p>
+          <p className="mt-2 max-w-3xl text-xs leading-5 text-canvas/55">
+            Exact evidence proves where a claim came from. Adding it to Current means you attest that it is correct, relevant, and still describes the project now.
+          </p>
+          <div className="mt-5 flex flex-wrap gap-2">
+            {readyCount > 0 ? (
+              <button type="button" onClick={onReview} className="inline-flex min-h-11 items-center gap-2 rounded-control bg-accent px-4 text-xs font-semibold text-accent-ink">
+                Review {readyCount.toLocaleString()} {readyCount === 1 ? "candidate" : "candidates"}
+                <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+            ) : null}
+            <button type="button" onClick={onSetGoal} className="min-h-11 rounded-control border border-canvas/20 px-4 text-xs font-semibold text-canvas hover:bg-canvas/10">
+              {hasGoal ? "Edit current goal" : "Set current goal"}
+            </button>
+          </div>
+        </div>
+        <div className="grid min-w-[280px] grid-cols-2 border-t border-canvas/10 bg-canvas/[0.04] lg:border-l lg:border-t-0">
+          <ReadinessMetric label="Current facts" value={currentCount} />
+          <ReadinessMetric label="To decide" value={readyCount} attention={readyCount > 0} />
+          <ReadinessMetric label="Conflicts" value={conflictCount} />
+          <ReadinessMetric label="Need refresh" value={refreshCount} />
+        </div>
+      </div>
+      {reportedCount > 0 ? (
+        <p className="border-t border-canvas/10 px-5 py-3 text-[11px] leading-5 text-canvas/55 sm:px-7">
+          {reportedCount.toLocaleString()} assistant-reported checks and outcomes were kept as activity history—not turned into verification work.
+        </p>
+      ) : null}
+      {evidenceGapCount > 0 ? (
+        <p className="border-t border-canvas/10 px-5 py-3 text-[11px] leading-5 text-canvas/55 sm:px-7">
+          {evidenceGapCount.toLocaleString()} {evidenceGapCount === 1 ? "record lacks" : "records lack"} exact evidence and can only be cleaned up—not promoted to Current.
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+
+function ReadinessMetric({ label, value, attention = false }) {
+  return (
+    <div className="border-b border-r border-canvas/10 p-4 last:border-b-0">
+      <p className={`text-2xl font-semibold tabular-nums ${attention ? "text-accent" : "text-canvas"}`}>{value}</p>
+      <p className="mt-1 text-[11px] font-medium text-canvas/55">{label}</p>
+    </div>
+  );
+}
+
+
+function MemoryCategoryCard({
+  type,
+  currentCount,
+  candidateCount,
+  loading,
+  index,
+  onViewCurrent,
+  onReview,
+}) {
   const meta = AREA_META[type.area];
-  const previews = items.slice(0, 2);
   const Icon = type.icon;
+  const empty = !loading && currentCount === 0 && candidateCount === 0;
+  return (
+    <article
+      className="memory-card-enter relative overflow-hidden rounded-surface border border-line bg-surface p-4 shadow-elevation-1"
+      style={{ animationDelay: `${Math.min(index, 12) * 20}ms` }}
+    >
+      <span aria-hidden="true" className="absolute inset-x-0 top-0 h-1" style={{ backgroundColor: meta.accent }} />
+      <div className="flex items-center gap-3 pt-1">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-control bg-surface-muted" style={{ color: meta.accent }}>
+          <Icon className="h-4 w-4" aria-hidden="true" />
+        </span>
+        <h3 className="text-sm font-semibold tracking-[-0.015em] text-ink">{type.title}</h3>
+      </div>
+      <p className="mt-3 min-h-10 text-xs leading-5 text-ink-muted">{type.description}</p>
+      {empty ? (
+        <div className="mt-4 flex min-h-[58px] items-center rounded-control border border-dashed border-line bg-surface-raised px-3 text-xs font-medium text-ink-subtle">
+          No source-backed records yet
+        </div>
+      ) : (
+        <dl className="mt-4 grid grid-cols-2 overflow-hidden rounded-control border border-line">
+          <div className="border-r border-line bg-surface-raised px-3 py-2.5">
+            <dt className="text-[10px] font-medium text-ink-subtle">Current</dt>
+            <dd className="mt-0.5 text-lg font-semibold tabular-nums text-ink">{loading ? "—" : currentCount}</dd>
+          </div>
+          <div className={candidateCount > 0 ? "bg-attention/10 px-3 py-2.5" : "bg-surface-raised px-3 py-2.5"}>
+            <dt className={`text-[10px] font-medium ${candidateCount > 0 ? "text-attention" : "text-ink-subtle"}`}>Candidates</dt>
+            <dd className={`mt-0.5 text-lg font-semibold tabular-nums ${candidateCount > 0 ? "text-attention" : "text-ink"}`}>{loading ? "—" : candidateCount}</dd>
+          </div>
+        </dl>
+      )}
+      <div className="mt-3 flex min-h-10 items-center justify-between gap-2">
+        {currentCount > 0 ? (
+          <button type="button" onClick={onViewCurrent} className="min-h-10 rounded-control px-2 text-[11px] font-semibold text-ink-muted hover:bg-surface-muted hover:text-ink">
+            View current
+          </button>
+        ) : <span className="text-[11px] text-ink-subtle">{candidateCount ? "Nothing confirmed yet" : "Captured when evidence appears"}</span>}
+        {candidateCount > 0 ? (
+          <button type="button" onClick={onReview} className="inline-flex min-h-10 items-center gap-1.5 rounded-control bg-ink px-3 text-[11px] font-semibold text-canvas">
+            Review {candidateCount}
+            <ArrowRight className="h-3 w-3" aria-hidden="true" />
+          </button>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
+
+function ReviewWorkspace({
+  candidate,
+  remaining,
+  shownRemaining,
+  conflictCount,
+  conflictRecords,
+  evidenceGapCount,
+  evidenceGapRecords,
+  selectedType,
+  reviewingId,
+  error,
+  notice,
+  onReview,
+  onSkip,
+  onResetSkipped,
+  onOpenSourceHealth,
+  refreshCount,
+  hasMore,
+  onLoadMore,
+}) {
+  const source = candidate?.source || null;
+  const evidence = candidate?.evidence || null;
+  const destination = selectedType?.title
+    || MEMORY_TYPES.find((type) => type.id === candidate?.semantic_section)?.title
+    || "Current memory";
+  const candidateReviewing = reviewingId === candidate?.component_id;
+  return (
+    <section aria-labelledby="review-workspace-heading" className="app-surface overflow-hidden">
+      <header className="border-b border-line px-5 py-4 sm:px-6">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold text-ink-subtle">Guided review</p>
+            <h2 id="review-workspace-heading" className="mt-0.5 text-xl font-semibold tracking-[-0.03em] text-ink">
+              {selectedType ? `Review ${selectedType.title.toLowerCase()}` : "Decide what future agents may reuse"}
+            </h2>
+          </div>
+          <span className="rounded-full bg-attention/10 px-3 py-1.5 text-xs font-semibold tabular-nums text-attention">
+            {remaining.toLocaleString()} {remaining === 1 ? "claim" : "claims"} to decide
+            {conflictCount > 0 ? ` · ${conflictCount.toLocaleString()} ${conflictCount === 1 ? "conflict" : "conflicts"}` : ""}
+            {evidenceGapCount > 0 ? ` · ${evidenceGapCount.toLocaleString()} evidence ${evidenceGapCount === 1 ? "gap" : "gaps"}` : ""}
+          </span>
+        </div>
+        <p className="mt-2 max-w-3xl text-xs leading-5 text-ink-muted">
+          Exact-evidence claims are decided one at a time. Evidence gaps are listed separately and cannot be added to Current; reported checks stay in History and provider snapshots stay in Source health.
+        </p>
+      </header>
+      {notice ? <p role="status" aria-live="polite" className="border-b border-line bg-accent/15 px-5 py-3 text-xs font-semibold text-ink sm:px-6">{notice}</p> : null}
+      {error ? <p role="alert" className="border-b border-red-300 bg-red-50 px-5 py-3 text-xs font-semibold text-red-800 dark:border-red-950 dark:bg-red-950/20 dark:text-red-200">{error}</p> : null}
+      {candidate ? (
+        <article className="grid lg:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="p-5 sm:p-7">
+            <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold text-ink-muted">
+              <span className="rounded-full bg-surface-muted px-2.5 py-1">{candidate.kind}</span>
+              {source?.label ? <span>{source.label}</span> : null}
+              {source?.revision_number ? <span>Revision {source.revision_number}</span> : null}
+              {candidate.last_observed_at ? <span>{formatTimeAgo(candidate.last_observed_at)}</span> : null}
+            </div>
+            <h3 className="mt-4 text-xl font-semibold leading-8 tracking-[-0.025em] text-ink">{cleanDisplayText(candidate.title)}</h3>
+            {evidence?.excerpt ? (
+              <div className="mt-5">
+                <p className="text-[11px] font-semibold text-ink-muted">Exact source evidence</p>
+                <blockquote className="mt-2 rounded-control border border-line bg-surface-raised p-4 text-sm leading-6 text-ink">
+                  “{cleanDisplayText(evidence.excerpt)}”
+                </blockquote>
+              </div>
+            ) : null}
+            {candidate.occurrence_count > 1 ? (
+              <p className="mt-3 text-xs leading-5 text-ink-muted">
+                This claim appears in {candidate.occurrence_count} matching source occurrences. One decision updates the canonical claim across those occurrences.
+              </p>
+            ) : null}
+          </div>
+          <aside className="border-t border-line bg-surface-raised p-5 lg:border-l lg:border-t-0">
+            <p className="text-xs font-semibold text-ink">What your decision means</p>
+            <p className="mt-2 text-xs leading-5 text-ink-muted">
+              The excerpt proves where this claim came from—not that it is true. Add it only if it is correct, relevant, and still current.
+            </p>
+            <div className="mt-4 rounded-control border border-line bg-surface p-3">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-subtle">Impact</p>
+              <p className="mt-1 text-xs leading-5 text-ink">
+                Adds this to <strong>{destination}</strong> in Current and makes it eligible for future agent briefs.
+              </p>
+            </div>
+            <div className="mt-5 grid gap-2">
+              <button type="button" disabled={candidateReviewing} onClick={() => onReview(candidate, "confirm")} className="min-h-11 rounded-control bg-ink px-4 text-xs font-semibold text-canvas disabled:opacity-40">
+                {candidateReviewing ? "Saving…" : "Add to current memory"}
+              </button>
+              {(candidate.allowed_actions || []).includes("supersede") ? (
+                <button type="button" disabled={candidateReviewing} onClick={() => onReview(candidate, "supersede")} className="min-h-10 rounded-control border border-line px-3 text-xs font-semibold text-ink disabled:opacity-40">
+                  Not current
+                </button>
+              ) : null}
+              {(candidate.allowed_actions || []).includes("dismiss") ? (
+                <button type="button" disabled={candidateReviewing} onClick={() => onReview(candidate, "dismiss")} className="min-h-10 rounded-control px-3 text-xs font-semibold text-ink-muted hover:bg-surface-muted disabled:opacity-40">
+                  Not project memory
+                </button>
+              ) : null}
+              <button type="button" disabled={candidateReviewing} onClick={() => onSkip(candidate)} className="min-h-10 rounded-control px-3 text-xs font-semibold text-ink-subtle hover:bg-surface-muted disabled:opacity-40">
+                Skip for now
+              </button>
+            </div>
+          </aside>
+        </article>
+      ) : shownRemaining === 0 && remaining > 0 ? (
+        <div className="px-6 py-14 text-center">
+          <Clock3 className="mx-auto h-6 w-6 text-ink-subtle" aria-hidden="true" />
+          <p className="mt-3 text-sm font-semibold text-ink">Every visible candidate was skipped</p>
+          <p className="mx-auto mt-2 max-w-lg text-xs leading-5 text-ink-muted">Nothing changed. Revisit the skipped candidates whenever you are ready.</p>
+          <button type="button" onClick={onResetSkipped} className="btn-secondary mt-4 min-h-11 text-xs">Review skipped candidates</button>
+        </div>
+      ) : conflictCount > 0 ? (
+        <div className="px-6 py-10 text-center">
+          <GitMerge className="mx-auto h-7 w-7 text-attention" aria-hidden="true" />
+          <p className="mt-3 text-base font-semibold text-ink">Conflicts still need a decision</p>
+          <p className="mx-auto mt-2 max-w-xl text-xs leading-5 text-ink-muted">
+            There are no ordinary claims ready to add. Compare the conflicting records below and rule out the version that should not remain current.
+          </p>
+        </div>
+      ) : evidenceGapCount > 0 ? (
+        <div className="px-6 py-10 text-center">
+          <HelpCircle className="mx-auto h-7 w-7 text-attention" aria-hidden="true" />
+          <p className="mt-3 text-base font-semibold text-ink">Some records lack exact evidence</p>
+          <p className="mx-auto mt-2 max-w-xl text-xs leading-5 text-ink-muted">
+            They cannot become Current. Inspect the records below and dismiss or supersede them, or improve the source extraction first.
+          </p>
+        </div>
+      ) : (
+        <div className="px-6 py-14 text-center">
+          <CheckCheck className="mx-auto h-7 w-7 text-emerald-700 dark:text-emerald-300" aria-hidden="true" />
+          <p className="mt-3 text-base font-semibold text-ink">Review queue clear</p>
+          <p className="mx-auto mt-2 max-w-xl text-xs leading-5 text-ink-muted">
+            Every reviewable claim in this scope is now current, dismissed, superseded, or outside the active filters.
+          </p>
+        </div>
+      )}
+      {conflictRecords.length > 0 ? (
+        <div className="border-t border-line px-5 py-5 sm:px-6">
+          <h3 className="text-sm font-semibold text-ink">Conflicts need comparison</h3>
+          <p className="mt-1 text-xs leading-5 text-ink-muted">A matching quote cannot resolve a disagreement. Compare the competing claims and rule out the one that should not remain current.</p>
+          <div className="mt-4 overflow-hidden rounded-control border border-line">
+            {conflictRecords.map((item) => (
+              <MemoryRecord
+                key={item.id}
+                item={item}
+                reviewing={reviewingId === item.component_id}
+                onReview={onReview}
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {evidenceGapRecords.length > 0 ? (
+        <div className="border-t border-line px-5 py-5 sm:px-6">
+          <h3 className="text-sm font-semibold text-ink">Evidence gaps cannot be verified here</h3>
+          <p className="mt-1 text-xs leading-5 text-ink-muted">
+            Without an exact source span, Context Engine cannot prove what text produced the claim and will never offer “Add to current memory.”
+          </p>
+          <div className="mt-4 overflow-hidden rounded-control border border-line">
+            {evidenceGapRecords.map((item) => (
+              <MemoryRecord
+                key={item.id}
+                item={item}
+                reviewing={reviewingId === item.component_id}
+                onReview={onReview}
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {hasMore ? (
+        <div className="border-t border-line px-5 py-3 text-right sm:px-6">
+          <button type="button" onClick={onLoadMore} className="btn-secondary min-h-10 text-xs">
+            Load more review records
+          </button>
+        </div>
+      ) : null}
+      {(refreshCount > 0 || conflictCount > 0) ? (
+        <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-5 py-3 text-xs text-ink-muted sm:px-6">
+          <span>{conflictCount ? `${conflictCount} conflicts require comparison. ` : ""}{refreshCount ? `${refreshCount} provider snapshots need a source refresh.` : ""}</span>
+          {refreshCount > 0 ? <button type="button" onClick={onOpenSourceHealth} className="font-semibold text-ink underline-offset-4 hover:underline">Open source health</button> : null}
+        </footer>
+      ) : null}
+    </section>
+  );
+}
+
+
+function ScopeButton({ active, label, detail, onClick }) {
   return (
     <button
       type="button"
-      onClick={onOpen}
-      aria-label={`Open ${type.title}`}
-      className="memory-card-enter group relative grid w-full gap-4 border-b border-[#d8d8cf] py-5 text-left outline-none transition-colors hover:bg-[#efefe8]/65 focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--memory-accent)] dark:border-[#30302c] dark:hover:bg-white/[0.025] sm:grid-cols-[minmax(0,0.8fr)_auto] sm:px-3 lg:grid-cols-[minmax(240px,0.75fr)_minmax(260px,1.25fr)_auto] lg:items-center lg:gap-8"
+      aria-pressed={active}
+      onClick={onClick}
+      className={`min-h-12 rounded-control border px-3 py-2 text-left transition ${
+        active
+          ? "border-ink bg-ink text-canvas"
+          : "border-line bg-surface text-ink hover:border-line-strong"
+      }`}
+    >
+      <span className="block text-xs font-semibold">{label}</span>
+      <span className={`mt-0.5 block text-[11px] ${active ? "text-canvas/65" : "text-ink-muted"}`}>{detail}</span>
+    </button>
+  );
+}
+
+
+function FilterSelect({ label, value, options, onChange, disabled = false }) {
+  return (
+    <label className="block">
+      <span className="text-[11px] font-semibold text-ink-muted">{label}</span>
+      <select
+        value={value}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value)}
+        className="mt-1.5 h-11 w-full rounded-control border border-line bg-surface-raised px-3 text-sm font-medium text-ink outline-none transition hover:border-line-strong disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {options.map((option) => <option key={option.id || "__all__"} value={option.id}>{option.label}</option>)}
+      </select>
+    </label>
+  );
+}
+
+
+function MemoryTypeCard({
+  type,
+  count,
+  items,
+  index,
+  loading,
+  selected,
+  reviewCount = 0,
+  countLabel = "records",
+  emptyLabel = "No records in this scope",
+  onSelect,
+}) {
+  const meta = AREA_META[type.area];
+  const Icon = type.icon;
+  const kinds = [...new Set(items.map((item) => item.kind).filter(Boolean))].slice(0, 3);
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-label={`Filter by ${type.title}`}
+      aria-pressed={selected}
+      className={`memory-card-enter group relative min-h-48 overflow-hidden rounded-surface border p-4 text-left shadow-elevation-1 transition hover:-translate-y-0.5 hover:shadow-elevation-2 ${
+        selected ? "border-ink bg-ink text-canvas" : "border-line bg-surface text-ink"
+      }`}
       style={{
         "--memory-accent": meta.accent,
         animationDelay: `${Math.min(index, 12) * 20}ms`,
       }}
     >
-      <span className="flex min-w-0 items-start gap-3.5 pr-20 sm:pr-0">
-        <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[#d8d8cf] bg-[#f5f5ef] dark:border-[#34342f] dark:bg-[#11110f]" style={{ color: meta.accent }}>
-          <Icon className="h-4 w-4" strokeWidth={1.8} aria-hidden="true" />
+      <span aria-hidden="true" className="absolute inset-x-0 top-0 h-1" style={{ backgroundColor: selected ? "var(--ce-color-accent)" : meta.accent }} />
+      <span className="flex items-start justify-between gap-4">
+        <span className={`flex h-10 w-10 items-center justify-center rounded-control border ${selected ? "border-canvas/20 bg-canvas/10" : "border-line bg-surface-raised"}`} style={{ color: selected ? "var(--ce-color-accent)" : meta.accent }}>
+          <Icon className="h-[18px] w-[18px]" strokeWidth={1.8} aria-hidden="true" />
         </span>
-        <span className="min-w-0">
-          <span className="block text-[9px] font-semibold uppercase tracking-[0.13em]" style={{ color: meta.accent }}>{meta.label}</span>
-          <span className="mt-1 block text-[15px] font-semibold leading-5 tracking-[-0.02em] text-[#171713] dark:text-white">{type.title}</span>
-          <span className={`mt-1.5 flex items-center gap-1.5 text-[9px] font-medium ${count ? "text-[#5f5f57] dark:text-[#bdbdb4]" : "text-[#929289]"}`}>
-            <Fingerprint className="h-3 w-3" aria-hidden="true" />
-            {loading ? "Reading memory" : count ? "Contains source-backed records" : "No evidence captured"}
-          </span>
-        </span>
-      </span>
-
-      <span className="min-w-0 sm:col-span-2 lg:col-span-1">
-        <span className="block text-[11px] leading-5 text-[#68685f] dark:text-[#aaa9a0]">{type.description}</span>
-        {previews.length ? (
-          <span className="mt-2 flex min-w-0 flex-col gap-1 text-[10px] text-[#4f4f48] dark:text-[#c8c8bf]">
-            {previews.map((item, previewIndex) => (
-              <span key={`${item.id || item.title}-${previewIndex}`} className="flex min-w-0 items-center gap-2">
-                <span className="h-px w-3 shrink-0" style={{ backgroundColor: meta.accent }} />
-                <span className="line-clamp-1">{cleanDisplayText(item.title)}</span>
-              </span>
-            ))}
-          </span>
-        ) : (
-          <span className="mt-2 block text-[9px] text-[#929289]">No observed records in this area</span>
-        )}
-      </span>
-
-      <span className="absolute right-0 top-5 flex items-center gap-3 sm:static sm:row-start-1 sm:justify-self-end lg:row-auto">
         <span className="text-right">
-          <span className="block text-xl font-semibold tabular-nums leading-none tracking-[-0.04em] text-[#252520] dark:text-[#f1f1ea]">{loading ? "—" : count}</span>
-          <span className="mt-1 block text-[8px] font-semibold uppercase tracking-[0.1em] text-[#999990]">{count === 1 ? "record" : "records"}</span>
+          <span className="block text-2xl font-semibold tabular-nums tracking-[-0.04em]">{loading ? "—" : count}</span>
+          <span className={`block text-[11px] font-medium ${selected ? "text-canvas/60" : "text-ink-subtle"}`}>
+            {countLabel === "records" ? (count === 1 ? "record" : "records") : countLabel}
+          </span>
         </span>
-        <span className="flex h-8 w-8 items-center justify-center rounded-full border border-[#d7d7ce] text-[#77776e] transition-[transform,border-color,color] duration-200 group-hover:translate-x-0.5 group-hover:border-[var(--memory-accent)] group-hover:text-[var(--memory-accent)] dark:border-[#34342f]">
-          <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+      </span>
+      <span className="mt-5 block text-base font-semibold tracking-[-0.02em]">{type.title}</span>
+      <span className={`mt-1.5 block text-xs leading-5 ${selected ? "text-canvas/70" : "text-ink-muted"}`}>{type.description}</span>
+      {reviewCount > 0 ? (
+        <span className={`mt-3 inline-flex rounded-full px-2 py-1 text-[10px] font-semibold ${
+          selected ? "bg-attention/20 text-canvas" : "bg-attention/10 text-attention"
+        }`}>
+          {reviewCount.toLocaleString()} awaiting review
         </span>
+      ) : null}
+      <span className="mt-4 flex min-h-6 flex-wrap gap-1.5">
+        {kinds.length ? (
+          kinds.map((itemKind) => (
+            <span key={itemKind} className={`rounded-full px-2 py-1 text-[10px] font-medium ${selected ? "bg-canvas/10 text-canvas/75" : "bg-surface-muted text-ink-muted"}`}>{itemKind}</span>
+          ))
+        ) : (
+          <span className={`text-[11px] ${selected ? "text-canvas/55" : "text-ink-subtle"}`}>{count ? "Apply filters to inspect records" : emptyLabel}</span>
+        )}
       </span>
     </button>
   );
+}
+
+
+function RecordPreview({ item, type, index, onOpen }) {
+  const truth = getTruthPresentation(item);
+  const TruthIcon = truth.Icon;
+  const Icon = type.icon;
+  const meta = AREA_META[type.area];
+  const source = item.source || {};
+  return (
+    <article
+      className="memory-card-enter group relative border-b border-line p-5 last:border-b-0 lg:min-h-64 lg:border-r lg:[&:nth-child(even)]:border-r-0"
+      style={{ animationDelay: `${Math.min(index, 12) * 20}ms` }}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-control bg-surface-muted" style={{ color: meta.accent }}>
+            <Icon className="h-4 w-4" aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold text-ink-subtle">{type.title}</p>
+            <p className="truncate text-xs font-medium text-ink-muted">{item.kind}</p>
+          </div>
+        </div>
+        <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-1 text-[10px] font-semibold ${truth.className}`}>
+          <TruthIcon className="h-3 w-3" aria-hidden="true" />
+          {truth.label}
+        </span>
+      </div>
+      <h3 className="mt-4 text-[15px] font-semibold leading-6 tracking-[-0.015em] text-ink">{cleanDisplayText(item.title)}</h3>
+      {item.summary && cleanDisplayText(item.summary) !== cleanDisplayText(item.title) ? (
+        <p className="mt-1.5 line-clamp-2 text-xs leading-5 text-ink-muted">{cleanDisplayText(item.summary)}</p>
+      ) : null}
+      <div className="mt-4 rounded-control bg-surface-raised px-3 py-2.5">
+        <p className="text-[11px] font-semibold text-ink">Why this is shown</p>
+        <p className="mt-1 text-[11px] leading-4 text-ink-muted">{item.relevance || item.explanation}</p>
+      </div>
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+        <span className="inline-flex min-w-0 items-center gap-1.5 text-[11px] text-ink-muted">
+          <Link2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          <span className="truncate">{source.label || "Workspace record"}</span>
+        </span>
+        <button
+          type="button"
+          aria-label={`Inspect evidence for ${cleanDisplayText(item.title)}`}
+          onClick={onOpen}
+          className="inline-flex min-h-10 items-center gap-1.5 rounded-control px-3 text-xs font-semibold text-ink hover:bg-surface-muted"
+        >
+          Inspect evidence
+          <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
+        </button>
+      </div>
+    </article>
+  );
+}
+
+
+function scopeExplanation({ scopeMode, effectiveScope, agenda, workspaceName }) {
+  if (scopeMode === "workspace") {
+    return `Showing every trusted record assigned to ${workspaceName}.`;
+  }
+  if (!agenda || effectiveScope === "workspace") {
+    return `No current agenda is selected, so Memory is safely showing the full ${workspaceName} workspace.`;
+  }
+  if (agenda.match_mode === "selected_source") {
+    return "Showing memory from the task session selected in Library. Unverified session claims remain in the Review queue.";
+  }
+  if (agenda.match_mode === "linked_component") {
+    return "Showing the selected goal, records linked to it, and records backed by the same source.";
+  }
+  return "Showing records with explicit text matches to the selected goal. This is a transparent relevance match, not an inferred fact.";
 }
 
 
@@ -457,6 +1391,7 @@ function MemoryDrawer({
   onSetGoal,
   onClearGoal,
   currentGoal,
+  hasSelectedSession,
   onLoadMore,
   onClose,
 }) {
@@ -544,6 +1479,7 @@ function MemoryDrawer({
               saving={goalSaving}
               onSave={onSetGoal}
               onClear={currentGoal?.can_clear ? onClearGoal : null}
+              hasSelectedSession={hasSelectedSession}
             />
           ) : null}
           {items.length ? (
@@ -569,7 +1505,13 @@ function MemoryDrawer({
 }
 
 
-function GoalEditor({ currentGoal, saving, onSave, onClear }) {
+function GoalEditor({
+  currentGoal,
+  saving,
+  onSave,
+  onClear,
+  hasSelectedSession,
+}) {
   const currentTitle = currentGoal?.title || "";
   const locked = currentGoal?.source_kind === "active_agent_run";
   const [title, setTitle] = useState(currentTitle);
@@ -602,7 +1544,7 @@ function GoalEditor({ currentGoal, saving, onSave, onClear }) {
       <p className="mt-2 text-[10px] leading-4 text-[#77776e] dark:text-[#aaa9a0]">
         {locked
           ? "An active agent run currently controls this objective. Finish or stop that run before changing it here."
-          : "This is a display-only workspace focus shown in Memory and Now. It does not start work, edit files, or change an agent brief by itself."}
+          : "This scopes Current Memory and is also shown in Now. It does not start work, edit files, or change an agent brief by itself."}
       </p>
       <div className="mt-2.5 flex items-center justify-between gap-3">
         {onClear ? <button type="button" disabled={saving} onClick={() => setConfirmingClear(true)} className="text-[10px] font-semibold text-[#7a5750] underline-offset-4 hover:underline disabled:opacity-40 dark:text-[#d6a69b]">Clear goal</button> : <span />}
@@ -611,7 +1553,11 @@ function GoalEditor({ currentGoal, saving, onSave, onClear }) {
       {confirmingClear ? (
         <div role="group" aria-label="Confirm clear current goal" className="mt-4 border-l-2 border-[#9a5e38] bg-[#9a5e38]/[0.06] px-3 py-3">
           <p className="text-[10px] font-semibold text-[#633c25] dark:text-[#e4ab85]">Clear the current project goal?</p>
-          <p className="mt-1 text-[10px] leading-4 text-[#68685f] dark:text-[#aaa9a0]">This removes the focus from Memory and Now. It does not delete its history or change project files.</p>
+          <p className="mt-1 text-[10px] leading-4 text-[#68685f] dark:text-[#aaa9a0]">
+            {hasSelectedSession
+              ? "This removes the goal from Memory and Now. Current Memory will then follow the session selected in Library. It does not delete history or change project files."
+              : "This removes the focus from Memory and Now, returning Memory to the full workspace. It does not delete history or change project files."}
+          </p>
           <div className="mt-3 flex items-center gap-3 text-[10px] font-semibold">
             <button type="button" disabled={saving} onClick={() => setConfirmingClear(false)} className="underline-offset-4 hover:underline disabled:opacity-40">Keep goal</button>
             <button type="button" disabled={saving} onClick={onClear} className="rounded-md bg-[#7a4030] px-2.5 py-1.5 text-white disabled:opacity-40 dark:bg-[#d38d74] dark:text-[#171713]">{saving ? "Clearing…" : "Clear current goal"}</button>
@@ -629,7 +1575,10 @@ function getTruthPresentation(item) {
   if (status.includes("conflict") || status.includes("contested")) {
     return { label: "Conflict flagged", Icon: GitMerge, className: "border-amber-300 text-amber-800 dark:border-amber-900 dark:text-amber-200" };
   }
-  if (status.includes("stale") || status.includes("deprecated")) {
+  if (status.includes("deprecated")) {
+    return { label: "Deprecated", Icon: Archive, className: "border-[#c9c9c0] text-[#5f5f57] dark:border-[#393934] dark:text-[#bdbdb4]" };
+  }
+  if (status.includes("stale")) {
     return { label: "Stale — review required", Icon: Clock3, className: "border-amber-300 text-amber-800 dark:border-amber-900 dark:text-amber-200" };
   }
   if (status.includes("superseded")) {
@@ -644,7 +1593,15 @@ function getTruthPresentation(item) {
   if (status.includes("historical")) {
     return { label: "Historical record", Icon: History, className: "border-[#c9c9c0] text-[#5f5f57] dark:border-[#393934] dark:text-[#bdbdb4]" };
   }
+  if (status.includes("reported") || verification.includes("reported")) {
+    return { label: "Reported activity", Icon: History, className: "border-[#c9c9c0] text-[#5f5f57] dark:border-[#393934] dark:text-[#bdbdb4]" };
+  }
+  if (verification.includes("unavailable")) {
+    return { label: "No exact evidence", Icon: HelpCircle, className: "border-amber-300 text-amber-800 dark:border-amber-900 dark:text-amber-200" };
+  }
   if (
+    status.includes("proposed")
+    ||
     status.includes("needs_review")
     || status.includes("unverified")
     || status.includes("reported")
@@ -671,6 +1628,7 @@ function getTruthPresentation(item) {
 function MemoryRecord({ item, reviewing, onReview }) {
   const actions = new Set(item.allowed_actions || []);
   const evidence = item.evidence || null;
+  const resolution = item.resolution || null;
   const source = item.source || null;
   const [confirmAction, setConfirmAction] = useState(null);
   const truth = getTruthPresentation(item);
@@ -717,14 +1675,53 @@ function MemoryRecord({ item, reviewing, onReview }) {
           </span>
         </blockquote>
       ) : null}
+      {resolution ? (
+        <div className="mt-3 rounded-control border border-emerald-200 bg-emerald-50/60 px-3 py-3 text-[10px] dark:border-emerald-950 dark:bg-emerald-950/20">
+          <p className="font-semibold text-emerald-900 dark:text-emerald-200">
+            Evidence that cleared this blocker
+          </p>
+          <p className="mt-1 leading-4 text-emerald-950/75 dark:text-emerald-100/75">
+            {cleanDisplayText(resolution.summary)}
+          </p>
+          {resolution.source?.url ? (
+            <a
+              href={resolution.source.url}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-2 inline-flex items-center gap-1 font-semibold text-emerald-800 underline-offset-4 hover:underline dark:text-emerald-300"
+            >
+              <Link2 className="h-3 w-3" aria-hidden="true" />
+              {resolution.source.label}
+            </a>
+          ) : resolution.source?.label ? (
+            <p className="mt-2 inline-flex items-center gap-1 font-semibold text-emerald-800 dark:text-emerald-300">
+              <Link2 className="h-3 w-3" aria-hidden="true" />
+              {resolution.source.label}
+            </p>
+          ) : null}
+          {resolution.evidence?.excerpt ? (
+            <blockquote className="mt-2 border-l-2 border-emerald-300 pl-2 leading-4 text-emerald-950/70 dark:border-emerald-800 dark:text-emerald-100/70">
+              “{cleanDisplayText(resolution.evidence.excerpt)}”
+              <span className="mt-1 block text-[9px]">
+                {resolution.evidence.exact ? "Exact resolution source span" : "Captured resolution evidence"}
+              </span>
+            </blockquote>
+          ) : null}
+        </div>
+      ) : null}
       {item.last_review ? (
         <p className="mt-2 text-[9px] text-[#8a8a80]">Last review: {item.last_review.action.replaceAll("_", " ")} by {item.last_review.reviewed_by}{item.last_review.reason ? ` — ${item.last_review.reason}` : ""}</p>
       ) : null}
       {item.component_id && actions.size ? (
         <div className="mt-3 border-t border-[#e5e5dd] pt-3 text-[10px] font-semibold dark:border-[#292925]">
+          {actions.has("confirm") ? (
+            <p className="mb-3 font-normal leading-4 text-[#68685f] dark:text-[#aaa9a0]">
+              Exact evidence proves the source, not the truth. Add this only if the claim is correct and current.
+            </p>
+          ) : null}
           <div className="flex flex-wrap gap-x-3 gap-y-2">
             {actions.has("reopen") ? <button type="button" disabled={reviewing} onClick={() => onReview(item, "reopen")} className="text-[#4f4f48] underline-offset-4 hover:underline disabled:opacity-40 dark:text-[#d0d0c8]">Reopen</button> : null}
-            {actions.has("confirm") ? <button type="button" disabled={reviewing} onClick={() => onReview(item, "confirm")} className="text-emerald-700 underline-offset-4 hover:underline disabled:opacity-40 dark:text-emerald-300">Confirm exact evidence</button> : null}
+            {actions.has("confirm") ? <button type="button" disabled={reviewing} onClick={() => onReview(item, "confirm")} className="text-emerald-700 underline-offset-4 hover:underline disabled:opacity-40 dark:text-emerald-300">Add to current memory</button> : null}
             {actions.has("resolve") ? <button type="button" disabled={reviewing} onClick={() => onReview(item, "resolve")} className="text-[#4f4f48] underline-offset-4 hover:underline disabled:opacity-40 dark:text-[#d0d0c8]">Resolve</button> : null}
             {actions.has("supersede") ? <button type="button" disabled={reviewing} onClick={() => setConfirmAction("supersede")} className="text-[#4f4f48] underline-offset-4 hover:underline disabled:opacity-40 dark:text-[#d0d0c8]">Supersede</button> : null}
             {actions.has("dismiss") ? <button type="button" disabled={reviewing} onClick={() => setConfirmAction("dismiss")} className="text-[#7a5750] underline-offset-4 hover:underline disabled:opacity-40 dark:text-[#d6a69b]">Dismiss</button> : null}

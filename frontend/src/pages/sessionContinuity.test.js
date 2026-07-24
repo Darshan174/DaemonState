@@ -50,23 +50,43 @@ describe("session continuity projection", () => {
     expect(cards[0].versions.map((value) => value.id)).toEqual(["new", "old"]);
   });
 
-  it("keeps Missing explicitly unmeasured instead of presenting a false zero", () => {
+  it("presents an unmeasured compaction gap as Unknown instead of a false zero", () => {
     const [missing] = ledgerSections(ledger("one"))
       .filter((section) => section.key === "missing");
 
     expect(missing.count).toBeNull();
     expect(missing.status).toBe("unmeasured");
+    expect(missing.label).toBe("Context gaps");
+    expect(missing.statusLabel).toBe("Unknown");
     expect(missing.items).toEqual([]);
   });
 
-  it("searches across the session title and ledger details", () => {
+  it("plainly says when there was no compaction", () => {
+    const source = ledger("one");
+    source.missing.status = "not_applicable";
+    const [gaps] = ledgerSections(source)
+      .filter((section) => section.key === "missing");
+
+    expect(gaps.statusLabel).toBe("No compaction");
+  });
+
+  it("uses user-facing section names and keeps raw file paths out of search", () => {
     const [card] = buildSessionContinuity({
       sessions: [session("one", "Resume redesign")],
       ledgers: [ledger("one")],
     });
+    const sections = ledgerSections(card.ledger);
 
     expect(sessionSearchText(card)).toContain("one card per session");
-    expect(sessionSearchText(card)).toContain("runspage.jsx");
+    expect(sessionSearchText(card)).toContain("finished the resume redesign");
+    expect(sessionSearchText(card)).not.toContain("runspage.jsx");
+    expect(sections.map((section) => section.label)).toEqual([
+      "Original request",
+      "Since then",
+      "Updated requests",
+      "Context gaps",
+      "No longer applies",
+    ]);
   });
 });
 
@@ -90,7 +110,10 @@ function ledger(id) {
     provider: "codex",
     session_id: id,
     base: [{ id: "base", text: "Build one card per session", kind: "original_request" }],
-    added: [{ id: "file", text: "frontend/src/pages/RunsPage.jsx", kind: "file" }],
+    added: [
+      { id: "progress", text: "Finished the resume redesign", kind: "progress" },
+      { id: "file", text: "frontend/src/pages/RunsPage.jsx", kind: "file" },
+    ],
     changed: [],
     missing: { status: "unmeasured", items: [], reason: "Provider context is opaque." },
     removed: [],
