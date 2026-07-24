@@ -635,7 +635,20 @@ def extract_agent_session(content: str, doc_metadata: dict[str, Any] | None = No
 
     extraction_content = _agent_session_signal_text(content)
 
-    task_items = _extract_session_tasks(extraction_content, session_provenance)
+    memory_items = _extract_session_memory_facts(
+        extraction_content,
+        session_provenance,
+    )
+    explicit_semantic_keys = {
+        (item.fact_type, item.value.casefold())
+        for item in memory_items
+    }
+
+    task_items = [
+        item
+        for item in _extract_session_tasks(extraction_content, session_provenance)
+        if (item.fact_type, item.value.casefold()) not in explicit_semantic_keys
+    ]
     for task in task_items:
         task.relationships.append(ExtractedRelationship(
             target_name=session_name,
@@ -645,7 +658,14 @@ def extract_agent_session(content: str, doc_metadata: dict[str, Any] | None = No
         ))
     facts.extend(task_items)
 
-    decision_items = _extract_session_decisions(extraction_content, session_provenance)
+    decision_items = [
+        item
+        for item in _extract_session_decisions(
+            extraction_content,
+            session_provenance,
+        )
+        if (item.fact_type, item.value.casefold()) not in explicit_semantic_keys
+    ]
     for dec in decision_items:
         dec.relationships.append(ExtractedRelationship(
             target_name=session_name,
@@ -655,7 +675,11 @@ def extract_agent_session(content: str, doc_metadata: dict[str, Any] | None = No
         ))
     facts.extend(decision_items)
 
-    risk_items = _extract_session_risks(extraction_content, session_provenance)
+    risk_items = [
+        item
+        for item in _extract_session_risks(extraction_content, session_provenance)
+        if (item.fact_type, item.value.casefold()) not in explicit_semantic_keys
+    ]
     for risk in risk_items:
         risk.relationships.append(ExtractedRelationship(
             target_name=session_name,
@@ -664,6 +688,15 @@ def extract_agent_session(content: str, doc_metadata: dict[str, Any] | None = No
             evidence="Risk/blocker extracted from agent session",
         ))
     facts.extend(risk_items)
+
+    for item in memory_items:
+        item.relationships.append(ExtractedRelationship(
+            target_name=session_name,
+            relationship_type="generated_by_agent",
+            confidence=0.88,
+            evidence=item.excerpt,
+        ))
+    facts.extend(memory_items)
 
     file_refs = _extract_session_file_refs(extraction_content, session_provenance)
     for ref in file_refs:
@@ -675,41 +708,208 @@ def extract_agent_session(content: str, doc_metadata: dict[str, Any] | None = No
         ))
     facts.extend(file_refs)
 
+    for fact in facts:
+        span = _agent_authored_excerpt_span(content, fact.excerpt)
+        if span is not None:
+            fact.excerpt_start_char, fact.excerpt_end_char = span
+
+    return facts
+
+
+_SESSION_MEMORY_LABELS: tuple[
+    tuple[str, str, str, str, float, str],
+    ...,
+] = (
+    (r"requirements?", "Document", "Requirement", "requirement", 0.84, "current"),
+    (r"constraints?", "Document", "Constraint", "constraint", 0.84, "current"),
+    (r"assumptions?", "Decision", "Assumption", "assumption", 0.82, "current"),
+    (r"(?:alternative|option)s?", "Decision", "Alternative", "alternative", 0.82, "current"),
+    (r"open questions?", "Risk", "Open question", "open_question", 0.84, "current"),
+    (r"(?:lesson|learning|takeaway)s?", "Document", "Lesson", "lesson", 0.84, "past"),
+    (r"failed attempts?", "Agent Session", "Failed attempt", "failed_attempt", 0.86, "past"),
+    (r"(?:outcome|result)s?", "Decision", "Outcome", "outcome", 0.86, "past"),
+    (r"(?:release|deployment)s?", "Feature", "Release", "release", 0.84, "current"),
+    (r"(?:verification|test|check)s?", "Document", "Verification", "verification", 0.84, "current"),
+    (r"owners?", "Person", "Owner", "owner", 0.82, "current"),
+    (r"(?:milestone|deadline|target date)s?", "Metric", "Milestone", "milestone", 0.84, "future"),
+    (r"decisions?", "Decision", "Decision", "decision", 0.82, "current"),
+    (r"blockers?", "Risk", "Blocker", "blocker", 0.82, "current"),
+    (r"risks?", "Risk", "Risk", "risk", 0.82, "current"),
+    (r"(?:tasks?|action items?)", "Task", "Task", "task", 0.78, "future"),
+)
+
+_SESSION_MEMORY_SECTION_GROUPS = (
+    (("requirement", "requirements"), ("Document", "Requirement", "requirement", 0.84, "current")),
+    (("constraint", "constraints"), ("Document", "Constraint", "constraint", 0.84, "current")),
+    (("assumption", "assumptions"), ("Decision", "Assumption", "assumption", 0.82, "current")),
+    (("alternative", "alternatives", "option", "options"), ("Decision", "Alternative", "alternative", 0.82, "current")),
+    (("open question", "open questions"), ("Risk", "Open question", "open_question", 0.84, "current")),
+    (("lesson", "lessons", "learning", "learnings", "takeaway", "takeaways"), ("Document", "Lesson", "lesson", 0.84, "past")),
+    (("failed attempt", "failed attempts"), ("Agent Session", "Failed attempt", "failed_attempt", 0.86, "past")),
+    (("outcome", "outcomes", "result", "results"), ("Decision", "Outcome", "outcome", 0.86, "past")),
+    (("release", "releases", "deployment", "deployments"), ("Feature", "Release", "release", 0.84, "current")),
+    (("verification", "verifications", "test", "tests", "check", "checks"), ("Document", "Verification", "verification", 0.84, "current")),
+    (("owner", "owners"), ("Person", "Owner", "owner", 0.82, "current")),
+    (("milestone", "milestones", "deadline", "deadlines", "target date", "target dates"), ("Metric", "Milestone", "milestone", 0.84, "future")),
+    (("decision", "decisions"), ("Decision", "Decision", "decision", 0.82, "current")),
+    (("blocker", "blockers"), ("Risk", "Blocker", "blocker", 0.82, "current")),
+    (("risk", "risks"), ("Risk", "Risk", "risk", 0.82, "current")),
+    (("task", "tasks", "work", "next step", "next steps", "action item", "action items"), ("Task", "Task", "task", 0.78, "future")),
+)
+_SESSION_MEMORY_SECTIONS: dict[
+    str,
+    tuple[str, str, str, float, str],
+] = {
+    heading: specification
+    for headings, specification in _SESSION_MEMORY_SECTION_GROUPS
+    for heading in headings
+}
+
+_AGENT_RESPONSE_BOUNDARY = "<!-- context-engine-agent-response-boundary -->"
+
+
+def _extract_session_memory_facts(content: str, provenance: str) -> list[ExtractedFact]:
+    """Extract only explicitly labelled project-memory facts from agent-authored text."""
+    facts: list[ExtractedFact] = []
+    seen: set[tuple[str, str]] = set()
+    line_prefix = (
+        r"^\s*(?:#{1,6}\s+)?"
+        r"(?:(?:[-+*]|\d+[.)])\s+)?"
+        r"(?:\[[ xX]\]\s+)?"
+        r"(?:[*_`~]{1,3})?"
+    )
+
+    for source_line in content.splitlines():
+        for label_pattern, model_name, label, fact_type, confidence, temporal in _SESSION_MEMORY_LABELS:
+            match = re.match(
+                rf"{line_prefix}(?P<label>{label_pattern})(?:[*_`~]{{1,3}})?"
+                r"\s*:(?:[*_`~]{1,3})?\s*(?P<text>.+?)\s*$",
+                source_line,
+                re.IGNORECASE,
+            )
+            if match is None:
+                continue
+
+            text = _clean_session_fact_text(match.group("text"))
+            key = (fact_type, text.casefold())
+            if (
+                not _is_extractable_session_fact_for_type(fact_type, text)
+                or (fact_type == "task" and _looks_like_completed_or_placeholder_task(text))
+                or key in seen
+            ):
+                break
+
+            seen.add(key)
+            exact_excerpt = source_line.strip()[:500]
+            facts.append(ExtractedFact(
+                model_name=model_name,
+                name=f"{label}: {text[:120]}",
+                value=text,
+                fact_type=fact_type,
+                confidence=confidence,
+                temporal=temporal,
+                temporal_hint=temporal,
+                provenance=provenance,
+                excerpt=exact_excerpt,
+            ))
+            break
+
+    active_section: tuple[str, str, str, float, str] | None = None
+    heading_pattern = re.compile(
+        r"^\s{0,3}#{1,6}\s+(?P<title>.+?)\s*#*\s*$"
+    )
+    bullet_pattern = re.compile(
+        r"^\s{0,3}(?:[-+*]|\d+[.)])\s+"
+        r"(?:\[[ xX]\]\s+)?(?P<text>.+?)\s*$"
+    )
+
+    for source_line in content.splitlines():
+        if source_line.strip() == _AGENT_RESPONSE_BOUNDARY:
+            active_section = None
+            continue
+
+        heading = heading_pattern.match(source_line)
+        if heading is not None:
+            heading_name = _clean_session_fact_text(heading.group("title")).casefold()
+            active_section = _SESSION_MEMORY_SECTIONS.get(heading_name)
+            continue
+
+        if active_section is None:
+            continue
+        bullet = bullet_pattern.match(source_line)
+        if bullet is None:
+            continue
+
+        model_name, label, fact_type, confidence, temporal = active_section
+        text = _clean_session_fact_text(bullet.group("text"))
+        key = (fact_type, text.casefold())
+        if not _is_extractable_session_fact_for_type(fact_type, text) or key in seen:
+            continue
+
+        seen.add(key)
+        facts.append(ExtractedFact(
+            model_name=model_name,
+            name=f"{label}: {text[:120]}",
+            value=text,
+            fact_type=fact_type,
+            confidence=confidence,
+            temporal=temporal,
+            temporal_hint=temporal,
+            provenance=provenance,
+            excerpt=source_line.strip()[:500],
+        ))
+
     return facts
 
 
 def _extract_session_tasks(content: str, provenance: str) -> list[ExtractedFact]:
     facts: list[ExtractedFact] = []
     seen: set[str] = set()
-
-    for m in re.finditer(r"^\s*[-*]\s+(.+?)$", content, re.MULTILINE):
-        text = _clean_session_fact_text(m.group(1))
-        if not _is_extractable_session_fact(text):
+    task_prefix = re.compile(
+        r"^(?:next(?:\s+step)?|step|todo|action(?:\s+item)?|task|"
+        r"follow[- ]?up)(?:\s*:\s*|\s+[-–—]\s+)(?P<text>.+?)\s*$",
+        re.IGNORECASE,
+    )
+    for source_line in content.splitlines():
+        candidate = re.sub(
+            r"^\s*(?:(?:[-+*]|\d+[.)])\s+)?(?:\[[ xX]\]\s+)?",
+            "",
+            source_line,
+        ).strip()
+        match = task_prefix.match(candidate)
+        if match is None:
             continue
-        first_word = text.split()[0].rstrip(":").lower() if text.split() else ""
-        if first_word in ("next", "step", "todo", "action", "task", "follow"):
-            cleaned = re.sub(r"^\s*\d+[\.\)]\s*", "", text).strip()
-            if cleaned and len(cleaned) > 5 and cleaned not in seen:
-                seen.add(cleaned)
-                facts.append(ExtractedFact(
-                    model_name="Task", name=f"Task: {cleaned[:120]}",
-                    value=cleaned, fact_type="task", confidence=0.75,
-                    temporal="future", temporal_hint="future",
-                    provenance=provenance, excerpt=cleaned[:300],
-                ))
-
-    for m in re.finditer(r"^\s*(?:next step|todo|action item|task|follow.?up)\s*:?\s*(.+?)\s*$", content, re.MULTILINE | re.IGNORECASE):
-        text = _clean_session_fact_text(m.group(1))
-        if _is_extractable_session_fact(text) and text not in seen:
-            seen.add(text)
-            facts.append(ExtractedFact(
-                model_name="Task", name=f"Task: {text[:120]}",
-                value=text, fact_type="task", confidence=0.78,
-                temporal="future", temporal_hint="future",
-                provenance=provenance, excerpt=text[:300],
-            ))
+        text = _clean_session_fact_text(match.group("text"))
+        if (
+            not _is_extractable_session_fact_for_type("task", text)
+            or _looks_like_completed_or_placeholder_task(text)
+            or text in seen
+        ):
+            continue
+        seen.add(text)
+        facts.append(ExtractedFact(
+            model_name="Task",
+            name=f"Task: {text[:120]}",
+            value=text,
+            fact_type="task",
+            confidence=0.78,
+            temporal="future",
+            temporal_hint="future",
+            provenance=provenance,
+            excerpt=source_line.strip()[:500],
+        ))
 
     return facts
+
+
+def _looks_like_completed_or_placeholder_task(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text).strip().casefold()
+    if normalized in {"one concrete action", "a concrete action"}:
+        return True
+    return bool(re.match(
+        r"^(?:completed|done|finished|no (?:further )?action|none)\b",
+        normalized,
+    ))
 
 
 def _extract_session_decisions(content: str, provenance: str) -> list[ExtractedFact]:
@@ -722,7 +922,10 @@ def _extract_session_decisions(content: str, provenance: str) -> list[ExtractedF
     for pattern in decision_patterns:
         for m in re.finditer(pattern, content, re.MULTILINE | re.IGNORECASE):
             text = _clean_session_fact_text(m.group(1))
-            if _is_extractable_session_fact(text) and text not in seen:
+            if (
+                _is_extractable_session_fact_for_type("decision", text)
+                and text not in seen
+            ):
                 seen.add(text)
                 facts.append(ExtractedFact(
                     model_name="Decision", name=f"Decision: {text[:120]}",
@@ -737,7 +940,10 @@ def _extract_session_decisions(content: str, provenance: str) -> list[ExtractedF
         section = content[start:end].strip() if end != -1 else content[start:].strip()
         section = _clean_session_fact_text(section)
         summary = section[:200].strip()
-        if _is_extractable_session_fact(summary) and summary not in seen:
+        if (
+            _is_extractable_session_fact_for_type("decision", summary)
+            and summary not in seen
+        ):
             seen.add(summary)
             facts.append(ExtractedFact(
                 model_name="Decision", name=f"Session decision: {summary[:80]}",
@@ -754,20 +960,28 @@ def _extract_session_risks(content: str, provenance: str) -> list[ExtractedFact]
     seen: set[str] = set()
 
     risk_patterns = [
-        r"^\s*(blocker|blocked by|risk|concern|unresolved question|open question|failed)\s*:?\s*(.+?)\s*$",
+        r"^\s*(blocker|blocked by|risk|concern|unresolved question|failed(?!\s+attempts?\b))\s*:?\s*(.+?)\s*$",
     ]
     for pattern in risk_patterns:
         for m in re.finditer(pattern, content, re.MULTILINE | re.IGNORECASE):
             label = m.group(1).lower()
             text = _clean_session_fact_text(m.group(2))
-            if _is_extractable_session_fact(text) and text not in seen:
+            fact_type = (
+                "blocker"
+                if label in {"blocker", "blocked by", "failed"}
+                else "risk"
+            )
+            if (
+                _is_extractable_session_fact_for_type(fact_type, text)
+                and text not in seen
+            ):
                 seen.add(text)
                 is_blocker = label in {"blocker", "blocked by", "failed"}
                 temporal = "past" if label == "failed" or "failed" in text.lower() else "current"
                 prefix = "Blocker" if is_blocker else "Risk"
                 facts.append(ExtractedFact(
                     model_name="Risk", name=f"{prefix}: {text[:120]}",
-                    value=text, fact_type="blocker" if is_blocker else "risk", confidence=0.82,
+                    value=text, fact_type=fact_type, confidence=0.82,
                     temporal=temporal, temporal_hint=temporal,
                     provenance=provenance, excerpt=text[:300],
                 ))
@@ -803,7 +1017,54 @@ def _agent_session_signal_text(content: str) -> str:
         for role, lines in sections
         if role in useful_roles and "\n".join(lines).strip()
     ]
-    return "\n\n".join(useful_sections)
+    return f"\n\n{_AGENT_RESPONSE_BOUNDARY}\n\n".join(useful_sections)
+
+
+def _agent_authored_excerpt_span(
+    content: str,
+    excerpt: str | None,
+) -> tuple[int, int] | None:
+    """Locate an excerpt inside an assistant-authored role section."""
+    if not excerpt:
+        return None
+    role_re = re.compile(r"^\[(?P<role>[A-Z_ -]+)\]\s*$")
+    useful_roles = {
+        "assistant",
+        "ai",
+        "codex",
+        "claude",
+        "opencode",
+        "gpt",
+        "session",
+    }
+    ranges: list[tuple[str, int, int]] = []
+    current_role: str | None = None
+    section_start = 0
+    offset = 0
+    saw_role = False
+    for line in content.splitlines(keepends=True):
+        marker = role_re.match(line.strip())
+        if marker is not None:
+            saw_role = True
+            if current_role is not None:
+                ranges.append((current_role, section_start, offset))
+            current_role = marker.group("role").strip().lower()
+            section_start = offset + len(line)
+        offset += len(line)
+    if current_role is not None:
+        ranges.append((current_role, section_start, len(content)))
+
+    if not saw_role:
+        start = content.find(excerpt)
+        return (start, start + len(excerpt)) if start >= 0 else None
+
+    for role, start, end in ranges:
+        if role not in useful_roles:
+            continue
+        relative_start = content.find(excerpt, start, end)
+        if relative_start >= 0:
+            return relative_start, relative_start + len(excerpt)
+    return None
 
 
 def _clean_session_fact_text(value: str | None) -> str:
@@ -836,6 +1097,32 @@ def _is_extractable_session_fact(text: str) -> bool:
     compact = re.sub(r"\s+", "", text)
     noisy_chars = sum(1 for ch in compact if ch in "/.\\{}[]<>_=+:;|")
     return not (len(compact) >= 12 and len(words) < 3 and noisy_chars / max(1, len(compact)) > 0.34)
+
+
+def _is_extractable_session_fact_for_type(fact_type: str, text: str) -> bool:
+    if not _is_extractable_session_fact(text):
+        return False
+    normalized = text.casefold()
+    if fact_type in {"decision", "task"} and (
+        re.search(r"(?:\.{3}|…)\s*(?:→|->)", text)
+        or re.search(r"(?:→|->).*\b(?:component|confidence)\b", normalized)
+        or (
+            "|" in text
+            and re.search(r"^\s*(?:/)?\^", text)
+        )
+    ):
+        return False
+    if fact_type in {"verification", "test"}:
+        if len(re.findall(r"\s/\s", normalized)) >= 2:
+            return False
+        return bool(re.search(
+            r"\b(?:pass(?:ed|es)?|fail(?:ed|s)?|succeed(?:ed|s)?|clean|green|"
+            r"valid|verified|complete(?:d|s)?|not run|unavailable|warning|errors?|"
+            r"zero|no|fits?|reachable|promoted|confirmed)\b|"
+            r"\b\d+\s*/\s*\d+\b",
+            normalized,
+        ))
+    return True
 
 
 def _looks_like_session_fragment(text: str) -> bool:

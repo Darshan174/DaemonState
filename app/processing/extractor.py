@@ -33,6 +33,8 @@ class ExtractedFact:
     relationships: list[ExtractedRelationship] = field(default_factory=list)
     provenance: str | None = None
     excerpt: str | None = None
+    excerpt_start_char: int | None = None
+    excerpt_end_char: int | None = None
 
 
 @dataclass

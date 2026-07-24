@@ -4,9 +4,9 @@ import hashlib
 import json
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only
 
@@ -23,10 +23,13 @@ from app.services.session_ledger import (
     render_session_ledger_markdown,
 )
 from app.services.session_scope import (
+    normalize_optional_session_key,
     normalize_session_key,
     scoped_session_documents,
+    session_provider_values,
     session_document_is_in_scope,
     session_reference,
+    workspace_session_scope,
 )
 from app.services.session_summary import derive_session_topic, is_internal_session_content
 from app.services.workspace_scope import current_source_documents
@@ -44,16 +47,35 @@ class SessionContinuationRequest(BaseModel):
 @router.get("/session-continuity")
 async def get_session_continuity(
     workspace_id: UUID,
+    provider: str | None = Query(default=None, min_length=1, max_length=50),
+    session_id: str | None = Query(default=None, min_length=1, max_length=255),
     session: AsyncSession = Depends(get_db_session),
     access_scope: AccessScope = Depends(get_access_scope),
 ) -> dict:
     await _require_workspace(session, workspace_id, access_scope)
+    try:
+        session_filter = normalize_optional_session_key(provider, session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    document_conditions = [
+        SourceDocument.workspace_id == workspace_id,
+        SourceDocument.source_type == "agent_session",
+        source_access_predicate(access_scope, workspace_id=workspace_id),
+    ]
+    if session_filter is not None:
+        normalized_provider, normalized_session_id = session_filter
+        document_conditions.append(exists(
+            select(SessionEvent.id).where(
+                SessionEvent.source_document_id == SourceDocument.id,
+                SessionEvent.workspace_id == workspace_id,
+                SessionEvent.provider.in_(
+                    session_provider_values(normalized_provider)
+                ),
+                SessionEvent.session_id == normalized_session_id,
+            )
+        ))
     documents = list(await session.scalars(
-        select(SourceDocument).where(
-            SourceDocument.workspace_id == workspace_id,
-            SourceDocument.source_type == "agent_session",
-            source_access_predicate(access_scope, workspace_id=workspace_id),
-        )
+        select(SourceDocument).where(*document_conditions)
     ))
     current_documents, _ = current_source_documents(documents)
     current_documents = [
@@ -61,10 +83,21 @@ async def get_session_continuity(
         for document in current_documents
         if not is_internal_session_content(document.content)
     ]
+    active_scope = (
+        await workspace_session_scope(
+            session,
+            workspace_id,
+            session_key=session_filter,
+            source_document_ids={document.id for document in current_documents},
+        )
+        if session_filter is not None
+        else None
+    )
     scoped_documents = await scoped_session_documents(
         session,
         workspace_id,
         current_documents,
+        scope=active_scope,
     )
     allowed_sessions = {
         normalize_session_key(*session_reference(document))
@@ -73,15 +106,22 @@ async def get_session_continuity(
     allowed_sessions.discard(None)
     if not allowed_sessions:
         return {"sessions": []}
+    event_conditions = [
+        SessionEvent.workspace_id == workspace_id,
+        _ledger_event_predicate(),
+        SourceDocument.source_type == "agent_session",
+        source_access_predicate(access_scope, workspace_id=workspace_id),
+    ]
+    if session_filter is not None:
+        normalized_provider, normalized_session_id = session_filter
+        event_conditions.extend((
+            SessionEvent.provider.in_(session_provider_values(normalized_provider)),
+            SessionEvent.session_id == normalized_session_id,
+        ))
     events = list(await session.scalars(
         select(SessionEvent)
         .join(SourceDocument, SessionEvent.source_document_id == SourceDocument.id)
-        .where(
-            SessionEvent.workspace_id == workspace_id,
-            _ledger_event_predicate(),
-            SourceDocument.source_type == "agent_session",
-            source_access_predicate(access_scope, workspace_id=workspace_id),
-        )
+        .where(*event_conditions)
         .options(load_only(
             SessionEvent.id,
             SessionEvent.source_document_id,

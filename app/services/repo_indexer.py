@@ -20,6 +20,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import CodeEdge, CodeFile, CodeSymbol, RepoEvent
+from app.services.repo_paths import validated_repository_path
 from app.time import utc_now
 
 
@@ -609,11 +610,7 @@ class RepoIndexer:
         workspace_id: str | UUID | None = None,
         persist: bool = True,
     ) -> RepoFrame:
-        root = Path(repo_path).expanduser().resolve()
-        if not root.exists():
-            raise FileNotFoundError(f"repo path does not exist: {root}")
-        if not root.is_dir():
-            raise NotADirectoryError(f"repo path is not a directory: {root}")
+        root = validated_repository_path(repo_path)
         # Filesystem traversal, parsing, and git subprocesses are synchronous.
         # Keep them off the API event loop so one large repository cannot stall
         # health checks and unrelated requests.
@@ -1331,16 +1328,14 @@ def _git_visible_files(root: Path) -> list[Path] | None:
     """Return tracked and non-ignored untracked files, or None outside a Git worktree."""
     try:
         proc = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(root),
+            _git_command(
+                root,
                 "ls-files",
                 "-z",
                 "--cached",
                 "--others",
                 "--exclude-standard",
-            ],
+            ),
             check=False,
             capture_output=True,
             timeout=10,
@@ -2099,7 +2094,7 @@ def _recent_commits(root: Path) -> list[dict[str, Any]]:
 def _git(root: Path, *args: str) -> str:
     try:
         proc = subprocess.run(
-            ["git", "-C", str(root), *args],
+            _git_command(root, *args),
             check=False,
             capture_output=True,
             text=True,
@@ -2113,6 +2108,21 @@ def _git(root: Path, *args: str) -> str:
     # Preserve a leading space on the first row or ` M app.py` becomes
     # `M app.py` and the path parser silently drops its first character.
     return proc.stdout.rstrip()
+
+
+def _git_command(root: Path, *args: str) -> list[str]:
+    # Production intentionally runs as a fixed non-root UID while repositories
+    # arrive through read-only bind mounts with host ownership. Scope Git's
+    # ownership exception to this already-canonicalized repository only; never
+    # mutate global config or trust every path with safe.directory='*'.
+    return [
+        "git",
+        "-c",
+        f"safe.directory={root}",
+        "-C",
+        str(root),
+        *args,
+    ]
 
 
 def _package_manifests(root: Path, indexed_files: list[IndexedFile]) -> dict[str, dict[str, Any]]:

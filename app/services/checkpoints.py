@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from uuid import UUID
 
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -22,8 +22,14 @@ from app.models import (
     SourceDocument,
     WorkCheckpoint,
 )
+from app.services.access import AccessScope, source_access_predicate
 from app.services.local_harness import RepositorySnapshot, capture_repository_snapshot
 from app.services.session_events import event_payload
+from app.services.session_scope import (
+    normalize_optional_session_key,
+    normalize_session_key,
+    session_provider_values,
+)
 from app.services.session_summary import (
     extract_delegated_user_request,
     is_continuation_control,
@@ -337,11 +343,27 @@ async def latest_checkpoint(
     session: AsyncSession,
     *,
     workspace_id: UUID,
+    provider: str | None = None,
+    session_id: str | None = None,
+    access_scope: AccessScope | None = None,
 ) -> WorkCheckpoint | None:
+    conditions = [WorkCheckpoint.workspace_id == workspace_id]
+    normalized_session = normalize_optional_session_key(provider, session_id)
+    if normalized_session is not None:
+        normalized_provider, normalized_session_id = normalized_session
+        conditions.extend((
+            WorkCheckpoint.provider.in_(session_provider_values(normalized_provider)),
+            WorkCheckpoint.session_id == normalized_session_id,
+        ))
+    conditions.extend(_checkpoint_access_conditions(
+        workspace_id=workspace_id,
+        access_scope=access_scope,
+    ))
+
     return await session.scalar(
         select(WorkCheckpoint)
         .join(SessionEvent, WorkCheckpoint.boundary_event_id == SessionEvent.id)
-        .where(WorkCheckpoint.workspace_id == workspace_id)
+        .where(*conditions)
         .order_by(
             SessionEvent.occurred_at.desc().nulls_last(),
             SessionEvent.sequence_number.desc(),
@@ -364,12 +386,27 @@ async def list_checkpoints(
     *,
     workspace_id: UUID,
     limit: int = 50,
+    provider: str | None = None,
+    session_id: str | None = None,
+    access_scope: AccessScope | None = None,
 ) -> list[WorkCheckpoint]:
     requested = max(1, min(limit, 100))
+    conditions = [WorkCheckpoint.workspace_id == workspace_id]
+    normalized_session = normalize_optional_session_key(provider, session_id)
+    if normalized_session is not None:
+        normalized_provider, normalized_session_id = normalized_session
+        conditions.extend((
+            WorkCheckpoint.provider.in_(session_provider_values(normalized_provider)),
+            WorkCheckpoint.session_id == normalized_session_id,
+        ))
+    conditions.extend(_checkpoint_access_conditions(
+        workspace_id=workspace_id,
+        access_scope=access_scope,
+    ))
     values = list(await session.scalars(
         select(WorkCheckpoint)
         .join(SessionEvent, WorkCheckpoint.boundary_event_id == SessionEvent.id)
-        .where(WorkCheckpoint.workspace_id == workspace_id)
+        .where(*conditions)
         .order_by(
             SessionEvent.occurred_at.desc().nulls_last(),
             SessionEvent.sequence_number.desc(),
@@ -405,13 +442,35 @@ async def list_checkpoints(
 async def checkpoints_to_dicts(
     session: AsyncSession,
     checkpoints: Iterable[WorkCheckpoint],
+    *,
+    access_scope: AccessScope | None = None,
 ) -> list[dict[str, Any]]:
     """Serialize checkpoints with one coherent session-tip lookup."""
 
     values = list(checkpoints)
-    pairs = {(item.provider, item.session_id) for item in values}
+    pairs = {
+        key
+        for item in values
+        if (key := normalize_session_key(item.provider, item.session_id)) is not None
+    }
     tips: dict[tuple[str, str], dict[str, Any]] = {}
     if values and pairs:
+        pair_predicates = [
+            and_(
+                SessionEvent.provider.in_(session_provider_values(provider)),
+                SessionEvent.session_id == session_id,
+            )
+            for provider, session_id in pairs
+        ]
+        tip_conditions = [
+            SessionEvent.workspace_id == values[0].workspace_id,
+            or_(*pair_predicates),
+        ]
+        if access_scope is not None:
+            tip_conditions.append(source_access_predicate(
+                access_scope,
+                workspace_id=values[0].workspace_id,
+            ))
         rows = await session.execute(
             select(
                 SessionEvent.provider,
@@ -419,24 +478,79 @@ async def checkpoints_to_dicts(
                 func.max(SessionEvent.sequence_number),
                 func.max(SessionEvent.occurred_at),
             )
-            .where(
-                SessionEvent.workspace_id == values[0].workspace_id,
-                tuple_(SessionEvent.provider, SessionEvent.session_id).in_(pairs),
-            )
+            .join(SourceDocument, SessionEvent.source_document_id == SourceDocument.id)
+            .where(*tip_conditions)
             .group_by(SessionEvent.provider, SessionEvent.session_id)
         )
         for provider, session_id, sequence_number, occurred_at in rows:
-            tips[(provider, session_id)] = {
-                "sequence_number": sequence_number,
-                "occurred_at": occurred_at,
-            }
+            key = normalize_session_key(provider, session_id)
+            if key is None or key not in pairs:
+                continue
+            current = tips.setdefault(key, {
+                "sequence_number": None,
+                "occurred_at": None,
+            })
+            if sequence_number is not None:
+                current["sequence_number"] = max(
+                    sequence_number,
+                    current["sequence_number"] or sequence_number,
+                )
+            if occurred_at is not None:
+                current["occurred_at"] = max(
+                    occurred_at,
+                    current["occurred_at"] or occurred_at,
+                )
     return [
         checkpoint_to_dict(
             item,
-            session_tip=tips.get((item.provider, item.session_id)),
+            session_tip=tips.get(normalize_session_key(
+                item.provider,
+                item.session_id,
+            )),
         )
         for item in values
     ]
+
+
+def _checkpoint_access_conditions(
+    *,
+    workspace_id: UUID,
+    access_scope: AccessScope | None,
+) -> tuple:
+    """Keep hidden checkpoint and evidence sources out of result pagination."""
+
+    if access_scope is None:
+        return ()
+    checkpoint_source_is_visible = exists(
+        select(SourceDocument.id)
+        .where(
+            SourceDocument.id == WorkCheckpoint.source_document_id,
+            source_access_predicate(access_scope, workspace_id=workspace_id),
+        )
+        .correlate(WorkCheckpoint)
+    )
+    evidence_source_is_visible = exists(
+        select(SourceDocument.id)
+        .where(
+            SourceDocument.id == CheckpointEvidence.source_document_id,
+            source_access_predicate(access_scope, workspace_id=workspace_id),
+        )
+        .correlate(CheckpointEvidence)
+    )
+    hidden_evidence_source = exists(
+        select(CheckpointEvidence.id)
+        .join(
+            CheckpointItem,
+            CheckpointEvidence.checkpoint_item_id == CheckpointItem.id,
+        )
+        .where(
+            CheckpointItem.checkpoint_id == WorkCheckpoint.id,
+            CheckpointEvidence.source_document_id.is_not(None),
+            ~evidence_source_is_visible,
+        )
+        .correlate(WorkCheckpoint)
+    )
+    return checkpoint_source_is_visible, ~hidden_evidence_source
 
 
 def checkpoint_to_dict(
@@ -519,7 +633,10 @@ def checkpoint_to_dict(
         "id": str(checkpoint.id),
         "task_key": task_key,
         "workspace_id": str(checkpoint.workspace_id),
-        "provider": checkpoint.provider,
+        "provider": (
+            normalize_session_key(checkpoint.provider, checkpoint.session_id)
+            or (checkpoint.provider, checkpoint.session_id)
+        )[0],
         "session_id": checkpoint.session_id,
         "source_document_id": str(checkpoint.source_document_id),
         "boundary_event_id": str(checkpoint.boundary_event_id),

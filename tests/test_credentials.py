@@ -6,9 +6,11 @@ from cryptography.fernet import Fernet
 from app.services.credentials import (
     CredentialStoreError,
     credentials_are_encrypted,
+    credentials_are_empty,
     dump_credentials,
     load_credentials,
     rotate_credentials,
+    validate_encrypted_credentials,
 )
 
 
@@ -79,3 +81,44 @@ def test_rotate_encrypted_credentials_requires_primary_key(monkeypatch):
 
     with pytest.raises(CredentialStoreError, match="rotate encrypted credentials"):
         rotate_credentials(payload)
+
+
+@pytest.mark.parametrize("raw", ["not-json", "[]", '{"_encrypted":true}'])
+def test_rotation_rejects_malformed_stored_credentials(raw, monkeypatch):
+    monkeypatch.setattr(
+        "app.config.settings.encryption_key",
+        Fernet.generate_key().decode(),
+        raising=False,
+    )
+
+    with pytest.raises(CredentialStoreError):
+        rotate_credentials(raw)
+
+
+def test_production_validation_requires_a_decryptable_envelope(monkeypatch):
+    current_key = Fernet.generate_key().decode()
+    wrong_key = Fernet.generate_key().decode()
+    monkeypatch.setattr("app.config.settings.encryption_key", current_key, raising=False)
+    monkeypatch.setattr(
+        "app.config.settings.previous_encryption_keys",
+        None,
+        raising=False,
+    )
+
+    assert credentials_are_empty("{}") is True
+    with pytest.raises(CredentialStoreError, match="encrypted Fernet envelope"):
+        validate_encrypted_credentials('{"access_token":"plaintext"}')
+
+    encrypted = dump_credentials({"access_token": "secret"})
+    validate_encrypted_credentials(encrypted)
+
+    monkeypatch.setattr("app.config.settings.encryption_key", wrong_key, raising=False)
+    with pytest.raises(CredentialStoreError, match="could not be decrypted"):
+        validate_encrypted_credentials(encrypted)
+
+    monkeypatch.setattr(
+        "app.config.settings.previous_encryption_keys",
+        current_key,
+        raising=False,
+    )
+    validate_encrypted_credentials(encrypted)

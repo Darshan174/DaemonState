@@ -7,6 +7,7 @@ from typing import Any, Iterable
 
 from app.models import SessionEvent
 from app.services.session_events import event_payload
+from app.services.session_scope import normalize_session_key
 from app.services.session_summary import (
     clean_session_message_text,
     extract_delegated_user_request,
@@ -73,12 +74,23 @@ _CONTINUE_PREFIX = re.compile(
     r"^continue:\s*(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})?\s*",
     re.IGNORECASE,
 )
+_LOW_SIGNAL_PROGRESS = re.compile(
+    r"^(?:implemented|completed|fixed|done|working|updated|built|created|passed|finished)$",
+    re.IGNORECASE,
+)
+_LOW_SIGNAL_AUTH_STATUS = re.compile(
+    r"^(?:authentication|auth|login|sign in)\s+(?:is|now)\s+"
+    r"(?:complete|completed|fixed|working|successful|ready)$",
+    re.IGNORECASE,
+)
 
 
 def build_session_ledgers(events: Iterable[SessionEvent]) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, str], list[SessionEvent]] = defaultdict(list)
     for event in events:
-        grouped[(event.provider, event.session_id)].append(event)
+        key = normalize_session_key(event.provider, event.session_id)
+        if key is not None:
+            grouped[key].append(event)
 
     ledgers = [
         build_session_ledger(sorted(values, key=lambda item: (item.sequence_number, item.id)))
@@ -100,12 +112,15 @@ def build_session_ledger(events: list[SessionEvent]) -> dict[str, Any]:
     if not events:
         raise ValueError("Session events are required")
 
-    provider = events[0].provider
-    session_id = events[0].session_id
+    provider, session_id = (
+        normalize_session_key(events[0].provider, events[0].session_id)
+        or (events[0].provider, events[0].session_id)
+    )
     requests: list[tuple[SessionEvent, str]] = []
     compactions: list[dict[str, Any]] = []
     reported: list[dict[str, Any]] = []
     observed: list[dict[str, Any]] = []
+    file_items: list[dict[str, Any]] = []
 
     for event in events:
         request = _event_user_request(event)
@@ -130,12 +145,15 @@ def build_session_ledger(events: list[SessionEvent]) -> dict[str, Any]:
             for sentence in _sentences(event.content):
                 if _DECISION_SIGNAL.search(sentence):
                     reported.append(_ledger_item(event, sentence, kind="decision", truth_state="reported"))
-                elif _PROGRESS_SIGNAL.search(sentence):
+                elif (
+                    _PROGRESS_SIGNAL.search(sentence)
+                    and not _is_low_signal_progress(sentence)
+                ):
                     reported.append(_ledger_item(event, sentence, kind="progress", truth_state="reported"))
 
         payload = event_payload(event)
         for path in _event_paths(event, payload):
-            observed.append(_ledger_item(
+            file_items.append(_ledger_item(
                 event,
                 path,
                 kind="file",
@@ -187,9 +205,13 @@ def build_session_ledger(events: list[SessionEvent]) -> dict[str, Any]:
     added.extend(item for item in reported if item["sequence_number"] > base_sequence)
     added.extend(item for item in observed if item["sequence_number"] > base_sequence)
     added_all = _dedupe_items(added)
+    files_all = _dedupe_items(
+        item for item in file_items if item["sequence_number"] > base_sequence
+    )
     changed_all = _dedupe_items(changed)
     removed_all = _dedupe_items(removed)
     added = added_all[-MAX_LEDGER_ITEMS:]
+    files = files_all[-MAX_LEDGER_ITEMS:]
     changed = changed_all[-MAX_LEDGER_ITEMS:]
     removed = removed_all[-MAX_LEDGER_ITEMS:]
 
@@ -219,6 +241,7 @@ def build_session_ledger(events: list[SessionEvent]) -> dict[str, Any]:
         "source_document_id": str(latest.source_document_id),
         "base": base,
         "added": added,
+        "files": files,
         "changed": changed,
         "missing": missing,
         "removed": removed,
@@ -226,6 +249,7 @@ def build_session_ledger(events: list[SessionEvent]) -> dict[str, Any]:
         "counts": {
             "base": len(base),
             "added": len(added_all),
+            "files": len(files_all),
             "changed": len(changed_all),
             "missing": None,
             "removed": len(removed_all),
@@ -233,6 +257,7 @@ def build_session_ledger(events: list[SessionEvent]) -> dict[str, Any]:
         "truncated": {
             "base": 0,
             "added": len(added_all) - len(added),
+            "files": len(files_all) - len(files),
             "changed": len(changed_all) - len(changed),
             "missing": 0,
             "removed": len(removed_all) - len(removed),
@@ -263,10 +288,10 @@ def render_session_ledger_markdown(
         "Agent-reported decisions and progress are not automatically treated as verified repository truth.",
     ]
     sections = (
-        ("base", "Base · original request", ledger.get("base") or []),
-        ("added", "Added since the request", ledger.get("added") or []),
-        ("changed", "Changed explicitly by the user", ledger.get("changed") or []),
-        ("removed", "Removed explicitly by the user", ledger.get("removed") or []),
+        ("base", "Original request", ledger.get("base") or []),
+        ("added", "Since your request", ledger.get("added") or []),
+        ("changed", "Updated requests", ledger.get("changed") or []),
+        ("removed", "No longer applies", ledger.get("removed") or []),
     )
     for key, title, items in sections:
         lines.extend(["", f"## {title}", ""])
@@ -281,13 +306,11 @@ def render_session_ledger_markdown(
             lines.append("- None captured.")
             continue
         for item in items:
-            lines.append(
-                f"- [{item['truth_state']}; event {item['sequence_number']}] {item['text']}"
-            )
+            lines.append(f"- [{_truth_label(item.get('truth_state'))}] {item['text']}")
     missing = ledger.get("missing") or {}
     lines.extend([
         "",
-        "## Missing after compaction",
+        "## Context gaps",
         "",
         f"- Status: {missing.get('status', 'unmeasured')}",
         f"- {missing.get('reason', 'Compaction loss could not be measured.')}",
@@ -299,11 +322,15 @@ def render_session_ledger_markdown(
 
 def _event_user_request(event: SessionEvent) -> str | None:
     raw: str | None = None
-    if event.event_type == "user_request" and is_substantive_user_request(event.content):
+    if (
+        event.event_type == "user_request"
+        and not _is_cli_auth_transcript(event.content)
+        and is_substantive_user_request(event.content)
+    ):
         raw = event.content
     elif event.event_type == "runtime_instruction" and event.role == "user":
         raw = extract_delegated_user_request(event.content)
-    if not raw or is_continuation_control(raw):
+    if not raw or is_continuation_control(raw) or _is_cli_auth_transcript(raw):
         return None
     clean = _clean_ledger_text(raw)
     return _cap(clean, MAX_ITEM_CHARS) if clean else None
@@ -341,15 +368,16 @@ def _ledger_item(
 
 
 def _sentences(value: str) -> list[str]:
-    cleaned = re.sub(r"```.*?```", " ", value, flags=re.DOTALL)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = re.sub(r"```.*?```", "\n", value, flags=re.DOTALL).strip()
     if not cleaned:
         return []
-    return [
-        part.strip(" -•\t")
-        for part in re.split(r"(?<=[.!?])\s+|\s*[\r\n]+\s*", cleaned)
-        if len(part.strip(" -•\t")) >= 4
-    ]
+    result: list[str] = []
+    for part in re.split(r"(?<=[.!?])[ \t]+|(?:\r?\n)+", cleaned):
+        normalized = re.sub(r"[ \t]+", " ", part).strip()
+        normalized = re.sub(r"^(?:[-*•]+|\d+[.)])\s*", "", normalized).strip()
+        if len(normalized) >= 4:
+            result.append(normalized)
+    return result
 
 
 def _extract_paths(value: str) -> list[str]:
@@ -418,7 +446,7 @@ def _event_paths(event: SessionEvent, payload: dict[str, Any]) -> list[str]:
 def _dedupe_items(values: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
-    for value in sorted(values, key=lambda item: (item["sequence_number"], item["id"])):
+    for value in sorted(values, key=lambda item: item["sequence_number"]):
         normalized = re.sub(r"\W+", " ", value["text"].lower()).strip()
         key = (value["kind"], normalized)
         if not normalized or key in seen:
@@ -426,6 +454,37 @@ def _dedupe_items(values: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
         seen.add(key)
         result.append(value)
     return result
+
+
+def _is_low_signal_progress(value: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+    return bool(
+        _LOW_SIGNAL_PROGRESS.fullmatch(normalized)
+        or _LOW_SIGNAL_AUTH_STATUS.fullmatch(normalized)
+    )
+
+
+def _is_cli_auth_transcript(value: str | None) -> bool:
+    normalized = re.sub(r"\s+", " ", str(value or "")).strip().lower()
+    if not normalized:
+        return False
+    markers = (
+        "authentication complete",
+        "gh config",
+        "git_protocol",
+        "configured git protocol",
+        "logged in as",
+        "already logged in",
+    )
+    return sum(marker in normalized for marker in markers) >= 2
+
+
+def _truth_label(value: str | None) -> str:
+    return {
+        "user_stated": "You asked",
+        "reported": "Agent reported",
+        "observed": "Observed",
+    }.get(str(value or ""), "Source linked")
 
 
 def _cap(value: str | None, limit: int) -> str:
