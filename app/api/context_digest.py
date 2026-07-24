@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -44,7 +45,14 @@ from app.services.founder_oversight import (
 )
 from app.services.focus_policy import focus_eligibility
 from app.services.open_loops import OpenLoopService, open_loop_to_dict
+from app.services.memory_trust import (
+    AGENT_REPORTED_ACTIVITY_FACT_TYPES,
+    exact_memory_evidence,
+    is_agent_source_type,
+    is_remote_source,
+)
 from app.services.playbooks import PlaybookService
+from app.services.provider_freshness import provider_source_is_fresh
 from app.services.session_summary import (
     derive_latest_session_topic,
     derive_session_attention_items,
@@ -62,6 +70,10 @@ from app.services.project_scope import (
     workspace_relevance,
 )
 from app.services.workspace_goals import resolve_current_goal
+from app.services.context_digest_cache import (
+    context_digest_cache,
+    context_digest_cache_key,
+)
 from app.taxonomy import relationship_display_label, source_type_display
 from app.time import utc_now
 
@@ -271,13 +283,14 @@ async def review_memory_record(
         .join(SourceDocument, Component.source_document_id == SourceDocument.id)
         .where(
             Component.id == component_id,
+            Component.workspace_id == payload.workspace_id,
             source_access_predicate(access_scope, workspace_id=payload.workspace_id),
         )
     )
     if component is None:
         raise HTTPException(status_code=404, detail="Memory record not found")
 
-    historical_statuses = {"resolved", "superseded", "rejected"}
+    historical_statuses = {"deprecated", "resolved", "superseded", "rejected"}
     if payload.action == "reopen" and component.status not in historical_statuses:
         raise HTTPException(status_code=409, detail="Only historical records can be reopened")
     if payload.action != "reopen" and component.status in historical_statuses:
@@ -286,60 +299,122 @@ async def review_memory_record(
         "blocker", "ai_blocker",
     }:
         raise HTTPException(status_code=422, detail="Only blockers can be resolved")
+    source_requires_refresh = (
+        payload.action == "confirm"
+        and is_remote_source(component.source_document)
+        and not await provider_source_is_fresh(
+            session,
+            component.source_document,
+        )
+    )
+    if source_requires_refresh:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Refresh this provider source before adding its snapshot to "
+                "current memory"
+            ),
+        )
+    if (
+        payload.action == "confirm"
+        and is_agent_source_type(component.source_document.source_type)
+        and (component.fact_type or "").strip().lower()
+        in AGENT_REPORTED_ACTIVITY_FACT_TYPES
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Assistant-reported activity is retained as history and cannot "
+                "be promoted as durable project truth"
+            ),
+        )
 
     next_status = {
-        # Human confirmation verifies the exact evidence. The Component remains
-        # active so it stays eligible for context compilation.
+        # Human confirmation attests that the source-backed claim is correct,
+        # relevant, and current. The Component remains active so the shared
+        # trust policy can make it eligible for context compilation.
         "confirm": "active",
         "dismiss": "rejected",
         "resolve": "resolved",
         "supersede": "superseded",
         "reopen": "active",
     }[payload.action]
-    previous_component_status = component.status
-    component.status = next_status
 
     claim = None
+    revision = None
     evidence = None
     evidence_status = None
     previous_claim_status = None
     previous_evidence_status = None
     if component.claim_id is not None:
         claim = await session.get(Claim, component.claim_id)
-        if claim is not None:
-            previous_claim_status = claim.status
-            claim.status = "active" if payload.action in {"confirm", "reopen"} else next_status
+        if claim is not None and claim.workspace_id != payload.workspace_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Memory record provenance crosses workspace boundaries",
+            )
         revision = (
             await session.get(ClaimRevision, claim.current_revision_id)
             if claim is not None and claim.current_revision_id is not None
             else None
         )
-        if revision is None:
+        if revision is not None:
+            if claim is None or revision.claim_id != claim.id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Memory record claim revision is inconsistent",
+                )
+            current_evidence = await session.get(
+                EvidenceSpan,
+                revision.evidence_span_id,
+            )
+            if (
+                current_evidence is not None
+                and current_evidence.workspace_id != payload.workspace_id
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Memory record evidence crosses workspace boundaries",
+                )
+            if (
+                current_evidence is not None
+                and current_evidence.source_document_id
+                == component.source_document_id
+            ):
+                evidence = current_evidence
+            else:
+                revision = None
+        if revision is None and claim is not None:
             revision = await session.scalar(
                 select(ClaimRevision)
+                .join(
+                    EvidenceSpan,
+                    ClaimRevision.evidence_span_id == EvidenceSpan.id,
+                )
                 .where(ClaimRevision.claim_id == component.claim_id)
+                .where(
+                    EvidenceSpan.source_document_id
+                    == component.source_document_id
+                )
                 .order_by(ClaimRevision.created_at.desc(), ClaimRevision.id.desc())
                 .limit(1)
             )
         if revision is not None:
-            evidence = await session.get(EvidenceSpan, revision.evidence_span_id)
+            evidence = evidence or await session.get(
+                EvidenceSpan,
+                revision.evidence_span_id,
+            )
             if evidence is not None:
-                previous_evidence_status = evidence.review_status
-                if payload.action in {"confirm", "reopen"}:
-                    if not _exact_evidence_span(component.source_document, evidence):
-                        raise HTTPException(
-                            status_code=422,
-                            detail=(
-                                "This record cannot be confirmed without exact source evidence"
-                                if payload.action == "confirm"
-                                else "This record cannot be reopened without exact source evidence"
-                            ),
-                        )
-                if payload.action == "confirm":
-                    evidence.review_status = "verified"
-                    evidence.trust_zone = "trusted_human"
-                    evidence.authority_weight = max(float(evidence.authority_weight or 0), 0.9)
-                evidence_status = evidence.review_status
+                if evidence.workspace_id != payload.workspace_id:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Memory record evidence does not match its workspace source",
+                    )
+                if evidence.source_document_id != component.source_document_id:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Memory record evidence does not match its component source",
+                    )
 
     if payload.action in {"confirm", "reopen"} and evidence is None:
         raise HTTPException(
@@ -350,49 +425,165 @@ async def review_memory_record(
                 else "This record cannot be reopened without exact source evidence"
             ),
         )
+    if (
+        payload.action in {"confirm", "reopen"}
+        and not _exact_evidence_span(component.source_document, evidence)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This record cannot be confirmed without exact source evidence"
+                if payload.action == "confirm"
+                else "This record cannot be reopened without exact source evidence"
+            ),
+        )
 
-    event = MemoryReviewEvent(
-        workspace_id=payload.workspace_id,
-        component_id=component.id,
-        action=payload.action,
-        previous_component_status=previous_component_status,
-        next_component_status=component.status,
-        previous_claim_status=previous_claim_status,
-        next_claim_status=claim.status if claim is not None else None,
-        previous_evidence_status=previous_evidence_status,
-        next_evidence_status=evidence.review_status if evidence is not None else None,
-        reviewed_by=access_scope.principal_id,
-        reason=" ".join(payload.reason.split()) if payload.reason else None,
-    )
-    session.add(event)
+    affected_components = [component]
+    if claim is not None:
+        claim_components = list(await session.scalars(
+            select(Component)
+            .join(
+                SourceDocument,
+                Component.source_document_id == SourceDocument.id,
+            )
+            .where(
+                Component.workspace_id == payload.workspace_id,
+                Component.claim_id == claim.id,
+                source_access_predicate(
+                    access_scope,
+                    workspace_id=payload.workspace_id,
+                ),
+            )
+        ))
+        all_claim_component_count = int(await session.scalar(
+            select(func.count(Component.id)).where(
+                Component.workspace_id == payload.workspace_id,
+                Component.claim_id == claim.id,
+            )
+        ) or 0)
+        if all_claim_component_count != len(claim_components):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This claim also appears in a source outside your access "
+                    "scope and cannot be reviewed as a group"
+                ),
+            )
+        if payload.action == "reopen":
+            human_terminal_component_ids = set(await session.scalars(
+                select(MemoryReviewEvent.component_id).where(
+                    MemoryReviewEvent.workspace_id == payload.workspace_id,
+                    MemoryReviewEvent.action.in_(
+                        ["dismiss", "resolve", "supersede"]
+                    ),
+                )
+            ))
+            affected_components = [
+                item for item in claim_components
+                if (
+                    item.id == component.id
+                    or (
+                        item.id in human_terminal_component_ids
+                        and item.status in historical_statuses
+                    )
+                )
+            ]
+        else:
+            affected_components = [
+                item for item in claim_components
+                if item.status not in historical_statuses
+            ]
+            if component not in affected_components:
+                affected_components.append(component)
+
+    previous_component_statuses = {
+        item.id: item.status for item in affected_components
+    }
+    lifecycle_at = utc_now()
+    for item in affected_components:
+        item.status = next_status
+        if payload.action in {"dismiss", "resolve", "supersede"}:
+            item.valid_to = lifecycle_at
+        elif payload.action == "reopen":
+            item.valid_to = None
+            item.superseded_by_id = None
+
+    if payload.action == "reopen":
+        affected_component_ids = {item.id for item in affected_components}
+        superseding_relationships = list(await session.scalars(
+            select(Relationship).where(
+                Relationship.target_component_id.in_(affected_component_ids),
+                Relationship.relationship_type == "supersedes",
+                Relationship.status.not_in(["rejected", "superseded"]),
+            )
+        ))
+        for relationship in superseding_relationships:
+            relationship.status = "superseded"
+
+    if claim is not None:
+        previous_claim_status = claim.status
+        claim.status = (
+            "active" if payload.action in {"confirm", "reopen"} else next_status
+        )
+    if evidence is not None:
+        previous_evidence_status = evidence.review_status
+        if payload.action == "confirm":
+            evidence.review_status = "verified"
+            evidence.trust_zone = "trusted_human"
+            evidence.authority_weight = max(
+                float(evidence.authority_weight or 0),
+                0.9,
+            )
+        evidence_status = evidence.review_status
+
+    review_reason = " ".join(payload.reason.split()) if payload.reason else None
+    events: list[MemoryReviewEvent] = []
+    for item in affected_components:
+        is_selected = item.id == component.id
+        event = MemoryReviewEvent(
+            workspace_id=payload.workspace_id,
+            component_id=item.id,
+            action=payload.action,
+            previous_component_status=previous_component_statuses[item.id],
+            next_component_status=item.status,
+            previous_claim_status=previous_claim_status,
+            next_claim_status=claim.status if claim is not None else None,
+            previous_evidence_status=(
+                previous_evidence_status if is_selected else None
+            ),
+            next_evidence_status=(
+                evidence.review_status
+                if is_selected and evidence is not None
+                else None
+            ),
+            reviewed_by=access_scope.principal_id,
+            reason=review_reason,
+        )
+        session.add(event)
+        events.append(event)
 
     await session.commit()
+    selected_event = next(
+        event for event in events if event.component_id == component.id
+    )
     return {
         "component_id": str(component.id),
         "action": payload.action,
         "status": "verified" if payload.action == "confirm" else component.status,
         "component_status": component.status,
         "evidence_status": evidence_status,
-        "review_event_id": str(event.id),
+        "review_event_id": str(selected_event.id),
+        "affected_components": len(affected_components),
     }
 
 
 def _exact_evidence_span(source: SourceDocument | None, evidence: EvidenceSpan) -> bool:
-    if source is None or evidence.start_char is None or evidence.end_char is None:
-        return False
-    content = source.content or ""
-    excerpt = evidence.text or ""
-    return bool(
-        evidence.source_document_id == source.id
-        and
-        0 <= evidence.start_char < evidence.end_char <= len(content)
-        and content[evidence.start_char:evidence.end_char] == excerpt
-        and sha256_text(excerpt) == evidence.text_sha256
-    )
+    return exact_memory_evidence(source, evidence)
 
 
 @router.get("/context/digest", response_model=ContextDigest)
 async def get_context_digest(
+    response: Response,
     workspace_id: str | None = None,
     limit: int = 50,
     session: AsyncSession = Depends(get_db_session),
@@ -406,15 +597,33 @@ async def get_context_digest(
     workspace_kind: str | None = None
     if workspace_id:
         try:
-            workspace_id_str, _ = await workspace_connector_types(session, workspace_id)
+            workspace_uuid = UUID(workspace_id)
         except ValueError:
             raise HTTPException(status_code=422, detail="Invalid workspace_id")
+        if not access_scope.allows_workspace(workspace_uuid):
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        workspace_id_str = str(workspace_uuid)
+        cache_key = context_digest_cache_key(
+            access_scope=access_scope,
+            workspace_id=workspace_uuid,
+            limit=limit,
+        )
+        cached_digest = context_digest_cache.get(cache_key)
+        if cached_digest is not None:
+            response.headers["X-Context-Digest-Cache"] = "HIT"
+            return cached_digest
+        response.headers["X-Context-Digest-Cache"] = "MISS"
+        cache_generation = context_digest_cache.generation
+        workspace_id_str, _ = await workspace_connector_types(session, workspace_uuid)
         if not await workspace_scope_exists(session, workspace_id_str):
             raise HTTPException(status_code=404, detail="Workspace not found")
-        workspace_uuid = UUID(workspace_id_str)
         workspace_kind = await session.scalar(
             select(Workspace.kind).where(Workspace.id == workspace_uuid)
         )
+    else:
+        cache_key = None
+        cache_generation = None
+        response.headers["X-Context-Digest-Cache"] = "BYPASS"
     scoped_documents = list(await session.scalars(
         select(SourceDocument)
         .where(source_access_predicate(access_scope, workspace_id=workspace_uuid))
@@ -677,7 +886,7 @@ async def get_context_digest(
         if workspace_uuid is not None
         else None
     )
-    return ContextDigest(
+    digest = ContextDigest(
         workspace_id=workspace_id_str,
         generated_at=utc_now(),
         objective=await _digest_objective(session, workspace_id_str),
@@ -739,6 +948,13 @@ async def get_context_digest(
         },
         monitoring=_monitoring_summary(current_documents),
     )
+    if cache_key is not None:
+        context_digest_cache.set(
+            cache_key,
+            digest,
+            expected_generation=cache_generation,
+        )
+    return digest
 
 
 def _loop_sources_accessible(raw_sources: str, accessible_source_ids: set[UUID]) -> bool:
@@ -774,6 +990,27 @@ def _monitoring_summary(documents: list[SourceDocument]) -> dict | None:
     }
 
 
+@dataclass(frozen=True)
+class _SessionActivityEvent:
+    id: UUID
+    source_document_id: UUID
+    sequence_number: int
+    event_type: str
+    role: str | None
+    content: str | None
+
+
+@dataclass(frozen=True)
+class _SessionActivityCandidate:
+    card: ContextCard | None
+    source: SourceDocument
+    assigned: bool
+    project_relevance: ProjectRelevance
+    selected: bool
+    identity: str
+    sort_key: tuple[int, datetime, str]
+
+
 async def _digest_activity(
     session: AsyncSession,
     *,
@@ -807,34 +1044,24 @@ async def _digest_activity(
     represented_session_source_ids = {
         card.source_snapshot.source_document_id for card in session_cards
     }
-    session_source_ids = {
-        document.id
-        for document in current_documents
-        if document.source_type == "agent_session"
-    }
-    normalized_events = list(await session.scalars(
-        select(SessionEvent)
-        .where(SessionEvent.source_document_id.in_(session_source_ids))
-        .order_by(SessionEvent.sequence_number, SessionEvent.id)
-    )) if session_source_ids else []
-    events_by_source: dict[str, list[SessionEvent]] = {}
-    for event in normalized_events:
-        events_by_source.setdefault(str(event.source_document_id), []).append(event)
-    session_items = [
-        _session_activity(
+    raw_session_candidates: list[_SessionActivityCandidate] = []
+    for card in session_cards:
+        source = documents_by_id.get(card.source_snapshot.source_document_id)
+        if source is None:
+            continue
+        raw_session_candidates.append(_session_activity_candidate(
             card,
-            documents_by_id.get(card.source_snapshot.source_document_id),
-            assigned=(workspace_id is None or card.workspace_relevance.status == "relevant"),
+            source,
+            assigned=(
+                workspace_id is None
+                or card.workspace_relevance.status == "relevant"
+            ),
             project_relevance=card.workspace_relevance,
             selected=(
                 card.source_snapshot.source_document_id
                 == selected_session_source_id
             ),
-            selected_topic=selected_session_topic,
-            events=events_by_source.get(card.source_snapshot.source_document_id, []),
-        )
-        for card in session_cards
-    ]
+        ))
     for document in current_documents:
         if (
             document.source_type != "agent_session"
@@ -854,30 +1081,64 @@ async def _digest_activity(
                 status="relevant",
                 reasons=["Session was explicitly selected for this project."],
             )
-        session_items.append(_session_activity(
+        raw_session_candidates.append(_session_activity_candidate(
             None,
             document,
             assigned=(workspace_id is None or relevance.status == "relevant"),
             project_relevance=relevance,
             selected=selected,
-            selected_topic=selected_session_topic,
-            events=events_by_source.get(str(document.id), []),
         ))
-    session_items = [item for item in session_items if item is not None]
-    session_items.sort(key=_activity_sort_key, reverse=True)
-    deduplicated_session_items: list[dict] = []
+
+    # Session ranking depends only on durable source/card metadata, not event
+    # bodies. Rank and deduplicate before loading transcripts so the response
+    # still contains the exact selected session, newest preview, and four most
+    # recent assigned sessions without materializing every event in the ledger.
+    raw_session_candidates.sort(key=lambda item: item.sort_key, reverse=True)
+    session_candidates: list[_SessionActivityCandidate] = []
     seen_session_identities: set[str] = set()
-    for item in session_items:
-        session_id = str(item.get("session_id") or "").strip()
-        identity = (
-            f"{str(item.get('tool') or '').lower()}:{session_id}"
-            if session_id else str(item.get("source_document_id") or item["id"])
-        )
-        if identity in seen_session_identities:
+    for candidate in raw_session_candidates:
+        if candidate.identity in seen_session_identities:
             continue
-        seen_session_identities.add(identity)
-        deduplicated_session_items.append(item)
-    session_items = deduplicated_session_items
+        seen_session_identities.add(candidate.identity)
+        session_candidates.append(candidate)
+
+    assigned_candidates = [
+        item for item in session_candidates if item.assigned
+    ]
+    selected_candidates = [
+        item for item in assigned_candidates if item.selected
+    ]
+    required_source_ids = {
+        candidate.source.id
+        for candidate in [
+            *assigned_candidates[:4],
+            *selected_candidates[:1],
+            *session_candidates[:1],
+        ]
+    }
+    selected_candidates_for_read = [
+        candidate
+        for candidate in session_candidates
+        if candidate.source.id in required_source_ids
+    ]
+    events_by_source, event_counts = await _session_activity_events(
+        session,
+        required_source_ids,
+    )
+    session_items = [
+        _session_activity(
+            candidate.card,
+            candidate.source,
+            assigned=candidate.assigned,
+            project_relevance=candidate.project_relevance,
+            selected=candidate.selected,
+            selected_topic=selected_session_topic,
+            events=events_by_source.get(candidate.source.id, []),
+            normalized_event_count=event_counts.get(candidate.source.id, 0),
+        )
+        for candidate in selected_candidates_for_read
+    ]
+    session_items = [item for item in session_items if item is not None]
     assigned_session_items = [
         item for item in session_items if item["state"] != "unassigned"
     ]
@@ -928,6 +1189,95 @@ async def _digest_activity(
             "No agent run or relevant imported coding session has been observed for this project."
         ),
     }
+
+
+def _session_activity_candidate(
+    card: ContextCard | None,
+    source: SourceDocument,
+    *,
+    assigned: bool,
+    project_relevance: ProjectRelevance,
+    selected: bool,
+) -> _SessionActivityCandidate:
+    metadata = metadata_dict(source)
+    session_id = str(metadata.get("session_id") or source.external_id).strip()
+    tool = str(metadata.get("tool") or metadata.get("agent_tool") or "").lower()
+    identity = f"{tool}:{session_id}" if session_id else str(source.id)
+    updated_at, _, recency_basis = _session_activity_clock(source, metadata)
+    return _SessionActivityCandidate(
+        card=card,
+        source=source,
+        assigned=assigned,
+        project_relevance=project_relevance,
+        selected=selected,
+        identity=identity,
+        sort_key=_activity_sort_key({
+            "id": f"session:{source.id}",
+            "updated_at": updated_at,
+            "recency_basis": recency_basis,
+        }),
+    )
+
+
+async def _session_activity_events(
+    session: AsyncSession,
+    source_ids: set[UUID],
+) -> tuple[dict[UUID, list[_SessionActivityEvent]], dict[UUID, int]]:
+    if not source_ids:
+        return {}, {}
+
+    count_rows = list((await session.execute(
+        select(
+            SessionEvent.source_document_id,
+            func.count(SessionEvent.id).label("event_count"),
+        )
+        .where(SessionEvent.source_document_id.in_(source_ids))
+        .group_by(SessionEvent.source_document_id)
+    )).all())
+    event_counts = {
+        row.source_document_id: int(row.event_count)
+        for row in count_rows
+    }
+
+    # Command/tool payloads make up most of the session ledger and are not used
+    # to derive the Now request, update, or rationale. Read only the five small
+    # columns those projections consume; event_counts above remains exact.
+    event_rows = list((await session.execute(
+        select(
+            SessionEvent.id,
+            SessionEvent.source_document_id,
+            SessionEvent.sequence_number,
+            SessionEvent.event_type,
+            SessionEvent.role,
+            SessionEvent.content,
+        )
+        .where(
+            SessionEvent.source_document_id.in_(source_ids),
+            SessionEvent.event_type.in_(
+                ["user_request", "runtime_instruction", "assistant_update"]
+            ),
+        )
+        .order_by(
+            SessionEvent.source_document_id,
+            SessionEvent.event_type,
+            SessionEvent.sequence_number,
+        )
+    )).all())
+    events_by_source: dict[UUID, list[_SessionActivityEvent]] = {}
+    for row in event_rows:
+        events_by_source.setdefault(row.source_document_id, []).append(
+            _SessionActivityEvent(
+                id=row.id,
+                source_document_id=row.source_document_id,
+                sequence_number=row.sequence_number,
+                event_type=row.event_type,
+                role=row.role,
+                content=row.content,
+            )
+        )
+    for events in events_by_source.values():
+        events.sort(key=lambda item: (item.sequence_number, str(item.id)))
+    return events_by_source, event_counts
 
 
 def _run_activity(run: AgentRun, observations: list[RunObservation]) -> dict:
@@ -1013,7 +1363,8 @@ def _session_activity(
     project_relevance: ProjectRelevance | None = None,
     selected: bool = False,
     selected_topic: str | None = None,
-    events: list[SessionEvent] | None = None,
+    events: list[_SessionActivityEvent] | None = None,
+    normalized_event_count: int | None = None,
 ) -> dict | None:
     if source is None:
         return None
@@ -1025,7 +1376,8 @@ def _session_activity(
         if role in {"assistant", "ai", "codex", "claude", "opencode", "gpt"}
     ]
     normalized = events or []
-    if normalized:
+    has_normalized_events = bool(normalized) or bool(normalized_event_count)
+    if has_normalized_events:
         request_candidate = next(
             (
                 (event, text) for event in reversed(normalized)
@@ -1045,7 +1397,11 @@ def _session_activity(
             and event.content
             and not is_session_instruction_noise(event.content)
         ]
-        event_count = len(normalized)
+        event_count = (
+            normalized_event_count
+            if normalized_event_count is not None
+            else len(normalized)
+        )
     else:
         indexed_turns = list(enumerate(turns))
         request_turn = next(
@@ -1108,19 +1464,10 @@ def _session_activity(
         session_id=str(metadata.get("session_id") or source.external_id),
     )
     ended_at = _parse_datetime(metadata.get("ended_at"))
-    source_activity_at = _latest_datetime(
-        metadata.get("updated_at"),
-        metadata.get("ended_at"),
-        metadata.get("source_modified_at"),
-        metadata.get("started_at"),
-        source.source_created_at,
+    updated_at, source_activity_at, recency_basis = _session_activity_clock(
+        source,
+        metadata,
     )
-    updated_at = (
-        source_activity_at
-        or _latest_datetime(metadata.get("ingested_at"), source.ingested_at)
-        or source.ingested_at
-    )
-    recency_basis = "source_activity" if source_activity_at else "imported_at_fallback"
     session_title = topic or request or "Imported coding session"
     chosen_topic = selected_topic if selected else None
     relevance = project_relevance or ProjectRelevance(
@@ -1195,7 +1542,33 @@ def _session_activity(
         "event_count": event_count,
     }
 
-def _activity_user_request(event: SessionEvent) -> str | None:
+def _session_activity_clock(
+    source: SourceDocument,
+    metadata: dict | None = None,
+) -> tuple[datetime, datetime | None, str]:
+    metadata = metadata if metadata is not None else metadata_dict(source)
+    source_activity_at = _latest_datetime(
+        metadata.get("updated_at"),
+        metadata.get("ended_at"),
+        metadata.get("source_modified_at"),
+        metadata.get("started_at"),
+        source.source_created_at,
+    )
+    updated_at = (
+        source_activity_at
+        or _latest_datetime(metadata.get("ingested_at"), source.ingested_at)
+        or source.ingested_at
+    )
+    return (
+        updated_at,
+        source_activity_at,
+        "source_activity" if source_activity_at else "imported_at_fallback",
+    )
+
+
+def _activity_user_request(
+    event: SessionEvent | _SessionActivityEvent,
+) -> str | None:
     if event.event_type == "user_request" and is_substantive_user_request(event.content):
         return str(event.content).strip()
     if event.event_type == "runtime_instruction" and event.role == "user":
@@ -1220,7 +1593,7 @@ def _session_turns(content: str) -> list[tuple[str, str]]:
 def _compact_activity_text(value: object, max_chars: int = 240) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None
-    text = value
+    text = _strip_activity_attachment_metadata(value)
     text = re.sub(
         r"<(environment_context|recommended_plugins|permissions instructions|app-context|"
         r"collaboration_mode|apps_instructions|plugins_instructions|skills_instructions)[^>]*>"
@@ -1230,8 +1603,6 @@ def _compact_activity_text(value: object, max_chars: int = 240) -> str | None:
         flags=re.IGNORECASE,
     )
     text = re.sub(r"```[\s\S]*?```", " ", text)
-    text = re.sub(r"^# Files mentioned by the user:[\s\S]*?(?=^#|\Z)", " ", text, flags=re.MULTILINE)
-    text = re.sub(r"<image[\s\S]*?</image>", " ", text, flags=re.IGNORECASE)
     cleaned = _clean_digest_text(text)
     if not cleaned or _looks_like_digest_noise(cleaned):
         return None
@@ -1241,6 +1612,47 @@ def _compact_activity_text(value: object, max_chars: int = 240) -> str | None:
     if 24 <= len(sentence) <= max_chars:
         return sentence
     return f"{cleaned[:max_chars - 3].rstrip()}..."
+
+
+def _strip_activity_attachment_metadata(value: str) -> str:
+    """Keep the user's request while removing Codex attachment envelopes."""
+
+    text = str(value or "")
+    request_marker = re.search(
+        r"^#{1,6}\s*My request for Codex:\s*$",
+        text,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    if request_marker:
+        text = text[request_marker.end():]
+
+    text = re.sub(r"<image\b[\s\S]*?</image>", " ", text, flags=re.IGNORECASE)
+    kept_lines: list[str] = []
+    for raw_line in text.splitlines():
+        plain = re.sub(r"^[#>*\-\d.)\s]+", "", raw_line).strip()
+        lowered = plain.lower()
+        if not plain:
+            kept_lines.append("")
+            continue
+        if lowered in {"files mentioned by the user:", "my request for codex:"}:
+            continue
+        if re.match(
+            r"^(?:screenshot\s+\d{4}-\d{2}-\d{2}\s+at\s+"
+            r"\d{1,2}(?:[.:]\d{2}){1,2}|codex-clipboard-[a-z0-9-]+)"
+            r"(?:\.(?:png|jpe?g|webp))?(?::.*)?$",
+            plain,
+            flags=re.IGNORECASE,
+        ):
+            continue
+        if (
+            re.search(r"(?:/var/folders/|/private/var/|/temporaryitems/|screencaptureui_)", raw_line, re.IGNORECASE)
+            and re.search(r"\.(?:png|jpe?g|webp)(?:[\"'>:]|$)", raw_line, re.IGNORECASE)
+        ):
+            continue
+        if re.match(r"^(?:image\s+name\s*=|path\s*=|\[image\s+#)", plain, flags=re.IGNORECASE):
+            continue
+        kept_lines.append(raw_line)
+    return "\n".join(kept_lines).strip()
 
 
 def _looks_like_process_narration(value: str) -> bool:

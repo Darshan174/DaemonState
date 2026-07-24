@@ -6,16 +6,24 @@ import logging
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Connector
+from app.models import Connector, SyncJob
 from app.services.credentials import load_credentials
+from app.services.provider_freshness import record_provider_observation
 from app.services.source_revisions import ingest_source_document_revision
+from app.time import utc_now
 
 logger = logging.getLogger(__name__)
 
 MAX_ITEMS_PER_REPO = 100
 
 
-async def sync_github(connector: Connector, session: AsyncSession) -> dict:
+async def sync_github(
+    connector: Connector,
+    session: AsyncSession,
+    *,
+    sync_job: SyncJob | None = None,
+) -> dict:
+    sync_observed_at = utc_now()
     creds = load_credentials(connector.credentials_json)
     token = creds.get("access_token", "")
     if not token:
@@ -130,6 +138,18 @@ async def sync_github(connector: Connector, session: AsyncSession) -> dict:
                             "merged_at": merged_at,
                             "source_type": f"github_{item_type}",
                         },
+                        revision_on_metadata_change=True,
+                    )
+                    await record_provider_observation(
+                        session,
+                        connector=connector,
+                        source=result.document,
+                        sync_job=sync_job,
+                        observed_at=sync_observed_at,
+                        provider_version=str(updated_at or "") or None,
+                        observation_kind=(
+                            "not_modified" if result.unchanged else "fetched"
+                        ),
                     )
                     if result.created:
                         docs_persisted += 1

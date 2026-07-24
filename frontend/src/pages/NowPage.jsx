@@ -13,7 +13,6 @@ import {
   RefreshCw,
   ShieldAlert,
   ShieldCheck,
-  TestTube2,
 } from "lucide-react";
 
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
@@ -27,7 +26,11 @@ import {
   useSessionLibrary,
   useVerifyCheckpoint,
 } from "../api/hooks";
-import { useContextDigest, useLinkedAISessionRefresh } from "../context-map/api";
+import {
+  useContextDigest,
+  useLinkedAISessionRefresh,
+  usePrepareContext,
+} from "../context-map/api";
 import { cleanDisplayText, formatTimeAgo, sessionIdentity } from "../context-map/digest";
 import { useProductWorkspace } from "./useProductWorkspace";
 
@@ -38,6 +41,9 @@ export default function NowPage() {
   const checkpointHistoryQuery = useCheckpoints(workspace.activeWorkspaceId, 100);
   const libraryQuery = useSessionLibrary(workspace.activeWorkspaceId);
   const captureCheckpoint = useCaptureCheckpoint();
+  const prepareContext = usePrepareContext();
+  const [prepareState, setPrepareState] = useState("idle");
+  const [prepareError, setPrepareError] = useState("");
   useLinkedAISessionRefresh(workspace.activeWorkspaceId);
 
   if (!workspace.workspacesQuery.isLoading && !workspace.activeWorkspaceId) {
@@ -73,6 +79,11 @@ export default function NowPage() {
   );
   const activity = observedActivity || (checkpointIsCurrent ? checkpoint?.activity : null);
   const currentGoal = prepareTaskCandidate(digest.current_goal?.title);
+  const activeTaskTitle = currentGoal
+    || prepareTaskCandidate(observedActivity?.request || observedActivity?.title)
+    || prepareTaskCandidate(activity?.request || activity?.title)
+    || prepareTaskCandidate(cleanRecoveryText(checkpoint?.sections?.goal?.[0]?.statement))
+    || "No active task selected";
   const attentionCards = cards
     .filter((card) => card.attention_required)
     .filter((card) => card.workspace_relevance?.status !== "not_relevant")
@@ -116,55 +127,134 @@ export default function NowPage() {
       sessionId: latestSession.session_id,
     });
   };
+  const prepareNextSession = async () => {
+    if (!currentGoal) return;
+    setPrepareState("preparing");
+    setPrepareError("");
+    try {
+      const result = await prepareContext.mutateAsync({
+        objective: currentGoal,
+        workspace_id: workspace.activeWorkspaceId,
+        mode: "task",
+        objective_origin: "trusted_human",
+      });
+      if (!globalThis.navigator?.clipboard?.writeText) {
+        throw new Error("Clipboard access is unavailable.");
+      }
+      await globalThis.navigator.clipboard.writeText(result.markdown);
+      setPrepareState("copied");
+    } catch (error) {
+      setPrepareState("error");
+      setPrepareError(error?.message || "Could not prepare the next session.");
+    }
+  };
+  const prepareAction = latestSession && currentGoal
+    ? {
+        kind: "compile",
+        description: "Compile the trusted goal and copy a focused context pack for a new agent session.",
+      }
+    : !latestSession
+      ? {
+          kind: "choose",
+          description: "Choose a linked coding session before preparing its continuation.",
+        }
+      : checkpoint
+        ? {
+            kind: "review",
+            description: "Review the saved continuation before opening the earlier session state.",
+          }
+        : {
+            kind: "capture",
+            description: "Capture the current session state before preparing its continuation.",
+          };
 
   return (
     <div className="app-page ce-now-page relative">
-      <header className="ce-now-hero relative overflow-hidden rounded-[1.75rem] border border-black/10 bg-[#171713] p-5 text-white shadow-[0_24px_70px_rgba(23,23,19,0.16)] sm:p-7 lg:p-8 dark:border-[#292929]">
+      <header className="ce-now-hero relative overflow-hidden rounded-[1.75rem] border border-black/10 bg-[#171713] text-white shadow-[0_24px_70px_rgba(23,23,19,0.16)] dark:border-[#292929]">
         <div className="ce-now-grid pointer-events-none absolute inset-0" aria-hidden="true" />
-        <div className="ce-now-orbit pointer-events-none absolute -right-24 -top-40 h-80 w-80 rounded-full border border-[#d9ff68]/20" aria-hidden="true" />
-        <div className="relative flex flex-col gap-7 lg:flex-row lg:items-end lg:justify-between">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-3">
-              <p className="text-xs font-semibold text-[#c5c5bc]">{workspace.activeWorkspace?.name || "Project"}</p>
-              <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.055] px-2.5 py-1 text-[11px] font-semibold text-[#d0d0c8]">
-                <span className="ce-now-status-dot h-1.5 w-1.5 rounded-full bg-[#d9ff68]" aria-hidden="true" />
-                {activity ? "Observing activity" : "Ready for activity"}
-              </span>
-            </div>
-            <h1 className="mt-5 text-5xl font-semibold leading-none tracking-[-0.055em] text-white sm:text-6xl">Now</h1>
-            <p className="mt-4 max-w-2xl text-sm leading-6 text-[#b8b8af] sm:text-[15px]">
-              The current work, its latest result, and the safest verified point to continue from.
-            </p>
-            {currentGoal ? (
-              <div className="mt-6 max-w-3xl rounded-2xl border border-[#d9ff68]/20 bg-[#d9ff68]/[0.07] px-4 py-3">
-                <p className="text-[11px] font-semibold text-[#d9ff68]">Selected goal</p>
-                <p className="mt-1 truncate text-sm font-semibold text-white">{currentGoal}</p>
-              </div>
-            ) : null}
+        <div className="ce-now-orbit pointer-events-none absolute -right-24 -top-32 h-80 w-80 rounded-full border border-white/10" aria-hidden="true" />
+        <div className="relative px-5 pb-6 pt-5 sm:px-7 sm:pb-7 sm:pt-6 lg:px-9 lg:pb-8 lg:pt-7">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-4">
+            <p className="text-xs font-semibold text-[#c5c5bc]">{workspace.activeWorkspace?.name || "Project"}</p>
+            <span className="inline-flex items-center rounded-full border border-white/12 bg-white/[0.05] px-3 py-1 text-[11px] font-semibold text-[#d0d0c8]">
+              {activity ? "Activity in view" : "Waiting for activity"}
+            </span>
           </div>
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
-            <Link to="/app/explain" className="inline-flex h-11 items-center justify-center rounded-xl border border-white/15 bg-white/[0.055] px-4 text-xs font-semibold text-white transition hover:-translate-y-0.5 hover:bg-white/10">
-              Explain project
-            </Link>
-            {latestSession ? (
-              <button type="button" onClick={saveCheckpoint} disabled={captureCheckpoint.isPending} className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-[#d9ff68] px-4 text-xs font-semibold text-[#171713] transition hover:-translate-y-0.5 hover:bg-[#e4ff91] disabled:cursor-wait disabled:opacity-60">
-                {captureCheckpoint.isPending ? "Saving checkpoint…" : "Save checkpoint"}
-                <RefreshCw className={`h-3.5 w-3.5 ${captureCheckpoint.isPending ? "animate-spin" : ""}`} />
-              </button>
-            ) : (
-              <Link to="/app/library" className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-[#d9ff68] px-4 text-xs font-semibold text-[#171713] transition hover:-translate-y-0.5 hover:bg-[#e4ff91]">
-                Choose work <ArrowRight className="h-3.5 w-3.5" />
-              </Link>
-            )}
+
+          <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1fr)_18rem] lg:items-end">
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#d9ff68]">Active task</p>
+              <h1 className="mt-4 max-w-[18ch] text-[clamp(2.65rem,6.2vw,5.75rem)] font-semibold leading-[0.92] tracking-[-0.062em] text-white">
+                {activeTaskTitle}
+              </h1>
+              <p className="mt-5 max-w-2xl text-sm leading-6 text-[#b8b8af] sm:text-[15px]">
+                Progress, verification, and the safest available continuation—kept separate by evidence type.
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-3">
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1">
+                {prepareAction.kind === "compile" ? (
+                  <button
+                    type="button"
+                    onClick={prepareNextSession}
+                    disabled={prepareState === "preparing" || prepareContext.isPending}
+                    className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#d9ff68] px-5 py-3 text-sm font-semibold text-[#171713] transition hover:-translate-y-0.5 hover:bg-[#e4ff91] focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-[#171713] disabled:cursor-wait disabled:opacity-60"
+                  >
+                    {prepareState === "preparing" || prepareContext.isPending ? "Preparing context…" : "Prepare next session"}
+                    {prepareState === "preparing" || prepareContext.isPending
+                      ? <RefreshCw className="h-4 w-4 animate-spin" aria-hidden="true" />
+                      : <ArrowRight className="h-4 w-4" aria-hidden="true" />}
+                  </button>
+                ) : prepareAction.kind === "choose" ? (
+                  <Link to="/app/library" className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#d9ff68] px-5 py-3 text-sm font-semibold text-[#171713] transition hover:-translate-y-0.5 hover:bg-[#e4ff91] focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-[#171713]">
+                    Prepare next session <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                  </Link>
+                ) : prepareAction.kind === "review" ? (
+                  <a href="#continuity-checkpoint" className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#d9ff68] px-5 py-3 text-sm font-semibold text-[#171713] transition hover:-translate-y-0.5 hover:bg-[#e4ff91] focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-[#171713]">
+                    Prepare next session <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                  </a>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={saveCheckpoint}
+                    disabled={captureCheckpoint.isPending}
+                    className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#d9ff68] px-5 py-3 text-sm font-semibold text-[#171713] transition hover:-translate-y-0.5 hover:bg-[#e4ff91] focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-[#171713] disabled:cursor-wait disabled:opacity-60"
+                  >
+                    {captureCheckpoint.isPending ? "Capturing session…" : "Prepare next session"}
+                    <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                )}
+                <Link to="/app/explain" className="inline-flex min-h-11 w-full items-center justify-center rounded-xl border border-white/15 bg-white/[0.055] px-4 py-3 text-xs font-semibold text-white transition hover:-translate-y-0.5 hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-white">
+                  Explain evidence
+                </Link>
+              </div>
+              <p className="text-xs leading-5 text-[#97978f]">{prepareAction.description}</p>
+              <div aria-live="polite" aria-atomic="true">
+                {prepareState === "copied" ? (
+                  <p role="status" className="text-xs font-semibold leading-5 text-[#d9ff68]">
+                    Context pack copied. Paste it into the new agent session.
+                  </p>
+                ) : null}
+                {prepareState === "error" || prepareError ? (
+                  <p role="alert" className="text-xs font-semibold leading-5 text-red-300">
+                    {prepareError || "Could not prepare the next session."}
+                  </p>
+                ) : null}
+              </div>
+            </div>
           </div>
         </div>
+
+        <TaskStatusRibbon activity={activity} checkpoint={checkpoint} />
       </header>
 
       {unassignedSessionCount > 0 ? <UnassignedSessions count={unassignedSessionCount} cardId={unassignedSessionCard?.id} /> : null}
 
-      <section className="grid items-stretch gap-4 lg:grid-cols-[1.48fr_.82fr]">
-        <ObservedWork activity={activity} />
-        <ObservedResult activity={activity} />
+      <section className="grid items-stretch gap-4 lg:grid-cols-3" aria-label="Active task overview">
+        <ObservedWork activity={activity} activeTaskTitle={activeTaskTitle} />
+        <ObservedResult activity={activity} checkpoint={checkpoint} attentionCount={attentionCards.length} />
+        <ContinuationSummary checkpoint={checkpoint} latestSession={latestSession} />
       </section>
 
       <CheckpointPanel
@@ -218,15 +308,15 @@ function CheckpointPanel({ checkpoint, sessionCompactions, isLoading, error, lat
   };
 
   if (isLoading) {
-    return <section className="app-surface p-5 text-sm text-[#68685f] dark:text-[#aaa9a0]">Loading structured checkpoint…</section>;
+    return <section id="continuity-checkpoint" className="app-surface scroll-mt-24 p-5 text-sm text-[#68685f] dark:text-[#aaa9a0]">Loading structured checkpoint…</section>;
   }
   if (!checkpoint) {
     return (
-      <section className="app-surface p-5 sm:p-6">
+      <section id="continuity-checkpoint" className="app-surface scroll-mt-24 p-5 sm:p-6">
         <PanelLabel icon={ShieldCheck}>Continuity checkpoint</PanelLabel>
         <h2 className="mt-5 text-xl font-semibold">No structured checkpoint captured yet.</h2>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
-          Checkpoints are created automatically at context compaction boundaries. Save one now to capture the latest goal, progress, decisions, failures, files, blockers, checks, and exact next action.
+          Recovery points are created automatically before long sessions are condensed. Save one now to preserve the latest goal, progress, decisions, failures, files, blockers, checks, and exact next action.
         </p>
         {latestSession ? (
           <button type="button" onClick={onCapture} disabled={capturePending} className="btn-primary mt-5 h-10 text-xs disabled:opacity-60">
@@ -239,23 +329,18 @@ function CheckpointPanel({ checkpoint, sessionCompactions, isLoading, error, lat
   }
 
   const sections = checkpoint.sections || {};
-  const goal = sections.goal?.[0]?.statement || "Goal was not captured.";
+  const goal = cleanRecoveryText(sections.goal?.[0]?.statement || "Goal was not captured.");
   const nextAction = sections.exact_next_action?.[0]?.statement || "Exact next action is missing.";
-  const verification = checkpoint.verification;
-  const status = verification?.status || "not_run";
   const currentness = checkpoint.currentness || {};
   const boundary = checkpoint.boundary || {};
-  const snapshotPhaseLabel = boundary.snapshot_phase_label || (
-    checkpoint.trigger === "compaction" ? "Pre-compaction snapshot" : "Session-tip snapshot"
-  );
-  const snapshotPhaseDescription = boundary.snapshot_phase_description || (
-    checkpoint.trigger === "compaction"
-      ? "Captures session state immediately before context compaction and excludes later events."
-      : "Captures session state through the selected latest event."
-  );
+  const recoveryTitle = checkpoint.trigger === "compaction"
+    ? "Saved before the session was condensed"
+    : "Saved from the latest session state";
+  const recoveryDescription = checkpoint.trigger === "compaction"
+    ? "This recovery point preserves what the agent knew and planned at that moment. Later activity stays separate, so you always know exactly what will be resumed."
+    : "This recovery point preserves the goal, decisions, evidence, and next action available when it was saved.";
   const outdated = currentness.state === "superseded" || currentness.state === "historical";
   const eventsBehind = checkpointEventsBehind(checkpoint);
-  const statusTone = checkpointStatusTone(status, checkpoint.capture_status);
   const evidenceCount = checkpoint.payload?.sections
     ? Object.values(checkpoint.payload.sections)
       .flat()
@@ -263,54 +348,86 @@ function CheckpointPanel({ checkpoint, sessionCompactions, isLoading, error, lat
     : 0;
   return (
     <>
-    <section className="app-surface relative overflow-hidden p-5 sm:p-6">
-      <SurfaceAccent />
-      <div className="relative flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-        <div className="min-w-0 max-w-4xl">
-          <div className="flex flex-wrap items-center gap-2">
-            <PanelLabel icon={outdated ? History : ShieldCheck}>{outdated ? "Last recovery checkpoint" : "Continuity checkpoint"}</PanelLabel>
-            <span className={`rounded-full px-2.5 py-1 text-[9px] font-bold uppercase tracking-wide ${statusTone}`}>{status.replaceAll("_", " ")}</span>
-            <span className="rounded-full bg-[#efefe7] px-2.5 py-1 text-[9px] font-bold text-[#68685f] dark:bg-[#252521] dark:text-[#bdbdb4]">{checkpoint.trigger}</span>
-            <span className="rounded-full bg-sky-50 px-2.5 py-1 text-[9px] font-bold text-sky-800 dark:bg-sky-950/40 dark:text-sky-200">{snapshotPhaseLabel}</span>
-            <span className="rounded-full bg-amber-50 px-2.5 py-1 text-[9px] font-bold text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">{currentness.label || "Captured boundary"}</span>
+    <section id="continuity-checkpoint" className="ce-recovery-editorial relative scroll-mt-24 overflow-hidden border-y border-[#171713] bg-white dark:border-white dark:bg-black">
+      <div className="grid border-b border-[#171713] dark:border-white lg:grid-cols-[minmax(0,1.55fr)_minmax(19rem,.65fr)]">
+        <header className="relative overflow-hidden px-5 py-8 sm:px-8 sm:py-10 lg:min-h-[15rem] lg:px-10 lg:py-10">
+          <div className="pointer-events-none absolute -right-8 -top-16 select-none text-[14rem] font-semibold leading-none tracking-[-0.1em] text-[#171713]/[0.025] dark:text-white/[0.035]" aria-hidden="true">
+            04
           </div>
-          <p className="mt-3 max-w-3xl text-[10px] leading-5 text-[#77776e] dark:text-[#aaa9a0]">
-            {boundary.occurred_at ? `Boundary ${formatBoundaryTime(boundary.occurred_at)}` : "Boundary time unavailable"}
-            {boundary.sequence_number ? ` · event ${boundary.sequence_number}` : ""}
-            {boundary.captured_at ? ` · saved ${formatBoundaryTime(boundary.captured_at)}` : ""}. {currentness.reason || "This is an immutable checkpoint, not live session truth."}
-          </p>
-          <p className="mt-2 max-w-3xl text-[11px] font-semibold leading-5 text-sky-800 dark:text-sky-200">{snapshotPhaseDescription}</p>
+          <div className="relative flex items-center justify-between gap-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#68685f] dark:text-[#aaa9a0]">04 / Recovery</p>
+            <span className="text-xs font-semibold text-[#68685f] dark:text-[#aaa9a0]">{outdated ? "Earlier state" : "Latest state"}</span>
+          </div>
+          <h2 className="relative mt-10 max-w-[16ch] text-[clamp(2.4rem,3.8vw,3.5rem)] font-semibold leading-[0.96] tracking-[-0.055em] text-[#171713] dark:text-white sm:mt-12">
+            {outdated ? "Previous recovery point" : "Recovery point"}
+          </h2>
+        </header>
+
+        <aside className="flex flex-col justify-between border-t border-[#171713] px-5 py-7 dark:border-white sm:px-8 lg:border-l lg:border-t-0 lg:px-7 lg:py-8">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.19em] text-[#77776e] dark:text-[#929289]">What this means</p>
+            <h3 className="mt-5 text-2xl font-semibold leading-[1.08] tracking-[-0.04em] text-[#171713] dark:text-white">{recoveryTitle}</h3>
+            <p className="mt-4 text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">{recoveryDescription}</p>
+            <Link to="/app/memory" className="group mt-6 inline-flex items-center gap-2 border-b border-[#171713] pb-1 text-sm font-semibold text-[#171713] dark:border-white dark:text-white">
+              View in Memory <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-1" />
+            </Link>
+          </div>
+          <div className="mt-10 grid grid-cols-2 gap-2 lg:grid-cols-1">
+            <button type="button" onClick={verify} disabled={verifyCheckpoint.isPending} className="btn-secondary h-11 text-xs disabled:cursor-wait disabled:opacity-60">
+              {verifyCheckpoint.isPending ? "Running checks…" : "Verify now"}
+            </button>
+            <button type="button" onClick={() => setConfirmResume(true)} disabled={resumeCheckpoint.isPending} className="btn-primary h-11 text-xs disabled:opacity-60">
+              <Clipboard className="h-3.5 w-3.5" />{copyState === "copied" ? "Session opened" : copyState === "copied_only" ? "Resume copied" : "Resume session"}
+            </button>
+          </div>
+        </aside>
+      </div>
+
+      <div className="grid border-b border-[#171713] dark:border-white lg:grid-cols-[minmax(0,1.55fr)_minmax(19rem,.65fr)]">
+        <section className="px-5 py-9 sm:px-8 sm:py-10 lg:px-10 lg:py-11" aria-labelledby={`checkpoint-goal-${checkpoint.id}`}>
+          <p className="text-lg font-semibold tracking-[-0.02em] text-[#4f4f48] dark:text-[#c7c7bd]">Goal</p>
+          <h3 id={`checkpoint-goal-${checkpoint.id}`} className="mt-4 max-w-[32ch] text-[clamp(1.8rem,2.4vw,2.4rem)] font-semibold leading-[1.1] tracking-[-0.035em] text-[#171713] dark:text-white">
+            {prepareTaskCandidate(goal) || "Goal was not captured"}
+          </h3>
+
+          <div className="mt-10 grid border-t border-[#171713] pt-5 dark:border-white sm:grid-cols-[3.5rem_1fr] sm:gap-5">
+            <span className="hidden text-sm font-semibold text-[#85857c] sm:block" aria-hidden="true">01</span>
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.16em] text-[#77776e] dark:text-[#929289]">Exact next action</p>
+              <p className="mt-3 max-w-3xl text-lg font-semibold leading-7 tracking-[-0.015em] text-[#171713] dark:text-white sm:text-xl">
+                {prepareTaskCandidate(nextAction) || "Exact next action was not captured"}
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <aside className="border-t border-[#171713] dark:border-white lg:border-l lg:border-t-0">
+          <div className="px-5 py-7 sm:px-8 lg:px-7 lg:py-9">
+            <p className="text-[10px] font-bold uppercase tracking-[0.19em] text-[#77776e] dark:text-[#929289]">Recovery position</p>
+            <dl className="mt-5">
+              <BoundaryDetail label="Session point" value={boundary.occurred_at ? formatBoundaryTime(boundary.occurred_at) : "Time unavailable"} />
+              <BoundaryDetail label="Position" value={boundary.sequence_number ? `Event ${boundary.sequence_number}` : "Event unavailable"} />
+              <BoundaryDetail label="Saved" value={boundary.captured_at ? formatBoundaryTime(boundary.captured_at) : "Time unavailable"} />
+            </dl>
+          </div>
           {outdated ? (
-            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/25 dark:text-amber-100">
-              <p className="text-xs font-bold">Not the latest session state{eventsBehind ? ` · ${eventsBehind} events behind` : ""}</p>
-              <p className="mt-1 text-[11px] leading-5 opacity-80">This remains available as a recovery point. Save a new checkpoint before resuming if you need the current state.</p>
+            <div className="border-t border-[#171713] bg-[#fff7dc] px-5 py-7 text-[#3f210f] dark:border-white dark:bg-[#21170b] dark:text-[#ffe8b4] sm:px-8 lg:px-7">
+              <p className="text-base font-semibold leading-6">Not the latest state{eventsBehind ? ` — ${eventsBehind} events behind` : ""}</p>
+              <p className="mt-2 text-xs leading-5 opacity-80">Keep this for recovery, or save the current session before resuming.</p>
               {latestSession ? (
-                <button type="button" onClick={onCapture} disabled={capturePending} className="mt-3 rounded-lg border border-amber-300 bg-white/70 px-3 py-2 text-[10px] font-bold transition hover:bg-white disabled:cursor-wait disabled:opacity-60 dark:border-amber-800 dark:bg-black/15 dark:hover:bg-black/25">
+                <button type="button" onClick={onCapture} disabled={capturePending} className="mt-5 inline-flex h-10 items-center justify-center border border-current px-4 text-xs font-bold transition hover:bg-white/60 disabled:cursor-wait disabled:opacity-60 dark:hover:bg-black/20">
                   {capturePending ? "Saving latest checkpoint…" : "Save latest checkpoint"}
                 </button>
               ) : null}
             </div>
           ) : null}
-          <p className="mt-5 text-[9px] font-bold uppercase tracking-[0.15em] text-[#85857c]">Goal</p>
-          <h2 className="mt-2 text-xl font-semibold leading-7 tracking-[-0.02em]">{cleanDisplayText(goal)}</h2>
-          <div className="mt-5 rounded-xl border border-[#d9dfc6] bg-[#f2f6e6] p-4 dark:border-[#384125] dark:bg-[#d9ff68]/[0.055]">
-            <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-[#71802f] dark:text-[#d9ff68]">Exact next action</p>
-            <p className="mt-1.5 text-sm font-semibold leading-6">{cleanDisplayText(nextAction)}</p>
-          </div>
-        </div>
-        <div className="flex shrink-0 flex-wrap gap-2">
-          <button type="button" onClick={verify} disabled={verifyCheckpoint.isPending} className="btn-secondary h-10 text-xs disabled:cursor-wait disabled:opacity-60">
-            {verifyCheckpoint.isPending ? "Running checks…" : "Verify now"}
-          </button>
-          <button type="button" onClick={() => setConfirmResume(true)} disabled={resumeCheckpoint.isPending} className="btn-primary h-10 text-xs disabled:opacity-60">
-            <Clipboard className="h-3.5 w-3.5" />{copyState === "copied" ? "Session opened" : copyState === "copied_only" ? "Resume copied" : "Resume session"}
-          </button>
-        </div>
+        </aside>
       </div>
+
       {sessionCompactions?.length ? (
         <SessionCompactions checkpoints={sessionCompactions} displayedCheckpointId={checkpoint.id} />
       ) : null}
-      <div className="relative mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+      <div className="relative grid grid-cols-2 border-b border-[#171713] dark:border-white sm:grid-cols-4 lg:grid-cols-7">
         <CheckpointMetric label="Progress" value={sections.progress?.length || 0} />
         <CheckpointMetric label="Decisions" value={sections.decisions?.length || 0} />
         <CheckpointMetric label="Failures" value={sections.failed_attempts?.length || 0} />
@@ -319,13 +436,16 @@ function CheckpointPanel({ checkpoint, sessionCompactions, isLoading, error, lat
         <CheckpointMetric label="Checks" value={sections.verification?.length || 0} />
         <CheckpointMetric label="Evidence" value={evidenceCount} />
       </div>
-      <p className="relative mt-4 break-all text-[9px] font-semibold text-[#85857c]">
-        {checkpoint.provider} · {checkpoint.session_id} · {checkpoint.repo?.branch || "branch unavailable"}
-      </p>
+      <div className="relative flex flex-col gap-3 px-5 py-6 sm:flex-row sm:items-center sm:justify-between sm:px-8 lg:px-10">
+        <p className="max-w-xl text-xs leading-5 text-[#77776e] dark:text-[#929289]">Goals, decisions, files, and supporting evidence continue in project memory.</p>
+        <Link to="/app/memory" className="group inline-flex shrink-0 items-center gap-2 text-sm font-semibold text-[#171713] dark:text-white">
+          Open project memory <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-1" />
+        </Link>
+      </div>
       {(verifyCheckpoint.error || resumeCheckpoint.error || copyState === "error") ? (
-        <p role="alert" className="relative mt-3 text-xs font-semibold text-red-600">{verifyCheckpoint.error?.message || resumeCheckpoint.error?.message || "Clipboard access is unavailable."}</p>
+        <p role="alert" className="relative border-t border-red-300 px-5 py-3 text-xs font-semibold text-red-600 sm:px-8 lg:px-10">{verifyCheckpoint.error?.message || resumeCheckpoint.error?.message || "Clipboard access is unavailable."}</p>
       ) : null}
-      {resumeNotice ? <p role="status" className="relative mt-3 text-xs font-semibold text-amber-700 dark:text-amber-300">{resumeNotice}</p> : null}
+      {resumeNotice ? <p role="status" className="relative border-t border-amber-300 px-5 py-3 text-xs font-semibold text-amber-700 dark:text-amber-300 sm:px-8 lg:px-10">{resumeNotice}</p> : null}
     </section>
     {confirmResume ? (
       <ResumeCheckpointDialog
@@ -341,30 +461,29 @@ function CheckpointPanel({ checkpoint, sessionCompactions, isLoading, error, lat
 
 function SessionCompactions({ checkpoints, displayedCheckpointId }) {
   return (
-    <section className="relative mt-6 rounded-xl border border-[#e1e1d9] bg-white/40 p-4 dark:border-[#30302b] dark:bg-black/10">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+    <section className="relative border-b border-[#171713] dark:border-white">
+      <div className="flex flex-wrap items-start justify-between gap-3 px-5 py-6 sm:px-8 lg:px-10">
         <div>
-          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#77776e]">Captured compactions for this session · {checkpoints.length}</p>
-          <p className="mt-1 text-[11px] leading-5 text-[#68685f] dark:text-[#aaa9a0]">Every entry is the session state immediately before that compaction—not the work that happened after it.</p>
+          <p className="text-xs font-bold uppercase tracking-[0.16em] text-[#77776e]">Saved recovery points · {checkpoints.length}</p>
+          <p className="mt-2 text-xs leading-5 text-[#68685f] dark:text-[#aaa9a0]">Each entry preserves an earlier handoff state. Newer work remains separate.</p>
         </div>
-        <Link to="/app/runs" className="text-[10px] font-bold underline underline-offset-4">Inspect all evidence</Link>
+        <Link to="/app/runs" className="text-xs font-bold underline underline-offset-4">View history</Link>
       </div>
-      <div className="mt-4 space-y-2">
+      <div className="grid border-t border-[#171713] dark:border-white md:grid-cols-2">
         {checkpoints.map((item, index) => {
           const itemBoundary = item.boundary || {};
-          const itemGoal = item.sections?.goal?.[0]?.statement || "Goal was not captured.";
+          const itemGoal = prepareTaskCandidate(cleanRecoveryText(item.sections?.goal?.[0]?.statement))
+            || "Goal was not captured";
           const displayed = item.id === displayedCheckpointId;
           return (
-            <div key={item.id} className={`rounded-lg border px-3 py-3 ${displayed ? "border-[#b9cc73] bg-[#f2f6e6] dark:border-[#516127] dark:bg-[#d9ff68]/[0.055]" : "border-[#e5e5dd] bg-white/50 dark:border-[#292925] dark:bg-white/[0.02]"}`}>
+            <div key={item.id} className={`border-b border-[#171713] px-5 py-5 dark:border-white md:odd:border-r ${displayed ? "bg-[#171713] text-white dark:bg-white dark:text-black" : "bg-white dark:bg-black"}`}>
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-[10px] font-bold">Compaction {index + 1}{displayed ? " · displayed checkpoint" : ""}</p>
-                <span className="text-[9px] font-semibold text-[#85857c]">
+                <p className="text-[10px] font-bold uppercase tracking-[0.14em]">Recovery point {String(index + 1).padStart(2, "0")}{displayed ? " · shown" : ""}</p>
+                <span className={`text-[10px] font-semibold ${displayed ? "opacity-70" : "text-[#85857c]"}`}>
                   {itemBoundary.occurred_at ? formatBoundaryTime(itemBoundary.occurred_at) : "Time unavailable"}
-                  {itemBoundary.sequence_number ? ` · event ${itemBoundary.sequence_number}` : ""}
                 </span>
               </div>
-              <p className="mt-1.5 line-clamp-2 text-xs font-semibold leading-5">{cleanDisplayText(itemGoal)}</p>
-              <p className="mt-1 text-[9px] font-bold text-sky-700 dark:text-sky-300">{itemBoundary.snapshot_phase_label || "Pre-compaction snapshot"}</p>
+              <p className="mt-3 line-clamp-2 text-sm font-semibold leading-5">{itemGoal}</p>
             </div>
           );
         })}
@@ -374,32 +493,54 @@ function SessionCompactions({ checkpoints, displayedCheckpointId }) {
 }
 
 function CheckpointMetric({ label, value }) {
-  return <div className="rounded-xl bg-[#efefe7] p-3 text-center dark:bg-[#252521]"><p className="text-lg font-semibold">{value}</p><p className="mt-0.5 text-[8px] font-bold uppercase tracking-wide text-[#85857c]">{label}</p></div>;
+  return <div className="border-r border-t border-[#171713] px-4 py-5 text-left first:border-l-0 dark:border-white sm:py-6 lg:border-t-0"><p className="text-2xl font-semibold tracking-[-0.04em]">{value}</p><p className="mt-1 text-[9px] font-bold uppercase tracking-[0.14em] text-[#85857c]">{label}</p></div>;
 }
 
-function checkpointStatusTone(status, captureStatus) {
-  if (status === "verified") return "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-200";
-  if (status === "failed") return "bg-red-100 text-red-800 dark:bg-red-950/50 dark:text-red-200";
-  if (status === "stale") return "bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-200";
-  if (captureStatus === "incomplete") return "bg-red-100 text-red-800 dark:bg-red-950/50 dark:text-red-200";
-  return "bg-[#efefe7] text-[#68685f] dark:bg-[#252521] dark:text-[#bdbdb4]";
+function TaskStatusRibbon({ activity, checkpoint }) {
+  const evidence = activityEvidenceStatus(activity);
+  const updatedAt = activity?.updated_at || checkpoint?.boundary?.captured_at;
+
+  return (
+    <dl className="relative grid border-t border-white/10 bg-black/10 sm:grid-cols-2" aria-label="Active task status">
+      <StatusRibbonItem
+        label="Evidence"
+        value={evidence.value}
+        detail={evidence.detail}
+        tone={evidence.tone}
+      />
+      <StatusRibbonItem
+        label="Freshness"
+        value={updatedAt ? `Updated ${formatTimeAgo(updatedAt)}` : "Time unavailable"}
+        detail={activity?.live ? "Live session activity" : "Latest available record"}
+        tone="text-white"
+      />
+    </dl>
+  );
 }
 
-function ObservedWork({ activity }) {
+function StatusRibbonItem({ label, value, detail, tone }) {
+  return (
+    <div className="border-b border-white/10 px-5 py-4 last:border-b-0 sm:border-b-0 sm:border-r sm:px-7 sm:last:border-r-0 lg:px-9">
+      <dt className="text-[9px] font-bold uppercase tracking-[0.17em] text-[#85857c]">{label}</dt>
+      <dd className={`mt-1.5 text-sm font-semibold ${tone}`}>{value}</dd>
+      <dd className="mt-1 text-[10px] leading-4 text-[#929289]">{detail}</dd>
+    </div>
+  );
+}
+
+function ObservedWork({ activity, activeTaskTitle }) {
   if (!activity) {
     return (
       <article className="app-surface relative overflow-hidden p-5 sm:p-6">
-        <SurfaceAccent />
-        <PanelLabel icon={PlayCircle}>Observed work</PanelLabel>
-        <div className="mt-8 max-w-2xl">
-          <h2 className="text-2xl font-semibold tracking-[-0.025em] text-[#171713] dark:text-white">No agent work observed yet.</h2>
-          <p className="mt-3 text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
-            Import a Codex, Claude Code, or OpenCode session to make the latest request and agent update visible here.
-          </p>
-          <Link to="/app/connectors" className="group mt-6 inline-flex items-center gap-1.5 text-xs font-bold text-[#171713] dark:text-[#d9ff68]">
-            Connect agent sessions <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
-          </Link>
-        </div>
+        <PanelLabel icon={History}>01 / Active task</PanelLabel>
+        <h2 className="mt-5 text-2xl font-semibold tracking-[-0.025em] text-[#171713] dark:text-white">Progress</h2>
+        <p className="mt-5 text-base font-semibold leading-7 text-[#171713] dark:text-white">No agent progress observed yet.</p>
+        <p className="mt-2 text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
+          Import a Codex, Claude Code, or OpenCode session to make its latest update visible here.
+        </p>
+        <Link to="/app/connectors" className="group mt-6 inline-flex items-center gap-1.5 text-xs font-bold text-[#171713] dark:text-[#d9ff68]">
+          Connect agent sessions <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
+        </Link>
       </article>
     );
   }
@@ -408,48 +549,37 @@ function ObservedWork({ activity }) {
   const checkpointBoundary = activity.evidence_level === "checkpoint_boundary";
   const unassigned = activity.evidence_level === "session_unassigned";
   const changedFiles = activity.changed_files || [];
-  const verification = activity.verification || {};
+  const activityTitle = prepareTaskCandidate(activity.request || activity.title);
+  const distinctActivityTitle = activityTitle
+    && activityTitle.toLocaleLowerCase() !== activeTaskTitle.toLocaleLowerCase();
   const detailUrl = activity.source_card_id
     ? explainCardUrl(activity.source_card_id)
     : "/app/runs";
 
   return (
     <article className="app-surface relative overflow-hidden p-5 sm:p-6">
-      <SurfaceAccent />
       <div className="relative flex flex-wrap items-center justify-between gap-3">
-        <PanelLabel icon={activity.live ? PlayCircle : History}>
-          {activity.live
-            ? "Active work"
-            : checkpointBoundary
-              ? "Work at checkpoint"
-              : observedRun
-                ? "Recorded work"
-                : "Imported session snapshot"}
-        </PanelLabel>
+        <PanelLabel icon={activity.live ? PlayCircle : History}>01 / Active task</PanelLabel>
         <ActivityBadge activity={activity} />
       </div>
 
-      <h2 className="relative mt-6 max-w-4xl text-2xl font-semibold leading-[1.2] tracking-[-0.025em] text-[#171713] dark:text-white sm:text-[28px]">
-        {cleanDisplayText(activity.request || activity.title) || "Agent request was not captured."}
-      </h2>
+      <h2 className="relative mt-5 text-2xl font-semibold tracking-[-0.025em] text-[#171713] dark:text-white">Progress</h2>
 
-      {activity.latest_update ? (
-        <div className="relative mt-6 border-l-2 border-[#c5d98a] pl-4 dark:border-[#4b5830]">
-          <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-[#85857c]">
-            {checkpointBoundary
-              ? "Last update before boundary"
-              : observedRun
-                ? "Latest recorded update"
-                : "Session update at source time"}
-          </p>
-          <p className="mt-1.5 max-w-3xl text-sm leading-6 text-[#4f4f48] dark:text-[#d0d0c7]">
-            {cleanDisplayText(activity.latest_update)}
-          </p>
+      {distinctActivityTitle ? (
+        <div className="mt-5 border-l-2 border-[#171713] pl-3 dark:border-white">
+          <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-[#85857c]">Observed request</p>
+          <h3 className="mt-1.5 text-base font-semibold leading-6 text-[#171713] dark:text-white">{activityTitle}</h3>
         </div>
       ) : null}
 
+      {activity.latest_update ? (
+        <p className="relative mt-5 text-base font-semibold leading-7 tracking-[-0.012em] text-[#171713] dark:text-white">
+          {cleanDisplayText(activity.latest_update)}
+        </p>
+      ) : null}
+
       {activity.rationale ? (
-        <div className="relative mt-5 rounded-xl bg-[#f1f1e9] px-4 py-3 dark:bg-white/[0.035]">
+        <div className="relative mt-4 rounded-xl bg-[#f1f1e9] px-4 py-3 dark:bg-white/[0.035]">
           <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-[#85857c]">
             {observedRun ? "Recorded reason" : "Stated reason"}
           </p>
@@ -461,7 +591,6 @@ function ObservedWork({ activity }) {
         <Metric icon={Bot} label={agentLabel(activity)} />
         {activity.branch ? <Metric icon={GitBranch} label={activity.branch} /> : null}
         {observedRun && changedFiles.length ? <Metric icon={FileCode2} label={`${changedFiles.length} file${changedFiles.length === 1 ? "" : "s"} changed`} /> : null}
-        {observedRun && verification.observed ? <Metric icon={TestTube2} label={verificationLabel(verification)} /> : null}
         <Metric icon={Clock3} label={activity.updated_at ? `Updated ${formatTimeAgo(activity.updated_at)}` : "Update time unavailable"} />
       </div>
 
@@ -476,7 +605,7 @@ function ObservedWork({ activity }) {
               : "This update comes from an imported transcript; repository changes were not observed."}
         </p>
         <Link to={detailUrl} className="group inline-flex shrink-0 items-center gap-1.5 text-xs font-bold text-[#171713] dark:text-[#d9ff68]">
-          {activity.source_card_id ? "Open session evidence" : checkpointBoundary ? "Inspect checkpoint evidence" : "Inspect recorded run"}
+          {activity.source_card_id ? "Explain session evidence" : checkpointBoundary ? "Inspect checkpoint evidence" : "Inspect run evidence"}
           <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
         </Link>
       </div>
@@ -484,31 +613,40 @@ function ObservedWork({ activity }) {
   );
 }
 
-function ObservedResult({ activity }) {
+function ObservedResult({ activity, checkpoint, attentionCount }) {
   const outcome = activity?.outcome || null;
   const verification = activity?.verification || {};
   const changedFiles = activity?.changed_files || [];
+  const trust = activityEvidenceStatus(activity);
+  const checkpointVerified = checkpoint?.verification?.status === "verified";
 
   return (
     <article className="app-surface p-5 sm:p-6">
-      <PanelLabel icon={CheckCircle2}>{activity?.evidence_level === "checkpoint_boundary" ? "Result at checkpoint" : "Latest observed result"}</PanelLabel>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <PanelLabel icon={CheckCircle2}>02 / Trust</PanelLabel>
+        <span className={`rounded-full bg-[#f1f1ec] px-2.5 py-1 text-[9px] font-bold dark:bg-white/[0.06] ${trust.panelTone}`}>
+          {trust.value}
+        </span>
+      </div>
+      <h2 className="mt-5 text-2xl font-semibold tracking-[-0.025em] text-[#171713] dark:text-white">Verification</h2>
       {outcome ? (
         <>
-          <p className="mt-7 text-lg font-semibold leading-7 tracking-[-0.012em] text-[#171713] dark:text-white">
+          <p className="mt-5 text-base font-semibold leading-7 tracking-[-0.012em] text-[#171713] dark:text-white">
             {cleanDisplayText(outcome.summary) || "A terminal outcome was recorded."}
           </p>
-          <div className="mt-6 space-y-2.5 border-t border-[#e5e5dd] pt-4 dark:border-[#292925]">
+          <div className="mt-5 space-y-2.5 border-t border-[#e5e5dd] pt-4 dark:border-[#292925]">
             {changedFiles.length ? <EvidenceRow label="Changed" value={`${changedFiles.length} file${changedFiles.length === 1 ? "" : "s"}`} /> : null}
             {verification.observed ? <EvidenceRow label="Checks" value={verificationLabel(verification)} /> : null}
             <EvidenceRow label="Observed" value={formatTimeAgo(outcome.observed_at || activity?.updated_at)} />
           </div>
-          <Link to="/app/runs" className="group mt-6 inline-flex items-center gap-1.5 text-xs font-bold text-[#171713] dark:text-[#d9ff68]">
-            View run evidence <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
-          </Link>
         </>
       ) : (
         <>
-          <p className="mt-7 text-lg font-semibold leading-7 text-[#171713] dark:text-white">No verified result captured.</p>
+          <p className="mt-5 text-base font-semibold leading-7 text-[#171713] dark:text-white">
+            {activity?.evidence_level?.startsWith("session_")
+              ? "Agent-reported progress is not repository-verified."
+              : "No verified result captured."}
+          </p>
           <p className="mt-2 text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
             {activity?.evidence_level?.startsWith("session_")
               ? "The session contains an agent update, but no linked repository result or check evidence."
@@ -521,6 +659,71 @@ function ObservedResult({ activity }) {
           ) : null}
         </>
       )}
+      {checkpointVerified ? (
+        <p className="mt-5 border-t border-[#e5e5dd] pt-4 text-[11px] leading-5 text-[#68685f] dark:border-[#292925] dark:text-[#aaa9a0]">
+          The saved recovery point is verified separately. That does not verify newer activity.
+        </p>
+      ) : null}
+      <div className="mt-5 flex flex-col gap-2 border-t border-[#e5e5dd] pt-4 dark:border-[#292925]">
+        <Link to="/app/explain" className="group inline-flex items-center gap-1.5 text-xs font-bold text-[#171713] dark:text-[#d9ff68]">
+          Explain evidence <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
+        </Link>
+        {attentionCount ? (
+          <span className="text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+            {attentionCount} item{attentionCount === 1 ? "" : "s"} need attention
+          </span>
+        ) : (
+          <span className="text-[10px] text-[#85857c]">No visible blocker, conflict, or stale evidence.</span>
+        )}
+      </div>
+    </article>
+  );
+}
+
+function ContinuationSummary({ checkpoint, latestSession }) {
+  const currentness = checkpoint?.currentness?.state;
+  const outdated = currentness === "superseded" || currentness === "historical";
+  const savedNextAction = prepareTaskCandidate(checkpoint?.sections?.exact_next_action?.[0]?.statement);
+  const nextAction = savedNextAction
+    || (latestSession
+      ? "Capture the current session to preserve its exact next action."
+      : "Choose or import an agent session before continuing.");
+
+  return (
+    <article className="app-surface flex flex-col p-5 sm:p-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <PanelLabel icon={Clipboard}>03 / Continue</PanelLabel>
+        {checkpoint ? (
+          <span className={`rounded-full px-2.5 py-1 text-[9px] font-bold ${outdated ? "bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-200" : "bg-[#edf3d7] text-[#617324] dark:bg-[#d9ff68]/10 dark:text-[#d9ff68]"}`}>
+            {outdated ? "Earlier state" : "Saved state"}
+          </span>
+        ) : null}
+      </div>
+      <h2 className="mt-5 text-2xl font-semibold tracking-[-0.025em] text-[#171713] dark:text-white">Exact next action</h2>
+      <p className="mt-5 text-base font-semibold leading-7 tracking-[-0.012em] text-[#171713] dark:text-white">
+        {nextAction}
+      </p>
+      <p className="mt-3 text-[11px] leading-5 text-[#68685f] dark:text-[#aaa9a0]">
+        {checkpoint
+          ? outdated
+            ? "This instruction belongs to an earlier recovery point; newer activity is not merged into it."
+            : "This instruction was saved at the recovery boundary and remains separate from newer work."
+          : latestSession
+            ? "No exact next action has been preserved in a structured recovery point yet."
+            : "No session continuation is available yet."}
+      </p>
+      <div className="mt-auto pt-6">
+        {checkpoint || latestSession ? (
+          <a href="#continuity-checkpoint" className="group inline-flex items-center gap-1.5 text-xs font-bold text-[#171713] dark:text-[#d9ff68]">
+            {checkpoint ? "Review recovery point" : "Capture recovery point"}
+            <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
+          </a>
+        ) : (
+          <Link to="/app/library" className="group inline-flex items-center gap-1.5 text-xs font-bold text-[#171713] dark:text-[#d9ff68]">
+            Choose work <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
+          </Link>
+        )}
+      </div>
     </article>
   );
 }
@@ -610,19 +813,51 @@ function UnassignedSessions({ count, cardId }) {
 function PanelLabel({ icon: Icon, children }) {
   return (
     <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#77776e] dark:text-[#929289]">
-      <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#edf3d7] text-[#708327] dark:bg-[#d9ff68]/10 dark:text-[#d9ff68]"><Icon className="h-3.5 w-3.5" /></span>
+      <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       {children}
     </div>
   );
 }
 
-function SurfaceAccent() {
-  return (
-    <>
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[#accf3d] to-transparent opacity-80 dark:via-[#d9ff68]" />
-      <div className="pointer-events-none absolute -right-20 -top-24 h-52 w-52 rounded-full bg-[#d9ff68]/10 blur-3xl dark:bg-[#d9ff68]/[0.055]" />
-    </>
-  );
+function activityEvidenceStatus(activity) {
+  if (!activity) {
+    return {
+      value: "No evidence",
+      detail: "Nothing observed or reported",
+      tone: "text-[#c5c5bc]",
+      panelTone: "text-[#68685f] dark:text-[#bdbdb4]",
+    };
+  }
+  if (activity.evidence_level === "observed_run") {
+    return {
+      value: "Observed run",
+      detail: "Repository and run evidence",
+      tone: "text-[#d9ff68]",
+      panelTone: "text-[#617324] dark:text-[#d9ff68]",
+    };
+  }
+  if (activity.evidence_level === "checkpoint_boundary") {
+    return {
+      value: "Saved boundary",
+      detail: "Immutable recovery evidence",
+      tone: "text-sky-200",
+      panelTone: "text-sky-700 dark:text-sky-200",
+    };
+  }
+  if (activity.evidence_level === "session_unassigned") {
+    return {
+      value: "Needs assignment",
+      detail: "Excluded from project truth",
+      tone: "text-amber-200",
+      panelTone: "text-amber-700 dark:text-amber-200",
+    };
+  }
+  return {
+    value: "Agent-reported",
+    detail: "Imported session claim",
+    tone: "text-sky-200",
+    panelTone: "text-sky-700 dark:text-sky-200",
+  };
 }
 
 function ActivityBadge({ activity }) {
@@ -634,9 +869,18 @@ function ActivityBadge({ activity }) {
         ? "Needs assignment"
         : activity.refreshable ? "Auto-updating" : "Imported session";
   return (
-    <span className={`rounded-full px-2.5 py-1 text-[9px] font-bold ${activity.live ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-400/10 dark:text-emerald-200" : "bg-[#efefe7] text-[#68685f] dark:bg-[#252521] dark:text-[#bdbdb4]"}`}>
+    <span className="rounded-full border border-[#deded8] bg-[#f5f5f2] px-2.5 py-1 text-[9px] font-bold text-[#68685f] dark:border-[#292929] dark:bg-[#111111] dark:text-[#bdbdb4]">
       {label}
     </span>
+  );
+}
+
+function BoundaryDetail({ label, value }) {
+  return (
+    <div>
+      <dt className="text-[9px] font-semibold text-[#85857c]">{label}</dt>
+      <dd className="mt-1 text-xs font-semibold text-[#383832] dark:text-[#deded6]">{value}</dd>
+    </div>
   );
 }
 
@@ -730,7 +974,25 @@ function fallbackActivity(digest) {
 }
 
 function prepareTaskCandidate(value) {
-  const task = cleanDisplayText(value);
+  let raw = String(value || "");
+  const requestMarker = raw.match(/^#{1,6}\s*My request for Codex:\s*$/im);
+  if (requestMarker?.index != null) {
+    raw = raw.slice(requestMarker.index + requestMarker[0].length);
+  }
+  raw = raw
+    .replace(/<image\b[\s\S]*?<\/image>/gi, " ")
+    .split(/\r?\n/)
+    .filter((rawLine) => {
+      const plain = rawLine.replace(/^[#>*\-\d.)\s]+/, "").trim();
+      const lowered = plain.toLowerCase();
+      if (!plain) return true;
+      if (["files mentioned by the user:", "my request for codex:"].includes(lowered)) return false;
+      if (/^(?:screenshot\s+\d{4}-\d{2}-\d{2}\s+at\s+\d{1,2}(?:[.:]\d{2}){1,2}|codex-clipboard-[a-z0-9-]+)(?:\.(?:png|jpe?g|webp))?(?::.*)?$/i.test(plain)) return false;
+      if (/(?:\/var\/folders\/|\/private\/var\/|\/temporaryitems\/|screencaptureui_)/i.test(rawLine) && /\.(?:png|jpe?g|webp)(?:["'>:]|$)/i.test(rawLine)) return false;
+      return !/^(?:image\s+name\s*=|path\s*=|\[image\s+#)/i.test(plain);
+    })
+    .join("\n");
+  const task = cleanDisplayText(raw);
   if (!task) return "";
   const lowered = task.toLowerCase();
   const runtimeMarkers = [
@@ -741,7 +1003,29 @@ function prepareTaskCandidate(value) {
     "sandbox_permissions",
     "internal_chat_message_metadata",
   ];
-  return runtimeMarkers.some((marker) => lowered.includes(marker)) ? "" : task;
+  const attachmentMarkers = [
+    "/var/folders/",
+    "/private/var/",
+    "/temporaryitems/",
+    "screencaptureui_",
+    "files mentioned by the user",
+    "image name=",
+  ];
+  const screenshotArtifact = (
+    /\bscreenshot\s+\d{4}-\d{2}-\d{2}\s+at\s+\d{1,2}(?:[.:]\d{2}){1,2}/i.test(task)
+    && /\.(?:png|jpe?g|webp)\b/i.test(task)
+  );
+  return runtimeMarkers.some((marker) => lowered.includes(marker))
+    || attachmentMarkers.some((marker) => lowered.includes(marker))
+    || screenshotArtifact
+    ? ""
+    : task;
+}
+
+function cleanRecoveryText(value) {
+  return cleanDisplayText(value)
+    .replace(/^continue:\s*(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})?\s*/i, "")
+    .trim();
 }
 
 function distinctCardDetail(card, fallback) {

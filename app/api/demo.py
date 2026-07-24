@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db_session
 from app.models import Connector, SourceDocument, Workspace
 from app.services.ingest import IngestionService
@@ -160,6 +161,8 @@ async def seed_demo(
     payload: SeedDemoRequest | None = None,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
+    if not settings.demo_endpoints_enabled:
+        raise HTTPException(status_code=404, detail="Not found")
     workspace = await _resolve_workspace(session, payload.workspace_id if payload else None)
     ingestor = IngestionService(session)
 

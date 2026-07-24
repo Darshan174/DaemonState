@@ -13,7 +13,7 @@ from app.api.dependencies import get_access_scope
 from app.database import get_db_session
 from app.models import SessionEvent, SourceDocument, Workspace, WorkCheckpoint
 from app.services.access import AccessScope, source_access_predicate
-from app.services.checkpoint_verifier import verify_checkpoint
+from app.services.checkpoint_verifier import compare_checkpoint_repository, verify_checkpoint
 from app.services.checkpoints import (
     capture_checkpoint,
     checkpoints_to_dicts,
@@ -48,12 +48,24 @@ class CheckpointResumeRequest(BaseModel):
 @router.get("/checkpoints")
 async def get_checkpoints(
     workspace_id: UUID,
+    provider: str | None = Query(default=None, min_length=1, max_length=50),
+    session_id: str | None = Query(default=None, min_length=1, max_length=255),
     limit: int = Query(default=50, ge=1, le=100),
     session: AsyncSession = Depends(get_db_session),
     access_scope: AccessScope = Depends(get_access_scope),
 ) -> dict:
     await _require_workspace(session, workspace_id, access_scope)
-    checkpoints = await list_checkpoints(session, workspace_id=workspace_id, limit=limit)
+    try:
+        checkpoints = await list_checkpoints(
+            session,
+            workspace_id=workspace_id,
+            limit=limit,
+            provider=provider,
+            session_id=session_id,
+            access_scope=access_scope,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     visible = [
         checkpoint for checkpoint in checkpoints
         if await _checkpoint_sources_allowed(
@@ -63,17 +75,34 @@ async def get_checkpoints(
             access_scope,
         )
     ]
-    return {"checkpoints": await checkpoints_to_dicts(session, visible)}
+    return {
+        "checkpoints": await checkpoints_to_dicts(
+            session,
+            visible,
+            access_scope=access_scope,
+        )
+    }
 
 
 @router.get("/checkpoints/latest")
 async def get_latest_checkpoint(
     workspace_id: UUID,
+    provider: str | None = Query(default=None, min_length=1, max_length=50),
+    session_id: str | None = Query(default=None, min_length=1, max_length=255),
     session: AsyncSession = Depends(get_db_session),
     access_scope: AccessScope = Depends(get_access_scope),
 ) -> dict:
     await _require_workspace(session, workspace_id, access_scope)
-    checkpoint = await latest_checkpoint(session, workspace_id=workspace_id)
+    try:
+        checkpoint = await latest_checkpoint(
+            session,
+            workspace_id=workspace_id,
+            provider=provider,
+            session_id=session_id,
+            access_scope=access_scope,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if checkpoint is None or not await _checkpoint_sources_allowed(
         session,
         checkpoint,
@@ -81,7 +110,13 @@ async def get_latest_checkpoint(
         access_scope,
     ):
         raise HTTPException(status_code=404, detail="Checkpoint not found")
-    return (await checkpoints_to_dicts(session, [checkpoint]))[0]
+    return (
+        await checkpoints_to_dicts(
+            session,
+            [checkpoint],
+            access_scope=access_scope,
+        )
+    )[0]
 
 
 @router.get("/checkpoints/{checkpoint_id}")
@@ -94,7 +129,13 @@ async def get_checkpoint_by_id(
     checkpoint = await _accessible_checkpoint(
         session, checkpoint_id, workspace_id, access_scope
     )
-    return (await checkpoints_to_dicts(session, [checkpoint]))[0]
+    return (
+        await checkpoints_to_dicts(
+            session,
+            [checkpoint],
+            access_scope=access_scope,
+        )
+    )[0]
 
 
 @router.post("/checkpoints/capture")
@@ -144,7 +185,13 @@ async def create_checkpoint(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     loaded = await get_checkpoint(session, checkpoint.id)
     assert loaded is not None
-    return (await checkpoints_to_dicts(session, [loaded]))[0]
+    return (
+        await checkpoints_to_dicts(
+            session,
+            [loaded],
+            access_scope=access_scope,
+        )
+    )[0]
 
 
 @router.post("/checkpoints/{checkpoint_id}/verify")
@@ -172,7 +219,29 @@ async def run_checkpoint_verification(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     loaded = await get_checkpoint(session, checkpoint_id)
     assert loaded is not None
-    return (await checkpoints_to_dicts(session, [loaded]))[0]
+    return (
+        await checkpoints_to_dicts(
+            session,
+            [loaded],
+            access_scope=access_scope,
+        )
+    )[0]
+
+
+@router.get("/checkpoints/{checkpoint_id}/compare")
+async def compare_checkpoint_with_repository(
+    checkpoint_id: UUID,
+    workspace_id: UUID,
+    session: AsyncSession = Depends(get_db_session),
+    access_scope: AccessScope = Depends(get_access_scope),
+) -> dict:
+    checkpoint = await _accessible_checkpoint(
+        session,
+        checkpoint_id,
+        workspace_id,
+        access_scope,
+    )
+    return await compare_checkpoint_repository(checkpoint)
 
 
 @router.post("/checkpoints/{checkpoint_id}/resume")

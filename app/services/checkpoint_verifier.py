@@ -11,14 +11,58 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import CheckpointVerification
+from app.models import CheckpointVerification, WorkCheckpoint
 from app.services.checkpoints import CHECKPOINT_CATEGORIES, checkpoint_to_dict, get_checkpoint
 from app.services.local_harness import capture_repository_snapshot, run_repository_command
+from app.time import utc_now
 
 
-VERIFIER_POLICY_VERSION = "checkpoint_verifier.v1"
+VERIFIER_POLICY_VERSION = "checkpoint_verifier.v2"
 MAX_REPLAY_COMMANDS = 8
 _SHELL_CONTROL_TOKENS = {"|", "||", "&&", ";", ">", ">>", "<", "<<"}
+
+
+async def compare_checkpoint_repository(checkpoint: WorkCheckpoint) -> dict[str, Any]:
+    """Compare one saved checkpoint with the current repository without mutating state."""
+
+    base = {
+        "checkpoint_id": str(checkpoint.id),
+        "checked_at": utc_now(),
+        "captured": {
+            "branch": checkpoint.branch,
+            "head_commit": checkpoint.head_commit,
+            "status_fingerprint": checkpoint.worktree_fingerprint,
+        },
+    }
+    if not checkpoint.repo_root or not checkpoint.worktree_fingerprint:
+        return {
+            **base,
+            "status": "unavailable",
+            "reason": "This saved version is not linked to a repository snapshot.",
+            "current": None,
+        }
+
+    try:
+        current = await capture_repository_snapshot(checkpoint.repo_root)
+    except (OSError, ValueError) as exc:
+        return {
+            **base,
+            "status": "unavailable",
+            "reason": str(exc),
+            "current": None,
+        }
+
+    matches = current.status_fingerprint == checkpoint.worktree_fingerprint
+    return {
+        **base,
+        "status": "matched" if matches else "changed",
+        "reason": (
+            "The current repository matches this saved version."
+            if matches
+            else "The current repository differs from this saved version."
+        ),
+        "current": current.to_dict(),
+    }
 
 
 async def verify_checkpoint(
@@ -135,33 +179,45 @@ async def verify_checkpoint(
                 "reason": "checkpoint has no repository root",
             })
         else:
-            seen: set[tuple[str, str]] = set()
+            seen: set[tuple[str, tuple[str, ...]]] = set()
             for item in evidence_results:
                 payload = item.get("payload", {})
                 command = str(payload.get("command") or "").strip()
                 cwd = str(payload.get("cwd") or checkpoint.repo_root)
-                key = (cwd, command)
-                if not command or key in seen:
+                if not command:
                     continue
-                seen.add(key)
                 if len(replay_results) + len(replay_rejections) >= MAX_REPLAY_COMMANDS:
                     break
                 try:
-                    argv = _safe_replay_argv(command)
-                    result = await run_repository_command(
-                        checkpoint.repo_root,
-                        argv,
-                        cwd=cwd,
-                    )
-                except (OSError, ValueError, TypeError) as exc:
+                    commands = _safe_replay_commands(command)
+                except ValueError as exc:
                     replay_rejections.append({"command": command, "reason": str(exc)})
                     continue
-                replay_results.append({
-                    "command": command,
-                    "cwd": cwd,
-                    "result": result.to_dict(),
-                    "passed": result.exit_code == 0 and not result.timed_out,
-                })
+                for replay_command, argv in commands:
+                    key = (cwd, argv)
+                    if key in seen:
+                        continue
+                    if len(replay_results) + len(replay_rejections) >= MAX_REPLAY_COMMANDS:
+                        break
+                    seen.add(key)
+                    try:
+                        result = await run_repository_command(
+                            checkpoint.repo_root,
+                            argv,
+                            cwd=cwd,
+                        )
+                    except (OSError, ValueError, TypeError) as exc:
+                        replay_rejections.append({
+                            "command": replay_command,
+                            "reason": str(exc),
+                        })
+                        continue
+                    replay_results.append({
+                        "command": replay_command,
+                        "cwd": cwd,
+                        "result": result.to_dict(),
+                        "passed": result.exit_code == 0 and not result.timed_out,
+                    })
     replay_failed = any(not item["passed"] for item in replay_results)
     replay_passed = bool(replay_results) and not replay_failed
     if execute_commands:
@@ -254,7 +310,20 @@ def _structural_errors(data: dict[str, Any]) -> list[str]:
     return errors
 
 
+def _safe_replay_commands(
+    command: str,
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    if "\x00" in command:
+        raise ValueError("commands containing NUL bytes are not replayed")
+    lines = tuple(line.strip() for line in command.splitlines() if line.strip())
+    if not lines:
+        raise ValueError("command is empty")
+    return tuple((line, _safe_replay_argv(line)) for line in lines)
+
+
 def _safe_replay_argv(command: str) -> tuple[str, ...]:
+    if any(separator in command for separator in ("\n", "\r", "\x00")):
+        raise ValueError("command separators must be replayed as independent commands")
     try:
         argv = tuple(shlex.split(command))
     except ValueError as exc:

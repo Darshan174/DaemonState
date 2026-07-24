@@ -37,14 +37,14 @@ import { useProductWorkspace } from "./useProductWorkspace";
 
 
 const AREA_META = {
-  direction: { label: "Direction", accent: "#7357d9", soft: "rgba(115,87,217,0.13)" },
-  execution: { label: "Execution", accent: "#3d7ff2", soft: "rgba(61,127,242,0.12)" },
-  uncertainty: { label: "Uncertainty", accent: "#db7046", soft: "rgba(219,112,70,0.13)" },
-  learning: { label: "Learning", accent: "#a27818", soft: "rgba(162,120,24,0.13)" },
-  delivery: { label: "Delivery", accent: "#218c72", soft: "rgba(33,140,114,0.13)" },
-  proof: { label: "Proof", accent: "#2f8061", soft: "rgba(47,128,97,0.13)" },
-  ownership: { label: "Ownership", accent: "#a04e83", soft: "rgba(160,78,131,0.12)" },
-  history: { label: "History", accent: "#667085", soft: "rgba(102,112,133,0.13)" },
+  direction: { label: "Direction", accent: "#68721f", soft: "rgba(104,114,31,0.10)" },
+  execution: { label: "Execution", accent: "#416781", soft: "rgba(65,103,129,0.09)" },
+  uncertainty: { label: "Uncertainty", accent: "#9a5e38", soft: "rgba(154,94,56,0.09)" },
+  learning: { label: "Learning", accent: "#786337", soft: "rgba(120,99,55,0.09)" },
+  delivery: { label: "Delivery", accent: "#3f6d5e", soft: "rgba(63,109,94,0.09)" },
+  proof: { label: "Proof", accent: "#3f6d5e", soft: "rgba(63,109,94,0.09)" },
+  ownership: { label: "Ownership", accent: "#6d5c7d", soft: "rgba(109,92,125,0.09)" },
+  history: { label: "History", accent: "#6b6b65", soft: "rgba(107,107,101,0.09)" },
 };
 
 const MEMORY_VIEWS = [
@@ -108,7 +108,19 @@ export default function ProjectMemory() {
   const selectedView = MEMORY_VIEWS.find((item) => item.id === view) || MEMORY_VIEWS[0];
   const activeRecordCount = memoryQuery.data?.totals?.active || 0;
   const reviewRecordCount = memoryQuery.data?.totals?.needs_review || 0;
+  const peopleRecordCount = memoryQuery.data?.totals?.people_and_dates || 0;
   const historyRecordCount = memoryQuery.data?.totals?.history || 0;
+  const currentGoal = memoryQuery.data?.current_goal || null;
+  const goalType = MEMORY_TYPES.find((type) => type.id === "goal");
+  const displayedTypes = visibleTypes.filter(
+    (type) => !(view === "active" && type.id === "goal" && !search.trim()),
+  );
+  const viewCounts = {
+    active: activeRecordCount,
+    review: reviewRecordCount,
+    people: peopleRecordCount,
+    history: historyRecordCount,
+  };
   const excludedSessionCount = Number(memoryQuery.data?.scope?.excluded_unknown_session_components || 0)
     + Number(memoryQuery.data?.scope?.excluded_irrelevant_session_components || 0);
   const excludedLowIntegrityCount = Number(memoryQuery.data?.scope?.excluded_unconfirmable_agent_components || 0)
@@ -146,6 +158,17 @@ export default function ProjectMemory() {
     }
   };
 
+  const openMemoryType = (type) => {
+    setReviewError(null);
+    setDetailLimit(50);
+    setSelectedType(type);
+  };
+
+  const selectView = (nextView) => {
+    setView(nextView);
+    setSelectedType(null);
+  };
+
   if (!workspace.workspacesQuery.isLoading && !workspace.activeWorkspaceId) {
     return (
       <WorkspaceTopicGate
@@ -158,54 +181,79 @@ export default function ProjectMemory() {
 
   return (
     <div className="relative mx-auto w-full max-w-7xl pb-16">
-      <header className="border-b border-[#d8d8cf] pb-7 dark:border-[#252522]">
-        <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <p className="text-[11px] font-semibold text-[#77776e] dark:text-[#929289]">{workspace.activeWorkspace?.name || "Project"}</p>
-            <h1 className="mt-2 text-4xl font-semibold tracking-[-0.05em] text-[#171713] dark:text-white sm:text-5xl">Project memory</h1>
-            <p className="mt-3 max-w-xl text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
-              Source-backed project records with their verification state and history.
+      <header className="border-b border-[#d8d8cf] pb-8 dark:border-[#252522] sm:pb-10">
+        <div className="grid gap-8 lg:grid-cols-[minmax(0,1.4fr)_minmax(300px,0.6fr)] lg:items-end">
+          <div className="max-w-3xl">
+            <h1 className="text-3xl font-black tracking-[-0.035em] text-[#171713] dark:text-white sm:text-4xl">Project memory</h1>
+            <p className="mt-4 max-w-2xl text-sm leading-6 text-[#5f5f57] dark:text-[#b7b7ae] sm:text-[15px] sm:leading-7">
+              The project’s trusted knowledge base—what is current, where it came from, and what still needs a human decision.
             </p>
           </div>
-          <dl className="grid w-full grid-cols-3 divide-x divide-[#d8d8cf] border-y border-[#d8d8cf] py-3 dark:divide-[#30302c] dark:border-[#30302c] sm:w-auto sm:min-w-[420px]">
-            <MemoryStat value={activeRecordCount} label="Current" />
-            <MemoryStat value={reviewRecordCount} label="Needs review" />
-            <MemoryStat value={historyRecordCount} label="History" />
-          </dl>
+          <div className="border-l-2 border-[#a7b74d] pl-4 dark:border-[#d9ff68] sm:pl-5">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#77776e] dark:text-[#929289]">Trust rule</p>
+            <p className="mt-2 text-sm font-medium leading-6 text-[#30302b] dark:text-[#deded6]">
+              Reported claims do not become current memory until their evidence is verified.
+            </p>
+          </div>
         </div>
       </header>
 
-      <div className="mt-5 flex flex-col gap-4 border-b border-[#d8d8cf] dark:border-[#252522] lg:flex-row lg:items-center lg:justify-between">
-        <nav aria-label="Memory views" className="no-scrollbar flex min-w-0 gap-6 overflow-x-auto">
-          {MEMORY_VIEWS.map((memoryView) => (
+      <section aria-labelledby="memory-priorities-heading" className="grid border-b border-[#d8d8cf] dark:border-[#252522] lg:grid-cols-[minmax(0,1.6fr)_minmax(320px,0.8fr)]">
+        <div className="border-b border-[#d8d8cf] py-7 dark:border-[#252522] lg:border-b-0 lg:border-r lg:pr-8 dark:lg:border-[#252522] sm:py-8">
+          <div className="flex items-center justify-between gap-4">
+            <p id="memory-priorities-heading" className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#77776e] dark:text-[#929289]">Current project goal</p>
+            <span className="inline-flex items-center gap-1.5 text-[10px] font-medium text-[#68721f] dark:text-[#d9ff68]">
+              <span className="h-1.5 w-1.5 rounded-full bg-current" />
+              {currentGoal?.source_kind === "active_agent_run" ? "Controlled by active run" : currentGoal ? "Explicitly selected" : "Not selected"}
+            </span>
+          </div>
+          <h2 className="mt-5 max-w-3xl text-2xl font-semibold leading-tight tracking-[-0.04em] text-[#171713] dark:text-white sm:text-3xl">
+            {currentGoal?.title || "No current goal selected"}
+          </h2>
+          <p className="mt-3 max-w-2xl text-xs leading-5 text-[#68685f] dark:text-[#aaa9a0]">
+            {currentGoal
+              ? "Shown as the workspace focus in Memory and Now, and used only when you explicitly prepare context."
+              : "Set a display-only workspace focus for Memory, Now, and context you explicitly prepare."}
+          </p>
+          <button
+            type="button"
+            aria-label="Open Current goal"
+            onClick={() => openMemoryType(goalType)}
+            className="mt-5 inline-flex items-center gap-2 text-xs font-semibold text-[#31312c] outline-none underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-[#68721f] focus-visible:ring-offset-4 dark:text-[#e0e0d8] dark:focus-visible:ring-[#d9ff68] dark:focus-visible:ring-offset-[#090908]"
+          >
+            {currentGoal ? "Review project goal" : "Set project goal"}
+            <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className="py-7 lg:pl-8 sm:py-8">
+          <h2 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#77776e] dark:text-[#929289]">Memory health</h2>
+          <dl className="mt-5 divide-y divide-[#deded6] border-y border-[#deded6] dark:divide-[#30302c] dark:border-[#30302c]">
+            <MemoryHealthStat
+              value={activeRecordCount}
+              label="Trusted current memory"
+              description="Verified or directly observed"
+              tone="trusted"
+            />
+            <MemoryHealthStat
+              value={reviewRecordCount}
+              label="Needs human review"
+              description={reviewRecordCount ? "Waiting for a decision" : "Nothing waiting"}
+              tone={reviewRecordCount ? "review" : "neutral"}
+            />
+          </dl>
+          {reviewRecordCount ? (
             <button
               type="button"
-              key={memoryView.id}
-              aria-pressed={view === memoryView.id}
-              onClick={() => { setView(memoryView.id); setSelectedType(null); }}
-              className={`relative shrink-0 pb-3 text-[11px] font-semibold transition-colors duration-200 ${
-                view === memoryView.id
-                  ? "text-[#171713] dark:text-white"
-                  : "text-[#85857c] hover:text-[#363630] dark:hover:text-[#d8d8cf]"
-              }`}
+              onClick={() => selectView("review")}
+              className="mt-4 inline-flex items-center gap-2 text-xs font-semibold text-[#8a4d2d] outline-none underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-[#9a5e38] focus-visible:ring-offset-4 dark:text-[#e4ab85] dark:focus-visible:ring-offset-[#090908]"
             >
-              {memoryView.label}
-              {view === memoryView.id ? <span className="absolute inset-x-0 -bottom-px h-0.5 bg-[#171713] dark:bg-[#d9ff68]" /> : null}
+              Review {reviewRecordCount.toLocaleString()} {reviewRecordCount === 1 ? "item" : "items"}
+              <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
-          ))}
-        </nav>
-        <div className="relative mb-3 w-full shrink-0 lg:w-64">
-          <Search className="pointer-events-none absolute left-0 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#85857c]" />
-          <input
-            type="search"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            aria-label="Search memory records"
-            placeholder="Search records and evidence"
-            className="h-9 w-full border-0 border-b border-[#cfcfc5] bg-transparent pl-6 pr-1 text-xs font-medium text-[#171713] outline-none transition-colors placeholder:text-[#9b9b92] focus:border-[#171713] focus:ring-0 dark:border-[#393934] dark:text-white dark:focus:border-[#d9ff68]"
-          />
+          ) : null}
         </div>
-      </div>
+      </section>
 
       {memoryQuery.isError ? (
         <div role="alert" className="mt-6 border-y border-amber-300 py-3 text-xs font-medium text-amber-900 dark:border-amber-900/70 dark:text-amber-200">
@@ -224,30 +272,65 @@ export default function ProjectMemory() {
         </p>
       ) : null}
 
-      <section aria-label="Project memory types" className="mt-9">
-        {visibleTypes.length ? (
+      <section aria-labelledby="memory-browser-heading" className="mt-10">
+        <div className="grid gap-5 border-b border-[#d8d8cf] pb-5 dark:border-[#252522] lg:grid-cols-[minmax(0,1fr)_minmax(260px,0.38fr)] lg:items-end">
+          <div className="min-w-0">
+            <h2 id="memory-browser-heading" className="text-lg font-semibold tracking-[-0.03em]">Browse project knowledge</h2>
+            <nav aria-label="Memory views" className="no-scrollbar mt-4 flex min-w-0 gap-2 overflow-x-auto pb-1">
+              {MEMORY_VIEWS.map((memoryView) => (
+                <button
+                  type="button"
+                  key={memoryView.id}
+                  aria-label={memoryView.label}
+                  aria-pressed={view === memoryView.id}
+                  onClick={() => selectView(memoryView.id)}
+                  className={`inline-flex min-h-9 shrink-0 items-center gap-2 rounded-full border px-3.5 text-[10px] font-semibold outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[#68721f] focus-visible:ring-offset-2 dark:focus-visible:ring-[#d9ff68] dark:focus-visible:ring-offset-[#090908] ${
+                    view === memoryView.id
+                      ? "border-[#24241f] bg-[#24241f] text-white dark:border-[#d9ff68] dark:bg-[#d9ff68] dark:text-[#11110f]"
+                      : "border-[#d4d4cb] text-[#68685f] hover:border-[#99998f] hover:text-[#24241f] dark:border-[#34342f] dark:text-[#aaa9a0] dark:hover:border-[#62625b] dark:hover:text-white"
+                  }`}
+                >
+                  {memoryView.label}
+                  <span className={`tabular-nums ${view === memoryView.id ? "opacity-70" : "text-[#929289]"}`}>{viewCounts[memoryView.id].toLocaleString()}</span>
+                </button>
+              ))}
+            </nav>
+          </div>
           <div>
-            <div className="mb-5 flex items-end justify-between gap-6 border-b border-[#dfdfd7] pb-4 dark:border-[#252522]">
+            <label htmlFor="memory-search" className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#77776e] dark:text-[#929289]">Search this workspace</label>
+            <div className="relative mt-2">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#85857c]" aria-hidden="true" />
+              <input
+                id="memory-search"
+                type="search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Records, evidence, sources…"
+                className="h-10 w-full rounded-lg border border-[#d4d4cb] bg-[#fbfbf6] pl-9 pr-3 text-xs font-medium text-[#171713] outline-none transition-colors placeholder:text-[#9b9b92] focus:border-[#68721f] focus:ring-2 focus:ring-[#68721f]/20 dark:border-[#34342f] dark:bg-[#11110f] dark:text-white dark:focus:border-[#d9ff68] dark:focus:ring-[#d9ff68]/15"
+              />
+            </div>
+          </div>
+        </div>
+
+        {displayedTypes.length ? (
+          <div>
+            <div className="flex items-end justify-between gap-6 py-6">
               <div>
-                <h2 className="text-lg font-semibold tracking-[-0.025em]">{selectedView.label}</h2>
+                <h3 className="text-base font-semibold tracking-[-0.025em]">{selectedView.label}</h3>
                 <p className="mt-1 max-w-2xl text-xs leading-5 text-[#74746b] dark:text-[#aaa9a0]">{selectedView.description}</p>
               </div>
-              <span className="shrink-0 text-[10px] font-medium text-[#8a8a80]">{visibleTypes.length} {visibleTypes.length === 1 ? "area" : "areas"}</span>
+              <span className="shrink-0 text-[10px] font-medium text-[#8a8a80]">{displayedTypes.length} {displayedTypes.length === 1 ? "area" : "areas"}</span>
             </div>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-              {visibleTypes.map((type, index) => (
-                <MemoryTypeCard
+            <div className="border-t border-[#cfcfc5] dark:border-[#353530]">
+              {displayedTypes.map((type, index) => (
+                <MemoryTypeRow
                   key={type.id}
                   type={type}
                   index={index}
                   loading={memoryQuery.isLoading}
                   count={sectionsById[type.id]?.total || 0}
                   items={sectionsById[type.id]?.records || []}
-                  onOpen={() => {
-                    setReviewError(null);
-                    setDetailLimit(50);
-                    setSelectedType(type);
-                  }}
+                  onOpen={() => openMemoryType(type)}
                 />
               ))}
             </div>
@@ -284,17 +367,25 @@ export default function ProjectMemory() {
 }
 
 
-function MemoryStat({ value, label }) {
+function MemoryHealthStat({ value, label, description, tone }) {
+  const toneClass = tone === "trusted"
+    ? "text-[#68721f] dark:text-[#d9ff68]"
+    : tone === "review"
+      ? "text-[#9a5e38] dark:text-[#e4ab85]"
+      : "text-[#77776e] dark:text-[#aaa9a0]";
   return (
-    <div className="px-4 text-center sm:px-6">
-      <dd className="text-xl font-semibold tabular-nums tracking-[-0.03em]">{value}</dd>
-      <dt className="mt-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-[#85857c]">{label}</dt>
+    <div className="grid grid-cols-[1fr_auto] items-center gap-4 py-3">
+      <dt className="text-xs font-semibold text-[#34342f] dark:text-[#d8d8cf]">
+        <span className="block">{label}</span>
+        <span className="mt-0.5 block text-[10px] font-normal text-[#85857c]">{description}</span>
+      </dt>
+      <dd className={`text-2xl font-semibold tabular-nums tracking-[-0.04em] ${toneClass}`}>{value}</dd>
     </div>
   );
 }
 
 
-function MemoryTypeCard({ type, count, items, index, loading, onOpen }) {
+function MemoryTypeRow({ type, count, items, index, loading, onOpen }) {
   const meta = AREA_META[type.area];
   const previews = items.slice(0, 2);
   const Icon = type.icon;
@@ -303,63 +394,49 @@ function MemoryTypeCard({ type, count, items, index, loading, onOpen }) {
       type="button"
       onClick={onOpen}
       aria-label={`Open ${type.title}`}
-      className="memory-card-enter group relative min-h-[270px] w-full overflow-hidden rounded-[20px] border border-[#d7d7ce] bg-[#fbfbf6] p-5 text-left outline-none transition-[transform,border-color,box-shadow] duration-300 ease-out hover:-translate-y-1.5 hover:border-[var(--memory-accent)] hover:shadow-[0_18px_44px_rgba(23,23,19,0.1)] focus-visible:border-[var(--memory-accent)] focus-visible:ring-2 focus-visible:ring-[var(--memory-accent)] focus-visible:ring-offset-2 dark:border-[#2c2c28] dark:bg-[#0f0f0d] dark:focus-visible:ring-offset-[#090908] dark:hover:shadow-[0_20px_48px_rgba(0,0,0,0.46)]"
+      className="memory-card-enter group relative grid w-full gap-4 border-b border-[#d8d8cf] py-5 text-left outline-none transition-colors hover:bg-[#efefe8]/65 focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--memory-accent)] dark:border-[#30302c] dark:hover:bg-white/[0.025] sm:grid-cols-[minmax(0,0.8fr)_auto] sm:px-3 lg:grid-cols-[minmax(240px,0.75fr)_minmax(260px,1.25fr)_auto] lg:items-center lg:gap-8"
       style={{
         "--memory-accent": meta.accent,
-        animationDelay: `${Math.min(index, 12) * 30}ms`,
+        animationDelay: `${Math.min(index, 12) * 20}ms`,
       }}
     >
-      <span aria-hidden="true" className="pointer-events-none absolute -right-12 -top-16 h-48 w-48 rounded-full opacity-70 blur-3xl transition-transform duration-700 group-hover:scale-125" style={{ backgroundColor: meta.soft }} />
-      <span aria-hidden="true" className="absolute inset-y-5 left-0 w-[3px] origin-top scale-y-50 rounded-r-full opacity-70 transition-transform duration-500 group-hover:scale-y-100" style={{ backgroundColor: meta.accent }} />
+      <span className="flex min-w-0 items-start gap-3.5 pr-20 sm:pr-0">
+        <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[#d8d8cf] bg-[#f5f5ef] dark:border-[#34342f] dark:bg-[#11110f]" style={{ color: meta.accent }}>
+          <Icon className="h-4 w-4" strokeWidth={1.8} aria-hidden="true" />
+        </span>
+        <span className="min-w-0">
+          <span className="block text-[9px] font-semibold uppercase tracking-[0.13em]" style={{ color: meta.accent }}>{meta.label}</span>
+          <span className="mt-1 block text-[15px] font-semibold leading-5 tracking-[-0.02em] text-[#171713] dark:text-white">{type.title}</span>
+          <span className={`mt-1.5 flex items-center gap-1.5 text-[9px] font-medium ${count ? "text-[#5f5f57] dark:text-[#bdbdb4]" : "text-[#929289]"}`}>
+            <Fingerprint className="h-3 w-3" aria-hidden="true" />
+            {loading ? "Reading memory" : count ? "Contains source-backed records" : "No evidence captured"}
+          </span>
+        </span>
+      </span>
 
-      <span className="relative flex h-full flex-col">
-        <span className="flex items-start justify-between gap-4">
-          <span className="flex min-w-0 items-center gap-3">
-            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[13px] border shadow-[0_6px_18px_rgba(23,23,19,0.06)] transition-transform duration-300 group-hover:-rotate-3 group-hover:scale-105 dark:shadow-none" style={{ borderColor: meta.accent, color: meta.accent, backgroundColor: meta.soft }}>
-              <Icon className="h-5 w-5" strokeWidth={1.8} />
-            </span>
-            <span className="min-w-0">
-              <span className="block text-[9px] font-semibold uppercase tracking-[0.13em] text-[#8a8a80]">{meta.label}</span>
-              <span className={`mt-1 flex items-center gap-1.5 text-[10px] font-medium ${count ? "text-[#57574f] dark:text-[#bdbdb4]" : "text-[#9a9a91] dark:text-[#707069]"}`}>
-                <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: count ? meta.accent : "currentColor" }} />
-                {loading ? "Reading memory" : count ? "In memory" : "Awaiting evidence"}
+      <span className="min-w-0 sm:col-span-2 lg:col-span-1">
+        <span className="block text-[11px] leading-5 text-[#68685f] dark:text-[#aaa9a0]">{type.description}</span>
+        {previews.length ? (
+          <span className="mt-2 flex min-w-0 flex-col gap-1 text-[10px] text-[#4f4f48] dark:text-[#c8c8bf]">
+            {previews.map((item, previewIndex) => (
+              <span key={`${item.id || item.title}-${previewIndex}`} className="flex min-w-0 items-center gap-2">
+                <span className="h-px w-3 shrink-0" style={{ backgroundColor: meta.accent }} />
+                <span className="line-clamp-1">{cleanDisplayText(item.title)}</span>
               </span>
-            </span>
+            ))}
           </span>
-          <span className="text-right">
-            <span className="block text-[26px] font-semibold tabular-nums leading-none tracking-[-0.06em] text-[#252520] dark:text-[#f1f1ea]">{loading ? "—" : count}</span>
-            <span className="mt-1 block text-[8px] font-semibold uppercase tracking-[0.12em] text-[#999990]">{count === 1 ? "record" : "records"}</span>
-          </span>
-        </span>
+        ) : (
+          <span className="mt-2 block text-[9px] text-[#929289]">No observed records in this area</span>
+        )}
+      </span>
 
-        <span className="mt-5 block">
-          <span className="block text-[18px] font-semibold leading-tight tracking-[-0.035em] text-[#171713] dark:text-white">{type.title}</span>
-          <span className="mt-1.5 line-clamp-2 text-[11px] font-normal leading-[1.55] text-[#68685f] dark:text-[#aaa9a0]">{type.description}</span>
+      <span className="absolute right-0 top-5 flex items-center gap-3 sm:static sm:row-start-1 sm:justify-self-end lg:row-auto">
+        <span className="text-right">
+          <span className="block text-xl font-semibold tabular-nums leading-none tracking-[-0.04em] text-[#252520] dark:text-[#f1f1ea]">{loading ? "—" : count}</span>
+          <span className="mt-1 block text-[8px] font-semibold uppercase tracking-[0.1em] text-[#999990]">{count === 1 ? "record" : "records"}</span>
         </span>
-
-        <span className={`mt-5 block rounded-[13px] border px-3 py-2.5 ${previews.length ? "border-[#dfdfd7] bg-white/55 dark:border-[#292925] dark:bg-white/[0.025]" : "border-dashed border-[#d8d8cf] bg-[#f5f5ef]/65 dark:border-[#30302b] dark:bg-white/[0.015]"}`}>
-          {previews.length ? (
-            <span className="block space-y-2">
-              {previews.map((item, previewIndex) => (
-                <span key={`${item.id || item.title}-${previewIndex}`} className="flex items-center gap-2">
-                  <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: meta.accent }} />
-                  <span className="line-clamp-1 text-[10px] font-medium text-[#56564f] dark:text-[#c8c8bf]">{cleanDisplayText(item.title)}</span>
-                </span>
-              ))}
-            </span>
-          ) : (
-            <span className="flex items-center justify-between gap-3 text-[10px] text-[#8f8f86] dark:text-[#777770]">
-              <span>No observed records yet</span>
-              <span className="font-mono text-[8px] tabular-nums">{String(index + 1).padStart(2, "0")}</span>
-            </span>
-          )}
-        </span>
-
-        <span className="mt-auto flex items-center justify-between border-t border-[#dfdfd7] pt-3 text-[10px] font-semibold dark:border-[#292925]">
-          <span className="text-[#56564f] transition-colors group-hover:text-[#171713] dark:text-[#aaa9a0] dark:group-hover:text-white">Open memory</span>
-          <span className="flex h-7 w-7 items-center justify-center rounded-full border border-[#d7d7ce] text-[#77776e] transition-[transform,border-color,color,background-color] duration-300 group-hover:translate-x-0.5 group-hover:border-[var(--memory-accent)] group-hover:text-[var(--memory-accent)] dark:border-[#34342f]">
-            <ArrowRight className="h-3.5 w-3.5" />
-          </span>
+        <span className="flex h-8 w-8 items-center justify-center rounded-full border border-[#d7d7ce] text-[#77776e] transition-[transform,border-color,color] duration-200 group-hover:translate-x-0.5 group-hover:border-[var(--memory-accent)] group-hover:text-[var(--memory-accent)] dark:border-[#34342f]">
+          <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
         </span>
       </span>
     </button>
@@ -384,21 +461,56 @@ function MemoryDrawer({
   onClose,
 }) {
   const closeRef = useRef(null);
+  const drawerRef = useRef(null);
+  const onCloseRef = useRef(onClose);
   const meta = AREA_META[type.area];
   const Icon = type.icon;
 
   useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    const returnFocusTo = document.activeElement;
+    const appRoot = document.getElementById("root");
+    const previousOverflow = document.body.style.overflow;
+    appRoot?.setAttribute("inert", "");
+    document.body.style.overflow = "hidden";
     closeRef.current?.focus();
+
     const onKeyDown = (event) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(drawerRef.current?.querySelectorAll(
+        'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ) || []).filter((element) => !element.hasAttribute("hidden"));
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      appRoot?.removeAttribute("inert");
+      document.body.style.overflow = previousOverflow;
+      window.requestAnimationFrame(() => returnFocusTo?.focus?.());
+    };
+  }, []);
 
   return (
     <div className="fixed inset-0 z-[100] flex justify-end bg-[#171713]/35 dark:bg-black/70" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <aside role="dialog" aria-modal="true" aria-labelledby="memory-drawer-title" className="memory-drawer-enter relative flex h-full w-full max-w-lg flex-col border-l border-[#d8d8cf] bg-[#f7f7f2] shadow-[-20px_0_60px_rgba(23,23,19,0.16)] dark:border-[#292925] dark:bg-[#090908]">
+      <aside ref={drawerRef} role="dialog" aria-modal="true" aria-labelledby="memory-drawer-title" aria-describedby="memory-drawer-description" className="memory-drawer-enter relative flex h-[100dvh] w-full max-w-lg flex-col overscroll-contain border-l border-[#d8d8cf] bg-[#f7f7f2] shadow-[-20px_0_60px_rgba(23,23,19,0.16)] dark:border-[#292925] dark:bg-[#090908]">
         <span aria-hidden="true" className="absolute inset-y-0 left-0 w-[3px]" style={{ backgroundColor: meta.accent }} />
         <header className="border-b border-[#d8d8cf] px-5 py-5 dark:border-[#292925] sm:px-7 sm:py-6">
           <div className="flex items-start justify-between gap-4">
@@ -413,7 +525,7 @@ function MemoryDrawer({
             </div>
             <button ref={closeRef} type="button" onClick={onClose} aria-label="Close memory details" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[#d4d4cb] text-[#68685f] transition-colors hover:border-[#a9a99f] hover:text-[#171713] dark:border-[#34342f] dark:text-[#aaa9a0] dark:hover:text-white"><X className="h-4 w-4" /></button>
           </div>
-          <p className="mt-5 max-w-md text-sm leading-6 text-[#4f4f48] dark:text-[#c8c8bf]">{type.description}</p>
+          <p id="memory-drawer-description" className="mt-5 max-w-md text-sm leading-6 text-[#4f4f48] dark:text-[#c8c8bf]">{type.description}</p>
           <div className="mt-4 flex items-center gap-2 border-t border-[#dfdfd7] pt-3 text-[10px] text-[#77776e] dark:border-[#292925] dark:text-[#aaa9a0]">
             <Fingerprint className="h-3.5 w-3.5 shrink-0" />
             <span>{type.capture}</span>
@@ -436,7 +548,7 @@ function MemoryDrawer({
           ) : null}
           {items.length ? (
             <div className="overflow-hidden rounded-[12px] border border-[#d8d8cf] bg-[#fbfbf6] dark:border-[#292925] dark:bg-[#11110f]">
-              {items.map((item) => <MemoryRecord key={item.id} item={item} accent={meta.accent} reviewing={reviewingId === item.component_id} onReview={onReview} />)}
+              {items.map((item) => <MemoryRecord key={item.id} item={item} reviewing={reviewingId === item.component_id} onReview={onReview} />)}
             </div>
           ) : (
             <div className="border-y border-[#d1d1c7] px-6 py-12 text-center dark:border-[#30302b]">
@@ -461,8 +573,12 @@ function GoalEditor({ currentGoal, saving, onSave, onClear }) {
   const currentTitle = currentGoal?.title || "";
   const locked = currentGoal?.source_kind === "active_agent_run";
   const [title, setTitle] = useState(currentTitle);
+  const [confirmingClear, setConfirmingClear] = useState(false);
 
-  useEffect(() => setTitle(currentTitle), [currentTitle]);
+  useEffect(() => {
+    setTitle(currentTitle);
+    setConfirmingClear(false);
+  }, [currentTitle]);
 
   const submit = async (event) => {
     event.preventDefault();
@@ -489,27 +605,100 @@ function GoalEditor({ currentGoal, saving, onSave, onClear }) {
           : "This is a display-only workspace focus shown in Memory and Now. It does not start work, edit files, or change an agent brief by itself."}
       </p>
       <div className="mt-2.5 flex items-center justify-between gap-3">
-        {onClear ? <button type="button" disabled={saving} onClick={onClear} className="text-[10px] font-semibold text-[#7a5750] underline-offset-4 hover:underline disabled:opacity-40 dark:text-[#d6a69b]">Clear goal</button> : <span />}
+        {onClear ? <button type="button" disabled={saving} onClick={() => setConfirmingClear(true)} className="text-[10px] font-semibold text-[#7a5750] underline-offset-4 hover:underline disabled:opacity-40 dark:text-[#d6a69b]">Clear goal</button> : <span />}
         <button type="submit" disabled={locked || saving || title.trim().length < 3 || title.trim() === currentTitle} className="rounded-md bg-[#171713] px-3 py-2 text-[10px] font-semibold text-white transition-opacity disabled:opacity-35 dark:bg-[#d9ff68] dark:text-[#11110f]">{saving ? "Saving…" : currentTitle ? "Update goal" : "Set goal"}</button>
       </div>
+      {confirmingClear ? (
+        <div role="group" aria-label="Confirm clear current goal" className="mt-4 border-l-2 border-[#9a5e38] bg-[#9a5e38]/[0.06] px-3 py-3">
+          <p className="text-[10px] font-semibold text-[#633c25] dark:text-[#e4ab85]">Clear the current project goal?</p>
+          <p className="mt-1 text-[10px] leading-4 text-[#68685f] dark:text-[#aaa9a0]">This removes the focus from Memory and Now. It does not delete its history or change project files.</p>
+          <div className="mt-3 flex items-center gap-3 text-[10px] font-semibold">
+            <button type="button" disabled={saving} onClick={() => setConfirmingClear(false)} className="underline-offset-4 hover:underline disabled:opacity-40">Keep goal</button>
+            <button type="button" disabled={saving} onClick={onClear} className="rounded-md bg-[#7a4030] px-2.5 py-1.5 text-white disabled:opacity-40 dark:bg-[#d38d74] dark:text-[#171713]">{saving ? "Clearing…" : "Clear current goal"}</button>
+          </div>
+        </div>
+      ) : null}
     </form>
   );
 }
 
 
-function MemoryRecord({ item, accent, reviewing, onReview }) {
+function getTruthPresentation(item) {
+  const status = String(item?.status || "").toLowerCase();
+  const verification = String(item?.verification || "observed").toLowerCase();
+  if (status.includes("conflict") || status.includes("contested")) {
+    return { label: "Conflict flagged", Icon: GitMerge, className: "border-amber-300 text-amber-800 dark:border-amber-900 dark:text-amber-200" };
+  }
+  if (status.includes("stale") || status.includes("deprecated")) {
+    return { label: "Stale — review required", Icon: Clock3, className: "border-amber-300 text-amber-800 dark:border-amber-900 dark:text-amber-200" };
+  }
+  if (status.includes("superseded")) {
+    return { label: "Superseded", Icon: Archive, className: "border-[#c9c9c0] text-[#5f5f57] dark:border-[#393934] dark:text-[#bdbdb4]" };
+  }
+  if (status.includes("dismissed") || status.includes("rejected")) {
+    return { label: "Dismissed", Icon: XCircle, className: "border-[#c9c9c0] text-[#5f5f57] dark:border-[#393934] dark:text-[#bdbdb4]" };
+  }
+  if (status.includes("resolved")) {
+    return { label: "Resolved", Icon: CheckCheck, className: "border-[#c9c9c0] text-[#5f5f57] dark:border-[#393934] dark:text-[#bdbdb4]" };
+  }
+  if (status.includes("historical")) {
+    return { label: "Historical record", Icon: History, className: "border-[#c9c9c0] text-[#5f5f57] dark:border-[#393934] dark:text-[#bdbdb4]" };
+  }
+  if (
+    status.includes("needs_review")
+    || status.includes("unverified")
+    || status.includes("reported")
+    || verification.includes("needs_review")
+    || verification.includes("unverified")
+    || verification.includes("reported")
+  ) {
+    return { label: "Needs human review", Icon: HelpCircle, className: "border-amber-300 text-amber-800 dark:border-amber-900 dark:text-amber-200" };
+  }
+  if (verification.includes("verified") || verification.includes("confirmed")) {
+    return { label: "Verified evidence", Icon: CheckCircle2, className: "border-emerald-300 text-emerald-800 dark:border-emerald-900 dark:text-emerald-200" };
+  }
+  if (verification.includes("observed") || status.includes("observed")) {
+    return { label: "Directly observed", Icon: Fingerprint, className: "border-[#c9c9c0] text-[#5f5f57] dark:border-[#393934] dark:text-[#bdbdb4]" };
+  }
+  return {
+    label: status === "active" ? "Current record" : (status || verification).replaceAll("_", " "),
+    Icon: Fingerprint,
+    className: "border-[#c9c9c0] text-[#5f5f57] dark:border-[#393934] dark:text-[#bdbdb4]",
+  };
+}
+
+
+function MemoryRecord({ item, reviewing, onReview }) {
   const actions = new Set(item.allowed_actions || []);
   const evidence = item.evidence || null;
   const source = item.source || null;
+  const [confirmAction, setConfirmAction] = useState(null);
+  const truth = getTruthPresentation(item);
+  const TruthIcon = truth.Icon;
+  const confirmCopy = confirmAction === "supersede"
+    ? "This moves the record out of current memory while preserving it in History."
+    : "This marks the extracted record as not useful or correct and preserves that decision in History.";
+
+  useEffect(() => setConfirmAction(null), [item.id]);
+
+  const submitConfirmedReview = async () => {
+    if (!confirmAction) return;
+    await onReview(item, confirmAction);
+    setConfirmAction(null);
+  };
+
   return (
     <article className="group border-b border-[#e1e1d9] p-4 last:border-b-0 dark:border-[#292925]">
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-col items-start gap-3 sm:flex-row sm:justify-between">
         <div className="min-w-0">
           {item.kind ? <p className="mb-1 text-[9px] font-semibold uppercase tracking-[0.1em] text-[#8a8a80]">{item.kind}</p> : null}
           <h4 className="text-[13px] font-semibold leading-5">{cleanDisplayText(item.title)}</h4>
           {item.summary && cleanDisplayText(item.summary) !== cleanDisplayText(item.title) ? <p className="mt-1.5 text-[11px] leading-5 text-[#68685f] dark:text-[#aaa9a0]">{cleanDisplayText(item.summary)}</p> : null}
         </div>
-        <span className="flex shrink-0 items-center gap-1.5 text-[9px] font-medium text-[#68685f] dark:text-[#aaa9a0]"><span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: accent }} />{String(item.verification || item.status || "observed").replaceAll("_", " ")}</span>
+        <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-1 text-[9px] font-semibold ${truth.className}`}>
+          <TruthIcon className="h-3 w-3" aria-hidden="true" />
+          {truth.label}
+        </span>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[9px] font-medium text-[#8a8a80]">
         {source?.url ? (
@@ -524,7 +713,7 @@ function MemoryRecord({ item, accent, reviewing, onReview }) {
         <blockquote className="mt-3 border-l-2 border-[#cfcfc5] pl-3 text-[10px] leading-4 text-[#5f5f57] dark:border-[#3a3a34] dark:text-[#b7b7ae]">
           “{cleanDisplayText(evidence.excerpt)}”
           <span className="mt-1 block text-[9px] text-[#8a8a80]">
-            {evidence.exact ? "Exact source span" : "Captured evidence"} · {String(evidence.review_status || item.verification).replaceAll("_", " ")}
+            {evidence.exact ? "Exact source span" : "Captured evidence"} · {getTruthPresentation({ verification: evidence.review_status || item.verification }).label}
           </span>
         </blockquote>
       ) : null}
@@ -532,13 +721,26 @@ function MemoryRecord({ item, accent, reviewing, onReview }) {
         <p className="mt-2 text-[9px] text-[#8a8a80]">Last review: {item.last_review.action.replaceAll("_", " ")} by {item.last_review.reviewed_by}{item.last_review.reason ? ` — ${item.last_review.reason}` : ""}</p>
       ) : null}
       {item.component_id && actions.size ? (
-        <div className="mt-3 flex flex-wrap gap-x-3 gap-y-2 border-t border-[#e5e5dd] pt-3 text-[10px] font-semibold dark:border-[#292925]">
-          {actions.has("reopen") ? <button type="button" disabled={reviewing} onClick={() => onReview(item, "reopen")} className="text-[#4f4f48] underline-offset-4 hover:underline disabled:opacity-40 dark:text-[#d0d0c8]">Reopen</button> : null}
-          {actions.has("confirm") ? <button type="button" disabled={reviewing} onClick={() => onReview(item, "confirm")} className="text-emerald-700 underline-offset-4 hover:underline disabled:opacity-40 dark:text-emerald-300">Confirm exact evidence</button> : null}
-          {actions.has("resolve") ? <button type="button" disabled={reviewing} onClick={() => onReview(item, "resolve")} className="text-[#4f4f48] underline-offset-4 hover:underline disabled:opacity-40 dark:text-[#d0d0c8]">Resolve</button> : null}
-          {actions.has("supersede") ? <button type="button" disabled={reviewing} onClick={() => onReview(item, "supersede")} className="text-[#4f4f48] underline-offset-4 hover:underline disabled:opacity-40 dark:text-[#d0d0c8]">Supersede</button> : null}
-          {actions.has("dismiss") ? <button type="button" disabled={reviewing} onClick={() => onReview(item, "dismiss")} className="text-[#7a5750] underline-offset-4 hover:underline disabled:opacity-40 dark:text-[#d6a69b]">Dismiss</button> : null}
-          {reviewing ? <span className="text-[#8a8a80]">Saving…</span> : null}
+        <div className="mt-3 border-t border-[#e5e5dd] pt-3 text-[10px] font-semibold dark:border-[#292925]">
+          <div className="flex flex-wrap gap-x-3 gap-y-2">
+            {actions.has("reopen") ? <button type="button" disabled={reviewing} onClick={() => onReview(item, "reopen")} className="text-[#4f4f48] underline-offset-4 hover:underline disabled:opacity-40 dark:text-[#d0d0c8]">Reopen</button> : null}
+            {actions.has("confirm") ? <button type="button" disabled={reviewing} onClick={() => onReview(item, "confirm")} className="text-emerald-700 underline-offset-4 hover:underline disabled:opacity-40 dark:text-emerald-300">Confirm exact evidence</button> : null}
+            {actions.has("resolve") ? <button type="button" disabled={reviewing} onClick={() => onReview(item, "resolve")} className="text-[#4f4f48] underline-offset-4 hover:underline disabled:opacity-40 dark:text-[#d0d0c8]">Resolve</button> : null}
+            {actions.has("supersede") ? <button type="button" disabled={reviewing} onClick={() => setConfirmAction("supersede")} className="text-[#4f4f48] underline-offset-4 hover:underline disabled:opacity-40 dark:text-[#d0d0c8]">Supersede</button> : null}
+            {actions.has("dismiss") ? <button type="button" disabled={reviewing} onClick={() => setConfirmAction("dismiss")} className="text-[#7a5750] underline-offset-4 hover:underline disabled:opacity-40 dark:text-[#d6a69b]">Dismiss</button> : null}
+            {reviewing ? <span role="status" aria-live="polite" className="text-[#8a8a80]">Saving…</span> : null}
+          </div>
+          {confirmAction ? (
+            <div role="group" aria-label={`Confirm ${confirmAction}`} className="mt-3 border-l-2 border-[#9a5e38] bg-[#9a5e38]/[0.06] px-3 py-2.5">
+              <p className="font-normal leading-4 text-[#68685f] dark:text-[#aaa9a0]">{confirmCopy}</p>
+              <div className="mt-2 flex items-center gap-3">
+                <button type="button" disabled={reviewing} onClick={() => setConfirmAction(null)} className="underline-offset-4 hover:underline disabled:opacity-40">Cancel</button>
+                <button type="button" disabled={reviewing} onClick={submitConfirmedReview} className="rounded-md bg-[#7a4030] px-2.5 py-1.5 text-white disabled:opacity-40 dark:bg-[#d38d74] dark:text-[#171713]">
+                  {reviewing ? "Saving…" : `Confirm ${confirmAction}`}
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </article>

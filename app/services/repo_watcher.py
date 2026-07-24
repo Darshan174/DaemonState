@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import CodeFile, SourceDocument, Workspace
 from app.services.redaction import redact_sensitive, redact_sensitive_text
 from app.services.repo_indexer import PROJECT_ROOT_MARKERS, RepoFrame, RepoIndexer
+from app.services.repo_paths import RepositoryPathNotAllowed, validated_repository_path
 from app.services.source_revisions import ingest_source_document_revision
 from app.time import utc_now
 
@@ -231,13 +232,10 @@ def _workspace_uuid(value: str | UUID | None) -> UUID:
 
 
 def _validated_repo_root(value: str | Path) -> Path:
-    root = Path(value).expanduser().resolve()
-    if not root.exists():
-        raise RepositoryWatchError("repo_not_found", f"repo path does not exist: {root}")
-    if not root.is_dir():
-        raise RepositoryWatchError(
-            "repo_not_directory", f"repo path is not a directory: {root}"
-        )
+    try:
+        root = validated_repository_path(value)
+    except RepositoryPathNotAllowed as exc:
+        raise RepositoryWatchError("repo_not_allowed", str(exc)) from exc
     if not any((root / marker).exists() for marker in PROJECT_ROOT_MARKERS):
         raise RepositoryWatchError(
             "repo_not_project_root",

@@ -41,7 +41,10 @@ function ContextDigestSurface() {
   const [openLoopsOpen, setOpenLoopsOpen] = useState(false);
 
   const digest = digestQuery.data;
+  const requestedCardId = searchParams.get("card");
+  const requestedCard = digest?.cards?.find((card) => card.id === requestedCardId) || null;
   const selectedCard = digest?.cards?.find((card) => card.id === selectedCardId) || null;
+  const requestedCardUnavailable = Boolean(digest && requestedCardId && !requestedCard);
   const selectedFocusComponentId = focusComponentId(selectedCard);
   const timelineQuery = useRunTimeline(activeWorkspaceId, selectedFocusComponentId);
   const openLoopsQuery = useOpenLoops(activeWorkspaceId, { enabled: openLoopsOpen });
@@ -77,11 +80,9 @@ function ContextDigestSurface() {
   };
 
   useEffect(() => {
-    const requestedCardId = searchParams.get("card");
-    const requestedCard = digest?.cards?.find((card) => card.id === requestedCardId);
     setSelectedCardId(requestedCard?.id || null);
     setOpenLoopsOpen(false);
-  }, [activeWorkspaceId, digest?.cards, searchParams]);
+  }, [activeWorkspaceId, requestedCard?.id]);
 
   if (!workspacesQuery.isLoading && !activeWorkspaceId) {
     return (
@@ -218,12 +219,40 @@ function ContextDigestSurface() {
                     contextRevision={digest.generated_at}
                   />
                 </div>
+              ) : requestedCardUnavailable ? (
+                <EvidenceRecordUnavailable onClose={clearCardSelection} />
               ) : null}
             </div>
           ) : null}
         </main>
       </div>
     </div>
+  );
+}
+
+function EvidenceRecordUnavailable({ onClose }) {
+  return (
+    <aside
+      aria-labelledby="evidence-record-unavailable-title"
+      className="absolute inset-y-0 right-0 z-50 flex w-full max-w-[430px] items-center border-l border-[#deded6] bg-[#fbfbf6] p-6 shadow-[-24px_0_60px_rgba(15,23,42,0.16)] dark:border-[#292925] dark:bg-[#141411]"
+    >
+      <div className="w-full rounded-2xl border border-amber-200 bg-amber-50 p-6 text-[#3f2b12] dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100">
+        <AlertTriangle className="h-7 w-7 text-amber-600 dark:text-amber-300" aria-hidden="true" />
+        <h2 id="evidence-record-unavailable-title" className="mt-4 text-xl font-black tracking-[-0.025em]">
+          Evidence record unavailable
+        </h2>
+        <p className="mt-3 text-sm leading-6 opacity-80">
+          This record is no longer part of the current project map. It may have been superseded, archived, or filtered from current evidence.
+        </p>
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-6 inline-flex h-10 w-full items-center justify-center rounded-xl bg-[#171713] px-4 text-xs font-black text-white transition hover:bg-black dark:bg-[#d9ff68] dark:text-[#171713]"
+        >
+          Return to current evidence
+        </button>
+      </div>
+    </aside>
   );
 }
 
