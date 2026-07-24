@@ -7,12 +7,388 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from app.config import settings
-from app.models import SourceDocument, Workspace
+from app.models import CodeFile, SourceDocument, Workspace
+from app.services.session_events import NormalizedSessionEvent, persist_session_events
+from app.services.source_revisions import ingest_source_document_revision
 from app.sync.session_resolvers import (
     ResolvedSession,
     SessionDiscoveryResult,
     discover_local_ai_sessions,
 )
+
+
+async def test_library_and_resume_share_the_indexed_project_boundary(
+    client,
+    db_session,
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "context-engine"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    worktree = tmp_path / "codex-worktrees" / "task" / "context-engine"
+    worktree.mkdir(parents=True)
+    worktree_git_dir = repo / ".git" / "worktrees" / "task"
+    worktree_git_dir.mkdir(parents=True)
+    (worktree_git_dir / "commondir").write_text("../..", encoding="utf-8")
+    (worktree / ".git").write_text(
+        f"gitdir: {worktree_git_dir}\n",
+        encoding="utf-8",
+    )
+    outside = tmp_path / "another-project"
+    outside.mkdir()
+
+    workspace = Workspace(
+        id=uuid4(),
+        name="Scoped session project",
+        slug=f"scoped-session-project-{uuid4().hex}",
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+    db_session.add(CodeFile(
+        workspace_id=workspace.id,
+        repo_root=str(repo),
+        path="app.py",
+        identity_key=uuid4().hex * 2,
+        language="python",
+        sha256="1" * 64,
+        size=10,
+    ))
+
+    def document(provider: str, session_id: str, cwd: Path) -> SourceDocument:
+        return SourceDocument(
+            workspace_id=workspace.id,
+            source_type="agent_session",
+            external_id=f"{provider}:session:{session_id}",
+            content=f"[USER]\nWork on {session_id}.",
+            metadata_json=json.dumps({
+                "connector_type": provider,
+                "session_id": session_id,
+                "cwd": str(cwd),
+                "source_path": str(tmp_path / f"{session_id}.jsonl"),
+                "title": session_id.replace("-", " ").title(),
+            }),
+        )
+
+    direct = document("codex", "direct-project", repo)
+    observed = document("opencode", "observed-project", outside)
+    linked_worktree = document("codex", "linked-worktree", outside)
+    unrelated = document("claude", "outside-project", outside)
+    db_session.add_all([direct, observed, linked_worktree, unrelated])
+    await db_session.flush()
+
+    for item, provider, session_id, event_cwd in (
+        (direct, "codex", "direct-project", repo),
+        (observed, "opencode", "observed-project", repo),
+        (linked_worktree, "codex", "linked-worktree", worktree),
+        (unrelated, "claude", "outside-project", outside),
+    ):
+        await persist_session_events(
+            db_session,
+            workspace_id=workspace.id,
+            source_document=item,
+            provider=provider,
+            session_id=session_id,
+            events=[
+                NormalizedSessionEvent(
+                    provider_event_id=f"{session_id}:base",
+                    sequence_number=1,
+                    event_type="user_request",
+                    role="user",
+                    content=f"Work on {session_id}.",
+                ),
+                NormalizedSessionEvent(
+                    provider_event_id=f"{session_id}:tool",
+                    sequence_number=2,
+                    event_type="tool_call",
+                    role="assistant",
+                    payload={
+                        "tool_name": "apply_patch",
+                        "cwd": str(event_cwd),
+                        "input": "*** Begin Patch",
+                    },
+                ),
+            ],
+        )
+    await db_session.commit()
+
+    library_response = await client.get(
+        "/api/session-library",
+        params={"workspace_id": str(workspace.id)},
+    )
+    assert library_response.status_code == 200
+    library = library_response.json()
+    assert {
+        item["session_id"] for item in library["sessions"]
+    } == {"direct-project", "observed-project", "linked-worktree"}
+    assert library["stats"]["sessions"] == 3
+    assert {
+        item["connector_type"]: item["session_count"]
+        for item in library["harnesses"]
+    } == {"codex": 2, "claude": 0, "opencode": 1}
+
+    continuity_response = await client.get(
+        "/api/session-continuity",
+        params={"workspace_id": str(workspace.id)},
+    )
+    assert continuity_response.status_code == 200
+    assert {
+        item["session_id"] for item in continuity_response.json()["sessions"]
+    } == {"direct-project", "observed-project", "linked-worktree"}
+
+    for endpoint, method, body in (
+        (
+            "/api/session-library/selection",
+            client.put,
+            {
+                "workspace_id": str(workspace.id),
+                "source_document_id": str(unrelated.id),
+            },
+        ),
+        (
+            "/api/session-continuity/continue",
+            client.post,
+            {
+                "workspace_id": str(workspace.id),
+                "source_document_id": str(unrelated.id),
+                "launch_session": False,
+            },
+        ),
+    ):
+        response = await method(endpoint, json=body)
+        assert response.status_code == 404
+
+
+async def test_sync_excludes_sessions_outside_the_selected_project(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "selected-project"
+    repo.mkdir()
+    workspace = Workspace(
+        id=uuid4(),
+        name="Selected project",
+        slug=f"selected-project-{uuid4().hex}",
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+    db_session.add(CodeFile(
+        workspace_id=workspace.id,
+        repo_root=str(repo),
+        path="main.py",
+        identity_key=uuid4().hex * 2,
+        sha256="2" * 64,
+        size=10,
+    ))
+    await db_session.commit()
+
+    matching = ResolvedSession(
+        connector_type="codex",
+        session_id="matching",
+        content="[USER]\nImplement the selected project.",
+        metadata={
+            "tool": "codex",
+            "cwd": str(repo),
+            "source_path": str(tmp_path / "matching.jsonl"),
+        },
+    )
+    observed = ResolvedSession(
+        connector_type="claude",
+        session_id="observed",
+        content="[USER]\nReview the selected project.",
+        metadata={
+            "tool": "claude",
+            "cwd": str(tmp_path),
+            "source_path": str(tmp_path / "observed.jsonl"),
+        },
+        events=[NormalizedSessionEvent(
+            provider_event_id="observed:tool",
+            sequence_number=1,
+            event_type="tool_call",
+            payload={"tool_name": "Read", "cwd": str(repo)},
+        )],
+    )
+    outside = ResolvedSession(
+        connector_type="opencode",
+        session_id="outside",
+        content="[USER]\nWork on an unrelated repository.",
+        metadata={
+            "tool": "opencode",
+            "cwd": str(tmp_path / "outside"),
+            "source_path": str(tmp_path / "outside.jsonl"),
+        },
+    )
+
+    monkeypatch.setattr(
+        "app.services.session_library.discover_local_ai_sessions",
+        lambda _types: [
+            SessionDiscoveryResult(connector_type="codex", sessions=[matching]),
+            SessionDiscoveryResult(connector_type="claude", sessions=[observed]),
+            SessionDiscoveryResult(connector_type="opencode", sessions=[outside]),
+        ],
+    )
+
+    response = await client.post(
+        "/api/session-library/sync",
+        json={"workspace_id": str(workspace.id)},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["sync"]["scanned"] == 3
+    assert payload["sync"]["discovered"] == 2
+    assert payload["sync"]["excluded"] == 1
+    assert {
+        item["session_id"] for item in payload["library"]["sessions"]
+    } == {"matching", "observed"}
+
+
+async def test_unindexed_project_workspace_fails_closed_during_session_sync(
+    client,
+    db_session,
+    monkeypatch,
+) -> None:
+    workspace = Workspace(
+        id=uuid4(),
+        name="Unindexed project",
+        slug=f"unindexed-project-{uuid4().hex}",
+    )
+    db_session.add(workspace)
+    await db_session.commit()
+
+    monkeypatch.setattr(
+        "app.services.session_library.discover_local_ai_sessions",
+        lambda _types: [
+            SessionDiscoveryResult(
+                connector_type="codex",
+                sessions=[ResolvedSession(
+                    connector_type="codex",
+                    session_id="unscoped-session",
+                    content="[USER]\nWork on a local project.",
+                    metadata={
+                        "tool": "codex",
+                        "cwd": "/workspace/unknown-project",
+                        "source_path": "/tmp/unscoped-session.jsonl",
+                    },
+                )],
+            ),
+        ],
+    )
+
+    response = await client.post(
+        "/api/session-library/sync",
+        json={"workspace_id": str(workspace.id)},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["sync"]["scanned"] == 1
+    assert payload["sync"]["discovered"] == 0
+    assert payload["sync"]["excluded"] == 1
+    assert payload["library"]["sessions"] == []
+
+
+async def test_library_and_resume_enforce_session_source_read_grants(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "permissioned-project"
+    repo.mkdir()
+    workspace = Workspace(
+        id=uuid4(),
+        name="Permissioned project",
+        slug=f"permissioned-project-{uuid4().hex}",
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+    db_session.add(CodeFile(
+        workspace_id=workspace.id,
+        repo_root=str(repo),
+        path="app.py",
+        identity_key=uuid4().hex * 2,
+        language="python",
+        sha256="3" * 64,
+        size=10,
+    ))
+    documents = {}
+    for principal in ("alice", "bob"):
+        result = await ingest_source_document_revision(
+            db_session,
+            workspace_id=workspace.id,
+            source_type="agent_session",
+            external_id=f"codex:session:{principal}-session",
+            content=f"[USER]\nWork on the {principal} session.",
+            metadata_json={
+                "connector_type": "codex",
+                "session_id": f"{principal}-session",
+                "cwd": str(repo),
+                "source_path": str(tmp_path / f"{principal}.jsonl"),
+            },
+            visibility_scope="restricted",
+            permission_source="explicit",
+            allowed_principal_ids=[principal],
+        )
+        documents[principal] = result.document
+        await persist_session_events(
+            db_session,
+            workspace_id=workspace.id,
+            source_document=result.document,
+            provider="codex",
+            session_id=f"{principal}-session",
+            events=[NormalizedSessionEvent(
+                provider_event_id=f"{principal}:base",
+                sequence_number=1,
+                event_type="user_request",
+                role="user",
+                content=f"Work on the {principal} session.",
+            )],
+        )
+    await db_session.commit()
+
+    monkeypatch.setattr(
+        settings,
+        "principal_api_keys",
+        json.dumps({
+            "alice-token": {
+                "principal_id": "alice",
+                "workspace_ids": [str(workspace.id)],
+            },
+        }),
+        raising=False,
+    )
+    headers = {"X-Context-Engine-API-Key": "alice-token"}
+
+    library = await client.get(
+        "/api/session-library",
+        params={"workspace_id": str(workspace.id)},
+        headers=headers,
+    )
+    assert library.status_code == 200
+    assert {
+        item["session_id"] for item in library.json()["sessions"]
+    } == {"alice-session"}
+
+    continuity = await client.get(
+        "/api/session-continuity",
+        params={"workspace_id": str(workspace.id)},
+        headers=headers,
+    )
+    assert continuity.status_code == 200
+    assert {
+        item["session_id"] for item in continuity.json()["sessions"]
+    } == {"alice-session"}
+
+    denied_selection = await client.put(
+        "/api/session-library/selection",
+        json={
+            "workspace_id": str(workspace.id),
+            "source_document_id": str(documents["bob"].id),
+        },
+        headers=headers,
+    )
+    assert denied_selection.status_code == 404
 
 
 async def test_sample_workspace_never_mixes_in_live_local_sessions(
@@ -286,6 +662,16 @@ async def test_library_sync_discovers_ingests_and_groups_sessions(
         slug=f"automatic-session-library-{uuid4().hex}",
     )
     db_session.add(workspace)
+    await db_session.flush()
+    db_session.add(CodeFile(
+        workspace_id=workspace.id,
+        repo_root="/workspace/context-engine",
+        path="app.py",
+        identity_key=uuid4().hex * 2,
+        language="python",
+        sha256="4" * 64,
+        size=10,
+    ))
     await db_session.commit()
 
     resolved = [
@@ -327,6 +713,7 @@ async def test_library_sync_discovers_ingests_and_groups_sessions(
                 "tool": "codex",
                 "source_path": "/tmp/codex-release.jsonl",
                 "source_modified_at": "2026-07-18T09:00:00+00:00",
+                "cwd": "/workspace/context-engine",
                 "title": "Alpha release",
                 "topics": ["Alpha billing", "Release readiness"],
                 "forked_from_session_id": "codex-alpha-beta",

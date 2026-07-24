@@ -507,8 +507,17 @@ def checkpoint_to_dict(
     )
     boundary = _boundary_context(checkpoint, payload, session_tip=session_tip)
     activity = _checkpoint_activity(checkpoint, sections, boundary)
+    task_key = next(
+        (
+            evidence["session_event_id"]
+            for evidence in (sections.get("goal") or [{}])[0].get("evidence", [])
+            if evidence.get("session_event_id")
+        ),
+        None,
+    )
     return {
         "id": str(checkpoint.id),
+        "task_key": task_key,
         "workspace_id": str(checkpoint.workspace_id),
         "provider": checkpoint.provider,
         "session_id": checkpoint.session_id,

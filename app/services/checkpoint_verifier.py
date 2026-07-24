@@ -11,14 +11,58 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import CheckpointVerification
+from app.models import CheckpointVerification, WorkCheckpoint
 from app.services.checkpoints import CHECKPOINT_CATEGORIES, checkpoint_to_dict, get_checkpoint
 from app.services.local_harness import capture_repository_snapshot, run_repository_command
+from app.time import utc_now
 
 
 VERIFIER_POLICY_VERSION = "checkpoint_verifier.v1"
 MAX_REPLAY_COMMANDS = 8
 _SHELL_CONTROL_TOKENS = {"|", "||", "&&", ";", ">", ">>", "<", "<<"}
+
+
+async def compare_checkpoint_repository(checkpoint: WorkCheckpoint) -> dict[str, Any]:
+    """Compare one saved checkpoint with the current repository without mutating state."""
+
+    base = {
+        "checkpoint_id": str(checkpoint.id),
+        "checked_at": utc_now(),
+        "captured": {
+            "branch": checkpoint.branch,
+            "head_commit": checkpoint.head_commit,
+            "status_fingerprint": checkpoint.worktree_fingerprint,
+        },
+    }
+    if not checkpoint.repo_root or not checkpoint.worktree_fingerprint:
+        return {
+            **base,
+            "status": "unavailable",
+            "reason": "This saved version is not linked to a repository snapshot.",
+            "current": None,
+        }
+
+    try:
+        current = await capture_repository_snapshot(checkpoint.repo_root)
+    except (OSError, ValueError) as exc:
+        return {
+            **base,
+            "status": "unavailable",
+            "reason": str(exc),
+            "current": None,
+        }
+
+    matches = current.status_fingerprint == checkpoint.worktree_fingerprint
+    return {
+        **base,
+        "status": "matched" if matches else "changed",
+        "reason": (
+            "The current repository matches this saved version."
+            if matches
+            else "The current repository differs from this saved version."
+        ),
+        "current": current.to_dict(),
+    }
 
 
 async def verify_checkpoint(

@@ -11,6 +11,7 @@ from sqlalchemy import select
 from app.api.context_digest import (
     _agent_reported_summary,
     _clean_digest_text,
+    _compact_activity_text,
     _display_title,
     _excerpt,
     _is_digest_noise_component,
@@ -90,6 +91,31 @@ def test_digest_rejects_punctuation_led_typed_fragments_and_cleans_legacy_displa
     assert _display_title(component, "task") == "Task: provenance, review queue, evals, and temporal support"
     assert _summary(component) == "provenance, review queue, evals, and temporal support"
     assert _excerpt(component) == "provenance, review queue, evals, and temporal support"
+
+
+def test_activity_text_keeps_request_and_removes_screenshot_attachment_metadata():
+    value = """# Files mentioned by the user:
+
+## Screenshot 2026-07-23 at 16.42.18.png: /var/folders/example/TemporaryItems/NSIRD_screencaptureui_abc/Screenshot 2026-07-23 at 16.42.18.png
+
+## My request for Codex:
+Remove screenshot IDs and temporary paths from the Now page.
+<image name=[Image #1] path="/var/folders/example/TemporaryItems/NSIRD_screencaptureui_abc/Screenshot 2026-07-23 at 16.42.18.png">
+</image>"""
+
+    assert _compact_activity_text(value) == (
+        "Remove screenshot IDs and temporary paths from the Now page"
+    )
+
+
+def test_activity_text_rejects_metadata_only_screenshot_attachment():
+    value = (
+        "Screenshot 2026-07-23 at 16.42.18.png: "
+        "/var/folders/example/TemporaryItems/NSIRD_screencaptureui_abc/"
+        "Screenshot 2026-07-23 at 16.42.18.png"
+    )
+
+    assert _compact_activity_text(value) is None
 
 
 async def test_graph_build_modes_are_honest_and_rebuild_is_idempotent(client, db_session):

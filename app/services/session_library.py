@@ -12,8 +12,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Connector, SourceDocument, Workspace
+from app.services.access import AccessScope, source_access_predicate
 from app.services.ingest import IngestionService
 from app.services.session_checkpoints import list_session_checkpoints
+from app.services.session_scope import (
+    enrich_session_scope_metadata,
+    scoped_session_documents,
+    workspace_session_scope,
+)
 from app.services.session_summary import (
     derive_latest_session_topic,
     derive_session_topic,
@@ -71,6 +77,7 @@ async def sync_local_session_library(
         for value in (connector_types or SESSION_CONNECTOR_TYPES)
         if value and value.strip().lower() in SESSION_CONNECTOR_TYPES
     ))
+    project_scope = await workspace_session_scope(session, workspace_id)
     discovery = discover_local_ai_sessions(requested)
     existing_documents = list(await session.scalars(
         select(SourceDocument).where(
@@ -82,7 +89,9 @@ async def sync_local_session_library(
     current_by_external_id = {document.external_id: document for document in existing_current}
     provider_results: list[dict[str, Any]] = []
     totals = {
+        "scanned": 0,
         "discovered": 0,
+        "excluded": 0,
         "imported": 0,
         "updated": 0,
         "unchanged": 0,
@@ -90,9 +99,20 @@ async def sync_local_session_library(
     }
 
     for result in discovery:
-        user_sessions = [
+        scanned_sessions = [
             item for item in result.sessions
             if not is_internal_session_content(item.content)
+        ]
+        for item in scanned_sessions:
+            item.metadata = enrich_session_scope_metadata(item.metadata, item.events)
+        user_sessions = [
+            item
+            for item in scanned_sessions
+            if project_scope.matches_metadata(
+                item.metadata,
+                provider=result.connector_type,
+                session_id=item.session_id,
+            )
         ]
         connector = await _get_or_create_connector(session, workspace_id, result.connector_type)
         config = _loads_dict(connector.config_json)
@@ -102,6 +122,8 @@ async def sync_local_session_library(
             "adapter_message": result.error or "Local session history detected.",
             "last_discovery_at": utc_now().isoformat(),
             "discovered_sessions": len(user_sessions),
+            "scanned_sessions": len(scanned_sessions),
+            "excluded_outside_project": len(scanned_sessions) - len(user_sessions),
         })
         config["session_lineage"] = {
             item.session_id: {
@@ -116,14 +138,18 @@ async def sync_local_session_library(
             "connector_type": result.connector_type,
             "name": HARNESS_LABELS[result.connector_type],
             "available": result.error is None,
+            "scanned": len(scanned_sessions),
             "discovered": len(user_sessions),
+            "excluded": len(scanned_sessions) - len(user_sessions),
             "imported": 0,
             "updated": 0,
             "unchanged": 0,
             "failed": 0,
             "error": result.error,
         }
+        totals["scanned"] += len(scanned_sessions)
         totals["discovered"] += len(user_sessions)
+        totals["excluded"] += len(scanned_sessions) - len(user_sessions)
 
         if result.error:
             connector.status = "disconnected"
@@ -207,7 +233,15 @@ async def sync_local_session_library(
         config["items_synced"] = len(user_sessions) - provider_summary["failed"]
         config["last_sync_summary"] = {
             key: provider_summary[key]
-            for key in ("discovered", "imported", "updated", "unchanged", "failed")
+            for key in (
+                "scanned",
+                "discovered",
+                "excluded",
+                "imported",
+                "updated",
+                "unchanged",
+                "failed",
+            )
         }
         # A library selection can be saved while a long local scan is running.
         # Reload only the config column and preserve that later user choice.
@@ -232,20 +266,25 @@ async def sync_local_session_library(
 async def build_session_library(
     session: AsyncSession,
     workspace_id: UUID,
+    *,
+    access_scope: AccessScope | None = None,
 ) -> dict[str, Any]:
     workspace = await session.get(Workspace, workspace_id)
     if workspace is None:
         raise ValueError("Workspace not found")
 
+    active_access_scope = access_scope or AccessScope.local()
     documents = [] if workspace.kind == "demo" else list(await session.scalars(
         select(SourceDocument)
         .where(
             SourceDocument.workspace_id == workspace_id,
             SourceDocument.source_type == "agent_session",
+            source_access_predicate(active_access_scope, workspace_id=workspace_id),
         )
         .order_by(SourceDocument.ingested_at.desc(), SourceDocument.id.desc())
     ))
     current, _ = current_source_documents(documents)
+    current = await scoped_session_documents(session, workspace_id, current)
 
     sessions = [
         _session_entry(document)

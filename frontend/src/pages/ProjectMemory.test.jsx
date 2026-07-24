@@ -141,7 +141,13 @@ describe("ProjectMemory", () => {
   it("shows typed memory sections and exact evidence", () => {
     render(<MemoryRouter><ProjectMemory /></MemoryRouter>);
 
-    expect(screen.getByRole("heading", { name: "Project memory" })).toBeInTheDocument();
+    const heading = screen.getByRole("heading", { name: "Project memory" });
+    expect(heading).toHaveClass("text-3xl", "font-black", "tracking-[-0.035em]", "sm:text-4xl");
+    expect(screen.queryByText("Context Engine")).not.toBeInTheDocument();
+    expect(screen.getByText(/project’s trusted knowledge base/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Ship project memory" })).toBeInTheDocument();
+    expect(screen.getByText("Trusted current memory")).toBeInTheDocument();
+    expect(screen.getByText("Needs human review")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open Current goal" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open Decisions" })).toHaveTextContent(/1\s*record/);
 
@@ -150,6 +156,7 @@ describe("ProjectMemory", () => {
     expect(within(drawer).getByText("Use source-backed records")).toBeInTheDocument();
     expect(within(drawer).getByText("Keep evidence attached to every decision")).toBeInTheDocument();
     expect(within(drawer).getByText(/Exact source span/)).toBeInTheDocument();
+    expect(within(drawer).getByText("Verified evidence")).toBeInTheDocument();
     expect(within(drawer).getByRole("link", { name: /Agent Session/ })).toHaveAttribute(
       "href",
       "https://example.test/session/1",
@@ -160,6 +167,7 @@ describe("ProjectMemory", () => {
     render(<MemoryRouter><ProjectMemory /></MemoryRouter>);
 
     fireEvent.click(screen.getByRole("button", { name: "Needs review" }));
+    expect(screen.getByRole("button", { name: "Needs review" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "Open Unverified memory" })).toHaveTextContent(/1\s*record/);
     expect(screen.queryByRole("button", { name: "Open Decisions" })).not.toBeInTheDocument();
 
@@ -168,6 +176,17 @@ describe("ProjectMemory", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "History" }));
     expect(screen.getByRole("button", { name: "Open Resolved blockers" })).toBeInTheDocument();
+  });
+
+  it("makes the review queue an explicit priority and exposes a labeled workspace search", () => {
+    render(<MemoryRouter><ProjectMemory /></MemoryRouter>);
+
+    expect(screen.getByRole("searchbox", { name: "Search this workspace" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Review 1 item" }));
+
+    expect(screen.getByRole("button", { name: "Needs review" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("heading", { name: "Needs review" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open Unverified memory" })).toBeInTheDocument();
   });
 
   it("confirms only records whose API contract allows exact-evidence review", async () => {
@@ -184,12 +203,89 @@ describe("ProjectMemory", () => {
     }));
   });
 
+  it("explains the impact before superseding a current memory record", async () => {
+    render(<MemoryRouter><ProjectMemory /></MemoryRouter>);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Decisions" }));
+    const drawer = screen.getByRole("dialog", { name: "Decisions" });
+    fireEvent.click(within(drawer).getByRole("button", { name: "Supersede" }));
+
+    expect(mocks.reviewMemory.mutateAsync).not.toHaveBeenCalled();
+    expect(within(drawer).getByText(/moves the record out of current memory/i)).toBeInTheDocument();
+    fireEvent.click(within(drawer).getByRole("button", { name: "Confirm supersede" }));
+
+    await waitFor(() => expect(mocks.reviewMemory.mutateAsync).toHaveBeenCalledWith({
+      componentId: "decision-1",
+      action: "supersede",
+    }));
+  });
+
+  it("requires explicit confirmation before dismissing an extracted record", async () => {
+    render(<MemoryRouter><ProjectMemory /></MemoryRouter>);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Decisions" }));
+    const drawer = screen.getByRole("dialog", { name: "Decisions" });
+    fireEvent.click(within(drawer).getByRole("button", { name: "Dismiss" }));
+
+    expect(mocks.reviewMemory.mutateAsync).not.toHaveBeenCalled();
+    expect(within(drawer).getByText(/not useful or correct/i)).toBeInTheDocument();
+    fireEvent.click(within(drawer).getByRole("button", { name: "Confirm dismiss" }));
+
+    await waitFor(() => expect(mocks.reviewMemory.mutateAsync).toHaveBeenCalledWith({
+      componentId: "decision-1",
+      action: "dismiss",
+    }));
+  });
+
+  it.each([
+    ["review", "stale", "Stale context", "stale", "verified", "Stale — review required"],
+    ["review", "conflicts", "Conflicts", "conflict", "observed", "Conflict flagged"],
+    ["history", "superseded", "Superseded memory", "superseded", "verified", "Superseded"],
+    ["history", "dismissed", "Dismissed memory", "dismissed", "verified", "Dismissed"],
+    ["history", "resolved", "Resolved blockers", "resolved", "verified", "Resolved"],
+    ["history", "revisions", "Source revisions", "historical", "observed", "Historical record"],
+  ])(
+    "prioritizes governing %s state over the evidence verification flag",
+    (view, section, typeTitle, status, verification, expectedLabel) => {
+      mocks.memory.data = memoryData({
+        records: [{
+          ...decision,
+          id: `component:${section}`,
+          component_id: section,
+          section,
+          status,
+          verification,
+        }],
+      });
+      render(<MemoryRouter><ProjectMemory /></MemoryRouter>);
+
+      fireEvent.click(screen.getByRole("button", { name: view === "review" ? "Needs review" : "History" }));
+      fireEvent.click(screen.getByRole("button", { name: `Open ${typeTitle}` }));
+
+      expect(within(screen.getByRole("dialog", { name: typeTitle })).getByText(expectedLabel)).toBeInTheDocument();
+    },
+  );
+
+  it("focuses the memory drawer and returns focus to its trigger when closed", async () => {
+    render(<MemoryRouter><ProjectMemory /></MemoryRouter>);
+
+    const trigger = screen.getByRole("button", { name: "Open Decisions" });
+    trigger.focus();
+    fireEvent.click(trigger);
+
+    expect(screen.getByRole("button", { name: "Close memory details" })).toHaveFocus();
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(screen.queryByRole("dialog", { name: "Decisions" })).not.toBeInTheDocument();
+  });
+
   it("sets and clears an explicit current goal while explaining its real effect", async () => {
     mocks.memory.data = memoryData();
     render(<MemoryRouter><ProjectMemory /></MemoryRouter>);
 
     fireEvent.click(screen.getByRole("button", { name: "Open Current goal" }));
-    expect(screen.getByText(/display-only workspace focus/i)).toBeInTheDocument();
+    expect(within(screen.getByRole("dialog", { name: "Current goal" })).getByText(/does not start work, edit files/i)).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Set project focus"), {
       target: { value: "Make project memory trustworthy" },
     });
@@ -203,6 +299,19 @@ describe("ProjectMemory", () => {
     mocks.memory.data = memoryData({
       currentGoal: { id: "goal-1", title: "Ship memory", source_kind: "user_selected", can_clear: true },
     });
+  });
+
+  it("explains where the goal is removed before clearing it", async () => {
+    render(<MemoryRouter><ProjectMemory /></MemoryRouter>);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Current goal" }));
+    fireEvent.click(screen.getByRole("button", { name: "Clear goal" }));
+
+    expect(mocks.clearGoal.mutateAsync).not.toHaveBeenCalled();
+    expect(screen.getByText(/removes the focus from Memory and Now/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Clear current goal" }));
+
+    await waitFor(() => expect(mocks.clearGoal.mutateAsync).toHaveBeenCalledTimes(1));
   });
 
   it("fails closed when the Memory API is unavailable", () => {

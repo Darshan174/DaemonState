@@ -13,7 +13,7 @@ from app.api.dependencies import get_access_scope
 from app.database import get_db_session
 from app.models import SessionEvent, SourceDocument, Workspace, WorkCheckpoint
 from app.services.access import AccessScope, source_access_predicate
-from app.services.checkpoint_verifier import verify_checkpoint
+from app.services.checkpoint_verifier import compare_checkpoint_repository, verify_checkpoint
 from app.services.checkpoints import (
     capture_checkpoint,
     checkpoints_to_dicts,
@@ -173,6 +173,22 @@ async def run_checkpoint_verification(
     loaded = await get_checkpoint(session, checkpoint_id)
     assert loaded is not None
     return (await checkpoints_to_dicts(session, [loaded]))[0]
+
+
+@router.get("/checkpoints/{checkpoint_id}/compare")
+async def compare_checkpoint_with_repository(
+    checkpoint_id: UUID,
+    workspace_id: UUID,
+    session: AsyncSession = Depends(get_db_session),
+    access_scope: AccessScope = Depends(get_access_scope),
+) -> dict:
+    checkpoint = await _accessible_checkpoint(
+        session,
+        checkpoint_id,
+        workspace_id,
+        access_scope,
+    )
+    return await compare_checkpoint_repository(checkpoint)
 
 
 @router.post("/checkpoints/{checkpoint_id}/resume")

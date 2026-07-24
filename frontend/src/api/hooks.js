@@ -1705,6 +1705,29 @@ export function useSessionLibrary(workspaceId) {
   });
 }
 
+export function useSessionContinuity(workspaceId) {
+  return useQuery({
+    queryKey: ["session-continuity", workspaceId],
+    enabled: Boolean(workspaceId),
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+    queryFn: () => api.get(
+      `/session-continuity?workspace_id=${encodeURIComponent(workspaceId)}`,
+    ),
+  });
+}
+
+export function useContinueSession() {
+  return useMutation({
+    mutationFn: ({ workspaceId, sourceDocumentId, launchSession = true }) =>
+      api.post("/session-continuity/continue", {
+        workspace_id: workspaceId,
+        source_document_id: sourceDocumentId,
+        launch_session: launchSession,
+      }),
+  });
+}
+
 export function useLatestCheckpoint(workspaceId) {
   return useQuery({
     queryKey: ["checkpoints", workspaceId, "latest"],
@@ -1765,6 +1788,18 @@ export function useVerifyCheckpoint() {
       );
       qc.invalidateQueries({ queryKey: ["checkpoints", variables.workspaceId] });
     },
+  });
+}
+
+export function useCheckpointComparison(workspaceId, checkpointId) {
+  return useQuery({
+    queryKey: ["checkpoints", workspaceId, checkpointId, "comparison"],
+    enabled: Boolean(workspaceId && checkpointId),
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+    queryFn: () => api.get(
+      `/checkpoints/${checkpointId}/compare?workspace_id=${encodeURIComponent(workspaceId)}`,
+    ),
   });
 }
 

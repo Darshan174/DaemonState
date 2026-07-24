@@ -1220,7 +1220,7 @@ def _session_turns(content: str) -> list[tuple[str, str]]:
 def _compact_activity_text(value: object, max_chars: int = 240) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None
-    text = value
+    text = _strip_activity_attachment_metadata(value)
     text = re.sub(
         r"<(environment_context|recommended_plugins|permissions instructions|app-context|"
         r"collaboration_mode|apps_instructions|plugins_instructions|skills_instructions)[^>]*>"
@@ -1230,8 +1230,6 @@ def _compact_activity_text(value: object, max_chars: int = 240) -> str | None:
         flags=re.IGNORECASE,
     )
     text = re.sub(r"```[\s\S]*?```", " ", text)
-    text = re.sub(r"^# Files mentioned by the user:[\s\S]*?(?=^#|\Z)", " ", text, flags=re.MULTILINE)
-    text = re.sub(r"<image[\s\S]*?</image>", " ", text, flags=re.IGNORECASE)
     cleaned = _clean_digest_text(text)
     if not cleaned or _looks_like_digest_noise(cleaned):
         return None
@@ -1241,6 +1239,47 @@ def _compact_activity_text(value: object, max_chars: int = 240) -> str | None:
     if 24 <= len(sentence) <= max_chars:
         return sentence
     return f"{cleaned[:max_chars - 3].rstrip()}..."
+
+
+def _strip_activity_attachment_metadata(value: str) -> str:
+    """Keep the user's request while removing Codex attachment envelopes."""
+
+    text = str(value or "")
+    request_marker = re.search(
+        r"^#{1,6}\s*My request for Codex:\s*$",
+        text,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    if request_marker:
+        text = text[request_marker.end():]
+
+    text = re.sub(r"<image\b[\s\S]*?</image>", " ", text, flags=re.IGNORECASE)
+    kept_lines: list[str] = []
+    for raw_line in text.splitlines():
+        plain = re.sub(r"^[#>*\-\d.)\s]+", "", raw_line).strip()
+        lowered = plain.lower()
+        if not plain:
+            kept_lines.append("")
+            continue
+        if lowered in {"files mentioned by the user:", "my request for codex:"}:
+            continue
+        if re.match(
+            r"^(?:screenshot\s+\d{4}-\d{2}-\d{2}\s+at\s+"
+            r"\d{1,2}(?:[.:]\d{2}){1,2}|codex-clipboard-[a-z0-9-]+)"
+            r"(?:\.(?:png|jpe?g|webp))?(?::.*)?$",
+            plain,
+            flags=re.IGNORECASE,
+        ):
+            continue
+        if (
+            re.search(r"(?:/var/folders/|/private/var/|/temporaryitems/|screencaptureui_)", raw_line, re.IGNORECASE)
+            and re.search(r"\.(?:png|jpe?g|webp)(?:[\"'>:]|$)", raw_line, re.IGNORECASE)
+        ):
+            continue
+        if re.match(r"^(?:image\s+name\s*=|path\s*=|\[image\s+#)", plain, flags=re.IGNORECASE):
+            continue
+        kept_lines.append(raw_line)
+    return "\n".join(kept_lines).strip()
 
 
 def _looks_like_process_narration(value: str) -> bool:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from uuid import uuid4
 
 from sqlalchemy import func, select
@@ -72,6 +73,7 @@ async def test_checkpoint_capture_is_structured_evidenced_and_idempotent(
     assert data["boundary"]["snapshot_phase_label"] == "Pre-compaction snapshot"
     assert tuple(data["sections"]) == CHECKPOINT_CATEGORIES
     assert data["sections"]["goal"][0]["statement"] == "Implement durable checkpoints for session compaction."
+    assert data["task_key"] == data["sections"]["goal"][0]["evidence"][0]["session_event_id"]
     assert "app/core.py" in {
         item["statement"] for item in data["sections"]["relevant_files"]
     }
@@ -204,6 +206,35 @@ async def test_checkpoint_api_captures_verifies_and_builds_resume_bundle(
     assert checkpoint["created_at"].endswith("Z")
     assert checkpoint["boundary"]["captured_at"].endswith("Z")
 
+    compared = await client.get(
+        f"/api/checkpoints/{checkpoint['id']}/compare?workspace_id={workspace.id}"
+    )
+    assert compared.status_code == 200
+    assert compared.json()["status"] == "matched"
+    assert compared.json()["current"]["changed_files"] == ["app/core.py"]
+
+    changed_snapshot = replace(
+        snapshot,
+        head_commit="def456",
+        status_fingerprint="fingerprint-2",
+        changed_files=("app/core.py", "app/new.py"),
+    )
+    monkeypatch.setattr(
+        "app.services.checkpoint_verifier.capture_repository_snapshot",
+        _async_value(changed_snapshot),
+    )
+    changed = await client.get(
+        f"/api/checkpoints/{checkpoint['id']}/compare?workspace_id={workspace.id}"
+    )
+    assert changed.status_code == 200
+    assert changed.json()["status"] == "changed"
+    assert changed.json()["captured"]["head_commit"] == "abc123"
+    assert changed.json()["current"]["head_commit"] == "def456"
+
+    monkeypatch.setattr(
+        "app.services.checkpoint_verifier.capture_repository_snapshot",
+        _async_value(snapshot),
+    )
     verified = await client.post(
         f"/api/checkpoints/{checkpoint['id']}/verify",
         json={"workspace_id": str(workspace.id), "execute_commands": False},
@@ -350,6 +381,12 @@ async def test_checkpoint_without_repository_snapshot_is_only_partial(
         "provider": "codex",
         "session_id": "no-repo",
     })
+    compared = await client.get(
+        f"/api/checkpoints/{captured.json()['id']}/compare?workspace_id={workspace.id}"
+    )
+    assert compared.status_code == 200
+    assert compared.json()["status"] == "unavailable"
+    assert compared.json()["current"] is None
     response = await client.post(
         f"/api/checkpoints/{captured.json()['id']}/verify",
         json={"workspace_id": str(workspace.id), "execute_commands": False},
