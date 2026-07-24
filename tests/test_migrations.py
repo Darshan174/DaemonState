@@ -558,6 +558,7 @@ class TestQueryAndSyncIndexMigration:
                 "ix_source_documents_source_type_external_id",
                 "ix_source_documents_processed_at",
                 "ix_source_documents_ingested_at",
+                "ix_source_documents_workspace_type_ingested",
             }
             expected_component_indexes = {
                 "ix_components_status_confidence",
@@ -678,6 +679,16 @@ class TestQueryAndSyncIndexMigration:
                     )
                 """)
                 )
+                await conn.execute(
+                    text("""
+                    CREATE TABLE session_events (
+                        id TEXT PRIMARY KEY,
+                        source_document_id TEXT NOT NULL,
+                        event_type TEXT NOT NULL,
+                        sequence_number INTEGER NOT NULL
+                    )
+                """)
+                )
 
             async with engine.begin() as conn:
                 await run_migrations(conn)
@@ -686,9 +697,17 @@ class TestQueryAndSyncIndexMigration:
 
             async with engine.connect() as conn:
                 source_indexes = await _index_names(conn, "source_documents")
+                session_event_indexes = await _index_names(conn, "session_events")
                 assert "ix_source_documents_source_type_external_id" not in source_indexes
                 assert "ix_source_documents_processed_at" not in source_indexes
                 assert "ix_source_documents_ingested_at" not in source_indexes
+                assert (
+                    "ix_source_documents_workspace_type_ingested"
+                    not in source_indexes
+                )
+                assert session_event_indexes.count(
+                    "ix_session_events_source_type_sequence"
+                ) == 1
         finally:
             await engine.dispose()
             try:

@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.mcp.server import _record_observation, _stored_manifest
 from app.models import AgentRun, ContextPack
 from app.services.redaction import REDACTED_VALUE, is_sensitive_key, redact_sensitive_text
+from app.services.repo_paths import validated_repository_path
 from app.time import utc_now
 
 
@@ -622,19 +623,14 @@ async def _read_bounded(
 
 
 async def _resolve_git_root(repo_path: str | Path) -> Path:
-    path = Path(repo_path).expanduser().resolve()
-    if not path.is_dir():
-        raise ValueError(f"repo_path is not a directory: {path}")
+    path = validated_repository_path(repo_path)
     inside = await _git(path, "rev-parse", "--is-inside-work-tree", limit=256)
     if inside.exit_code != 0 or inside.stdout.strip() != "true":
         raise ValueError(f"repo_path is not a Git working tree: {path}")
     root = await _git(path, "rev-parse", "--show-toplevel", limit=4_096)
     if root.exit_code != 0 or not root.stdout.strip():
         raise ValueError(f"cannot resolve Git root for: {path}")
-    resolved = Path(root.stdout.strip()).resolve()
-    if not resolved.is_dir():
-        raise ValueError(f"resolved Git root is not a directory: {resolved}")
-    return resolved
+    return validated_repository_path(root.stdout.strip())
 
 
 async def _repository_snapshot(root: Path) -> RepositorySnapshot:
@@ -773,7 +769,14 @@ def _bounded_file_hash(root: Path, relative_path: str) -> str | None:
 
 async def _git(root: Path, *args: str, limit: int) -> CommandResult:
     return await _run_command(
-        ("git", "-C", str(root), *args),
+        (
+            "git",
+            "-c",
+            f"safe.directory={root}",
+            "-C",
+            str(root),
+            *args,
+        ),
         cwd=root,
         env=os.environ,
         output_limit_bytes=limit,

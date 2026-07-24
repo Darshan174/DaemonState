@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+from contextlib import suppress
+import html
 import json
+import logging
 import secrets
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -11,19 +15,32 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies import get_access_scope
 from app.config import settings
-from app.database import get_db_session
+from app.database import (
+    database_wall_clock,
+    database_wall_clock_expression,
+    get_db_session,
+)
 from app.models import Connector, SourceDocument, SyncJob, Workspace
+from app.services.access import AccessScope
 from app.services.credentials import clear_credentials, dump_credentials, load_credentials
+from app.services.oauth_state import (
+    OAuthStateError,
+    consume_oauth_state,
+    issue_oauth_state,
+    pkce_challenge,
+)
 from app.services.redaction import redact_sensitive, redact_sensitive_text
 from app.services.source_revisions import ingest_source_document_revision
 from app.time import utc_now
 
 router = APIRouter()
+logger = logging.getLogger("context-engine.connectors")
 DEFAULT_WORKSPACE_ID = UUID("00000000-0000-0000-0000-000000000000")
 
 # ── Catalog ────────────────────────────────────────────────────
@@ -234,6 +251,13 @@ def _google_configured() -> bool:
     return bool(_get_google_client_id() and _get_env("GOOGLE_CLIENT_SECRET"))
 
 
+def _google_redirect_uri(request: Request | None = None) -> str:
+    return _get_env("GOOGLE_REDIRECT_URI") or _callback_url(
+        "/api/connectors/google/callback",
+        request,
+    )
+
+
 def _raise_unavailable_connector(connector_type: str, detail: str | None = None) -> None:
     catalog = CONNECTOR_CATALOG.get(connector_type)
     name = catalog["name"] if catalog else connector_type
@@ -247,13 +271,15 @@ def _raise_unavailable_connector(connector_type: str, detail: str | None = None)
 def _connector_setup_status(connector_type: str, request: Request | None = None) -> dict[str, Any]:
     base = _public_base_url() or _request_base_url(request)
     if connector_type == "slack":
-        configured = _slack_configured()
+        self_hosted_configured = _slack_configured()
         managed_url = _slack_managed_install_url()
-        managed = bool(managed_url and configured)
+        managed = bool(managed_url)
+        configured = self_hosted_configured or managed
         redirect_uri = _get_env("SLACK_REDIRECT_URI") or (f"{base}/api/connectors/slack/callback" if base else None)
         return {
             "connector_type": "slack",
             "configured": configured,
+            "self_hosted_configured": self_hosted_configured,
             "managed_available": managed,
             "managed_install_url": "/api/connectors/slack/managed/install" if managed else None,
             "missing": [] if configured else ["SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET"],
@@ -281,7 +307,10 @@ def _connector_setup_status(connector_type: str, request: Request | None = None)
         }
     if connector_type in GOOGLE_CONNECTORS:
         configured = _google_configured()
-        redirect_uri = _get_env("GOOGLE_REDIRECT_URI") or (f"{base}/api/connectors/{connector_type}/callback" if base else None)
+        redirect_uri = (
+            _get_env("GOOGLE_REDIRECT_URI")
+            or (f"{base}/api/connectors/google/callback" if base else None)
+        )
         label = CONNECTOR_CATALOG[connector_type]["name"]
         return {
             "connector_type": connector_type,
@@ -562,6 +591,11 @@ async def save_slack_oauth_settings(
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     import os
+    if settings.environment.strip().lower() == "production":
+        raise HTTPException(
+            status_code=403,
+            detail="OAuth settings are immutable in production.",
+        )
     client_id = payload.get("client_id", "").strip()
     client_secret = payload.get("client_secret", "").strip()
     redirect_uri = payload.get("redirect_uri", "").strip()
@@ -575,12 +609,28 @@ async def save_slack_oauth_settings(
 
 
 @router.get("/connectors/slack/install")
-async def slack_install(workspace_id: str, request: Request) -> RedirectResponse:
+async def slack_install(
+    workspace_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    access_scope: AccessScope = Depends(get_access_scope),
+) -> RedirectResponse:
     client_id = _get_env("SLACK_CLIENT_ID")
     if not client_id:
         raise HTTPException(status_code=503, detail="Slack OAuth is not configured on this server.")
+    workspace = await _get_workspace(workspace_id, session)
+    if not access_scope.allows_workspace(workspace.id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
     redirect_uri = _get_env("SLACK_REDIRECT_URI") or _callback_url("/api/connectors/slack/callback", request)
-    state = f"{workspace_id}:{secrets.token_urlsafe(16)}"
+    try:
+        state, _ = await issue_oauth_state(
+            workspace_id=workspace.id,
+            connector_type="slack",
+            principal_id=access_scope.principal_id,
+        )
+    except OAuthStateError as exc:
+        logger.warning("oauth_state_issue_failed", extra={"connector_type": "slack"})
+        raise HTTPException(status_code=503, detail="OAuth state is unavailable.") from exc
     scopes = "channels:history,channels:join,channels:read,groups:history,groups:read,users:read,team:read"
     params = urlencode({
         "client_id": client_id,
@@ -597,8 +647,11 @@ async def slack_managed_install(
     workspace_id: str,
     request: Request,
     session: AsyncSession = Depends(get_db_session),
+    access_scope: AccessScope = Depends(get_access_scope),
 ) -> RedirectResponse:
-    await _get_workspace(workspace_id, session)
+    workspace = await _get_workspace(workspace_id, session)
+    if not access_scope.allows_workspace(workspace.id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
     managed_url = _slack_managed_install_url()
     if not managed_url:
         raise HTTPException(
@@ -606,8 +659,20 @@ async def slack_managed_install(
             detail="Managed Slack OAuth is not configured on this server.",
         )
     callback_url = _callback_url("/api/connectors/slack/callback", request)
+    try:
+        state, _ = await issue_oauth_state(
+            workspace_id=workspace.id,
+            connector_type="slack",
+            principal_id=access_scope.principal_id,
+        )
+    except OAuthStateError as exc:
+        raise HTTPException(status_code=503, detail="OAuth state is unavailable.") from exc
     separator = "&" if "?" in managed_url else "?"
-    params = urlencode({"workspace_id": workspace_id, "callback_url": callback_url})
+    params = urlencode({
+        "workspace_id": workspace_id,
+        "callback_url": callback_url,
+        "state": state,
+    })
     return RedirectResponse(f"{managed_url}{separator}{params}")
 
 
@@ -624,12 +689,16 @@ async def slack_callback(
     authed_user_id: str | None = None,
     session: AsyncSession = Depends(get_db_session),
 ) -> Response:
-    if error:
-        return _oauth_close_html(success=False, message=f"Slack OAuth error: {error}")
     if not state:
         return _oauth_close_html(success=False, message="Missing state.")
+    try:
+        oauth_state = await consume_oauth_state(state, connector_type="slack")
+    except OAuthStateError:
+        return _oauth_close_html(success=False, message="OAuth state is invalid or expired.")
+    if error:
+        return _oauth_close_html(success=False, message=f"Slack OAuth error: {error}")
 
-    workspace_id = state.split(":")[0]
+    workspace_id = str(oauth_state.workspace_id)
     try:
         ws = await _get_workspace(workspace_id, session)
     except HTTPException:
@@ -677,8 +746,9 @@ async def slack_callback(
             }
             resp = await http.post("https://slack.com/api/oauth.v2.access", data=params)
             data = resp.json()
-    except Exception as exc:
-        return _oauth_close_html(success=False, message=f"OAuth exchange failed: {exc}")
+    except Exception:
+        logger.exception("oauth_exchange_failed", extra={"connector_type": "slack"})
+        return _oauth_close_html(success=False, message="OAuth exchange failed.")
 
     if not data.get("ok"):
         return _oauth_close_html(success=False, message=data.get("error", "Slack OAuth failed."))
@@ -793,14 +863,27 @@ async def google_install(
     connector_type: str,
     workspace_id: str,
     request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    access_scope: AccessScope = Depends(get_access_scope),
 ) -> RedirectResponse:
     if connector_type not in GOOGLE_CONNECTORS:
         raise HTTPException(status_code=404, detail="Connector not found")
     client_id = _get_google_client_id()
     if not client_id:
         raise HTTPException(status_code=503, detail="Google OAuth is not configured on this server.")
-    redirect_uri = _get_env("GOOGLE_REDIRECT_URI") or _callback_url(f"/api/connectors/{connector_type}/callback", request)
-    state = f"{workspace_id}:{connector_type}:{secrets.token_urlsafe(16)}"
+    workspace = await _get_workspace(workspace_id, session)
+    if not access_scope.allows_workspace(workspace.id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    redirect_uri = _google_redirect_uri(request)
+    try:
+        state, code_verifier = await issue_oauth_state(
+            workspace_id=workspace.id,
+            connector_type=connector_type,
+            principal_id=access_scope.principal_id,
+            use_pkce=True,
+        )
+    except OAuthStateError as exc:
+        raise HTTPException(status_code=503, detail="OAuth state is unavailable.") from exc
     scope = _GOOGLE_SCOPES[connector_type]
     params = urlencode({
         "response_type": "code",
@@ -810,6 +893,8 @@ async def google_install(
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
+        "code_challenge": pkce_challenge(str(code_verifier)),
+        "code_challenge_method": "S256",
     })
     url = f"https://accounts.google.com/o/oauth2/v2/auth?{params}"
     return RedirectResponse(url)
@@ -824,15 +909,26 @@ async def google_callback(
     error: str | None = None,
     session: AsyncSession = Depends(get_db_session),
 ) -> Response:
-    if connector_type not in GOOGLE_CONNECTORS:
+    if connector_type not in (*GOOGLE_CONNECTORS, "google"):
         raise HTTPException(status_code=404, detail="Connector not found")
+    if not state:
+        return _oauth_close_html(success=False, message="Missing state.")
+    try:
+        oauth_state = await consume_oauth_state(
+            state,
+            connector_type=None if connector_type == "google" else connector_type,
+        )
+    except OAuthStateError:
+        return _oauth_close_html(success=False, message="OAuth state is invalid or expired.")
+    connector_type = oauth_state.connector_type
+    if connector_type not in GOOGLE_CONNECTORS:
+        return _oauth_close_html(success=False, message="OAuth state is invalid or expired.")
     if error:
         return _oauth_close_html(success=False, message=f"Google OAuth error: {error}")
-    if not code or not state:
-        return _oauth_close_html(success=False, message="Missing code or state.")
+    if not code:
+        return _oauth_close_html(success=False, message="Missing code.")
 
-    parts = state.split(":")
-    workspace_id = parts[0]
+    workspace_id = str(oauth_state.workspace_id)
     try:
         ws = await _get_workspace(workspace_id, session)
     except HTTPException:
@@ -841,7 +937,7 @@ async def google_callback(
     import httpx
     client_id = _get_google_client_id() or ""
     client_secret = _get_env("GOOGLE_CLIENT_SECRET") or ""
-    redirect_uri = _get_env("GOOGLE_REDIRECT_URI") or _callback_url(f"/api/connectors/{connector_type}/callback", request)
+    redirect_uri = _google_redirect_uri(request)
 
     try:
         async with httpx.AsyncClient() as http:
@@ -853,11 +949,16 @@ async def google_callback(
                     "client_secret": client_secret,
                     "redirect_uri": redirect_uri,
                     "grant_type": "authorization_code",
+                    "code_verifier": oauth_state.code_verifier or "",
                 },
             )
             data = resp.json()
-    except Exception as exc:
-        return _oauth_close_html(success=False, message=f"OAuth exchange failed: {exc}")
+    except Exception:
+        logger.exception(
+            "oauth_exchange_failed",
+            extra={"connector_type": connector_type},
+        )
+        return _oauth_close_html(success=False, message="OAuth exchange failed.")
 
     if "access_token" not in data:
         return _oauth_close_html(success=False, message=data.get("error_description", "Google OAuth failed."))
@@ -1514,14 +1615,15 @@ def _oauth_close_html(success: bool, message: str) -> Response:
     color = "#16a34a" if success else "#dc2626"
     icon = "✓" if success else "✗"
     script = "window.opener && window.opener.postMessage('oauth-complete', '*'); window.close();"
-    html = f"""<!doctype html>
+    safe_message = html.escape(message, quote=True)
+    document = f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>OAuth</title>
 <style>body{{font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f8fafc}}
 .card{{background:#fff;border-radius:12px;padding:2rem 2.5rem;box-shadow:0 4px 24px #0001;text-align:center;max-width:380px}}
 .icon{{font-size:2.5rem;color:{color}}}p{{color:#374151;margin:.75rem 0 0}}</style></head>
-<body><div class="card"><div class="icon">{icon}</div><p>{message}</p></div>
+<body><div class="card"><div class="icon">{icon}</div><p>{safe_message}</p></div>
 <script>{script}</script></body></html>"""
-    return Response(content=html, media_type="text/html")
+    return Response(content=document, media_type="text/html")
 
 
 async def _run_sync_job(
@@ -1530,119 +1632,210 @@ async def _run_sync_job(
     database_url: str,
     *,
     worker_id: str | None = None,
+    claim_token: str | None = None,
     lease_seconds: int | None = None,
     retry_base_seconds: int | None = None,
     retry_max_seconds: int | None = None,
 ) -> None:
     """Worker executor: sync source documents, extract them, and finish or retry the job."""
-    from app.database import _ensure_sqlite_parent_dir, _make_async_url
+    from app.database import (
+        _ensure_sqlite_parent_dir,
+        _make_async_url,
+        create_database_engine,
+    )
     from app.sync.slack import sync_slack
-    from app.extract.basic import extract_from_source_documents
-    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+    from app.services.sync_worker import ClaimFencedAsyncSession
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     database_url = _make_async_url(database_url)
     _ensure_sqlite_parent_dir(database_url)
-    engine = create_async_engine(database_url)
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    engine = create_database_engine(
+        database_url,
+        application_name="context-engine-sync-executor",
+    )
+    session_factory = async_sessionmaker(
+        engine,
+        class_=ClaimFencedAsyncSession,
+        expire_on_commit=False,
+    )
+    control_session_factory = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    lease_seconds = max(3, lease_seconds or settings.sync_worker_lease_seconds)
+    owner = worker_id or "inline-sync-worker"
+    active_claim = claim_token
+    attempt_count = 0
+    max_attempts = 3
+    heartbeat_stop = asyncio.Event()
+    lease_lost = asyncio.Event()
+    heartbeat_task: asyncio.Task | None = None
 
-    async with session_factory() as session:
-        job = await session.get(SyncJob, UUID(job_id))
-        connector = await session.get(Connector, UUID(connector_id))
-        if not job or not connector:
-            await engine.dispose()
-            return
+    try:
+        async with session_factory() as session:
+            job = await session.get(SyncJob, UUID(job_id))
+            connector = await session.get(Connector, UUID(connector_id))
+            if not job or not connector:
+                return
 
-        now = utc_now()
-        lease_seconds = max(1, lease_seconds or settings.sync_worker_lease_seconds)
-        already_claimed = job.status == "running" and bool(job.locked_by)
-        job.status = "running"
-        job.workspace_id = connector.workspace_id
-        job.job_type = job.job_type or CONNECTOR_SYNC_JOB_TYPE
-        job.idempotency_key = job.idempotency_key or _sync_job_idempotency_key(connector)
-        if not already_claimed:
-            job.attempt_count = int(job.attempt_count or 0) + 1
-        job.started_at = job.started_at or now
-        job.available_at = None
-        job.lease_expires_at = now + timedelta(seconds=lease_seconds)
-        job.locked_by = worker_id or job.locked_by or "inline-sync-worker"
-        job.dead_lettered_at = None
-        job.error_type = None
-        job.error_message = None
-        await session.commit()
+            if active_claim:
+                if (
+                    job.status != "running"
+                    or job.claim_token != active_claim
+                    or job.locked_by != owner
+                ):
+                    return
+            else:
+                active_claim = secrets.token_hex(16)
+                now = await _sync_database_now(session)
+                job.status = "running"
+                job.attempt_count = int(job.attempt_count or 0) + 1
+                job.locked_by = owner
+                job.claim_token = active_claim
+                job.heartbeat_at = now
+                job.lease_expires_at = now + timedelta(seconds=lease_seconds)
 
-        try:
+            now = await _sync_database_now(session)
+            job.workspace_id = connector.workspace_id
+            job.job_type = job.job_type or CONNECTOR_SYNC_JOB_TYPE
+            job.idempotency_key = job.idempotency_key or _sync_job_idempotency_key(connector)
+            job.started_at = job.started_at or now
+            job.available_at = None
+            job.dead_lettered_at = None
+            job.error_type = None
+            job.error_message = None
+            job.heartbeat_at = now
+            job.lease_expires_at = now + timedelta(seconds=lease_seconds)
+            attempt_count = int(job.attempt_count or 0)
+            max_attempts = int(job.max_attempts or 3)
+            session.configure_claim_fence(
+                job_id=job.id,
+                worker_id=owner,
+                claim_token=active_claim,
+            )
+            await session.commit()
+
+            heartbeat_task = asyncio.create_task(
+                _heartbeat_sync_job(
+                    control_session_factory,
+                    job_id=job.id,
+                    worker_id=owner,
+                    claim_token=active_claim,
+                    lease_seconds=lease_seconds,
+                    stop=heartbeat_stop,
+                    lease_lost=lease_lost,
+                ),
+                name=f"sync-heartbeat-{job.id}",
+            )
+
             sync_result: dict[str, Any] = {}
             extract_result: dict[str, Any] = {}
+            async with asyncio.timeout(
+                max(1.0, settings.sync_worker_job_timeout_seconds)
+            ):
+                if connector.connector_type == "slack":
+                    sync_result = await sync_slack(
+                        connector,
+                        session,
+                        sync_job=job,
+                    )
+                elif connector.connector_type == "github":
+                    from app.sync.github import sync_github
+                    sync_result = await sync_github(
+                        connector,
+                        session,
+                        sync_job=job,
+                    )
+                elif connector.connector_type == "gmail":
+                    from app.sync.google import sync_gmail
+                    sync_result = await sync_gmail(
+                        connector,
+                        session,
+                        sync_job=job,
+                    )
+                elif connector.connector_type == "gdrive":
+                    from app.sync.google import sync_gdrive
+                    sync_result = await sync_gdrive(
+                        connector,
+                        session,
+                        sync_job=job,
+                    )
+                elif connector.connector_type in AI_SESSION_CONNECTORS:
+                    from app.services.session_library import sync_local_session_library
 
-            if connector.connector_type == "slack":
-                sync_result = await sync_slack(connector, session)
-                extract_result = await extract_from_source_documents(
-                    "slack",
-                    session,
-                    workspace_id=connector.workspace_id,
-                )
-            elif connector.connector_type == "github":
-                from app.sync.github import sync_github
-                sync_result = await sync_github(connector, session)
-                extract_result = await extract_from_source_documents(
-                    "github",
-                    session,
-                    workspace_id=connector.workspace_id,
-                )
-            elif connector.connector_type == "gmail":
-                from app.sync.google import sync_gmail
-                sync_result = await sync_gmail(connector, session)
-                extract_result = await extract_from_source_documents(
-                    "gmail",
-                    session,
-                    workspace_id=connector.workspace_id,
-                )
-            elif connector.connector_type == "gdrive":
-                from app.sync.google import sync_gdrive
-                sync_result = await sync_gdrive(connector, session)
-                extract_result = await extract_from_source_documents(
-                    "gdrive",
-                    session,
-                    workspace_id=connector.workspace_id,
-                )
-            elif connector.connector_type in AI_SESSION_CONNECTORS:
-                from app.services.session_library import sync_local_session_library
-
-                library_sync = await sync_local_session_library(
-                    session,
-                    connector.workspace_id,
-                    connector_types=[connector.connector_type],
-                )
-                changed_documents = int(library_sync.get("imported") or 0) + int(
-                    library_sync.get("updated") or 0
-                )
-                sync_result = {
-                    "documents_fetched": int(library_sync.get("discovered") or 0),
-                    "documents_persisted": changed_documents,
-                    "documents_skipped": int(library_sync.get("unchanged") or 0),
-                    "session_library": library_sync,
-                }
-                extract_result = {
-                    "documents_processed": changed_documents,
-                    "components_created": 0,
-                }
-            else:
-                # Generic stub for connectors not yet implemented
-                sync_result = {"documents_fetched": 0, "documents_persisted": 0}
+                    library_sync = await sync_local_session_library(
+                        session,
+                        connector.workspace_id,
+                        connector_types=[connector.connector_type],
+                    )
+                    changed_documents = int(library_sync.get("imported") or 0) + int(
+                        library_sync.get("updated") or 0
+                    )
+                    sync_result = {
+                        "documents_fetched": int(library_sync.get("discovered") or 0),
+                        "documents_persisted": changed_documents,
+                        "documents_skipped": int(library_sync.get("unchanged") or 0),
+                        "session_library": library_sync,
+                    }
+                    extract_result = {
+                        "documents_processed": changed_documents,
+                        "components_created": 0,
+                    }
+                else:
+                    sync_result = {"documents_fetched": 0, "documents_persisted": 0}
             sync_result = _sync_result_with_skip_counts(sync_result)
+            extract_result.setdefault(
+                "documents_queued",
+                int(sync_result.get("documents_persisted") or 0),
+            )
+
+            heartbeat_stop.set()
+            if heartbeat_task is not None:
+                await heartbeat_task
+                heartbeat_task = None
+            if lease_lost.is_set():
+                await session.rollback()
+                return
 
             result_metadata: dict[str, Any] = {
                 "sync_mode": "polling",
                 **sync_result,
                 **extract_result,
             }
-            job.status = "completed"
-            job.completed_at = utc_now()
-            job.available_at = None
-            job.lease_expires_at = None
-            job.locked_by = None
-            job.dead_lettered_at = None
-            job.result_metadata_json = json.dumps(result_metadata)
+            completed_at = await _sync_database_now(session)
+            # The conditional completion update below is the final transaction
+            # fence. Disable the per-commit hook because this transaction
+            # intentionally changes the job out of the "running" state.
+            session.disable_claim_fence()
+            fenced = await session.execute(
+                update(SyncJob)
+                .where(
+                    SyncJob.id == job.id,
+                    SyncJob.status == "running",
+                    SyncJob.locked_by == owner,
+                    SyncJob.claim_token == active_claim,
+                    SyncJob.lease_expires_at
+                    > database_wall_clock_expression(
+                        session.get_bind().dialect.name
+                    ),
+                )
+                .values(
+                    status="completed",
+                    completed_at=completed_at,
+                    available_at=None,
+                    lease_expires_at=None,
+                    locked_by=None,
+                    claim_token=None,
+                    heartbeat_at=None,
+                    dead_lettered_at=None,
+                    result_metadata_json=json.dumps(result_metadata),
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if fenced.rowcount != 1:
+                await session.rollback()
+                return
 
             config = json.loads(connector.config_json or "{}")
             config["items_synced"] = (
@@ -1654,37 +1847,173 @@ async def _run_sync_job(
                 + extract_result.get("documents_processed", 0)
             )
             connector.config_json = json.dumps(config)
-            connector.last_sync_at = utc_now()
+            connector.last_sync_at = completed_at
             await session.commit()
+    except asyncio.CancelledError:
+        heartbeat_stop.set()
+        if heartbeat_task is not None:
+            with suppress(asyncio.CancelledError, Exception):
+                await heartbeat_task
+            heartbeat_task = None
+        if active_claim:
+            try:
+                async with control_session_factory() as shutdown_session:
+                    now = await _sync_database_now(shutdown_session)
+                    released = await shutdown_session.execute(
+                        update(SyncJob)
+                        .where(
+                            SyncJob.id == UUID(job_id),
+                            SyncJob.status == "running",
+                            SyncJob.locked_by == owner,
+                            SyncJob.claim_token == active_claim,
+                            SyncJob.lease_expires_at
+                            > database_wall_clock_expression(
+                                shutdown_session.get_bind().dialect.name
+                            ),
+                        )
+                        .values(
+                            status="retrying",
+                            attempt_count=max(0, attempt_count - 1),
+                            available_at=now,
+                            completed_at=None,
+                            dead_lettered_at=None,
+                            lease_expires_at=None,
+                            locked_by=None,
+                            claim_token=None,
+                            heartbeat_at=None,
+                            error_type="worker_shutdown",
+                            error_message="Worker stopped before job completion",
+                        )
+                    )
+                    if released.rowcount == 1:
+                        await shutdown_session.commit()
+                    else:
+                        await shutdown_session.rollback()
+            except Exception:
+                logger.exception(
+                    "sync_job_shutdown_release_failed",
+                    extra={"sync_job_id": job_id},
+                )
+        raise
+    except Exception as exc:
+        import traceback
 
-        except Exception as exc:
-            import traceback
-            now = utc_now()
-            attempt_count = int(job.attempt_count or 0)
-            max_attempts = int(job.max_attempts or 3)
-            if attempt_count < max_attempts:
-                job.status = "retrying"
-                job.available_at = now + timedelta(
-                    seconds=_sync_retry_delay_seconds(
-                        attempt_count,
-                        base_seconds=retry_base_seconds,
-                        max_seconds=retry_max_seconds,
+        heartbeat_stop.set()
+        if heartbeat_task is not None:
+            with suppress(Exception):
+                await heartbeat_task
+            heartbeat_task = None
+        if not lease_lost.is_set() and active_claim:
+            error_message = redact_sensitive_text(
+                f"{exc}\n{traceback.format_exc()}"
+            )[:16_384]
+            async with control_session_factory() as failure_session:
+                now = await _sync_database_now(failure_session)
+                if attempt_count < max_attempts:
+                    next_status = "retrying"
+                    available_at = now + timedelta(
+                        seconds=_sync_retry_delay_seconds(
+                            attempt_count,
+                            base_seconds=retry_base_seconds,
+                            max_seconds=retry_max_seconds,
+                        )
+                    )
+                    completed_at = None
+                    dead_lettered_at = None
+                else:
+                    next_status = DEAD_LETTER_SYNC_JOB_STATUS
+                    available_at = None
+                    completed_at = now
+                    dead_lettered_at = now
+                fenced = await failure_session.execute(
+                    update(SyncJob)
+                    .where(
+                        SyncJob.id == UUID(job_id),
+                        SyncJob.status == "running",
+                        SyncJob.locked_by == owner,
+                        SyncJob.claim_token == active_claim,
+                        SyncJob.lease_expires_at
+                        > database_wall_clock_expression(
+                            failure_session.get_bind().dialect.name
+                        ),
+                    )
+                    .values(
+                        status=next_status,
+                        available_at=available_at,
+                        completed_at=completed_at,
+                        dead_lettered_at=dead_lettered_at,
+                        lease_expires_at=None,
+                        locked_by=None,
+                        claim_token=None,
+                        heartbeat_at=None,
+                        error_type=type(exc).__name__,
+                        error_message=error_message,
                     )
                 )
-                job.completed_at = None
-                job.dead_lettered_at = None
-            else:
-                job.status = DEAD_LETTER_SYNC_JOB_STATUS
-                job.available_at = None
-                job.completed_at = now
-                job.dead_lettered_at = now
-            job.lease_expires_at = None
-            job.locked_by = None
-            job.error_type = type(exc).__name__
-            job.error_message = f"{exc}\n{traceback.format_exc()}"
-            await session.commit()
+                if fenced.rowcount == 1:
+                    await failure_session.commit()
+                else:
+                    await failure_session.rollback()
+    finally:
+        heartbeat_stop.set()
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat_task
+        await engine.dispose()
 
-    await engine.dispose()
+
+async def _heartbeat_sync_job(
+    session_factory,
+    *,
+    job_id: UUID,
+    worker_id: str,
+    claim_token: str,
+    lease_seconds: int,
+    stop: asyncio.Event,
+    lease_lost: asyncio.Event,
+) -> None:
+    interval = max(1.0, lease_seconds / 3)
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+            return
+        except TimeoutError:
+            pass
+        try:
+            async with session_factory() as session:
+                now = await _sync_database_now(session)
+                result = await session.execute(
+                    update(SyncJob)
+                    .where(
+                        SyncJob.id == job_id,
+                        SyncJob.status == "running",
+                        SyncJob.locked_by == worker_id,
+                        SyncJob.claim_token == claim_token,
+                        SyncJob.lease_expires_at
+                        > database_wall_clock_expression(
+                            session.get_bind().dialect.name
+                        ),
+                    )
+                    .values(
+                        heartbeat_at=now,
+                        lease_expires_at=now + timedelta(seconds=lease_seconds),
+                    )
+                )
+                if result.rowcount != 1:
+                    await session.rollback()
+                    lease_lost.set()
+                    return
+                await session.commit()
+        except Exception:
+            # A transient heartbeat error does not immediately surrender the
+            # lease; the next cycle can recover before the stored deadline.
+            continue
+
+
+async def _sync_database_now(session: AsyncSession) -> datetime:
+    value = await database_wall_clock(session)
+    return value if isinstance(value, datetime) else utc_now()
 
 
 def _sync_retry_delay_seconds(

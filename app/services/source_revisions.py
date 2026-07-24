@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -67,6 +68,7 @@ async def ingest_source_document_revision(
     permission_source: str = "workspace_default",
     permission_observed_at: datetime | None = None,
     allowed_principal_ids: list[str] | tuple[str, ...] | None = None,
+    revision_on_metadata_change: bool = False,
 ) -> SourceRevisionResult:
     """Insert immutable content revisions while making identical retries idempotent."""
     incoming_hash = sha256_text(content)
@@ -84,8 +86,11 @@ async def ingest_source_document_revision(
         "allowed_principal_ids": normalized_principals,
     }, sort_keys=True, separators=(",", ":")))
     identity_sha256 = canonical_source_identity_sha256(workspace_id, source_type, external_id)
+    serialized_metadata = _serialize_metadata(metadata_json)
+    canonical_metadata = _canonical_metadata(serialized_metadata)
 
     for attempt in range(2):
+        await _lock_source_identity(session, identity_sha256)
         current = await get_current_source_document(
             session,
             workspace_id=workspace_id,
@@ -98,7 +103,17 @@ async def ingest_source_document_revision(
             and current.content_sha256 == incoming_hash
             and current.content == content
             and current.permission_snapshot_sha256 == permission_snapshot_sha256
+            and (
+                not revision_on_metadata_change
+                or _canonical_metadata(current.metadata_json) == canonical_metadata
+            )
         ):
+            if current.processed_at is None:
+                from app.services.source_ingestion_worker import (
+                    enqueue_source_ingestion_job,
+                )
+
+                await enqueue_source_ingestion_job(session, current)
             return SourceRevisionResult(
                 document=current,
                 created=False,
@@ -118,7 +133,7 @@ async def ingest_source_document_revision(
             supersedes_source_document_id=current.id if current is not None else None,
             author=author,
             source_url=source_url,
-            metadata_json=_serialize_metadata(metadata_json),
+            metadata_json=serialized_metadata,
             source_created_at=source_created_at,
             trust_zone=trust_zone,
             visibility_scope=visibility_scope,
@@ -142,6 +157,12 @@ async def ingest_source_document_revision(
                             permission_snapshot_sha256=permission_snapshot_sha256,
                         ))
                     await session.flush()
+                from app.services.source_ingestion_worker import (
+                    enqueue_source_ingestion_job,
+                )
+
+                await enqueue_source_ingestion_job(session, doc)
+                await session.flush()
         except IntegrityError:
             if attempt == 0:
                 continue
@@ -156,7 +177,33 @@ async def ingest_source_document_revision(
     raise RuntimeError("source revision allocation retry exhausted")
 
 
+async def _lock_source_identity(session: AsyncSession, identity_sha256: str) -> None:
+    if session.get_bind().dialect.name != "postgresql":
+        return
+    key = int.from_bytes(
+        hashlib.sha256(identity_sha256.encode("ascii")).digest()[:8],
+        byteorder="big",
+        signed=True,
+    )
+    from sqlalchemy import func
+
+    await session.execute(select(func.pg_advisory_xact_lock(key)))
+
+
 def _serialize_metadata(value: dict[str, Any] | str | None) -> str:
     if isinstance(value, str):
         return value
-    return json.dumps(value or {})
+    return json.dumps(value or {}, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _canonical_metadata(value: dict[str, Any] | str | None) -> str:
+    if isinstance(value, dict):
+        parsed: Any = value
+    elif isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return value
+    else:
+        parsed = {}
+    return json.dumps(parsed, sort_keys=True, separators=(",", ":"), default=str)

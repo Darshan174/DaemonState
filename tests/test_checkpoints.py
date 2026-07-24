@@ -4,6 +4,7 @@ import json
 from dataclasses import replace
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import func, select
 
 from app.models import (
@@ -24,6 +25,7 @@ from app.services.checkpoints import (
     get_checkpoint,
     latest_checkpoint,
 )
+from app.services.checkpoint_verifier import _safe_replay_commands
 from app.services.local_harness import CommandResult, RepositorySnapshot
 from app.services.session_events import NormalizedSessionEvent, persist_session_events
 
@@ -288,20 +290,21 @@ async def test_checkpoint_api_captures_verifies_and_builds_resume_bundle(
     }
 
 
-async def test_explicit_verification_replays_only_captured_test_commands(
+async def test_explicit_verification_replays_multiline_commands_independently(
     client,
     db_session,
     tmp_path,
     monkeypatch,
 ) -> None:
     workspace, document = await _session_source(db_session, tmp_path)
+    recorded_command = "npm test -- --run\nnpm run build"
     await persist_session_events(
         db_session,
         workspace_id=workspace.id,
         source_document=document,
         provider="codex",
         session_id="checkpoint-session",
-        events=_events(),
+        events=_events_with_verification_command(recorded_command),
     )
     await db_session.commit()
     snapshot = _snapshot(tmp_path)
@@ -340,10 +343,102 @@ async def test_explicit_verification_replays_only_captured_test_commands(
     )
 
     assert response.status_code == 200
-    assert replayed == [("pytest", "-q", "tests/test_core.py")]
+    assert replayed == [
+        ("npm", "test", "--", "--run"),
+        ("npm", "run", "build"),
+    ]
     verification = response.json()["verification"]
     assert verification["status"] == "verified"
-    assert verification["results"]["replay_results"][0]["passed"] is True
+    replay_results = verification["results"]["replay_results"]
+    assert [item["command"] for item in replay_results] == [
+        "npm test -- --run",
+        "npm run build",
+    ]
+    assert all(item["passed"] is True for item in replay_results)
+    assert verification["results"]["replay_rejections"] == []
+
+
+def test_safe_replay_commands_splits_cr_and_rejects_unsafe_input() -> None:
+    assert _safe_replay_commands("npm test -- --run\rnpm run build") == (
+        ("npm test -- --run", ("npm", "test", "--", "--run")),
+        ("npm run build", ("npm", "run", "build")),
+    )
+
+    with pytest.raises(ValueError, match="NUL"):
+        _safe_replay_commands("npm test -- --run\x00npm run build")
+
+    with pytest.raises(ValueError, match="shell operators"):
+        _safe_replay_commands("npm test -- --run\nnpm run build && npm publish")
+
+
+async def test_explicit_verification_rejects_nul_command_without_false_failure(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    recorded_command = "npm test -- --run\x00npm run build"
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="checkpoint-session",
+        events=_events_with_verification_command(recorded_command),
+    )
+    await db_session.commit()
+    snapshot = _snapshot(tmp_path)
+    monkeypatch.setattr(
+        "app.services.checkpoints.capture_repository_snapshot",
+        _async_value(snapshot),
+    )
+    monkeypatch.setattr(
+        "app.services.checkpoint_verifier.capture_repository_snapshot",
+        _async_value(snapshot),
+    )
+    replayed: list[tuple[str, ...]] = []
+
+    async def _run(_repo_path, command, **_kwargs):
+        replayed.append(tuple(command))
+        return CommandResult(
+            argv=tuple(command),
+            exit_code=1,
+            stdout="",
+            stderr="must not run",
+            stdout_truncated=False,
+            stderr_truncated=False,
+            timed_out=False,
+            duration_ms=1,
+        )
+
+    monkeypatch.setattr("app.services.checkpoint_verifier.run_repository_command", _run)
+    captured = await client.post("/api/checkpoints/capture", json={
+        "workspace_id": str(workspace.id),
+        "provider": "codex",
+        "session_id": "checkpoint-session",
+    })
+    response = await client.post(
+        f"/api/checkpoints/{captured.json()['id']}/verify",
+        json={"workspace_id": str(workspace.id), "execute_commands": True},
+    )
+
+    assert response.status_code == 200
+    assert replayed == []
+    verification = response.json()["verification"]
+    assert verification["status"] == "partial"
+    results = verification["results"]
+    assert results["replay_results"] == []
+    assert results["replay_rejections"] == [{
+        "command": recorded_command,
+        "reason": "commands containing NUL bytes are not replayed",
+    }]
+    fresh_execution = next(
+        check
+        for check in results["checks"]
+        if check["name"] == "fresh_command_execution"
+    )
+    assert fresh_execution["status"] == "not_available"
 
 
 async def test_checkpoint_without_repository_snapshot_is_only_partial(
@@ -619,6 +714,199 @@ async def test_latest_checkpoint_uses_boundary_time_not_import_or_insert_time(
     assert selected.session_id == "new-work"
 
 
+async def test_latest_checkpoint_session_filter_does_not_fall_back_to_workspace_latest(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="opencode",
+        session_id="older-task",
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id="older-task-goal",
+                sequence_number=1,
+                event_type="user_request",
+                role="user",
+                occurred_at="2026-07-23T09:00:00Z",
+                content="Finish the older task.",
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="older-task-boundary",
+                sequence_number=2,
+                event_type="compaction_boundary",
+                occurred_at="2026-07-23T09:30:00Z",
+            ),
+        ],
+    )
+    workspace_latest = (await capture_missing_compaction_checkpoints(
+        db_session,
+        workspace_id=workspace.id,
+        provider="opencode",
+        session_id="older-task",
+    ))[0]
+
+    assert (
+        await latest_checkpoint(db_session, workspace_id=workspace.id)
+    ).id == workspace_latest.id
+    assert await latest_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="active-task-without-checkpoint",
+    ) is None
+
+    response = await client.get("/api/checkpoints/latest", params={
+        "workspace_id": str(workspace.id),
+        "provider": "codex",
+        "session_id": "active-task-without-checkpoint",
+    })
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Checkpoint not found"
+
+
+async def test_latest_checkpoint_session_filter_selects_matching_boundary_time(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="active-task",
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id="active-task-goal",
+                sequence_number=1,
+                event_type="user_request",
+                role="user",
+                occurred_at="2026-04-01T08:00:00Z",
+                content="Finish the active task.",
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="active-task-newer-boundary",
+                sequence_number=2,
+                event_type="compaction_boundary",
+                occurred_at="2026-07-20T09:30:00Z",
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="active-task-older-boundary",
+                sequence_number=3,
+                event_type="compaction_boundary",
+                occurred_at="2026-05-01T16:00:00Z",
+            ),
+        ],
+    )
+    newer_boundary = await db_session.scalar(select(SessionEvent).where(
+        SessionEvent.provider_event_id == "active-task-newer-boundary"
+    ))
+    older_boundary = await db_session.scalar(select(SessionEvent).where(
+        SessionEvent.provider_event_id == "active-task-older-boundary"
+    ))
+    matching_newer = await capture_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="active-task",
+        boundary_event_id=newer_boundary.id,
+    )
+    # Capture the older boundary last: insert order must not decide the result.
+    matching_older = await capture_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="active-task",
+        boundary_event_id=older_boundary.id,
+    )
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="opencode",
+        session_id="workspace-latest-task",
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id="workspace-latest-goal",
+                sequence_number=1,
+                event_type="user_request",
+                role="user",
+                occurred_at="2026-07-21T09:00:00Z",
+                content="Finish the workspace-latest task.",
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="workspace-latest-boundary",
+                sequence_number=2,
+                event_type="compaction_boundary",
+                occurred_at="2026-07-21T09:30:00Z",
+            ),
+        ],
+    )
+    workspace_latest = (await capture_missing_compaction_checkpoints(
+        db_session,
+        workspace_id=workspace.id,
+        provider="opencode",
+        session_id="workspace-latest-task",
+    ))[0]
+
+    assert matching_older.id != matching_newer.id
+    assert (
+        await latest_checkpoint(db_session, workspace_id=workspace.id)
+    ).id == workspace_latest.id
+    selected = await latest_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider=" CODEX ",
+        session_id="active-task",
+    )
+    assert selected.id == matching_newer.id
+
+    response = await client.get("/api/checkpoints/latest", params={
+        "workspace_id": str(workspace.id),
+        "provider": "CODEX",
+        "session_id": "active-task",
+    })
+
+    assert response.status_code == 200
+    assert response.json()["id"] == str(matching_newer.id)
+    assert response.json()["boundary"]["occurred_at"].startswith("2026-07-20T09:30:00")
+
+
+async def test_latest_checkpoint_session_filter_requires_a_complete_pair(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    workspace, _ = await _session_source(db_session, tmp_path)
+
+    with pytest.raises(
+        ValueError,
+        match="provider and session_id must be provided together",
+    ):
+        await latest_checkpoint(
+            db_session,
+            workspace_id=workspace.id,
+            provider="codex",
+        )
+
+    response = await client.get("/api/checkpoints/latest", params={
+        "workspace_id": str(workspace.id),
+        "provider": "codex",
+    })
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "provider and session_id must be provided together"
+    )
+
+
 async def _session_source(db_session, tmp_path):
     tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "app").mkdir(exist_ok=True)
@@ -703,6 +991,22 @@ def _events() -> list[NormalizedSessionEvent]:
             payload={"window_id": "window-2", "turn_count": 2},
         ),
     ]
+
+
+def _events_with_verification_command(
+    command: str,
+) -> list[NormalizedSessionEvent]:
+    events = _events()
+    events[2] = replace(
+        events[2],
+        content=command,
+        payload={**events[2].payload, "command": command},
+    )
+    events[3] = replace(
+        events[3],
+        payload={**events[3].payload, "command": command},
+    )
+    return events
 
 
 def _snapshot(root) -> RepositorySnapshot:

@@ -14,6 +14,7 @@ from app.models import Workspace
 from app.services.access import AccessScope
 from app.services.ingest import IngestionService
 from app.services.repo_indexer import PROJECT_ROOT_MARKERS, RepoFrame, RepoIndexer
+from app.services.repo_paths import RepositoryPathNotAllowed, validated_repository_path
 from app.services.source_revisions import ingest_source_document_revision
 
 router = APIRouter()
@@ -54,7 +55,10 @@ async def index_repo(
     ):
         raise HTTPException(status_code=404, detail="Workspace not found")
 
-    requested_root = Path(payload.repo_path).expanduser().resolve()
+    try:
+        requested_root = validated_repository_path(payload.repo_path)
+    except RepositoryPathNotAllowed as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if (
         requested_root.exists()
         and requested_root.is_dir()
