@@ -3,6 +3,11 @@
 The harness wraps one local worker command. It gives the worker a task brief and
 records what happened; it does not decide or perform the work itself.
 
+`ctxe continue` composes this harness with task resolution, durable checkpoint
+verification, and audited Codex, Claude Code, and OpenCode CLI adapters. Use
+`ctxe harness run` for an arbitrary explicit worker; use `ctxe continue --into`
+for the built-in cross-harness path.
+
 ## What It Does
 
 `ctxe harness run`:
@@ -95,7 +100,15 @@ Example row:
 ## Current Limits
 
 - The user still chooses and configures the worker command.
-- There are no built-in Codex, Claude Code, Hermes, or OpenCode launch adapters.
+- `ctxe harness run` still requires a worker command. `ctxe continue --into`
+  provides built-in non-interactive adapters for Codex, Claude Code, and
+  OpenCode when their CLIs are installed and authenticated.
+- Context delivery is bounded to 1 MiB. Codex and Claude Code receive it on
+  stdin; OpenCode receives a permission-restricted temporary context file.
+- Codex is explicitly constrained to its workspace-write sandbox. Claude Code
+  and OpenCode retain their installed permission configuration; the adapters
+  never add bypass, danger, or auto-approval flags.
+- Hermes and other providers do not yet have built-in adapters.
 - Captured output is deliberately bounded; it is not terminal playback.
 - On POSIX systems the runner kills the worker process group on timeout or
   cancellation. Process-tree cleanup is best effort on other platforms.

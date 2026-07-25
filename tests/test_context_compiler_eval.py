@@ -395,7 +395,7 @@ async def test_context_compiler_eval_invokes_real_compiler_and_validates_evidenc
         source_documents=source_documents,
     )
 
-    assert result.manifest["compiler"]["version"] == "context_compiler.v4"
+    assert result.manifest["compiler"]["version"] == "context_compiler.v5"
     assert metrics["context_recall"] == 1.0
     assert metrics["citation_validity"] == 1.0
     assert metrics["stale_leakage"] == 0.0

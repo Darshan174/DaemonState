@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   ArrowRight,
   Bot,
@@ -17,29 +17,26 @@ import {
 } from "lucide-react";
 
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
-import SessionContinuationDialog from "../components/SessionContinuationDialog";
 import ProductLoadingState from "../components/ProductLoadingState";
+import { HarnessContinuationCard } from "../components/HarnessCard";
+import { HARNESS_ORDER, harnessMeta } from "../components/HarnessBrand";
 import {
-  useCaptureCheckpoint,
-  useCheckpointComparison,
   useCheckpoints,
-  useContinueSession,
+  useContinuationProviders,
   useLatestCheckpoint,
-  useSessionContinuity,
+  useRunContinuation,
   useSessionLibrary,
-  useVerifyCheckpoint,
 } from "../api/hooks";
 import {
   useContextDigest,
   useLinkedAISessionRefresh,
-  usePrepareContext,
   useProjectMemory,
 } from "../context-map/api";
 import { cleanDisplayText, formatTimeAgo, sessionIdentity } from "../context-map/digest";
-import { buildSessionContinuity } from "./sessionContinuity";
 import { useProductWorkspace } from "./useProductWorkspace";
 
 export default function NowPage() {
+  const [searchParams] = useSearchParams();
   const workspace = useProductWorkspace();
   const digestQuery = useContextDigest(workspace.activeWorkspaceId, { poll: true });
   const digestActivity = digestQuery.data?.activity?.primary || null;
@@ -86,29 +83,39 @@ export default function NowPage() {
       ...(detailSessionReference || {}),
     },
   );
-  const continuityQuery = useSessionContinuity(
-    workspace.activeWorkspaceId,
-    {
-      enabled: checkpointSettled && Boolean(detailSessionReference),
-      ...(detailSessionReference || {}),
-    },
-  );
   const memoryQuery = useProjectMemory(
     workspace.activeWorkspaceId,
     { limit: 1, poll: true, enabled: checkpointSettled },
   );
-  const captureCheckpoint = useCaptureCheckpoint();
-  const continueSession = useContinueSession();
-  const prepareContext = usePrepareContext();
-  const [prepareState, setPrepareState] = useState("idle");
-  const [prepareError, setPrepareError] = useState("");
-  const [selectedResumeCard, setSelectedResumeCard] = useState(null);
-  const [resumeState, setResumeState] = useState("idle");
-  const [resumeNotice, setResumeNotice] = useState("");
-  const selectedComparison = useCheckpointComparison(
+  const continuationProvidersQuery = useContinuationProviders(
     workspace.activeWorkspaceId,
-    selectedResumeCard?.checkpoint?.id,
   );
+  const runContinuation = useRunContinuation();
+  const [continuationState, setContinuationState] = useState("idle");
+  const [continuationResult, setContinuationResult] = useState(null);
+  const [continuationError, setContinuationError] = useState(null);
+  const [pendingProvider, setPendingProvider] = useState(null);
+  const continuationRequestKey = JSON.stringify([
+    workspace.activeWorkspaceId || "",
+    searchParams.get("objective") || "",
+    searchParams.get("checkpoint") || "",
+    searchParams.get("checkpoint_source") || "",
+    digestQuery.data?.current_goal?.title || "",
+    digestActivity?.request || digestActivity?.title || "",
+    digestQuery.data?.scope?.project_paths?.[0]
+      || digestActivity?.cwd
+      || latestSession?.cwd
+      || primaryCheckpointQuery.data?.activity?.cwd
+      || workspace.activeWorkspace?.repo_path
+      || "",
+    primaryCheckpointQuery.data?.sections?.goal?.[0]?.statement || "",
+  ]);
+  useEffect(() => {
+    setContinuationState("idle");
+    setContinuationResult(null);
+    setContinuationError(null);
+    setPendingProvider(null);
+  }, [continuationRequestKey]);
   useLinkedAISessionRefresh(
     workspace.activeWorkspaceId,
     { enabled: checkpointSettled, initialDelayMs: 5_000 },
@@ -155,16 +162,9 @@ export default function NowPage() {
     && workspaceCheckpoint.id !== checkpoint?.id
     && !checkpointMatchesActivity(workspaceCheckpoint, activity)
   ) ? workspaceCheckpoint : null;
+  const requestedObjective = prepareTaskCandidate(searchParams.get("objective"));
+  const requestedCheckpointId = String(searchParams.get("checkpoint") || "").trim();
   const currentGoal = prepareTaskCandidate(digest.current_goal?.title);
-  const activeTaskTitle = digestPending
-    ? "Loading current activity…"
-    : digestUnavailable
-      ? "Current activity is unavailable"
-      : currentGoal
-        || prepareTaskCandidate(observedActivity?.request || observedActivity?.title)
-        || prepareTaskCandidate(activity?.request || activity?.title)
-        || prepareTaskCandidate(cleanRecoveryText(currentCheckpoint?.sections?.goal?.[0]?.statement))
-        || "No active task selected";
   const attentionCards = cards
     .filter((card) => card.attention_required)
     .filter((card) => card.workspace_relevance?.status !== "not_relevant")
@@ -180,44 +180,6 @@ export default function NowPage() {
   );
   const unassignedSessionCard = unassignedSessionCards[0];
   const unassignedSessionCount = unassignedSessionCards.length;
-  const continuitySessions = activitySession
-    ? [activitySession]
-    : libraryQuery.data?.sessions || [];
-  const sessionContinuityCards = buildSessionContinuity({
-    sessions: continuitySessions,
-    ledgers: continuityQuery.data?.sessions || [],
-    checkpoints: checkpointHistoryQuery.data?.checkpoints || [],
-  });
-  const resumeCard = sessionContinuityCards.find((card) => (
-    card.provider === normalizeProvider(checkpoint?.provider)
-    && card.sessionId === checkpoint?.session_id
-  )) || null;
-  const resumeSourcesLoading = Boolean(
-    checkpoint
-    && !resumeCard?.canResume
-    && (
-      !checkpointSettled
-      || (detailSessionReference && !queryHasSettled(continuityQuery))
-      || (detailSessionReference && !queryHasSettled(checkpointHistoryQuery))
-      || (libraryFallbackNeeded && !queryHasSettled(libraryQuery))
-      || libraryQuery.isLoading
-      || continuityQuery.isLoading
-      || checkpointHistoryQuery.isLoading
-    )
-  );
-  const resumeSourcesError = (
-    libraryQuery.error
-    || continuityQuery.error
-    || checkpointHistoryQuery.error
-    || null
-  );
-  const resumeAvailability = resumeCard?.canResume
-    ? "available"
-    : resumeSourcesLoading
-      ? "loading"
-      : resumeSourcesError
-        ? "unknown"
-        : "unavailable";
   const sessionCompactions = (checkpointHistoryQuery.data?.checkpoints || [])
     .filter((item) => (
       checkpoint
@@ -229,63 +191,49 @@ export default function NowPage() {
       Number(left.boundary?.sequence_number || 0)
       - Number(right.boundary?.sequence_number || 0)
     ));
-  const saveCheckpoint = () => {
-    if (!latestSession) return;
-    captureCheckpoint.mutate({
-      workspaceId: workspace.activeWorkspaceId,
-      provider: latestSession.connector_type,
-      sessionId: latestSession.session_id,
-    });
-  };
-  const openResume = (card) => {
-    if (!card?.canResume) return;
-    setResumeState("idle");
-    setResumeNotice("");
-    setSelectedResumeCard(card);
-  };
-  const confirmResume = async () => {
-    if (!selectedResumeCard) return;
-    setResumeState("preparing");
-    setResumeNotice("");
+  const continuationObjective = requestedObjective
+    || currentGoal
+    || prepareTaskCandidate(observedActivity?.request)
+    || prepareTaskCandidate(observedActivity?.session_title)
+    || prepareTaskCandidate(observedActivity?.title)
+    || prepareTaskCandidate(latestSession?.title)
+    || prepareTaskCandidate(cleanRecoveryText(currentCheckpoint?.sections?.goal?.[0]?.statement));
+  const continuationRepoPath = digest.scope?.project_paths?.[0]
+    || activity?.cwd
+    || latestSession?.cwd
+    || workspace.activeWorkspace?.repo_path
+    || null;
+  const continuationBranch = activity?.branch
+    || currentCheckpoint?.repo?.branch
+    || currentCheckpoint?.repository?.branch
+    || null;
+  const runTaskContinuation = async (targetProvider) => {
+    if (!workspace.activeWorkspaceId || (!continuationObjective && !continuationRepoPath)) return;
+    setContinuationState("running");
+    setContinuationResult(null);
+    setContinuationError(null);
+    setPendingProvider(targetProvider);
     try {
-      const bundle = await continueSession.mutateAsync({
-        workspaceId: workspace.activeWorkspaceId,
-        sourceDocumentId: selectedResumeCard.sourceDocumentId,
-        launchSession: true,
-      });
-      await navigator.clipboard.writeText(bundle.content);
-      const copiedOnly = bundle.launch?.launched === false;
-      setResumeState(copiedOnly ? "copied_only" : "copied");
-      setResumeNotice(
-        copiedOnly
-          ? bundle.launch?.message || "Resume context copied. The original task could not be opened."
-          : "Original task opened and resume context copied.",
-      );
-      setSelectedResumeCard(null);
-    } catch (error) {
-      setResumeState("error");
-      setResumeNotice(error?.message || "Could not prepare resume context.");
-    }
-  };
-  const prepareNextSession = async () => {
-    if (!currentGoal) return;
-    setPrepareState("preparing");
-    setPrepareError("");
-    try {
-      const result = await prepareContext.mutateAsync({
-        objective: currentGoal,
+      const result = await runContinuation.mutateAsync({
         workspace_id: workspace.activeWorkspaceId,
-        mode: "task",
-        objective_origin: "trusted_human",
+        idempotency_key: continuationIdempotencyKey(),
+        target_provider: targetProvider,
+        ...(continuationObjective ? { objective: continuationObjective } : {}),
+        ...(continuationRepoPath ? { repo_path: continuationRepoPath } : {}),
+        ...(requestedCheckpointId ? { checkpoint_id: requestedCheckpointId } : {}),
+        ...(requestedCheckpointId && searchParams.get("checkpoint_source")
+          ? { checkpoint_source_id: searchParams.get("checkpoint_source") }
+          : {}),
       });
-      if (!globalThis.navigator?.clipboard?.writeText) {
-        throw new Error("Clipboard access is unavailable.");
-      }
-      await globalThis.navigator.clipboard.writeText(result.markdown);
-      setPrepareState("copied");
+      setContinuationResult(result);
+      const blocker = continuationBlocker(result);
+      setContinuationError(blocker);
+      setContinuationState(blocker ? "blocked" : "completed");
     } catch (error) {
-      setPrepareState("error");
-      setPrepareError(error?.message || "Could not prepare the next session.");
+      setContinuationState("blocked");
+      setContinuationError(continuationErrorFromRequest(error, targetProvider));
+    } finally {
+      setPendingProvider(null);
     }
   };
   const actionInputsPending = digestPending
@@ -299,35 +247,27 @@ export default function NowPage() {
       && Boolean(latestSession)
       && (activeCheckpointSession ? checkpointQuery.isLoading : workspaceCheckpointQuery.isLoading)
     );
-  const prepareAction = digestUnavailable
+  const continueAction = digestUnavailable
     ? {
         kind: "unavailable",
-        description: "Current activity could not be loaded. Other saved project context remains available below.",
+        description: "Current activity could not be loaded. Saved project evidence remains available below.",
       }
     : actionInputsPending
       ? {
           kind: "loading",
-          description: "Reading the current task and its safest available continuation.",
+          description: "Resolving the current task, repository, and safest continuation.",
         }
-      : latestSession && currentGoal
+      : continuationObjective || continuationRepoPath
         ? {
-            kind: "compile",
-            description: "Compile the trusted goal and copy a focused context pack for a new agent session.",
+            kind: "continue",
+            description: "Resolve the task, reconcile the repository, run a fresh agent, and verify the observed outcome automatically.",
           }
-        : !latestSession
-          ? {
-              kind: "choose",
-              description: "Choose a linked coding session before preparing its continuation.",
-            }
-          : checkpoint
-            ? {
-                kind: "review",
-                description: "Review the saved context before resuming this task.",
-              }
-            : {
-                kind: "capture",
-                description: "Capture the current session state before preparing its continuation.",
-              };
+        : {
+            kind: "choose",
+            description: "Choose linked work before continuing.",
+          };
+  const continuationProviders = resolvedContinuationProviders(continuationProvidersQuery);
+  const continuationRunnable = continueAction.kind === "continue";
 
   return (
     <div className="app-page ce-now-page relative">
@@ -348,78 +288,75 @@ export default function NowPage() {
             </span>
           </div>
 
-          <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1fr)_18rem] lg:items-end">
-            <div className="min-w-0">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#d9ff68]">Active task</p>
-              <h1 className="mt-4 max-w-[18ch] text-[clamp(2.65rem,6.2vw,5.75rem)] font-semibold leading-[0.92] tracking-[-0.062em] text-white">
-                {activeTaskTitle}
+          <div className="mt-7">
+            <div className="max-w-3xl">
+              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-[#d9ff68]">
+                Choose the next harness
+              </p>
+              <h1 className="mt-3 text-[clamp(2rem,4.2vw,3.5rem)] font-semibold leading-[0.96] tracking-[-0.055em] text-white">
+                Continue with full context
               </h1>
-              <p className="mt-5 max-w-2xl text-sm leading-6 text-[#b8b8af] sm:text-[15px]">
-                Progress, verification, and the safest available continuation—kept separate by evidence type.
+              <p className="mt-4 max-w-2xl text-sm leading-6 text-[#b8b8af] sm:text-[15px]">
+                The selected agent starts fresh with the same reconciled decisions, learnings, memory, blockers, and repository state.
               </p>
             </div>
 
-            <div className="flex flex-col gap-3">
-              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1">
-                {prepareAction.kind === "loading" || prepareAction.kind === "unavailable" ? (
-                  <button
-                    type="button"
-                    disabled
-                    className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#d9ff68] px-5 py-3 text-sm font-semibold text-[#171713] opacity-65"
-                  >
-                    {prepareAction.kind === "loading" ? "Loading task…" : "Activity unavailable"}
-                    {prepareAction.kind === "loading"
-                      ? <RefreshCw className="h-4 w-4 animate-spin" aria-hidden="true" />
-                      : <ShieldAlert className="h-4 w-4" aria-hidden="true" />}
-                  </button>
-                ) : prepareAction.kind === "compile" ? (
-                  <button
-                    type="button"
-                    onClick={prepareNextSession}
-                    disabled={prepareState === "preparing" || prepareContext.isPending}
-                    className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#d9ff68] px-5 py-3 text-sm font-semibold text-[#171713] transition hover:-translate-y-0.5 hover:bg-[#e4ff91] focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-[#171713] disabled:cursor-wait disabled:opacity-60"
-                  >
-                    {prepareState === "preparing" || prepareContext.isPending ? "Preparing context…" : "Prepare next session"}
-                    {prepareState === "preparing" || prepareContext.isPending
-                      ? <RefreshCw className="h-4 w-4 animate-spin" aria-hidden="true" />
-                      : <ArrowRight className="h-4 w-4" aria-hidden="true" />}
-                  </button>
-                ) : prepareAction.kind === "choose" ? (
-                  <Link to="/app/library" className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#d9ff68] px-5 py-3 text-sm font-semibold text-[#171713] transition hover:-translate-y-0.5 hover:bg-[#e4ff91] focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-[#171713]">
-                    Prepare next session <ArrowRight className="h-4 w-4" aria-hidden="true" />
-                  </Link>
-                ) : prepareAction.kind === "review" ? (
-                  <a href="#continuity-checkpoint" className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#d9ff68] px-5 py-3 text-sm font-semibold text-[#171713] transition hover:-translate-y-0.5 hover:bg-[#e4ff91] focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-[#171713]">
-                    Prepare next session <ArrowRight className="h-4 w-4" aria-hidden="true" />
-                  </a>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={saveCheckpoint}
-                    disabled={captureCheckpoint.isPending}
-                    className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#d9ff68] px-5 py-3 text-sm font-semibold text-[#171713] transition hover:-translate-y-0.5 hover:bg-[#e4ff91] focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-[#171713] disabled:cursor-wait disabled:opacity-60"
-                  >
-                    {captureCheckpoint.isPending ? "Capturing session…" : "Prepare next session"}
-                    <ArrowRight className="h-4 w-4" aria-hidden="true" />
-                  </button>
-                )}
-                <Link to="/app/explain" className="inline-flex min-h-11 w-full items-center justify-center rounded-xl border border-white/15 bg-white/[0.055] px-4 py-3 text-xs font-semibold text-white transition hover:-translate-y-0.5 hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-white">
-                  Explain evidence
+            <dl
+              className="mt-5 grid max-w-4xl gap-px overflow-hidden rounded-xl border border-white/10 bg-white/10 sm:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)_minmax(0,1fr)]"
+              aria-label="Continuation task contract"
+            >
+              <ContinuationContractItem
+                label="Execution goal"
+                value={compactContinuationGoal(continuationObjective)}
+              />
+              <ContinuationContractItem
+                label="Repository"
+                value={continuationRepositoryLabel(continuationRepoPath)}
+              />
+              <ContinuationContractItem
+                label="Branch"
+                value={preserveContinuationText(continuationBranch) || "Resolved at launch"}
+              />
+            </dl>
+
+            <div className="mt-7 grid gap-3 md:grid-cols-3" aria-label="Continuation harnesses">
+              {continuationProviders.map((provider) => (
+                <HarnessContinuationCard
+                  key={provider.provider}
+                  provider={provider}
+                  pending={pendingProvider === provider.provider}
+                  workflowPending={continuationState === "running" || runContinuation.isPending}
+                  taskReady={continuationRunnable}
+                  onContinue={runTaskContinuation}
+                />
+              ))}
+            </div>
+
+            <div className="mt-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded-full border border-[#d9ff68]/30 bg-[#d9ff68]/10 px-2.5 py-1 text-[10px] font-semibold text-[#d9ff68]">
+                  Automatic reconciliation
+                </span>
+                {requestedCheckpointId ? (
+                  <span className="rounded-full border border-white/15 bg-white/[0.04] px-2.5 py-1 text-[10px] font-semibold text-[#c5c5bc]">
+                    Recovery request · {requestedCheckpointId}
+                  </span>
+                ) : null}
+              </div>
+              {continueAction.kind === "choose" ? (
+                <Link to="/app/library" className="group inline-flex min-h-11 items-center gap-1.5 text-xs font-semibold text-[#d9ff68]">
+                  Choose work to continue
+                  <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
                 </Link>
-              </div>
-              <p className="text-xs leading-5 text-[#97978f]">{prepareAction.description}</p>
-              <div aria-live="polite" aria-atomic="true">
-                {prepareState === "copied" ? (
-                  <p role="status" className="text-xs font-semibold leading-5 text-[#d9ff68]">
-                    Context pack copied. Paste it into the new agent session.
-                  </p>
-                ) : null}
-                {prepareState === "error" || prepareError ? (
-                  <p role="alert" className="text-xs font-semibold leading-5 text-red-300">
-                    {prepareError || "Could not prepare the next session."}
-                  </p>
-                ) : null}
-              </div>
+              ) : null}
+            </div>
+            <p className="mt-3 text-xs leading-5 text-[#97978f]">{continueAction.description}</p>
+            <div className="mt-3 max-w-3xl">
+              <ContinuationWorkflowStatus
+                state={continuationState}
+                result={continuationResult}
+                blocker={continuationError}
+              />
             </div>
           </div>
         </div>
@@ -458,10 +395,9 @@ export default function NowPage() {
 
       {unassignedSessionCount > 0 ? <UnassignedSessions count={unassignedSessionCount} cardId={unassignedSessionCard?.id} /> : null}
 
-      <section className="grid items-start gap-4 lg:grid-cols-2 xl:grid-cols-3" aria-label="Active task overview">
+      <section className="grid items-start gap-4 lg:grid-cols-2 xl:grid-cols-3" aria-label="Observed work overview">
         <ObservedWork
           activity={activity}
-          activeTaskTitle={activeTaskTitle}
           loading={digestPending}
           error={digestUnavailable}
         />
@@ -498,65 +434,20 @@ export default function NowPage() {
           digestPending
           || !checkpointSettled
         }
-        error={checkpointQuery.error || workspaceCheckpointQuery.error || captureCheckpoint.error}
-        latestSession={latestSession}
+        error={checkpointQuery.error || workspaceCheckpointQuery.error}
         memory={checkpointSettled ? memoryQuery.data : null}
         memoryLoading={
           !checkpointSettled
           || (!queryHasSettled(memoryQuery) && !memoryQuery.error)
         }
         memoryError={checkpointSettled ? memoryQuery.error : null}
-        sessionLoading={
-          digestPending
-          || (
-            libraryFallbackNeeded
-            && (
-              !checkpointSettled
-              || !queryHasSettled(libraryQuery)
-            )
-          )
-        }
-        resumeCard={resumeCard}
-        resumeAvailability={resumeAvailability}
-        workspaceId={workspace.activeWorkspaceId}
-        onCapture={saveCheckpoint}
-        onResume={openResume}
-        capturePending={captureCheckpoint.isPending}
-        resumePending={continueSession.isPending || resumeState === "preparing"}
       />
-
-      {resumeNotice && ["copied", "copied_only"].includes(resumeState) ? (
-        <p role="status" className={`rounded-2xl border px-4 py-3 text-xs font-semibold ${
-          resumeState === "copied_only"
-            ? "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-200"
-            : "border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-900/70 dark:bg-emerald-950/30 dark:text-emerald-200"
-        }`}>
-          {resumeNotice}
-        </p>
-      ) : null}
-      {(resumeState === "error" || continueSession.error) && !selectedResumeCard ? (
-        <p role="alert" className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-semibold text-red-700 dark:border-red-900/70 dark:bg-red-950/30 dark:text-red-200">
-          {resumeNotice || continueSession.error?.message || "Could not prepare resume context."}
-        </p>
-      ) : null}
 
       <AttentionPanel cards={attentionCards} loading={digestPending} error={digestUnavailable} />
 
       {checkpointSettled && !digestUnavailable && recentSessionCards.length
         ? <RecentSessions cards={recentSessionCards} />
         : null}
-
-      {selectedResumeCard ? (
-        <SessionContinuationDialog
-          card={selectedResumeCard}
-          repositoryComparison={selectedComparison.data}
-          repositoryComparisonLoading={selectedComparison.isLoading}
-          isPending={continueSession.isPending || resumeState === "preparing"}
-          errorMessage={resumeState === "error" ? resumeNotice : ""}
-          onCancel={() => setSelectedResumeCard(null)}
-          onConfirm={confirmResume}
-        />
-      ) : null}
     </div>
   );
 }
@@ -567,27 +458,10 @@ function CheckpointPanel({
   sessionCompactions,
   isLoading,
   error,
-  latestSession,
   memory,
   memoryLoading,
   memoryError,
-  sessionLoading,
-  resumeCard,
-  resumeAvailability,
-  workspaceId,
-  onCapture,
-  onResume,
-  capturePending,
-  resumePending,
 }) {
-  const verifyCheckpoint = useVerifyCheckpoint();
-
-  const verify = () => {
-    if (checkpoint) {
-      verifyCheckpoint.mutate({ workspaceId, checkpointId: checkpoint.id, executeCommands: true });
-    }
-  };
-
   if (isLoading) {
     return (
       <section id="continuity-checkpoint" className="app-surface scroll-mt-24">
@@ -627,24 +501,15 @@ function CheckpointPanel({
             No saved context for this task
           </h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
-            Save the current task before a long handoff or compaction to preserve its goal, evidence, and exact next action.
+            Context is captured automatically during session sync and continuation.
           </p>
         </header>
 
         <div className="grid lg:grid-cols-[minmax(0,1.15fr)_minmax(19rem,.85fr)]">
           <div className="px-6 py-6 sm:px-8 sm:py-8">
-            {sessionLoading && !latestSession ? (
-              <button type="button" disabled className="btn-primary min-h-11 text-xs opacity-60">
-                <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                Loading linked task…
-              </button>
-            ) : latestSession ? (
-              <button type="button" onClick={onCapture} disabled={capturePending} className="btn-primary min-h-11 text-xs disabled:opacity-60">
-                {capturePending ? "Saving current context…" : "Save current context"}
-              </button>
-            ) : (
-              <Link to="/app/library" className="btn-primary min-h-11 text-xs">Choose a linked task</Link>
-            )}
+            <p className="max-w-2xl text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
+              Continue will resolve the latest linked session and create the recovery boundary it needs. No manual save is required.
+            </p>
 
             {previousCheckpoint ? (
               <article className="relative mt-7 overflow-hidden rounded-2xl bg-[#171713] p-5 text-white dark:bg-[#e8e8df] dark:text-[#171713]">
@@ -664,7 +529,7 @@ function CheckpointPanel({
                   It is kept in history and is not being used as the current task’s next action.
                 </p>
                 <Link to="/app/runs" className="group relative mt-5 inline-flex min-h-11 items-center gap-2 text-xs font-semibold">
-                  Review resume history <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-1" />
+                  View recovery history <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-1" />
                 </Link>
               </article>
             ) : null}
@@ -713,10 +578,10 @@ function CheckpointPanel({
       : unknownBoundary
         ? "Boundary time unknown"
         : "Recent snapshot";
-  const reviewNotice = superseded
+  const boundaryNotice = superseded
     ? "Earlier snapshot · newer task activity exists"
     : historical
-      ? "Older snapshot · review before continuing"
+      ? "Older snapshot · reconciled automatically on Continue"
       : "Saved snapshot · boundary time unavailable";
   return (
     <section id="continuity-checkpoint" className="app-surface ce-recovery-checkpoint relative scroll-mt-24">
@@ -759,13 +624,8 @@ function CheckpointPanel({
           </div>
 
           {needsReview ? (
-            <div className="mt-5 flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-xs font-semibold leading-5">{reviewNotice}</p>
-              {latestSession ? (
-                <button type="button" onClick={onCapture} disabled={capturePending} className="min-h-11 shrink-0 rounded-xl border border-current px-4 text-xs font-semibold transition hover:bg-white/50 disabled:cursor-wait disabled:opacity-60 dark:hover:bg-black/20">
-                  {capturePending ? "Saving current context…" : "Save current context"}
-                </button>
-              ) : null}
+            <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100">
+              <p className="text-xs font-semibold leading-5">{boundaryNotice}</p>
             </div>
           ) : null}
         </section>
@@ -773,34 +633,9 @@ function CheckpointPanel({
         <aside className="flex flex-col border-t border-[#deded5] dark:border-[#292925] lg:border-l lg:border-t-0">
           <ProjectMemorySummary memory={memory} loading={memoryLoading} error={memoryError} />
           <div className="mt-auto border-t border-[#deded5] px-6 py-6 dark:border-[#292925] sm:px-8 lg:px-7">
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-              <button type="button" onClick={verify} disabled={verifyCheckpoint.isPending} className="btn-secondary min-h-11 text-xs disabled:cursor-wait disabled:opacity-60">
-                {verifyCheckpoint.isPending ? "Running checks…" : "Verify checkpoint"}
-              </button>
-              {resumeAvailability === "available" ? (
-                <button type="button" onClick={() => onResume(resumeCard)} disabled={resumePending} className="btn-primary min-h-11 text-xs disabled:opacity-60">
-                  <Clipboard className="h-3.5 w-3.5" />{resumePending ? "Preparing…" : "Resume task"}
-                </button>
-              ) : resumeAvailability === "loading" ? (
-                <button type="button" disabled className="btn-primary min-h-11 text-xs opacity-60">
-                  <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                  Checking resume availability…
-                </button>
-              ) : (
-                <Link to="/app/runs" className="btn-primary min-h-11 text-xs">
-                  Review resume history <ArrowRight className="h-3.5 w-3.5" />
-                </Link>
-              )}
-            </div>
-            {resumeAvailability === "unknown" ? (
-              <p className="mt-3 text-xs leading-5 text-amber-700 dark:text-amber-200">
-                Resume availability could not be confirmed. The saved context remains available in history.
-              </p>
-            ) : resumeAvailability === "unavailable" ? (
-              <p className="mt-3 text-xs leading-5 text-[#77776e] dark:text-[#aaa9a0]">
-                The original task is unavailable here; its saved context remains in history.
-              </p>
-            ) : null}
+            <p className="text-xs leading-5 text-[#77776e] dark:text-[#aaa9a0]">
+              Continue reconciles this snapshot against current repository state and runs the target agent automatically.
+            </p>
           </div>
         </aside>
       </div>
@@ -808,9 +643,7 @@ function CheckpointPanel({
       {sessionCompactions?.length ? (
         <SessionCompactions checkpoints={sessionCompactions} displayedCheckpointId={checkpoint.id} />
       ) : null}
-      {(verifyCheckpoint.error || error) ? (
-        <p role="alert" className="border-t border-red-200 px-6 py-3 text-xs font-semibold text-red-600 sm:px-8">{verifyCheckpoint.error?.message || error.message}</p>
-      ) : null}
+      {error ? <p role="alert" className="border-t border-red-200 px-6 py-3 text-xs font-semibold text-red-600 sm:px-8">{error.message}</p> : null}
     </section>
   );
 }
@@ -954,7 +787,7 @@ function TaskStatusRibbon({ activity, checkpoint, loading = false, error = false
         : "Latest available record";
 
   return (
-    <dl className="relative grid border-t border-white/10 bg-black/10 sm:grid-cols-2" aria-label="Active task status">
+    <dl className="relative grid border-t border-white/10 bg-black/10 sm:grid-cols-2" aria-label="Observed work status">
       <StatusRibbonItem
         label="Evidence"
         value={evidence.value}
@@ -981,6 +814,19 @@ function StatusRibbonItem({ label, value, detail, tone }) {
   );
 }
 
+function ContinuationContractItem({ label, value }) {
+  return (
+    <div className="min-w-0 bg-[#171713]/95 px-3.5 py-3">
+      <dt className="text-[8px] font-black uppercase tracking-[0.16em] text-[#85857c]">
+        {label}
+      </dt>
+      <dd className="mt-1.5 truncate text-[11px] font-semibold text-[#e7e7df]" title={value}>
+        {value}
+      </dd>
+    </div>
+  );
+}
+
 function OverviewLoadCard({ icon, label, title, message, error = false }) {
   const Icon = icon;
   return (
@@ -1003,12 +849,12 @@ function OverviewLoadCard({ icon, label, title, message, error = false }) {
   );
 }
 
-function ObservedWork({ activity, activeTaskTitle, loading = false, error = false }) {
+function ObservedWork({ activity, loading = false, error = false }) {
   if (loading || error) {
     return (
       <OverviewLoadCard
         icon={History}
-        label="Active task"
+        label="Observed work"
         title="Progress"
         message={error ? "Current progress could not be loaded." : "Loading observed progress…"}
         error={error}
@@ -1018,7 +864,7 @@ function ObservedWork({ activity, activeTaskTitle, loading = false, error = fals
   if (!activity) {
     return (
       <article className="app-surface relative overflow-hidden p-6 sm:p-7 xl:p-8">
-        <PanelLabel icon={History}>Active task</PanelLabel>
+        <PanelLabel icon={History}>Observed work</PanelLabel>
         <h2 className="mt-6 text-2xl font-semibold tracking-[-0.025em] text-[#171713] dark:text-white">Progress</h2>
         <p className="mt-6 text-base font-semibold leading-7 text-[#171713] dark:text-white">No agent progress observed yet.</p>
         <p className="mt-2 text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
@@ -1035,10 +881,7 @@ function ObservedWork({ activity, activeTaskTitle, loading = false, error = fals
   const checkpointBoundary = activity.evidence_level === "checkpoint_boundary";
   const unassigned = activity.evidence_level === "session_unassigned";
   const changedFiles = activity.changed_files || [];
-  const activityTitle = prepareTaskCandidate(activity.request || activity.title);
   const latestUpdate = displayActivityText(activity.latest_update);
-  const distinctActivityTitle = activityTitle
-    && activityTitle.toLocaleLowerCase() !== activeTaskTitle.toLocaleLowerCase();
   const detailUrl = activity.source_card_id
     ? explainCardUrl(activity.source_card_id)
     : "/app/runs";
@@ -1046,18 +889,11 @@ function ObservedWork({ activity, activeTaskTitle, loading = false, error = fals
   return (
     <article className="app-surface relative overflow-hidden p-6 sm:p-7 xl:p-8">
       <div className="relative flex flex-wrap items-center justify-between gap-3">
-        <PanelLabel icon={activity.live ? PlayCircle : History}>Active task</PanelLabel>
+        <PanelLabel icon={activity.live ? PlayCircle : History}>Observed work</PanelLabel>
         <ActivityBadge activity={activity} />
       </div>
 
       <h2 className="relative mt-6 text-2xl font-semibold tracking-[-0.025em] text-[#171713] dark:text-white">Progress</h2>
-
-      {distinctActivityTitle ? (
-        <div className="mt-6 border-l-2 border-[#171713] pl-4 dark:border-white">
-          <p className="text-[11px] font-semibold text-[#85857c]">Observed request</p>
-          <h3 className="mt-1.5 text-base font-semibold leading-6 text-[#171713] dark:text-white">{activityTitle}</h3>
-        </div>
-      ) : null}
 
       {latestUpdate ? (
         <p className="relative mt-6 text-base font-semibold leading-7 tracking-[-0.012em] text-[#171713] [overflow-wrap:anywhere] dark:text-white">
@@ -1177,7 +1013,9 @@ function ObservedResult({
             {attentionCount} item{attentionCount === 1 ? "" : "s"} need attention
           </span>
         ) : (
-          <span className="text-[10px] text-[#85857c]">No visible blocker, conflict, or stale evidence.</span>
+          <span className="text-[10px] text-[#85857c]">
+            No additional evidence alert. Provider readiness and run blockers appear above.
+          </span>
         )}
       </div>
     </article>
@@ -1209,7 +1047,7 @@ function ContinuationSummary({
   const savedNextAction = prepareTaskCandidate(checkpoint?.sections?.exact_next_action?.[0]?.statement);
   const nextAction = savedNextAction
     || (latestSession
-      ? "Save the current task context to preserve its exact next action."
+      ? "Continue will resolve the latest exact next action from the linked session."
       : "Choose or import an agent task before continuing.");
 
   return (
@@ -1239,22 +1077,24 @@ function ContinuationSummary({
             : historical
               ? "This instruction was saved more than 24 hours ago. Its age does not prove that newer task activity exists."
               : unknownBoundary
-                ? "This instruction is saved, but its boundary time could not be verified. Review it before continuing."
+                ? "This instruction is saved, but its boundary time is unknown. Continue reconciles it automatically."
                 : "This instruction was saved at the recovery boundary and remains separate from live activity."
           : latestSession
-            ? "No exact next action has been saved for this task yet."
+            ? "No manual checkpoint is needed; continuation resolves and captures current state automatically."
             : "No task continuation is available yet."}
       </p>
       <div className="mt-7 border-t border-[#e5e5dd] pt-5 dark:border-[#292925]">
-        {checkpoint || latestSession ? (
+        {checkpoint ? (
           <a href="#continuity-checkpoint" className="group inline-flex min-h-11 items-center gap-1.5 text-xs font-semibold text-[#171713] dark:text-[#d9ff68]">
-            {checkpoint ? "Review saved context" : "Save current context"}
+            View saved context
             <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
           </a>
-        ) : (
+        ) : !latestSession ? (
           <Link to="/app/library" className="group inline-flex min-h-11 items-center gap-1.5 text-xs font-semibold text-[#171713] dark:text-[#d9ff68]">
             Choose work <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
           </Link>
+        ) : (
+          <p className="text-xs font-semibold text-[#77776e] dark:text-[#aaa9a0]">Captured automatically on Continue</p>
         )}
       </div>
     </article>
@@ -1268,7 +1108,7 @@ function AttentionPanel({ cards, loading = false, error = false }) {
         <PanelLabel icon={ShieldAlert}>Needs attention</PanelLabel>
         {!loading && !error ? (
           <span className="rounded-full bg-amber-100/80 px-2.5 py-1 text-[9px] font-bold text-amber-800 dark:bg-amber-950/50 dark:text-amber-200">
-            {cards.length} visible
+            {cards.length} evidence alert{cards.length === 1 ? "" : "s"}
           </span>
         ) : null}
       </div>
@@ -1306,7 +1146,8 @@ function AttentionPanel({ cards, loading = false, error = false }) {
         </div>
       ) : (
         <p className="mt-4 text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
-          No blocker, conflict, stale evidence, or high-risk review is currently visible.
+          No additional task-evidence alert is visible. Provider readiness and
+          continuation blockers are reported in the harness cards above.
         </p>
       )}
     </section>
@@ -1451,6 +1292,519 @@ function verificationLabel(verification = {}) {
   const failed = Number(verification.failed || 0);
   if (failed) return `${passed} passed · ${failed} failed`;
   return `${passed}/${observed} passed`;
+}
+
+const CONTINUATION_PHASES = [
+  "Resolving the real task",
+  "Reconciling repository state",
+  "Running a fresh target agent",
+  "Verifying the observed outcome",
+];
+
+function resolvedContinuationProviders(query) {
+  const supplied = Array.isArray(query.data?.providers) ? query.data.providers : [];
+  const byProvider = new Map(
+    supplied.map((item) => [normalizeProvider(item.provider), item]),
+  );
+  return HARNESS_ORDER.map((provider) => {
+    const meta = harnessMeta(provider);
+    const suppliedProvider = byProvider.get(provider);
+    if (suppliedProvider) {
+      return {
+        ...suppliedProvider,
+        provider,
+        name: suppliedProvider.name || meta.name,
+        status: suppliedProvider.status || (suppliedProvider.ready ? "ready" : "unavailable"),
+        ready: suppliedProvider.ready === true,
+        message: preserveContinuationText(suppliedProvider.message),
+        action: preserveContinuationText(suppliedProvider.action),
+      };
+    }
+    if (query.isLoading) {
+      return {
+        provider,
+        name: meta.name,
+        status: "checking",
+        ready: false,
+        code: "provider_readiness_loading",
+        message: "Checking local installation and authentication.",
+        action: "",
+      };
+    }
+    if (query.isError) {
+      return {
+        provider,
+        name: meta.name,
+        status: "unavailable",
+        ready: false,
+        code: "provider_readiness_unavailable",
+        message: preserveContinuationText(query.error?.message)
+          || "Execution readiness could not be loaded.",
+        action: "Retry provider readiness before continuing.",
+      };
+    }
+    return {
+      provider,
+      name: meta.name,
+      status: "unavailable",
+      ready: false,
+      code: "provider_readiness_missing",
+      message: `${meta.name} execution readiness was not reported.`,
+      action: "Refresh provider readiness before continuing.",
+    };
+  });
+}
+
+function ContinuationWorkflowStatus({ state, result, blocker }) {
+  if (state === "idle") return null;
+
+  if (state === "running") {
+    return (
+      <div
+        role="status"
+        aria-busy="true"
+        className="rounded-xl border border-[#d9ff68]/25 bg-[#d9ff68]/[0.08] px-3 py-3 text-xs text-[#e7ffad]"
+      >
+        <p className="font-semibold">Automatic continuation in progress</p>
+        <ol className="mt-2 grid gap-1.5" aria-label="Continuation workflow phases">
+          {CONTINUATION_PHASES.map((phase) => (
+            <li key={phase} className="flex items-center gap-2 text-[11px] leading-5 text-[#d8e6b5]">
+              <RefreshCw className="h-3 w-3 shrink-0 animate-spin opacity-70" aria-hidden="true" />
+              {phase}
+            </li>
+          ))}
+        </ol>
+        <p className="mt-2 text-[10px] leading-4 text-[#aab28f]">
+          The result appears after the agent exits and verification finishes.
+        </p>
+      </div>
+    );
+  }
+
+  if (state === "blocked") {
+    const detail = blocker || {
+      title: "Continuation blocked",
+      message: "The target agent could not complete the continuation workflow.",
+      affectedTasks: [],
+      action: "",
+    };
+    return (
+      <div role="alert" className="rounded-xl border border-red-300/25 bg-red-300/[0.08] px-3 py-3 text-xs text-red-100">
+        <p className="font-semibold">{detail.title}</p>
+        <p className="mt-1 leading-5 opacity-85">
+          {detail.message}
+        </p>
+        {detail.affectedTasks?.length ? (
+          <div className="mt-2 border-t border-red-100/10 pt-2">
+            <p className="text-[9px] font-semibold uppercase tracking-[0.14em] opacity-65">
+              Affected tasks
+            </p>
+            <ul className="mt-1.5 grid gap-1 text-[11px] leading-5">
+              {detail.affectedTasks.map((task) => (
+                <li key={task} className="flex gap-2">
+                  <span aria-hidden="true">•</span>
+                  <span>{task}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {detail.action ? (
+          <p className="mt-2 rounded-lg bg-red-100/[0.06] px-2.5 py-2 text-[11px] font-semibold leading-5">
+            Next: {detail.action}
+          </p>
+        ) : null}
+        <p className="mt-1 text-[10px] leading-4 opacity-65">
+          No successful handoff is being claimed.
+        </p>
+      </div>
+    );
+  }
+
+  const delivery = result?.delivery || {};
+  const outcome = result?.outcome || {};
+  const run = result?.run || {};
+  const provider = continuationProviderLabel(
+    delivery.provider || result?.target_provider || run.provider,
+  );
+  const sourceProvider = continuationProviderLabel(
+    delivery.source_provider || result?.source_provider,
+    "",
+  );
+  const changedFiles = continuationChangedFiles(result);
+  const checks = continuationChecks(result);
+  const agentOutput = continuationAgentOutput(result);
+  const verified = outcome.verified === true;
+  const fresh = String(delivery.mode || "").toLocaleLowerCase() === "fresh";
+  const taskTransition = outcome.task_transition || {};
+  const workflow = taskTransition.workflow_after
+    || result?.preparation?.task?.workflow
+    || result?.task?.workflow
+    || null;
+
+  return (
+    <div role="status" className="rounded-xl border border-[#d9ff68]/25 bg-[#d9ff68]/[0.08] px-3 py-3 text-xs text-[#e7ffad]">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p className="font-semibold">
+            {verified ? "Observed run passed verification" : "Agent run completed"}
+          </p>
+          <p className="mt-1 text-[11px] leading-5 opacity-80">
+            {fresh ? "Fresh " : ""}{provider} agent
+            {delivery.provider_switched && sourceProvider
+              ? ` · switched from ${sourceProvider}`
+              : ""}
+          </p>
+        </div>
+        <span className={`rounded-full border px-2 py-1 text-[9px] font-semibold ${
+          verified
+            ? "border-[#d9ff68]/30 bg-[#d9ff68]/10 text-[#d9ff68]"
+            : "border-amber-300/30 bg-amber-300/10 text-amber-200"
+        }`}>
+          {verified ? "Verified outcome" : "Verification incomplete"}
+        </span>
+      </div>
+
+      <ContinuationTaskQueue
+        workflow={workflow}
+        advanced={taskTransition.status === "completed"}
+      />
+
+      <dl className="mt-3 grid gap-2 border-t border-white/10 pt-3">
+        <div>
+          <dt className="text-[9px] font-semibold uppercase tracking-[0.14em] opacity-55">
+            Repository changes
+          </dt>
+          <dd className="mt-1 leading-5">
+            {changedFiles.length
+              ? `${changedFiles.length} changed ${changedFiles.length === 1 ? "file" : "files"} · ${summarizeChangedFiles(changedFiles)}`
+              : "No repository file changes observed."}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-[9px] font-semibold uppercase tracking-[0.14em] opacity-55">
+            Checks
+          </dt>
+          <dd className="mt-1 leading-5">{continuationChecksLabel(checks)}</dd>
+        </div>
+        {agentOutput ? (
+          <div>
+            <dt className="text-[9px] font-semibold uppercase tracking-[0.14em] opacity-55">
+              Agent outcome
+            </dt>
+            <dd className="mt-1 leading-5">“{agentOutput}”</dd>
+          </div>
+        ) : null}
+      </dl>
+
+      {!verified ? (
+        <p className="mt-2 border-t border-amber-200/15 pt-2 text-[10px] leading-4 text-amber-100/75">
+          The run finished, but successful task continuation is not proven.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function ContinuationTaskQueue({ workflow, advanced = false }) {
+  if (!workflow || typeof workflow !== "object") return null;
+  const buckets = [
+    ["Now", workflow.now],
+    ["Blocked", workflow.blocked],
+    ["Next", workflow.next],
+    ["Paused", workflow.paused],
+  ]
+    .map(([label, tasks]) => [
+      label,
+      normalizeWorkflowTaskTitles(tasks),
+    ])
+    .filter(([, tasks]) => tasks.length);
+  if (!buckets.length) return null;
+
+  return (
+    <div className="mt-3 border-t border-white/10 pt-3">
+      <p className="text-[9px] font-semibold uppercase tracking-[0.14em] opacity-55">
+        {advanced ? "Workflow advanced after verification" : "Execution plan"}
+      </p>
+      <dl className="mt-2 grid gap-2 sm:grid-cols-2">
+        {buckets.map(([label, tasks]) => (
+          <div key={label} className="rounded-lg bg-white/[0.045] px-2.5 py-2">
+            <dt className="text-[8px] font-black uppercase tracking-[0.13em] opacity-55">
+              {label}
+            </dt>
+            <dd className="mt-1 text-[10px] font-semibold leading-4">
+              {tasks.slice(0, 3).join(" · ")}
+              {tasks.length > 3 ? ` · +${tasks.length - 3}` : ""}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
+function normalizeWorkflowTaskTitles(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((task) => (
+    preserveContinuationText(
+      typeof task === "string"
+        ? task
+        : task?.title || task?.objective || task?.name,
+    )
+  )).filter(Boolean))];
+}
+
+function continuationBlocker(result) {
+  const candidates = [
+    result?.blocker,
+    result?.outcome?.blocker,
+    result?.delivery?.blocker,
+  ];
+  const explicit = candidates.find(Boolean);
+  if (explicit) {
+    return normalizeContinuationBlocker(explicit, {
+      fallbackTitle: "Continuation blocked",
+      fallbackMessage: "The continuation workflow reported a blocker.",
+    });
+  }
+
+  const checks = continuationChecks(result);
+  if (checks.failed > 0) {
+    return {
+      title: "Verification failed",
+      message: `${checks.failed} verification ${checks.failed === 1 ? "check failed" : "checks failed"}.`,
+      affectedTasks: [],
+      action: "Review the failed checks before starting another continuation.",
+    };
+  }
+
+  const statuses = [
+    result?.status,
+    result?.delivery?.status,
+    result?.run?.status,
+    result?.outcome?.status,
+  ]
+    .map((value) => String(value || "").trim().toLocaleLowerCase())
+    .filter(Boolean);
+  if (statuses.some((status) => (
+    ["blocked", "failed", "error", "not_delivered", "unavailable"].includes(status)
+  ))) {
+    const message = cleanDisplayText(
+      result?.outcome?.message
+      || result?.delivery?.message
+      || result?.message,
+    ) || "The target agent did not complete the continuation workflow.";
+    return {
+      title: continuationFailureTitle(result),
+      message,
+      affectedTasks: continuationAffectedTasks(result),
+      action: cleanDisplayText(
+        result?.outcome?.action
+        || result?.delivery?.action
+        || result?.action,
+      ),
+    };
+  }
+  return null;
+}
+
+function continuationErrorFromRequest(error, targetProvider) {
+  const detail = error?.detail;
+  const candidate = detail?.blocker || detail || error;
+  return normalizeContinuationBlocker(candidate, {
+    fallbackTitle: `${continuationProviderLabel(targetProvider)} continuation blocked`,
+    fallbackMessage: error?.message || "The continuation workflow could not start.",
+  });
+}
+
+function normalizeContinuationBlocker(blocker, {
+  fallbackTitle = "Continuation blocked",
+  fallbackMessage = "The continuation workflow could not continue.",
+} = {}) {
+  if (typeof blocker === "string") {
+    return {
+      title: fallbackTitle,
+      message: preserveContinuationText(blocker) || fallbackMessage,
+      affectedTasks: [],
+      action: "",
+    };
+  }
+  const source = blocker && typeof blocker === "object" ? blocker : {};
+  const code = cleanDisplayText(source.code);
+  const title = preserveContinuationText(
+    source.title
+    || source.label
+    || continuationBlockerTitleFromCode(code),
+  ) || fallbackTitle;
+  const message = preserveContinuationText(
+    source.message
+    || source.reason
+    || source.detail?.message
+    || source.error,
+  ) || fallbackMessage;
+  const affectedTasks = normalizeAffectedTasks(
+    source.affected_tasks
+    || source.affectedTasks
+    || source.detail?.affected_tasks,
+  );
+  const action = preserveContinuationText(
+    source.action
+    || source.next_action
+    || source.recovery_action
+    || source.detail?.action,
+  );
+  return { title, message, affectedTasks, action, code };
+}
+
+function preserveContinuationText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function compactContinuationGoal(value) {
+  const text = preserveContinuationText(cleanDisplayText(value));
+  if (!text) return "Resolved from the latest linked work";
+  const sentence = text.split(/(?<=[.!?])\s+/)[0] || text;
+  const limit = 140;
+  return sentence.length > limit
+    ? `${sentence.slice(0, limit - 1).trimEnd()}…`
+    : sentence;
+}
+
+function continuationRepositoryLabel(value) {
+  const normalized = String(value || "").replace(/\\/g, "/").replace(/\/+$/, "");
+  return normalized.split("/").filter(Boolean).at(-1) || "Resolved at launch";
+}
+
+function continuationBlockerTitleFromCode(code) {
+  const normalized = String(code || "").toLocaleLowerCase();
+  if (normalized.includes("auth") || normalized.includes("oauth")) {
+    return "Agent authentication failed";
+  }
+  if (normalized.includes("update") || normalized.includes("cli")) {
+    return "Agent update required";
+  }
+  if (normalized.includes("fresh")) return "Repository freshness check failed";
+  if (normalized.includes("verification")) return "Verification failed";
+  if (normalized.includes("goal")) return "Task goal is missing";
+  if (normalized.includes("provider") || normalized.includes("agent")) {
+    return "Target agent unavailable";
+  }
+  return "";
+}
+
+function continuationFailureTitle(result) {
+  const provider = continuationProviderLabel(
+    result?.delivery?.provider || result?.target_provider || result?.run?.provider,
+    "",
+  );
+  return provider ? `${provider} continuation failed` : "Continuation failed";
+}
+
+function continuationAffectedTasks(result) {
+  return normalizeAffectedTasks(
+    result?.affected_tasks
+    || result?.outcome?.affected_tasks
+    || result?.delivery?.affected_tasks,
+  );
+}
+
+function normalizeAffectedTasks(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((item) => (
+    cleanDisplayText(
+      typeof item === "string"
+        ? item
+        : item?.title || item?.name || item?.task || item?.id,
+    )
+  )).filter(Boolean))];
+}
+
+function continuationChangedFiles(result) {
+  const candidates = [
+    result?.outcome?.changed_files,
+    result?.run?.changed_files,
+    result?.changed_files,
+  ];
+  const files = candidates.find(Array.isArray) || [];
+  return [...new Set(files.map((item) => cleanDisplayText(item)).filter(Boolean))];
+}
+
+function continuationAgentOutput(result) {
+  const value = cleanDisplayText(
+    result?.outcome?.summary
+    || result?.outcome?.output
+    || result?.run?.command?.stdout,
+  );
+  if (!value) return "";
+  const limit = 320;
+  return value.length > limit ? `${value.slice(0, limit - 1).trimEnd()}…` : value;
+}
+
+function continuationChecks(result) {
+  const supplied = result?.outcome?.checks;
+  if (supplied && typeof supplied === "object") {
+    const items = Array.isArray(supplied.items) ? supplied.items : [];
+    const total = numericCount(supplied.total, items.length);
+    const passed = numericCount(
+      supplied.passed,
+      items.filter((item) => continuationCheckPassed(item)).length,
+    );
+    const failed = numericCount(supplied.failed, Math.max(0, total - passed));
+    return { total, passed, failed, status: supplied.status || "", items };
+  }
+
+  const items = Array.isArray(result?.run?.verification_results)
+    ? result.run.verification_results
+    : [];
+  const passed = items.filter((item) => continuationCheckPassed(item)).length;
+  return {
+    total: items.length,
+    passed,
+    failed: Math.max(0, items.length - passed),
+    status: items.length ? (passed === items.length ? "passed" : "failed") : "",
+    items,
+  };
+}
+
+function continuationCheckPassed(item) {
+  const status = String(item?.status || "").toLocaleLowerCase();
+  if (status) return ["passed", "success", "completed"].includes(status);
+  return Number(item?.result?.exit_code) === 0;
+}
+
+function continuationChecksLabel(checks) {
+  if (!checks.total) return "No verification checks ran.";
+  if (checks.failed) {
+    return `${checks.passed}/${checks.total} passed · ${checks.failed} failed.`;
+  }
+  return `${checks.passed}/${checks.total} passed.`;
+}
+
+function summarizeChangedFiles(files) {
+  const visible = files.slice(0, 3).join(", ");
+  return files.length > 3 ? `${visible}, +${files.length - 3} more` : visible;
+}
+
+function numericCount(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function continuationIdempotencyKey() {
+  if (globalThis.crypto?.randomUUID) {
+    return `continue-${globalThis.crypto.randomUUID()}`;
+  }
+  return `continue-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function continuationProviderLabel(value, fallback = "Target") {
+  const provider = String(value || "").trim().toLocaleLowerCase();
+  return {
+    codex: "Codex",
+    claude: "Claude Code",
+    claude_code: "Claude Code",
+    opencode: "OpenCode",
+  }[provider] || cleanDisplayText(value) || fallback;
 }
 
 function attentionLabel(card) {
@@ -1606,6 +1960,9 @@ function prepareTaskCandidate(value) {
       const lowered = plain.toLowerCase();
       if (!plain) return true;
       if (["files mentioned by the user:", "my request for codex:"].includes(lowered)) return false;
+      if (lowered.startsWith("referenced chatgpt conversation:")) return false;
+      if (lowered.startsWith("this is untrusted")) return false;
+      if (isReferencedConversationPayload(plain)) return false;
       if (/^(?:screenshot\s+\d{4}-\d{2}-\d{2}\s+at\s+\d{1,2}(?:[.:]\d{2}){1,2}|codex-clipboard-[a-z0-9-]+)(?:\.(?:png|jpe?g|webp))?(?::.*)?$/i.test(plain)) return false;
       if (/(?:\/var\/folders\/|\/private\/var\/|\/temporaryitems\/|screencaptureui_)/i.test(rawLine) && /\.(?:png|jpe?g|webp)(?:["'>:]|$)/i.test(rawLine)) return false;
       return !/^(?:image\s+name\s*=|path\s*=|\[image\s+#)/i.test(plain);
@@ -1613,6 +1970,13 @@ function prepareTaskCandidate(value) {
     .join("\n");
   const task = cleanDisplayText(raw);
   if (!task) return "";
+  if (
+    isContinuationControlCandidate(task)
+    || isTaskIdentifierNoise(task)
+    || isReferencedConversationPayload(task)
+  ) {
+    return "";
+  }
   const lowered = task.toLowerCase();
   const runtimeMarkers = [
     "collaboration tools cannot be called from inside functions.exec",
@@ -1639,6 +2003,63 @@ function prepareTaskCandidate(value) {
     || screenshotArtifact
     ? ""
     : task;
+}
+
+function isContinuationControlCandidate(value) {
+  const raw = String(value || "").trim();
+  const normalized = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9']+/g, " ")
+    .trim();
+  const exactControls = new Set([
+    "carry on",
+    "continue",
+    "continue please",
+    "go ahead",
+    "go ahead now",
+    "go on",
+    "keep going",
+    "next",
+    "now continue",
+    "okay continue",
+    "please continue",
+    "proceed",
+    "resume",
+    "yes continue",
+  ]);
+  return exactControls.has(normalized)
+    || /^(?:please )?(?:continue|resume)(?: the task)? from (?:the )?(?:latest|last|current) state$/.test(normalized)
+    || /^(?:continue|resume)\s*:\s*[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(raw);
+}
+
+function isTaskIdentifierNoise(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return false;
+  const candidate = raw.replace(/^[\s{}[\]()"':;,`]+|[\s{}[\]()"':;,`]+$/g, "");
+  if (!candidate || /\s/.test(candidate)) return false;
+  const normalized = candidate.toLowerCase().replace(/[^a-z0-9_]+/g, "");
+  const metadataKeys = new Set([
+    "clientthreadid",
+    "conversationid",
+    "hostid",
+    "projectid",
+    "sessionid",
+    "sourcedocumentid",
+    "sourcethreadid",
+    "threadid",
+    "turnid",
+    "workspaceid",
+  ]);
+  return metadataKeys.has(normalized)
+    || /^[a-z][A-Za-z0-9]*(?:Id|ID|Uuid|UUID|Url|URL)$/.test(candidate)
+    || /^[a-z][a-z0-9_]*(?:_id|_uuid|_url)$/.test(candidate);
+}
+
+function isReferencedConversationPayload(value) {
+  const raw = String(value || "").trim();
+  if (!raw.startsWith("{") && !raw.startsWith("[")) return false;
+  return /["']conversationId["']\s*:/i.test(raw)
+    && /["']conversation["']\s*:/i.test(raw);
 }
 
 function cleanRecoveryText(value) {

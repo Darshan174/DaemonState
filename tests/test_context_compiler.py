@@ -21,12 +21,15 @@ from app.models import (
     Workspace,
 )
 from app.services.context_compiler import (
+    ContextCandidate,
     ContextBudgetExceededError,
     ContextCompiler,
     estimate_tokens,
+    infer_task_frame,
     parse_goal,
 )
 from app.services.model_profiles import profile_for_target_model
+from app.services.repo_indexer import IndexedFile, RepoFrame
 
 
 def test_model_profile_selection_maps_small_coder_names():
@@ -48,6 +51,159 @@ def test_parse_goal_extracts_files_and_constraints():
 
     readme_frame = parse_goal("[DOCS] Rewrite README and current repo docs")
     assert readme_frame.file_hints == ["README"]
+
+    truth_audit_frame = parse_goal("verify this handoff truthfully")
+    assert truth_audit_frame.requires_tests is False
+
+
+def test_verification_inference_keeps_test_runners_and_file_types_separate(tmp_path):
+    repo = RepoFrame(
+        repo_path=str(tmp_path),
+        branch="main",
+        base_commit="abc123",
+        head_commit="abc123",
+        dirty=False,
+        changed_files=[],
+        untracked_files=[],
+        indexed_files=[
+            IndexedFile(
+                path="tests/test_compiler.py",
+                language="python",
+                sha256="python",
+                size=1,
+                is_test=True,
+            ),
+            IndexedFile(
+                path="frontend/src/App.test.jsx",
+                language="javascript-react",
+                sha256="javascript",
+                size=1,
+                is_test=True,
+            ),
+            IndexedFile(
+                path="docs/testing-contract.md",
+                language="markdown",
+                sha256="markdown",
+                size=1,
+                is_test=True,
+            ),
+            IndexedFile(
+                path="pyproject.toml",
+                language="toml",
+                sha256="pyproject",
+                size=1,
+                is_manifest=True,
+            ),
+            IndexedFile(
+                path="frontend/package.json",
+                language="json",
+                sha256="package",
+                size=1,
+                is_manifest=True,
+            ),
+        ],
+        package_manifests={
+            "pyproject.toml": {"project": "fixture"},
+            "frontend/package.json": {
+                "name": "fixture-frontend",
+                "scripts": {"test": "vitest run"},
+            },
+        },
+        recent_commits=[],
+        test_files=[
+            "docs/testing-contract.md",
+            "frontend/src/App.test.jsx",
+            "tests/test_compiler.py",
+        ],
+        manifest_files=["frontend/package.json", "pyproject.toml"],
+        env_files=[],
+        last_indexed_at="2026-07-25T00:00:00Z",
+    )
+
+    task = infer_task_frame(
+        parse_goal("verify compiler and frontend tests"),
+        repo,
+        profile_for_target_model("general-coder"),
+    )
+
+    assert task["verification_commands"] == [
+        {
+            "id": "V1",
+            "command": "python3 -m pytest -q tests/test_compiler.py",
+            "cwd": str(tmp_path),
+            "purpose": "Run focused Python tests for the selected implementation surface.",
+            "required": True,
+            "expected": "exit_code == 0",
+        },
+        {
+            "id": "V2",
+            "command": "npm test -- src/App.test.jsx",
+            "cwd": str(tmp_path / "frontend"),
+            "purpose": (
+                "Run focused JavaScript or TypeScript tests for the selected "
+                "implementation surface."
+            ),
+            "required": True,
+            "expected": "exit_code == 0",
+        },
+    ]
+
+
+async def test_restored_checkpoint_files_drive_continuation_retrieval_and_checks(
+    db_session,
+    tmp_path,
+):
+    (tmp_path / "frontend" / "src" / "pages").mkdir(parents=True)
+    (tmp_path / "frontend" / "src" / "pages" / "NowPage.jsx").write_text(
+        "export default function NowPage() { return null; }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "src" / "pages" / "NowPage.test.jsx").write_text(
+        "test('continues the task', () => {});\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "package.json").write_text(
+        json.dumps({
+            "name": "continuation-ui",
+            "scripts": {"test": "vitest run"},
+        }),
+        encoding="utf-8",
+    )
+
+    result = await ContextCompiler(db_session).compile_context_pack(
+        "Continue the real task truthfully without stale context.",
+        repo_path=str(tmp_path),
+        persist=False,
+        restored_checkpoint={
+            "checkpoint": {"id": "checkpoint-1"},
+            "restore_context": {
+                "markdown": "# Saved task\nContinue the one-click workflow.",
+                "referenced_files": [
+                    "frontend/src/pages/NowPage.jsx",
+                    "frontend/src/pages/NowPage.test.jsx",
+                    "../outside.py",
+                ],
+            },
+        },
+    )
+
+    relevant = {
+        item["path"] for item in result.manifest["repo_state"]["relevant_files"]
+    }
+    assert "frontend/src/pages/NowPage.jsx" in relevant
+    assert "frontend/src/pages/NowPage.test.jsx" in relevant
+    assert "../outside.py" not in relevant
+    assert result.manifest["verification"]["commands"] == [{
+        "id": "V1",
+        "command": "npm test -- src/pages/NowPage.test.jsx",
+        "cwd": str(tmp_path / "frontend"),
+        "purpose": (
+            "Run focused JavaScript or TypeScript tests for the selected "
+            "implementation surface."
+        ),
+        "required": True,
+        "expected": "exit_code == 0",
+    }]
 
 
 async def test_compile_pack_persists_manifest_markdown_and_items(db_session, tmp_path):
@@ -115,6 +271,15 @@ async def test_compile_pack_persists_manifest_markdown_and_items(db_session, tmp
         repo_path=str(tmp_path),
         target_model="qwen2.5-coder-7b",
         token_budget=4000,
+        continuation={
+            "task_id": "task.v1:compiler-persistence",
+            "checkpoint_id": "8e90e727-5ea0-4d50-8ca7-9019847912af",
+            "provider": "codex",
+            "session_id": "compiler-session",
+            "verification_status": "verified",
+            "checkpoint_fingerprint": "a" * 64,
+            "current_repo_fingerprint": "a" * 64,
+        },
     )
 
     assert result.context_pack_id
@@ -127,6 +292,28 @@ async def test_compile_pack_persists_manifest_markdown_and_items(db_session, tmp
     assert "## Files To Inspect" not in result.markdown
     assert "affected_code" not in result.manifest
     assert "## Stop Conditions" in result.markdown
+    assert "## Continuation Identity" in result.markdown
+    assert "`task.v1:compiler-persistence`" in result.markdown
+    assert result.manifest["continuation"]["checkpoint_id"] == (
+        "8e90e727-5ea0-4d50-8ca7-9019847912af"
+    )
+    assert result.manifest["lockfile"]["continuation"] == result.manifest["continuation"]
+    compiler_constraints = [
+        item
+        for item in result.manifest["selected_context"]
+        if item["inclusion_reason"] == "non_negotiable_task_constraint"
+    ]
+    assert compiler_constraints
+    assert {
+        citation["source_type"]
+        for item in compiler_constraints
+        for citation in item["citations"]
+    } == {"compiler_policy"}
+    assert all(
+        citation["source_url"] is None
+        for item in compiler_constraints
+        for citation in item["citations"]
+    )
 
     pack = await db_session.get(ContextPack, UUID(result.context_pack_id))
     assert pack is not None
@@ -562,7 +749,7 @@ async def test_current_verified_claim_revision_populates_exact_evidence_audit(
     assert result.manifest["repo_state"]["state_fingerprint"]
     assert result.manifest["compiler"] == {
         "name": "ContextCompiler",
-        "version": "context_compiler.v4",
+        "version": "context_compiler.v5",
         "ranking_version": "objective_file_rank.v3",
         "evidence_contract_version": "exact_evidence_span.v1",
         "token_estimation_method": "chars_div_4.v1",
@@ -716,6 +903,127 @@ async def test_minimum_required_render_explicitly_fails_when_budget_cannot_fit(t
             token_budget=300,
             persist=False,
         )
+
+
+async def test_large_exclusion_audit_does_not_bloat_agent_markdown(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    (tmp_path / "app.py").write_text("value = 1\n", encoding="utf-8")
+    compiler = ContextCompiler(None)
+
+    async def many_review_items(*_args, **_kwargs):
+        return [
+            ContextCandidate(
+                id=f"review-item:{index}",
+                item_type="decision",
+                title=f"Review item {index}",
+                summary="Historical context that must remain inspectable but not executable.",
+                status="needs_review",
+                truth_state="needs_review",
+                token_cost=20,
+            )
+            for index in range(600)
+        ]
+
+    monkeypatch.setattr(compiler, "_collect_candidates", many_review_items)
+    result = await compiler.compile_context_pack(
+        "continue the current task",
+        repo_path=str(tmp_path),
+        token_budget=2000,
+        persist=False,
+    )
+
+    assert estimate_tokens(result.markdown) <= 2000
+    assert len(result.excluded_items) == 600
+    assert "full exclusion audit remains in the machine-readable manifest" in (
+        result.markdown.lower()
+    )
+
+
+async def test_unrelated_graph_blockers_do_not_zero_task_health(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    (tmp_path / "app.py").write_text("value = 1\n", encoding="utf-8")
+    compiler = ContextCompiler(None)
+
+    async def unrelated_blockers(*_args, **_kwargs):
+        return [
+            ContextCandidate(
+                id=f"unrelated-blocker:{index}",
+                item_type="blocker",
+                title=f"Archived billing blocker {index}",
+                summary="Resolve an unrelated payment processor migration.",
+                status="active",
+                truth_state="current",
+                component_id=str(uuid4()),
+                token_cost=20,
+                lane="blockers_and_questions",
+            )
+            for index in range(200)
+        ]
+
+    monkeypatch.setattr(compiler, "_collect_candidates", unrelated_blockers)
+    result = await compiler.compile_context_pack(
+        "continue the coding agent handoff",
+        repo_path=str(tmp_path),
+        token_budget=2000,
+        persist=False,
+    )
+
+    assert result.manifest["context_health"]["unresolved_blockers"] == 0
+    assert result.manifest["context_health"]["readiness_score"] > 0
+    assert not result.selected_items
+    assert {
+        item["reason"] for item in result.excluded_items
+    } == {"out_of_scope"}
+
+
+async def test_unrelated_review_blockers_stay_out_of_agent_handoff(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    (tmp_path / "app.py").write_text("value = 1\n", encoding="utf-8")
+    compiler = ContextCompiler(None)
+
+    async def unrelated_review_blockers(*_args, **_kwargs):
+        return [
+            ContextCandidate(
+                id=f"unrelated-review-blocker:{index}",
+                item_type="blocker",
+                title=f"Expired GitHub token {index}",
+                summary="Authentication failed for an unrelated archived integration.",
+                status="needs_review",
+                truth_state="needs_review",
+                component_id=str(uuid4()),
+                token_cost=20,
+                lane="blockers_and_questions",
+            )
+            for index in range(20)
+        ]
+
+    monkeypatch.setattr(
+        compiler,
+        "_collect_candidates",
+        unrelated_review_blockers,
+    )
+    result = await compiler.compile_context_pack(
+        "continue the coding agent handoff",
+        repo_path=str(tmp_path),
+        token_budget=2000,
+        persist=False,
+    )
+
+    assert {
+        item["reason"] for item in result.excluded_items
+    } == {"out_of_scope"}
+    assert not [
+        item
+        for item in result.manifest["uncertainties"]
+        if item.get("item_type") in {"blocker", "risk"}
+    ]
+    assert "Expired GitHub token" not in result.markdown
 
 
 async def test_health_caps_unknown_objective_relevance_below_perfect(tmp_path):
