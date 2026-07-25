@@ -18,13 +18,16 @@ vi.mock("./pages/ContextMapPage", () => ({
 
 vi.mock("./pages/NowPage", async () => {
   const { useState } = await vi.importActual("react");
+  const { useLocation } = await vi.importActual("react-router-dom");
   return {
     default: () => {
       const [draft, setDraft] = useState("");
+      const location = useLocation();
       return (
         <>
           <h1>Now page</h1>
           <input aria-label="Transient goal draft" value={draft} onChange={(event) => setDraft(event.target.value)} />
+          <span data-testid="now-search">{location.search}</span>
         </>
       );
     },
@@ -88,7 +91,7 @@ it("remounts transient product state when the workspace changes", async () => {
   expect(screen.getByRole("textbox", { name: "Transient goal draft" })).toHaveValue("");
 });
 
-it("makes Now the default and exposes a focused product navigation", async () => {
+it("makes Continue the default and groups inspection history separately", async () => {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -110,9 +113,9 @@ it("makes Now the default and exposes a focused product navigation", async () =>
     expect(links.length).toBeGreaterThanOrEqual(1);
     links.forEach((link) => expect(link).toHaveAttribute("href", href));
   };
-  expectResponsiveLinks("Now", "/app");
+  expectResponsiveLinks("Continue", "/app");
   expectResponsiveLinks("Library", "/app/library");
-  expectResponsiveLinks("Resume", "/app/runs");
+  expectResponsiveLinks("History", "/app/runs");
   expectResponsiveLinks("Memory", "/app/memory");
   expectResponsiveLinks("Evidence", "/app/explain");
   expectResponsiveLinks("Sources", "/app/sources");
@@ -127,11 +130,11 @@ it("makes Now the default and exposes a focused product navigation", async () =>
   expect(screen.queryByRole("region", { name: "Continuity loop" })).not.toBeInTheDocument();
 
   const mobileNavigation = screen.getByRole("navigation", { name: "Mobile navigation" });
-  expect(within(mobileNavigation).getAllByRole("link")).toHaveLength(4);
-  expect(within(mobileNavigation).getByRole("link", { name: "Now" })).toHaveAttribute("href", "/app");
+  expect(within(mobileNavigation).getAllByRole("link")).toHaveLength(2);
+  expect(within(mobileNavigation).getByRole("link", { name: "Continue" })).toHaveAttribute("href", "/app");
   expect(within(mobileNavigation).getByRole("link", { name: "Library" })).toHaveAttribute("href", "/app/library");
-  expect(within(mobileNavigation).getByRole("link", { name: "Resume" })).toHaveAttribute("href", "/app/runs");
-  expect(within(mobileNavigation).getByRole("link", { name: "Memory" })).toHaveAttribute("href", "/app/memory");
+  expect(within(mobileNavigation).queryByRole("link", { name: "History" })).not.toBeInTheDocument();
+  expect(within(mobileNavigation).queryByRole("link", { name: "Memory" })).not.toBeInTheDocument();
   expect(within(mobileNavigation).queryByRole("link", { name: "Evidence" })).not.toBeInTheDocument();
 
   const more = within(mobileNavigation).getByRole("button", { name: "More destinations" });
@@ -140,6 +143,8 @@ it("makes Now the default and exposes a focused product navigation", async () =>
 
   expect(more).toHaveAttribute("aria-expanded", "true");
   const moreDestinations = screen.getByRole("region", { name: "More destinations" });
+  expect(within(moreDestinations).getByRole("link", { name: "History" })).toHaveAttribute("href", "/app/runs");
+  expect(within(moreDestinations).getByRole("link", { name: "Memory" })).toHaveAttribute("href", "/app/memory");
   expect(within(moreDestinations).getByRole("link", { name: "Evidence" })).toHaveAttribute("href", "/app/explain");
   expect(within(moreDestinations).getByRole("link", { name: "Sources" })).toHaveAttribute("href", "/app/sources");
   expect(within(moreDestinations).getByRole("link", { name: "Integrations" })).toHaveAttribute("href", "/app/connectors");
@@ -160,6 +165,7 @@ it("redirects legacy Prepare URLs to Now", async () => {
   );
 
   expect(await screen.findByRole("heading", { name: "Now page" })).toBeInTheDocument();
+  expect(screen.getByTestId("now-search")).toHaveTextContent("?objective=Fix%20the%20redirect");
 });
 
 it("redirects legacy dashboard and graph routes to their replacement surfaces", async () => {
@@ -230,5 +236,5 @@ it("collapses the desktop sidebar with an accessible persisted control", async (
   const expand = screen.getByRole("button", { name: "Expand sidebar" });
   expect(expand).toHaveAttribute("aria-expanded", "false");
   expect(localStorage.getItem("ce_sidebar_collapsed")).toBe("true");
-  expect(screen.getAllByRole("link", { name: "Now" }).length).toBeGreaterThan(0);
+  expect(screen.getAllByRole("link", { name: "Continue" }).length).toBeGreaterThan(0);
 });

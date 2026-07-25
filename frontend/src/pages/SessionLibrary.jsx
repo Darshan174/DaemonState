@@ -6,7 +6,6 @@ import {
   ArrowRight,
   ArrowUpRight,
   Check,
-  ChevronRight,
   Copy,
   FileSearch,
   FolderGit2,
@@ -26,9 +25,9 @@ import { useSelectSessionFromLibrary, useSessionLibrary, useSyncSessionLibrary }
 import {
   HARNESS_META,
   HARNESS_ORDER,
-  HarnessArtwork,
   HarnessLogo,
 } from "../components/HarnessBrand";
+import { HarnessArchiveCard } from "../components/HarnessCard";
 import ProductLoadingState from "../components/ProductLoadingState";
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
 import { formatTimeAgo } from "../context-map/digest";
@@ -239,7 +238,7 @@ export default function SessionLibrary() {
                 const translateX = hoverIndex >= 0 && !hovered ? distanceFromHover * 24 : 0;
                 const translateY = hovered || selected ? -18 : Math.abs(distanceFromHover) * 5;
                 return (
-                  <HarnessCard
+                  <HarnessArchiveCard
                     key={item.connector_type}
                     item={item}
                     index={index}
@@ -342,85 +341,6 @@ export default function SessionLibrary() {
         document.body,
       ) : null}
     </div>
-  );
-}
-
-
-function HarnessCard({ item, index, hovered, selected, translateX, translateY, onHover, onSelect }) {
-  const ready = item.adapter_state === "ready";
-  const baseRotation = [-7, 0, 7][index] || 0;
-  const cardNumber = String(index + 1).padStart(2, "0");
-  return (
-    <button
-      type="button"
-      aria-label={`Open ${item.name} sessions`}
-      aria-pressed={selected}
-      data-harness={item.connector_type}
-      data-hovered={hovered ? "true" : "false"}
-      onMouseEnter={onHover}
-      onFocus={onHover}
-      onClick={onSelect}
-      className={`group relative aspect-[2/3] w-[190px] shrink-0 overflow-hidden rounded-[26px] border bg-[#fbfbf6] text-left outline-none transition-[transform,border-color,box-shadow,background-color] duration-500 ease-out focus-visible:ring-2 focus-visible:ring-offset-4 focus-visible:ring-offset-[#f7f7f2] dark:bg-[#141411] dark:focus-visible:ring-offset-[#0d0d0b] sm:w-[260px] sm:rounded-[32px] lg:w-[280px] ${index ? "-ml-[88px] sm:-ml-[58px]" : ""} ${selected ? "border-transparent" : "border-[#cecec3] dark:border-[#3a3a33]"}`}
-      style={{
-        zIndex: hovered || selected ? 30 : 10 + index,
-        transform: `translate3d(${translateX}px, ${translateY}px, 0) rotate(${hovered || selected ? 0 : baseRotation}deg) scale(${hovered || selected ? 1.045 : 1})`,
-        borderColor: hovered || selected ? item.accent : undefined,
-        boxShadow: hovered || selected ? `0 28px 70px ${item.glow}, 0 16px 34px rgba(23,23,19,0.18)` : "0 16px 34px rgba(23,23,19,0.12)",
-        transitionDelay: hovered ? "0ms" : `${index * 35}ms`,
-      }}
-    >
-      <span
-        aria-hidden="true"
-        className="absolute inset-0"
-        style={{ background: `linear-gradient(150deg, ${item.accentSoft} 0%, transparent 48%), radial-gradient(circle at 92% 8%, ${item.glow}, transparent 46%)` }}
-      />
-      <span
-        aria-hidden="true"
-        className="absolute inset-x-0 top-0 h-1 origin-left scale-x-50 transition-transform duration-500 group-hover:scale-x-100 group-focus-visible:scale-x-100"
-        style={{ backgroundColor: item.accent, transform: selected ? "scaleX(1)" : undefined }}
-      />
-      <span
-        aria-hidden="true"
-        className="absolute -right-[19%] top-[10%] h-[53%] w-[86%] origin-center opacity-[0.16] transition-all duration-700 group-hover:-translate-x-3 group-hover:scale-110 group-hover:opacity-[0.24] group-focus-visible:-translate-x-3 group-focus-visible:scale-110 group-focus-visible:opacity-[0.24]"
-      >
-        <HarnessArtwork type={item.connector_type} />
-      </span>
-
-      <span className="absolute inset-x-0 top-0 flex items-start justify-between px-4 pt-4 sm:px-5 sm:pt-5">
-        <span>
-          <span className="block font-mono text-lg font-black leading-none sm:text-2xl" style={{ color: item.accent }}>{cardNumber}</span>
-          <span className="mt-1 block text-[7px] font-black uppercase tracking-[0.18em] text-[#85857c] sm:text-[8px]">{item.company}</span>
-        </span>
-        <span className={`inline-flex items-center gap-1 rounded-full border border-[#d5d5cb] bg-white/65 px-2 py-1 text-[7px] font-black uppercase tracking-[0.14em] backdrop-blur-md dark:border-[#41413a] dark:bg-black/20 sm:text-[8px] ${ready ? "text-emerald-700 dark:text-emerald-300" : "text-[#85857c]"}`}>
-          <Radio className="h-2.5 w-2.5" /> {ready ? "Live" : "Offline"}
-        </span>
-      </span>
-
-      <span className="absolute inset-x-0 bottom-0 flex min-h-[49%] flex-col justify-end bg-gradient-to-t from-[#fbfbf6] via-[#fbfbf6]/95 to-[#fbfbf6]/35 px-4 pb-4 pt-10 dark:from-[#141411] dark:via-[#141411]/95 dark:to-[#141411]/30 sm:px-5 sm:pb-5">
-        <span className="block text-lg font-black leading-tight tracking-[-0.035em] sm:text-2xl">{item.name}</span>
-        <span className="mt-2 hidden text-[10px] font-semibold leading-[1.55] text-[#68685f] dark:text-[#aaa9a0] sm:line-clamp-2">{item.description}</span>
-        <span className="mt-3 grid grid-cols-2 gap-2 border-t border-[#d8d8cf]/80 pt-3 dark:border-[#3a3a34] sm:mt-4">
-          <span>
-            <span className="block text-base font-black leading-none sm:text-xl">{item.session_count}</span>
-            <span className="mt-1 block text-[7px] font-black uppercase tracking-[0.13em] text-[#85857c] sm:text-[8px]">Sessions</span>
-          </span>
-          <span>
-            <span className="block text-base font-black leading-none sm:text-xl">{item.topic_count}</span>
-            <span className="mt-1 block text-[7px] font-black uppercase tracking-[0.13em] text-[#85857c] sm:text-[8px]">Topics</span>
-          </span>
-        </span>
-        <span className="mt-3 flex items-center justify-between text-[8px] font-black uppercase tracking-[0.14em] sm:mt-4 sm:text-[9px]" style={{ color: item.accent }}>
-          Open archive
-          <span className="flex h-7 w-7 items-center justify-center rounded-full border border-current/30 bg-white/60 transition-transform duration-500 group-hover:translate-x-1 dark:bg-black/15 sm:h-8 sm:w-8">
-            <ChevronRight className="h-3.5 w-3.5" />
-          </span>
-        </span>
-      </span>
-
-      <span aria-hidden="true" className="absolute bottom-3 right-3 rotate-180 font-mono text-sm font-black opacity-20 sm:bottom-4 sm:right-4 sm:text-base" style={{ color: item.accent }}>
-        {cardNumber}
-      </span>
-    </button>
   );
 }
 

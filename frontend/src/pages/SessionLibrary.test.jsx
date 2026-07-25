@@ -162,6 +162,20 @@ it("organizes sessions behind animated harness cards", async () => {
   expect(screen.queryByRole("heading", { name: "Beta onboarding" })).not.toBeInTheDocument();
 });
 
+it("keeps archive detection semantics separate from continuation readiness", () => {
+  renderLibrary();
+
+  const codex = screen.getByRole("button", { name: "Open Codex sessions" });
+  const claude = screen.getByRole("button", { name: "Open Claude Code sessions" });
+  expect(within(codex).getByText("Live")).toBeInTheDocument();
+  expect(within(claude).getByText("Offline")).toBeInTheDocument();
+  expect(claude).toBeEnabled();
+
+  fireEvent.click(claude);
+  expect(screen.getByRole("heading", { name: "Claude Code sessions" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "No sessions match this search" })).toBeInTheDocument();
+});
+
 
 it("selects a session topic for Now and returns to the Now tab", async () => {
   renderLibrary();

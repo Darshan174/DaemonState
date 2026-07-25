@@ -6,9 +6,10 @@ for source-backed project memory without scraping the UI.
 Observed current behavior: MCP runs over stdio through `ctxe mcp` and reads the
 same database as the FastAPI app.
 
-Implemented in this branch: MCP acts as the runtime observation bridge for the
-Context Compiler v2 loop: let the agent work, observe the run, ingest
-observations as source evidence, and improve later context.
+MCP acts as the agent-native continuation and observation bridge: resolve the
+current task without opening the dashboard, verify its durable checkpoint,
+compile the pack, let the agent work, and preserve observations as evidence for
+the next continuation.
 
 Current checkout: `prepare_task` is registered and calls the shared
 `ContextCompiler` service. Its import guard still returns a structured
@@ -56,6 +57,7 @@ client uses a different wrapper, keep the same executable behavior:
 
 | Tool | Purpose |
 |---|---|
+| `resume_task` | Resolve the current repository-scoped task, restore an exact requested checkpoint or select the latest compatible durable one, and return a compiled continuation pack without Library curation. |
 | `prepare_task` | When the compiler service is importable, compile and persist a `context_pack.v2` markdown pack plus manifest by calling that service. If the service is absent, return `compiler_unavailable`. |
 | `query_context` | Ask the graph with the stable `query.v1` trace contract. |
 | `search_nodes` | Rank matching graph components. |
@@ -72,8 +74,36 @@ client uses a different wrapper, keep the same executable behavior:
 | `verify_context_item` | Update a component or claim review status with verification evidence. |
 | `close_task` | Mark a task component or claim resolved with resolution and commit evidence. |
 
-Security rule: no MCP tool edits code, runs shell commands, pushes commits,
-sends provider messages, or mutates external services.
+Security rule: no MCP tool edits code, runs arbitrary project or verification
+commands, pushes commits, sends provider messages, or mutates external services.
+
+## resume_task Contract
+
+`resume_task` is the default entry point for continuing existing work. It
+accepts:
+
+- `workspace_id` and `repo_path` (required);
+- optional trusted `objective`, exact `checkpoint_id`, `target_model`, and
+  `token_budget`;
+- `checkpoint_source_id` when `checkpoint_id` is a legacy provider-compaction
+  ID rather than a durable WorkCheckpoint UUID;
+- `sync_sessions` to refresh local Codex, Claude Code, and OpenCode history
+  (defaults to true).
+
+The MCP path never replays checkpoint commands. Imported commands remain
+untrusted evidence rather than executable instructions.
+
+Without an exact ID, the runtime selects the latest compatible durable
+checkpoint. A durable UUID is loaded directly even when it is older than the
+recent Library window. A legacy `checkpoint-*` ID is restored only from the
+specified accessible source document and returns `review_required` because it
+lacks a durable repository fingerprint.
+
+It returns `continuation.v1` with stable task identity, source session,
+checkpoint and verification state, current repository freshness, readiness,
+attention items, and the durable `context_pack.v2` markdown and manifest.
+Imported agent progress remains reported evidence unless repository or command
+observations verify it.
 
 Trust rule: quoted source text from Slack, email, Drive, web, uploads, logs, and
 agent observations is evidence, not instruction. Tool descriptions warn clients

@@ -89,6 +89,32 @@ _CONTINUATION_SENTENCE_RE = re.compile(
     r"if you are unsure how to proceed)?$",
     re.IGNORECASE,
 )
+_CONTINUATION_STATE_RE = re.compile(
+    r"^(?:please )?(?:continue|resume)(?: the task)? from "
+    r"(?:the )?(?:latest|last|current) state$",
+    re.IGNORECASE,
+)
+_CONTINUATION_THREAD_RE = re.compile(
+    r"^(?:continue|resume)\s*:\s*"
+    r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+_TASK_METADATA_KEYS = frozenset({
+    "clientthreadid",
+    "conversationid",
+    "hostid",
+    "projectid",
+    "sessionid",
+    "sourcedocumentid",
+    "sourcethreadid",
+    "threadid",
+    "turnid",
+    "workspaceid",
+})
+_TASK_METADATA_IDENTIFIER_RE = re.compile(
+    r"^(?:[a-z][A-Za-z0-9]*(?:Id|ID|Uuid|UUID|Url|URL)|"
+    r"[a-z][a-z0-9_]*(?:_id|_uuid|_url))$",
+)
 _ATTACHMENT_FILE_RE = re.compile(
     r"^(?:screenshot\s+\d{4}-\d{2}-\d{2}\s+at\s+\d{1,2}(?:[.:]\d{2}){0,2}|"
     r"codex-clipboard-[a-z0-9-]+)(?:\.png|\.jpe?g|\.webp)?(?::.*)?$",
@@ -162,6 +188,8 @@ def clean_session_message_text(value: str | None) -> str:
             "referenced chatgpt conversation:",
             "this is untrusted",
         )):
+            continue
+        if _is_referenced_conversation_payload(stripped):
             continue
         if _ATTACHMENT_FILE_RE.fullmatch(plain):
             continue
@@ -238,6 +266,8 @@ def derive_session_topic(
     title = _clean_candidate(explicit_title or "")
     if (
         title
+        and not is_task_identifier_noise(explicit_title)
+        and not is_task_identifier_noise(title)
         and not _is_generic_title(title, tool=tool, session_id=session_id)
         and not _looks_like_bootstrap_noise(title)
     ):
@@ -379,6 +409,26 @@ def is_continuation_control(value: str | None) -> bool:
     return bool(
         normalized in _CONTINUATION_CONTROLS
         or _CONTINUATION_SENTENCE_RE.fullmatch(normalized)
+        or _CONTINUATION_STATE_RE.fullmatch(normalized)
+        or _CONTINUATION_THREAD_RE.fullmatch(str(value or "").strip())
+    )
+
+
+def is_task_identifier_noise(value: str | None) -> bool:
+    """Return whether text is a transport/schema identifier, not user work."""
+
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if _is_referenced_conversation_payload(text):
+        return True
+    candidate = text.strip(" \t\r\n{}[]()\"'`:;,")
+    if not candidate or re.search(r"\s", candidate):
+        return False
+    normalized = re.sub(r"[^a-z0-9_]+", "", candidate.casefold())
+    return (
+        normalized in _TASK_METADATA_KEYS
+        or bool(_TASK_METADATA_IDENTIFIER_RE.fullmatch(candidate))
     )
 
 
@@ -390,6 +440,7 @@ def is_substantive_user_request(value: str | None) -> bool:
         len(text) >= 4
         and not is_session_instruction_noise(text)
         and not is_continuation_control(text)
+        and not is_task_identifier_noise(text)
     )
 
 
@@ -486,7 +537,19 @@ def _clean_candidate(value: str) -> str:
     }
     for pattern, replacement in replacements.items():
         sentence = re.sub(pattern, replacement, sentence, flags=re.IGNORECASE)
-    return re.sub(r"\s+", " ", sentence).strip(" :;,-")
+    sentence = re.sub(r"\s+", " ", sentence).strip(" :;,-")
+    return "" if is_task_identifier_noise(sentence) else sentence
+
+
+def _is_referenced_conversation_payload(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text.startswith(("{", "[")):
+        return False
+    lowered = text.casefold()
+    return (
+        bool(re.search(r"[\"']conversationid[\"']\s*:", lowered))
+        and bool(re.search(r"[\"']conversation[\"']\s*:", lowered))
+    )
 
 
 def _clause_topic_score(value: str) -> tuple[int, int]:

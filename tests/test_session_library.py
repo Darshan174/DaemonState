@@ -513,6 +513,10 @@ def test_codex_discovery_reads_every_local_session_without_ids(tmp_path: Path, m
     assert all(len(item.metadata["compaction_checkpoints"]) == 1 for item in result.sessions)
     assert {item.metadata["compaction_checkpoints"][0]["turn_count"] for item in result.sessions} == {2}
     assert {item.metadata["compaction_checkpoints"][0]["provider"] for item in result.sessions} == {"codex"}
+    assert {
+        item.metadata["compaction_checkpoints"][0]["repo_path"]
+        for item in result.sessions
+    } == {"/workspace/product-1", "/workspace/product-2"}
 
 
 def test_codex_discovery_marks_continued_tasks_as_forks(tmp_path: Path, monkeypatch) -> None:
