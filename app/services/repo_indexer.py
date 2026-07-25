@@ -318,7 +318,10 @@ class RepoFrame:
         hinted = {hint.strip("./") for hint in file_hints}
         normalized_keywords = set(_tokenize(" ".join(sorted(keywords))))
         retrieval_terms = normalized_keywords - _GENERIC_GOAL_TERMS
-        requires_tests = bool({"test", "tests", "pytest", "verify"} & normalized_keywords)
+        requires_tests = bool(
+            {"test", "tests", "pytest", "vitest", "unittest", "spec", "specs"}
+            & normalized_keywords
+        )
         changed_paths = {item["path"] for item in self.changed_files}
         scored: list[
             tuple[

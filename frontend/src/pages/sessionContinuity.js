@@ -43,7 +43,9 @@ export function sessionSearchText(card) {
     card.cwd,
     card.branch,
     ...ledgerSections(card.ledger).flatMap((section) =>
-      section.items.map((item) => `${item.kind || ""} ${item.text || ""}`),
+      section.items
+        .filter((item) => item.kind !== "file" && item.kind !== "check")
+        .map((item) => `${item.kind || ""} ${item.text || ""}`),
     ),
   ].join(" ").toLocaleLowerCase();
 }
@@ -62,9 +64,8 @@ export function ledgerSections(ledger) {
   return [
     {
       key: "base",
-      symbol: "B",
-      label: "Base",
-      description: "Original request and requirements",
+      label: "Original request",
+      description: "What you asked for when this task started",
       items: ledger?.base || [],
       count: ledgerCount(ledger, "base"),
       hiddenCount: ledgerHiddenCount(ledger, "base"),
@@ -72,9 +73,8 @@ export function ledgerSections(ledger) {
     },
     {
       key: "added",
-      symbol: "+",
-      label: "Added",
-      description: "New instructions, decisions, files, and progress",
+      label: "Since then",
+      description: "Follow-up requests, decisions, and progress since the task started",
       items: ledger?.added || [],
       count: ledgerCount(ledger, "added"),
       hiddenCount: ledgerHiddenCount(ledger, "added"),
@@ -82,9 +82,8 @@ export function ledgerSections(ledger) {
     },
     {
       key: "changed",
-      symbol: "~",
-      label: "Changed",
-      description: "Explicit user amendments",
+      label: "Updated requests",
+      description: "Requests you explicitly changed",
       items: ledger?.changed || [],
       count: ledgerCount(ledger, "changed"),
       hiddenCount: ledgerHiddenCount(ledger, "changed"),
@@ -92,20 +91,18 @@ export function ledgerSections(ledger) {
     },
     {
       key: "missing",
-      symbol: "!",
-      label: "Missing",
-      description: "Information compaction may have omitted",
+      label: "Context gaps",
+      description: "What may no longer be carried forward after compaction",
       items: ledger?.missing?.items || [],
       count: null,
       status: ledger?.missing?.status || "unmeasured",
-      statusLabel: ledger?.missing?.status === "not_applicable" ? "n/a" : (ledger?.missing?.status || "unmeasured"),
+      statusLabel: ledger?.missing?.status === "not_applicable" ? "No compaction" : "Unknown",
       reason: ledger?.missing?.reason,
     },
     {
       key: "removed",
-      symbol: "−",
-      label: "Removed",
-      description: "Requirements explicitly cancelled by the user",
+      label: "No longer applies",
+      description: "Earlier requests you explicitly cancelled",
       items: ledger?.removed || [],
       count: ledgerCount(ledger, "removed"),
       hiddenCount: ledgerHiddenCount(ledger, "removed"),
@@ -128,11 +125,12 @@ function ledgerHiddenCount(ledger, key) {
 function prepareSessionCard(session, ledger, versions, checkpoint) {
   const provider = normalizeProvider(session.connector_type || ledger.provider);
   const key = sessionKey(provider, session.session_id);
+  const sourceDocumentId = session.source_document_id || ledger.source_document_id || null;
   return {
     key,
     id: session.id || key,
     sessionId: session.session_id,
-    sourceDocumentId: session.source_document_id || ledger.source_document_id,
+    sourceDocumentId,
     provider,
     providerLabel: session.harness || providerLabel(provider),
     title: cleanText(session.title) || cleanText(ledger.base?.[0]?.text) || FALLBACK_TITLE,
@@ -149,8 +147,8 @@ function prepareSessionCard(session, ledger, versions, checkpoint) {
     ledger,
     versions,
     checkpoint,
-    canRepair: Boolean(session.source_document_id && ledger.schema_version),
-    missingUnmeasured: ledger?.missing?.status === "unmeasured",
+    canResume: Boolean(sourceDocumentId && ledger.schema_version),
+    hasUnknownContextGaps: ledger?.missing?.status === "unmeasured",
   };
 }
 

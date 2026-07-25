@@ -207,6 +207,8 @@ def _read_codex_rollout(
                             item,
                             provider="codex",
                             ordinal=len(compaction_checkpoints) + 1,
+                            repo_path=metadata.get("cwd"),
+                            branch=metadata.get("branch") or metadata.get("git_branch"),
                         )
                         if not any(
                             current["id"] == descriptor["id"]

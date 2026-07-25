@@ -250,7 +250,13 @@ def _citation_is_valid(
         repo_root = Path(str((manifest.get("repo_state") or {}).get("repo_path") or ""))
         file_path = repo_root / path
         return file_path.is_file() and _sha256_bytes(file_path.read_bytes()) == file_ref["sha256"]
-    return source_type in {"repo_index", "repo_state", "task_contract", "user_task"}
+    return source_type in {
+        "compiler_policy",
+        "repo_index",
+        "repo_state",
+        "task_contract",
+        "user_task",
+    }
 
 
 def _item_text(item: dict[str, Any]) -> str:

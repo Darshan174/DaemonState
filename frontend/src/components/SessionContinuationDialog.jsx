@@ -17,6 +17,7 @@ export default function SessionContinuationDialog({
   repositoryComparison,
   repositoryComparisonLoading = false,
   isPending,
+  errorMessage = "",
   onCancel,
   onConfirm,
 }) {
@@ -101,7 +102,7 @@ export default function SessionContinuationDialog({
           <div className="relative flex items-start justify-between gap-5">
             <div className="min-w-0">
               <p className="text-[10px] font-black uppercase tracking-[0.18em] text-[#77776e] dark:text-[#aaa9a0]">
-                Recovered session context
+                Resume task
               </p>
               <h2
                 ref={headingRef}
@@ -109,7 +110,7 @@ export default function SessionContinuationDialog({
                 tabIndex={-1}
                 className="mt-2 text-2xl font-black tracking-[-0.035em] outline-none sm:text-3xl"
               >
-                Repair context and continue?
+                Review and resume
               </h2>
               <p className="mt-2 line-clamp-2 text-sm font-bold leading-6 text-[#68685f] dark:text-[#aaa9a0]">
                 {card.title}
@@ -119,7 +120,7 @@ export default function SessionContinuationDialog({
               type="button"
               onClick={onCancel}
               disabled={isPending}
-              aria-label="Close session continuation dialog"
+              aria-label="Close review and resume dialog"
               className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-[#d8d8cf] bg-white/70 text-[#77776e] transition hover:-rotate-6 hover:border-[#aaa99f] hover:text-[#171713] disabled:opacity-50 dark:border-[#34342f] dark:bg-black/30 dark:hover:text-white"
             >
               <X className="h-4 w-4" />
@@ -128,15 +129,12 @@ export default function SessionContinuationDialog({
         </div>
 
         <div className="space-y-4 p-5 sm:p-7">
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-5" aria-label="Recovered context summary">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-5" aria-label="Resume context summary">
             {sections.map((section) => (
               <div key={section.key} className="rounded-xl border border-[#deded5] bg-white/70 px-3 py-3 dark:border-[#2e2e29] dark:bg-black/20">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-mono text-sm font-black" aria-hidden="true">{section.symbol}</span>
-                  <span className="font-mono text-xs font-black text-[#77776e] dark:text-[#aaa9a0]">
-                    {section.count === null && section.status === "not_applicable" ? "N/A" : (section.count === null ? "—" : section.count)}
-                  </span>
-                </div>
+                <span className="font-mono text-xs font-black text-[#77776e] dark:text-[#aaa9a0]">
+                  {section.count === null ? section.statusLabel : section.count}
+                </span>
                 <p className="mt-2 text-[9px] font-black uppercase tracking-[0.13em]">{section.label}</p>
               </div>
             ))}
@@ -156,19 +154,27 @@ export default function SessionContinuationDialog({
             </Notice>
           ) : null}
 
-          {card.missingUnmeasured ? (
-            <Notice icon={AlertTriangle} title="Compaction loss cannot be measured yet" attention>
-              The provider does not expose the active prompt created after compaction. Context Engine preserves the source history but will not pretend that “nothing is missing.”
+          {card.hasUnknownContextGaps ? (
+            <Notice icon={AlertTriangle} title="Some context gaps are unknown" attention>
+              This session was compacted, but its history cannot show exactly what the agent stopped carrying forward. Review the summary before resuming.
             </Notice>
+          ) : null}
+
+          {errorMessage ? (
+            <div role="alert">
+              <Notice icon={AlertTriangle} title="Could not prepare resume context" attention>
+                {errorMessage}
+              </Notice>
+            </div>
           ) : null}
 
           <div className="rounded-2xl border border-[#d8d8cf] bg-[#171713] p-5 text-white dark:border-[#383833] dark:bg-[#151512]">
             <div className="flex items-start gap-3">
               <Layers3 className="mt-0.5 h-5 w-5 shrink-0 text-[#d9ff68]" aria-hidden="true" />
               <div>
-                <p className="text-sm font-black">What Context Engine will prepare</p>
+                <p className="text-sm font-black">What happens when you resume</p>
                 <p className="mt-1 text-xs leading-5 text-white/70">
-                  One source-backed continuation containing {totalMeasured} captured context {totalMeasured === 1 ? "item" : "items"}, with every section labelled by its evidence status.
+                  Context Engine prepares a source-backed summary from {totalMeasured} captured session {totalMeasured === 1 ? "update" : "updates"} for you to review and use.
                 </p>
               </div>
             </div>
@@ -176,8 +182,8 @@ export default function SessionContinuationDialog({
               <DialogStep icon={ExternalLink} title={`Open ${card.providerLabel}`}>
                 Opens the original linked session when the desktop app is available.
               </DialogStep>
-              <DialogStep icon={Clipboard} title="Copy repaired context">
-                Copies the reconstructed ledger so you can review it before use.
+              <DialogStep icon={Clipboard} title="Copy resume context">
+                Copies the reconstructed session summary to your clipboard for review.
               </DialogStep>
             </div>
           </div>
@@ -197,7 +203,7 @@ export default function SessionContinuationDialog({
               className="btn-primary min-h-11 text-xs disabled:cursor-wait disabled:opacity-60"
             >
               <Clipboard className="h-4 w-4" />
-              {isPending ? "Preparing recovered context…" : `Open ${card.providerLabel} and copy context`}
+              {isPending ? "Preparing resume context…" : `Open ${card.providerLabel} and copy context`}
             </button>
           </div>
         </div>

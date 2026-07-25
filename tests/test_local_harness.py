@@ -11,7 +11,13 @@ import pytest
 from sqlalchemy import select
 
 from app.models import AgentRun, ContextPack, RunObservation, SourceDocument, Workspace
-from app.services.local_harness import LocalHarnessRunner, TRUNCATED_OUTPUT
+from app.services.harness_adapters import provider_environment
+from app.services.local_harness import (
+    MAX_CONTEXT_STDIN_BYTES,
+    LocalHarnessRunner,
+    RepositoryStateChangedError,
+    TRUNCATED_OUTPUT,
+)
 
 
 def _git(root: Path, *args: str) -> str:
@@ -36,7 +42,12 @@ def _repository(tmp_path: Path) -> Path:
     return root
 
 
-async def _pack_and_run(db_session, *, verification_commands=None):
+async def _pack_and_run(
+    db_session,
+    *,
+    verification_commands=None,
+    markdown="# Context pack\nUse only the supplied project evidence.\n",
+):
     workspace = Workspace(
         id=uuid4(),
         name=f"Harness {uuid4()}",
@@ -48,7 +59,7 @@ async def _pack_and_run(db_session, *, verification_commands=None):
         id=uuid4(),
         workspace_id=workspace.id,
         objective="Implement the local harness contract",
-        markdown="# Context pack\nUse only the supplied project evidence.\n",
+        markdown=markdown,
         manifest=json.dumps(
             {
                 "schema_version": "context_pack.v2",
@@ -71,6 +82,34 @@ async def _pack_and_run(db_session, *, verification_commands=None):
     db_session.add_all([pack, run])
     await db_session.flush()
     return pack, run
+
+
+@pytest.mark.asyncio
+async def test_runner_refuses_a_stale_pack_before_starting_the_agent(
+    db_session,
+    tmp_path,
+):
+    root = _repository(tmp_path)
+    pack, run = await _pack_and_run(db_session)
+    marker = root / "agent-started.txt"
+
+    with pytest.raises(RepositoryStateChangedError):
+        await LocalHarnessRunner(db_session).run(
+            context_pack_id=pack.id,
+            run_id=run.id,
+            repo_path=root,
+            command=[
+                sys.executable,
+                "-c",
+                f"from pathlib import Path; Path({str(marker)!r}).write_text('started')",
+            ],
+            expected_status_fingerprint="stale-pack-fingerprint",
+        )
+
+    await db_session.refresh(run)
+    assert run.status == "failed"
+    assert run.ended_at is not None
+    assert not marker.exists()
 
 
 @pytest.mark.asyncio
@@ -169,6 +208,129 @@ async def test_runner_exposes_context_and_persists_observed_evidence(db_session,
     )
     assert "hunter2" not in source_contents
     assert "verification-secret" not in source_contents
+
+
+@pytest.mark.asyncio
+async def test_runner_delivers_context_on_stdin_and_closes_the_pipe(
+    db_session,
+    tmp_path,
+):
+    root = _repository(tmp_path)
+    markdown = "# Context pack\nContinue from the verified checkpoint.\n"
+    pack, run = await _pack_and_run(db_session, markdown=markdown)
+    child_code = (
+        "import sys; from pathlib import Path; "
+        "payload = sys.stdin.read(); "
+        "assert payload == sys.argv[1]; "
+        "assert sys.stdin.read() == ''; "
+        "Path('stdin-received.txt').write_text(payload)"
+    )
+
+    result = await LocalHarnessRunner(db_session).run(
+        context_pack_id=pack.id,
+        run_id=run.id,
+        repo_path=root,
+        command=[sys.executable, "-c", child_code, markdown],
+        context_stdin=True,
+    )
+
+    assert result.status == "completed"
+    assert (root / "stdin-received.txt").read_text(encoding="utf-8") == markdown
+
+
+@pytest.mark.asyncio
+async def test_runner_strips_server_secrets_and_preserves_provider_auth(
+    db_session,
+    monkeypatch,
+    tmp_path,
+):
+    root = _repository(tmp_path)
+    pack, run = await _pack_and_run(db_session)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "provider-auth")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-provider-auth")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://server-secret")
+    monkeypatch.setenv("SERVER_API_KEY", "server-api-secret")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "connector-secret")
+    child_code = (
+        "import json, os; from pathlib import Path; "
+        "names = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', "
+        "'DATABASE_URL', 'SERVER_API_KEY', 'GOOGLE_CLIENT_SECRET']; "
+        "Path('child-env.json').write_text(json.dumps("
+        "{name: os.environ.get(name) for name in names}))"
+    )
+    environment = {
+        **provider_environment("claude"),
+        # The runner keeps the denylist as a second line of defense even if a
+        # caller accidentally includes a Context Engine secret.
+        "DATABASE_URL": "explicit-server-secret",
+    }
+
+    result = await LocalHarnessRunner(db_session).run(
+        context_pack_id=pack.id,
+        run_id=run.id,
+        repo_path=root,
+        command=[sys.executable, "-c", child_code],
+        extra_env=environment,
+    )
+
+    assert result.status == "completed"
+    observed = json.loads(
+        (root / "child-env.json").read_text(encoding="utf-8")
+    )
+    assert observed == {
+        "ANTHROPIC_API_KEY": "provider-auth",
+        "CLAUDE_CODE_OAUTH_TOKEN": "oauth-provider-auth",
+        "DATABASE_URL": None,
+        "SERVER_API_KEY": None,
+        "GOOGLE_CLIENT_SECRET": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_runner_keeps_worker_stdin_closed_by_default(db_session, tmp_path):
+    root = _repository(tmp_path)
+    pack, run = await _pack_and_run(db_session)
+    child_code = (
+        "import sys; from pathlib import Path; "
+        "Path('stdin-default.txt').write_text(sys.stdin.read())"
+    )
+
+    result = await LocalHarnessRunner(db_session).run(
+        context_pack_id=pack.id,
+        run_id=run.id,
+        repo_path=root,
+        command=[sys.executable, "-c", child_code],
+    )
+
+    assert result.status == "completed"
+    assert (root / "stdin-default.txt").read_text(encoding="utf-8") == ""
+
+
+@pytest.mark.asyncio
+async def test_runner_rejects_oversized_context_before_starting_worker(
+    db_session,
+    tmp_path,
+):
+    root = _repository(tmp_path)
+    pack, run = await _pack_and_run(
+        db_session,
+        markdown="x" * (MAX_CONTEXT_STDIN_BYTES + 1),
+    )
+
+    with pytest.raises(ValueError, match="too large for stdin"):
+        await LocalHarnessRunner(db_session).run(
+            context_pack_id=pack.id,
+            run_id=run.id,
+            repo_path=root,
+            command=[
+                sys.executable,
+                "-c",
+                "from pathlib import Path; Path('must-not-run').touch()",
+            ],
+            context_stdin=True,
+        )
+
+    assert not (root / "must-not-run").exists()
 
 
 @pytest.mark.asyncio

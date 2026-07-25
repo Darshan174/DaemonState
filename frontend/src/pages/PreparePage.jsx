@@ -1,5 +1,6 @@
-import { Navigate } from "react-router-dom";
+import { Navigate, useLocation } from "react-router-dom";
 
 export default function PreparePage() {
-  return <Navigate replace to="/app" />;
+  const location = useLocation();
+  return <Navigate replace to={{ pathname: "/app", search: location.search }} />;
 }

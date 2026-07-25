@@ -8,55 +8,31 @@
   Verified project history in. Minimum task-ready context out.
 </p>
 
-> **Active alpha.** Core workflows are implemented and tested locally. Bare-metal
-> and Docker setup tooling is included; hosted operation and production
-> deployment guidance are not ready yet.
+> **Active alpha.** Core workflows are implemented and tested locally. A hardened, single-host production profile is
+> included for self-hosting; it is not a hosted service, multi-tenant control plane, or high-availability deployment.
 
 ## What it is
 
-Context Engine is an open-source context and evidence layer for coding agents.
-It compiles verified project history into the minimum task-ready context an
-agent needs to continue real work on a long-running codebase.
+Context Engine is an open-source context and evidence layer for coding agents. It compiles verified project history
+into the task-sized brief an agent needs to continue real work on a long-running codebase.
 
-Context Engine is not another coding agent or a generic knowledge graph. The
-context compiler is the core product. The graph is the human-readable
-explanation and navigation surface that shows where facts came from, how work is
-connected, and why specific context was selected.
+Context Engine is not another coding agent or a generic knowledge graph. The verified continuation runtime is the core
+product. The compiler, checkpoints, Library, and graph support that handoff and explain what was selected and why.
 
 ## The problem
 
 AI coding feels fast until the next session starts.
 
-The agent has forgotten the decision you made yesterday. It cannot tell which
-issue is actually current. It reads stale files, repeats an abandoned approach,
-or says the work is done without seeing the failed check. You spend the first
-part of every session rebuilding context the project already has.
+The agent has forgotten yesterday's decision. It reads stale files, repeats an abandoned approach, or says the work is
+done without seeing the failed check. You spend the first part of each session rebuilding context the project has.
 
-A larger context window does not fix this by itself. More text can mean more old
-plans, duplicated facts, and irrelevant history.
+A larger context window does not fix this. More text can mean more old plans, duplicated facts, and irrelevant history.
 
 ## Who it is for
 
-Context Engine is built first for solo founders and tiny teams using coding
-agents every day. Developers get the exact sources, files, constraints, checks,
-and run evidence needed for the next task. Founders and non-technical users get a
-readable view of the same project state without living in terminal logs.
-
-## What Context Engine changes
-
-Context Engine can turn repository state, issues, pull requests, imported agent
-sessions, decisions, blockers, documents, patches, and test results into durable
-project memory after those sources are imported, connected, or reported by an
-integration.
-
-It lets the user choose the current goal, compiles a focused source-backed brief
-for that task and target model, and stores run evidence reported through HTTP or
-MCP. The local harness also observes repository changes and command results
-directly. Those records can become evidence for the next session instead of
-disappearing inside one chat history.
-
-The intended result is that supported coding-agent sessions behave less like
-disconnected chats and more like continuous work on one project.
+Context Engine is built first for solo founders and tiny teams using coding agents every day. Developers get the exact
+sources, files, constraints, checks, and run evidence for the next task. Founders and non-technical users get a readable
+view of the same project state without living in terminal logs.
 
 ## The bet
 
@@ -79,33 +55,19 @@ we need results from real projects, not demos.
 | Capture the work | Imports or syncs code state, issues, decisions, AI sessions, changes, and checks from supported sources. |
 | Choose the current goal | Keeps the user in control. Open issues stay backlog until selected. |
 | Capture a checkpoint | When a supported local session is synced and exposes a compaction boundary, preserves its pre-compaction goal, progress, decisions, failures, files, blockers, checks, and next action. A session-tip checkpoint can also be saved manually. |
-| Verify the checkpoint | On request, checks its structure, event evidence, repository fingerprint, relevant files, and captured test commands. |
-| Resume the work | Copies one deterministic, evidence-linked continuation bundle and, from the local macOS app, attempts to open the linked desktop agent. |
+| Verify the checkpoint | Continue automatically checks structure, event evidence, repository fingerprint, relevant files, and recorded command evidence without replaying imported commands. |
+| Resume the work | Selecting a ready Codex, Claude Code, or OpenCode card resolves the task, compiles its evidence-linked pack, starts a fresh target agent, runs available checks, and reports the observed outcome. |
 | Explain what matters | Uses the graph to show the relationships behind the current project state and compiled context. |
 
 Extracted facts retain their source and provenance; explicit user choices are
 labeled separately. Missing evidence stays missing instead of being replaced
 with a confident guess.
 
-## What this gives you
-
-- **Continuity:** start the next session from the last recorded project state and
-  its verified results.
-- **Control:** choose the current goal instead of letting an old issue or context
-  pack choose it for you.
-- **Less noise:** give the agent a task-sized brief, not a dump of everything the
-  project has ever seen.
-- **Proof:** see the changed files, checks, blockers, and evidence behind a run.
-- **Model freedom:** carry project memory across agents and providers instead of
-  locking it inside one chat history.
-- **A path to lower cost:** test where better context lets an older, smaller, or
-  open model do work that otherwise required a frontier model.
-
 ## What works today
 
 | Surface | Actual job |
 |---|---|
-| Now | Shows current work plus the latest structured checkpoint, verification state, and exact next action. |
+| Continue | Resolves the current repository-scoped task, verifies its latest compatible checkpoint, starts a fresh installed target agent, runs available checks, and reports the outcome. |
 | Runs | Shows real session checkpoints, event evidence, repository freshness, checks, blockers, and resume actions. |
 | Library | Scans local Codex, Claude Code, and OpenCode history while the page is open or when requested, then keeps sessions, topics, and project selection inspectable. |
 | Memory | Organizes active, needs-review, and historical project facts with their evidence. |
@@ -113,28 +75,35 @@ with a confident guess.
 | Sources and connectors | Shows raw source previews, extracted components, connection state, and sync results. The API preserves revisions and enforces access scopes. |
 | Local harness | Wraps one user-supplied worker command and records bounded output, Git changes, checks, and outcome evidence. |
 
-The React app uses the FastAPI API. The `ctxe` CLI and MCP server expose core
-prepare, query, repository, and run-evidence workflows rather than every UI
-view. Local development uses SQLite; Docker can use PostgreSQL/pgvector.
+The React app uses the FastAPI API. The `ctxe` CLI and MCP server expose the
+agent-native continuation runtime, context preparation, query, repository, and
+run-evidence workflows rather than every UI view. Local development
+uses SQLite; Docker can use PostgreSQL/pgvector.
 
-## Local agent harness
+## Continue without the dashboard
 
-You choose the model, provider, and worker command. Context Engine prepares the
-brief, exposes it to the worker, observes the repository, and stores factual run
-evidence.
+Resolve the active task, refresh local agent history, verify the latest
+compatible checkpoint, compile the pack, and run it directly in another
+installed coding harness:
 
 ```bash
-ctxe harness run "fix the selected task" \
+ctxe continue \
   --workspace-id <workspace-uuid> \
-  --target-model qwen2.5-coder-7b \
-  --verify \
-  -- your-worker --context {context_file}
+  --repo . \
+  --into codex
 ```
 
-`--verify` is explicit permission to run the required checks in the compiled
-brief. Without it, those checks are not executed.
+Use `--into claude` or `--into opencode` for another harness. Continue always
+starts a fresh target session; it never silently resumes the source task.
+Provider CLIs run non-interactively through direct argv execution. Context is
+delivered through bounded stdin or a permission-restricted temporary file, and
+the local harness records Git state and outcome evidence. `ready` and
+`review_required` evidence continue automatically; only blocked or unknown
+states fail closed.
 
-See [Local Agent Harness](docs/agent-harness.md) for the contract and limits.
+Continue always runs its compiled verification contract. For arbitrary worker
+commands and explicitly authorized verification, see
+[Local Agent Harness](docs/agent-harness.md).
 
 ## Connectors
 
@@ -155,23 +124,38 @@ Demo data never marks a connector as authenticated or connected.
 
 ## Honest limits
 
-- The product UI prepares and copies agent and resume briefs; it never sends or
-  pastes them automatically.
+- The browser UI calls a local-only run service. It shows separate
+  readiness-checked Codex, Claude Code, and OpenCode targets, refreshes evidence,
+  starts a fresh explicitly selected provider CLI, observes the repository, and
+  runs available checks; it is unavailable to remote principals. Explicit
+  choices never silently fall back. `ctxe continue --into ...` launches an
+  explicitly selected provider CLI. MCP `resume_task` returns the pack to its
+  calling agent without starting another process.
 - There is no system-wide agent monitor. Library scans while its page is open;
-  Now refreshes linked local histories; other integrations must report events.
+  Continue refreshes linked local histories; other integrations must report events.
 - HTTP and MCP run records contain observations supplied by their caller. The
   local harness is the path that independently inspects Git state and commands.
-- The CLI harness runs only the explicit local command supplied by the user.
-- On macOS, checkpoint resume can reopen an exact Codex task; Claude opens its
-  desktop app, and OpenCode opens the project when its path is available. Exact
-  Claude/OpenCode session reopening, Hermes, and other platforms are unsupported.
+- `ctxe harness run` still runs only the explicit local command supplied by the
+  user. `ctxe continue --into ...` selects one of three audited built-in
+  provider adapters and never adds permission-bypass flags.
+- The legacy macOS resume path can reopen an exact Codex task. The primary
+  Continue workflow deliberately starts a fresh Codex, Claude Code, or OpenCode
+  session. Hermes and other platforms are unsupported.
 - Scrutiny uses deterministic evidence rules. It is not an autonomous code review.
 - Live retrieval is limited to the local repository and configured manual-token
   GitHub access.
 - Captured command output and repository inspection are deliberately bounded.
+- A provider exit with no executable checks is `completed_unverified`, not a
+  verified handoff. Product acceptance additionally requires a paired real-task
+  test showing that another agent continued correctly without re-explanation,
+  with less discovery and no stale-context mistake.
 - Model-lift reports describe observed runs. They do not yet prove that an older
   model matches a newer one because of Context Engine.
-- Hosted operation and production deployment guidance are unfinished.
+- The production profile is deliberately single-tenant. Per-principal API keys are rejected until action-level
+  authorization covers every HTTP and MCP operation.
+- MCP is a trusted local stdio surface; expose the authenticated HTTP API, not the MCP process, across a network.
+- The production deployment has one Docker host as its failure domain. Multi-host failover, managed storage, and
+  multi-region recovery remain operator responsibilities.
 
 ## Developer surface
 
@@ -184,6 +168,8 @@ Main API routes:
 | Route | Purpose |
 |---|---|
 | `POST /api/context/prepare` | Compile and persist a task brief. |
+| `POST /api/continuations/prepare` | Resolve current task state, verify its compatible checkpoint, and compile a continuation pack. |
+| `POST /api/continuations/run` | From the local app, prepare a continuation, start a fresh installed target agent, run available checks, and record the outcome. |
 | `POST /api/query` | Query project context with a source trace. |
 | `POST /api/repo/index` | Index repository files, symbols, and exact structural links. |
 | `GET /api/context/run-timeline` | Read observed agent work and scrutiny findings. |
@@ -194,6 +180,7 @@ Useful CLI commands:
 
 ```text
 ctxe prepare
+ctxe continue
 ctxe query
 ctxe repo index
 ctxe repo watch
@@ -201,6 +188,7 @@ ctxe harness run
 ctxe harness report
 ctxe eval harness
 ctxe mcp
+ctxe db deploy
 ```
 
 The MCP server can prepare or query context and record run evidence. It cannot
@@ -244,11 +232,17 @@ credentials.
 
 ## Deployment
 
-`docker-compose.yml` is the supported local PostgreSQL/pgvector deployment path.
-It is not a production hardening guide. Before any non-local deployment, replace
-the default database password, configure API and credential encryption keys,
-terminate TLS, plan backups, and validate migrations and provider callback URLs.
-Hosted-service, high-availability, and upgrade procedures are still unfinished.
+`docker-compose.yml` is the supported local PostgreSQL/pgvector deployment path. It is not a production hardening guide.
+
+For a hardened single-host deployment, use `docker-compose.production.yml` and follow the
+[production runbook](docs/production-runbook.md). It fails closed on invalid settings, gates startup on migrations,
+exposes only a TLS proxy, keeps PostgreSQL/pgvector and Redis internal, drops runtime privileges, bounds requests and
+resources, and includes backup and guarded restore tooling.
+
+The production profile requires immutable image references, file-backed
+secrets, an explicit read-only repository root, and `ctxe db deploy` before API
+startup. Validate it in staging and complete the runbook's load, restore, and
+security checks against your own SLO/RPO/RTO before serving real traffic.
 
 ## Contributing
 
@@ -267,10 +261,12 @@ Maintainers should also run `bash scripts/smoke.sh --docker` before release tags
 - [Connectors](docs/connectors.md)
 - [Context Pack v2](docs/context-pack-v2.md)
 - [Context Compiler v2](docs/context-compiler-v2.md)
+- [Continuation Runtime](docs/continuation-runtime.md)
 - [Local Agent Harness](docs/agent-harness.md)
 - [MCP](docs/mcp.md)
 - [AI session imports](docs/ai-context.md)
 - [Demo walkthrough](docs/demo.md)
+- [Production runbook](docs/production-runbook.md)
 - [OSS readiness](docs/oss-readiness.md)
 
 Some documents are implementation contracts rather than public guides. The code

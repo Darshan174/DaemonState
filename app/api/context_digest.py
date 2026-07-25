@@ -2354,8 +2354,7 @@ async def _digest_objective(
         if (
             run
             and run.objective
-            and run.objective.strip()
-            and not is_session_instruction_noise(run.objective)
+            and is_substantive_user_request(run.objective)
         ):
             return DigestObjective(
                 status="supplied",
@@ -2380,8 +2379,7 @@ async def _digest_objective(
                 continue
             if (
                 pack.objective
-                and pack.objective.strip()
-                and not is_session_instruction_noise(pack.objective)
+                and is_substantive_user_request(pack.objective)
             ):
                 return DigestObjective(
                     status="supplied",

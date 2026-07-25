@@ -78,6 +78,7 @@ async def ingest_ai_session(
     workspace_id: str | None = None,
     metadata_extra: dict[str, Any] | None = None,
     normalized_events: list[NormalizedSessionEvent] | None = None,
+    commit: bool = True,
 ) -> dict[str, Any]:
     messages = _parse_session_content(content)
 
@@ -134,7 +135,10 @@ async def ingest_ai_session(
             provider=connector_type,
             session_id=session_id,
         )
-    await session.commit()
+    if commit:
+        await session.commit()
+    else:
+        await session.flush()
     return {
         "documents_fetched": len(messages),
         "documents_persisted": int(result.created),
