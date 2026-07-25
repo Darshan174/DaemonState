@@ -178,6 +178,7 @@ async def test_mcp_lists_runtime_bridge_tools_with_trust_warning():
 
     required = {
         "prepare_task",
+        "resume_task",
         "record_agent_run_start",
         "record_agent_run_finish",
         "record_agent_event",
@@ -189,6 +190,7 @@ async def test_mcp_lists_runtime_bridge_tools_with_trust_warning():
     }
     assert required <= set(by_name)
     assert "untrusted project data" in by_name["prepare_task"].description
+    assert "without Library curation" in by_name["resume_task"].description
     assert "untrusted project data" in by_name["record_decision"].description
     assert "untrusted project data" in by_name["query_context"].description
 
@@ -217,6 +219,114 @@ async def test_prepare_task_reports_compiler_unavailable(db_session, monkeypatch
 
     assert data["ok"] is False
     assert data["error"]["code"] == "compiler_unavailable"
+
+
+async def test_resume_task_calls_zero_curation_continuation_service(
+    db_session,
+    monkeypatch,
+    tmp_path,
+):
+    from app.services import continuation as continuation_service
+
+    workspace = Workspace(id=uuid4(), name="MCP Resume", slug=f"mcp-resume-{uuid4()}")
+    db_session.add(workspace)
+    await db_session.flush()
+    mcp_server = _patch_mcp_session(monkeypatch, db_session)
+    calls = []
+
+    class FakeResult:
+        def to_dict(self):
+            return {
+                "schema_version": "continuation.v1",
+                "task": {"id": "task:v1"},
+                "context_pack_id": str(uuid4()),
+                "markdown": "# Continue",
+            }
+
+    class FakeContinuationService:
+        def __init__(self, session):
+            assert session is db_session
+
+        async def prepare(self, **kwargs):
+            calls.append(kwargs)
+            return FakeResult()
+
+    monkeypatch.setattr(
+        continuation_service,
+        "ContinuationService",
+        FakeContinuationService,
+    )
+
+    result = await mcp_server._resume_task(
+        workspace_id=str(workspace.id),
+        repo_path=str(tmp_path),
+        objective=None,
+        checkpoint_id=None,
+        checkpoint_source_id=None,
+        target_model=None,
+        token_budget=None,
+        sync_sessions=True,
+    )
+    data = json.loads(result[0].text)
+
+    assert data["schema_version"] == "continuation.v1"
+    assert data["markdown"] == "# Continue"
+    assert len(calls) == 1
+    assert calls[0]["workspace_id"] == workspace.id
+    assert calls[0]["objective"] is None
+    assert calls[0]["checkpoint_id"] is None
+    assert calls[0]["checkpoint_source_id"] is None
+    assert calls[0]["sync_sessions"] is True
+    assert calls[0]["access_scope"].principal_id == "local"
+
+
+async def test_resume_task_preserves_continuation_error_codes(
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from app.services import continuation as continuation_service
+    from app.services.continuation import ContinuationError
+
+    workspace = Workspace(
+        id=uuid4(),
+        name="MCP exact recovery",
+        slug=f"mcp-exact-{uuid4()}",
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+    mcp_server = _patch_mcp_session(monkeypatch, db_session)
+
+    class RejectingContinuationService:
+        def __init__(self, session):
+            assert session is db_session
+
+        async def prepare(self, **_kwargs):
+            raise ContinuationError(
+                "checkpoint_source_required",
+                "A source document is required for a provider-compaction checkpoint.",
+            )
+
+    monkeypatch.setattr(
+        continuation_service,
+        "ContinuationService",
+        RejectingContinuationService,
+    )
+
+    result = await mcp_server._resume_task(
+        workspace_id=str(workspace.id),
+        repo_path=str(tmp_path),
+        objective=None,
+        checkpoint_id="checkpoint-legacy",
+        checkpoint_source_id=None,
+        target_model=None,
+        token_budget=None,
+        sync_sessions=True,
+    )
+    data = json.loads(result[0].text)
+
+    assert data["ok"] is False
+    assert data["error"]["code"] == "checkpoint_source_required"
 
 
 async def test_prepare_task_calls_compiler_and_persists_pack(db_session, monkeypatch, tmp_path):

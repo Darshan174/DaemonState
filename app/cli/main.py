@@ -54,6 +54,57 @@ def build_arg_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--json", action="store_true", dest="json_output")
     prepare_parser.set_defaults(func=run_prepare)
 
+    continue_parser = subparsers.add_parser(
+        "continue",
+        help="Resolve current task state, compile it, and optionally run another coding harness.",
+    )
+    continue_parser.add_argument(
+        "objective",
+        nargs="?",
+        default=None,
+        help="Optional trusted objective; inferred from current task/session when omitted",
+    )
+    continue_parser.add_argument("--repo", default=".", help="Git repository path")
+    continue_parser.add_argument("--workspace-id", required=True)
+    continue_parser.add_argument(
+        "--checkpoint-id",
+        default=None,
+        help="Continue one exact durable checkpoint instead of selecting the latest compatible one",
+    )
+    continue_parser.add_argument(
+        "--checkpoint-source-id",
+        default=None,
+        help="Source-document UUID required for a legacy provider-compaction checkpoint",
+    )
+    continue_parser.add_argument(
+        "--into",
+        choices=["codex", "claude", "opencode"],
+        default=None,
+        help="Run the compiled continuation in this local coding harness",
+    )
+    continue_parser.add_argument(
+        "--target-model",
+        default="general-coder",
+        help="Context compiler model/profile target",
+    )
+    continue_parser.add_argument(
+        "--provider-model",
+        default=None,
+        help="Optional model passed to the selected provider CLI",
+    )
+    continue_parser.add_argument("--budget", type=int, default=None)
+    continue_parser.add_argument(
+        "--no-sync",
+        action="store_true",
+        help="Do not refresh local Codex, Claude Code, and OpenCode histories first",
+    )
+    continue_parser.add_argument("--out", default=None, help="Write the compiled pack to this path")
+    continue_parser.add_argument("--output-limit-bytes", type=int, default=32_768)
+    continue_parser.add_argument("--command-timeout", type=float, default=3_600.0)
+    continue_parser.add_argument("--verification-timeout", type=float, default=900.0)
+    continue_parser.add_argument("--json", action="store_true", dest="json_output")
+    continue_parser.set_defaults(func=run_continue)
+
     graph_parser = subparsers.add_parser("graph", help="Get knowledge graph.")
     graph_parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     graph_parser.add_argument("--api-key", default=None, help="API key for protected servers")
@@ -390,6 +441,237 @@ async def _compile_prepare(args: argparse.Namespace):
         )
         await session.commit()
         return result
+
+
+def run_continue(args: argparse.Namespace) -> int:
+    import asyncio
+
+    try:
+        data = asyncio.run(_prepare_and_maybe_run_continuation(args))
+    except KeyboardInterrupt:
+        print("continuation interrupted", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    markdown = str(
+        data.get("markdown")
+        or (data.get("context_pack") or {}).get("markdown")
+        or ""
+    )
+    if args.out:
+        output_path = Path(args.out).expanduser()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(markdown, encoding="utf-8")
+        data["markdown_path"] = str(output_path)
+
+    if args.json_output:
+        print(json.dumps(data, indent=2, default=str))
+        return _continuation_exit_code(data, into=args.into)
+
+    task = data.get("task") or {}
+    readiness = data.get("readiness")
+    readiness_status = (
+        readiness.get("status") if isinstance(readiness, dict) else readiness
+    )
+    print(
+        "continuation ready: "
+        f"task={task.get('id') or task.get('task_id') or 'unavailable'} "
+        f"readiness={readiness_status or 'unknown'}"
+    )
+    if args.out:
+        print(f"wrote context pack: {data['markdown_path']}")
+    elif not args.into:
+        print(markdown)
+    if data.get("attention"):
+        for item in data["attention"]:
+            message = item.get("message") if isinstance(item, dict) else str(item)
+            print(f"attention: {message}")
+    if args.into:
+        delivery = data.get("delivery") or {}
+        run = data.get("run") or {}
+        outcome = data.get("outcome") or _continuation_observed_outcome(run)
+        if delivery:
+            print(
+                f"delivered to {delivery.get('provider', args.into)} "
+                f"({delivery.get('mode', 'fresh')}): "
+                f"status={run.get('status', 'unknown')} "
+                f"outcome={outcome.get('status', 'unknown')} "
+                f"run_id={run.get('run_id', 'unavailable')}"
+            )
+        else:
+            print(
+                f"not delivered to {args.into}: "
+                f"status={run.get('status', 'not_started')} "
+                f"reason={run.get('reason', 'continuation is not ready')}"
+            )
+    return _continuation_exit_code(data, into=args.into)
+
+
+async def _prepare_and_maybe_run_continuation(args: argparse.Namespace) -> dict:
+    import asyncio
+    from uuid import UUID, uuid4
+
+    from app.database import AsyncSessionLocal
+    from app.models import AgentRun, Workspace
+    from app.services.access import AccessScope
+    from app.services.continuation import ContinuationService
+    from app.services.harness_adapters import (
+        build_harness_invocation,
+        provider_environment,
+    )
+    from app.services.local_harness import LocalHarnessRunner
+    from app.time import utc_now
+
+    workspace_id = UUID(str(args.workspace_id))
+    async with AsyncSessionLocal() as session:
+        if await session.get(Workspace, workspace_id) is None:
+            raise ValueError(f"Workspace not found: {workspace_id}")
+        prepared = await ContinuationService(session).prepare(
+            workspace_id=workspace_id,
+            access_scope=AccessScope.local(),
+            repo_path=args.repo,
+            objective=args.objective,
+            checkpoint_id=args.checkpoint_id,
+            checkpoint_source_id=(
+                UUID(str(args.checkpoint_source_id))
+                if args.checkpoint_source_id
+                else None
+            ),
+            target_model=args.target_model,
+            token_budget=args.budget,
+            sync_sessions=not bool(args.no_sync),
+        )
+        data = prepared.to_dict() if hasattr(prepared, "to_dict") else dict(prepared)
+        await session.commit()
+        if not args.into:
+            return data
+        blocked_reason = _continuation_execution_block(data)
+        if blocked_reason is not None:
+            data["run"] = {
+                "status": "not_started",
+                "reason": blocked_reason,
+            }
+            return data
+
+        invocation = build_harness_invocation(
+            args.into,
+            repo_path=args.repo,
+            session_id=None,
+            model=args.provider_model,
+        )
+
+        pack_id = data.get("context_pack_id") or (
+            data.get("context_pack") or {}
+        ).get("id")
+        if not pack_id:
+            raise RuntimeError("continuation compiler returned no durable context_pack_id")
+        manifest = data.get("manifest") or (data.get("context_pack") or {}).get("manifest") or {}
+        repo_state = manifest.get("repo_state") or data.get("repository") or {}
+        repository_current = (data.get("repository") or {}).get("current") or {}
+        expected_status_fingerprint = str(
+            repository_current.get("status_fingerprint")
+            or repo_state.get("status_fingerprint")
+            or ""
+        ).strip()
+        if not expected_status_fingerprint:
+            raise RuntimeError(
+                "continuation preparation returned no repository status fingerprint"
+            )
+        objective = str(
+            data.get("objective")
+            or (data.get("task") or {}).get("title")
+            or manifest.get("objective")
+            or ""
+        ).strip()
+        run = AgentRun(
+            workspace_id=workspace_id,
+            context_pack_id=UUID(str(pack_id)),
+            run_key=f"continuation:{uuid4()}",
+            tool=f"context-engine:{invocation.provider}",
+            model=str(args.provider_model or args.target_model or invocation.provider),
+            objective=objective,
+            branch=repo_state.get("branch"),
+            base_commit=repo_state.get("head_commit") or repo_state.get("base_commit"),
+            started_at=utc_now(),
+            status="running",
+        )
+        session.add(run)
+        await session.commit()
+        try:
+            result = await LocalHarnessRunner(
+                session,
+                output_limit_bytes=args.output_limit_bytes,
+                command_timeout_seconds=args.command_timeout,
+                verification_timeout_seconds=args.verification_timeout,
+            ).run(
+                context_pack_id=pack_id,
+                run_id=run.id,
+                repo_path=invocation.repo_path,
+                command=invocation.argv,
+                verify=True,
+                context_stdin=invocation.context_delivery == "stdin",
+                expected_status_fingerprint=expected_status_fingerprint,
+                extra_env=provider_environment(invocation.provider),
+            )
+        except BaseException:
+            run.status = "failed"
+            run.ended_at = utc_now()
+            await asyncio.shield(session.commit())
+            raise
+        data["delivery"] = {
+            "provider": invocation.provider,
+            "mode": invocation.mode,
+            "context_delivery": invocation.context_delivery,
+            "session_id": invocation.session_id,
+            "executable": invocation.executable,
+        }
+        data["run"] = result.to_dict()
+        data["outcome"] = _continuation_observed_outcome(data["run"])
+        return data
+
+
+def _continuation_execution_block(data: dict) -> str | None:
+    readiness = data.get("readiness")
+    status = (
+        str(readiness.get("status") or "").strip().lower()
+        if isinstance(readiness, dict)
+        else str(readiness or "").strip().lower()
+    )
+    if status in {"ready", "review_required"}:
+        return None
+    if status == "blocked":
+        return "continuation readiness is blocked and cannot be overridden"
+    return "continuation readiness is unknown; execution failed closed"
+
+
+def _continuation_observed_outcome(run: dict) -> dict[str, object]:
+    if str(run.get("status") or "").strip().lower() != "completed":
+        return {"status": "failed", "verified": False}
+    verification = run.get("verification_results")
+    if not isinstance(verification, list) or not verification:
+        return {"status": "completed_unverified", "verified": False}
+    passed = all(
+        isinstance(item, dict)
+        and isinstance(item.get("result"), dict)
+        and item["result"].get("exit_code") == 0
+        and not item["result"].get("timed_out", False)
+        for item in verification
+    )
+    return {
+        "status": "verified" if passed else "failed",
+        "verified": passed,
+    }
+
+
+def _continuation_exit_code(data: dict, *, into: str | None) -> int:
+    if not into:
+        return 0
+    outcome = data.get("outcome")
+    if not isinstance(outcome, dict):
+        outcome = _continuation_observed_outcome(data.get("run") or {})
+    return 0 if outcome.get("verified") is True else 1
 
 
 def run_repo(args: argparse.Namespace) -> int:

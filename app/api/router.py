@@ -6,6 +6,7 @@ from app.api import (
     agents_api,
     checkpoints,
     connectors,
+    continuations,
     context,
     context_digest,
     demo,
@@ -23,6 +24,7 @@ from app.api import (
 
 api_router = APIRouter()
 api_router.include_router(checkpoints.router, prefix="", tags=["checkpoints"])
+api_router.include_router(continuations.router, prefix="", tags=["continuations"])
 api_router.include_router(sources.router, prefix="", tags=["sources"])
 api_router.include_router(graph.router, prefix="", tags=["graph"])
 api_router.include_router(context_digest.router, prefix="", tags=["context"])

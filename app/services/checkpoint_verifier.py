@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shlex
 from pathlib import Path
 from typing import Any
@@ -13,13 +14,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import CheckpointVerification, WorkCheckpoint
 from app.services.checkpoints import CHECKPOINT_CATEGORIES, checkpoint_to_dict, get_checkpoint
-from app.services.local_harness import capture_repository_snapshot, run_repository_command
+from app.services.local_harness import capture_repository_snapshot
 from app.time import utc_now
 
 
-VERIFIER_POLICY_VERSION = "checkpoint_verifier.v2"
+VERIFIER_POLICY_VERSION = "checkpoint_verifier.v3"
 MAX_REPLAY_COMMANDS = 8
 _SHELL_CONTROL_TOKENS = {"|", "||", "&&", ";", ">", ">>", "<", "<<"}
+AUTOMATIC_REPLAY_DISABLED_REASON = (
+    "automatic replay is disabled because imported session commands are "
+    "untrusted evidence; run an explicitly reviewed command instead"
+)
 
 
 async def compare_checkpoint_repository(checkpoint: WorkCheckpoint) -> dict[str, Any]:
@@ -179,45 +184,17 @@ async def verify_checkpoint(
                 "reason": "checkpoint has no repository root",
             })
         else:
-            seen: set[tuple[str, tuple[str, ...]]] = set()
             for item in evidence_results:
                 payload = item.get("payload", {})
                 command = str(payload.get("command") or "").strip()
-                cwd = str(payload.get("cwd") or checkpoint.repo_root)
                 if not command:
                     continue
-                if len(replay_results) + len(replay_rejections) >= MAX_REPLAY_COMMANDS:
+                if len(replay_rejections) >= MAX_REPLAY_COMMANDS:
                     break
-                try:
-                    commands = _safe_replay_commands(command)
-                except ValueError as exc:
-                    replay_rejections.append({"command": command, "reason": str(exc)})
-                    continue
-                for replay_command, argv in commands:
-                    key = (cwd, argv)
-                    if key in seen:
-                        continue
-                    if len(replay_results) + len(replay_rejections) >= MAX_REPLAY_COMMANDS:
-                        break
-                    seen.add(key)
-                    try:
-                        result = await run_repository_command(
-                            checkpoint.repo_root,
-                            argv,
-                            cwd=cwd,
-                        )
-                    except (OSError, ValueError, TypeError) as exc:
-                        replay_rejections.append({
-                            "command": replay_command,
-                            "reason": str(exc),
-                        })
-                        continue
-                    replay_results.append({
-                        "command": replay_command,
-                        "cwd": cwd,
-                        "result": result.to_dict(),
-                        "passed": result.exit_code == 0 and not result.timed_out,
-                    })
+                replay_rejections.append({
+                    "command": command,
+                    "reason": AUTOMATIC_REPLAY_DISABLED_REASON,
+                })
     replay_failed = any(not item["passed"] for item in replay_results)
     replay_passed = bool(replay_results) and not replay_failed
     if execute_commands:
@@ -334,7 +311,34 @@ def _safe_replay_argv(command: str) -> tuple[str, ...]:
         raise ValueError("shell operators are not replayed; run a direct test command")
     if argv[0] in {"bash", "sh", "zsh", "fish", "powershell", "pwsh"}:
         raise ValueError("shell-wrapped commands are not replayed")
+    if not _is_allowlisted_verification_argv(argv):
+        raise ValueError("command is not an allowlisted verification command")
     return argv
+
+
+def _is_allowlisted_verification_argv(argv: tuple[str, ...]) -> bool:
+    executable = argv[0]
+    if "/" in executable or "\\" in executable or len(argv) < 2:
+        return False
+    if executable == "pytest":
+        return True
+    if re.fullmatch(r"python(?:3(?:\.\d+)?)?", executable):
+        return len(argv) >= 3 and argv[1:3] == ("-m", "pytest")
+    if executable in {"npm", "pnpm", "yarn", "bun"}:
+        if argv[1] == "test":
+            return True
+        return (
+            len(argv) >= 3
+            and argv[1] == "run"
+            and argv[2] in {"build", "check", "lint", "test", "typecheck"}
+        )
+    if executable == "cargo":
+        return argv[1] in {"check", "clippy", "test"}
+    if executable == "go":
+        return argv[1] in {"test", "vet"}
+    if executable == "dotnet":
+        return argv[1] == "test"
+    return False
 
 
 def _sha256(value: str) -> str:

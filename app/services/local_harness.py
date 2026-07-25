@@ -19,6 +19,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.mcp.server import _record_observation, _stored_manifest
 from app.models import AgentRun, ContextPack
+from app.services.harness_adapters import (
+    is_context_engine_secret_key,
+    minimal_process_environment,
+)
 from app.services.redaction import REDACTED_VALUE, is_sensitive_key, redact_sensitive_text
 from app.services.repo_paths import validated_repository_path
 from app.time import utc_now
@@ -28,11 +32,23 @@ DEFAULT_OUTPUT_LIMIT_BYTES = 32_768
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 3_600.0
 DEFAULT_VERIFICATION_TIMEOUT_SECONDS = 900.0
 MAX_OUTPUT_LIMIT_BYTES = 1_048_576
+MAX_CONTEXT_STDIN_BYTES = 1_048_576
 MAX_STATUS_BYTES = 131_072
 MAX_STATUS_PATHS = 500
 MAX_HASHED_FILE_BYTES = 1_048_576
 CONTEXT_FILE_PLACEHOLDER = "{context_file}"
 TRUNCATED_OUTPUT = "[output truncated by local harness; captured content omitted]"
+
+
+class RepositoryStateChangedError(RuntimeError):
+    """Raised before worker launch when a compiled pack no longer matches the repo."""
+
+    def __init__(self, expected: str, observed: str) -> None:
+        self.expected = expected
+        self.observed = observed
+        super().__init__(
+            "Repository state changed after context preparation and before agent launch."
+        )
 
 
 @dataclass(frozen=True)
@@ -194,7 +210,9 @@ class LocalHarnessRunner:
         repo_path: str | Path,
         command: Sequence[str],
         verify: bool = False,
+        context_stdin: bool = False,
         extra_env: Mapping[str, str] | None = None,
+        expected_status_fingerprint: str | None = None,
     ) -> LocalHarnessResult:
         pack_uuid = _uuid(context_pack_id, "context_pack_id")
         run_uuid = _uuid(run_id, "run_id")
@@ -209,6 +227,9 @@ class LocalHarnessRunner:
             raise ValueError("AgentRun is not linked to the supplied ContextPack")
         if run.status != "running":
             raise ValueError("AgentRun must have status 'running' before harness execution")
+        context_input = (
+            _context_stdin_payload(pack.markdown) if context_stdin else None
+        )
 
         manifest = _stored_manifest(pack)
         repo_root = await _resolve_git_root(repo_path)
@@ -216,6 +237,17 @@ class LocalHarnessRunner:
             _required_verification_commands(manifest, repo_root) if verify else []
         )
         before = await _repository_snapshot(repo_root)
+        if (
+            expected_status_fingerprint
+            and before.status_fingerprint != expected_status_fingerprint
+        ):
+            run.status = "failed"
+            run.ended_at = utc_now()
+            await self.session.commit()
+            raise RepositoryStateChangedError(
+                expected_status_fingerprint,
+                before.status_fingerprint,
+            )
         run.branch = before.branch
         run.base_commit = before.head_commit
         run.started_at = run.started_at or utc_now()
@@ -240,6 +272,7 @@ class LocalHarnessRunner:
                 env=child_env,
                 output_limit_bytes=self.output_limit_bytes,
                 timeout_seconds=self.command_timeout_seconds,
+                stdin_data=context_input,
             )
             after_command = await _repository_snapshot(repo_root)
             changed_files = await _observed_changed_files(repo_root, before, after_command)
@@ -487,13 +520,15 @@ def _child_environment(
     run_id: UUID,
     model_profile: str | None,
 ) -> dict[str, str]:
-    env = os.environ.copy()
+    env = minimal_process_environment()
     if extra_env:
         for key, value in extra_env.items():
             key_text = str(key)
             value_text = str(value)
             if not key_text or "\x00" in key_text or "=" in key_text or "\x00" in value_text:
                 raise ValueError("extra_env contains an invalid environment entry")
+            if is_context_engine_secret_key(key_text):
+                continue
             env[key_text] = value_text
     env.update(
         {
@@ -513,14 +548,26 @@ async def _run_command(
     env: Mapping[str, str],
     output_limit_bytes: int,
     timeout_seconds: float,
+    stdin_data: bytes | None = None,
 ) -> CommandResult:
+    if stdin_data is not None:
+        if not isinstance(stdin_data, bytes):
+            raise TypeError("stdin_data must be bytes")
+        if len(stdin_data) > MAX_CONTEXT_STDIN_BYTES:
+            raise ValueError(
+                f"stdin_data exceeds the {MAX_CONTEXT_STDIN_BYTES}-byte limit"
+            )
     started = time.monotonic()
     try:
         process = await asyncio.create_subprocess_exec(
             *argv,
             cwd=str(cwd),
             env=dict(env),
-            stdin=asyncio.subprocess.DEVNULL,
+            stdin=(
+                asyncio.subprocess.PIPE
+                if stdin_data is not None
+                else asyncio.subprocess.DEVNULL
+            ),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=os.name == "posix",
@@ -541,6 +588,11 @@ async def _run_command(
     assert process.stderr is not None
     stdout_task = asyncio.create_task(_read_bounded(process.stdout, output_limit_bytes))
     stderr_task = asyncio.create_task(_read_bounded(process.stderr, output_limit_bytes))
+    stdin_task = (
+        asyncio.create_task(_write_stdin(process, stdin_data))
+        if stdin_data is not None
+        else None
+    )
     timed_out = False
     try:
         await asyncio.wait_for(process.wait(), timeout=timeout_seconds)
@@ -549,10 +601,24 @@ async def _run_command(
         await _terminate_process(process)
     except asyncio.CancelledError:
         await _terminate_process(process)
+        if stdin_task is not None:
+            stdin_task.cancel()
         stdout_task.cancel()
         stderr_task.cancel()
-        await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+        await asyncio.gather(
+            *(
+                [stdout_task, stderr_task]
+                + ([stdin_task] if stdin_task is not None else [])
+            ),
+            return_exceptions=True,
+        )
         raise
+    if stdin_task is not None:
+        try:
+            await asyncio.wait_for(stdin_task, timeout=5.0)
+        except TimeoutError:
+            stdin_task.cancel()
+            await asyncio.gather(stdin_task, return_exceptions=True)
     try:
         stdout_capture, stderr_capture = await asyncio.wait_for(
             asyncio.gather(stdout_task, stderr_task),
@@ -586,6 +652,36 @@ async def _run_command(
         timed_out=timed_out,
         duration_ms=_duration_ms(started),
     )
+
+
+async def _write_stdin(
+    process: asyncio.subprocess.Process,
+    payload: bytes,
+) -> None:
+    stream = process.stdin
+    if stream is None:
+        raise RuntimeError("worker stdin pipe is unavailable")
+    try:
+        stream.write(payload)
+        await stream.drain()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    finally:
+        stream.close()
+        try:
+            await stream.wait_closed()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+
+def _context_stdin_payload(markdown: str) -> bytes:
+    payload = str(markdown).encode("utf-8")
+    if len(payload) > MAX_CONTEXT_STDIN_BYTES:
+        raise ValueError(
+            "context pack is too large for stdin delivery "
+            f"({len(payload)} bytes; maximum {MAX_CONTEXT_STDIN_BYTES})"
+        )
+    return payload
 
 
 async def _terminate_process(process: asyncio.subprocess.Process) -> None:

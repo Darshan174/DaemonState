@@ -4,7 +4,8 @@ import hashlib
 import json
 import math
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -42,7 +43,7 @@ from app.time import utc_now
 
 
 SCHEMA_VERSION = "context_pack.v2"
-COMPILER_VERSION = "context_compiler.v4"
+COMPILER_VERSION = "context_compiler.v5"
 EVIDENCE_CONTRACT_VERSION = "exact_evidence_span.v1"
 TOKEN_ESTIMATION_METHOD = "chars_div_4.v1"
 PROMPT_INJECTION_PATTERNS = (
@@ -289,6 +290,7 @@ class ContextCompiler:
         objective_source_document_id: str | UUID | None = None,
         objective_evidence_span_id: str | UUID | None = None,
         restored_checkpoint: dict[str, Any] | None = None,
+        continuation: dict[str, Any] | None = None,
         access_scope: AccessScope | None = None,
     ) -> CompiledContextPack:
         access_scope = access_scope or AccessScope.local()
@@ -297,6 +299,7 @@ class ContextCompiler:
         effective_origin = objective_origin or (
             "project_snapshot" if objective_kind == "project_snapshot" else "trusted_human"
         )
+        continuation_frame = _normalize_continuation_metadata(continuation)
         goal, focus = await self._resolve_focus(
             goal=goal,
             workspace_id=_uuid_or_none(workspace_id),
@@ -308,6 +311,15 @@ class ContextCompiler:
             access_scope=access_scope,
         )
         goal_frame = parse_goal(goal, objective_kind=objective_kind)
+        checkpoint_file_hints = _restored_checkpoint_file_hints(restored_checkpoint)
+        if checkpoint_file_hints:
+            goal_frame = replace(
+                goal_frame,
+                file_hints=list(dict.fromkeys([
+                    *goal_frame.file_hints,
+                    *checkpoint_file_hints,
+                ])),
+            )
         profile = profile_for_target_model(target_model, token_budget)
         effective_budget = int(token_budget or profile.max_pack_tokens)
         if effective_budget < 300:
@@ -419,6 +431,7 @@ class ContextCompiler:
                 persistence_reason=None if persist else "file_output_only",
                 focus=focus,
                 known_playbook=known_playbook,
+                continuation=continuation_frame,
             )
             markdown = render_context_pack_markdown(manifest, profile)
             rendered_tokens = estimate_tokens(markdown)
@@ -463,6 +476,7 @@ class ContextCompiler:
             token_budget=effective_budget,
             focus=focus,
             known_playbook=known_playbook,
+            continuation=continuation_frame,
         )
         manifest["input_fingerprint"] = manifest["lockfile"]["replay_key"]
         selected_item_tokens = sum(item.token_cost for item in selected)
@@ -990,11 +1004,7 @@ class ContextCompiler:
                 relationships=relationships,
                 conflict_state=conflict_state,
                 identity_key=component.identity_key or str(component.entity_id or component.id),
-                mandatory=(
-                    item_type == "blocker"
-                    and truth_state == "current"
-                    and status == "active"
-                ),
+                mandatory=False,
                 lane=_lane_for_item(item_type, status, summary),
                 rank_features={
                     "evidence_verified": evidence_verified,
@@ -1069,7 +1079,7 @@ class ContextCompiler:
                 }],
                 conflict_state="unresolved",
                 identity_key=rel.target_identity_key or rel.target_name,
-                mandatory=rel.relationship_type in {"blocks", "blocked_by"},
+                mandatory=False,
                 lane="blockers_and_questions",
                 rank_features={"relationship_unresolved": True},
                 provenance_verified=False,
@@ -1178,6 +1188,7 @@ class ContextCompiler:
         persistence_reason: str | None,
         focus: dict[str, Any],
         known_playbook: dict[str, Any] | None,
+        continuation: dict[str, Any] | None,
     ) -> dict[str, Any]:
         manifest = {
             "schema_version": SCHEMA_VERSION,
@@ -1242,6 +1253,8 @@ class ContextCompiler:
             manifest["affected_code"] = affected_code
         if known_playbook is not None:
             manifest["known_playbook"] = known_playbook
+        if continuation is not None:
+            manifest["continuation"] = continuation
         return manifest
 
     async def _persist_pack(
@@ -1361,7 +1374,18 @@ def parse_goal(goal: str, *, objective_kind: str = "observed") -> GoalFrame:
         )
         if domain in keywords or f"{domain}s" in keywords
     }
-    requires_tests = bool({"test", "tests", "pytest", "verify", "verification"} & keywords)
+    requires_tests = bool(
+        {
+            "test",
+            "tests",
+            "pytest",
+            "vitest",
+            "unittest",
+            "spec",
+            "specs",
+        }
+        & keywords
+    )
     constraints = []
     if "connector" in domains:
         constraints.append("Preserve connector status honesty and SourceDocument-backed support claims.")
@@ -1401,19 +1425,11 @@ def infer_task_frame(
         repo_frame.test_files,
         goal_frame,
     )
-    commands = []
-    command_index = 1
-    if test_files:
-        commands.append({
-            "id": f"V{command_index}",
-            "command": f"python3 -m pytest -q {' '.join(test_files[:6])}",
-            "cwd": repo_frame.repo_path,
-            "purpose": "Run focused tests for the selected implementation surface.",
-            "required": True,
-            "expected": "exit_code == 0",
-        })
-        command_index += 1
-    elif any(path == "pyproject.toml" for path in repo_frame.manifest_files):
+    commands = _verification_commands_for_tests(test_files, repo_frame)
+    command_index = len(commands) + 1
+    if not commands and any(
+        path == "pyproject.toml" for path in repo_frame.manifest_files
+    ):
         commands.append({
             "id": f"V{command_index}",
             "command": "python3 -m pytest -q",
@@ -1594,6 +1610,31 @@ def render_context_pack_markdown(
         "## Files To Inspect" if affected_files else "## Relevant Repository Files",
         "",
     ]
+    continuation = manifest.get("continuation")
+    if isinstance(continuation, dict):
+        identity_lines = [
+            "",
+            "## Continuation Identity",
+            "",
+            f"- Task: `{continuation.get('task_id') or 'unavailable'}`",
+            f"- Checkpoint: `{continuation.get('checkpoint_id') or 'unavailable'}`",
+            f"- Source session: `{continuation.get('provider') or 'unknown'} / "
+            f"{continuation.get('session_id') or 'unknown'}`",
+            f"- Checkpoint verification: "
+            f"`{continuation.get('verification_status') or 'not_run'}`",
+            "",
+        ]
+        workflow_lines = _render_task_workflow(
+            continuation.get("workflow"),
+            selected_objective=continuation.get("selected_objective"),
+            execution_objective=continuation.get("execution_objective"),
+        )
+        if workflow_lines:
+            identity_lines.extend(workflow_lines)
+        insert_at = sections.index(
+            "## Files To Inspect" if affected_files else "## Relevant Repository Files"
+        )
+        sections[insert_at:insert_at] = identity_lines
     if affected_files:
         sections.extend([
             "These are task-based suggestions, not confirmed edit targets. Verify them before changing code.",
@@ -1668,10 +1709,16 @@ def render_context_pack_markdown(
         for item in manifest.get("uncertainties") or []
         if item.get("item_type") in {"blocker", "risk"}
     ]
-    for item in uncertain_blockers:
+    visible_uncertain_blockers = uncertain_blockers[:profile.max_open_questions]
+    for item in visible_uncertain_blockers:
         sections.append(
             f"- [{item.get('truth_state') or 'unknown'}] {item['title']}: "
             f"{item['reason_detail']} (not an execution instruction)"
+        )
+    if len(uncertain_blockers) > len(visible_uncertain_blockers):
+        sections.append(
+            f"- {len(uncertain_blockers) - len(visible_uncertain_blockers)} more "
+            "uncertain blocker or risk records remain in the manifest for audit."
         )
 
     sections.extend(["", "## Prior Failures And Open Questions", ""])
@@ -1730,8 +1777,18 @@ def render_context_pack_markdown(
 
     sections.extend(["", "## Excluded Stale Or Conflicting Context", ""])
     if excluded:
+        reason_counts: dict[str, int] = {}
         for item in excluded:
-            sections.append(f"- Excluded `{item['id']}`: {item['reason']} - {item['reason_detail']}")
+            reason = str(item.get("reason") or "other")
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        reason_summary = ", ".join(
+            f"{reason}={count}"
+            for reason, count in sorted(reason_counts.items())
+        )
+        sections.append(
+            f"- {len(excluded)} item(s) excluded ({reason_summary}). "
+            "The full exclusion audit remains in the machine-readable manifest."
+        )
     else:
         sections.append("- No stale or conflicting context was excluded.")
 
@@ -1743,6 +1800,30 @@ def render_context_pack_markdown(
 
 def estimate_tokens(text: str) -> int:
     return max(1, math.ceil(len(str(text or "")) / 4))
+
+
+def _restored_checkpoint_file_hints(
+    payload: dict[str, Any] | None,
+) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    restored = payload.get("restore_context")
+    if not isinstance(restored, dict):
+        return []
+    hints: list[str] = []
+    for item in restored.get("referenced_files") or []:
+        raw = str(item or "").strip().replace("\\", "/")
+        normalized = raw[2:] if raw.startswith("./") else raw
+        candidate = Path(normalized)
+        if (
+            not normalized
+            or candidate.is_absolute()
+            or ".." in candidate.parts
+            or normalized not in _extract_file_paths(normalized)
+        ):
+            continue
+        hints.append(normalized)
+    return list(dict.fromkeys(hints))[:30]
 
 
 def _restored_checkpoint_candidate(payload: dict[str, Any]) -> ContextCandidate:
@@ -1897,21 +1978,21 @@ def _core_candidates(
             summary=constraint,
             token_cost=estimate_tokens(constraint),
             inclusion_reason="non_negotiable_task_constraint",
-            trust_zone="trusted_human",
+            trust_zone="trusted_system",
             confidence=0.92,
             authority_weight=0.9,
             citations=[{
                 "citation_id": "",
                 "source_document_id": None,
                 "evidence_span_id": None,
-                "source_type": "task_contract",
-                "source_url": "AGENTS.md",
+                "source_type": "compiler_policy",
+                "source_url": None,
                 "quote": constraint,
-                "trust_zone": "trusted_human",
+                "trust_zone": "trusted_system",
             }],
             mandatory=True,
             lane="decisions_and_invariants",
-            rank_features={"source": "task_contract"},
+            rank_features={"source": "compiler_policy"},
             provenance_verified=True,
             truth_state="current",
         ))
@@ -2044,16 +2125,20 @@ def _context_health(
     repo_state: dict[str, Any],
     task_frame: dict[str, Any],
 ) -> dict[str, Any]:
+    health_candidates = [
+        item for item in all_candidates
+        if _candidate_has_task_relevance(item)
+    ]
     unresolved_blockers = sum(
-        1 for item in all_candidates
+        1 for item in health_candidates
         if item.item_type == "blocker" and item.status == "active"
     )
     unresolved_conflicts = sum(
-        1 for item in all_candidates
+        1 for item in health_candidates
         if item.conflict_state == "unresolved"
     )
     stale_high_authority = sum(
-        1 for item in all_candidates
+        1 for item in health_candidates
         if item.status in {"stale", "superseded", "deprecated"} and item.authority_weight >= 0.75
     )
     missing_verification = 0 if task_frame.get("verification_commands") else 1
@@ -2110,7 +2195,7 @@ def _context_health(
 
     selected_lanes = {item.lane for item in selected}
     required_lanes = {"instructions", "code_and_tests", "verification"}
-    candidate_lanes = {item.lane for item in all_candidates}
+    candidate_lanes = {item.lane for item in health_candidates}
     required_lanes.update(candidate_lanes & {"blockers_and_questions", "prior_failures"})
     covered_lanes = required_lanes & selected_lanes
     completeness_score = round(100 * len(covered_lanes) / len(required_lanes), 2)
@@ -2308,6 +2393,12 @@ def _exclusion_for(candidate: ContextCandidate) -> ExcludedContextCandidate | No
             candidate.truth_state,
             f"Candidate truth state is {candidate.truth_state}; only current truth is selected.",
         )
+    if not _candidate_has_task_relevance(candidate):
+        return _exclude(
+            candidate,
+            "out_of_scope",
+            "Candidate has no objective-token or relevant-file overlap with this task.",
+        )
     if (
         candidate.truth_state == "reported"
         and candidate.item_type != "session_checkpoint"
@@ -2351,6 +2442,16 @@ def _exclusion_for(candidate: ContextCandidate) -> ExcludedContextCandidate | No
     ):
         return _exclude(candidate, "unsupported_connector", "Unsupported connector state cannot become an implementation instruction.")
     return None
+
+
+def _candidate_has_task_relevance(candidate: ContextCandidate) -> bool:
+    if candidate.mandatory or candidate.component_id is None:
+        return True
+    return bool(
+        candidate.rank_features.get("explicit_focus")
+        or candidate.rank_features.get("relevant_file_overlap")
+        or float(candidate.rank_features.get("objective_token_coverage") or 0.0) > 0
+    )
 
 
 def _exclude(candidate: ContextCandidate, reason: str, detail: str) -> ExcludedContextCandidate:
@@ -2459,6 +2560,7 @@ def _build_lockfile(
     token_budget: int,
     focus: dict[str, Any],
     known_playbook: dict[str, Any] | None,
+    continuation: dict[str, Any] | None,
 ) -> dict[str, Any]:
     repo_snapshot = {
         "repo_path": repo_state.get("repo_path"),
@@ -2566,6 +2668,7 @@ def _build_lockfile(
             "last_verified_at": known_playbook.get("last_verified_at"),
             "repository_snapshot": known_playbook.get("repository_snapshot"),
         } if known_playbook else None,
+        "continuation": continuation,
     }
     replay_key = _sha256_text(json.dumps(
         replay_inputs,
@@ -2588,6 +2691,7 @@ def _build_lockfile(
             "estimation_method": TOKEN_ESTIMATION_METHOD,
         },
         "selection": selection,
+        "continuation": continuation,
         "replay_key": replay_key,
     }
 
@@ -2733,14 +2837,145 @@ def _relevant_test_files(
 ) -> list[str]:
     if not test_files:
         return []
+    direct_matches = {
+        path for path in relevant_paths
+        if path in set(test_files)
+    }
+    generic_tokens = {
+        "app",
+        "code",
+        "current",
+        "file",
+        "fix",
+        "implementation",
+        "run",
+        "spec",
+        "specs",
+        "src",
+        "task",
+        "test",
+        "tests",
+        "verify",
+        "verification",
+    }
+    relevant_tokens = {
+        token
+        for token in _tokenize(" ".join(
+            [
+                *[path for path in relevant_paths if path not in set(test_files)],
+                *goal_frame.keywords,
+            ]
+        ))
+        if token not in generic_tokens
+    }
+    matching = {
+        test_file
+        for test_file in test_files
+        if relevant_tokens
+        & {
+            token
+            for token in _tokenize(test_file)
+            if token not in generic_tokens
+        }
+    }
     if goal_frame.requires_tests or "test" in goal_frame.domains:
-        matching = []
-        relevant_tokens = set(_tokenize(" ".join(relevant_paths + list(goal_frame.keywords))))
-        for test_file in test_files:
-            if relevant_tokens & set(_tokenize(test_file)):
-                matching.append(test_file)
-        return sorted(matching or test_files)[:6]
-    return sorted(test_files)[:3] if any(path.startswith("tests/") for path in relevant_paths) else []
+        return sorted(direct_matches | matching)[:6]
+    return sorted(direct_matches | matching)[:3]
+
+
+def _verification_commands_for_tests(
+    test_files: list[str],
+    repo_frame: RepoFrame,
+) -> list[dict[str, Any]]:
+    """Build runner-specific commands only from repository-observed test files."""
+
+    if not test_files:
+        return []
+    indexed_by_path = {item.path: item for item in repo_frame.indexed_files}
+    python_tests = [
+        path
+        for path in test_files
+        if indexed_by_path.get(path) is not None
+        and indexed_by_path[path].language == "python"
+        and path.endswith(".py")
+    ][:6]
+    javascript_tests = [
+        path
+        for path in test_files
+        if indexed_by_path.get(path) is not None
+        and indexed_by_path[path].language
+        in {
+            "javascript",
+            "javascript-react",
+            "typescript",
+            "typescript-react",
+        }
+    ][:6]
+
+    commands: list[dict[str, Any]] = []
+    if python_tests:
+        commands.append({
+            "id": f"V{len(commands) + 1}",
+            "command": f"python3 -m pytest -q {' '.join(python_tests)}",
+            "cwd": repo_frame.repo_path,
+            "purpose": "Run focused Python tests for the selected implementation surface.",
+            "required": True,
+            "expected": "exit_code == 0",
+        })
+
+    package_groups: dict[str, list[str]] = {}
+    for test_path in javascript_tests:
+        manifest_path = _nearest_test_package_manifest(
+            test_path,
+            repo_frame.package_manifests,
+        )
+        if manifest_path is None:
+            continue
+        package_groups.setdefault(manifest_path, []).append(test_path)
+    for manifest_path, paths in sorted(package_groups.items()):
+        manifest = repo_frame.package_manifests.get(manifest_path) or {}
+        scripts = manifest.get("scripts") if isinstance(manifest, dict) else {}
+        if not isinstance(scripts, dict) or not str(scripts.get("test") or "").strip():
+            continue
+        package_root = str(Path(manifest_path).parent)
+        cwd = (
+            repo_frame.repo_path
+            if package_root == "."
+            else str(Path(repo_frame.repo_path) / package_root)
+        )
+        relative_paths = [
+            str(Path(path).relative_to(package_root))
+            if package_root != "."
+            else path
+            for path in paths
+        ]
+        commands.append({
+            "id": f"V{len(commands) + 1}",
+            "command": f"npm test -- {' '.join(relative_paths)}",
+            "cwd": cwd,
+            "purpose": "Run focused JavaScript or TypeScript tests for the selected implementation surface.",
+            "required": True,
+            "expected": "exit_code == 0",
+        })
+    return commands
+
+
+def _nearest_test_package_manifest(
+    test_path: str,
+    package_manifests: dict[str, dict[str, Any]],
+) -> str | None:
+    candidates = []
+    for manifest_path in package_manifests:
+        if Path(manifest_path).name != "package.json":
+            continue
+        package_root = str(Path(manifest_path).parent)
+        if package_root == "." or test_path.startswith(f"{package_root}/"):
+            candidates.append(manifest_path)
+    return max(
+        candidates,
+        key=lambda item: len(Path(item).parts),
+        default=None,
+    )
 
 
 def _extract_file_paths(text: str) -> list[str]:
@@ -2802,6 +3037,260 @@ def _loads_json_dict(raw: object) -> dict[str, Any]:
     except (json.JSONDecodeError, TypeError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _normalize_continuation_metadata(
+    value: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Keep runtime identity deterministic and safe to render into a context pack."""
+
+    if not isinstance(value, dict):
+        return None
+    limits = {
+        "task_id": 255,
+        "selected_objective": 500,
+        "execution_objective": 500,
+        "checkpoint_id": 64,
+        "source_document_id": 64,
+        "provider": 50,
+        "session_id": 255,
+        "verification_status": 32,
+        "checkpoint_fingerprint": 64,
+        "current_repo_fingerprint": 64,
+    }
+    normalized: dict[str, str | None] = {}
+    for key, limit in limits.items():
+        raw = value.get(key)
+        if raw is None:
+            normalized[key] = None
+            continue
+        text = " ".join(str(raw).replace("`", "").split())
+        normalized[key] = text[:limit] or None
+    workflow = _normalize_task_workflow(value.get("workflow"))
+    if workflow is not None:
+        normalized["workflow"] = workflow
+    return normalized if any(item is not None for item in normalized.values()) else None
+
+
+def _normalize_task_workflow(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    normalized = {
+        "schema_version": _bounded_continuation_text(
+            value.get("schema_version"),
+            40,
+        ),
+        "modeled": bool(value.get("modeled")),
+        "selected_intent": _normalize_workflow_task(
+            value.get("selected_intent")
+        ),
+        "execution_task": _normalize_workflow_task(
+            value.get("execution_task")
+        ),
+        "execution_reason": _bounded_continuation_text(
+            value.get("execution_reason"),
+            50,
+        ),
+        "now": _normalize_workflow_tasks(value.get("now"), limit=8),
+        "blocked": _normalize_blocked_workflow_tasks(
+            value.get("blocked"),
+            limit=8,
+        ),
+        "next": _normalize_workflow_tasks(value.get("next"), limit=8),
+        "paused": _normalize_workflow_tasks(value.get("paused"), limit=8),
+        "affected_tasks": _normalize_workflow_tasks(
+            value.get("affected_tasks"),
+            limit=12,
+        ),
+        "blocking_issues": _normalize_workflow_issues(
+            value.get("blocking_issues"),
+            limit=8,
+        ),
+        "relationship_count": max(
+            0,
+            min(int(value.get("relationship_count") or 0), 10_000),
+        ),
+    }
+    if (
+        normalized["selected_intent"] is None
+        and normalized["execution_task"] is None
+    ):
+        return None
+    return normalized
+
+
+def _normalize_workflow_task(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    task = {
+        "id": _bounded_continuation_text(value.get("id"), 255),
+        "component_id": _bounded_continuation_text(
+            value.get("component_id"),
+            64,
+        ),
+        "title": _bounded_continuation_text(value.get("title"), 180),
+        "objective": _bounded_continuation_text(
+            value.get("objective"),
+            500,
+        ),
+        "status": _bounded_continuation_text(value.get("status"), 50),
+        "lifecycle": _bounded_continuation_text(
+            value.get("lifecycle"),
+            32,
+        ),
+        "fact_type": _bounded_continuation_text(
+            value.get("fact_type"),
+            50,
+        ),
+        "source_document_id": _bounded_continuation_text(
+            value.get("source_document_id"),
+            64,
+        ),
+        "source_backed": bool(value.get("source_backed")),
+    }
+    return task if task["id"] or task["title"] else None
+
+
+def _normalize_workflow_tasks(
+    value: Any,
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in value[:limit]:
+        task = _normalize_workflow_task(item)
+        if task is not None:
+            result.append(task)
+    return result
+
+
+def _normalize_blocked_workflow_tasks(
+    value: Any,
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in value[:limit]:
+        task = _normalize_workflow_task(item)
+        if task is None:
+            continue
+        task["blocked_by"] = _normalize_workflow_tasks(
+            item.get("blocked_by") if isinstance(item, dict) else None,
+            limit=8,
+        )
+        task["has_inaccessible_prerequisite"] = bool(
+            isinstance(item, dict)
+            and item.get("has_inaccessible_prerequisite")
+        )
+        result.append(task)
+    return result
+
+
+def _normalize_workflow_issues(
+    value: Any,
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in value[:limit]:
+        if not isinstance(item, dict):
+            continue
+        result.append({
+            "code": _bounded_continuation_text(item.get("code"), 80),
+            "message": _bounded_continuation_text(
+                item.get("message"),
+                800,
+            ),
+            "blocker": _normalize_workflow_task(item.get("blocker")),
+            "blocking_tasks": _normalize_workflow_tasks(
+                item.get("blocking_tasks"),
+                limit=8,
+            ),
+            "affected_tasks": _normalize_workflow_tasks(
+                item.get("affected_tasks"),
+                limit=12,
+            ),
+        })
+    return result
+
+
+def _bounded_continuation_text(value: Any, limit: int) -> str | None:
+    if value is None:
+        return None
+    text = " ".join(str(value).replace("`", "").split())
+    return text[:limit] or None
+
+
+def _render_task_workflow(
+    value: Any,
+    *,
+    selected_objective: Any = None,
+    execution_objective: Any = None,
+) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    selected = value.get("selected_intent")
+    execution = value.get("execution_task")
+    selected_objective = _first_non_empty(
+        str(selected_objective or "").strip() or None,
+        (
+            str(selected.get("objective") or "").strip()
+            if isinstance(selected, dict)
+            else None
+        ),
+    )
+    execution_objective = _first_non_empty(
+        str(execution_objective or "").strip() or None,
+        (
+            str(execution.get("objective") or "").strip()
+            if isinstance(execution, dict)
+            else None
+        ),
+    )
+    if not selected_objective and not execution_objective:
+        return []
+    lines = ["## Task Workflow", ""]
+    if selected_objective:
+        lines.append(f"- Desired outcome: {selected_objective}")
+    if execution_objective:
+        lines.append(f"- Immediate execution target: {execution_objective}")
+    if (
+        selected_objective
+        and execution_objective
+        and selected.get("id") != execution.get("id")
+    ):
+        lines.append(
+            "- Execution order: complete this prerequisite first; do not start "
+            "the desired downstream task in this run."
+        )
+    affected = value.get("affected_tasks")
+    if isinstance(affected, list) and affected:
+        names = [
+            str(item.get("title") or "").strip()
+            for item in affected[:6]
+            if isinstance(item, dict)
+            and str(item.get("title") or "").strip()
+        ]
+        if names:
+            lines.append(f"- Affected tasks: {', '.join(names)}")
+    issues = value.get("blocking_issues")
+    if isinstance(issues, list):
+        for issue in issues[:4]:
+            message = (
+                str(issue.get("message") or "").strip()
+                if isinstance(issue, dict)
+                else ""
+            )
+            if message:
+                lines.append(f"- Blocking issue: {message}")
+    lines.append("")
+    return lines
 
 
 def _first_non_empty(*values: str | None) -> str | None:

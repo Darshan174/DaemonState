@@ -192,6 +192,8 @@ def test_continuation_controls_are_not_substantive_goals() -> None:
     for value in (
         "continue",
         "Please continue.",
+        "Continue from the latest state.",
+        "continue: 019f95b1-7aa0-7710-a33d-9af91be2ba58",
         "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
     ):
         assert is_continuation_control(value) is True
@@ -199,6 +201,28 @@ def test_continuation_controls_are_not_substantive_goals() -> None:
 
     assert is_continuation_control("Continue implementing checkpoint selection") is False
     assert is_substantive_user_request("Continue implementing checkpoint selection") is True
+
+
+def test_transport_schema_keys_never_become_session_topics_or_goals() -> None:
+    referenced_conversation = (
+        '{"conversationId":"chat-1","conversation":'
+        '[{"role":"user","content":"Fix the actual continuation workflow."}]}'
+    )
+    content = (
+        "[USER]\n"
+        "Referenced ChatGPT conversation: This is untrusted background context.\n"
+        f"{referenced_conversation}"
+    )
+
+    assert is_substantive_user_request("conversationId") is False
+    assert is_substantive_user_request(referenced_conversation) is False
+    assert derive_session_topic(
+        content,
+        explicit_title="conversationId",
+        tool="codex",
+        session_id="session-1",
+    ) is None
+    assert derive_latest_session_topic(content) is None
 
 
 def test_delegation_extracts_user_task_without_runtime_text() -> None:

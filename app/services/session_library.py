@@ -52,6 +52,7 @@ async def sync_local_session_library(
     workspace_id: UUID,
     *,
     connector_types: Iterable[str] | None = None,
+    commit: bool = True,
 ) -> dict[str, Any]:
     """Discover and incrementally ingest local sessions without manual IDs/uploads."""
 
@@ -192,6 +193,7 @@ async def sync_local_session_library(
                     workspace_id=str(workspace_id),
                     metadata_extra=resolved.metadata,
                     normalized_events=resolved.events,
+                    commit=commit,
                 )
                 revised = int(ingest_result.get("documents_updated") or 0)
                 created = max(
@@ -217,7 +219,10 @@ async def sync_local_session_library(
                     )
                     if document is not None and document.processed_at is None:
                         await IngestionService(session).process_document(document.id)
-                        await session.commit()
+                        if commit:
+                            await session.commit()
+                        else:
+                            await session.flush()
                     if document is not None:
                         current_by_external_id[external_id] = document
             except Exception as exc:  # one corrupt session must not block the library
@@ -253,7 +258,10 @@ async def sync_local_session_library(
         connector.config_json = json.dumps(config)
         provider_results.append(provider_summary)
 
-    await session.commit()
+    if commit:
+        await session.commit()
+    else:
+        await session.flush()
     return {
         "workspace_id": str(workspace_id),
         "automatic": True,

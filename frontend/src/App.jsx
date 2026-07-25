@@ -32,15 +32,21 @@ const Connectors   = lazy(() => import("./pages/Connectors"));
 const Changes      = lazy(() => import("./pages/Changes"));
 const WorkspacesPage = lazy(() => import("./pages/WorkspacesPage"));
 
-const WORKSPACE_NAV_ITEMS = [
-  { to: "/app", label: "Now", icon: Activity, end: true },
+const CONTINUE_NAV_ITEMS = [
+  { to: "/app", label: "Continue", icon: Activity, end: true },
+];
+
+const INSPECT_NAV_ITEMS = [
   { to: "/app/library", label: "Library", icon: LibraryBig },
-  { to: "/app/runs", label: "Resume", icon: History },
+  { to: "/app/runs", label: "History", icon: History },
   { to: "/app/memory", label: "Memory", icon: BrainCircuit },
   { to: "/app/explain", label: "Evidence", icon: Waypoints },
 ];
 
-const MOBILE_PRIMARY_ITEMS = WORKSPACE_NAV_ITEMS.filter(({ to }) => to !== "/app/explain");
+const MOBILE_PRIMARY_ITEMS = [
+  ...CONTINUE_NAV_ITEMS,
+  INSPECT_NAV_ITEMS.find(({ to }) => to === "/app/library"),
+];
 
 const SETUP_NAV_ITEMS = [
   { to: "/app/sources", label: "Sources", icon: Database },
@@ -49,8 +55,12 @@ const SETUP_NAV_ITEMS = [
 
 const NAV_GROUPS = [
   {
-    label: "Workspace",
-    items: WORKSPACE_NAV_ITEMS,
+    label: "Continue",
+    items: CONTINUE_NAV_ITEMS,
+  },
+  {
+    label: "Inspect & history",
+    items: INSPECT_NAV_ITEMS,
   },
   {
     label: "Setup",
@@ -58,7 +68,7 @@ const NAV_GROUPS = [
   },
 ];
 const MOBILE_MORE_ITEMS = [
-  WORKSPACE_NAV_ITEMS.find(({ to }) => to === "/app/explain"),
+  ...INSPECT_NAV_ITEMS.filter(({ to }) => to !== "/app/library"),
   ...SETUP_NAV_ITEMS,
 ];
 
@@ -272,7 +282,7 @@ function MobileNavigation({ pathname }) {
             <div className="flex items-center justify-between border-b border-line px-4 py-3">
               <div>
                 <p className="text-sm font-semibold text-ink">More</p>
-                <p className="mt-0.5 text-xs text-ink-muted">Evidence and setup</p>
+                <p className="mt-0.5 text-xs text-ink-muted">History, evidence, and setup</p>
               </div>
               <button
                 type="button"
