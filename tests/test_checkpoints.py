@@ -25,8 +25,11 @@ from app.services.checkpoints import (
     get_checkpoint,
     latest_checkpoint,
 )
-from app.services.checkpoint_verifier import _safe_replay_commands
-from app.services.local_harness import CommandResult, RepositorySnapshot
+from app.services.checkpoint_verifier import (
+    AUTOMATIC_REPLAY_DISABLED_REASON,
+    _safe_replay_commands,
+)
+from app.services.local_harness import RepositorySnapshot
 from app.services.session_events import NormalizedSessionEvent, persist_session_events
 
 
@@ -290,7 +293,7 @@ async def test_checkpoint_api_captures_verifies_and_builds_resume_bundle(
     }
 
 
-async def test_explicit_verification_replays_multiline_commands_independently(
+async def test_explicit_verification_keeps_imported_commands_as_untrusted_evidence(
     client,
     db_session,
     tmp_path,
@@ -316,22 +319,6 @@ async def test_explicit_verification_replays_multiline_commands_independently(
         "app.services.checkpoint_verifier.capture_repository_snapshot",
         _async_value(snapshot),
     )
-    replayed: list[tuple[str, ...]] = []
-
-    async def _run(_repo_path, command, **_kwargs):
-        replayed.append(tuple(command))
-        return CommandResult(
-            argv=tuple(command),
-            exit_code=0,
-            stdout="2 passed",
-            stderr="",
-            stdout_truncated=False,
-            stderr_truncated=False,
-            timed_out=False,
-            duration_ms=12,
-        )
-
-    monkeypatch.setattr("app.services.checkpoint_verifier.run_repository_command", _run)
     captured = await client.post("/api/checkpoints/capture", json={
         "workspace_id": str(workspace.id),
         "provider": "codex",
@@ -343,19 +330,13 @@ async def test_explicit_verification_replays_multiline_commands_independently(
     )
 
     assert response.status_code == 200
-    assert replayed == [
-        ("npm", "test", "--", "--run"),
-        ("npm", "run", "build"),
-    ]
     verification = response.json()["verification"]
-    assert verification["status"] == "verified"
-    replay_results = verification["results"]["replay_results"]
-    assert [item["command"] for item in replay_results] == [
-        "npm test -- --run",
-        "npm run build",
-    ]
-    assert all(item["passed"] is True for item in replay_results)
-    assert verification["results"]["replay_rejections"] == []
+    assert verification["status"] == "partial"
+    assert verification["results"]["replay_results"] == []
+    assert verification["results"]["replay_rejections"] == [{
+        "command": recorded_command,
+        "reason": AUTOMATIC_REPLAY_DISABLED_REASON,
+    }]
 
 
 def test_safe_replay_commands_splits_cr_and_rejects_unsafe_input() -> None:
@@ -370,8 +351,14 @@ def test_safe_replay_commands_splits_cr_and_rejects_unsafe_input() -> None:
     with pytest.raises(ValueError, match="shell operators"):
         _safe_replay_commands("npm test -- --run\nnpm run build && npm publish")
 
+    with pytest.raises(ValueError, match="allowlisted"):
+        _safe_replay_commands("rm -rf . pytest")
 
-async def test_explicit_verification_rejects_nul_command_without_false_failure(
+    with pytest.raises(ValueError, match="allowlisted"):
+        _safe_replay_commands("npm publish")
+
+
+async def test_explicit_verification_never_executes_even_a_malformed_imported_command(
     client,
     db_session,
     tmp_path,
@@ -397,22 +384,6 @@ async def test_explicit_verification_rejects_nul_command_without_false_failure(
         "app.services.checkpoint_verifier.capture_repository_snapshot",
         _async_value(snapshot),
     )
-    replayed: list[tuple[str, ...]] = []
-
-    async def _run(_repo_path, command, **_kwargs):
-        replayed.append(tuple(command))
-        return CommandResult(
-            argv=tuple(command),
-            exit_code=1,
-            stdout="",
-            stderr="must not run",
-            stdout_truncated=False,
-            stderr_truncated=False,
-            timed_out=False,
-            duration_ms=1,
-        )
-
-    monkeypatch.setattr("app.services.checkpoint_verifier.run_repository_command", _run)
     captured = await client.post("/api/checkpoints/capture", json={
         "workspace_id": str(workspace.id),
         "provider": "codex",
@@ -424,14 +395,13 @@ async def test_explicit_verification_rejects_nul_command_without_false_failure(
     )
 
     assert response.status_code == 200
-    assert replayed == []
     verification = response.json()["verification"]
     assert verification["status"] == "partial"
     results = verification["results"]
     assert results["replay_results"] == []
     assert results["replay_rejections"] == [{
         "command": recorded_command,
-        "reason": "commands containing NUL bytes are not replayed",
+        "reason": AUTOMATIC_REPLAY_DISABLED_REASON,
     }]
     fresh_execution = next(
         check

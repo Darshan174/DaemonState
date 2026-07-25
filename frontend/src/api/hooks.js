@@ -1751,6 +1751,30 @@ export function useContinueSession() {
   });
 }
 
+export function usePrepareContinuation() {
+  return useMutation({
+    mutationFn: (payload) => api.post("/continuations/prepare", payload),
+  });
+}
+
+export function useContinuationProviders(workspaceId, { enabled = true } = {}) {
+  return useQuery({
+    queryKey: ["continuation-providers", workspaceId],
+    enabled: Boolean(workspaceId) && enabled,
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+    queryFn: () => api.get(
+      `/continuations/providers?workspace_id=${encodeURIComponent(workspaceId)}`,
+    ),
+  });
+}
+
+export function useRunContinuation() {
+  return useMutation({
+    mutationFn: (payload) => api.post("/continuations/run", payload),
+  });
+}
+
 export function useLatestCheckpoint(
   workspaceId,
   { provider = null, sessionId = null, enabled = true } = {},
@@ -1875,7 +1899,7 @@ export function useCaptureCheckpoint() {
 export function useVerifyCheckpoint() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ workspaceId, checkpointId, executeCommands = true }) =>
+    mutationFn: ({ workspaceId, checkpointId, executeCommands = false }) =>
       api.post(`/checkpoints/${checkpointId}/verify`, {
         workspace_id: workspaceId,
         execute_commands: executeCommands,

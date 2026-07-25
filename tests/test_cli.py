@@ -292,6 +292,293 @@ def test_cli_harness_run_requires_explicit_worker_command(capsys):
     assert "provide an explicit worker command" in capsys.readouterr().err
 
 
+def test_cli_continue_infers_objective_and_prints_compiled_pack(monkeypatch, capsys):
+    workspace_id = "6ab92f38-0b46-4415-a43d-f293cc659581"
+    calls = []
+
+    async def fake_continue(args):
+        calls.append(args)
+        return {
+            "schema_version": "continuation.v1",
+            "task": {"id": "task.v1:current"},
+            "readiness": "ready",
+            "attention": [],
+            "context_pack_id": "5e7adbe6-71cf-46e4-8c2d-cee0b422526b",
+            "markdown": "# Objective\n\nContinue the current task.\n",
+        }
+
+    monkeypatch.setattr(cli_main, "_prepare_and_maybe_run_continuation", fake_continue)
+
+    assert cli_main.main([
+        "continue",
+        "--workspace-id",
+        workspace_id,
+        "--repo",
+        ".",
+        "--no-sync",
+    ]) == 0
+
+    assert len(calls) == 1
+    assert calls[0].objective is None
+    assert calls[0].workspace_id == workspace_id
+    assert calls[0].no_sync is True
+    output = capsys.readouterr().out
+    assert "continuation ready: task=task.v1:current readiness=ready" in output
+    assert "# Objective" in output
+
+
+def test_cli_continue_reports_provider_delivery(monkeypatch, capsys):
+    async def fake_continue(_args):
+        return {
+            "task": {"id": "task.v1:cross-agent"},
+            "readiness": "ready",
+            "attention": [],
+            "markdown": "# Continue",
+            "delivery": {
+                "provider": "claude",
+                "mode": "fresh",
+                "context_delivery": "stdin",
+            },
+            "run": {
+                "run_id": "b3a2c60b-4bf4-42e4-94f4-6c2cbce14f43",
+                "status": "completed",
+            },
+            "outcome": {"status": "verified", "verified": True},
+        }
+
+    monkeypatch.setattr(cli_main, "_prepare_and_maybe_run_continuation", fake_continue)
+
+    assert cli_main.main([
+        "continue",
+        "--workspace-id",
+        "4f4f4594-fb11-4c46-ac8f-1daae8d51094",
+        "--into",
+        "claude",
+    ]) == 0
+
+    output = capsys.readouterr().out
+    assert (
+        "delivered to claude (fresh): status=completed outcome=verified"
+        in output
+    )
+
+
+def test_cli_continue_reports_completed_without_checks_as_unverified(
+    monkeypatch,
+    capsys,
+):
+    async def fake_continue(_args):
+        return {
+            "task": {"id": "task.v1:no-checks"},
+            "readiness": "review_required",
+            "attention": [],
+            "delivery": {"provider": "codex", "mode": "fresh"},
+            "run": {
+                "run_id": "b3a2c60b-4bf4-42e4-94f4-6c2cbce14f43",
+                "status": "completed",
+                "verification_results": [],
+            },
+        }
+
+    monkeypatch.setattr(cli_main, "_prepare_and_maybe_run_continuation", fake_continue)
+
+    assert cli_main.main([
+        "continue",
+        "--workspace-id",
+        "4f4f4594-fb11-4c46-ac8f-1daae8d51094",
+        "--into",
+        "codex",
+    ]) == 1
+
+    assert "outcome=completed_unverified" in capsys.readouterr().out
+
+
+def test_cli_continue_reports_an_unstarted_blocked_delivery(monkeypatch, capsys):
+    async def fake_continue(_args):
+        return {
+            "task": {"id": "task.v1:unsafe"},
+            "readiness": {"status": "blocked", "score": 0},
+            "attention": [{"message": "The repository is unavailable."}],
+            "markdown": "# Continue",
+            "run": {
+                "status": "not_started",
+                "reason": "continuation readiness is blocked",
+            },
+        }
+
+    monkeypatch.setattr(cli_main, "_prepare_and_maybe_run_continuation", fake_continue)
+
+    assert cli_main.main([
+        "continue",
+        "--workspace-id",
+        "4f4f4594-fb11-4c46-ac8f-1daae8d51094",
+        "--into",
+        "codex",
+    ]) == 1
+
+    output = capsys.readouterr().out
+    assert "not delivered to codex: status=not_started" in output
+    assert "delivered to codex (" not in output
+
+
+def test_continuation_execution_gate_runs_partial_evidence_and_blocks_unsafe_states():
+    ready = {"readiness": {"status": "ready"}}
+    review = {"readiness": {"status": "review_required"}}
+    blocked = {"readiness": {"status": "blocked"}}
+
+    assert cli_main._continuation_execution_block(ready) is None
+    assert cli_main._continuation_execution_block(review) is None
+    assert "cannot be overridden" in cli_main._continuation_execution_block(blocked)
+    assert "failed closed" in cli_main._continuation_execution_block({})
+
+
+def test_continuation_observed_outcome_requires_an_executed_passing_check():
+    assert cli_main._continuation_observed_outcome({
+        "status": "completed",
+        "verification_results": [],
+    }) == {"status": "completed_unverified", "verified": False}
+    assert cli_main._continuation_observed_outcome({
+        "status": "completed",
+        "verification_results": [
+            {"result": {"exit_code": 0, "timed_out": False}},
+        ],
+    }) == {"status": "verified", "verified": True}
+
+
+@pytest.mark.asyncio
+async def test_cli_continue_runs_checks_automatically_for_review_required_evidence(
+    monkeypatch,
+):
+    from app import database, models
+    from app.services import continuation, harness_adapters, local_harness
+
+    captured = {}
+
+    class FakeSession:
+        async def get(self, _model, _identity):
+            return object()
+
+        def add(self, run):
+            run.id = "282799dc-5525-42b9-b55f-596005ed1421"
+
+        async def commit(self):
+            return None
+
+    class FakeSessionContext:
+        async def __aenter__(self):
+            return FakeSession()
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            return False
+
+    class FakePreparation:
+        def to_dict(self):
+            return {
+                "task": {"id": "task.v1:current"},
+                "objective": "Continue the real task",
+                "readiness": {"status": "review_required"},
+                "source_session": {"provider": "claude"},
+                "context_pack_id": "62b8e658-cce3-45ab-9636-04bd8cb0ba07",
+                "manifest": {
+                    "repo_state": {
+                        "branch": "main",
+                        "head_commit": "abc123",
+                    },
+                },
+                "repository": {
+                    "current": {
+                        "status_fingerprint": "fresh-repository-state",
+                    },
+                },
+            }
+
+    class FakeContinuationService:
+        def __init__(self, _session):
+            pass
+
+        async def prepare(self, **_kwargs):
+            return FakePreparation()
+
+    class FakeAgentRun:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+            self.id = "282799dc-5525-42b9-b55f-596005ed1421"
+
+    class FakeHarnessResult:
+        def to_dict(self):
+            return {
+                "run_id": "282799dc-5525-42b9-b55f-596005ed1421",
+                "status": "completed",
+                "verification_results": [
+                    {"result": {"exit_code": 0, "timed_out": False}},
+                ],
+            }
+
+    class FakeHarnessRunner:
+        def __init__(self, _session, **_kwargs):
+            pass
+
+        async def run(self, **kwargs):
+            captured.update(kwargs)
+            return FakeHarnessResult()
+
+    monkeypatch.setattr(database, "AsyncSessionLocal", lambda: FakeSessionContext())
+    monkeypatch.setattr(continuation, "ContinuationService", FakeContinuationService)
+    monkeypatch.setattr(models, "AgentRun", FakeAgentRun)
+    monkeypatch.setattr(
+        harness_adapters,
+        "build_harness_invocation",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            provider="codex",
+            mode="fresh",
+            context_delivery="stdin",
+            session_id=None,
+            executable="codex",
+            repo_path=".",
+            argv=("codex", "exec", "-"),
+        ),
+    )
+    monkeypatch.setattr(local_harness, "LocalHarnessRunner", FakeHarnessRunner)
+
+    result = await cli_main._prepare_and_maybe_run_continuation(SimpleNamespace(
+        workspace_id="4f4f4594-fb11-4c46-ac8f-1daae8d51094",
+        repo=".",
+        objective=None,
+        checkpoint_id=None,
+        checkpoint_source_id=None,
+        target_model="general-coder",
+        provider_model=None,
+        budget=None,
+        no_sync=False,
+        into="codex",
+        output_limit_bytes=32_768,
+        command_timeout=3_600.0,
+        verification_timeout=900.0,
+    ))
+
+    assert captured["verify"] is True
+    assert captured["expected_status_fingerprint"] == "fresh-repository-state"
+    assert result["outcome"] == {"status": "verified", "verified": True}
+
+
+@pytest.mark.parametrize(
+    "removed_flag",
+    ["--verify", "--allow-review-required", "--fresh"],
+)
+def test_cli_continue_has_no_manual_workflow_gate(removed_flag):
+    parser = cli_main.build_arg_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "continue",
+            "--workspace-id",
+            "4f4f4594-fb11-4c46-ac8f-1daae8d51094",
+            "--into",
+            "codex",
+            removed_flag,
+        ])
+
+
 def test_cli_worker_sync_runs_pending_jobs(monkeypatch, capsys):
     class FakeResult:
         def to_dict(self):

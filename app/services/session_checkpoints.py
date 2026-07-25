@@ -41,6 +41,8 @@ def build_compaction_checkpoint_descriptor(
     *,
     provider: str,
     ordinal: int,
+    repo_path: str | None = None,
+    branch: str | None = None,
 ) -> dict[str, Any]:
     """Describe a provider compaction boundary without retaining its opaque blob."""
 
@@ -55,7 +57,7 @@ def build_compaction_checkpoint_descriptor(
         str(len(materialized)),
     ])
     checkpoint_id = f"checkpoint-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:12]}"
-    return {
+    descriptor = {
         "id": checkpoint_id,
         "kind": "provider_compaction",
         "provider": provider,
@@ -65,6 +67,11 @@ def build_compaction_checkpoint_descriptor(
         "assistant_turn_count": sum(role == "assistant" for role, _ in materialized),
         "window_id": window_id,
     }
+    if normalized_repo_path := str(repo_path or "").strip():
+        descriptor["repo_path"] = normalized_repo_path
+    if normalized_branch := str(branch or "").strip():
+        descriptor["branch"] = normalized_branch
+    return descriptor
 
 
 def list_session_checkpoints(
@@ -196,7 +203,7 @@ def _checkpoint_descriptors(metadata: dict[str, Any] | None) -> list[dict[str, A
         if not checkpoint_id or checkpoint_id in seen or turn_count <= 0:
             continue
         seen.add(checkpoint_id)
-        descriptors.append({
+        descriptor = {
             "id": checkpoint_id,
             "kind": str(raw.get("kind") or "provider_compaction"),
             "provider": str(raw.get("provider") or "unknown"),
@@ -205,7 +212,12 @@ def _checkpoint_descriptors(metadata: dict[str, Any] | None) -> list[dict[str, A
             "user_turn_count": int(raw.get("user_turn_count") or 0),
             "assistant_turn_count": int(raw.get("assistant_turn_count") or 0),
             "window_id": raw.get("window_id"),
-        })
+        }
+        if repo_path := str(raw.get("repo_path") or "").strip():
+            descriptor["repo_path"] = repo_path
+        if branch := str(raw.get("branch") or "").strip():
+            descriptor["branch"] = branch
+        descriptors.append(descriptor)
     return descriptors
 
 

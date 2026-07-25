@@ -1,7 +1,7 @@
 # OSS Readiness Review
 
 Last updated: 2026-07-22
-Reviewed: 2026-05-01 by Xiaomi MiMo V2.5 Pro; refreshed 2026-07-22 after the checkpoint, session-library, project-memory, and setup documentation passes.
+Reviewed: 2026-05-01 by Xiaomi MiMo V2.5 Pro; refreshed 2026-07-24 after the verified continuation-runtime pass.
 
 ## Score
 
@@ -78,10 +78,11 @@ still calling out final hardening gaps below.
   cover recall, precision, evidence coverage against final citation fields,
   stale leakage, conflict detection, token efficiency, and verification-command
   presence on fixtures.
-- Implemented in this branch: `/app` is the current-work and checkpoint view.
-  Library, Memory, Explain, Sources, and Connectors are primary navigation
-  surfaces. The legacy `/app/prepare` route redirects to Now; persisted
-  `context_pack.v2` preparation remains available through HTTP, CLI, and MCP.
+- Implemented in this branch: `/app` is the primary Continue view. Library,
+  History, Memory, and Evidence are secondary inspection surfaces; Sources and
+  Integrations are setup surfaces. The legacy `/app/prepare` route preserves
+  query parameters while redirecting to Continue. Durable continuation is
+  available through HTTP, `ctxe continue`, and MCP `resume_task`.
 - Implemented in this branch: source objects use workspace-scoped append-only
   revisions, and MCP `record_agent_run_finish` links an exact pack to terminal
   repository and verification observations without claiming causal lift.
@@ -93,11 +94,11 @@ pytest -q
 cd frontend && npm run build
 ```
 
-Latest verified result from the 2026-07-22 documentation synchronization pass:
+Latest verified result from the 2026-07-24 continuation-runtime pass:
 
-- `pytest -q`: 609 passed, 1 SQLite datetime deprecation warning.
+- `pytest -q`: 798 passed, 1 skipped, 1 SQLite datetime deprecation warning.
 - `ruff check app tests`: passed.
-- `cd frontend && npm test`: 18 files, 112 tests passed.
+- `cd frontend && npm test -- --run`: 23 files, 178 tests passed.
 - `cd frontend && npm run build`: passed.
 
 Not verified in this pass:

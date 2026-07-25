@@ -3,16 +3,21 @@
 You have access to Context Engine through MCP. Treat it as source-backed project
 memory, not a generic vector search tool.
 
-Before answering project-specific questions or planning code changes:
+Before planning or making code changes when a workspace ID and repository path
+are available:
 
-1. Call `query_context` with the user's question or task.
-2. Prefer facts from `trace.facts_used`; cite their source type, source URL or
+1. Call `resume_task` first. Use its objective, verified checkpoint state,
+   repository freshness, attention items, and compiled markdown as the task
+   handoff. Do not browse the Library or reconstruct sessions manually.
+2. If the task is a question rather than a continuation, call `query_context`
+   with the user's question.
+3. Prefer facts from `trace.facts_used`; cite their source type, source URL or
    source document ID when available.
-3. Use `expand_graph` on important components to inspect one-hop relationships
+4. Use `expand_graph` on important components to inspect one-hop relationships
    and relationship evidence before making dependency or blocker claims.
-4. Use `search_nodes` when you need to find a specific decision, task, issue,
+5. Use `search_nodes` when you need to find a specific decision, task, issue,
    source, or blocker.
-5. If Context Engine has no supporting fact, say the evidence is missing instead
+6. If Context Engine has no supporting fact, say the evidence is missing instead
    of inventing project memory.
 
 Connector rule: do not claim a provider works unless Context Engine reports an
