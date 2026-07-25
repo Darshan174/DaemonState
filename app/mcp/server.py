@@ -131,6 +131,53 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="resume_task",
+            description=(
+                "Resolve the current repository-scoped task without Library curation, "
+                "verify its latest durable checkpoint, and compile the resulting "
+                "context_pack.v2 for this agent to continue immediately. "
+                f"{TRUST_WARNING}"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "workspace_id": {
+                        "type": "string",
+                        "description": "Workspace UUID that owns the repository evidence.",
+                    },
+                    "repo_path": {
+                        "type": "string",
+                        "description": "Local Git repository to verify and continue.",
+                    },
+                    "objective": {
+                        "type": "string",
+                        "description": "Optional trusted objective; inferred when omitted.",
+                    },
+                    "checkpoint_id": {
+                        "type": "string",
+                        "description": "Optional durable UUID or legacy provider-compaction checkpoint ID.",
+                    },
+                    "checkpoint_source_id": {
+                        "type": "string",
+                        "description": "Source-document UUID required for a legacy checkpoint ID.",
+                    },
+                    "target_model": {
+                        "type": "string",
+                        "description": "Target model/profile for context budgeting.",
+                    },
+                    "token_budget": {
+                        "type": "integer",
+                        "description": "Optional context-pack token budget.",
+                    },
+                    "sync_sessions": {
+                        "type": "boolean",
+                        "description": "Refresh local Codex, Claude Code, and OpenCode histories.",
+                    },
+                },
+                "required": ["workspace_id", "repo_path"],
+            },
+        ),
+        Tool(
             name="search_nodes",
             description=(
                 "Semantic search over components in the knowledge graph. "
@@ -470,6 +517,17 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             focus_component_id=arguments.get("focus_component_id"),
             objective_origin=arguments.get("objective_origin"),
         )
+    elif name == "resume_task":
+        return await _resume_task(
+            workspace_id=arguments.get("workspace_id"),
+            repo_path=arguments.get("repo_path"),
+            objective=arguments.get("objective"),
+            checkpoint_id=arguments.get("checkpoint_id"),
+            checkpoint_source_id=arguments.get("checkpoint_source_id"),
+            target_model=arguments.get("target_model"),
+            token_budget=arguments.get("token_budget"),
+            sync_sessions=arguments.get("sync_sessions", True),
+        )
     elif name == "search_nodes":
         return await _search_nodes(arguments["query"], arguments.get("limit", 10))
     elif name == "query_context":
@@ -770,6 +828,59 @@ async def _prepare_task(
         return _error_text("invalid_input", str(exc))
     except Exception as exc:
         logger.exception("prepare_task failed")
+        return _error_text("internal_error", str(exc))
+
+
+async def _resume_task(
+    *,
+    workspace_id: str | None,
+    repo_path: str | None,
+    objective: str | None,
+    checkpoint_id: str | None,
+    checkpoint_source_id: str | None,
+    target_model: str | None,
+    token_budget: int | None,
+    sync_sessions: bool,
+) -> list[TextContent]:
+    from app.services.access import AccessScope
+    from app.services.continuation import ContinuationError, ContinuationService
+
+    try:
+        workspace_uuid = _required_uuid(workspace_id, "workspace_id")
+        repository = _required_text(repo_path, "repo_path")
+        if token_budget is not None and int(token_budget) <= 0:
+            return _error_text("invalid_input", "token_budget must be positive")
+        if not isinstance(sync_sessions, bool):
+            return _error_text("invalid_input", "sync_sessions must be a boolean")
+        async with AsyncSessionLocal() as session:
+            result = await ContinuationService(session).prepare(
+                workspace_id=workspace_uuid,
+                access_scope=AccessScope.local(),
+                repo_path=repository,
+                objective=_none_if_blank(objective),
+                checkpoint_id=_none_if_blank(checkpoint_id),
+                checkpoint_source_id=_optional_uuid(
+                    checkpoint_source_id,
+                    "checkpoint_source_id",
+                ),
+                target_model=_none_if_blank(target_model) or "general-coder",
+                token_budget=token_budget,
+                sync_sessions=sync_sessions,
+            )
+            data = result.to_dict() if hasattr(result, "to_dict") else dict(result)
+            await session.commit()
+        return _json_text(data)
+    except ContinuationError as exc:
+        return _error_text(exc.code, str(exc))
+    except (ValueError, TypeError) as exc:
+        return _error_text("invalid_input", str(exc))
+    except (RuntimeError, OSError) as exc:
+        if "no such table" in str(exc).lower():
+            return _error_text("schema_missing", str(exc), retryable=True)
+        logger.exception("resume_task failed")
+        return _error_text("internal_error", str(exc))
+    except Exception as exc:
+        logger.exception("resume_task failed")
         return _error_text("internal_error", str(exc))
 
 
