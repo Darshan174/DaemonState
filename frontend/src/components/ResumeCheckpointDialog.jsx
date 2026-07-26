@@ -80,7 +80,11 @@ export default function ResumeCheckpointDialog({
     ? `Open the original ${provider} task when the desktop app is available.`
     : checkpoint.provider === "opencode"
       ? `Open the linked ${provider} project when the desktop app is available. Exact session reopening is not supported.`
-      : `Open ${provider} when the desktop app is available. Exact session reopening is not supported.`;
+      : (
+          "Open Claude Code only when its full desktop app is installed. "
+          + "The URL-handler launcher alone cannot reopen this saved session. "
+          + "Exact session reopening is not supported."
+        );
 
   return createPortal(
     <div
@@ -200,8 +204,8 @@ function checkpointEventsBehind(checkpoint) {
 function providerLabel(value) {
   return {
     codex: "Codex",
-    claude: "Claude Desktop",
-    claude_code: "Claude Desktop",
+    claude: "Claude Code",
+    claude_code: "Claude Code",
     opencode: "OpenCode",
   }[String(value || "").toLowerCase()] || "the desktop agent";
 }

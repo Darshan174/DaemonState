@@ -18,7 +18,7 @@ from app.services.local_harness import capture_repository_snapshot
 from app.time import utc_now
 
 
-VERIFIER_POLICY_VERSION = "checkpoint_verifier.v3"
+VERIFIER_POLICY_VERSION = "checkpoint_verifier.v5"
 MAX_REPLAY_COMMANDS = 8
 _SHELL_CONTROL_TOKENS = {"|", "||", "&&", ";", ">", ">>", "<", "<<"}
 AUTOMATIC_REPLAY_DISABLED_REASON = (
@@ -105,9 +105,23 @@ async def verify_checkpoint(
 
     checks: list[dict[str, Any]] = []
     structural_errors = _structural_errors(data)
+    integrity_errors = [
+        error
+        for error in structural_errors
+        if error not in {
+            "checkpoint must contain exactly one goal",
+            "checkpoint must contain exactly one exact next action",
+        }
+    ]
     checks.append({
         "name": "checkpoint_structure",
-        "status": "passed" if not structural_errors else "failed",
+        "status": (
+            "passed"
+            if not structural_errors
+            else "failed"
+            if integrity_errors
+            else "partial"
+        ),
         "details": structural_errors,
     })
 
@@ -214,17 +228,19 @@ async def verify_checkpoint(
         })
 
     has_blockers = bool(data["sections"]["blockers"])
-    hard_failure = bool(structural_errors or missing_files or replay_failed)
+    integrity_failure = bool(integrity_errors)
+    repository_drift = bool(stale or missing_files)
+    fresh_execution_failure = bool(execute_commands and replay_failed)
     verification_evidence = replay_passed if execute_commands else bool(observed_passes)
-    verification_failure = bool(observed_failures) and not replay_passed
-    if hard_failure or verification_failure:
+    if integrity_failure or fresh_execution_failure:
         status = "failed"
-    elif stale:
+    elif repository_drift:
         status = "stale"
     elif (
         not snapshot_error
         and not has_blockers
         and verification_evidence
+        and not observed_failures
         and current_snapshot is not None
         and fingerprint == checkpoint.worktree_fingerprint
     ):
@@ -238,6 +254,8 @@ async def verify_checkpoint(
         "status": status,
         "checks": checks,
         "has_blockers": has_blockers,
+        "integrity_errors": integrity_errors,
+        "historical_verification_failures": len(observed_failures),
         "replay_results": replay_results,
         "replay_rejections": replay_rejections,
         "repository": current_snapshot.to_dict() if current_snapshot else None,

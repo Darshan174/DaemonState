@@ -1761,7 +1761,9 @@ export function useContinuationProviders(workspaceId, { enabled = true } = {}) {
   return useQuery({
     queryKey: ["continuation-providers", workspaceId],
     enabled: Boolean(workspaceId) && enabled,
-    refetchInterval: 30_000,
+    refetchInterval: (query) => (
+      query.state.data?.active_run ? 3_000 : 30_000
+    ),
     refetchIntervalInBackground: false,
     queryFn: () => api.get(
       `/continuations/providers?workspace_id=${encodeURIComponent(workspaceId)}`,
@@ -1771,7 +1773,16 @@ export function useContinuationProviders(workspaceId, { enabled = true } = {}) {
 
 export function useRunContinuation() {
   return useMutation({
-    mutationFn: (payload) => api.post("/continuations/run", payload),
+    mutationFn: (payload) => api.post("/continuations", payload),
+  });
+}
+
+export function useOpenContinuationHarness() {
+  return useMutation({
+    mutationFn: ({ workspaceId, runId }) => api.post(
+      `/continuations/${encodeURIComponent(runId)}/open`,
+      { workspace_id: workspaceId },
+    ),
   });
 }
 

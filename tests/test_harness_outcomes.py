@@ -344,6 +344,145 @@ async def test_service_groups_only_structured_observed_outcomes(db_session):
     assert restricted["runs"] == []
 
 
+async def test_latest_continuation_does_not_recover_checks_only_as_success(
+    db_session,
+):
+    workspace = Workspace(
+        id=uuid4(),
+        name="Recovered continuation",
+        slug=f"recovered-continuation-{uuid4()}",
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+    pack = await _pack(
+        db_session,
+        workspace,
+        target_model="opencode/big-pickle",
+        model_profile="frontier_coder_model",
+    )
+    run = await _run(
+        db_session,
+        workspace,
+        pack,
+        model="opencode/big-pickle",
+        run_key=f"continuation:{uuid4().hex}",
+    )
+    run.tool = "context-engine:opencode"
+    await _observation(
+        db_session,
+        run,
+        event_type="command",
+        event_key="harness:command",
+        payload={"exit_code": 0, "files": []},
+        minute=1,
+    )
+    await _observation(
+        db_session,
+        run,
+        event_type="verification",
+        event_key="harness:verification:0",
+        payload={
+            "requirement_id": "V1",
+            "command": COMMAND,
+            "exit_code": 0,
+        },
+        minute=2,
+    )
+    await _observation(
+        db_session,
+        run,
+        event_type="outcome",
+        event_key="harness:outcome",
+        payload={
+            "status": "completed",
+            "files": ["pre-existing-user-change.py"],
+        },
+        minute=3,
+    )
+    await db_session.commit()
+
+    latest = await HarnessOutcomeService(db_session).latest_continuation(
+        workspace_id=workspace.id,
+    )
+
+    assert latest is not None
+    assert latest["run_id"] == str(run.id)
+    assert latest["provider"] == "opencode"
+    assert latest["verification"] == {
+        "observed": 1,
+        "passed": 1,
+        "failed": 0,
+    }
+    assert latest["changed_files"] == ["pre-existing-user-change.py"]
+    assert latest["agent_changed_files"] == []
+    assert latest["verified_success"] is False
+
+
+async def test_latest_continuation_translates_a_persisted_timeout(
+    db_session,
+):
+    workspace = Workspace(
+        id=uuid4(),
+        name="Timed out continuation",
+        slug=f"timed-out-continuation-{uuid4()}",
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+    pack = await _pack(
+        db_session,
+        workspace,
+        target_model="opencode/big-pickle",
+        model_profile="frontier_coder_model",
+    )
+    run = await _run(
+        db_session,
+        workspace,
+        pack,
+        model="opencode/big-pickle",
+        run_key=f"continuation:{uuid4().hex}",
+    )
+    run.tool = "context-engine:opencode"
+    run.status = "failed"
+    await _observation(
+        db_session,
+        run,
+        event_type="command",
+        event_key="harness:command",
+        payload={
+            "exit_code": 124,
+            "timed_out": True,
+            "stdout": "[output truncated]",
+            "stderr": "",
+        },
+        minute=1,
+    )
+    await _observation(
+        db_session,
+        run,
+        event_type="outcome",
+        event_key="harness:outcome",
+        payload={
+            "status": "failed",
+            "summary": (
+                "Harness derived status failed from child exit 124 with no "
+                "executed verification commands."
+            ),
+        },
+        minute=2,
+    )
+    await db_session.commit()
+
+    latest = await HarnessOutcomeService(db_session).latest_continuation(
+        workspace_id=workspace.id,
+    )
+
+    assert latest is not None
+    assert latest["failure_code"] == "provider_run_timed_out"
+    assert latest["outcome_summary"] == (
+        "OpenCode did not finish before the continuation timeout."
+    )
+
+
 async def test_run_outcomes_api_returns_workspace_scoped_observed_runs(
     client,
     db_session,

@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     source_ingestion_max_attempts: int = 5
     context_digest_cache_ttl_seconds: float = 30.0
     context_digest_cache_max_entries: int = 32
+    continuation_command_timeout_seconds: float = 14_400.0
     litellm_api_key: str | None = None
     enable_local_embedder: bool = False
     data_dir: str = "./data"
@@ -249,6 +250,8 @@ def production_configuration_errors(config: Settings = settings) -> list[str]:
         errors.append("SOURCE_INGESTION_TIMEOUT_SECONDS must be greater than zero")
     if config.source_ingestion_max_attempts <= 0:
         errors.append("SOURCE_INGESTION_MAX_ATTEMPTS must be greater than zero")
+    if config.continuation_command_timeout_seconds <= 0:
+        errors.append("CONTINUATION_COMMAND_TIMEOUT_SECONDS must be greater than zero")
     return errors
 
 

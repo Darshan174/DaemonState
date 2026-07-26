@@ -5,7 +5,11 @@ from subprocess import CompletedProcess
 
 import pytest
 
-from app.services.harness_launcher import HarnessLaunchError, launch_harness_session
+from app.services.harness_launcher import (
+    HarnessLaunchError,
+    launch_harness_session,
+    probe_harness_visibility,
+)
 
 
 def test_opens_codex_session_in_the_desktop_app(monkeypatch) -> None:
@@ -23,6 +27,8 @@ def test_opens_codex_session_in_the_desktop_app(monkeypatch) -> None:
     )
 
     assert result["launched"] is True
+    assert result["navigation_requested"] is True
+    assert result["navigation_verified"] is False
     assert result["harness"] == "Codex"
     assert result["mode"] == "desktop_app"
     assert result["navigation"] == "session"
@@ -69,6 +75,48 @@ def test_uses_registered_claude_desktop_bundle_id(monkeypatch) -> None:
         "-b",
         "com.anthropic.claudefordesktop",
     ]
+
+
+def test_visible_harness_readiness_fails_closed_when_desktop_is_missing(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.harness_launcher.platform.system",
+        lambda: "Darwin",
+    )
+    monkeypatch.setattr(
+        "app.services.harness_launcher._macos_desktop_app_installed",
+        lambda _spec: False,
+    )
+
+    visibility = probe_harness_visibility("codex")
+
+    assert visibility.ready is False
+    assert visibility.desktop_available is False
+    assert visibility.exact_session_supported is True
+    assert visibility.code == "desktop_app_missing"
+
+
+@pytest.mark.parametrize("provider", ("claude", "opencode"))
+def test_visible_harness_readiness_fails_closed_without_exact_session_navigation(
+    provider: str,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.harness_launcher.platform.system",
+        lambda: "Darwin",
+    )
+    monkeypatch.setattr(
+        "app.services.harness_launcher._macos_desktop_app_installed",
+        lambda _spec: True,
+    )
+
+    visibility = probe_harness_visibility(provider)
+
+    assert visibility.ready is False
+    assert visibility.desktop_available is True
+    assert visibility.exact_session_supported is False
+    assert visibility.code == "visible_session_unsupported"
 
 
 @pytest.mark.parametrize("connector_type", ["codex", "claude", "opencode"])

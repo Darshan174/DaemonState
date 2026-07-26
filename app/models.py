@@ -1138,6 +1138,18 @@ class AgentRun(Base):
             sqlite_where=text("run_key IS NOT NULL"),
             postgresql_where=text("run_key IS NOT NULL"),
         ),
+        Index(
+            "uq_agent_runs_continuation_request_key",
+            "workspace_id",
+            "run_key",
+            unique=True,
+            sqlite_where=text(
+                "workspace_id IS NOT NULL AND run_key LIKE 'continuation:%'"
+            ),
+            postgresql_where=text(
+                "workspace_id IS NOT NULL AND run_key LIKE 'continuation:%'"
+            ),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)

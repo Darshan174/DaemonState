@@ -139,7 +139,11 @@ def test_alembic_upgrade_bootstraps_current_sqlite_schema(tmp_path):
             (("source_document_id",), "source_documents", ("id",)),
         } <= sync_observation_foreign_keys
 
-        assert version == "0013_source_ingestion_jobs"
+        assert version == "0014_continuation_idempotency"
+        agent_run_indexes = {
+            item["name"] for item in inspector.get_indexes("agent_runs")
+        }
+        assert "uq_agent_runs_continuation_request_key" in agent_run_indexes
     finally:
         engine.dispose()
 

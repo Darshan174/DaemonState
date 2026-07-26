@@ -87,10 +87,21 @@ function renderLibrary(initialEntry = "/app/library") {
     <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
         <Route path="/app/library" element={<SessionLibrary />} />
-        <Route path="/app" element={<div>Now destination</div>} />
+        <Route path="/app" element={<ContinueDestination />} />
         <Route path="/app/prepare" element={<PrepareDestination />} />
       </Routes>
     </MemoryRouter>,
+  );
+}
+
+function ContinueDestination() {
+  const [params] = useSearchParams();
+  return (
+    <div>
+      Canonical Continue destination · {params.get("checkpoint")} · {params.get("objective")}
+      {" · "}{params.get("source_provider")} · {params.get("source_session")}
+      {" · "}{params.get("objective_source")}
+    </div>
   );
 }
 
@@ -149,11 +160,11 @@ it("organizes sessions behind animated harness cards", async () => {
   const chooseAlphaTopic = within(alphaCard).getByRole("button", { name: "Choose a topic from Alpha launch" });
   expect(chooseAlphaTopic).toHaveAttribute("aria-expanded", "false");
   expect(within(alphaCard).getByText("2")).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Use Alpha billing from Alpha launch on Now" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Continue Alpha billing from Alpha launch" })).not.toBeInTheDocument();
 
   fireEvent.mouseEnter(alphaCard);
   expect(chooseAlphaTopic).toHaveAttribute("aria-expanded", "true");
-  expect(screen.getByRole("button", { name: "Use Alpha billing from Alpha launch on Now" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Continue Alpha billing from Alpha launch" })).toBeInTheDocument();
 
   fireEvent.change(screen.getByRole("searchbox", { name: "Search Codex sessions" }), {
     target: { value: "Alpha" },
@@ -177,38 +188,32 @@ it("keeps archive detection semantics separate from continuation readiness", () 
 });
 
 
-it("selects a session topic for Now and returns to the Now tab", async () => {
+it("selects a session topic and routes it to canonical Continue", async () => {
   renderLibrary();
 
   fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
   const alphaCard = document.querySelector('[data-session-card="codex:one"]');
   fireEvent.mouseEnter(alphaCard);
-  fireEvent.click(screen.getByRole("button", { name: "Use Alpha billing from Alpha launch on Now" }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue Alpha billing from Alpha launch" }));
 
-  await waitFor(() => {
-    expect(mocks.select).toHaveBeenCalledWith({
-      workspaceId: "workspace-1",
-      sourceDocumentId: "doc-1",
-      topic: "Alpha billing",
-    });
-  });
-  expect(await screen.findByText("Now destination")).toBeInTheDocument();
+  const destination = await screen.findByText(/Canonical Continue destination/);
+  expect(destination).toHaveTextContent("Alpha billing");
+  expect(destination).toHaveTextContent("codex · session-one");
+  expect(destination).toHaveTextContent("session");
+  expect(mocks.select).not.toHaveBeenCalled();
 });
 
 
-it("uses the latest topic when the user selects only the session", async () => {
+it("uses the latest topic when the user continues only the session", async () => {
   renderLibrary();
 
   fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
-  fireEvent.click(screen.getByRole("button", { name: "Use latest topic from Alpha launch on Now" }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue latest topic from Alpha launch" }));
 
-  await waitFor(() => {
-    expect(mocks.select).toHaveBeenCalledWith({
-      workspaceId: "workspace-1",
-      sourceDocumentId: "doc-1",
-    });
-  });
-  expect(await screen.findByText("Now destination")).toBeInTheDocument();
+  const destination = await screen.findByText(/Canonical Continue destination/);
+  expect(destination).toHaveTextContent("Beta pricing");
+  expect(destination).toHaveTextContent("codex · session-one");
+  expect(mocks.select).not.toHaveBeenCalled();
 });
 
 
@@ -235,22 +240,15 @@ it("opens the selected topic in a source evidence drawer and highlights matches"
     expect(drawer.querySelectorAll("mark").length).toBeGreaterThan(0);
   });
 
-  fireEvent.click(within(drawer).getByRole("button", { name: "Open in Codex" }));
-  await waitFor(() => {
-    expect(mocks.openHarness).toHaveBeenCalledWith("/session-library/open", {
-      workspace_id: "workspace-1",
-      source_document_id: "doc-1",
-      topic: "Beta pricing",
-    });
-  });
-  expect(within(drawer).getByRole("button", { name: "Opened Codex" })).toBeInTheDocument();
+  expect(within(drawer).queryByRole("button", { name: "Open in Codex" })).not.toBeInTheDocument();
+  expect(within(drawer).getByRole("button", { name: "Continue this topic" })).toBeInTheDocument();
 
   fireEvent.click(within(drawer).getByRole("button", { name: "Close evidence" }));
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 });
 
 
-it("restores an automatic compaction checkpoint and carries it into agent handoff", async () => {
+it("prepares an automatic compaction checkpoint and routes it to canonical Continue", async () => {
   mocks.openHarness.mockImplementation((path) => {
     if (path === "/session-library/checkpoints/restore") {
       return Promise.resolve({
@@ -269,11 +267,11 @@ it("restores an automatic compaction checkpoint and carries it into agent handof
 
   fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
   expect(screen.getByRole("button", { name: "Open 1 context checkpoints for Alpha launch" })).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Restore context from Alpha launch" }));
+  fireEvent.click(screen.getByRole("button", { name: "Open checkpoints for Alpha launch" }));
 
   const drawer = await screen.findByRole("dialog");
   expect(within(drawer).getByRole("heading", { name: "Compaction checkpoints" })).toBeInTheDocument();
-  fireEvent.click(within(drawer).getByRole("button", { name: "Restore context" }));
+  fireEvent.click(within(drawer).getByRole("button", { name: "Continue from checkpoint" }));
 
   await waitFor(() => {
     expect(mocks.openHarness).toHaveBeenCalledWith("/session-library/checkpoints/restore", {
@@ -282,27 +280,25 @@ it("restores an automatic compaction checkpoint and carries it into agent handof
       checkpoint_id: "checkpoint-1",
     });
   });
-  expect(await within(drawer).findAllByText("Review Beta pricing before launch")).toHaveLength(2);
-  expect(within(drawer).getByText(/Reported state · not verified truth/i)).toBeInTheDocument();
-
-  fireEvent.click(within(drawer).getByRole("button", { name: "Use in agent handoff" }));
-  expect(await screen.findByText(/Prepare destination · checkpoint-1 · Review Beta pricing before launch/)).toBeInTheDocument();
+  const destination = await screen.findByText(/Canonical Continue destination/);
+  expect(destination).toHaveTextContent("checkpoint-1");
+  expect(destination).toHaveTextContent("Review Beta pricing before launch");
+  expect(screen.queryByRole("button", { name: "Copy restored context" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Use in agent handoff" })).not.toBeInTheDocument();
 });
 
 
-it("shows a clear missing-app state without falling back to a terminal", async () => {
-  mocks.openHarness.mockRejectedValueOnce({
-    message: "Codex desktop app is missing. Install the Codex desktop app to open sessions here.",
-    detail: { code: "desktop_app_missing" },
-  });
+it("keeps original-harness launch out of the Library continuation journey", async () => {
   renderLibrary();
 
   fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
   fireEvent.click(screen.getByRole("button", { name: "Inspect evidence for Alpha launch" }));
 
   const drawer = await screen.findByRole("dialog");
-  fireEvent.click(within(drawer).getByRole("button", { name: "Open in Codex" }));
-
-  expect(await within(drawer).findByText(/Codex desktop app is missing/)).toBeInTheDocument();
-  expect(within(drawer).getByRole("button", { name: "Codex app missing" })).toBeDisabled();
+  expect(within(drawer).queryByRole("button", { name: /Open in Codex/ })).not.toBeInTheDocument();
+  expect(within(drawer).getByText(/without reopening or modifying this source session/)).toBeInTheDocument();
+  expect(mocks.openHarness).not.toHaveBeenCalledWith(
+    "/session-library/open",
+    expect.anything(),
+  );
 });

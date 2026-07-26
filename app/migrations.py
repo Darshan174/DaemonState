@@ -731,6 +731,13 @@ async def _migrate_founder_oversight_schema(conn: AsyncConnection) -> None:
             ON agent_runs (context_pack_id, run_key)
             WHERE run_key IS NOT NULL
         """))
+    if {"workspace_id", "run_key"} <= run_columns:
+        await conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_runs_continuation_request_key
+            ON agent_runs (workspace_id, run_key)
+            WHERE workspace_id IS NOT NULL
+              AND run_key LIKE 'continuation:%'
+        """))
     observation_columns = await _get_table_columns(conn, "run_observations")
     if "observed_at" in observation_columns:
         await conn.execute(text("""

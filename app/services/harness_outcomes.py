@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models import AgentRun, ContextPack, RunObservation
+from app.services.harness_sessions import harness_session_payload
 
 
 SUCCESS_STATUSES = frozenset({"complete", "completed", "passed", "success", "succeeded"})
@@ -133,6 +134,116 @@ class _RunOutcome:
 class HarnessOutcomeService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    async def latest_continuation(
+        self,
+        *,
+        workspace_id: UUID,
+    ) -> dict[str, Any] | None:
+        """Return the latest terminal continuation, including observed evidence."""
+
+        run = await self.session.scalar(
+            select(AgentRun)
+            .options(
+                selectinload(AgentRun.context_pack),
+                selectinload(AgentRun.observations).selectinload(
+                    RunObservation.source_document
+                ),
+            )
+            .where(
+                AgentRun.workspace_id == workspace_id,
+                AgentRun.run_key.like("continuation:%"),
+                AgentRun.status != "running",
+            )
+            .order_by(
+                AgentRun.ended_at.desc(),
+                AgentRun.started_at.desc(),
+                AgentRun.id.desc(),
+            )
+            .limit(1)
+        )
+        if run is None:
+            return None
+
+        command_observation = next(
+            (
+                item
+                for item in reversed(sorted(
+                    run.observations,
+                    key=_observation_sort_key,
+                ))
+                if item.event_key == "harness:command"
+                and _is_local_harness_observation(item)
+            ),
+            None,
+        )
+        outcome = _evaluate_run(run)
+        if outcome is not None:
+            payload = outcome.to_dict()
+            agent_changed_files = list(_observation_files(command_observation))
+            payload["agent_changed_files"] = agent_changed_files
+            # Continuation success requires both passing required checks and
+            # repository changes made by the target agent. A pre-existing dirty
+            # tree or checks alone must not become a recovered success claim.
+            if not agent_changed_files:
+                payload["verified_success"] = False
+        else:
+            status = _normalized_text(run.status) or "unknown"
+            payload = {
+                "run_id": str(run.id),
+                "model": _normalized_text(run.model) or "unreported",
+                "model_profile": "unreported",
+                "objective": _normalized_text(run.objective),
+                "tool": _normalized_text(run.tool),
+                "status": status,
+                "completed": status.lower() in SUCCESS_STATUSES,
+                "verified_success": False,
+                "failed_verification": False,
+                "unresolved_blocker": status.lower() not in SUCCESS_STATUSES,
+                "duration_seconds": _duration_seconds(run),
+                "started_at": (
+                    run.started_at.isoformat() if run.started_at else None
+                ),
+                "ended_at": run.ended_at.isoformat() if run.ended_at else None,
+                "outcome_summary": (
+                    "The run ended before a local harness outcome was recorded."
+                ),
+                "agent_changed_files": [],
+                "changed_files": [],
+                "verification": {
+                    "observed": 0,
+                    "passed": 0,
+                    "failed": 0,
+                },
+            }
+        tool = str(payload.get("tool") or "").strip().lower()
+        payload["provider"] = (
+            tool.split(":", 1)[1]
+            if tool.startswith("context-engine:")
+            else tool or None
+        )
+        harness_session = harness_session_payload(run.observations)
+        if harness_session is not None:
+            payload["harness_session"] = harness_session
+        command_payload = (
+            _payload(command_observation)
+            if command_observation is not None
+            else {}
+        )
+        if (
+            str(payload.get("status") or "").strip().lower() == "failed"
+            and command_payload.get("timed_out") is True
+        ):
+            provider_label = {
+                "codex": "Codex",
+                "claude": "Claude Code",
+                "opencode": "OpenCode",
+            }.get(str(payload["provider"] or ""), "The target agent")
+            payload["failure_code"] = "provider_run_timed_out"
+            payload["outcome_summary"] = (
+                f"{provider_label} did not finish before the continuation timeout."
+            )
+        return payload
 
     async def summarize(
         self,
