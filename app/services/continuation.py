@@ -33,6 +33,7 @@ from app.services.session_checkpoints import (
     restore_session_checkpoint,
 )
 from app.services.session_scope import (
+    normalize_optional_session_key,
     normalize_session_key,
     scoped_session_documents,
     session_provider_values,
@@ -40,8 +41,8 @@ from app.services.session_scope import (
 )
 from app.services.session_summary import (
     extract_delegated_user_request,
-    is_continuation_control,
     is_substantive_user_request,
+    normalize_substantive_user_request,
 )
 from app.services.task_workflow import TaskWorkflowService
 from app.services.workspace_goals import resolve_current_goal
@@ -136,6 +137,8 @@ class ContinuationService:
         objective: str | None = None,
         checkpoint_id: UUID | str | None = None,
         checkpoint_source_id: UUID | None = None,
+        source_provider: str | None = None,
+        source_session_id: str | None = None,
         target_model: str | None = None,
         token_budget: int | None = None,
         sync_sessions: bool = False,
@@ -148,11 +151,23 @@ class ContinuationService:
                 status_code=403,
             )
 
-        normalized_objective = _normalize_goal(objective)
-        if (
-            objective is not None
-            and not is_substantive_user_request(normalized_objective)
-        ):
+        try:
+            source_session_filter = normalize_optional_session_key(
+                source_provider,
+                source_session_id,
+            )
+        except ValueError as exc:
+            raise ContinuationError(
+                "continuation_source_session_invalid",
+                str(exc),
+            ) from exc
+
+        normalized_objective = _normalize_goal(
+            normalize_substantive_user_request(objective)
+            if objective is not None
+            else None
+        )
+        if objective is not None and normalized_objective is None:
             raise ContinuationError(
                 "continuation_invalid_goal",
                 (
@@ -344,7 +359,33 @@ class ContinuationService:
             access_scope=access_scope,
             requested_repo=requested_repo,
             objective=normalized_objective,
+            source_session=source_session_filter,
         )
+        if source_session_filter is not None:
+            if session_candidate is None:
+                unfiltered_source = await self._latest_session_task(
+                    workspace_id=workspace_id,
+                    access_scope=access_scope,
+                    requested_repo=requested_repo,
+                    objective=None,
+                    source_session=source_session_filter,
+                )
+                if unfiltered_source is None:
+                    raise ContinuationError(
+                        "continuation_source_session_not_found",
+                        (
+                            "The requested source session is not available in "
+                            "this workspace and repository scope."
+                        ),
+                        status_code=404,
+                    )
+                raise ContinuationError(
+                    "continuation_source_session_objective_mismatch",
+                    (
+                        "The requested source session does not contain a "
+                        "compatible source-backed objective."
+                    ),
+                )
 
         if normalized_objective is None and session_candidate is not None:
             normalized_objective = session_candidate.objective
@@ -406,6 +447,7 @@ class ContinuationService:
                 access_scope=access_scope,
                 requested_repo=requested_repo,
                 objective=execution_objective,
+                source_session=None,
             )
             if (
                 intent_session_candidate is not None
@@ -569,10 +611,17 @@ class ContinuationService:
                 or selected_checkpoint
             )
             checkpoint_data = checkpoint_to_dict(selected_checkpoint)
+            checkpoint_source = selected_checkpoint.source_document
+            checkpoint_source_title = (
+                str(metadata_dict(checkpoint_source).get("title") or "").strip()
+                if checkpoint_source is not None
+                else ""
+            )
             source_session = {
                 "provider": checkpoint_data["provider"],
                 "session_id": checkpoint_data["session_id"],
                 "source_document_id": checkpoint_data["source_document_id"],
+                **({"title": checkpoint_source_title} if checkpoint_source_title else {}),
             }
             restored_checkpoint = _compiler_checkpoint_adapter(
                 selected_checkpoint,
@@ -611,6 +660,11 @@ class ContinuationService:
                 "provider": legacy_provider,
                 "session_id": legacy_session_id,
                 "source_document_id": str(legacy_document.id),
+                **(
+                    {"title": str(metadata.get("title") or "").strip()}
+                    if str(metadata.get("title") or "").strip()
+                    else {}
+                ),
             }
             freshness = {
                 "status": "unavailable",
@@ -625,6 +679,17 @@ class ContinuationService:
                 "warning",
                 "The exact provider-compaction checkpoint is restored as reported context without a durable repository snapshot.",
             ))
+        elif session_candidate is not None:
+            session_title = str(
+                metadata_dict(session_candidate.source_document).get("title")
+                or ""
+            ).strip()
+            source_session = {
+                "provider": session_candidate.provider,
+                "session_id": session_candidate.session_id,
+                "source_document_id": str(session_candidate.source_document.id),
+                **({"title": session_title} if session_title else {}),
+            }
 
         effective_repo_path = (
             requested_repo
@@ -752,15 +817,13 @@ class ContinuationService:
         effective_checkpoint_status = reported_checkpoint_status
         if (
             reported_checkpoint_status == "blocked"
-            and checkpoint_issues
             and not any(
                 issue.get("blocks_current_execution", True)
                 for issue in checkpoint_issues
             )
         ):
-            # Provider authentication captured in a historical session is
-            # evidence, not live readiness. The selected provider's current
-            # preflight is authoritative.
+            # Historical command failures and provider authentication reports
+            # are context for the next run, not live launch authority.
             effective_checkpoint_status = "review_required"
         checkpoint_summary = (
             {
@@ -915,6 +978,7 @@ class ContinuationService:
         access_scope: AccessScope,
         requested_repo: str | None,
         objective: str | None,
+        source_session: tuple[str, str] | None = None,
     ) -> _SessionTaskCandidate | None:
         documents = list(await self.session.scalars(
             select(SourceDocument).where(
@@ -936,25 +1000,46 @@ class ContinuationService:
                 workspace_id,
                 current,
             )
+        if source_session is None:
+            current = [
+                document
+                for document in current
+                if str(
+                    metadata_dict(document).get("thread_source") or ""
+                ).strip().casefold() != "subagent"
+            ]
         documents_by_session = {
             normalize_session_key(*session_reference(document)): document
             for document in current
         }
         documents_by_session.pop(None, None)
+        if (
+            source_session is not None
+            and source_session not in documents_by_session
+        ):
+            return None
         if not documents_by_session:
             return None
 
+        event_conditions = [
+            SessionEvent.workspace_id == workspace_id,
+            SessionEvent.event_type.in_(("user_request", "runtime_instruction")),
+            source_access_predicate(access_scope, workspace_id=workspace_id),
+        ]
+        if source_session is not None:
+            event_conditions.extend((
+                SessionEvent.provider.in_(
+                    session_provider_values(source_session[0])
+                ),
+                SessionEvent.session_id == source_session[1],
+            ))
         events = list(await self.session.scalars(
             select(SessionEvent)
             .join(
                 SourceDocument,
                 SessionEvent.source_document_id == SourceDocument.id,
             )
-            .where(
-                SessionEvent.workspace_id == workspace_id,
-                SessionEvent.event_type.in_(("user_request", "runtime_instruction")),
-                source_access_predicate(access_scope, workspace_id=workspace_id),
-            )
+            .where(*event_conditions)
             .order_by(
                 SessionEvent.occurred_at.desc().nulls_last(),
                 SessionEvent.created_at.desc(),
@@ -969,8 +1054,15 @@ class ContinuationService:
             if key not in documents_by_session or key in latest_by_session:
                 continue
             goal = _event_goal(event)
-            if goal:
-                latest_by_session[key] = (event, goal)
+            if not goal:
+                continue
+            if (
+                source_session is not None
+                and objective
+                and not _goals_compatible(objective, goal)
+            ):
+                continue
+            latest_by_session[key] = (event, goal)
 
         for key, (goal_event, goal) in latest_by_session.items():
             if objective and not _goals_compatible(objective, goal):
@@ -1029,12 +1121,8 @@ class ContinuationService:
 
 
 def _event_goal(event: SessionEvent) -> str | None:
-    if (
-        event.event_type == "user_request"
-        and not is_continuation_control(event.content)
-        and is_substantive_user_request(event.content)
-    ):
-        return _normalize_goal(event.content)
+    if event.event_type == "user_request":
+        return _normalize_goal(normalize_substantive_user_request(event.content))
     if event.event_type == "runtime_instruction" and event.role == "user":
         return _normalize_goal(extract_delegated_user_request(event.content))
     return None
@@ -1047,8 +1135,9 @@ def _checkpoint_goal(checkpoint: WorkCheckpoint | None) -> str | None:
     goals = data.get("sections", {}).get("goal") or []
     if len(goals) != 1:
         return None
-    goal = _normalize_goal(goals[0].get("statement"))
-    return goal if is_substantive_user_request(goal) else None
+    return _normalize_goal(
+        normalize_substantive_user_request(goals[0].get("statement"))
+    )
 
 
 def _checkpoint_repo_compatible(
@@ -1301,6 +1390,7 @@ def _checkpoint_blocking_issues(
             "cancelled",
             "completed",
             "dismissed",
+            "historical",
             "rejected",
             "resolved",
             "superseded",
@@ -1319,6 +1409,13 @@ def _checkpoint_blocking_issues(
         }
         provider = _reported_provider_auth_blocker(statement)
         provider_scoped = provider is not None
+        truth_state = str(item.get("truth_state") or "").strip().lower()
+        item_payload = item.get("payload")
+        item_payload = item_payload if isinstance(item_payload, dict) else {}
+        hard_checkpoint_blocker = bool(
+            item_payload.get("blocks_current_execution") is True
+            and truth_state in {"observed", "verified"}
+        )
         issues.append({
             "code": (
                 "checkpoint_provider_auth_reported"
@@ -1330,7 +1427,12 @@ def _checkpoint_blocking_issues(
             "blocker": blocker,
             "blocking_tasks": [],
             "affected_tasks": affected_tasks,
-            "blocks_current_execution": not provider_scoped,
+            # A sentence extracted from agent commentary is useful context, not
+            # authority to prevent another agent from starting. Only an
+            # explicitly typed, observation-backed hard blocker may stop launch.
+            "blocks_current_execution": (
+                hard_checkpoint_blocker and not provider_scoped
+            ),
             "applicability": (
                 {
                     "kind": "provider",

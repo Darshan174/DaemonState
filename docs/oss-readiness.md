@@ -94,11 +94,11 @@ pytest -q
 cd frontend && npm run build
 ```
 
-Latest verified result from the 2026-07-24 continuation-runtime pass:
+Latest verified result from the 2026-07-25 continuation-workflow pass:
 
-- `pytest -q`: 798 passed, 1 skipped, 1 SQLite datetime deprecation warning.
+- `pytest -q`: 863 passed, 2 skipped, 1 SQLite datetime deprecation warning.
 - `ruff check app tests`: passed.
-- `cd frontend && npm test -- --run`: 23 files, 178 tests passed.
+- `cd frontend && npm test -- --run`: 23 files, 199 tests passed.
 - `cd frontend && npm run build`: passed.
 
 Not verified in this pass:

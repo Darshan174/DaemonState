@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   ArrowRight,
@@ -24,6 +24,7 @@ import {
   useCheckpoints,
   useContinuationProviders,
   useLatestCheckpoint,
+  useOpenContinuationHarness,
   useRunContinuation,
   useSessionLibrary,
 } from "../api/hooks";
@@ -40,7 +41,17 @@ export default function NowPage() {
   const workspace = useProductWorkspace();
   const digestQuery = useContextDigest(workspace.activeWorkspaceId, { poll: true });
   const digestActivity = digestQuery.data?.activity?.primary || null;
-  const activeCheckpointSession = activitySessionReference(digestActivity);
+  const requestedSourceReference = explicitSessionReference(
+    searchParams.get("source_provider"),
+    searchParams.get("source_session"),
+  );
+  const continuationDigestActivity = selectContinuationSessionActivity(
+    digestQuery.data?.activity?.recent_sessions,
+    digestActivity,
+    requestedSourceReference,
+  );
+  const activeCheckpointSession = requestedSourceReference
+    || activitySessionReference(continuationDigestActivity);
   const digestSettled = Boolean(digestQuery.data) || digestQuery.isError;
   const hasActiveCheckpointSession = Boolean(activeCheckpointSession);
   const checkpointQuery = useLatestCheckpoint(
@@ -65,13 +76,16 @@ export default function NowPage() {
     ? checkpointQuery
     : workspaceCheckpointQuery;
   const checkpointSettled = digestSettled && queryHasSettled(primaryCheckpointQuery);
-  const activitySession = activitySessionDescriptor(digestActivity);
+  const activitySession = activitySessionDescriptor(continuationDigestActivity);
   const libraryFallbackNeeded = !activitySession;
   const libraryQuery = useSessionLibrary(
     workspace.activeWorkspaceId,
     { enabled: checkpointSettled && libraryFallbackNeeded },
   );
-  const latestSession = activitySession || libraryQuery.data?.sessions?.[0] || null;
+  const latestSession = activitySession || selectLibrarySession(
+    libraryQuery.data?.sessions,
+    requestedSourceReference,
+  );
   const detailSessionReference = activeCheckpointSession
     || checkpointSessionReference(primaryCheckpointQuery.data)
     || sessionDescriptorReference(latestSession);
@@ -95,13 +109,25 @@ export default function NowPage() {
   const [continuationResult, setContinuationResult] = useState(null);
   const [continuationError, setContinuationError] = useState(null);
   const [pendingProvider, setPendingProvider] = useState(null);
+  const [hoveredContinuationProvider, setHoveredContinuationProvider] = useState(null);
+  const latestRunAtStartRef = useRef(null);
   const continuationRequestKey = JSON.stringify([
     workspace.activeWorkspaceId || "",
     searchParams.get("objective") || "",
+    searchParams.get("objective_source") || "",
+    searchParams.get("repo_path") || "",
     searchParams.get("checkpoint") || "",
     searchParams.get("checkpoint_source") || "",
+    searchParams.get("source_provider") || "",
+    searchParams.get("source_session") || "",
     digestQuery.data?.current_goal?.title || "",
-    digestActivity?.request || digestActivity?.title || "",
+    continuationDigestActivity?.session_title
+      || continuationDigestActivity?.title
+      || "",
+    continuationDigestActivity?.provider
+      || continuationDigestActivity?.tool
+      || "",
+    continuationDigestActivity?.session_id || "",
     digestQuery.data?.scope?.project_paths?.[0]
       || digestActivity?.cwd
       || latestSession?.cwd
@@ -110,12 +136,16 @@ export default function NowPage() {
       || "",
     primaryCheckpointQuery.data?.sections?.goal?.[0]?.statement || "",
   ]);
+  const continuationRequestKeyRef = useRef(continuationRequestKey);
   useEffect(() => {
+    if (continuationRequestKeyRef.current === continuationRequestKey) return;
+    continuationRequestKeyRef.current = continuationRequestKey;
+    if (continuationState === "running" || runContinuation.isPending) return;
     setContinuationState("idle");
     setContinuationResult(null);
     setContinuationError(null);
     setPendingProvider(null);
-  }, [continuationRequestKey]);
+  }, [continuationRequestKey, continuationState, runContinuation.isPending]);
   useLinkedAISessionRefresh(
     workspace.activeWorkspaceId,
     { enabled: checkpointSettled, initialDelayMs: 5_000 },
@@ -148,11 +178,16 @@ export default function NowPage() {
   const workspaceCheckpoint = workspaceCheckpointQuery.data || null;
   // Now is current observed activity. A checkpoint is a separate immutable
   // recovery boundary and must never replace newer session state.
-  const observedActivity = digest.activity?.primary || fallbackActivity(digest);
+  const observedActivity = continuationDigestActivity
+    || (!requestedSourceReference
+      ? digest.activity?.primary || fallbackActivity(digest)
+      : null);
   const checkpointIsCurrent = workspaceCheckpoint?.currentness?.state === "captured";
   const activity = observedActivity || (checkpointIsCurrent ? workspaceCheckpoint?.activity : null);
   const checkpoint = activeCheckpointSession
-    ? checkpointQuery.data || null
+    ? checkpointMatchesSessionReference(checkpointQuery.data, activeCheckpointSession)
+      ? checkpointQuery.data
+      : null
     : checkpointMatchesActivity(workspaceCheckpoint, activity)
       ? workspaceCheckpoint
       : null;
@@ -163,6 +198,10 @@ export default function NowPage() {
     && !checkpointMatchesActivity(workspaceCheckpoint, activity)
   ) ? workspaceCheckpoint : null;
   const requestedObjective = prepareTaskCandidate(searchParams.get("objective"));
+  const requestedObjectiveIsSourceBacked = (
+    searchParams.get("objective_source") === "session"
+  );
+  const requestedRepoPath = String(searchParams.get("repo_path") || "").trim();
   const requestedCheckpointId = String(searchParams.get("checkpoint") || "").trim();
   const currentGoal = prepareTaskCandidate(digest.current_goal?.title);
   const attentionCards = cards
@@ -191,24 +230,61 @@ export default function NowPage() {
       Number(left.boundary?.sequence_number || 0)
       - Number(right.boundary?.sequence_number || 0)
     ));
+  const selectedSessionObjective = rootSessionTaskCandidate(continuationDigestActivity)
+    || rootSessionTaskCandidate(latestSession);
+  const checkpointObjective = prepareTaskCandidate(
+    cleanRecoveryText(currentCheckpoint?.sections?.goal?.[0]?.statement),
+  );
+  const inferredSource = activitySessionReference(continuationDigestActivity)
+    || sessionDescriptorReference(latestSession);
+  // An inferred session is only a display hint. The backend performs a fresh
+  // provider sync before resolving the task, so pinning this pre-sync session
+  // would prevent a newly imported current session from winning. Only an exact
+  // source selected through History/URL is an execution constraint.
+  const continuationSource = !requestedCheckpointId
+    ? requestedSourceReference
+    : null;
   const continuationObjective = requestedObjective
-    || currentGoal
-    || prepareTaskCandidate(observedActivity?.request)
-    || prepareTaskCandidate(observedActivity?.session_title)
-    || prepareTaskCandidate(observedActivity?.title)
-    || prepareTaskCandidate(latestSession?.title)
-    || prepareTaskCandidate(cleanRecoveryText(currentCheckpoint?.sections?.goal?.[0]?.statement));
-  const continuationRepoPath = digest.scope?.project_paths?.[0]
-    || activity?.cwd
+    || selectedSessionObjective
+    || (!continuationSource && (
+      !requestedCheckpointId || currentCheckpoint?.id === requestedCheckpointId
+    )
+      ? checkpointObjective
+      : "");
+  const continuationRepoPath = requestedRepoPath
+    || continuationDigestActivity?.cwd
     || latestSession?.cwd
+    || currentCheckpoint?.activity?.cwd
     || workspace.activeWorkspace?.repo_path
+    || digest.scope?.project_paths?.[0]
     || null;
-  const continuationBranch = activity?.branch
+  const continuationBranch = continuationDigestActivity?.branch
+    || latestSession?.branch
+    || activity?.branch
     || currentCheckpoint?.repo?.branch
     || currentCheckpoint?.repository?.branch
     || null;
-  const runTaskContinuation = async (targetProvider) => {
-    if (!workspace.activeWorkspaceId || (!continuationObjective && !continuationRepoPath)) return;
+  // Likewise, an automatically discovered checkpoint is context for the
+  // screen, not a request to resume that immutable boundary.
+  const continuationCheckpointId = requestedCheckpointId;
+  const continuationAnchorAvailable = Boolean(
+    requestedObjective
+    || continuationSource
+    || continuationCheckpointId
+    || inferredSource
+    || continuationObjective
+  );
+  const continuationDisplayObjective = continuationObjective
+    || (continuationSource
+      ? "Task will be resolved from the selected session"
+      : continuationCheckpointId
+        ? "Task will be resolved from the saved recovery point"
+        : "");
+  const runTaskContinuation = async (targetProvider, providerConfig = {}) => {
+    if (!workspace.activeWorkspaceId || !continuationAnchorAvailable) return;
+    latestRunAtStartRef.current = (
+      continuationProvidersQuery.data?.latest_run?.run_id || null
+    );
     setContinuationState("running");
     setContinuationResult(null);
     setContinuationError(null);
@@ -218,11 +294,25 @@ export default function NowPage() {
         workspace_id: workspace.activeWorkspaceId,
         idempotency_key: continuationIdempotencyKey(),
         target_provider: targetProvider,
-        ...(continuationObjective ? { objective: continuationObjective } : {}),
+        ...(providerConfig.provider_model
+          ? { provider_model: providerConfig.provider_model }
+          : {}),
+        ...(providerConfig.provider_effort
+          ? { provider_effort: providerConfig.provider_effort }
+          : {}),
+        ...((!continuationSource || requestedObjectiveIsSourceBacked) && requestedObjective
+          ? { objective: requestedObjective }
+          : {}),
         ...(continuationRepoPath ? { repo_path: continuationRepoPath } : {}),
-        ...(requestedCheckpointId ? { checkpoint_id: requestedCheckpointId } : {}),
+        ...(continuationCheckpointId ? { checkpoint_id: continuationCheckpointId } : {}),
         ...(requestedCheckpointId && searchParams.get("checkpoint_source")
           ? { checkpoint_source_id: searchParams.get("checkpoint_source") }
+          : {}),
+        ...(continuationSource
+          ? {
+              source_provider: continuationSource.provider,
+              source_session_id: continuationSource.sessionId,
+            }
           : {}),
       });
       setContinuationResult(result);
@@ -247,27 +337,70 @@ export default function NowPage() {
       && Boolean(latestSession)
       && (activeCheckpointSession ? checkpointQuery.isLoading : workspaceCheckpointQuery.isLoading)
     );
-  const continueAction = digestUnavailable
-    ? {
-        kind: "unavailable",
-        description: "Current activity could not be loaded. Saved project evidence remains available below.",
-      }
-    : actionInputsPending
+  const continueAction = actionInputsPending
       ? {
           kind: "loading",
           description: "Resolving the current task, repository, and safest continuation.",
         }
-      : continuationObjective || continuationRepoPath
+      : continuationAnchorAvailable
         ? {
             kind: "continue",
-            description: "Resolve the task, reconcile the repository, run a fresh agent, and verify the observed outcome automatically.",
+            description: digestUnavailable
+              ? "Live activity is unavailable. Continue will reconcile the saved task against the repository before starting the agent."
+              : "Resolve the task, reconcile the repository, run a fresh agent, and verify the observed outcome automatically.",
           }
+        : digestUnavailable
+          ? {
+              kind: "unavailable",
+              description: "Current activity could not be loaded and no saved task could be resolved. Choose work before continuing.",
+            }
         : {
             kind: "choose",
             description: "Choose linked work before continuing.",
           };
   const continuationProviders = resolvedContinuationProviders(continuationProvidersQuery);
   const continuationRunnable = continueAction.kind === "continue";
+  const providerRetryVisible = continuationProviders.some((provider) => !provider.ready);
+  const activeContinuationRun = continuationProvidersQuery.data?.active_run || null;
+  const latestContinuationRun = continuationProvidersQuery.data?.latest_run || null;
+  const activeContinuationProvider = normalizeProvider(activeContinuationRun?.provider);
+  const latestRunFinishedCurrentRequest = Boolean(
+    continuationState === "running"
+    && !activeContinuationRun
+    && latestContinuationRun?.run_id
+    && latestContinuationRun.run_id !== latestRunAtStartRef.current,
+  );
+  const recoveredContinuationVisible = Boolean(
+    latestContinuationRun
+    && (
+      continuationState === "idle"
+      || latestRunFinishedCurrentRequest
+    ),
+  );
+  const recoveredContinuationResult = recoveredContinuationVisible
+    ? continuationResultFromPersistedRun(latestContinuationRun)
+    : null;
+  const recoveredContinuationState = recoveredContinuationVisible
+    ? continuationStateFromPersistedRun(latestContinuationRun)
+    : null;
+  const continuationWorkflowPending = (
+    !latestRunFinishedCurrentRequest
+    && (
+      continuationState === "running"
+      || runContinuation.isPending
+      || activeContinuationRun?.status === "running"
+    )
+  );
+  const displayedContinuationState = recoveredContinuationState || (
+    continuationState === "idle" && activeContinuationRun?.status === "running"
+      ? "running"
+      : continuationState
+  );
+  const displayedContinuationResult = recoveredContinuationResult
+    || continuationResult;
+  const displayedContinuationError = recoveredContinuationResult
+    ? continuationBlockerFromPersistedRun(latestContinuationRun)
+    : continuationError;
 
   return (
     <div className="app-page ce-now-page relative">
@@ -307,7 +440,7 @@ export default function NowPage() {
             >
               <ContinuationContractItem
                 label="Execution goal"
-                value={compactContinuationGoal(continuationObjective)}
+                value={compactContinuationGoal(continuationDisplayObjective)}
               />
               <ContinuationContractItem
                 label="Repository"
@@ -319,17 +452,45 @@ export default function NowPage() {
               />
             </dl>
 
-            <div className="mt-7 grid gap-3 md:grid-cols-3" aria-label="Continuation harnesses">
-              {continuationProviders.map((provider) => (
-                <HarnessContinuationCard
-                  key={provider.provider}
-                  provider={provider}
-                  pending={pendingProvider === provider.provider}
-                  workflowPending={continuationState === "running" || runContinuation.isPending}
-                  taskReady={continuationRunnable}
-                  onContinue={runTaskContinuation}
-                />
-              ))}
+            <div
+              className="relative mx-auto mt-7 flex min-h-[330px] max-w-4xl items-center justify-center overflow-visible px-2 py-7 sm:min-h-[430px] sm:px-8"
+              aria-label="Continuation harnesses"
+              onMouseLeave={() => setHoveredContinuationProvider(null)}
+            >
+              {continuationProviders.map((provider, index) => {
+                const hoverIndex = continuationProviders.findIndex(
+                  (candidate) => (
+                    candidate.provider === hoveredContinuationProvider
+                  ),
+                );
+                const hovered = hoveredContinuationProvider === provider.provider;
+                const pending = (
+                  pendingProvider === provider.provider
+                  || activeContinuationProvider === provider.provider
+                );
+                const distanceFromHover = hoverIndex >= 0 ? index - hoverIndex : 0;
+                const translateX = hoverIndex >= 0 && !hovered
+                  ? distanceFromHover * 24
+                  : 0;
+                const translateY = hovered || pending
+                  ? -18
+                  : Math.abs(distanceFromHover) * 5;
+                return (
+                  <HarnessContinuationCard
+                    key={provider.provider}
+                    provider={provider}
+                    index={index}
+                    hovered={hovered}
+                    translateX={translateX}
+                    translateY={translateY}
+                    pending={pending}
+                    workflowPending={continuationWorkflowPending}
+                    taskReady={continuationRunnable}
+                    onHover={() => setHoveredContinuationProvider(provider.provider)}
+                    onContinue={runTaskContinuation}
+                  />
+                );
+              })}
             </div>
 
             <div className="mt-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
@@ -342,8 +503,24 @@ export default function NowPage() {
                     Recovery request · {requestedCheckpointId}
                   </span>
                 ) : null}
+                {providerRetryVisible ? (
+                  <button
+                    type="button"
+                    onClick={() => continuationProvidersQuery.refetch?.()}
+                    disabled={continuationProvidersQuery.isFetching}
+                    className="inline-flex min-h-9 items-center gap-1.5 rounded-full border border-white/15 bg-white/[0.04] px-3 text-[10px] font-semibold text-[#d0d0c8] transition hover:border-white/30 hover:text-white disabled:cursor-wait disabled:opacity-60"
+                  >
+                    <RefreshCw
+                      className={`h-3 w-3 ${continuationProvidersQuery.isFetching ? "animate-spin" : ""}`}
+                      aria-hidden="true"
+                    />
+                    {continuationProvidersQuery.isFetching
+                      ? "Checking readiness…"
+                      : "Retry provider readiness"}
+                  </button>
+                ) : null}
               </div>
-              {continueAction.kind === "choose" ? (
+              {continueAction.kind === "choose" || continueAction.kind === "unavailable" ? (
                 <Link to="/app/library" className="group inline-flex min-h-11 items-center gap-1.5 text-xs font-semibold text-[#d9ff68]">
                   Choose work to continue
                   <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
@@ -353,9 +530,11 @@ export default function NowPage() {
             <p className="mt-3 text-xs leading-5 text-[#97978f]">{continueAction.description}</p>
             <div className="mt-3 max-w-3xl">
               <ContinuationWorkflowStatus
-                state={continuationState}
-                result={continuationResult}
-                blocker={continuationError}
+                state={displayedContinuationState}
+                result={displayedContinuationResult}
+                blocker={displayedContinuationError}
+                activeRun={activeContinuationRun}
+                workspaceId={workspace.activeWorkspaceId}
               />
             </div>
           </div>
@@ -1294,12 +1473,91 @@ function verificationLabel(verification = {}) {
   return `${passed}/${observed} passed`;
 }
 
-const CONTINUATION_PHASES = [
-  "Resolving the real task",
-  "Reconciling repository state",
-  "Running a fresh target agent",
-  "Verifying the observed outcome",
-];
+function continuationResultFromPersistedRun(latestRun) {
+  const verification = latestRun?.verification || {};
+  const observed = numericCount(verification.observed);
+  const passed = numericCount(verification.passed);
+  const failed = numericCount(
+    verification.failed,
+    Math.max(0, observed - passed),
+  );
+  const provider = normalizeProvider(
+    latestRun?.provider || latestRun?.tool,
+  );
+  const objective = preserveContinuationText(latestRun?.objective);
+  return {
+    status: latestRun?.status,
+    delivery: {
+      status: "recorded",
+      provider,
+      mode: "fresh",
+      recovered: true,
+      harness_session: latestRun?.harness_session || null,
+    },
+    run: {
+      id: latestRun?.run_id,
+      run_id: latestRun?.run_id,
+      provider,
+      status: latestRun?.status,
+      changed_files: latestRun?.changed_files || [],
+      verification_results: [],
+      harness_session: latestRun?.harness_session || null,
+    },
+    outcome: {
+      status: latestRun?.status,
+      verified: latestRun?.verified_success === true,
+      summary: latestRun?.outcome_summary,
+      changed_files: latestRun?.changed_files || [],
+      affected_tasks: objective ? [objective] : [],
+      checks: {
+        total: observed,
+        passed,
+        failed,
+        status: failed ? "failed" : observed ? "passed" : "",
+        items: [],
+      },
+    },
+  };
+}
+
+function continuationStateFromPersistedRun(latestRun) {
+  if (latestRun?.verified_success === true) return "completed";
+  const status = String(latestRun?.status || "").trim().toLocaleLowerCase();
+  if (["complete", "completed", "passed", "success", "succeeded"].includes(status)) {
+    return "completed";
+  }
+  return "blocked";
+}
+
+function continuationBlockerFromPersistedRun(latestRun) {
+  if (continuationStateFromPersistedRun(latestRun) !== "blocked") return null;
+  const provider = continuationProviderLabel(
+    latestRun?.provider || latestRun?.tool,
+  );
+  const objective = preserveContinuationText(latestRun?.objective);
+  const verification = latestRun?.verification || {};
+  const failedChecks = numericCount(verification.failed);
+  const failureCode = preserveContinuationText(latestRun?.failure_code)
+    .toLocaleLowerCase();
+  return {
+    title: `${provider} continuation failed`,
+    message: preserveContinuationText(latestRun?.outcome_summary)
+      || (
+        failedChecks
+          ? `${failedChecks} verification ${failedChecks === 1 ? "check failed" : "checks failed"}.`
+          : "The run ended without a verified handoff."
+    ),
+    affectedTasks: objective ? [objective] : [],
+    action: failureCode === "provider_run_timed_out"
+      ? (
+          "Review the recorded changes, finish any incomplete work, and retry "
+          + "only if work remains."
+        )
+      : "Review the recorded run, then retry when the provider is available.",
+  };
+}
+
+const CONTINUATION_STARTING_PHASE = "Resolving the task and starting its harness";
 
 function resolvedContinuationProviders(query) {
   const supplied = Array.isArray(query.data?.providers) ? query.data.providers : [];
@@ -1310,12 +1568,20 @@ function resolvedContinuationProviders(query) {
     const meta = harnessMeta(provider);
     const suppliedProvider = byProvider.get(provider);
     if (suppliedProvider) {
+      const reportedReady = suppliedProvider.ready === true;
+      const status = normalizedProviderReadinessStatus(suppliedProvider, reportedReady);
+      const code = String(suppliedProvider.code || "").trim().toLowerCase();
+      const ready = (
+        reportedReady
+        && (status === "ready" || status === "configured")
+        && code !== "provider_cli_not_found"
+      );
       return {
         ...suppliedProvider,
         provider,
         name: suppliedProvider.name || meta.name,
-        status: suppliedProvider.status || (suppliedProvider.ready ? "ready" : "unavailable"),
-        ready: suppliedProvider.ready === true,
+        status,
+        ready,
         message: preserveContinuationText(suppliedProvider.message),
         action: preserveContinuationText(suppliedProvider.action),
       };
@@ -1355,27 +1621,78 @@ function resolvedContinuationProviders(query) {
   });
 }
 
-function ContinuationWorkflowStatus({ state, result, blocker }) {
+function normalizedProviderReadinessStatus(provider, reportedReady) {
+  const status = String(provider.status || "").trim().toLowerCase();
+  if (status) return status;
+
+  const code = String(provider.code || "").trim().toLowerCase();
+  if (code === "provider_cli_not_found") return "provider_cli_not_found";
+  if (code === "provider_configured") return "configured";
+  if (code === "provider_ready") return "ready";
+  if (code.includes("authentication")) return "authentication_required";
+  if (code.includes("access")) return "access_required";
+  if (code.includes("configuration") || code.includes("setup")) {
+    return "configuration_required";
+  }
+  return reportedReady ? "ready" : "unavailable";
+}
+
+function ContinuationWorkflowStatus({
+  state,
+  result,
+  blocker,
+  activeRun = null,
+  workspaceId = null,
+}) {
   if (state === "idle") return null;
 
+  const recordedRunId = activeRun?.run_id
+    || result?.run?.run_id
+    || result?.run?.id
+    || result?.delivery?.run_id;
+  const harnessSession = activeRun?.harness_session
+    || result?.delivery?.harness_session
+    || result?.run?.harness_session
+    || null;
+
   if (state === "running") {
+    const activeProvider = continuationProviderLabel(activeRun?.provider, "");
+    const activeStartedAt = activeRun?.started_at
+      ? formatTimeAgo(activeRun.started_at)
+      : "";
     return (
       <div
         role="status"
         aria-busy="true"
         className="rounded-xl border border-[#d9ff68]/25 bg-[#d9ff68]/[0.08] px-3 py-3 text-xs text-[#e7ffad]"
       >
-        <p className="font-semibold">Automatic continuation in progress</p>
-        <ol className="mt-2 grid gap-1.5" aria-label="Continuation workflow phases">
-          {CONTINUATION_PHASES.map((phase) => (
-            <li key={phase} className="flex items-center gap-2 text-[11px] leading-5 text-[#d8e6b5]">
-              <RefreshCw className="h-3 w-3 shrink-0 animate-spin opacity-70" aria-hidden="true" />
-              {phase}
-            </li>
-          ))}
-        </ol>
+        <p className="font-semibold">
+          {activeProvider
+            ? `${activeProvider} continuation in progress`
+            : "Automatic continuation in progress"}
+        </p>
+        {activeRun ? (
+          <p className="mt-1 text-[10px] leading-4 text-[#c8d6a7]">
+            The run is still active on this machine
+            {activeStartedAt ? ` · started ${activeStartedAt}` : ""}.
+            Reloading will not start another copy.
+          </p>
+        ) : null}
+        <div className="mt-2 flex items-center gap-2 rounded-lg bg-black/15 px-2.5 py-2 text-[11px] leading-5 text-[#d8e6b5]">
+          <RefreshCw className="h-3 w-3 shrink-0 animate-spin opacity-70" aria-hidden="true" />
+          {harnessSession
+            ? `${continuationProviderLabel(harnessSession.provider)} agent is working`
+            : activeRun
+              ? "Starting the selected harness and capturing its session"
+              : CONTINUATION_STARTING_PHASE}
+        </div>
+        <HarnessSessionAction
+          workspaceId={workspaceId}
+          runId={recordedRunId}
+          session={harnessSession}
+        />
         <p className="mt-2 text-[10px] leading-4 text-[#aab28f]">
-          The result appears after the agent exits and verification finishes.
+          Context Engine captures changed files and runs verification after the agent exits.
         </p>
       </div>
     );
@@ -1388,6 +1705,9 @@ function ContinuationWorkflowStatus({ state, result, blocker }) {
       affectedTasks: [],
       action: "",
     };
+    const failedChecks = continuationChecks(result).items.filter(
+      (item) => !continuationCheckPassed(item),
+    );
     return (
       <div role="alert" className="rounded-xl border border-red-300/25 bg-red-300/[0.08] px-3 py-3 text-xs text-red-100">
         <p className="font-semibold">{detail.title}</p>
@@ -1409,9 +1729,44 @@ function ContinuationWorkflowStatus({ state, result, blocker }) {
             </ul>
           </div>
         ) : null}
+        {failedChecks.length ? (
+          <div className="mt-2 border-t border-red-100/10 pt-2">
+            <p className="text-[9px] font-semibold uppercase tracking-[0.14em] opacity-65">
+              Failed checks
+            </p>
+            <ul className="mt-1.5 grid gap-2 text-[11px] leading-5">
+              {failedChecks.map((check, index) => (
+                <li
+                  key={check.requirement_id || check.command || index}
+                  className="rounded-lg bg-black/15 px-2.5 py-2"
+                >
+                  <code className="break-all text-[10px] text-red-50">
+                    {preserveContinuationText(check.command) || "Unnamed verification check"}
+                  </code>
+                  {continuationCheckDetail(check) ? (
+                    <p className="mt-1 break-words text-[10px] leading-4 opacity-75">
+                      {continuationCheckDetail(check)}
+                    </p>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
         {detail.action ? (
           <p className="mt-2 rounded-lg bg-red-100/[0.06] px-2.5 py-2 text-[11px] font-semibold leading-5">
             Next: {detail.action}
+          </p>
+        ) : null}
+        <HarnessSessionAction
+          workspaceId={workspaceId}
+          runId={recordedRunId}
+          session={harnessSession}
+          tone="danger"
+        />
+        {recordedRunId && !harnessSession ? (
+          <p className="mt-2 text-[10px] leading-4 opacity-65">
+            Recorded run {String(recordedRunId).slice(0, 8)} has no linked harness session.
           </p>
         ) : null}
         <p className="mt-1 text-[10px] leading-4 opacity-65">
@@ -1470,6 +1825,12 @@ function ContinuationWorkflowStatus({ state, result, blocker }) {
         advanced={taskTransition.status === "completed"}
       />
 
+      <HarnessSessionAction
+        workspaceId={workspaceId}
+        runId={recordedRunId}
+        session={harnessSession}
+      />
+
       <dl className="mt-3 grid gap-2 border-t border-white/10 pt-3">
         <div>
           <dt className="text-[9px] font-semibold uppercase tracking-[0.14em] opacity-55">
@@ -1501,6 +1862,70 @@ function ContinuationWorkflowStatus({ state, result, blocker }) {
         <p className="mt-2 border-t border-amber-200/15 pt-2 text-[10px] leading-4 text-amber-100/75">
           The run finished, but successful task continuation is not proven.
         </p>
+      ) : null}
+    </div>
+  );
+}
+
+function HarnessSessionAction({
+  workspaceId,
+  runId,
+  session,
+  tone = "default",
+}) {
+  const openHarness = useOpenContinuationHarness();
+  const [feedback, setFeedback] = useState("");
+  if (
+    !workspaceId
+    || !runId
+    || !session?.session_id
+    || session?.exact_session_supported !== true
+  ) {
+    return null;
+  }
+
+  const provider = continuationProviderLabel(session.provider);
+  const danger = tone === "danger";
+  const openSession = async () => {
+    setFeedback("");
+    try {
+      await openHarness.mutateAsync({
+        workspaceId,
+        runId,
+      });
+      setFeedback(`Asked ${provider} to show this exact run.`);
+    } catch (error) {
+      setFeedback(
+        preserveContinuationText(
+          error?.detail?.message || error?.message,
+        ) || `Could not open the ${provider} run.`,
+      );
+    }
+  };
+
+  return (
+    <div className={`mt-2 rounded-lg px-2.5 py-2 ${
+      danger ? "bg-red-100/[0.06]" : "bg-black/15"
+    }`}>
+      <p className="text-[10px] leading-4 opacity-80">
+        {session.navigation_verified
+          ? `This exact ${provider} thread is open.`
+          : session.navigation_requested
+            ? `${provider} was asked to show this exact thread automatically.`
+            : `This run has an exact ${provider} thread.`}
+        {" "}Thread {String(session.session_id).slice(0, 8)}.
+      </p>
+      <button
+        type="button"
+        onClick={openSession}
+        disabled={openHarness.isPending}
+        className="mt-1.5 inline-flex min-h-9 items-center gap-1.5 text-[11px] font-semibold underline decoration-current/35 underline-offset-4 disabled:cursor-wait disabled:opacity-60"
+      >
+        {openHarness.isPending ? `Opening ${provider}…` : `Open ${provider} run`}
+        <ArrowRight className="h-3 w-3" aria-hidden="true" />
+      </button>
+      {feedback ? (
+        <p className="mt-1 text-[10px] leading-4 opacity-75">{feedback}</p>
       ) : null}
     </div>
   );
@@ -1565,6 +1990,11 @@ function continuationBlocker(result) {
     return normalizeContinuationBlocker(explicit, {
       fallbackTitle: "Continuation blocked",
       fallbackMessage: "The continuation workflow reported a blocker.",
+      targetProvider: (
+        result?.delivery?.provider
+        || result?.target_provider
+        || result?.run?.provider
+      ),
     });
   }
 
@@ -1614,12 +2044,14 @@ function continuationErrorFromRequest(error, targetProvider) {
   return normalizeContinuationBlocker(candidate, {
     fallbackTitle: `${continuationProviderLabel(targetProvider)} continuation blocked`,
     fallbackMessage: error?.message || "The continuation workflow could not start.",
+    targetProvider,
   });
 }
 
 function normalizeContinuationBlocker(blocker, {
   fallbackTitle = "Continuation blocked",
   fallbackMessage = "The continuation workflow could not continue.",
+  targetProvider = "",
 } = {}) {
   if (typeof blocker === "string") {
     return {
@@ -1630,11 +2062,18 @@ function normalizeContinuationBlocker(blocker, {
     };
   }
   const source = blocker && typeof blocker === "object" ? blocker : {};
-  const code = cleanDisplayText(source.code);
+  // Error codes are machine identifiers. Display sanitization strips
+  // underscores and would collapse `provider_run_failed` before classification.
+  const code = preserveContinuationText(source.code);
+  const provider = source.provider
+    || source.target_provider
+    || source.detail?.provider
+    || source.detail?.target_provider
+    || targetProvider;
   const title = preserveContinuationText(
     source.title
     || source.label
-    || continuationBlockerTitleFromCode(code),
+    || continuationBlockerTitleFromCode(code, provider),
   ) || fallbackTitle;
   const message = preserveContinuationText(
     source.message
@@ -1662,7 +2101,7 @@ function preserveContinuationText(value) {
 
 function compactContinuationGoal(value) {
   const text = preserveContinuationText(cleanDisplayText(value));
-  if (!text) return "Resolved from the latest linked work";
+  if (!text) return "No task selected";
   const sentence = text.split(/(?<=[.!?])\s+/)[0] || text;
   const limit = 140;
   return sentence.length > limit
@@ -1675,8 +2114,18 @@ function continuationRepositoryLabel(value) {
   return normalized.split("/").filter(Boolean).at(-1) || "Resolved at launch";
 }
 
-function continuationBlockerTitleFromCode(code) {
+function continuationBlockerTitleFromCode(code, targetProvider = "") {
   const normalized = String(code || "").toLocaleLowerCase();
+  if (
+    normalized.includes("billing")
+    || normalized.includes("credits")
+    || normalized.includes("subscription")
+  ) {
+    return "Provider access or billing required";
+  }
+  if (normalized.includes("service_unavailable")) {
+    return "Provider service unavailable";
+  }
   if (normalized.includes("auth") || normalized.includes("oauth")) {
     return "Agent authentication failed";
   }
@@ -1684,9 +2133,30 @@ function continuationBlockerTitleFromCode(code) {
     return "Agent update required";
   }
   if (normalized.includes("fresh")) return "Repository freshness check failed";
-  if (normalized.includes("verification")) return "Verification failed";
+  if (
+    normalized.includes("verification")
+    || normalized.includes("continuation_checks_failed")
+  ) {
+    return "Verification failed";
+  }
   if (normalized.includes("goal")) return "Task goal is missing";
-  if (normalized.includes("provider") || normalized.includes("agent")) {
+  if ([
+    "provider_run_failed",
+    "provider_run_timed_out",
+    "provider_invocation_invalid",
+  ].some((failureCode) => normalized.includes(failureCode))) {
+    return `${continuationProviderLabel(targetProvider)} continuation failed`;
+  }
+  if ([
+    "provider_unavailable",
+    "provider_not_found",
+    "provider_not_ready",
+    "provider_readiness",
+    "provider_missing",
+    "agent_unavailable",
+    "agent_not_found",
+    "target_agent_unavailable",
+  ].some((unavailableCode) => normalized.includes(unavailableCode))) {
     return "Target agent unavailable";
   }
   return "";
@@ -1743,7 +2213,24 @@ function continuationAgentOutput(result) {
 function continuationChecks(result) {
   const supplied = result?.outcome?.checks;
   if (supplied && typeof supplied === "object") {
-    const items = Array.isArray(supplied.items) ? supplied.items : [];
+    const runItems = Array.isArray(result?.run?.verification_results)
+      ? result.run.verification_results
+      : [];
+    const items = (Array.isArray(supplied.items) ? supplied.items : []).map(
+      (item) => {
+        const matchingRunItem = runItems.find((candidate) => (
+          (
+            item?.requirement_id
+            && candidate?.requirement_id === item.requirement_id
+          )
+          || (
+            item?.command
+            && candidate?.command === item.command
+          )
+        ));
+        return matchingRunItem ? { ...matchingRunItem, ...item } : item;
+      },
+    );
     const total = numericCount(supplied.total, items.length);
     const passed = numericCount(
       supplied.passed,
@@ -1770,6 +2257,29 @@ function continuationCheckPassed(item) {
   const status = String(item?.status || "").toLocaleLowerCase();
   if (status) return ["passed", "success", "completed"].includes(status);
   return Number(item?.result?.exit_code) === 0;
+}
+
+function continuationCheckDetail(item) {
+  const result = item?.result && typeof item.result === "object"
+    ? item.result
+    : {};
+  const value = preserveContinuationText(
+    result.stderr
+    || result.stdout
+    || item?.message
+    || item?.details,
+  );
+  if (!value) {
+    const exitCode = item?.exit_code ?? result.exit_code;
+    return Number.isInteger(Number(exitCode))
+      ? `Exited with code ${Number(exitCode)}.`
+      : "";
+  }
+  const compact = value.replace(/\s+/g, " ").trim();
+  const limit = 280;
+  return compact.length > limit
+    ? `${compact.slice(0, limit - 1).trimEnd()}…`
+    : compact;
 }
 
 function continuationChecksLabel(checks) {
@@ -1825,6 +2335,64 @@ function activityTimestamp(card) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function explicitSessionReference(provider, sessionId) {
+  const normalizedProvider = normalizeProvider(provider);
+  const normalizedSessionId = String(sessionId || "").trim();
+  if (!normalizedProvider || !normalizedSessionId) return null;
+  return {
+    provider: normalizedProvider,
+    sessionId: normalizedSessionId,
+  };
+}
+
+function selectContinuationSessionActivity(recentSessions, primary, requestedSource) {
+  const recent = Array.isArray(recentSessions) ? recentSessions : [];
+  const candidates = [...recent, primary]
+    .filter(Boolean)
+    .filter((activity) => activitySessionReference(activity));
+  if (requestedSource) {
+    return candidates.find((activity) => (
+      sameSessionReference(activitySessionReference(activity), requestedSource)
+    )) || null;
+  }
+  return [...recent]
+    .filter((activity) => activitySessionReference(activity))
+    .sort((left, right) => sessionActivityTimestamp(right) - sessionActivityTimestamp(left))[0]
+    || (activitySessionReference(primary) ? primary : null);
+}
+
+function selectLibrarySession(sessions, requestedSource) {
+  const candidates = (Array.isArray(sessions) ? sessions : [])
+    .filter((session) => sessionDescriptorReference(session));
+  if (requestedSource) {
+    return candidates.find((session) => (
+      sameSessionReference(sessionDescriptorReference(session), requestedSource)
+    )) || null;
+  }
+  return [...candidates]
+    .sort((left, right) => sessionActivityTimestamp(right) - sessionActivityTimestamp(left))[0]
+    || null;
+}
+
+function sameSessionReference(left, right) {
+  return Boolean(
+    left
+    && right
+    && left.provider === right.provider
+    && left.sessionId === right.sessionId
+  );
+}
+
+function sessionActivityTimestamp(session) {
+  const value = session?.source_activity_at
+    || session?.updated_at
+    || session?.ended_at
+    || session?.started_at
+    || session?.imported_at;
+  const parsed = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function activitySessionReference(activity) {
   if (
     !activity?.session_id
@@ -1842,12 +2410,8 @@ function activitySessionReference(activity) {
 function activitySessionDescriptor(activity) {
   const session = activitySessionReference(activity);
   if (!session) return null;
-  const title = prepareTaskCandidate(
-    activity.selected_topic
-    || activity.request
-    || activity.title
-    || activity.session_title,
-  ) || "Imported coding session";
+  const rootTaskTitle = rootSessionTaskCandidate(activity);
+  const title = rootTaskTitle || "Imported coding session";
   return {
     id: activity.source_document_id || `${session.provider}:${session.sessionId}`,
     connector_type: session.provider,
@@ -1859,6 +2423,7 @@ function activitySessionDescriptor(activity) {
     session_id: session.sessionId,
     source_document_id: activity.source_document_id || null,
     title,
+    root_task_title: rootTaskTitle || null,
     preview: displayActivityText(activity.latest_update),
     updated_at: activity.updated_at || null,
     cwd: activity.cwd || null,
@@ -1866,6 +2431,15 @@ function activitySessionDescriptor(activity) {
     live: Boolean(activity.live),
     compaction_checkpoints: [],
   };
+}
+
+function rootSessionTaskCandidate(session) {
+  if (!session) return "";
+  if (Object.prototype.hasOwnProperty.call(session, "root_task_title")) {
+    return prepareTaskCandidate(session.root_task_title);
+  }
+  return prepareTaskCandidate(session.title)
+    || prepareTaskCandidate(session.session_title);
 }
 
 function checkpointSessionReference(checkpoint) {
@@ -1895,11 +2469,12 @@ function queryHasSettled(query) {
 
 function checkpointMatchesActivity(checkpoint, activity) {
   const session = activitySessionReference(activity);
+  return checkpointMatchesSessionReference(checkpoint, session);
+}
+
+function checkpointMatchesSessionReference(checkpoint, session) {
   if (!checkpoint || !session) return false;
-  return (
-    normalizeProvider(checkpoint.provider) === session.provider
-    && String(checkpoint.session_id || "") === session.sessionId
-  );
+  return sameSessionReference(checkpointSessionReference(checkpoint), session);
 }
 
 function normalizeProvider(value) {
@@ -1979,7 +2554,16 @@ function prepareTaskCandidate(value) {
   }
   const lowered = task.toLowerCase();
   const runtimeMarkers = [
-    "collaboration tools cannot be called from inside functions.exec",
+    "collaboration tools cannot be called from inside",
+    "you are an agent in a team of agents",
+    "message type: new_task",
+    "message type: message",
+    "message type: final_answer",
+    "<environment_context>",
+    "<permissions instructions>",
+    "<app-context>",
+    "available tools are explicitly described",
+    "target channel: commentary",
     "request_user_input availability",
     "permissions instructions",
     "developer instructions",

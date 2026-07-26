@@ -339,6 +339,137 @@ async def test_explicit_verification_keeps_imported_commands_as_untrusted_eviden
     }]
 
 
+async def test_historical_command_failure_is_context_not_a_launch_blocker(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    events = _events()
+    events[3] = replace(
+        events[3],
+        content="1 failed",
+        payload={
+            **events[3].payload,
+            "exit_code": 1,
+            "passed": False,
+        },
+    )
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="failed-check-session",
+        events=events,
+    )
+    snapshot = _snapshot(tmp_path)
+    monkeypatch.setattr(
+        "app.services.checkpoints.capture_repository_snapshot",
+        _async_value(snapshot),
+    )
+    monkeypatch.setattr(
+        "app.services.checkpoint_verifier.capture_repository_snapshot",
+        _async_value(snapshot),
+    )
+    await db_session.commit()
+
+    captured = await client.post("/api/checkpoints/capture", json={
+        "workspace_id": str(workspace.id),
+        "provider": "codex",
+        "session_id": "failed-check-session",
+    })
+
+    assert captured.status_code == 200
+    checkpoint = captured.json()
+    assert checkpoint["continuation_status"] == "ready"
+    assert checkpoint["sections"]["blockers"] == []
+    assert checkpoint["sections"]["failed_attempts"]
+    assert checkpoint["sections"]["verification"][0]["payload"]["passed"] is False
+    assert checkpoint["sections"]["exact_next_action"][0]["statement"] == (
+        "run the focused tests."
+    )
+
+    response = await client.post(
+        f"/api/checkpoints/{checkpoint['id']}/verify",
+        json={"workspace_id": str(workspace.id), "execute_commands": False},
+    )
+
+    assert response.status_code == 200
+    verification = response.json()["verification"]
+    assert verification["status"] == "partial"
+    assert verification["results"]["historical_verification_failures"] == 1
+    observed = next(
+        check
+        for check in verification["results"]["checks"]
+        if check["name"] == "observed_verification"
+    )
+    assert observed["status"] == "failed"
+
+
+async def test_later_progress_supersedes_reported_intermediate_blocker(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="reported-blocker-session",
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id="reported-blocker:user",
+                sequence_number=1,
+                event_type="user_request",
+                role="user",
+                content="Finish the portable continuation workflow.",
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="reported-blocker:blocked",
+                sequence_number=2,
+                event_type="assistant_update",
+                role="assistant",
+                content="Blocker: the continuation endpoint still rejects historical runs.",
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="reported-blocker:fixed",
+                sequence_number=3,
+                event_type="assistant_update",
+                role="assistant",
+                content=(
+                    "Implemented the fix and the focused tests passed. "
+                    "Next action: verify the final Continue screen."
+                ),
+            ),
+        ],
+    )
+    snapshot = _snapshot(tmp_path)
+    monkeypatch.setattr(
+        "app.services.checkpoints.capture_repository_snapshot",
+        _async_value(snapshot),
+    )
+    await db_session.commit()
+
+    captured = await client.post("/api/checkpoints/capture", json={
+        "workspace_id": str(workspace.id),
+        "provider": "codex",
+        "session_id": "reported-blocker-session",
+    })
+
+    assert captured.status_code == 200, captured.text
+    checkpoint = captured.json()
+    assert checkpoint["continuation_status"] == "ready"
+    assert checkpoint["sections"]["blockers"][0]["state"] == "historical"
+    assert checkpoint["sections"]["exact_next_action"][0]["statement"] == (
+        "verify the final Continue screen."
+    )
+
+
 def test_safe_replay_commands_splits_cr_and_rejects_unsafe_input() -> None:
     assert _safe_replay_commands("npm test -- --run\rnpm run build") == (
         ("npm test -- --run", ("npm", "test", "--", "--run")),

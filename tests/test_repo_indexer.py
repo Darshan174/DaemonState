@@ -66,6 +66,71 @@ async def test_indexes_typescript_imports_components_and_routes(tmp_path):
     assert ("function", "helper") in symbols
 
 
+async def test_regex_test_calls_do_not_turn_application_javascript_into_tests(
+    tmp_path,
+):
+    (tmp_path / ".git").mkdir()
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "NowPage.jsx").write_text(
+        "export const valid = (value) => /continue/.test(value);\n",
+        encoding="utf-8",
+    )
+    (src / "NowPage.test.jsx").write_text(
+        "test('renders continuation', () => true);\n",
+        encoding="utf-8",
+    )
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "conftest.py").write_text(
+        "def shared_fixture():\n    return True\n",
+        encoding="utf-8",
+    )
+
+    frame = await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
+
+    assert "src/NowPage.jsx" not in frame.test_files
+    assert "src/NowPage.test.jsx" in frame.test_files
+    assert "tests/conftest.py" not in frame.test_files
+
+
+async def test_automatic_context_ranking_excludes_agent_runs_and_fixtures(
+    tmp_path,
+):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "continuation.py").write_text(
+        "def continue_workflow():\n    return True\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".agent-runs").mkdir()
+    (tmp_path / ".agent-runs" / "continuation-workflow.md").write_text(
+        "Continue the workflow.\n",
+        encoding="utf-8",
+    )
+    fixture = (
+        tmp_path
+        / "app"
+        / "evals"
+        / "compiler"
+        / "fixture_project"
+        / "repo"
+    )
+    fixture.mkdir(parents=True)
+    (fixture / "continuation.py").write_text(
+        "def continue_fixture():\n    return True\n",
+        encoding="utf-8",
+    )
+
+    frame = await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
+    relevant = frame.relevant_files_for_goal(
+        {"continue", "continuation", "workflow"},
+        [],
+    )
+
+    assert [item["path"] for item in relevant] == ["app/continuation.py"]
+
+
 async def test_git_index_respects_ignores_and_keeps_tracked_files(
     monkeypatch, tmp_path
 ):

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
 
 from app.services.harness_adapters import (
+    CODEX_APP_SERVER_CLIENT,
     CONTEXT_FILE_PLACEHOLDER,
     OPENCODE_CONTINUATION_MESSAGE,
     HarnessAdapterError,
@@ -63,9 +65,9 @@ def _available(monkeypatch) -> None:
                 "json",
                 "--dir",
                 "{repo}",
+                OPENCODE_CONTINUATION_MESSAGE,
                 "-f",
                 CONTEXT_FILE_PLACEHOLDER,
-                OPENCODE_CONTINUATION_MESSAGE,
             ),
             "file",
         ),
@@ -91,6 +93,22 @@ def test_builds_safe_fresh_provider_invocations(
     assert invocation.session_id is None
     assert invocation.model is None
     assert not any("bypass" in item.lower() for item in invocation.argv)
+
+
+def test_opencode_message_precedes_greedy_file_option(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """OpenCode 1.14.x consumes every token after --file as an attachment."""
+
+    _available(monkeypatch)
+
+    invocation = build_harness_invocation("opencode", repo_path=tmp_path)
+
+    message_index = invocation.argv.index(OPENCODE_CONTINUATION_MESSAGE)
+    file_index = invocation.argv.index("-f")
+    assert message_index < file_index
+    assert invocation.argv[-2:] == ("-f", CONTEXT_FILE_PLACEHOLDER)
 
 
 @pytest.mark.parametrize(
@@ -192,6 +210,121 @@ def test_passes_an_explicit_model_as_direct_argv(
     assert invocation.model == "test-model"
     joined = " ".join(invocation.argv)
     assert " ".join(model_flag) in joined
+
+
+@pytest.mark.parametrize(
+    "effort",
+    ("low", "medium", "high", "xhigh", "max", "ultra"),
+)
+def test_codex_passes_an_explicit_reasoning_effort_as_config_override(
+    effort: str,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _available(monkeypatch)
+
+    invocation = build_harness_invocation(
+        "codex",
+        repo_path=tmp_path,
+        model="gpt-5.6-sol",
+        effort=effort,
+    )
+
+    assert invocation.model == "gpt-5.6-sol"
+    assert invocation.effort == effort
+    config_index = invocation.argv.index("-c")
+    assert invocation.argv[config_index + 1] == (
+        f"model_reasoning_effort={effort}"
+    )
+    assert invocation.argv.index("-m") < invocation.argv.index("exec")
+    assert config_index < invocation.argv.index("exec")
+
+
+def test_visible_codex_uses_app_server_wrapper_without_changing_normal_exec(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _available(monkeypatch)
+
+    normal = build_harness_invocation(
+        "codex",
+        repo_path=tmp_path,
+        model="gpt-5.6-sol",
+        effort="high",
+    )
+    visible = build_harness_invocation(
+        "codex",
+        repo_path=tmp_path,
+        model="gpt-5.6-sol",
+        effort="high",
+        visible=True,
+    )
+
+    assert normal.argv[0] == "/tools/codex"
+    assert "exec" in normal.argv
+    assert str(CODEX_APP_SERVER_CLIENT) not in normal.argv
+    assert visible.argv == (
+        sys.executable,
+        str(CODEX_APP_SERVER_CLIENT),
+        "--codex-bin",
+        "/tools/codex",
+        "--cwd",
+        str(tmp_path.resolve()),
+        "--model",
+        "gpt-5.6-sol",
+        "--effort",
+        "high",
+    )
+    assert visible.context_delivery == "stdin"
+    assert visible.executable == "/tools/codex"
+
+
+@pytest.mark.parametrize(
+    "effort",
+    ("", " ", "turbo", "--danger", "high;open-calculator"),
+)
+def test_rejects_invalid_codex_reasoning_effort(
+    effort: str,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _available(monkeypatch)
+
+    with pytest.raises(HarnessAdapterError, match="effort"):
+        build_harness_invocation(
+            "codex",
+            repo_path=tmp_path,
+            effort=effort,
+        )
+
+
+def test_rejects_reasoning_effort_for_non_codex_harnesses(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _available(monkeypatch)
+
+    with pytest.raises(HarnessAdapterError, match="effort"):
+        build_harness_invocation(
+            "claude",
+            repo_path=tmp_path,
+            effort="high",
+        )
+
+
+def test_rejects_effort_not_supported_by_selected_codex_model(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _available(monkeypatch)
+
+    with pytest.raises(HarnessAdapterError, match="not supported by model"):
+        build_harness_invocation(
+            "codex",
+            repo_path=tmp_path,
+            model="gpt-5.6-luna",
+            effort="ultra",
+        )
 
 
 @pytest.mark.parametrize("model", ["", "  ", "--danger", "x" * 256, "bad\x00model"])
@@ -326,8 +459,60 @@ def test_claude_readiness_accepts_logged_out_json_on_stderr(
     assert readiness.ready is False
     assert readiness.status == "authentication_required"
     assert readiness.code == "provider_authentication_required"
-    assert readiness.message == "Claude Code is not authenticated."
+    assert readiness.message == (
+        "Claude Code CLI is installed, but it is not signed in."
+    )
     assert readiness.action == "Run `claude auth login` and try again."
+
+
+def test_claude_readiness_rejects_logged_in_without_an_auth_method(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.harness_adapters.shutil.which",
+        lambda _name: "/tools/claude",
+    )
+    monkeypatch.setattr(
+        "app.services.harness_adapters.subprocess.run",
+        lambda *_args, **_kwargs: type("Result", (), {
+            "returncode": 0,
+            "stdout": '{"loggedIn": true, "authMethod": "none"}',
+            "stderr": "",
+        })(),
+    )
+
+    readiness = probe_provider_readiness("claude")
+
+    assert readiness.ready is False
+    assert readiness.status == "authentication_required"
+    assert readiness.code == "provider_authentication_required"
+
+
+def test_claude_readiness_does_not_equate_sign_in_with_live_access(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.harness_adapters.shutil.which",
+        lambda _name: "/tools/claude",
+    )
+    monkeypatch.setattr(
+        "app.services.harness_adapters.subprocess.run",
+        lambda *_args, **_kwargs: type("Result", (), {
+            "returncode": 0,
+            "stdout": '{"loggedIn": true, "authMethod": "claude.ai"}',
+            "stderr": "",
+        })(),
+    )
+
+    readiness = probe_provider_readiness("claude")
+
+    assert readiness.ready is True
+    assert readiness.status == "configured"
+    assert readiness.code == "provider_configured"
+    assert readiness.message == (
+        "Claude Code CLI has authentication configured. "
+        "Live Claude Code plan or API access is not verified until a run starts."
+    )
 
 
 def test_codex_readiness_detects_a_broken_installed_wrapper(monkeypatch) -> None:
@@ -351,7 +536,7 @@ def test_codex_readiness_detects_a_broken_installed_wrapper(monkeypatch) -> None
     assert "wrapper is broken" in readiness.message
 
 
-def test_opencode_readiness_requires_at_least_one_credential(monkeypatch) -> None:
+def _mock_opencode_credentials(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.services.harness_adapters.shutil.which",
         lambda _name: "/tools/opencode",
@@ -360,16 +545,76 @@ def test_opencode_readiness_requires_at_least_one_credential(monkeypatch) -> Non
         "app.services.harness_adapters.subprocess.run",
         lambda *_args, **_kwargs: type("Result", (), {
             "returncode": 0,
-            "stdout": "\x1b[0m\n└  4 credentials\n",
+            "stdout": (
+                "\x1b[0m\n"
+                "│  Anthropic oauth\n"
+                "│  OpenAI oauth\n"
+                "│  OpenCode Go api\n"
+                "│  mimo api\n"
+                "└  4 credentials\n"
+            ),
             "stderr": "",
         })(),
     )
 
+
+def test_opencode_requires_an_explicit_model_instead_of_assuming_a_subscription(
+    monkeypatch,
+) -> None:
+    _mock_opencode_credentials(monkeypatch)
+
     readiness = probe_provider_readiness("opencode")
 
+    assert readiness.ready is False
+    assert readiness.status == "configuration_required"
+    assert readiness.code == "provider_model_configuration_required"
+    assert "do not prove an active OpenCode Go or Zen subscription" in readiness.message
+    assert "CONTEXT_ENGINE_OPENCODE_MODEL" in readiness.action
+
+
+def test_opencode_matching_connected_provider_is_configured(monkeypatch) -> None:
+    _mock_opencode_credentials(monkeypatch)
+
+    readiness = probe_provider_readiness(
+        "opencode",
+        provider_model="openai/custom-model",
+    )
+
     assert readiness.ready is True
-    assert readiness.status == "ready"
-    assert readiness.code == "provider_ready"
+    assert readiness.status == "configured"
+    assert readiness.code == "provider_configured"
+    assert "`openai/custom-model`" in readiness.message
+
+
+def test_opencode_missing_model_provider_requires_access(monkeypatch) -> None:
+    _mock_opencode_credentials(monkeypatch)
+
+    readiness = probe_provider_readiness(
+        "opencode",
+        provider_model="google/gemini-2.5-pro",
+    )
+
+    assert readiness.ready is False
+    assert readiness.status == "access_required"
+    assert readiness.code == "provider_model_access_required"
+    assert "no matching google credential" in readiness.message
+    assert "Connect google in OpenCode" in readiness.action
+
+
+def test_opencode_go_credential_does_not_imply_zen_model_access(
+    monkeypatch,
+) -> None:
+    _mock_opencode_credentials(monkeypatch)
+
+    readiness = probe_provider_readiness(
+        "opencode",
+        provider_model="opencode/big-pickle",
+    )
+
+    assert readiness.ready is False
+    assert readiness.status == "access_required"
+    assert readiness.code == "provider_model_access_required"
+    assert "no matching OpenCode Zen credential" in readiness.message
 
 
 def test_readiness_preserves_revoked_oauth_401_meaning(monkeypatch) -> None:

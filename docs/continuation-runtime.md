@@ -12,7 +12,9 @@ of `ctxe continue` share the same sequence:
 1. Refresh repository-scoped local Codex, Claude Code, and OpenCode sessions
    when local sync is enabled.
 2. Resolve an explicit objective, the active workspace goal, or the latest
-   substantive request from an in-scope session.
+   substantive request from an in-scope session. A caller may pin
+   `source_provider` and `source_session_id` together; the runtime then uses
+   that exact session or fails explicitly instead of substituting another one.
 3. Without an exact request, capture the compatible session tip as an immutable
    `WorkCheckpoint` and select the latest goal/repository/branch-compatible one.
 4. For an exact durable UUID, load that checkpoint directly and authorize every
@@ -26,15 +28,37 @@ of `ctxe continue` share the same sequence:
 7. Persist stable task identity, checkpoint identity, verification state, and
    current repository fingerprint in the pack manifest and replay key.
 
-`POST /api/continuations/run` and `ctxe continue --into ...` continue that
+`POST /api/continuations` and `ctxe continue --into ...` continue that
 sequence by starting a local provider CLI, observing repository changes, and
 running the pack's verification contract after the provider exits. The HTTP run
-endpoint is local-only. The browser exposes Codex, Claude Code, and OpenCode as
-separate targets with live installation and authentication readiness. An
-explicit target never falls back to another provider. `auto` considers only
-ready providers in a stable order; it does not switch providers merely because
-one produced the source session. Readiness is checked again immediately before
-launch.
+endpoint is local-only. `POST /api/continuations/run` remains a compatibility
+alias. The browser exposes Codex, Claude Code, and OpenCode as
+separate targets with live installation, authentication, and visible-session
+readiness. A provider is runnable only when Context Engine can show the exact
+executing session in that provider's local harness. An explicit target never
+falls back to another provider. `auto` considers only ready providers in a
+stable order; it does not switch providers merely because one produced the
+source session. Readiness is checked again immediately before launch.
+
+For a browser-selected Codex run, Context Engine drives the documented Codex
+app-server thread/turn protocol. The app-server persists the thread first,
+accepts the turn, and then emits a visibility-ready event. Only after that
+boundary does Context Engine request
+`codex://threads/<thread-id>` navigation, avoiding the blank-screen race caused
+by deep-linking an unindexed `codex exec` rollout. The Continue screen polls
+that durable link and offers **Open Codex run** during and after execution, so
+the user can inspect the real executing harness thread instead of watching an
+anonymous spinner. A successful macOS `open` call records that navigation was
+requested; it is not mislabeled as proof that the destination rendered.
+
+Codex model and reasoning-effort controls are populated from the installed
+Codex model catalog. Claude Code and OpenCode remain monochrome and disabled
+unless both provider access and an exact visible-session route are available;
+generic app or project navigation is not sufficient.
+
+Continuation turns have a four-hour default execution window so substantive
+desktop-visible work is not killed at the former one-hour boundary. Operators
+can override it with `CONTINUATION_COMMAND_TIMEOUT_SECONDS`.
 
 The context pack is provider-neutral. Switching from Codex to Claude Code or
 OpenCode carries the same bounded goal, decisions, learnings, failed attempts,
@@ -59,9 +83,12 @@ a bounded queue:
 - `paused`: deliberately paused or dropped work that Continue must not revive.
 
 Ambiguous prerequisites, cycles, inaccessible evidence, a missing goal, and
-current non-provider checkpoint blockers fail closed. Historical provider-auth
-failures remain scoped evidence; live provider readiness is authoritative for a
-new run.
+explicit observation-backed hard blockers fail closed. A blocker sentence
+extracted from agent commentary is advisory context, not launch authority; later
+reported progress also marks earlier reported blockers historical. Historical
+command/test failures remain failed-attempt and verification context; they do
+not prevent a new agent from starting. Historical provider-auth failures also
+remain scoped evidence; live provider readiness is authoritative for a new run.
 
 A verified run advances only the exact source-backed task that executed.
 Completion is written only when the source revision is still current and the
@@ -121,6 +148,22 @@ no adapter adds bypass, danger, or automatic approval flags. Context delivery
 is bounded to 1 MiB and uses stdin for Codex/Claude Code or a
 permission-restricted temporary file for OpenCode.
 
+Automatic continuations inherit the local harness's one-hour command safety
+limit. They do not impose a shorter five-minute cutoff. If the safety limit is
+reached, repository changes remain in place and the UI directs the user to
+review that partial work before retrying. For Codex, the exact thread link is
+preserved on both successful and failed runs so partial activity remains
+inspectable.
+
+OpenCode's `--file` flag consumes multiple values, so the continuation message
+is placed before the final `--file <context-pack>` pair. Context Engine does
+not infer an OpenCode subscription or inherit OpenCode's possibly stale
+last-used model. Set `CONTEXT_ENGINE_OPENCODE_MODEL` to an explicit
+`provider/model`, or pass a provider model in the continuation request. The
+readiness check requires a matching connected provider before enabling the
+run. Structured provider errors are treated as failed runs even when a
+provider CLI exits with status zero.
+
 For Codex, Context Engine prefers the current desktop-bundled executable when
 the PATH candidate is an older npm-global wrapper. Set
 `CONTEXT_ENGINE_CODEX_EXECUTABLE` to an absolute executable path to override
@@ -142,10 +185,11 @@ an explicit `--verify` flag because it wraps arbitrary user-supplied commands.
 An exited provider process is not automatically a proven handoff. Runtime
 outcomes distinguish:
 
-- `verified`: the provider completed and at least one required check ran and
-  passed;
+- `verified`: the provider produced an observed repository change and at least
+  one required check ran and passed;
 - `completed_unverified`: the provider completed, but no executable checks were
-  available;
+  available, checks failed, or passing checks did not accompany an agent
+  repository change;
 - `blocked`: authentication or another actionable prerequisite prevented the
   selected provider from running;
 - `failed`: the provider or a required check failed.
@@ -156,9 +200,14 @@ no re-explanation, less discovery, and no stale-context mistake.
 
 ## Browser Surface
 
-The Continue page calls the local-only composite run endpoint and exposes one
+The Continue page calls the canonical local-only composite run endpoint and exposes one
 card for each supported target provider. Each card reports local execution
-readiness. Selecting a ready card resolves the task, refreshes evidence,
+readiness. Continue carries the exact selected History/Library session identity
+through preparation so an equally worded newer session cannot replace it.
+History also binds a multi-request session card to its source-backed original
+user request; the shortened card title is display-only and cannot silently
+select a different request from the same session.
+Selecting a ready card resolves the task, refreshes evidence,
 compiles the pack, starts a fresh target agent, runs available checks, and shows
 the observed outcome. Verified results also show the recomputed `Now`,
 `Blocked`, `Next`, and `Paused` queue. There is no clipboard fallback or manual
