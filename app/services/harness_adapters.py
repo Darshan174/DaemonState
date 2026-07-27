@@ -5,7 +5,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -19,10 +18,11 @@ InvocationMode = Literal["fresh", "session"]
 
 CONTEXT_FILE_PLACEHOLDER = "{context_file}"
 OPENCODE_CONTINUATION_MESSAGE = (
-    "Continue the task using the attached DaemonState context pack. "
-    "Verify the current repository state before editing."
+    "Execute the attached canonical DaemonState continuation prompt. "
+    "Do not merely summarize it. Use the supplied runtime bundle for its "
+    "hash-bound contract and artifacts."
 )
-OPENCODE_MODEL_ENV = "CONTEXT_ENGINE_OPENCODE_MODEL"
+OPENCODE_MODEL_ENV = "DAEMONSTATE_OPENCODE_MODEL"
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$")
 PROVIDER_EXECUTABLES: dict[ProviderName, str] = {
     "codex": "codex",
@@ -49,7 +49,6 @@ CODEX_APP_EXECUTABLES = (
     Path("/Applications/ChatGPT.app/Contents/Resources/codex"),
     Path("/Applications/Codex.app/Contents/Resources/codex"),
 )
-CODEX_APP_SERVER_CLIENT = Path(__file__).with_name("codex_app_server_client.py")
 PROVIDER_READINESS_TIMEOUT_SECONDS = 5.0
 PROVIDER_READINESS_OUTPUT_LIMIT = 8_192
 CODEX_MODEL_CATALOG_TIMEOUT_SECONDS = 5.0
@@ -195,59 +194,6 @@ class ProviderModelOption:
         }
 
 
-CODEX_FALLBACK_MODELS = (
-    ProviderModelOption(
-        id="gpt-5.6-sol",
-        label="GPT-5.6-Sol",
-        default=True,
-        reasoning_efforts=("low", "medium", "high", "xhigh", "max", "ultra"),
-        default_reasoning_effort="low",
-    ),
-    ProviderModelOption(
-        id="gpt-5.6-terra",
-        label="GPT-5.6-Terra",
-        default=False,
-        reasoning_efforts=("low", "medium", "high", "xhigh", "max", "ultra"),
-        default_reasoning_effort="medium",
-    ),
-    ProviderModelOption(
-        id="gpt-5.6-luna",
-        label="GPT-5.6-Luna",
-        default=False,
-        reasoning_efforts=("low", "medium", "high", "xhigh", "max"),
-        default_reasoning_effort="medium",
-    ),
-    ProviderModelOption(
-        id="gpt-5.5",
-        label="GPT-5.5",
-        default=False,
-        reasoning_efforts=("low", "medium", "high", "xhigh"),
-        default_reasoning_effort="medium",
-    ),
-    ProviderModelOption(
-        id="gpt-5.4",
-        label="GPT-5.4",
-        default=False,
-        reasoning_efforts=("low", "medium", "high", "xhigh"),
-        default_reasoning_effort="medium",
-    ),
-    ProviderModelOption(
-        id="gpt-5.4-mini",
-        label="GPT-5.4-Mini",
-        default=False,
-        reasoning_efforts=("low", "medium", "high", "xhigh"),
-        default_reasoning_effort="medium",
-    ),
-    ProviderModelOption(
-        id="gpt-5.3-codex-spark",
-        label="GPT-5.3-Codex-Spark",
-        default=False,
-        reasoning_efforts=("low", "medium", "high", "xhigh"),
-        default_reasoning_effort="high",
-    ),
-)
-
-
 @dataclass(frozen=True)
 class ProviderReadiness:
     provider: ProviderName
@@ -259,11 +205,15 @@ class ProviderReadiness:
     models: tuple[ProviderModelOption, ...] = field(default_factory=tuple)
     desktop_available: bool | None = None
     exact_session_supported: bool | None = None
+    context_staging_supported: bool = False
+    capabilities: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "provider": self.provider,
             "ready": self.ready,
+            "readiness_scope": "provider_cli_and_authentication",
+            "task_contract_checked": False,
             "status": self.status,
             "code": self.code,
             "message": self.message,
@@ -271,7 +221,11 @@ class ProviderReadiness:
             "models": [model.to_dict() for model in self.models],
             "desktop_available": self.desktop_available,
             "exact_session_supported": self.exact_session_supported,
+            "context_staging_supported": self.context_staging_supported,
         }
+        if self.capabilities is not None:
+            payload["capabilities"] = self.capabilities
+        return payload
 
 
 @dataclass(frozen=True)
@@ -285,6 +239,7 @@ class HarnessInvocation:
     session_id: str | None
     model: str | None
     effort: str | None = None
+    filesystem_mode: str = "workspace_write"
 
 
 def probe_provider_readiness(
@@ -360,12 +315,56 @@ def probe_provider_readiness(
         readiness = _codex_readiness(result.returncode, combined)
         if not readiness.ready:
             return readiness
+        models = codex_model_catalog(
+            executable=executable,
+            timeout_seconds=timeout_seconds,
+        )
+        try:
+            normalized_model = _model(provider_model) if provider_model else None
+        except HarnessAdapterError:
+            return ProviderReadiness(
+                provider="codex",
+                ready=False,
+                status="configuration_required",
+                code="provider_model_configuration_required",
+                message="The selected Codex model identifier is invalid.",
+                action="Choose a model reported by the current Codex CLI.",
+                models=models,
+            )
+        if normalized_model is not None and not any(
+            option.id == normalized_model for option in models
+        ):
+            catalog_detail = (
+                "the discovered Codex model catalog does not list it"
+                if models
+                else "Codex model catalog discovery did not succeed"
+            )
+            return ProviderReadiness(
+                provider="codex",
+                ready=False,
+                status="access_required",
+                code="provider_model_access_required",
+                message=(
+                    f"DaemonState cannot prove that Codex model "
+                    f"`{normalized_model}` is available because {catalog_detail}."
+                ),
+                action=(
+                    "Choose a model listed by the current Codex CLI, or clear "
+                    "the explicit model selection and use the CLI default."
+                ),
+                models=models,
+            )
+        message = readiness.message
+        if not models:
+            message = (
+                f"{message} Codex model catalog discovery did not return "
+                "a trustworthy catalog, so DaemonState will use the CLI "
+                "default without offering model or effort overrides."
+            )
         return replace(
             readiness,
-            models=codex_model_catalog(
-                executable=executable,
-                timeout_seconds=timeout_seconds,
-            ),
+            message=message,
+            models=models,
         )
     return _opencode_readiness(
         result.returncode,
@@ -420,11 +419,11 @@ def codex_model_catalog(
     executable: str | None = None,
     timeout_seconds: float = CODEX_MODEL_CATALOG_TIMEOUT_SECONDS,
 ) -> tuple[ProviderModelOption, ...]:
-    """Return safe, user-visible Codex model choices with a stable fallback."""
+    """Return only model choices proven by the current Codex CLI."""
 
     resolved_executable = executable or _provider_executable("codex")
     if not resolved_executable or "\x00" in resolved_executable:
-        return CODEX_FALLBACK_MODELS
+        return ()
     try:
         result = subprocess.run(
             (resolved_executable, "debug", "models"),
@@ -439,16 +438,15 @@ def codex_model_catalog(
             env=provider_environment("codex"),
         )
     except (OSError, subprocess.TimeoutExpired):
-        return CODEX_FALLBACK_MODELS
+        return ()
     if result.returncode != 0:
-        return CODEX_FALLBACK_MODELS
+        return ()
     payload = _json_object(
         ANSI_ESCAPE_PATTERN.sub("", str(result.stdout or ""))[
             :CODEX_MODEL_CATALOG_OUTPUT_LIMIT
         ]
     )
-    models = _codex_models_from_payload(payload)
-    return models or CODEX_FALLBACK_MODELS
+    return _codex_models_from_payload(payload)
 
 
 def is_daemonstate_secret_key(key: str) -> bool:
@@ -489,6 +487,7 @@ def build_harness_invocation(
     model: str | None = None,
     effort: str | None = None,
     visible: bool = False,
+    filesystem_mode: str = "workspace_write",
 ) -> HarnessInvocation:
     """Build a non-interactive provider argv without executing it."""
 
@@ -497,6 +496,7 @@ def build_harness_invocation(
     normalized_session_id = _session_id(session_id)
     normalized_model = _model(model)
     normalized_effort = _reasoning_effort(effort)
+    normalized_filesystem_mode = _filesystem_mode(filesystem_mode)
     executable_name = PROVIDER_EXECUTABLES[normalized_provider]
     executable = _provider_executable(normalized_provider)
     if not executable:
@@ -509,12 +509,20 @@ def build_harness_invocation(
         raise HarnessAdapterError(
             "reasoning effort is only supported by the Codex provider"
         )
+    if (
+        normalized_filesystem_mode == "read_only"
+        and normalized_provider == "opencode"
+    ):
+        raise HarnessAdapterError(
+            f"{PROVIDER_DISPLAY_NAMES[normalized_provider]} cannot enforce "
+            "the required read-only filesystem mode"
+        )
 
     mode: InvocationMode = (
         "session" if normalized_session_id is not None else "fresh"
     )
     if normalized_provider == "codex":
-        _validate_codex_model_effort(
+        _validate_codex_model_selection(
             model=normalized_model,
             effort=normalized_effort,
             executable=executable,
@@ -526,6 +534,7 @@ def build_harness_invocation(
                 normalized_session_id,
                 normalized_model,
                 normalized_effort,
+                normalized_filesystem_mode,
             )
             if visible
             else _codex_argv(
@@ -534,6 +543,7 @@ def build_harness_invocation(
                 normalized_session_id,
                 normalized_model,
                 normalized_effort,
+                normalized_filesystem_mode,
             )
         )
         delivery: ContextDelivery = "stdin"
@@ -543,6 +553,7 @@ def build_harness_invocation(
             normalized_repo,
             normalized_session_id,
             normalized_model,
+            normalized_filesystem_mode,
         )
         delivery = "stdin"
     else:
@@ -564,6 +575,7 @@ def build_harness_invocation(
         session_id=normalized_session_id,
         model=normalized_model,
         effort=normalized_effort,
+        filesystem_mode=normalized_filesystem_mode,
     )
 
 
@@ -743,7 +755,7 @@ def _opencode_readiness(
             status="configuration_required",
             code="provider_model_configuration_required",
             message=(
-                "OpenCode CLI has connected providers, but Context Engine has "
+                "OpenCode CLI has connected providers, but DaemonState has "
                 "no execution model selected. Installed credentials do not "
                 "prove an active OpenCode Go or Zen subscription."
             ),
@@ -980,15 +992,34 @@ def _reasoning_effort(value: str | None) -> str | None:
     return normalized
 
 
-def _validate_codex_model_effort(
+def _filesystem_mode(value: str) -> str:
+    normalized = str(value or "").strip().casefold().replace("-", "_")
+    if normalized not in {"read_only", "workspace_write"}:
+        raise HarnessAdapterError(
+            "filesystem_mode must be read_only or workspace_write"
+        )
+    return normalized
+
+
+def _validate_codex_model_selection(
     *,
     model: str | None,
     effort: str | None,
     executable: str,
 ) -> None:
-    if effort is None:
+    if model is None and effort is None:
         return
     catalog = codex_model_catalog(executable=executable)
+    if not catalog:
+        requested = (
+            f"model `{model}`"
+            if model is not None
+            else f"reasoning effort `{effort}`"
+        )
+        raise HarnessAdapterError(
+            f"cannot use Codex {requested}: the current CLI did not return "
+            "a trustworthy model catalog"
+        )
     selected = next(
         (
             option
@@ -997,7 +1028,11 @@ def _validate_codex_model_effort(
         ),
         None,
     )
-    if selected is not None and effort not in selected.reasoning_efforts:
+    if selected is None:
+        raise HarnessAdapterError(
+            f"Codex model `{model}` is not present in the current CLI model catalog"
+        )
+    if effort is not None and effort not in selected.reasoning_efforts:
         raise HarnessAdapterError(
             f"reasoning effort `{effort}` is not supported by model "
             f"`{selected.id}`"
@@ -1091,13 +1126,14 @@ def _codex_argv(
     session_id: str | None,
     model: str | None,
     effort: str | None,
+    filesystem_mode: str,
 ) -> tuple[str, ...]:
     prefix = (
         executable,
         "-C",
         repo_path,
         "--sandbox",
-        "workspace-write",
+        filesystem_mode.replace("_", "-"),
         *((("-m", model)) if model is not None else ()),
         *(
             (("-c", f"model_reasoning_effort={effort}"))
@@ -1117,24 +1153,24 @@ def _codex_visible_argv(
     session_id: str | None,
     model: str | None,
     effort: str | None,
+    filesystem_mode: str,
 ) -> tuple[str, ...]:
     if session_id is not None:
         raise HarnessAdapterError(
-            "visible Codex continuation currently requires a fresh app-server thread"
+            "visible Codex continuation currently requires a fresh Codex thread"
         )
-    argv = (
-        sys.executable,
-        str(CODEX_APP_SERVER_CLIENT),
-        "--codex-bin",
+    # `codex exec` owns its tool runtime and persists the rollout that the
+    # desktop app renders. A raw app-server client would also need to implement
+    # every server-initiated dynamic tool call; rejecting those requests
+    # interrupts the turn at its first tool use.
+    return _codex_argv(
         executable,
-        "--cwd",
         repo_path,
+        session_id,
+        model,
+        effort,
+        filesystem_mode,
     )
-    if model is not None:
-        argv = (*argv, "--model", model)
-    if effort is not None:
-        argv = (*argv, "--effort", effort)
-    return argv
 
 
 def _claude_argv(
@@ -1142,7 +1178,13 @@ def _claude_argv(
     repo_path: str,
     session_id: str | None,
     model: str | None,
+    filesystem_mode: str,
 ) -> tuple[str, ...]:
+    permission_mode = (
+        "plan"
+        if filesystem_mode == "read_only"
+        else "acceptEdits"
+    )
     argv = (
         executable,
         "--print",
@@ -1151,6 +1193,8 @@ def _claude_argv(
         "stream-json",
         "--input-format",
         "text",
+        "--permission-mode",
+        permission_mode,
         "--add-dir",
         repo_path,
     )

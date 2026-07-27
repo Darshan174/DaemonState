@@ -371,8 +371,25 @@ def exact_memory_evidence(
         or evidence.end_char is None
     ):
         return False
-    content = source.content or ""
     excerpt = evidence.text or ""
+    prechecked_source_text = evidence.__dict__.get("_source_text_matches")
+    if prechecked_source_text is not None and "content" not in source.__dict__:
+        source_length = evidence.__dict__.get("_source_content_length")
+        source_sha256 = evidence.__dict__.get("_source_content_sha256")
+        if not (
+            prechecked_source_text
+            and isinstance(source_length, int)
+            and 0 <= evidence.start_char < evidence.end_char <= source_length
+            and len(excerpt) == evidence.end_char - evidence.start_char
+            and evidence.source_document_id == source.id
+            and _sha256(excerpt) == evidence.text_sha256
+            and isinstance(source_sha256, str)
+            and source_sha256
+        ):
+            return False
+        declared_source_hash = source.content_sha256
+        return not declared_source_hash or declared_source_hash == source_sha256
+    content = source.content or ""
     if not (
         0 <= evidence.start_char < evidence.end_char <= len(content)
         and evidence.source_document_id == source.id

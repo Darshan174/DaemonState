@@ -16,8 +16,7 @@
 DaemonState is an open-source context and evidence layer for coding agents. It compiles verified project history
 into the task-sized brief an agent needs to continue real work on a long-running codebase.
 
-DaemonState is not another coding agent or a generic knowledge graph. The verified continuation runtime is the core
-product. The compiler, checkpoints, Library, and graph support that handoff and explain what was selected and why.
+DaemonState is not another coding agent or a generic knowledge graph. The verified continuation runtime is the core product. The compiler, checkpoints, Library, and graph support that handoff and explain what was selected and why.
 
 ## The problem
 
@@ -56,7 +55,7 @@ we need results from real projects, not demos.
 | Choose the current goal | Keeps the user in control. Open issues stay backlog until selected. |
 | Capture a checkpoint | Continue automatically captures the selected session tip; supported compaction boundaries also preserve exact pre-compaction state. Both retain source-backed goals, progress, decisions, failures, files, blockers, checks, and next actions. |
 | Verify the checkpoint | Continue automatically checks structure, event evidence, repository fingerprint, relevant files, and recorded command evidence without replaying imported commands. |
-| Resume the work | Selecting a ready Codex, Claude Code, or OpenCode card resolves the task, compiles its evidence-linked pack, starts a fresh target agent, runs available checks, and reports the observed outcome. |
+| Resume the work | Selecting ready Codex compiles Context + Direction + Execution loop into a fresh waiting thread. Nothing is submitted until the user types the new lead and presses Enter. |
 | Explain what matters | Uses the graph to show the relationships behind the current project state and compiled context. |
 
 Extracted facts retain their source and provenance; explicit user choices are
@@ -67,13 +66,14 @@ with a confident guess.
 
 | Surface | Actual job |
 |---|---|
-| Continue | Resolves the current repository-scoped task, verifies its latest compatible checkpoint, starts a fresh installed target agent, runs available checks, and reports the outcome. |
+| Continue | Resolves the current repository-scoped task, verifies its latest compatible checkpoint, loads the handoff into a fresh Codex thread, opens it, and waits for the user's lead. |
 | History | Shows task/session history, checkpoints, event evidence, repository freshness, checks, and one route back to Continue. |
 | Library | Scans local Codex, Claude Code, and OpenCode history, lets the user select an exact session/topic, and routes that identity to Continue. |
 | Memory | Organizes active, needs-review, and historical project facts with their evidence. |
 | Explain and agent brief | Uses the project graph to explain evidence and relationships; eligible task records can compile and copy a source-backed brief. |
 | Sources and connectors | Shows raw source previews, extracted components, connection state, and sync results. The API preserves revisions and enforces access scopes. |
 | Local harness | Wraps one user-supplied worker command and records bounded output, Git changes, checks, and outcome evidence. |
+| macOS floating control | Turn the logo on or off from Continue; click it to verify, copy, and paste Session Context without submitting, or triple-click for task-relevant Workspace Context. See the [guide](docs/floating-context-control.md). |
 
 The React app uses the FastAPI API. The `daemonstate` CLI and MCP server expose the
 agent-native continuation runtime, context preparation, query, repository, and
@@ -132,8 +132,9 @@ Demo data never marks a connector as authenticated or connected.
   starts a fresh explicitly selected provider CLI, observes the repository, and
   runs available checks; it is unavailable to remote principals. Explicit
   choices never silently fall back. `daemonstate continue --into ...` launches an
-  explicitly selected provider CLI. MCP `resume_task` returns the pack to its
-  calling agent without starting another process.
+  explicitly selected provider CLI through the same typed execution contract.
+  MCP `resume_task` returns the audit pack and canonical execution contract to
+  its calling agent without starting another process.
 - There is no system-wide agent monitor. Library scans while its page is open;
   Continue refreshes linked local histories; other integrations must report events.
 - HTTP and MCP run records contain observations supplied by their caller. The
@@ -141,17 +142,16 @@ Demo data never marks a connector as authenticated or connected.
 - `daemonstate harness run` still runs only the explicit local command supplied by the
   user. `daemonstate continue --into ...` selects one of three audited built-in
   provider adapters and never adds permission-bypass flags.
-- On macOS, browser Continue uses Codex's persistent app-server to reopen an exact Codex task
-  after it is renderable. Providers without an exact-session
-  surface are unavailable rather than invisible; other platforms are unsupported.
+- On macOS, browser Continue uses native Codex to reopen an exact Codex task
+  after its first renderable event. Providers without an exact-session surface
+  are unavailable rather than invisible; other platforms are unsupported.
 - Scrutiny uses deterministic evidence rules. It is not an autonomous code review.
-- Live retrieval is limited to the local repository and configured manual-token
-  GitHub access.
+- Live retrieval is limited to the local repository and configured GitHub access.
 - Captured command output and repository inspection are deliberately bounded.
-- A provider exit without both an observed agent repository change and a
-  passing executable check is `completed_unverified`, not a verified handoff.
-  Product acceptance additionally requires a paired real-task
-  test showing that another agent continued correctly without re-explanation,
+- A provider exit or worker-authored success summary is never proof. Only requirement-linked evidence can produce
+  `verified_complete`; other outcomes
+  remain explicitly unproven, failed, or blocked. Product acceptance also requires a paired real-task test showing
+  that another agent continued correctly without re-explanation,
   with less discovery and no stale-context mistake.
 - Model-lift reports describe observed runs. They do not yet prove that an older
   model matches a newer one because of DaemonState.
@@ -173,6 +173,7 @@ Main API routes:
 |---|---|
 | `POST /api/context/prepare` | Compile and persist a task brief. |
 | `POST /api/continuations/prepare` | Resolve current task state, verify its compatible checkpoint, and compile a continuation pack. |
+| `POST /api/continuations/stage` | From the local app, load Context + Direction + Execution loop into a persistent Codex thread without starting a turn. |
 | `POST /api/continuations` | From the local app, prepare a continuation, start a fresh installed target agent, run available checks, and record the outcome. `/api/continuations/run` remains a compatibility alias. |
 | `POST /api/query` | Query project context with a source trace. |
 | `POST /api/repo/index` | Index repository files, symbols, and exact structural links. |
@@ -265,7 +266,7 @@ Maintainers should also run `bash scripts/smoke.sh --docker` before release tags
 - [Connectors](docs/connectors.md)
 - [Context Pack v2](docs/context-pack-v2.md)
 - [Context Compiler v2](docs/context-compiler-v2.md)
-- [Continuation Runtime](docs/continuation-runtime.md)
+- [Continuation Runtime](docs/continuation-runtime.md) and [OpenTelemetry tracing](docs/opentelemetry.md)
 - [Local Agent Harness](docs/agent-harness.md)
 - [MCP](docs/mcp.md)
 - [AI session imports](docs/ai-context.md)
@@ -273,8 +274,7 @@ Maintainers should also run `bash scripts/smoke.sh --docker` before release tags
 - [Production runbook](docs/production-runbook.md)
 - [OSS readiness](docs/oss-readiness.md)
 
-Some documents are implementation contracts rather than public guides. The code
-and tests are the authority for current behavior.
+Some documents are implementation contracts rather than public guides. The code and tests are the authority for current behavior.
 
 ## License
 MIT. See [LICENSE](LICENSE).

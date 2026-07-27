@@ -4,13 +4,18 @@ import json
 import os
 import re
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from app.config import settings
 from app.services.session_checkpoints import build_compaction_checkpoint_descriptor
 from app.services.session_events import NormalizedSessionEvent
+from app.services.request_artifacts import (
+    normalize_request_without_image_transport,
+    structured_input_image_metadata,
+    structured_local_image_paths,
+)
 from app.services.session_summary import (
     derive_session_topic,
     derive_session_topics,
@@ -93,7 +98,12 @@ def _resolve_codex_session(session_id: str) -> ResolvedSession:
         raise SessionResolutionError(f"Codex session directory not found: {sessions_dir}")
 
     for path in _recent_files(sessions_dir, "*.jsonl"):
-        resolved = _read_codex_rollout(path, session_id, root=root)
+        resolved = _read_codex_rollout(
+            path,
+            session_id,
+            root=root,
+            materialize_images=True,
+        )
         if resolved is not None:
             _drop_codex_discovery_metadata(resolved)
             return resolved
@@ -119,7 +129,12 @@ def _discover_codex_sessions() -> list[ResolvedSession]:
         if not session_id or session_id in seen:
             continue
         try:
-            resolved = _read_codex_rollout(path, session_id, root=root)
+            resolved = _read_codex_rollout(
+                path,
+                session_id,
+                root=root,
+                materialize_images=False,
+            )
         except SessionResolutionError:
             continue
         if resolved is not None:
@@ -136,6 +151,7 @@ def _read_codex_rollout(
     session_id: str,
     *,
     root: Path,
+    materialize_images: bool,
 ) -> ResolvedSession | None:
     messages: list[tuple[str, str]] = []
     compaction_checkpoints: list[dict[str, Any]] = []
@@ -143,6 +159,7 @@ def _read_codex_rollout(
     final_answers: list[str] = []
     events: list[NormalizedSessionEvent] = []
     tool_calls: dict[str, dict[str, Any]] = {}
+    last_user_event_index: int | None = None
     metadata: dict[str, Any] = {
         "tool": "codex",
         "source_path": str(path),
@@ -250,6 +267,18 @@ def _read_codex_rollout(
                             final_answers.append(text)
                         event_text = _message_event_content(role, text)
                         event_type = _message_event_type(role, event_text)
+                        input_images = (
+                            structured_input_image_metadata(
+                                payload.get("content"),
+                                data_dir=(
+                                    settings.data_dir
+                                    if materialize_images
+                                    else None
+                                ),
+                            )
+                            if role == "user"
+                            else []
+                        )
                         events.append(NormalizedSessionEvent(
                             provider_event_id=_provider_event_id(
                                 payload,
@@ -260,9 +289,52 @@ def _read_codex_rollout(
                             role=role,
                             occurred_at=timestamp,
                             content=event_text,
-                            payload={"message_id": payload.get("id")},
+                            payload={
+                                "message_id": payload.get("id"),
+                                **(
+                                    {"input_images": input_images}
+                                    if input_images
+                                    else {}
+                                ),
+                            },
                             source_cursor=line_cursor,
                         ))
+                        if role == "user":
+                            last_user_event_index = len(events) - 1
+                    continue
+                if (
+                    item_type == "event_msg"
+                    and payload.get("type") == "user_message"
+                    and last_user_event_index is not None
+                ):
+                    event = events[last_user_event_index]
+                    event_message = _extract_content_text(
+                        payload.get("message") or payload.get("content")
+                    )
+                    normalized_message = _message_event_content(
+                        "user",
+                        event_message,
+                    )
+                    local_images = structured_local_image_paths(
+                        payload.get("local_images")
+                    )
+                    if (
+                        local_images
+                        and event.sequence_number + 1 == line_number
+                        and normalize_request_without_image_transport(
+                            normalized_message
+                        )
+                        == normalize_request_without_image_transport(
+                            str(event.content or "")
+                        )
+                    ):
+                        events[last_user_event_index] = replace(
+                            event,
+                            payload={
+                                **event.payload,
+                                "local_images": local_images,
+                            },
+                        )
                     continue
                 if item_type == "response_item" and payload.get("type") in {
                     "custom_tool_call",

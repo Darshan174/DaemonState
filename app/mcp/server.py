@@ -32,6 +32,7 @@ from app.models import (
     Component,
     ContextPack,
     ContextPackItem,
+    ContinuationRequirement,
     Model,
     Relationship,
     RunObservation,
@@ -135,7 +136,9 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Resolve the current repository-scoped task without Library curation, "
                 "verify its latest durable checkpoint, and compile the resulting "
-                "context_pack.v2 for this agent to continue immediately. "
+                "provider-neutral continuation_execution.v1 contract and canonical "
+                "execution prompt for this agent to continue immediately. The "
+                "context_pack.v2 remains included as a separate audit record. "
                 f"{TRUST_WARNING}"
             ),
             inputSchema={
@@ -729,6 +732,19 @@ async def _validate_runtime_references(
             raise ValueError("resolves_event_key must identify an earlier blocker in this run")
     requirement_id = str(payload.get("requirement_id") or "").strip()
     if requirement_id:
+        if run.continuation_execution_id is not None:
+            known = await session.scalar(
+                select(ContinuationRequirement.id).where(
+                    ContinuationRequirement.continuation_execution_id
+                    == run.continuation_execution_id,
+                    ContinuationRequirement.requirement_key == requirement_id,
+                )
+            )
+            if known is None:
+                raise ValueError(
+                    f"unknown continuation requirement_id: {requirement_id}"
+                )
+            return
         if run.context_pack_id is None:
             raise ValueError("requirement_id requires a linked ContextPack")
         pack = await session.get(ContextPack, run.context_pack_id)

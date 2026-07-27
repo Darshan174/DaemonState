@@ -56,6 +56,76 @@ def test_parse_goal_extracts_files_and_constraints():
     assert truth_audit_frame.requires_tests is False
 
 
+def test_parse_goal_uses_exact_authoritative_lead_for_repository_retrieval():
+    frame = parse_goal(
+        "Remove the shown panel from frontend/src/pages/NowPage.jsx.",
+        request_verbatim=(
+            "Explain OpenTelemetry in app/telemetry.py for this project."
+        ),
+    )
+
+    assert "telemetry" in frame.keywords
+    assert "opentelemetry" in frame.keywords
+    assert "remove" not in frame.keywords
+    assert frame.file_hints == ["app/telemetry.py"]
+
+
+async def test_compiler_emits_fixed_repository_evidence_from_authoritative_lead(
+    tmp_path,
+):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "telemetry.py").write_text(
+        "def configure_telemetry():\n"
+        "    return True\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "src" / "pages").mkdir(parents=True)
+    (tmp_path / "frontend" / "src" / "pages" / "NowPage.jsx").write_text(
+        "export default function NowPage() { return null; }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\n"
+        "name = 'fixture'\n"
+        "dependencies = ['opentelemetry-sdk>=1.25']\n",
+        encoding="utf-8",
+    )
+
+    result = await ContextCompiler(None).compile_context_pack(
+        "Remove the shown panel from frontend/src/pages/NowPage.jsx.",
+        request_verbatim=(
+            "Explain current OpenTelemetry instrumentation for this project."
+        ),
+        repo_path=str(tmp_path),
+        token_budget=3000,
+        persist=False,
+    )
+
+    relevant_paths = {
+        item["path"]
+        for item in result.manifest["repo_state"]["relevant_files"]
+    }
+    assert "app/telemetry.py" in relevant_paths
+    assert "frontend/src/pages/NowPage.jsx" not in relevant_paths
+    evidence = result.manifest["repository_evidence"]
+    assert evidence["schema_version"] == "repository_evidence.v1"
+    assert evidence["snapshot_fingerprint"]
+    assert [item["id"] for item in evidence["items"]] == [
+        f"RE{index}" for index in range(1, len(evidence["items"]) + 1)
+    ]
+    assert any(
+        item["kind"] == "symbol_declaration"
+        and item["path"] == "app/telemetry.py"
+        and item["symbol_name"] == "configure_telemetry"
+        for item in evidence["items"]
+    )
+    assert any(
+        item["kind"] == "manifest_dependency"
+        and item["dependency_name"] == "opentelemetry-sdk"
+        for item in evidence["items"]
+    )
+
+
 def test_verification_inference_keeps_test_runners_and_file_types_separate(tmp_path):
     repo = RepoFrame(
         repo_path=str(tmp_path),
@@ -191,7 +261,7 @@ def test_verification_inference_excludes_nested_fixture_projects(tmp_path):
                 is_manifest=True,
             ),
         ],
-        package_manifests={"pyproject.toml": {"project": "context-engine"}},
+        package_manifests={"pyproject.toml": {"project": "daemonstate"}},
         recent_commits=[],
         test_files=[
             (
@@ -821,8 +891,8 @@ async def test_current_verified_claim_revision_populates_exact_evidence_audit(
     assert result.manifest["repo_state"]["state_fingerprint"]
     assert result.manifest["compiler"] == {
         "name": "ContextCompiler",
-        "version": "context_compiler.v5",
-        "ranking_version": "objective_file_rank.v3",
+        "version": "context_compiler.v6",
+        "ranking_version": "objective_file_rank.v4",
         "evidence_contract_version": "exact_evidence_span.v1",
         "token_estimation_method": "chars_div_4.v1",
     }

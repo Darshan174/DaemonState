@@ -36,7 +36,7 @@ describe("session continuity projection", () => {
     expect(cards[0].sessionId).toBe("one");
   });
 
-  it("joins the newest usable saved version to its session", () => {
+  it("keeps the newest boundary instead of falling back to an older task", () => {
     const cards = buildSessionContinuity({
       sessions: [session("one", "Resume redesign")],
       ledgers: [ledger("one")],
@@ -46,7 +46,8 @@ describe("session continuity projection", () => {
       ],
     });
 
-    expect(cards[0].checkpoint.id).toBe("old");
+    expect(cards[0].checkpoint.id).toBe("new");
+    expect(cards[0].checkpoint.capture_status).toBe("incomplete");
     expect(cards[0].versions.map((value) => value.id)).toEqual(["new", "old"]);
   });
 

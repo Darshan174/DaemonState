@@ -139,3 +139,53 @@ async def test_provider_readiness_fails_closed_when_execution_cannot_be_shown(
     assert statuses["claude"].code == "visible_session_unsupported"
     assert statuses["opencode"].ready is False
     assert statuses["opencode"].code == "visible_session_unsupported"
+
+
+async def test_provider_readiness_reuses_recent_local_probes(monkeypatch) -> None:
+    cli_calls: list[str] = []
+    visibility_calls: list[str] = []
+
+    def cli_ready(provider: str, **_kwargs) -> ProviderReadiness:
+        cli_calls.append(provider)
+        return ProviderReadiness(
+            provider=provider,
+            ready=True,
+            status="ready",
+            code="provider_ready",
+            message=f"{provider} CLI is ready.",
+            action=f"Continue in {provider}.",
+        )
+
+    def visible(provider: str) -> HarnessVisibility:
+        visibility_calls.append(provider)
+        return HarnessVisibility(
+            provider=provider,
+            ready=True,
+            desktop_available=True,
+            exact_session_supported=True,
+            code="harness_ready",
+            message=f"{provider} is visible.",
+            action=f"Continue in {provider}.",
+        )
+
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.probe_provider_readiness",
+        cli_ready,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.probe_harness_visibility",
+        visible,
+    )
+
+    first = await provider_readiness()
+    second = await provider_readiness()
+    refreshed = await provider_readiness(force_refresh=True)
+
+    assert second == first
+    assert refreshed == first
+    assert sorted(cli_calls) == [
+        "claude", "claude", "codex", "codex", "opencode", "opencode",
+    ]
+    assert sorted(visibility_calls) == [
+        "claude", "claude", "codex", "codex", "opencode", "opencode",
+    ]

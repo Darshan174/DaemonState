@@ -1,17 +1,18 @@
 from __future__ import annotations
 
-import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from app.services.harness_adapters import (
-    CODEX_APP_SERVER_CLIENT,
     CONTEXT_FILE_PLACEHOLDER,
     OPENCODE_CONTINUATION_MESSAGE,
     HarnessAdapterError,
     HarnessExecutableNotFound,
+    ProviderModelOption,
     build_harness_invocation,
+    codex_model_catalog,
     probe_provider_readiness,
     provider_environment,
 )
@@ -22,6 +23,29 @@ def _available(monkeypatch) -> None:
         "app.services.harness_adapters.shutil.which",
         lambda name: f"/tools/{name}",
     )
+
+
+def _proven_codex_catalog(
+    monkeypatch,
+    *models: tuple[str, tuple[str, ...]],
+) -> tuple[ProviderModelOption, ...]:
+    catalog = tuple(
+        ProviderModelOption(
+            id=model_id,
+            label=model_id,
+            default=index == 0,
+            reasoning_efforts=efforts,
+            default_reasoning_effort=(
+                "medium" if "medium" in efforts else efforts[0]
+            ),
+        )
+        for index, (model_id, efforts) in enumerate(models)
+    )
+    monkeypatch.setattr(
+        "app.services.harness_adapters.codex_model_catalog",
+        lambda **_kwargs: catalog,
+    )
+    return catalog
 
 
 @pytest.mark.parametrize(
@@ -51,6 +75,8 @@ def _available(monkeypatch) -> None:
                 "stream-json",
                 "--input-format",
                 "text",
+                "--permission-mode",
+                "acceptEdits",
                 "--add-dir",
                 "{repo}",
             ),
@@ -162,6 +188,65 @@ def test_codex_grants_only_workspace_write_sandbox(
     assert not any("bypass" in item.lower() for item in invocation.argv)
 
 
+def test_codex_enforces_read_only_filesystem_mode(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _available(monkeypatch)
+
+    invocation = build_harness_invocation(
+        "codex",
+        repo_path=tmp_path,
+        filesystem_mode="read_only",
+    )
+
+    assert ("--sandbox", "read-only") == invocation.argv[3:5]
+    assert invocation.filesystem_mode == "read_only"
+
+
+@pytest.mark.parametrize("provider", ("opencode",))
+def test_rejects_read_only_mode_when_provider_cannot_enforce_it(
+    provider: str,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _available(monkeypatch)
+
+    with pytest.raises(HarnessAdapterError, match="read-only"):
+        build_harness_invocation(
+            provider,
+            repo_path=tmp_path,
+            filesystem_mode="read_only",
+        )
+
+
+def test_claude_pins_task_mode_permission_boundaries(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _available(monkeypatch)
+
+    writable = build_harness_invocation(
+        "claude",
+        repo_path=tmp_path,
+        filesystem_mode="workspace_write",
+    )
+    read_only = build_harness_invocation(
+        "claude",
+        repo_path=tmp_path,
+        filesystem_mode="read_only",
+    )
+
+    writable_mode = writable.argv.index("--permission-mode")
+    read_only_mode = read_only.argv.index("--permission-mode")
+    assert writable.argv[writable_mode + 1] == "acceptEdits"
+    assert read_only.argv[read_only_mode + 1] == "plan"
+    assert writable.filesystem_mode == "workspace_write"
+    assert read_only.filesystem_mode == "read_only"
+    assert "bypassPermissions" not in writable.argv
+    assert "bypassPermissions" not in read_only.argv
+
+
 def test_codex_prefers_the_current_desktop_cli_over_an_npm_global_wrapper(
     tmp_path: Path,
     monkeypatch,
@@ -200,6 +285,11 @@ def test_passes_an_explicit_model_as_direct_argv(
     monkeypatch,
 ) -> None:
     _available(monkeypatch)
+    if provider == "codex":
+        _proven_codex_catalog(
+            monkeypatch,
+            ("test-model", ("low", "medium", "high")),
+        )
 
     invocation = build_harness_invocation(
         provider,
@@ -222,6 +312,13 @@ def test_codex_passes_an_explicit_reasoning_effort_as_config_override(
     monkeypatch,
 ) -> None:
     _available(monkeypatch)
+    _proven_codex_catalog(
+        monkeypatch,
+        (
+            "gpt-5.6-sol",
+            ("low", "medium", "high", "xhigh", "max", "ultra"),
+        ),
+    )
 
     invocation = build_harness_invocation(
         "codex",
@@ -240,11 +337,18 @@ def test_codex_passes_an_explicit_reasoning_effort_as_config_override(
     assert config_index < invocation.argv.index("exec")
 
 
-def test_visible_codex_uses_app_server_wrapper_without_changing_normal_exec(
+def test_visible_codex_uses_native_exec_that_owns_tool_execution(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     _available(monkeypatch)
+    _proven_codex_catalog(
+        monkeypatch,
+        (
+            "gpt-5.6-sol",
+            ("low", "medium", "high", "xhigh", "max", "ultra"),
+        ),
+    )
 
     normal = build_harness_invocation(
         "codex",
@@ -260,21 +364,23 @@ def test_visible_codex_uses_app_server_wrapper_without_changing_normal_exec(
         visible=True,
     )
 
-    assert normal.argv[0] == "/tools/codex"
-    assert "exec" in normal.argv
-    assert str(CODEX_APP_SERVER_CLIENT) not in normal.argv
-    assert visible.argv == (
-        sys.executable,
-        str(CODEX_APP_SERVER_CLIENT),
-        "--codex-bin",
+    expected = (
         "/tools/codex",
-        "--cwd",
+        "-C",
         str(tmp_path.resolve()),
-        "--model",
+        "--sandbox",
+        "workspace-write",
+        "-m",
         "gpt-5.6-sol",
-        "--effort",
-        "high",
+        "-c",
+        "model_reasoning_effort=high",
+        "exec",
+        "--json",
+        "-",
     )
+    assert normal.argv == expected
+    assert visible.argv == expected
+    assert "app-server" not in visible.argv
     assert visible.context_delivery == "stdin"
     assert visible.executable == "/tools/codex"
 
@@ -317,6 +423,10 @@ def test_rejects_effort_not_supported_by_selected_codex_model(
     monkeypatch,
 ) -> None:
     _available(monkeypatch)
+    _proven_codex_catalog(
+        monkeypatch,
+        ("gpt-5.6-luna", ("low", "medium", "high", "xhigh", "max")),
+    )
 
     with pytest.raises(HarnessAdapterError, match="not supported by model"):
         build_harness_invocation(
@@ -324,6 +434,61 @@ def test_rejects_effort_not_supported_by_selected_codex_model(
             repo_path=tmp_path,
             model="gpt-5.6-luna",
             effort="ultra",
+        )
+
+
+def test_rejects_explicit_codex_model_missing_from_discovered_catalog(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _available(monkeypatch)
+    _proven_codex_catalog(
+        monkeypatch,
+        ("gpt-proven", ("low", "medium", "high")),
+    )
+
+    with pytest.raises(HarnessAdapterError, match="not present"):
+        build_harness_invocation(
+            "codex",
+            repo_path=tmp_path,
+            model="gpt-unproven",
+        )
+
+
+def test_rejects_codex_override_when_catalog_discovery_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _available(monkeypatch)
+    monkeypatch.setattr(
+        "app.services.harness_adapters.codex_model_catalog",
+        lambda **_kwargs: (),
+    )
+
+    with pytest.raises(HarnessAdapterError, match="trustworthy model catalog"):
+        build_harness_invocation(
+            "codex",
+            repo_path=tmp_path,
+            model="gpt-unproven",
+            effort="high",
+        )
+
+
+def test_validates_effort_against_cli_catalog_for_default_codex_model(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _available(monkeypatch)
+    _proven_codex_catalog(
+        monkeypatch,
+        ("gpt-proven", ("low", "medium")),
+    )
+
+    with pytest.raises(HarnessAdapterError, match="not supported by model"):
+        build_harness_invocation(
+            "codex",
+            repo_path=tmp_path,
+            effort="high",
         )
 
 
@@ -536,6 +701,167 @@ def test_codex_readiness_detects_a_broken_installed_wrapper(monkeypatch) -> None
     assert "wrapper is broken" in readiness.message
 
 
+def test_codex_model_catalog_does_not_invent_models_after_probe_failure(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.harness_adapters.subprocess.run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="model catalog unavailable",
+        ),
+    )
+
+    assert codex_model_catalog(executable="/tools/codex") == ()
+
+
+def test_codex_readiness_exposes_no_model_claims_when_catalog_is_unavailable(
+    monkeypatch,
+) -> None:
+    _available(monkeypatch)
+    responses = iter((
+        SimpleNamespace(
+            returncode=0,
+            stdout="Logged in using ChatGPT",
+            stderr="",
+        ),
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="model catalog unavailable",
+        ),
+    ))
+    monkeypatch.setattr(
+        "app.services.harness_adapters.subprocess.run",
+        lambda *_args, **_kwargs: next(responses),
+    )
+
+    readiness = probe_provider_readiness("codex")
+
+    assert readiness.ready is True
+    assert readiness.models == ()
+    assert "did not return a trustworthy catalog" in readiness.message
+    assert "without offering model or effort overrides" in readiness.message
+    assert readiness.to_dict()["models"] == []
+
+
+def test_codex_readiness_rejects_explicit_model_when_catalog_is_unavailable(
+    monkeypatch,
+) -> None:
+    _available(monkeypatch)
+    responses = iter((
+        SimpleNamespace(
+            returncode=0,
+            stdout="Logged in using ChatGPT",
+            stderr="",
+        ),
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="model catalog unavailable",
+        ),
+    ))
+    monkeypatch.setattr(
+        "app.services.harness_adapters.subprocess.run",
+        lambda *_args, **_kwargs: next(responses),
+    )
+
+    readiness = probe_provider_readiness(
+        "codex",
+        provider_model="gpt-unproven",
+    )
+
+    assert readiness.ready is False
+    assert readiness.status == "access_required"
+    assert readiness.code == "provider_model_access_required"
+    assert readiness.models == ()
+    assert "`gpt-unproven`" in readiness.message
+    assert "catalog discovery did not succeed" in readiness.message
+
+
+def test_codex_readiness_rejects_model_missing_from_live_catalog(
+    monkeypatch,
+) -> None:
+    _available(monkeypatch)
+    model_payload = (
+        '{"models":[{"slug":"gpt-proven","display_name":"GPT Proven",'
+        '"visibility":"list","priority":1,'
+        '"supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}],'
+        '"default_reasoning_level":"high"}]}'
+    )
+    responses = iter((
+        SimpleNamespace(
+            returncode=0,
+            stdout="Logged in using ChatGPT",
+            stderr="",
+        ),
+        SimpleNamespace(
+            returncode=0,
+            stdout=model_payload,
+            stderr="",
+        ),
+    ))
+    monkeypatch.setattr(
+        "app.services.harness_adapters.subprocess.run",
+        lambda *_args, **_kwargs: next(responses),
+    )
+
+    readiness = probe_provider_readiness(
+        "codex",
+        provider_model="gpt-unproven",
+    )
+
+    assert readiness.ready is False
+    assert readiness.code == "provider_model_access_required"
+    assert [model.id for model in readiness.models] == ["gpt-proven"]
+    assert "does not list it" in readiness.message
+
+
+def test_codex_readiness_accepts_model_and_efforts_from_live_catalog(
+    monkeypatch,
+) -> None:
+    _available(monkeypatch)
+    model_payload = (
+        '{"models":[{"slug":"gpt-proven","display_name":"GPT Proven",'
+        '"visibility":"list","priority":1,'
+        '"supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}],'
+        '"default_reasoning_level":"high"}]}'
+    )
+    responses = iter((
+        SimpleNamespace(
+            returncode=0,
+            stdout="Logged in using ChatGPT",
+            stderr="",
+        ),
+        SimpleNamespace(
+            returncode=0,
+            stdout=model_payload,
+            stderr="",
+        ),
+    ))
+    monkeypatch.setattr(
+        "app.services.harness_adapters.subprocess.run",
+        lambda *_args, **_kwargs: next(responses),
+    )
+
+    readiness = probe_provider_readiness(
+        "codex",
+        provider_model="gpt-proven",
+    )
+
+    assert readiness.ready is True
+    assert readiness.models == (
+        ProviderModelOption(
+            id="gpt-proven",
+            label="GPT Proven",
+            default=True,
+            reasoning_efforts=("low", "high"),
+            default_reasoning_effort="high",
+        ),
+    )
+
+
 def _mock_opencode_credentials(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.services.harness_adapters.shutil.which",
@@ -569,7 +895,7 @@ def test_opencode_requires_an_explicit_model_instead_of_assuming_a_subscription(
     assert readiness.status == "configuration_required"
     assert readiness.code == "provider_model_configuration_required"
     assert "do not prove an active OpenCode Go or Zen subscription" in readiness.message
-    assert "CONTEXT_ENGINE_OPENCODE_MODEL" in readiness.action
+    assert "DAEMONSTATE_OPENCODE_MODEL" in readiness.action
 
 
 def test_opencode_matching_connected_provider_is_configured(monkeypatch) -> None:
