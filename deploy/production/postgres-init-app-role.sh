@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 umask 077
 
-app_role="${POSTGRES_APP_USER:-ce_app}"
-app_password_file="/run/context-engine-secrets/postgres_app_password"
+app_role="${POSTGRES_APP_USER:-daemonstate_app}"
+app_password_file="/run/daemonstate-secrets/postgres_app_password"
 
 if [[ ! "$app_role" =~ ^[A-Za-z_][A-Za-z0-9_]{0,62}$ ]]; then
   echo "POSTGRES_APP_USER must be a valid PostgreSQL identifier" >&2
@@ -29,7 +29,7 @@ psql \
 SELECT format(
   'CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION CONNECTION LIMIT 80',
   :'app_role',
-  rtrim(pg_read_file('/run/context-engine-secrets/postgres_app_password'), E'\r\n')
+  rtrim(pg_read_file('/run/daemonstate-secrets/postgres_app_password'), E'\r\n')
 )
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'app_role')
 \gexec

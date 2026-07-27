@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode
 
+from app.telemetry import traced
+
 
 HARNESS_LABELS = {
     "codex": "Codex",
@@ -83,7 +85,7 @@ def probe_harness_visibility(connector_type: str) -> HarnessVisibility:
             exact_session_supported=False,
             code="desktop_app_unsupported",
             message=f"{label} visible continuation is not supported on this system.",
-            action=f"Run Context Engine on macOS with {spec.install_product}.",
+            action=f"Run DaemonState on macOS with {spec.install_product}.",
         )
 
     desktop_available = _macos_desktop_app_installed(spec)
@@ -128,6 +130,32 @@ def probe_harness_visibility(connector_type: str) -> HarnessVisibility:
     )
 
 
+@traced(
+    "daemonstate.harness.launch",
+    attributes=lambda args, kwargs: {
+        "daemonstate.phase": "harness_launch",
+        "daemonstate.provider": (
+            args[0] if args else kwargs.get("connector_type")
+        ),
+        "daemonstate.session.id": (
+            args[1] if len(args) > 1 else kwargs.get("session_id")
+        ),
+    },
+    result_attributes=lambda result: {
+        "daemonstate.provider": result.get("connector_type"),
+        "daemonstate.session.id": result.get("session_id"),
+        "daemonstate.harness.launched": result.get("launched"),
+        "daemonstate.harness.navigation_requested": result.get(
+            "navigation_requested"
+        ),
+        "daemonstate.harness.navigation_verified": result.get(
+            "navigation_verified"
+        ),
+        "daemonstate.status": (
+            "launched" if result.get("launched") is True else "not_launched"
+        ),
+    },
+)
 def launch_harness_session(
     connector_type: str,
     session_id: str,

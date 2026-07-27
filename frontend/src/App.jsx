@@ -1,7 +1,7 @@
-import { Suspense, lazy, useEffect, useState } from "react";
+import { Component, Suspense, lazy, useEffect, useState } from "react";
 import { Routes, Route, NavLink, Navigate, Link, useLocation } from "react-router-dom";
 import ThemeToggle from "./components/ThemeToggle";
-import CeIcon from "./components/CeIcon";
+import DaemonStateIcon from "./components/DaemonStateIcon";
 import ProductLoadingState from "./components/ProductLoadingState";
 import WorkspaceSwitcher from "./components/WorkspaceSwitcher";
 import { useWorkspaceSelection } from "./context/WorkspaceContext";
@@ -24,6 +24,7 @@ const NowPage        = lazy(() => import("./pages/NowPage"));
 const PreparePage    = lazy(() => import("./pages/PreparePage"));
 const RunsPage       = lazy(() => import("./pages/RunsPage"));
 const SessionLibrary = lazy(() => import("./pages/SessionLibrary"));
+const MemoryNow      = lazy(() => import("./pages/MemoryNow"));
 const ProjectMemory  = lazy(() => import("./pages/ProjectMemory"));
 const QueryView    = lazy(() => import("./pages/QueryView"));
 const SourceManager = lazy(() => import("./pages/SourceManager"));
@@ -82,6 +83,76 @@ function PageLoader({ fullScreen = false }) {
   );
 }
 
+class ProductRouteErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidUpdate(previousProps) {
+    if (
+      this.state.error
+      && previousProps.resetKey !== this.props.resetKey
+    ) {
+      this.setState({ error: null });
+    }
+  }
+
+  componentDidCatch(error, info) {
+    // Keep the failure observable for diagnostics without allowing one route
+    // to blank the entire product shell.
+    console.error("Product route render failed", error, info);
+  }
+
+  reset = () => {
+    this.setState({ error: null });
+  };
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <section
+        role="alert"
+        aria-labelledby="route-recovery-heading"
+        className="mx-auto flex min-h-[24rem] w-full max-w-3xl flex-col justify-center rounded-[1.75rem] border border-amber-200 bg-[#fbfbf6] px-6 py-10 shadow-[0_24px_70px_rgba(23,23,19,0.1)] dark:border-amber-900/60 dark:bg-[#11110f] sm:px-10"
+      >
+        <span className="text-xs font-bold uppercase tracking-[0.16em] text-amber-700 dark:text-amber-300">
+          View recovery
+        </span>
+        <h1
+          id="route-recovery-heading"
+          className="mt-3 text-3xl font-semibold tracking-[-0.045em] text-[#171713] dark:text-white"
+        >
+          This view could not be opened
+        </h1>
+        <p className="mt-4 max-w-xl text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
+          Your workspace and saved context are still intact. Retry this view, or return to Continue and choose another task.
+        </p>
+        <div className="mt-7 flex flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={this.reset}
+            className="inline-flex min-h-11 items-center justify-center rounded-xl bg-[#171713] px-5 text-sm font-semibold text-white transition-colors hover:bg-[#30302a] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#95b52f] focus-visible:ring-offset-2 dark:bg-[#d9ff68] dark:text-[#171713] dark:hover:bg-[#e3ff91]"
+          >
+            Try this view again
+          </button>
+          <Link
+            to="/app"
+            onClick={this.reset}
+            className="inline-flex min-h-11 items-center justify-center rounded-xl border border-[#d7d7cf] px-5 text-sm font-semibold text-[#383832] transition-colors hover:border-[#aaa99f] hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#95b52f] focus-visible:ring-offset-2 dark:border-white/15 dark:text-white dark:hover:bg-white/[0.06]"
+          >
+            Return to Continue
+          </Link>
+        </div>
+      </section>
+    );
+  }
+}
+
 export default function App() {
   return (
     <Suspense fallback={<PageLoader fullScreen />}>
@@ -100,24 +171,24 @@ function AdminShell() {
   const isProjectPage = location.pathname === "/app/explain" || location.pathname === "/app/explain/";
   const isLibraryPage = location.pathname === "/app/library" || location.pathname === "/app/library/";
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    try { return localStorage.getItem("ce_sidebar_collapsed") === "true"; }
+    try { return localStorage.getItem("daemonstate_sidebar_collapsed") === "true"; }
     catch { return false; }
   });
 
   const toggleSidebar = () => {
     setSidebarCollapsed((current) => {
       const next = !current;
-      try { localStorage.setItem("ce_sidebar_collapsed", String(next)); } catch {}
+      try { localStorage.setItem("daemonstate_sidebar_collapsed", String(next)); } catch {}
       window.setTimeout(() => window.dispatchEvent(new Event("resize")), 220);
       return next;
     });
   };
 
   return (
-    <div className="app-shell ce-app-shell flex h-screen h-[100dvh] overflow-hidden text-ink transition-colors duration-300">
+    <div className="app-shell daemonstate-app-shell flex h-screen h-[100dvh] overflow-hidden text-ink transition-colors duration-300">
       <aside
         id="desktop-sidebar"
-        className={`ce-app-sidebar relative hidden shrink-0 flex-col border-r border-line p-3 transition-[width] duration-300 ease-out lg:flex ${sidebarCollapsed ? "w-[76px]" : "w-[248px]"}`}
+        className={`daemonstate-app-sidebar relative hidden shrink-0 flex-col border-r border-line p-3 transition-[width] duration-300 ease-out lg:flex ${sidebarCollapsed ? "w-[76px]" : "w-[248px]"}`}
       >
         <button
           type="button"
@@ -130,10 +201,10 @@ function AdminShell() {
         >
           {sidebarCollapsed ? <PanelLeftOpen className="h-3.5 w-3.5" /> : <PanelLeftClose className="h-3.5 w-3.5" />}
         </button>
-        <Link to="/" title={sidebarCollapsed ? "Context Engine" : undefined} className={`group flex h-16 items-center rounded-2xl text-[#171713] transition-colors hover:bg-[#f6f6f3] dark:text-white dark:hover:bg-white/[0.04] ${sidebarCollapsed ? "justify-center px-0" : "gap-3 px-2"}`}>
-          <span className="transition-transform duration-300 ease-out group-hover:-rotate-3 group-hover:scale-105"><CeIcon size={34} /></span>
+        <Link to="/" title={sidebarCollapsed ? "DaemonState" : undefined} className={`group flex h-16 items-center rounded-2xl text-[#171713] transition-colors hover:bg-[#f6f6f3] dark:text-white dark:hover:bg-white/[0.04] ${sidebarCollapsed ? "justify-center px-0" : "gap-3 px-2"}`}>
+          <span className="transition-transform duration-300 ease-out group-hover:-rotate-3 group-hover:scale-105"><DaemonStateIcon size={34} /></span>
           <span className={sidebarCollapsed ? "sr-only" : "min-w-0"}>
-            <span className="block truncate text-[17px] font-semibold leading-none tracking-[-0.025em]">Context Engine</span>
+            <span className="block truncate text-[17px] font-semibold leading-none tracking-[-0.025em]">DaemonState</span>
           </span>
         </Link>
 
@@ -157,11 +228,11 @@ function AdminShell() {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="ce-mobile-header relative z-40 shrink-0 border-b border-line backdrop-blur-xl lg:hidden">
+        <header className="daemonstate-mobile-header relative z-40 shrink-0 border-b border-line backdrop-blur-xl lg:hidden">
           <div className="flex items-center justify-between gap-3 px-4 py-3 sm:px-6">
-            <Link to="/" aria-label="Context Engine home" className="flex min-w-0 items-center gap-2.5">
-              <CeIcon size={30} />
-              <span className="hidden truncate text-sm font-semibold sm:block">Context Engine</span>
+            <Link to="/" aria-label="DaemonState home" className="flex min-w-0 items-center gap-2.5">
+              <DaemonStateIcon size={30} />
+              <span className="hidden truncate text-sm font-semibold sm:block">DaemonState</span>
             </Link>
             <div className="flex min-w-0 items-center gap-2">
               <WorkspaceSwitcher />
@@ -170,37 +241,42 @@ function AdminShell() {
           </div>
         </header>
 
-        <main className={`app-main ${isLibraryPage ? "" : "ce-app-canvas"} relative min-h-0 flex-1 ${isProjectPage ? "overflow-hidden" : "overflow-y-auto px-4 py-6 sm:px-7 sm:py-8 xl:px-10 xl:py-10"}`}>
+        <main data-app-scroll-container className={`app-main ${isLibraryPage ? "" : "daemonstate-app-canvas"} relative min-h-0 flex-1 ${isProjectPage ? "overflow-hidden" : "overflow-y-auto px-4 py-6 sm:px-7 sm:py-8 xl:px-10 xl:py-10"}`}>
         {!isProjectPage ? (
           <div className={isLibraryPage
             ? "pointer-events-none absolute inset-x-0 top-0 h-48 border-b border-[#e7e7df]/70 bg-[radial-gradient(circle_at_75%_0%,rgba(217,255,104,0.14),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.7),rgba(247,247,242,0))] dark:border-[#171717] dark:bg-[radial-gradient(circle_at_75%_0%,rgba(217,255,104,0.035),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.018),rgba(0,0,0,0))]"
-            : "ce-app-ambient pointer-events-none absolute inset-x-0 top-0 h-64"
+            : "daemonstate-app-ambient pointer-events-none absolute inset-x-0 top-0 h-64"
           } />
         ) : null}
         <div
           className={`page-enter relative z-10 ${isProjectPage ? "h-full min-h-0" : ""}`}
           key={`${selectedId || "unselected-workspace"}:${location.pathname}`}
         >
-          <Suspense fallback={<PageLoader />}>
-            <Routes>
-              <Route index                                  element={<NowPage />} />
-              <Route path="prepare"                         element={<PreparePage />} />
-              <Route path="runs"                            element={<RunsPage />} />
-              <Route path="library"                         element={<SessionLibrary />} />
-              <Route path="memory"                          element={<ProjectMemory />} />
-              <Route path="explain"                         element={<ContextMapPage />} />
-              <Route path="dashboard"                       element={<Navigate to="/app" replace />} />
-              <Route path="graph"                           element={<Navigate to="/app/explain" replace />} />
-              <Route path="query"                           element={<QueryView />} />
-              <Route path="sources"                         element={<SourceManager />} />
-              <Route path="agents"                          element={<Navigate to="/app" replace />} />
-              <Route path="connectors"                      element={<Connectors />} />
-              <Route path="connectors/:connectorType/runs"  element={<Connectors />} />
-              <Route path="changes"                         element={<Changes />} />
-              <Route path="workspaces"                      element={<WorkspacesPage />} />
-              <Route path="*"                               element={<Navigate to="/app" replace />} />
-            </Routes>
-          </Suspense>
+          <ProductRouteErrorBoundary
+            resetKey={`${selectedId || "unselected-workspace"}:${location.pathname}:${location.search}`}
+          >
+            <Suspense fallback={<PageLoader />}>
+              <Routes>
+                <Route index                                  element={<NowPage />} />
+                <Route path="prepare"                         element={<PreparePage />} />
+                <Route path="runs"                            element={<RunsPage />} />
+                <Route path="library"                         element={<SessionLibrary />} />
+                <Route path="memory"                          element={<MemoryEntry />} />
+                <Route path="memory/inspector"                element={<ProjectMemory />} />
+                <Route path="explain"                         element={<ContextMapPage />} />
+                <Route path="dashboard"                       element={<Navigate to="/app" replace />} />
+                <Route path="graph"                           element={<Navigate to="/app/explain" replace />} />
+                <Route path="query"                           element={<QueryView />} />
+                <Route path="sources"                         element={<SourceManager />} />
+                <Route path="agents"                          element={<Navigate to="/app" replace />} />
+                <Route path="connectors"                      element={<Connectors />} />
+                <Route path="connectors/:connectorType/runs"  element={<Connectors />} />
+                <Route path="changes"                         element={<Changes />} />
+                <Route path="workspaces"                      element={<WorkspacesPage />} />
+                <Route path="*"                               element={<Navigate to="/app" replace />} />
+              </Routes>
+            </Suspense>
+          </ProductRouteErrorBoundary>
         </div>
         </main>
         <MobileNavigation pathname={location.pathname} />
@@ -222,6 +298,31 @@ function ShellNavGroup({ group, collapsed }) {
       </div>
     </div>
   );
+}
+
+function MemoryEntry() {
+  const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  const legacyInspectorKeys = [
+    "view",
+    "section",
+    "category",
+    "scope",
+    "source",
+    "verification",
+    "temporal",
+    "kind",
+    "q",
+  ];
+  if (legacyInspectorKeys.some((key) => params.has(key))) {
+    return (
+      <Navigate
+        replace
+        to={{ pathname: "/app/memory/inspector", search: location.search }}
+      />
+    );
+  }
+  return <MemoryNow />;
 }
 
 function ShellNavLink({ to, label, icon: Icon, end, collapsed = false }) {
@@ -277,7 +378,7 @@ function MobileNavigation({ pathname }) {
           <section
             id="mobile-more-destinations"
             aria-label="More destinations"
-            className="ce-mobile-more-panel absolute inset-x-3 bottom-[calc(100%+0.75rem)] z-10 overflow-hidden rounded-stage border border-line bg-surface shadow-elevation-3"
+            className="daemonstate-mobile-more-panel absolute inset-x-3 bottom-[calc(100%+0.75rem)] z-10 overflow-hidden rounded-stage border border-line bg-surface shadow-elevation-3"
           >
             <div className="flex items-center justify-between border-b border-line px-4 py-3">
               <div>
@@ -316,7 +417,7 @@ function MobileNavigation({ pathname }) {
         </>
       ) : null}
 
-      <nav aria-label="Mobile navigation" className="ce-mobile-navigation relative z-20 grid grid-cols-5 border-t border-line bg-surface">
+      <nav aria-label="Mobile navigation" className="daemonstate-mobile-navigation relative z-20 grid grid-flow-col auto-cols-fr border-t border-line bg-surface">
         {MOBILE_PRIMARY_ITEMS.map((item) => (
           <MobileNavLink key={item.to} {...item} />
         ))}

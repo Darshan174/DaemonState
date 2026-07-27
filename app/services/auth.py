@@ -14,7 +14,7 @@ from app.services.access import AccessScope
 
 
 API_KEY_HEADERS = (
-    "x-context-engine-api-key",
+    "x-daemonstate-api-key",
     "x-api-key",
 )
 _RATE_LIMIT_BUCKETS: dict[str, tuple[int, float]] = {}
@@ -143,7 +143,7 @@ async def check_api_rate_limit_async(
         window_seconds = 60
         window = int(time.time() // window_seconds)
         identity = _rate_limit_identity(request, key_by_ip=key_by_ip)
-        redis_key = f"context-engine:rate-limit:{namespace}:{identity}:{window}"
+        redis_key = f"daemonstate:rate-limit:{namespace}:{identity}:{window}"
         current, ttl = await client.eval(
             _RATE_LIMIT_SCRIPT,
             1,
@@ -199,7 +199,7 @@ async def rate_limit_backend_ready() -> bool:
         # memory ceiling. Probe the operation the API actually depends on.
         import secrets
 
-        key = f"context-engine:readiness:{secrets.token_hex(16)}"
+        key = f"daemonstate:readiness:{secrets.token_hex(16)}"
         if not await client.set(key, "1", ex=5, nx=True):
             return False
         await client.delete(key)

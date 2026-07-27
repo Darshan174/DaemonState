@@ -2,7 +2,7 @@
 
 Status: implemented and verified for the 2026-07-15 roadmap milestone.
 
-This contract completes the remaining useful Context Engine loop without turning
+This contract completes the remaining useful DaemonState loop without turning
 the product into enterprise search, an agent harness, or a generic memory store.
 
 ## 1. Bi-temporal claim revisions
@@ -157,7 +157,7 @@ live check.
 
 ## 7. Repository watcher
 
-`ctxe repo watch PATH --workspace-id ...` polls a bounded fingerprint, debounces
+`daemonstate repo watch PATH --workspace-id ...` polls a bounded fingerprint, debounces
 bursts and invokes incremental indexing only on change. Test-only `--once` and
 `--max-cycles` are supported.
 

@@ -3,14 +3,14 @@
 The harness wraps one local worker command. It gives the worker a task brief and
 records what happened; it does not decide or perform the work itself.
 
-`ctxe continue` composes this harness with task resolution, durable checkpoint
+`daemonstate continue` composes this harness with task resolution, durable checkpoint
 verification, and audited Codex, Claude Code, and OpenCode CLI adapters. Use
-`ctxe harness run` for an arbitrary explicit worker; use `ctxe continue --into`
+`daemonstate harness run` for an arbitrary explicit worker; use `daemonstate continue --into`
 for the built-in cross-harness path.
 
 ## What It Does
 
-`ctxe harness run`:
+`daemonstate harness run`:
 
 1. compiles and persists `context_pack.v2` for the selected workspace, repo,
    objective, target model, and token budget;
@@ -24,17 +24,17 @@ for the built-in cross-harness path.
 
 The worker receives:
 
-- `CONTEXT_ENGINE_PACK_PATH`
-- `CONTEXT_ENGINE_PACK_ID`
-- `CONTEXT_ENGINE_RUN_ID`
-- `CONTEXT_ENGINE_MODEL_PROFILE`
+- `DAEMONSTATE_PACK_PATH`
+- `DAEMONSTATE_PACK_ID`
+- `DAEMONSTATE_RUN_ID`
+- `DAEMONSTATE_MODEL_PROFILE`
 
 An exact `{context_file}` argv element is replaced with the temporary brief path.
 
 ## Usage
 
 ```bash
-ctxe harness run "fix the selected task and add focused tests" \
+daemonstate harness run "fix the selected task and add focused tests" \
   --repo . \
   --workspace-id <workspace-uuid> \
   --target-model qwen2.5-coder-7b \
@@ -58,21 +58,21 @@ wrapper cannot prove that a provider internally followed its planning instructio
 ## Outcome Reporting
 
 ```bash
-ctxe harness report --workspace-id <workspace-uuid> --json
+daemonstate harness report --workspace-id <workspace-uuid> --json
 ```
 
 The report groups local-harness runs by their recorded model and model profile.
 Verified success requires a harness-recorded successful outcome, passing evidence
 for every required check, and no unresolved recorded blocker. The report is
-descriptive evidence, not proof that Context Engine caused the result.
+descriptive evidence, not proof that DaemonState caused the result.
 
 ## Paired Evaluation
 
 ```bash
-ctxe eval harness --input experiment.json --json
+daemonstate eval harness --input experiment.json --json
 ```
 
-Each task must contain one row for `old_alone`, `old_with_context_engine`, and
+Each task must contain one row for `old_alone`, `old_with_daemonstate`, and
 `new_alone`. Every row must carry structured completion, verification, blocker,
 and evidence identifiers. The evaluator reports solve-rate, cost/time summaries,
 and paired wins/losses. Fewer than ten complete task triplets are labelled
@@ -85,7 +85,7 @@ Example row:
 ```json
 {
   "task_id": "auth-fix-01",
-  "label": "old_with_context_engine",
+  "label": "old_with_daemonstate",
   "cost_usd": 0.08,
   "duration_seconds": 94,
   "outcome_evidence": {
@@ -100,7 +100,7 @@ Example row:
 ## Current Limits
 
 - The user still chooses and configures the worker command.
-- `ctxe harness run` still requires a worker command. `ctxe continue --into`
+- `daemonstate harness run` still requires a worker command. `daemonstate continue --into`
   provides built-in non-interactive adapters for Codex, Claude Code, and
   OpenCode when their CLIs are installed and authenticated.
 - Context delivery is bounded to 1 MiB. Codex and Claude Code receive it on

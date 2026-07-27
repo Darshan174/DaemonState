@@ -551,7 +551,7 @@ export function cleanDisplayText(value) {
 
 function buildNextAgentPrompt({ groups, workspaceName, health }) {
   const lines = [
-    `Continue work on Context Engine for ${workspaceName}.`,
+    `Continue work on DaemonState for ${workspaceName}.`,
     "",
     "Goal: use the session knowledge map as the source of truth for the next focused change.",
     "",

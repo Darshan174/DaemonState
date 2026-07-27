@@ -14,7 +14,7 @@ from app.models import (
 from app.processing.embedder import HashingEmbedder
 from app.services.access import AccessScope
 from app.services.context_compiler import ContextCompiler, parse_goal
-from app.services.memory_trust import assess_memory_trust
+from app.services.memory_trust import assess_memory_trust, exact_memory_evidence
 from app.services.model_profiles import profile_for_target_model
 from app.services.query import QueryService
 
@@ -138,6 +138,32 @@ def test_exact_repo_and_human_confirmed_agent_evidence_can_be_current():
     )
     assert agent_assessment.current_truth is True
     assert agent_assessment.basis == "human_confirmed_exact_evidence"
+
+
+def test_deferred_exact_evidence_preserves_full_source_integrity_checks():
+    _component, evidence, source = _detached_record(
+        source_type="local_repository",
+        trust_zone="trusted_repo",
+        fact_type="decision",
+    )
+    source_content = source.content
+    source.__dict__.pop("content", None)
+    evidence._source_text_matches = True
+    evidence._source_content_length = len(source_content)
+    evidence._source_content_sha256 = hashlib.sha256(
+        source_content.encode(),
+    ).hexdigest()
+
+    assert exact_memory_evidence(source, evidence) is True
+
+    source.content_sha256 = "0" * 64
+    assert exact_memory_evidence(source, evidence) is False
+
+    source.content_sha256 = None
+    assert exact_memory_evidence(source, evidence) is True
+
+    evidence.end_char = len(source_content) + 1
+    assert exact_memory_evidence(source, evidence) is False
 
 
 def test_remote_provider_snapshot_is_not_current_without_freshness():

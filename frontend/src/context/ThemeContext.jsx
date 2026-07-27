@@ -1,7 +1,7 @@
 import { createContext, useContext, useLayoutEffect, useMemo, useState } from "react";
 
 const ThemeContext = createContext();
-const THEME_STORAGE_KEY = "ce-theme";
+const THEME_STORAGE_KEY = "daemonstate-theme";
 
 function isTheme(value) {
   return value === "light" || value === "dark";

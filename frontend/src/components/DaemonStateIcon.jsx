@@ -1,4 +1,4 @@
-export default function CeIcon({ size = 40, className = "" }) {
+export default function DaemonStateIcon({ size = 40, className = "" }) {
   return (
     <svg
       width={size}

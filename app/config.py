@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 from urllib.parse import urlparse
 
 from cryptography.fernet import Fernet
@@ -37,7 +39,7 @@ class Settings(BaseSettings):
     sync_worker_poll_interval_seconds: float = 2.0
     sync_worker_job_timeout_seconds: float = 1800.0
     sync_worker_metrics_port: int = 0
-    sync_worker_health_file: str = "/tmp/context-engine-sync-worker.ready"
+    sync_worker_health_file: str = "/tmp/daemonstate-sync-worker.ready"
     sync_worker_health_interval_seconds: float = 15.0
     source_ingestion_sweep_limit: int = 10
     source_ingestion_timeout_seconds: float = 300.0
@@ -63,6 +65,17 @@ class Settings(BaseSettings):
     serve_frontend: bool = True
     metrics_enabled: bool = True
     metrics_bearer_token: str | None = None
+    otel_enabled: bool = False
+    otel_content_capture: bool = False
+    otel_service_name: str = "daemonstate-api"
+    otel_exporter_otlp_traces_endpoint: str = (
+        "http://localhost:4318/v1/traces"
+    )
+    otel_export_timeout_seconds: float = 5.0
+    otel_sample_ratio: float = 1.0
+    otel_batch_max_queue_size: int = 2048
+    otel_batch_max_export_batch_size: int = 512
+    otel_batch_schedule_delay_ms: int = 5000
     oauth_state_ttl_seconds: int = 600
     log_level: str = "INFO"
     log_format: str = "console"
@@ -97,6 +110,73 @@ settings = Settings()
 
 def comma_separated(value: str | None) -> list[str]:
     return [item.strip() for item in (value or "").split(",") if item.strip()]
+
+
+def telemetry_configuration_errors(
+    config: Settings = settings,
+    *,
+    require_https: bool = False,
+) -> list[str]:
+    """Return errors that make the optional trace exporter unsafe to enable."""
+
+    if not config.otel_enabled:
+        return []
+
+    errors: list[str] = []
+    endpoint = str(config.otel_exporter_otlp_traces_endpoint or "").strip()
+    parsed = urlparse(endpoint)
+    allowed_schemes = {"https"} if require_https else {"http", "https"}
+    if (
+        parsed.scheme not in allowed_schemes
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        qualifier = "absolute https" if require_https else "absolute http(s)"
+        errors.append(
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT must be an "
+            f"{qualifier} URL without credentials, query parameters, or fragments"
+        )
+    if not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+        str(config.otel_service_name or "").strip(),
+    ):
+        errors.append(
+            "OTEL_SERVICE_NAME must be a bounded service identifier"
+        )
+    if config.otel_content_capture:
+        errors.append(
+            "OTEL_CONTENT_CAPTURE is unsupported; continuation telemetry is metadata-only"
+        )
+    if (
+        not math.isfinite(config.otel_sample_ratio)
+        or not 0.0 <= config.otel_sample_ratio <= 1.0
+    ):
+        errors.append("OTEL_SAMPLE_RATIO must be between 0 and 1")
+    if (
+        not math.isfinite(config.otel_export_timeout_seconds)
+        or config.otel_export_timeout_seconds <= 0
+    ):
+        errors.append("OTEL_EXPORT_TIMEOUT_SECONDS must be greater than zero")
+    if config.otel_batch_max_queue_size <= 0:
+        errors.append("OTEL_BATCH_MAX_QUEUE_SIZE must be greater than zero")
+    if config.otel_batch_max_export_batch_size <= 0:
+        errors.append(
+            "OTEL_BATCH_MAX_EXPORT_BATCH_SIZE must be greater than zero"
+        )
+    elif (
+        config.otel_batch_max_export_batch_size
+        > config.otel_batch_max_queue_size
+    ):
+        errors.append(
+            "OTEL_BATCH_MAX_EXPORT_BATCH_SIZE cannot exceed "
+            "OTEL_BATCH_MAX_QUEUE_SIZE"
+        )
+    if config.otel_batch_schedule_delay_ms <= 0:
+        errors.append("OTEL_BATCH_SCHEDULE_DELAY_MS must be greater than zero")
+    return errors
 
 
 def production_configuration_errors(config: Settings = settings) -> list[str]:
@@ -252,6 +332,7 @@ def production_configuration_errors(config: Settings = settings) -> list[str]:
         errors.append("SOURCE_INGESTION_MAX_ATTEMPTS must be greater than zero")
     if config.continuation_command_timeout_seconds <= 0:
         errors.append("CONTINUATION_COMMAND_TIMEOUT_SECONDS must be greater than zero")
+    errors.extend(telemetry_configuration_errors(config, require_https=True))
     return errors
 
 

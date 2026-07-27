@@ -5,10 +5,10 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
 
-EXPERIMENT_LABELS = ("old_alone", "old_with_context_engine", "new_alone")
+EXPERIMENT_LABELS = ("old_alone", "old_with_daemonstate", "new_alone")
 PAIRWISE_COMPARISONS = (
-    ("old_with_context_engine", "old_alone"),
-    ("old_with_context_engine", "new_alone"),
+    ("old_with_daemonstate", "old_alone"),
+    ("old_with_daemonstate", "new_alone"),
     ("old_alone", "new_alone"),
 )
 
@@ -121,7 +121,7 @@ class PairedExperimentReport:
                 "These are observed paired differences only. This report does not "
                 "establish causality or model parity. Evidence identifiers are "
                 "caller-supplied and checked for shape and uniqueness, but are not "
-                "resolved against Context Engine storage by this offline evaluator."
+                "resolved against DaemonState storage by this offline evaluator."
             ),
         }
 
@@ -196,6 +196,8 @@ def _validate_row(row: Mapping[str, Any], *, index: int) -> _ExperimentRow:
         raise ExperimentValidationError(f"row {index} must be an object")
     task_id = _required_text(row.get("task_id"), field=f"row {index} task_id")
     label = _required_text(row.get("label"), field=f"row {index} label")
+    if label.startswith("old_with_") and label not in EXPERIMENT_LABELS:
+        label = "old_with_daemonstate"
     if label not in EXPERIMENT_LABELS:
         raise ExperimentValidationError(
             f"row {index} label must be one of: {', '.join(EXPERIMENT_LABELS)}"

@@ -40,8 +40,8 @@ COPY --from=frontend-builder /frontend/dist ./frontend/dist
 # Run the normal image as an unprivileged identity. The hardened production
 # entrypoint may start as root solely to read file-backed secrets, then drops
 # irreversibly to this same UID/GID before importing application code.
-RUN groupadd --gid 10001 context-engine \
-    && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin context-engine \
+RUN groupadd --gid 10001 daemonstate \
+    && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin daemonstate \
     && mkdir -p /data \
     && chown -R 10001:10001 /app /data
 VOLUME ["/data"]

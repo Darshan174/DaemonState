@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useCallback, useEffect } from "react";
 
-const LS_KEY = "ce:selectedWorkspaceId";
+const LS_KEY = "daemonstate:selectedWorkspaceId";
 
 const WorkspaceContext = createContext(null);
 

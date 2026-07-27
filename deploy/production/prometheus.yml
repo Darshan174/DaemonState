@@ -4,7 +4,7 @@ global:
   evaluation_interval: 15s
 
 scrape_configs:
-  - job_name: context-engine-api
+  - job_name: daemonstate-api
     metrics_path: /metrics
     authorization:
       type: Bearer
@@ -13,7 +13,7 @@ scrape_configs:
       - targets:
           - app:8000
 
-  - job_name: context-engine-worker
+  - job_name: daemonstate-worker
     metrics_path: /metrics
     static_configs:
       - targets:

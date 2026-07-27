@@ -35,7 +35,7 @@ def test_passing_checks_without_agent_changes_do_not_prove_continuation() -> Non
         current_task="Implement the remaining continuation work.",
     )
 
-    assert outcome["status"] == "completed_unverified"
+    assert outcome["status"] == "requirements_unproven"
     assert outcome["verified"] is False
     assert (
         outcome["completion_evidence"]
@@ -68,7 +68,7 @@ def test_verification_side_effects_do_not_count_as_agent_changes() -> None:
         current_task="Implement the remaining continuation work.",
     )
 
-    assert outcome["status"] == "completed_unverified"
+    assert outcome["status"] == "requirements_unproven"
     assert outcome["agent_changed_files"] == []
     assert outcome["changed_files"] == ["verification-output.txt"]
 
@@ -81,7 +81,7 @@ def test_opencode_attachment_parser_failure_is_reported_as_our_invocation_bug() 
             stdout="",
             stderr=(
                 "Error: File not found: Continue the task using the attached "
-                "Context Engine context pack. Verify the current repository "
+                "Legacy Product context pack. Verify the current repository "
                 "state before editing."
             ),
         ),
@@ -99,11 +99,11 @@ def test_opencode_attachment_parser_failure_is_reported_as_our_invocation_bug() 
         "code": "provider_invocation_invalid",
         "provider": "opencode",
         "message": (
-            "Context Engine constructed an invalid OpenCode command: OpenCode "
+            "DaemonState constructed an invalid OpenCode command: OpenCode "
             "treated the continuation message as another attachment."
         ),
         "action": (
-            "Update Context Engine to the corrected OpenCode invocation and "
+            "Update DaemonState to the corrected OpenCode invocation and "
             "retry the continuation."
         ),
         "affected_tasks": ["Fix the harness continuation workflow."],
@@ -137,13 +137,13 @@ def test_preparation_affected_tasks_prefers_executable_task_over_session_title()
 
 
 def test_opencode_requires_an_explicit_or_configured_model(monkeypatch) -> None:
-    monkeypatch.delenv("CONTEXT_ENGINE_OPENCODE_MODEL", raising=False)
+    monkeypatch.delenv("DAEMONSTATE_OPENCODE_MODEL", raising=False)
 
     assert continuation_provider_model("opencode", None) is None
     assert continuation_provider_model("claude", None) is None
     assert continuation_provider_model("opencode", "openai/custom") == "openai/custom"
 
-    monkeypatch.setenv("CONTEXT_ENGINE_OPENCODE_MODEL", "opencode/team-default")
+    monkeypatch.setenv("DAEMONSTATE_OPENCODE_MODEL", "opencode/team-default")
     assert continuation_provider_model("opencode", None) == "opencode/team-default"
 
 

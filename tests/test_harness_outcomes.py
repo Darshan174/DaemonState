@@ -10,7 +10,15 @@ from app.evals.harness_outcomes import (
     ExperimentValidationError,
     evaluate_paired_experiment,
 )
-from app.models import AgentRun, ContextPack, RunObservation, SourceDocument, Workspace
+from app.models import (
+    AgentRun,
+    ContextPack,
+    ContinuationExecution,
+    ContinuationOutcome,
+    RunObservation,
+    SourceDocument,
+    Workspace,
+)
 from app.services.harness_outcomes import HarnessOutcomeService
 
 
@@ -360,6 +368,41 @@ async def test_latest_continuation_does_not_recover_checks_only_as_success(
         target_model="opencode/big-pickle",
         model_profile="frontier_coder_model",
     )
+    pack.token_budget = 24_000
+    pack.manifest = json.dumps({
+        "schema_version": "context_pack.v2",
+        "compiler": {"version": "context_compiler.v5"},
+        "created_at": BASE_TIME.isoformat(),
+        "selected_context": [
+            {
+                "id": "objective",
+                "lane": "instructions",
+                "provenance_verified": True,
+            },
+            {
+                "id": "file:app.py",
+                "lane": "code_and_tests",
+                "provenance_verified": None,
+            },
+        ],
+        "excluded_context": [
+            {"id": "stale", "reason": "stale"},
+        ],
+        "repo_state": {
+            "relevant_files": [{"path": "app.py"}],
+        },
+        "verification": {
+            "commands": [{"id": "V1", "command": COMMAND, "required": True}],
+        },
+        "token_accounting": {
+            "rendered_tokens": 18_420,
+            "budget": 24_000,
+            "remaining_tokens": 5_580,
+            "within_budget": True,
+            "estimation_method": "chars_div_4.v1",
+        },
+        "input_fingerprint": "fingerprint-1",
+    })
     run = await _run(
         db_session,
         workspace,
@@ -367,7 +410,7 @@ async def test_latest_continuation_does_not_recover_checks_only_as_success(
         model="opencode/big-pickle",
         run_key=f"continuation:{uuid4().hex}",
     )
-    run.tool = "context-engine:opencode"
+    run.tool = "daemonstate:opencode"
     await _observation(
         db_session,
         run,
@@ -416,6 +459,164 @@ async def test_latest_continuation_does_not_recover_checks_only_as_success(
     assert latest["changed_files"] == ["pre-existing-user-change.py"]
     assert latest["agent_changed_files"] == []
     assert latest["verified_success"] is False
+    assert latest["context_package"] == {
+        "schema_version": "context_package_summary.v1",
+        "context_pack_id": str(pack.id),
+        "state": "delivered",
+        "compiler_version": "context_compiler.v5",
+        "created_at": BASE_TIME.isoformat(),
+        "selected_count": 2,
+        "excluded_count": 1,
+        "selected_by_lane": {
+            "instructions": 1,
+            "code_and_tests": 1,
+        },
+        "excluded_by_reason": {"stale": 1},
+        "provenance": {
+            "verified": 1,
+            "unverified": 0,
+            "unknown": 1,
+        },
+        "token_estimate": {
+            "rendered": 18_420,
+            "budget": 24_000,
+            "remaining": 5_580,
+            "within_budget": True,
+            "method": "chars_div_4.v1",
+        },
+        "relevant_files_count": 1,
+        "verification_commands_count": 1,
+        "input_fingerprint": "fingerprint-1",
+        "continuation_identity": {
+            "task_id": None,
+            "selected_objective": None,
+            "checkpoint_id": None,
+            "source_provider": None,
+            "source_session_id": None,
+        },
+    }
+
+
+async def test_latest_continuation_uses_canonical_outcome_over_legacy_green(
+    db_session,
+):
+    workspace = Workspace(
+        id=uuid4(),
+        name="Canonical continuation outcome",
+        slug=f"canonical-continuation-{uuid4()}",
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+    pack = await _pack(
+        db_session,
+        workspace,
+        target_model="codex/frontier",
+        model_profile="frontier_coder_model",
+    )
+    execution = ContinuationExecution(
+        id=uuid4(),
+        workspace_id=workspace.id,
+        context_pack_id=pack.id,
+        schema_version="continuation_execution.v1",
+        task_mode="change",
+        request_verbatim="Fix the continuation result.",
+        request_normalized="Fix the continuation result.",
+        request_sha256="0" * 64,
+        display_title="Fix the continuation result.",
+        contract_json="{}",
+        contract_sha256="1" * 64,
+        prompt_markdown="# Continuation execution",
+        prompt_sha256="2" * 64,
+        status="requirements_unproven",
+        idempotency_key=uuid4().hex,
+    )
+    db_session.add(execution)
+    await db_session.flush()
+    run = await _run(
+        db_session,
+        workspace,
+        pack,
+        model="codex/frontier",
+        run_key=f"continuation:{uuid4().hex}",
+    )
+    run.tool = "daemonstate:codex"
+    run.continuation_execution_id = execution.id
+    await _observation(
+        db_session,
+        run,
+        event_type="command",
+        event_key="harness:command",
+        payload={"exit_code": 0, "files": ["app/result.py"]},
+        minute=1,
+    )
+    await _observation(
+        db_session,
+        run,
+        event_type="verification",
+        event_key="harness:verification:0",
+        payload={
+            "requirement_id": "V1",
+            "command": COMMAND,
+            "exit_code": 0,
+        },
+        minute=2,
+    )
+    await _observation(
+        db_session,
+        run,
+        event_type="outcome",
+        event_key="harness:outcome",
+        payload={
+            "status": "completed",
+            "files": ["app/result.py"],
+        },
+        minute=3,
+    )
+    db_session.add(ContinuationOutcome(
+        continuation_execution_id=execution.id,
+        status="requirements_unproven",
+        mandatory_total=2,
+        mandatory_passed=1,
+        mandatory_failed=0,
+        mandatory_unproven=1,
+        blocker_json="{}",
+        summary_json=json.dumps({
+            "status": "requirements_unproven",
+            "verified": False,
+            "completion_evidence": "mandatory_requirements_not_proven",
+            "agent_changed_files": ["app/result.py"],
+            "changed_files": ["app/result.py"],
+            "checks": {
+                "total": 2,
+                "passed": 1,
+                "failed": 0,
+                "unproven": 1,
+            },
+        }),
+    ))
+    await db_session.commit()
+
+    latest = await HarnessOutcomeService(db_session).latest_continuation(
+        workspace_id=workspace.id,
+    )
+
+    assert latest is not None
+    assert latest["status"] == "requirements_unproven"
+    assert latest["verified_success"] is False
+    assert latest["verification"] == {
+        "observed": 2,
+        "passed": 1,
+        "failed": 0,
+    }
+    assert latest["canonical_outcome"] == {
+        "status": "requirements_unproven",
+        "mandatory_total": 2,
+        "mandatory_passed": 1,
+        "mandatory_failed": 0,
+        "mandatory_unproven": 1,
+        "blocker": None,
+        "verified_at": None,
+    }
 
 
 async def test_latest_continuation_translates_a_persisted_timeout(
@@ -441,7 +642,7 @@ async def test_latest_continuation_translates_a_persisted_timeout(
         model="opencode/big-pickle",
         run_key=f"continuation:{uuid4().hex}",
     )
-    run.tool = "context-engine:opencode"
+    run.tool = "daemonstate:opencode"
     run.status = "failed"
     await _observation(
         db_session,
@@ -556,9 +757,9 @@ def test_paired_evaluator_reports_observed_deltas_without_parity_claim():
         },
         {
             "task_id": "task-1",
-            "label": "old_with_context_engine",
+            "label": "old_with_daemonstate",
             "outcome_evidence": _evidence(
-                completed=True, passed=True, blockers=0, evidence_id="ce-1"
+                completed=True, passed=True, blockers=0, evidence_id="daemonstate-1"
             ),
             "cost_usd": 6,
             "duration_seconds": 80,
@@ -581,9 +782,9 @@ def test_paired_evaluator_reports_observed_deltas_without_parity_claim():
         },
         {
             "task_id": "task-2",
-            "label": "old_with_context_engine",
+            "label": "old_with_daemonstate",
             "outcome_evidence": _evidence(
-                completed=True, passed=True, blockers=1, evidence_id="ce-2"
+                completed=True, passed=True, blockers=1, evidence_id="daemonstate-2"
             ),
             "cost_usd": 4,
             "duration_seconds": 90,
@@ -626,6 +827,33 @@ def test_paired_evaluator_reports_observed_deltas_without_parity_claim():
         rows, minimum_directional_tasks=2
     ).to_dict()
     assert directional["claim_status"] == "directional"
+
+
+def test_paired_evaluator_normalizes_a_previous_product_label():
+    rows = [
+        {
+            "task_id": "task-1",
+            "label": label,
+            "outcome_evidence": _evidence(
+                completed=True,
+                passed=True,
+                blockers=0,
+                evidence_id=f"evidence-{index}",
+            ),
+        }
+        for index, label in enumerate(
+            ("old_alone", "old_with_previous_product", "new_alone"),
+            start=1,
+        )
+    ]
+
+    result = evaluate_paired_experiment(rows).to_dict()
+
+    assert [item["label"] for item in result["conditions"]] == [
+        "old_alone",
+        "old_with_daemonstate",
+        "new_alone",
+    ]
 
 
 @pytest.mark.parametrize(

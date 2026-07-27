@@ -2,14 +2,14 @@ services:
   db:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_DB: context_engine
-      POSTGRES_USER: ce
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-contextengine}
+      POSTGRES_DB: daemonstate
+      POSTGRES_USER: daemonstate
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-daemonstate}
     volumes:
       - pg_data:/var/lib/postgresql/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ce -d context_engine"]
+      test: ["CMD-SHELL", "pg_isready -U daemonstate -d daemonstate"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -22,10 +22,10 @@ services:
       db:
         condition: service_healthy
     volumes:
-      - ce_uploads:/data
-      - ${CONTEXT_ENGINE_PROJECT_PATH:-.}:/workspace:ro
+      - daemonstate_uploads:/data
+      - ${DAEMONSTATE_PROJECT_PATH:-.}:/workspace:ro
     environment:
-      DATABASE_URL: postgresql://ce:${POSTGRES_PASSWORD:-contextengine}@db:5432/context_engine
+      DATABASE_URL: postgresql://daemonstate:${POSTGRES_PASSWORD:-daemonstate}@db:5432/daemonstate
       DATA_DIR: /data
       LITELLM_API_KEY: ${LITELLM_API_KEY:-}
       EXTRACTION_MODEL: ${EXTRACTION_MODEL:-}
@@ -54,14 +54,14 @@ services:
 
   worker:
     build: .
-    command: ["ctxe", "worker", "sync", "--watch"]
+    command: ["daemonstate", "worker", "sync", "--watch"]
     depends_on:
       db:
         condition: service_healthy
     volumes:
-      - ce_uploads:/data
+      - daemonstate_uploads:/data
     environment:
-      DATABASE_URL: postgresql://ce:${POSTGRES_PASSWORD:-contextengine}@db:5432/context_engine
+      DATABASE_URL: postgresql://daemonstate:${POSTGRES_PASSWORD:-daemonstate}@db:5432/daemonstate
       DATA_DIR: /data
       LITELLM_API_KEY: ${LITELLM_API_KEY:-}
       EXTRACTION_MODEL: ${EXTRACTION_MODEL:-}
@@ -82,4 +82,4 @@ services:
 
 volumes:
   pg_data:
-  ce_uploads:
+  daemonstate_uploads:

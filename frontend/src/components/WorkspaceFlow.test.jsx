@@ -50,7 +50,7 @@ describe("workspace entry flow", () => {
   it("separates real projects from sample workspaces in the switcher", async () => {
     mocks.workspaces = [
       { id: "project-1", name: "Actual Product", kind: "project", repo_path: "/code/actual-product" },
-      { id: "demo-1", name: "Context Engine Demo", kind: "demo" },
+      { id: "demo-1", name: "DaemonState Demo", kind: "demo" },
     ];
     renderWithProviders(<WorkspaceSwitcher />, ["/app/prepare?objective=Old%20workspace"]);
 

@@ -268,7 +268,7 @@ async def test_scoped_now_payloads_do_not_leak_restricted_session_evidence(
         }),
         raising=False,
     )
-    headers = {"X-Context-Engine-API-Key": "alice-token"}
+    headers = {"X-DaemonState-API-Key": "alice-token"}
 
     alice_continuity = await client.get("/api/session-continuity", params={
         "workspace_id": str(workspace.id),
@@ -345,7 +345,7 @@ async def test_same_session_private_events_do_not_change_visible_ledger_or_tip(
         }),
         raising=False,
     )
-    headers = {"X-Context-Engine-API-Key": "alice-token"}
+    headers = {"X-DaemonState-API-Key": "alice-token"}
     params = {
         "workspace_id": str(workspace.id),
         "provider": "codex",
@@ -421,7 +421,7 @@ async def test_hidden_checkpoints_do_not_consume_visible_result_limit(
     response = await client.get(
         "/api/checkpoints",
         params={"workspace_id": str(workspace.id), "limit": 1},
-        headers={"X-Context-Engine-API-Key": "alice-token"},
+        headers={"X-DaemonState-API-Key": "alice-token"},
     )
 
     assert response.status_code == 200

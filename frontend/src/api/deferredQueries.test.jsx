@@ -63,6 +63,7 @@ describe("deferred Now queries", () => {
         useSessionContinuity("workspace-1", {
           provider: "claude_code",
           sessionId: "session-1",
+          limit: 50,
           enabled,
         });
         useProjectMemory("workspace-1", { limit: 1, enabled });
@@ -82,8 +83,11 @@ describe("deferred Now queries", () => {
       "/checkpoints?workspace_id=workspace-1&limit=12&provider=claude&session_id=session-1",
     );
     expect(apiMock.get).toHaveBeenCalledWith(
-      "/session-continuity?workspace_id=workspace-1&provider=claude&session_id=session-1",
+      "/session-continuity?workspace_id=workspace-1&provider=claude&session_id=session-1&limit=50",
     );
+    expect(queryClient.getQueryCache().find({
+      queryKey: ["session-continuity", "workspace-1", "claude", "session-1", 50],
+    })).toBeDefined();
     expect(apiMock.get).toHaveBeenCalledWith(
       "/session-library?workspace_id=workspace-1",
     );
@@ -105,7 +109,7 @@ describe("deferred Now queries", () => {
     const firstQuery = queryClient.getQueryCache().find({
       queryKey: ["linked-ai-session-refresh", "workspace-1"],
     });
-    expect(firstQuery?.options.refetchInterval).toBe(30_000);
+    expect(firstQuery?.options.refetchInterval).toBe(120_000);
 
     await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith(
       "/connectors/ai-session/refresh-linked",

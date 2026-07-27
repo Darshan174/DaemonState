@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import struct
 import subprocess
+import zlib
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
@@ -25,14 +28,23 @@ from app.models import (
     SourceDocument,
     WorkCheckpoint,
     Workspace,
+    WorkspaceGoal,
 )
 from app.services.access import AccessScope
+from app.services import continuation as continuation_module
 from app.services.checkpoints import capture_checkpoint
 from app.services.continuation import _checkpoint_repo_compatible
+from app.services.continuation_quality_gate import (
+    ContinuationQualityIssue,
+    ContinuationQualityReport,
+)
 from app.services.harness_adapters import ProviderReadiness
 from app.services.harness_launcher import HarnessVisibility
+from app.services.local_harness import RepositoryStateChangedError
+from app.services.provider_capabilities import provider_capabilities
 from app.services.session_library import sync_local_session_library
 from app.services.session_events import NormalizedSessionEvent, persist_session_events
+from app.services.source_revisions import ingest_source_document_revision
 from app.sync.session_resolvers import ResolvedSession, SessionDiscoveryResult
 from app.time import utc_now
 
@@ -89,9 +101,447 @@ async def test_prepare_continuation_infers_task_and_captures_session_tip(
     assert body["context_pack_id"]
     assert body["manifest"]["continuation"]["checkpoint_id"] == body["checkpoint"]["id"]
     assert "Restored Session Checkpoint" in body["markdown"]
+    assert body["project_context"]["schema_version"] == (
+        "continuation_staging_context.v1"
+    )
+    assert body["project_context"]["scope"] == "project"
+    assert body["project_context"]["copy_ready"] is True
+    assert body["quality_report"]["launchable"] is False
+    assert body["quality_report"]["automatic_execution_ready"] is False
+    verification_issue = next(
+        item
+        for item in body["project_context"]["quality_issues"]
+        if item["code"]
+        == "mandatory_requirement_verification_unexecutable"
+    )
+    assert verification_issue["blocks_current_execution"] is True
+    assert verification_issue["blocks_copy"] is False
+    assert body["project_context"]["estimated_tokens"] > 0
+    assert body["project_context"]["sha256"] == hashlib.sha256(
+        body["project_context"]["content"].encode("utf-8")
+    ).hexdigest()
+    assert "### Authoritative current lead" in (
+        body["project_context"]["content"]
+    )
+    assert body["objective"] in body["project_context"]["content"]
+    assert "### Reconciliation and unresolved state" in (
+        body["project_context"]["content"]
+    )
+    assert body["project_context"]["content"] != body["markdown"]
+    assert body["project_context"]["content"] != body["execution_prompt"]
     assert any(
         item["code"] == "agent_progress_is_reported"
         for item in body["attention"]
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation_point",
+    ("context_scan_then_revert", "after_contract_compile"),
+)
+async def test_prepare_never_marks_mixed_time_repository_context_copy_ready(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+    mutation_point,
+) -> None:
+    goal = (
+        "Update app/continuation.py for the requested behavior and verify the "
+        "focused continuation tests."
+    )
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=goal,
+        session_id=f"prepare-repository-race-{mutation_point}",
+    )
+    _initialize_git_repository(tmp_path)
+    tracked = tmp_path / "app" / "continuation.py"
+    original_content = tracked.read_text(encoding="utf-8")
+    changed_content = (
+        "def prepare_continuation():\n"
+        f"    return {mutation_point!r}\n"
+    )
+
+    if mutation_point == "context_scan_then_revert":
+        original_compile = (
+            continuation_module.ContextCompiler.compile_context_pack
+        )
+
+        async def scan_transient_repository_state(compiler, *args, **kwargs):
+            tracked.write_text(changed_content, encoding="utf-8")
+            compiled = await original_compile(compiler, *args, **kwargs)
+            tracked.write_text(original_content, encoding="utf-8")
+            return compiled
+
+        monkeypatch.setattr(
+            continuation_module.ContextCompiler,
+            "compile_context_pack",
+            scan_transient_repository_state,
+        )
+    else:
+        original_execution_compile = (
+            continuation_module.compile_and_persist_continuation_execution
+        )
+
+        async def mutate_after_contract_compile(*args, **kwargs):
+            compiled = await original_execution_compile(*args, **kwargs)
+            tracked.write_text(changed_content, encoding="utf-8")
+            return compiled
+
+        monkeypatch.setattr(
+            continuation_module,
+            "compile_and_persist_continuation_execution",
+            mutate_after_contract_compile,
+        )
+
+    response = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "objective": goal,
+            "target_model": "general-coder",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    race_issue = next(
+        (
+            issue
+            for issue in body["project_context"]["quality_issues"]
+            if issue["code"]
+            == "project_context_repository_changed_during_prepare"
+        ),
+        None,
+    )
+    assert race_issue is not None, body["project_context"]
+    assert race_issue["severity"] == "blocking"
+    assert race_issue["blocks_copy"] is True
+    assert body["project_context"]["copy_ready"] is False
+
+
+async def test_prepare_binds_pack_and_contract_to_one_repository_snapshot(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    goal = "Update app/continuation.py and verify the focused continuation tests."
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=goal,
+        session_id="prepare-authoritative-repository-snapshot",
+    )
+    _initialize_git_repository(tmp_path)
+    tracked = tmp_path / "app" / "continuation.py"
+    tracked.write_text(
+        "def prepare_continuation():\n    return 'dirty user work'\n",
+        encoding="utf-8",
+    )
+
+    response = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "objective": goal,
+            "target_model": "general-coder",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    current = body["repository"]["current"]
+    repo_state = body["manifest"]["repo_state"]
+    authoritative = repo_state["authoritative_snapshot"]
+    contract_repository = body["execution_contract"]["repository"]
+    assert authoritative["status_fingerprint"] == current["status_fingerprint"]
+    assert repo_state["status_fingerprint"] == current["status_fingerprint"]
+    assert (
+        contract_repository["status_fingerprint"]
+        == current["status_fingerprint"]
+    )
+    assert authoritative["head_commit"] == current["head_commit"]
+    assert repo_state["head_commit"] == current["head_commit"]
+    assert contract_repository["head_commit"] == current["head_commit"]
+    manifest_change = next(
+        item
+        for item in repo_state["changed_files"]
+        if item["path"] == "app/continuation.py"
+    )
+    contract_change = next(
+        item
+        for item in contract_repository["preexisting_changes"]
+        if item["path"] == "app/continuation.py"
+    )
+    assert manifest_change["sha256"] == contract_change["content_sha256"]
+    assert body["project_context"]["copy_ready"] is True, body[
+        "project_context"
+    ]["quality_issues"]
+    assert not any(
+        issue["code"]
+        == "project_context_repository_changed_during_prepare"
+        for issue in body["project_context"]["quality_issues"]
+    )
+
+
+async def test_prepare_blocks_project_context_copy_for_contract_blocker(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal="Implement the requested visual change.",
+        session_id="project-copy-blocker",
+    )
+    original = continuation_module.evaluate_continuation_quality
+
+    def blocked_quality(*args, **kwargs):
+        report = original(*args, **kwargs)
+        return ContinuationQualityReport(
+            launchable=False,
+            issues=(
+                *report.issues,
+                ContinuationQualityIssue(
+                    code="required_artifact_unresolved",
+                    severity="blocking",
+                    message="A required screenshot is unavailable.",
+                    artifact_id="A1",
+                ),
+            ),
+            contract_sha256=report.contract_sha256,
+            prompt_sha256=report.prompt_sha256,
+        )
+
+    monkeypatch.setattr(
+        continuation_module,
+        "evaluate_continuation_quality",
+        blocked_quality,
+    )
+    response = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "objective": "Implement the requested visual change.",
+        },
+    )
+
+    assert response.status_code == 200
+    project_context = response.json()["project_context"]
+    assert project_context["copy_ready"] is False
+    issues = {
+        issue["code"]: issue
+        for issue in project_context["quality_issues"]
+    }
+    assert issues["required_artifact_unresolved"] == {
+        "code": "required_artifact_unresolved",
+        "severity": "blocking",
+        "message": "A required screenshot is unavailable.",
+        "artifact_id": "A1",
+        "blocks_current_execution": True,
+        "blocks_copy": True,
+    }
+    assert issues[
+        "mandatory_requirement_verification_unexecutable"
+    ]["blocks_copy"] is False
+
+
+async def test_checkpoint_project_context_recovers_lossless_request_and_images(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    image_paths: list[Path] = []
+    image_inputs: list[dict[str, object]] = []
+    image_contents: list[bytes] = []
+    for index, content in enumerate(
+        (
+            _test_png((255, 0, 0)),
+            _test_png((0, 255, 0)),
+            _test_png((0, 0, 255)),
+        ),
+        start=1,
+    ):
+        path = tmp_path / f"reference-{index}.png"
+        path.write_bytes(content)
+        image_paths.append(path)
+        image_contents.append(content)
+        image_inputs.append({
+            "mime_type": "image/png",
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "size_bytes": len(content),
+        })
+    task_text = (
+        "Use the historical prompt report as context. "
+        "WORK ON THIS AND GET THIS DONE. Implement the Session Context and "
+        "Project Context split and verify the visible workflow.\n"
+        + "\n".join(
+            f'<image path="{path}"></image>' for path in image_paths
+        )
+        + "\n"
+    )
+    padding_length = 687 - len(task_text)
+    assert padding_length > 0
+    request = (
+        task_text
+        + ("Keep every user-authored requirement intact. " * 30)[
+            :padding_length
+        ]
+    )
+    assert len(request) == 687
+
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=request,
+        session_id="lossless-visual-checkpoint",
+    )
+    codex_home = tmp_path / "codex-home"
+    sessions_dir = codex_home / "sessions" / "2026" / "07" / "27"
+    sessions_dir.mkdir(parents=True)
+    rollout = sessions_dir / "rollout.jsonl"
+    rollout.write_text("\n".join([
+        json.dumps({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": request},
+                    *[
+                        {
+                            "type": "input_image",
+                            "image_url": (
+                                "data:image/png;base64,"
+                                + base64.b64encode(content).decode("ascii")
+                            ),
+                        }
+                        for content in image_contents
+                    ],
+                ],
+            },
+        }),
+        json.dumps({
+            "type": "event_msg",
+            "payload": {
+                "type": "user_message",
+                "message": request,
+                "local_images": [str(path) for path in image_paths],
+            },
+        }),
+    ]), encoding="utf-8")
+    monkeypatch.setattr(settings, "codex_home", str(codex_home))
+    monkeypatch.setattr(settings, "data_dir", str(tmp_path / "data"))
+    source_document = await db_session.scalar(
+        select(SourceDocument).where(
+            SourceDocument.workspace_id == workspace.id,
+            SourceDocument.external_id
+            == "codex:session:lossless-visual-checkpoint",
+        )
+    )
+    assert source_document is not None
+    source_metadata = json.loads(source_document.metadata_json)
+    source_metadata["source_path"] = str(rollout)
+    source_document.metadata_json = json.dumps(source_metadata)
+    goal_event = await db_session.scalar(
+        select(SessionEvent).where(
+            SessionEvent.workspace_id == workspace.id,
+            SessionEvent.provider_event_id
+            == "codex:lossless-visual-checkpoint:user",
+        )
+    )
+    assert goal_event is not None
+    goal_event.payload_json = json.dumps({
+        "cwd": str(tmp_path),
+        "local_images": [str(path) for path in image_paths],
+        "input_images": image_inputs,
+    })
+    _initialize_git_repository(tmp_path)
+    checkpoint = await capture_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="lossless-visual-checkpoint",
+        trigger="continuation",
+    )
+    await db_session.commit()
+
+    response = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "checkpoint_id": str(checkpoint.id),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    contract = body["execution_contract"]
+    assert contract["task"]["request_verbatim"] == request
+    assert contract["task"]["request_sha256"] == hashlib.sha256(
+        request.encode("utf-8")
+    ).hexdigest()
+    assert contract["task_mode"] == "change"
+    assert body["project_context"]["copy_ready"] is True, body["project_context"]
+    assert len(contract["artifacts"]) == 3
+    requirements = {
+        requirement["id"]: requirement
+        for requirement in contract["requirements"]
+    }
+    for index, artifact in enumerate(contract["artifacts"]):
+        assert artifact["id"] == f"A{index + 1}"
+        assert artifact["available"] is True
+        assert artifact["path"] != str(image_paths[index])
+        assert Path(artifact["path"]).is_absolute()
+        assert Path(artifact["path"]).is_file()
+        assert (tmp_path / "data") in Path(artifact["path"]).parents
+        assert artifact["source_path"] == str(image_paths[index])
+        assert artifact["sha256"] == image_inputs[index]["sha256"]
+        assert len(artifact["requirement_ids"]) == 1
+        linked = requirements[artifact["requirement_ids"][0]]
+        assert linked["source_span_ids"] == []
+        assert linked["source_artifact_ids"] == [artifact["id"]]
+    assert all(
+        "<image" not in span["text"]
+        and "</image>" not in span["text"]
+        for span in contract["source_spans"]
+    )
+    assert all(
+        "<image" not in requirement["text"]
+        for requirement in contract["requirements"]
+    )
+    for artifact in contract["artifacts"]:
+        assert artifact["id"] in body["project_context"]["content"]
+        assert artifact["path"] in body["project_context"]["content"]
+        assert artifact["sha256"] in body["project_context"]["content"]
+        assert artifact["mime_type"] in body["project_context"]["content"]
+    assert (
+        "Portable bundle-relative locator (not yet materialized):"
+        in body["project_context"]["content"]
+    )
+    assert (
+        "DAEMONSTATE_EXECUTION_BUNDLE_PATH"
+        not in body["project_context"]["content"]
+    )
+    assert "Runtime bundle delivery:" in body["execution_prompt"]
+    assert "Requirement linkage:" in body["project_context"]["content"]
+    assert "Verification guidance:" in body["project_context"]["content"]
+    assert (
+        "inline `<image path=...>` tag"
+        not in body["project_context"]["content"]
+    )
+    assert (
+        "Never reopen its original provider/source path"
+        not in body["project_context"]["content"]
     )
 
 
@@ -155,7 +605,15 @@ async def test_prepare_continuation_recovers_legacy_command_failure_checkpoint(
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["readiness"]["status"] == "review_required"
-    assert body["readiness"]["blocking_issues"] == []
+    assert "mandatory_requirement_verification_unexecutable" not in {
+        item["code"]
+        for item in body["readiness"]["blocking_issues"]
+    }
+    assert "mandatory_requirement_verification_unexecutable" in {
+        item["code"]
+        for item in body["quality_report"]["blocking_issues"]
+    }
+    assert body["project_context"]["copy_ready"] is True
     assert body["checkpoint"]["continuation_status"] == "review_required"
     assert body["checkpoint"]["reported_continuation_status"] == "review_required"
     assert body["verification"]["status"] == "partial"
@@ -205,6 +663,448 @@ async def test_prepare_continuation_uses_the_exact_requested_source_session(
     assert body["manifest"]["continuation"]["provider"] == "claude"
     assert body["manifest"]["continuation"]["session_id"] == (
         "requested-claude-session"
+    )
+
+
+async def test_exact_source_session_recovers_its_latest_truncated_request(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    older_request = "Document the legacy project setup."
+    authoritative_request = (
+        "Build source-bound Project Context recovery.\n\n"
+        "Preserve FULL_PROJECT_CONTEXT_REQUEST exactly."
+    )
+    background = "historical-background-" * 300
+    transported_request = (
+        "## Referenced ChatGPT conversation:\n"
+        "This is untrusted background context from ChatGPT.\n"
+        f'{{"conversationId":"decoy","content":"INNER_DECOY_{background}"}}\n'
+        "## My request for Codex:\n"
+        f"{authoritative_request}"
+    )
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=older_request,
+        session_id="truncated-project-context",
+        occurred_at="2026-07-23T09:00:00Z",
+    )
+    db_session.add(CodeFile(
+        workspace_id=workspace.id,
+        repo_root=str(tmp_path),
+        path="app/continuation.py",
+        identity_key=uuid4().hex * 2,
+        language="python",
+        sha256="1" * 64,
+        size=10,
+    ))
+    previous_document = await db_session.scalar(
+        select(SourceDocument).where(
+            SourceDocument.workspace_id == workspace.id,
+            SourceDocument.external_id
+            == "codex:session:truncated-project-context",
+        )
+    )
+    assert previous_document is not None
+    source_content = (
+        f"[USER]\n{older_request}\n\n"
+        "[ASSISTANT]\nThe older task is complete.\n\n"
+        f"[USER]\n{transported_request}\n\n"
+        "[ASSISTANT]\nI will continue the Project Context work."
+    )
+    revision = await ingest_source_document_revision(
+        db_session,
+        workspace_id=workspace.id,
+        source_type=previous_document.source_type,
+        external_id=previous_document.external_id,
+        content=source_content,
+        metadata_json=previous_document.metadata_json,
+        trust_zone=previous_document.trust_zone,
+    )
+    truncated = f"{transported_request[:1_000]}\n[output truncated]"
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=revision.document,
+        provider="codex",
+        session_id="truncated-project-context",
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id="truncated-project-context:latest-user",
+                sequence_number=3,
+                event_type="user_request",
+                role="user",
+                occurred_at="2026-07-23T10:00:00Z",
+                content=transported_request,
+                payload={"cwd": str(tmp_path)},
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="truncated-project-context:latest-assistant",
+                sequence_number=4,
+                event_type="assistant_update",
+                role="assistant",
+                occurred_at="2026-07-23T10:01:00Z",
+                content=(
+                    "Implemented PROJECT_CONTEXT_PROGRESS_RESTORED after "
+                    "inspecting app/continuation.py. "
+                    "Next action: PROJECT_CONTEXT_NEXT_ACTION_RESTORED by "
+                    "verifying the generated handoff."
+                ),
+                payload={"cwd": str(tmp_path)},
+            ),
+        ],
+    )
+    goal_event = await db_session.scalar(
+        select(SessionEvent).where(
+            SessionEvent.workspace_id == workspace.id,
+            SessionEvent.provider_event_id
+            == "truncated-project-context:latest-user",
+        )
+    )
+    tip_event = await db_session.scalar(
+        select(SessionEvent).where(
+            SessionEvent.workspace_id == workspace.id,
+            SessionEvent.provider_event_id
+            == "truncated-project-context:latest-assistant",
+        )
+    )
+    assert goal_event is not None
+    assert tip_event is not None
+    checkpoint = await capture_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="truncated-project-context",
+        boundary_event_id=tip_event.id,
+        trigger="continuation",
+    )
+    goal_item = await db_session.scalar(
+        select(CheckpointItem).where(
+            CheckpointItem.checkpoint_id == checkpoint.id,
+            CheckpointItem.category == "goal",
+        )
+    )
+    assert goal_item is not None
+    goal_item.statement = "[output truncated]"
+    goal_item.payload_json = json.dumps({
+        "request_verbatim": truncated,
+        "request_sha256": hashlib.sha256(
+            truncated.encode("utf-8")
+        ).hexdigest(),
+    })
+    goal_event.content = truncated
+    await db_session.commit()
+
+    response = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": str(workspace.id),
+            "source_provider": "codex",
+            "source_session_id": "truncated-project-context",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["execution_contract"]["task"]["request_verbatim"] == (
+        authoritative_request
+    )
+    assert body["objective"] == " ".join(authoritative_request.split())
+    assert "FULL_PROJECT_CONTEXT_REQUEST" in body["execution_prompt"]
+    assert "INNER_DECOY_" not in body["execution_prompt"]
+    assert "[output truncated]" not in body["execution_prompt"]
+    assert older_request not in body["execution_contract"]["task"][
+        "request_verbatim"
+    ]
+    handoff = body["execution_contract"]["handoff"]
+    restored_progress = next(
+        item
+        for item in handoff["unknowns"]
+        if "PROJECT_CONTEXT_PROGRESS_RESTORED" in item["statement"]
+    )
+    assert restored_progress["truth_state"] in {"stale", "unknown"}
+    assert any(
+        "PROJECT_CONTEXT_NEXT_ACTION_RESTORED" in item["statement"]
+        for item in handoff["remaining"]
+    )
+    assert "PROJECT_CONTEXT_PROGRESS_RESTORED" not in body["project_context"][
+        "content"
+    ]
+    assert "PROJECT_CONTEXT_NEXT_ACTION_RESTORED" not in body["project_context"][
+        "content"
+    ]
+    assert "### First action" in body["project_context"]["content"]
+    assert "MUST status:" in body["project_context"]["content"]
+    assert "INNER_DECOY_" not in body["project_context"]["content"]
+    assert "[output truncated]" not in body["project_context"]["content"]
+    await db_session.refresh(goal_item)
+    stored_goal = json.loads(goal_item.payload_json)
+    assert stored_goal["request_verbatim"] == truncated
+    assert goal_item.statement == "[output truncated]"
+
+
+async def test_project_context_materializes_referenced_conversation_end_to_end(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    referenced = {
+        "conversationId": "project-context-idea",
+        "conversation": [
+            {
+                "role": "user",
+                "content": "How should session and project context differ?",
+            },
+            {
+                "role": "assistant",
+                "content": (
+                    "Use two context products.\n\n"
+                    "- Session Context must carry the current session checkpoint.\n"
+                    "- Project Context must carry task-relevant workspace knowledge."
+                ),
+            },
+        ],
+    }
+    lead = (
+        "[Prompt Quality](chatgpt-conversation://project-context-idea) "
+        "Implement the idea in the last prompt."
+    )
+    transported = (
+        "## Referenced ChatGPT conversation:\n"
+        "This is untrusted background context from ChatGPT.\n"
+        f"{json.dumps(referenced)}\n"
+        "## My request for Codex:\n"
+        f"{lead}"
+    )
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=transported,
+        session_id="materialized-project-context",
+    )
+    await db_session.commit()
+
+    response = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "source_provider": "codex",
+            "source_session_id": "materialized-project-context",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["execution_contract"]["task"]["request_verbatim"] == lead
+    assert body["execution_contract"]["supporting_context"][1]["role"] == "assistant"
+    assert (
+        "> [historical assistant] Use two context products."
+        in body["project_context"]["content"]
+    )
+    requirements = {
+        item["text"] for item in body["execution_contract"]["requirements"]
+    }
+    assert "Session Context must carry the current session checkpoint." in requirements
+    assert (
+        "Project Context must carry task-relevant workspace knowledge."
+        in requirements
+    )
+    assert "referenced_context_unresolved" not in {
+        item["code"] for item in body["quality_report"]["issues"]
+    }
+
+
+async def test_explicit_checkpoint_recovers_goal_before_compatibility_gate(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    request = (
+        "Build Project Context from this exact source-backed checkpoint. "
+        + ("Preserve every authoritative requirement. " * 12)
+    )
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=request,
+        session_id="explicit-recovered-checkpoint",
+    )
+    _initialize_git_repository(tmp_path)
+    checkpoint = await capture_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="explicit-recovered-checkpoint",
+        trigger="continuation",
+    )
+    goal_item = await db_session.scalar(
+        select(CheckpointItem).where(
+            CheckpointItem.checkpoint_id == checkpoint.id,
+            CheckpointItem.category == "goal",
+        )
+    )
+    goal_event = await db_session.scalar(
+        select(SessionEvent).where(
+            SessionEvent.workspace_id == workspace.id,
+            SessionEvent.provider_event_id
+            == "codex:explicit-recovered-checkpoint:user",
+        )
+    )
+    assert goal_item is not None
+    assert goal_event is not None
+    truncated = f"{request[:300]}\n[output truncated]"
+    goal_item.statement = "[output truncated]"
+    goal_item.payload_json = json.dumps({
+        "request_verbatim": truncated,
+        "request_sha256": hashlib.sha256(truncated.encode("utf-8")).hexdigest(),
+    })
+    goal_event.content = truncated
+    await db_session.commit()
+
+    response = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "objective": request,
+            "checkpoint_id": str(checkpoint.id),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["checkpoint"]["id"] == str(checkpoint.id)
+    assert body["execution_contract"]["task"]["request_verbatim"] == request
+    assert request in body["project_context"]["content"]
+
+
+async def test_exact_source_session_does_not_fall_back_when_recovery_is_ambiguous(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    older_request = "Implement the obsolete Project Context task."
+    shared_prefix = "Build the exact Project Context task. " + (
+        "shared-source-prefix-" * 20
+    )
+    first_request = f"{shared_prefix}FIRST_ENDING"
+    second_request = f"{shared_prefix}SECOND_ENDING"
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=older_request,
+        session_id="ambiguous-project-context",
+        occurred_at="2026-07-23T09:00:00Z",
+    )
+    db_session.add(CodeFile(
+        workspace_id=workspace.id,
+        repo_root=str(tmp_path),
+        path="app/continuation.py",
+        identity_key=uuid4().hex * 2,
+        language="python",
+        sha256="1" * 64,
+        size=10,
+    ))
+    previous_document = await db_session.scalar(
+        select(SourceDocument).where(
+            SourceDocument.workspace_id == workspace.id,
+            SourceDocument.external_id
+            == "codex:session:ambiguous-project-context",
+        )
+    )
+    assert previous_document is not None
+    revision = await ingest_source_document_revision(
+        db_session,
+        workspace_id=workspace.id,
+        source_type=previous_document.source_type,
+        external_id=previous_document.external_id,
+        content=(
+            f"[USER]\n{older_request}\n\n"
+            "[ASSISTANT]\nDone.\n\n"
+            f"[USER]\n{first_request}\n\n"
+            "[ASSISTANT]\nWorking.\n\n"
+            f"[USER]\n{second_request}"
+        ),
+        metadata_json=previous_document.metadata_json,
+        trust_zone=previous_document.trust_zone,
+    )
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=revision.document,
+        provider="codex",
+        session_id="ambiguous-project-context",
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id="ambiguous-project-context:latest-user",
+                sequence_number=3,
+                event_type="user_request",
+                role="user",
+                occurred_at="2026-07-23T10:00:00Z",
+                content=f"{shared_prefix}[output truncated]",
+                payload={"cwd": str(tmp_path)},
+            ),
+        ],
+    )
+    await db_session.commit()
+
+    response = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": str(workspace.id),
+            "source_provider": "codex",
+            "source_session_id": "ambiguous-project-context",
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == (
+        "continuation_source_session_not_found"
+    )
+    assert older_request not in response.text
+    assert "FIRST_ENDING" not in response.text
+    assert "SECOND_ENDING" not in response.text
+
+
+async def test_exact_source_session_overrides_an_unrelated_workspace_goal(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    session_goal = "Continue the exact source session task."
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=session_goal,
+        session_id="exact-source-over-current-goal",
+    )
+    db_session.add(WorkspaceGoal(
+        workspace_id=workspace.id,
+        title="Work on an unrelated selected workspace goal.",
+        status="active",
+    ))
+    await db_session.commit()
+
+    response = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "source_provider": "codex",
+            "source_session_id": "exact-source-over-current-goal",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["objective"] == session_goal
+    assert body["task"]["origin"] == "session"
+    assert body["source_session"]["provider"] == "codex"
+    assert body["source_session"]["session_id"] == (
+        "exact-source-over-current-goal"
     )
 
 
@@ -260,7 +1160,16 @@ async def test_reported_checkpoint_blocker_is_advisory_not_launch_authority(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["readiness"]["status"] != "blocked"
+    assert body["readiness"]["status"] == "review_required"
+    assert "mandatory_requirement_verification_unexecutable" not in {
+        item["code"]
+        for item in body["readiness"]["blocking_issues"]
+    }
+    assert "mandatory_requirement_verification_unexecutable" in {
+        item["code"]
+        for item in body["quality_report"]["blocking_issues"]
+        if item["blocks_current_execution"]
+    }
     issue = next(
         item
         for item in body["readiness"]["blocking_issues"]
@@ -315,6 +1224,7 @@ async def test_exact_source_session_can_resume_an_earlier_compatible_request(
             "workspace_id": str(workspace.id),
             "repo_path": str(tmp_path),
             "objective": "Alpha billing",
+            "objective_is_user_edited": True,
             "source_provider": "codex",
             "source_session_id": "multi-topic-source",
         },
@@ -692,6 +1602,8 @@ async def test_legacy_provider_checkpoint_is_resolved_from_its_exact_source(
     assert body["checkpoint"]["schema_version"] == "provider_compaction.v1"
     assert body["source_session"]["session_id"] == "legacy-provider-checkpoint"
     assert body["readiness"]["status"] == "review_required"
+    assert body["project_context"]["copy_ready"] is True
+    assert body["quality_report"]["automatic_execution_ready"] is False
     assert body["manifest"]["continuation"]["checkpoint_id"] == (
         "checkpoint-a1b2c3d4e5f6"
     )
@@ -864,6 +1776,8 @@ async def test_partial_checkpoint_is_returned_as_review_required(
     assert body["verification"]["status"] == "partial"
     assert body["repository"]["freshness"]["status"] == "unavailable"
     assert body["readiness"]["status"] == "review_required"
+    assert body["project_context"]["copy_ready"] is True
+    assert body["quality_report"]["automatic_execution_ready"] is False
     assert any(
         item["code"] == "checkpoint_partial"
         for item in body["attention"]
@@ -1238,10 +2152,14 @@ async def test_run_continuation_switches_provider_and_verifies_automatically(
     monkeypatch,
     tmp_path,
 ) -> None:
+    goal = _verifiable_provider_goal(
+        tmp_path,
+        "Continue the real task in a different local agent",
+    )
     workspace = await _seed_session(
         db_session,
         tmp_path,
-        goal="Continue the real task in a different local agent.",
+        goal=goal,
         session_id="one-click-source",
         provider="codex",
     )
@@ -1307,7 +2225,7 @@ async def test_run_continuation_switches_provider_and_verifies_automatically(
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["schema_version"] == "continuation.run.v1"
-    assert body["status"] == "verified"
+    assert body["status"] == "verified_complete"
     assert body["preparation"]["source_session"]["provider"] == "codex"
     assert body["delivery"] == {
         "status": "delivered",
@@ -1319,7 +2237,15 @@ async def test_run_continuation_switches_provider_and_verifies_automatically(
         "run_id": body["run"]["run_id"],
         "provider_model": "claude-test-model",
         "provider_effort": None,
+        "task_mode": "change",
+        "filesystem_mode": "workspace_write",
         "command_timeout_seconds": settings.continuation_command_timeout_seconds,
+        "root_run_id": body["run"]["run_id"],
+        "attempts": [{
+            "attempt_index": 1,
+            "run_id": body["run"]["run_id"],
+            "status": "verified_complete",
+        }],
     }
     assert runner_calls["verify"] is True
     assert runner_calls["context_stdin"] is True
@@ -1343,20 +2269,23 @@ async def test_run_continuation_switches_provider_and_verifies_automatically(
     assert body["outcome"]["verified"] is True
     assert body["outcome"]["changed_files"] == ["app/continuation.py"]
     assert body["outcome"]["task_transition"]["status"] == "not_applicable"
-    assert body["outcome"]["checks"] == {
-        "status": "passed",
+    assert body["outcome"]["mandatory"] == {
         "total": 1,
         "passed": 1,
         "failed": 0,
-        "items": [{
-            "requirement_id": "V1",
-            "command": "python3 -m pytest -q",
-            "cwd": str(tmp_path),
-            "status": "passed",
-            "exit_code": 0,
-            "timed_out": False,
-        }],
+        "unproven": 0,
     }
+    checks = body["outcome"]["checks"]
+    assert checks["passed"] == 1
+    assert checks["failed"] == 0
+    required_check = next(
+        item for item in checks["items"] if item["required"]
+    )
+    assert required_check["verifier_id"] == "V1"
+    assert required_check["status"] == "passed"
+    assert required_check["command_argv"][-1] == (
+        "tests/test_continuation_provider_fixture.py"
+    )
     assert "browser_fallback" not in response.text.lower()
     assert "copy_fallback" not in response.text.lower()
 
@@ -1466,7 +2395,7 @@ async def test_run_continuation_delivers_real_pack_and_records_lineage(
     assert response.status_code == 200, response.text
     body = response.json()
     preparation = body["preparation"]
-    assert body["status"] == "verified"
+    assert body["status"] == "verified_complete"
     assert preparation["objective"] == goal
     assert preparation["source_session"] == {
         "provider": "codex",
@@ -1487,13 +2416,36 @@ async def test_run_continuation_delivers_real_pack_and_records_lineage(
         "run_id": str(run_id),
         "provider_model": None,
         "provider_effort": None,
+        "task_mode": "change",
+        "filesystem_mode": "workspace_write",
         "command_timeout_seconds": settings.continuation_command_timeout_seconds,
+        "root_run_id": str(run_id),
+        "attempts": [{
+            "attempt_index": 1,
+            "run_id": str(run_id),
+            "status": "verified_complete",
+        }],
     }
     assert body["outcome"]["verified"] is True
-    assert body["outcome"]["checks"]["status"] == "passed"
-    assert body["outcome"]["checks"]["total"] >= 1
+    mandatory = body["outcome"]["mandatory"]
+    assert mandatory["total"] >= 1
+    assert mandatory["passed"] == mandatory["total"]
+    assert mandatory["failed"] == 0
+    assert mandatory["unproven"] == 0
+    assert all(
+        item["status"] == "passed"
+        for item in body["outcome"]["requirements"]
+        if item["priority"] == "must"
+    )
+    assert all(
+        item["status"] == "passed"
+        for item in body["outcome"]["evidence"]
+        if item["required"]
+    )
     assert body["outcome"]["changed_files"] == ["app/continuation.py"]
-    assert received_context.read_text(encoding="utf-8") == preparation["markdown"]
+    assert received_context.read_text(encoding="utf-8") == (
+        preparation["execution_prompt"]
+    )
     assert goal in received_context.read_text(encoding="utf-8")
     assert "app/continuation.py" in received_context.read_text(encoding="utf-8")
     assert (repo / "app" / "continuation.py").read_text(encoding="utf-8") == (
@@ -1519,7 +2471,7 @@ async def test_run_continuation_delivers_real_pack_and_records_lineage(
     assert run is not None
     assert run.workspace_id == workspace.id
     assert run.context_pack_id == pack.id
-    assert run.tool == "context-engine:claude"
+    assert run.tool == "daemonstate:claude"
     assert run.objective == goal
     assert run.status == "completed"
     assert run.ended_at is not None
@@ -1534,6 +2486,7 @@ async def test_run_continuation_delivers_real_pack_and_records_lineage(
         "patch_summary",
         "verification",
         "outcome",
+        "provider_event",
     }
     assert all(item.source_document_id is not None for item in observations)
     verification = next(
@@ -1557,10 +2510,14 @@ async def test_run_continuation_uses_a_fresh_same_provider_when_needed(
     monkeypatch,
     tmp_path,
 ) -> None:
+    goal = _verifiable_provider_goal(
+        tmp_path,
+        "Continue without asking the user to route the handoff",
+    )
     workspace = await _seed_session(
         db_session,
         tmp_path,
-        goal="Continue without asking the user to route the handoff.",
+        goal=goal,
         session_id="same-provider-source",
         provider="codex",
     )
@@ -1569,6 +2526,7 @@ async def test_run_continuation_uses_a_fresh_same_provider_when_needed(
     fake_claude = _fake_executable(tmp_path, "claude")
     runner_calls = {}
     launched_sessions = []
+    visible_before_completion = []
 
     async def fake_sync(*_args, **_kwargs):
         return {"failed": 0}
@@ -1590,11 +2548,18 @@ async def test_run_continuation_uses_a_fresh_same_provider_when_needed(
                 b'{"type":"thread.started",'
                 b'"thread_id":"019f9a4d-f586-79d3-b305-4844518003bd"}\n'
             )
+            await kwargs["stdout_chunk_observer"](
+                b'{"type":"turn.started"}\n'
+                b'{"type":"item.completed","item":{'
+                b'"id":"item-1","type":"agent_message",'
+                b'"text":"Starting the visible continuation."}}\n'
+            )
+            visible_before_completion.append(bool(launched_sessions))
             return _fake_harness_result(
                 run_id=str(kwargs["run_id"]),
                 status="completed",
                 changed_files=(),
-                check_exit_code=None,
+                check_exit_code=0,
                 cwd=tmp_path,
             )
 
@@ -1633,7 +2598,7 @@ async def test_run_continuation_uses_a_fresh_same_provider_when_needed(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["status"] == "completed_unverified"
+    assert body["status"] == "verified_complete"
     assert body["delivery"]["provider"] == "codex"
     assert body["delivery"]["provider_switched"] is False
     assert body["delivery"]["mode"] == "fresh"
@@ -1646,12 +2611,116 @@ async def test_run_continuation_uses_a_fresh_same_provider_when_needed(
         "mode": "desktop_app",
         "navigation": "session",
         "exact_session_supported": True,
+        "renderable_activity_observed": True,
     }
     assert launched_sessions == [
         ("codex", "019f9a4d-f586-79d3-b305-4844518003bd")
     ]
+    assert visible_before_completion == [True]
     assert "resume" not in runner_calls["command"]
-    assert body["outcome"]["checks"]["status"] == "not_available"
+    assert body["outcome"]["mandatory"] == {
+        "total": 1,
+        "passed": 1,
+        "failed": 0,
+        "unproven": 0,
+    }
+
+
+async def test_repair_repository_drift_closes_the_child_run(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    goal = _verifiable_provider_goal(
+        tmp_path,
+        "Repair the continuation after a failed verifier",
+    )
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=goal,
+        session_id="repair-drift-cleanup",
+    )
+    _initialize_git_repository(tmp_path)
+    fake_codex = _fake_executable(tmp_path, "codex")
+    calls = 0
+
+    async def fake_sync(*_args, **_kwargs):
+        return {"failed": 0}
+
+    class DriftOnRepairRunner:
+        def __init__(self, session):
+            self.session = session
+
+        async def run(self, **kwargs):
+            nonlocal calls
+            calls += 1
+            run = await self.session.get(
+                AgentRun,
+                UUID(str(kwargs["run_id"])),
+            )
+            assert run is not None
+            if calls == 2:
+                raise RepositoryStateChangedError("expected", "observed")
+            await kwargs["stdout_chunk_observer"](
+                b'{"type":"thread.started",'
+                b'"thread_id":"019f9a4d-f586-79d3-b305-4844518003bd"}\n'
+            )
+            run.status = "completed"
+            run.ended_at = utc_now()
+            await self.session.commit()
+            return _fake_harness_result(
+                run_id=str(run.id),
+                status="completed",
+                changed_files=(),
+                check_exit_code=1,
+                cwd=tmp_path,
+            )
+
+    monkeypatch.setattr(
+        "app.services.continuation.sync_local_session_library",
+        fake_sync,
+    )
+    monkeypatch.setattr(
+        "app.services.harness_adapters.shutil.which",
+        lambda name: str(fake_codex) if name == "codex" else None,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.LocalHarnessRunner",
+        DriftOnRepairRunner,
+    )
+
+    response = await client.post(
+        "/api/continuations/run",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "target_provider": "codex",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "blocked_external"
+    assert body["outcome"]["blocker"]["code"] == (
+        "continuation_repository_changed"
+    )
+    runs = list(await db_session.scalars(
+        select(AgentRun)
+        .where(AgentRun.workspace_id == workspace.id)
+        .order_by(AgentRun.attempt_index)
+    ))
+    assert len(runs) == 2
+    assert runs[1].parent_agent_run_id == runs[0].id
+    assert runs[1].attempt_index == 2
+    assert runs[1].status == "failed"
+    assert runs[1].ended_at is not None
+    assert body["delivery"]["attempts"][-1] == {
+        "attempt_index": 2,
+        "run_id": str(runs[1].id),
+        "status": "execution_failed",
+    }
 
 
 async def test_run_continuation_preserves_exact_source_during_drift_reprepare(
@@ -1701,6 +2770,13 @@ async def test_run_continuation_preserves_exact_source_during_drift_reprepare(
     async def stop_after_reprepare(**_kwargs):
         raise ValueError("stopped after drift reprepare")
 
+    async def valid_prepared_execution(*_args, **_kwargs):
+        return SimpleNamespace(
+            prompt_markdown="execution prompt",
+            contract_sha256="a" * 64,
+            prompt_sha256="b" * 64,
+        ), SimpleNamespace()
+
     monkeypatch.setattr(
         "app.services.continuation_runtime.ContinuationService",
         FakeContinuationService,
@@ -1708,6 +2784,17 @@ async def test_run_continuation_preserves_exact_source_during_drift_reprepare(
     monkeypatch.setattr(
         "app.services.continuation_runtime.capture_repository_snapshot",
         repository_after_drift,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime._prepared_execution",
+        valid_prepared_execution,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.evaluate_continuation_quality",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            launchable=True,
+            to_dict=lambda: {"launchable": True, "issues": []},
+        ),
     )
     monkeypatch.setattr(
         "app.services.continuation_runtime._select_ready_invocation",
@@ -1732,16 +2819,101 @@ async def test_run_continuation_preserves_exact_source_during_drift_reprepare(
     assert all(item["source_session_id"] == "pinned-source" for item in calls)
 
 
+async def test_run_continuation_recompiles_a_transient_truncated_baseline(
+    client,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    calls: list[dict] = []
+
+    class FakeContinuationService:
+        def __init__(self, _session):
+            pass
+
+        async def prepare(self, **kwargs):
+            calls.append(kwargs)
+            truncated = len(calls) == 1
+            issue = {
+                "code": "repository_baseline_truncated",
+                "severity": "blocking",
+                "blocks_current_execution": True,
+            }
+            return SimpleNamespace(
+                objective="Continue after a transient baseline capture race.",
+                checkpoint=None,
+                repository={
+                    "path": str(tmp_path),
+                    "current": {
+                        "status_fingerprint": (
+                            "truncated" if truncated else "complete"
+                        ),
+                    },
+                },
+                quality_report={
+                    "launchable": not truncated,
+                    "issues": [issue] if truncated else [],
+                    "blocking_issues": [issue] if truncated else [],
+                },
+                readiness={
+                    "status": "blocked" if truncated else "ready",
+                    "blocking_issues": [issue] if truncated else [],
+                    "affected_tasks": [],
+                },
+            )
+
+    async def complete_repository(_repo_path):
+        return SimpleNamespace(
+            status_fingerprint="complete",
+            status_truncated=False,
+        )
+
+    async def stop_after_refresh(*_args, **_kwargs):
+        raise ValueError("stopped after baseline refresh")
+
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.ContinuationService",
+        FakeContinuationService,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.capture_repository_snapshot",
+        complete_repository,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime._prepared_execution",
+        stop_after_refresh,
+    )
+
+    response = await client.post(
+        "/api/continuations",
+        json={
+            "workspace_id": str(uuid4()),
+            "repo_path": str(tmp_path),
+            "target_provider": "codex",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["message"] == (
+        "stopped after baseline refresh"
+    )
+    assert len(calls) == 2
+    assert [item["sync_sessions"] for item in calls] == [True, False]
+
+
 async def test_run_continuation_fails_safely_when_no_agent_cli_is_installed(
     client,
     db_session,
     monkeypatch,
     tmp_path,
 ) -> None:
+    goal = _verifiable_provider_goal(
+        tmp_path,
+        "Do not pretend a handoff happened without a target agent",
+    )
     workspace = await _seed_session(
         db_session,
         tmp_path,
-        goal="Do not pretend a handoff happened without a target agent.",
+        goal=goal,
         session_id="no-provider",
         provider="codex",
     )
@@ -1818,12 +2990,243 @@ async def test_provider_readiness_endpoint_returns_structured_local_status(
     assert response.json() == {
         "active_run": None,
         "latest_run": None,
-        "providers": [statuses[name].to_dict() for name in (
-            "codex",
-            "claude",
-            "opencode",
-        )],
+        "staged_handoff": None,
+        "providers": [
+            {
+                **statuses[name].to_dict(),
+                "capabilities": provider_capabilities(name).to_dict(),
+            }
+            for name in ("codex", "claude", "opencode")
+        ],
     }
+
+
+async def test_stage_requires_a_lead_or_exact_source_boundary(client) -> None:
+    response = await client.post(
+        "/api/continuations/stage",
+        json={
+            "workspace_id": str(uuid4()),
+            "target_provider": "codex",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "continuation_lead_required"
+    assert "unknown future instruction" in response.json()["detail"]["message"]
+
+
+async def test_stage_continuation_loads_context_and_waits_without_execution(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    goal = (
+        "Make the carried Project Context clear and visually polished for the "
+        "confirmed lead."
+    )
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=goal,
+        session_id="waiting-handoff-source",
+        provider="codex",
+    )
+    _initialize_git_repository(tmp_path)
+    fake_codex = _fake_executable(tmp_path, "codex")
+    staged_calls: list[dict[str, object]] = []
+    launch_calls: list[tuple[str, str, str | None]] = []
+    thread_id = "019f9a4d-f586-79d3-b305-4844518003bd"
+
+    async def fake_sync(*_args, **_kwargs):
+        return {"failed": 0, "imported": 0, "updated": 0}
+
+    async def fake_stage(**kwargs):
+        staged_calls.append(kwargs)
+        return SimpleNamespace(
+            thread_id=thread_id,
+            context_delivery="thread_history_and_developer_instructions",
+            context_sha256=hashlib.sha256(
+                kwargs["context_message"].encode("utf-8")
+            ).hexdigest(),
+            developer_instructions_sha256="d" * 64,
+            execution_started=False,
+            activation_boundary_verified=True,
+            observed_turn_count=0,
+        )
+
+    def fake_launch(provider: str, session_id: str, *, cwd: str | None = None):
+        launch_calls.append((provider, session_id, cwd))
+        return {
+            "launched": True,
+            "navigation_requested": True,
+            "navigation_verified": False,
+            "mode": "desktop_app",
+            "navigation": "session",
+            "exact_session_supported": True,
+        }
+
+    monkeypatch.setattr(
+        "app.services.continuation.sync_local_session_library",
+        fake_sync,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.probe_provider_readiness",
+        lambda provider, **_kwargs: _provider_status(provider),
+    )
+    monkeypatch.setattr(
+        "app.services.harness_adapters.CODEX_APP_EXECUTABLES",
+        (),
+    )
+    monkeypatch.setattr(
+        "app.services.harness_adapters.shutil.which",
+        lambda name: str(fake_codex) if name == "codex" else None,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.stage_codex_thread",
+        fake_stage,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.launch_harness_session",
+        fake_launch,
+    )
+    baseline = subprocess.run(
+        ["git", "-C", str(tmp_path), "status", "--porcelain=v1"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    response = await client.post(
+        "/api/continuations/stage",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "idempotency_key": "stage-context-and-wait",
+            "target_provider": "codex",
+            "source_provider": "codex",
+            "source_session_id": "waiting-handoff-source",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["schema_version"] == "continuation.stage.v1"
+    assert body["status"] == "awaiting_user"
+    assert body["execution_started"] is False
+    assert body["delivery"]["status"] == "awaiting_user"
+    assert body["delivery"]["activation"] == "next_user_turn"
+    assert body["delivery"]["execution_started"] is False
+    assert body["delivery"]["activation_boundary_verified"] is True
+    assert body["delivery"]["observed_turn_count"] == 0
+    assert body["delivery"]["run_id"] == body["run"]["run_id"]
+    assert body["delivery"]["harness_session"]["session_id"] == thread_id
+    assert body["delivery"]["harness_session"]["awaiting_user"] is True
+    assert (
+        body["delivery"]["harness_session"]["execution_started"]
+        is False
+    )
+    assert body["preparation"]["quality_report"]["launchable"] is False
+    assert body["preparation"]["project_context"]["copy_ready"] is True
+    assert any(
+        issue["code"] == "mandatory_requirement_verification_unexecutable"
+        for issue in body["preparation"]["quality_report"]["issues"]
+    )
+    assert len(staged_calls) == 1
+    staged_context = str(staged_calls[0]["context_message"])
+    assert "## Context" in staged_context
+    assert "## Direction" in staged_context
+    assert "## Execution loop" not in staged_context
+    assert goal in staged_context
+    assert "Retrieval boundary:" not in staged_context
+    assert "next user lead" not in staged_context
+    assert "future instruction" not in staged_context
+    assert "Inspect → implement → test → fix → verify" not in staged_context
+    assert staged_context.count("Activation boundary:") == 1
+    assert "### First action" in staged_context
+    assert "### Definition of done" in staged_context
+    assert "Complete the immediate task" not in staged_context
+    assert launch_calls == [("codex", thread_id, str(tmp_path))]
+    assert subprocess.run(
+        ["git", "-C", str(tmp_path), "status", "--porcelain=v1"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout == baseline
+
+    run = await db_session.get(AgentRun, UUID(body["run"]["run_id"]))
+    assert run is not None
+    assert run.status == "awaiting_user"
+    assert run.ended_at is None
+    assert run.provider_session_id == thread_id
+    assert run.continuation_execution_id is None
+    observations = list(await db_session.scalars(
+        select(RunObservation).where(RunObservation.agent_run_id == run.id)
+    ))
+    assert [item.event_key for item in observations] == ["harness:session"]
+
+    providers = await client.get(
+        f"/api/continuations/providers?workspace_id={workspace.id}"
+    )
+    assert providers.status_code == 200, providers.text
+    provider_body = providers.json()
+    assert provider_body["active_run"] is None
+    assert provider_body["latest_run"] is None
+    codex_provider = next(
+        item
+        for item in provider_body["providers"]
+        if item["provider"] == "codex"
+    )
+    assert codex_provider["context_staging_supported"] is True
+    staged_handoff = provider_body["staged_handoff"]
+    assert staged_handoff["status"] == "awaiting_user"
+    assert staged_handoff["delivery"]["status"] == "awaiting_user"
+    assert staged_handoff["delivery"]["run_id"] == str(run.id)
+    assert staged_handoff["delivery"]["context_delivery"] == (
+        "thread_history_and_developer_instructions"
+    )
+    assert staged_handoff["delivery"]["harness_session"]["session_id"] == thread_id
+    assert (
+        staged_handoff["context_package"]["continuation_identity"][
+            "selected_objective"
+        ]
+        == goal
+    )
+
+    source_document = await db_session.scalar(
+        select(SourceDocument)
+        .where(SourceDocument.workspace_id == workspace.id)
+        .limit(1)
+    )
+    assert source_document is not None
+    activated_at = utc_now()
+    db_session.add(SessionEvent(
+        workspace_id=workspace.id,
+        source_document_id=source_document.id,
+        provider="codex",
+        session_id=thread_id,
+        provider_event_id="waiting-thread-user-lead",
+        sequence_number=1,
+        event_type="user_message",
+        role="user",
+        occurred_at=activated_at,
+        content="Finish the remaining UI work and verify it.",
+        payload_json=json.dumps({"type": "user_message"}),
+        content_sha256=hashlib.sha256(
+            b"Finish the remaining UI work and verify it."
+        ).hexdigest(),
+    ))
+    await db_session.commit()
+
+    activated = await client.get(
+        f"/api/continuations/providers?workspace_id={workspace.id}"
+    )
+    assert activated.status_code == 200, activated.text
+    assert activated.json()["staged_handoff"] is None
+    assert activated.json()["latest_run"] is None
+    await db_session.refresh(run)
+    assert run.status == "handed_off"
+    assert run.ended_at == activated_at
 
 
 async def test_running_continuation_is_reported_and_blocks_a_duplicate_workspace_run(
@@ -1851,7 +3254,7 @@ async def test_running_continuation_is_reported_and_blocks_a_duplicate_workspace
         workspace_id=workspace.id,
         context_pack_id=pack.id,
         run_key=f"continuation:{uuid4().hex}",
-        tool="context-engine:opencode",
+        tool="daemonstate:opencode",
         model="opencode/big-pickle",
         objective=pack.objective,
         started_at=utc_now(),
@@ -1944,6 +3347,10 @@ async def test_local_action_endpoints_reject_remote_clients_even_with_forwarding
         MustNotRun,
     )
     monkeypatch.setattr(
+        "app.api.continuations.ContinuationStageService",
+        MustNotRun,
+    )
+    monkeypatch.setattr(
         "app.api.continuations.ContinuationService",
         MustNotRun,
     )
@@ -1953,7 +3360,7 @@ async def test_local_action_endpoints_reject_remote_clients_even_with_forwarding
     )
     async with AsyncClient(
         transport=transport,
-        base_url="http://context-engine.test",
+        base_url="http://daemonstate.test",
     ) as remote:
         providers = await remote.get(
             "/api/continuations/providers",
@@ -1970,6 +3377,14 @@ async def test_local_action_endpoints_reject_remote_clients_even_with_forwarding
                 "X-Forwarded-For": "127.0.0.1",
             },
         )
+        stage = await remote.post(
+            "/api/continuations/stage",
+            json={"workspace_id": str(uuid4())},
+            headers={
+                "Forwarded": "for=127.0.0.1",
+                "X-Forwarded-For": "127.0.0.1",
+            },
+        )
         sync_prepare = await remote.post(
             "/api/continuations/prepare",
             json={
@@ -1979,7 +3394,7 @@ async def test_local_action_endpoints_reject_remote_clients_even_with_forwarding
             headers={"X-Forwarded-For": "127.0.0.1"},
         )
 
-    for response in (providers, run, sync_prepare):
+    for response in (providers, run, stage, sync_prepare):
         assert response.status_code == 403, response.text
         assert response.json()["detail"]["code"] == "local_action_required"
         assert "loopback" in response.json()["detail"]["message"]
@@ -1991,10 +3406,14 @@ async def test_explicit_provider_selection_never_falls_back(
     monkeypatch,
     tmp_path,
 ) -> None:
+    goal = _verifiable_provider_goal(
+        tmp_path,
+        "Continue only in the provider selected by the user",
+    )
     workspace = await _seed_session(
         db_session,
         tmp_path,
-        goal="Continue only in the provider selected by the user.",
+        goal=goal,
         session_id="explicit-provider",
     )
     _initialize_git_repository(tmp_path)
@@ -2044,9 +3463,7 @@ async def test_explicit_provider_selection_never_falls_back(
         "provider": "claude",
         "message": statuses["claude"].message,
         "action": statuses["claude"].action,
-        "affected_tasks": [
-            "Continue only in the provider selected by the user."
-        ],
+        "affected_tasks": [goal],
     }
     runs = list(await db_session.scalars(
         select(AgentRun).where(AgentRun.workspace_id == workspace.id)
@@ -2060,10 +3477,14 @@ async def test_provider_readiness_is_rechecked_immediately_before_launch(
     monkeypatch,
     tmp_path,
 ) -> None:
+    goal = _verifiable_provider_goal(
+        tmp_path,
+        "Do not launch after provider readiness changes",
+    )
     workspace = await _seed_session(
         db_session,
         tmp_path,
-        goal="Do not launch after provider readiness changes.",
+        goal=goal,
         session_id="readiness-recheck",
     )
     _initialize_git_repository(tmp_path)
@@ -2136,7 +3557,10 @@ async def test_revoked_child_auth_failure_returns_a_blocked_outcome(
     monkeypatch,
     tmp_path,
 ) -> None:
-    goal = "Carry the full task context into Claude Code."
+    goal = _verifiable_provider_goal(
+        tmp_path,
+        "Carry the full task context into Claude Code",
+    )
     workspace = await _seed_session(
         db_session,
         tmp_path,
@@ -2192,8 +3616,8 @@ async def test_revoked_child_auth_failure_returns_a_blocked_outcome(
 
     assert response.status_code == 200, response.text
     outcome = response.json()["outcome"]
-    assert response.json()["status"] == "blocked"
-    assert outcome["status"] == "blocked"
+    assert response.json()["status"] == "blocked_external"
+    assert outcome["status"] == "blocked_external"
     assert outcome["verified"] is False
     assert outcome["blocker"] == {
         "code": "provider_authentication_revoked",
@@ -2213,7 +3637,10 @@ async def test_opencode_credits_error_returns_a_billing_required_blocker(
     monkeypatch,
     tmp_path,
 ) -> None:
-    goal = "Continue the task with the configured OpenCode model."
+    goal = _verifiable_provider_goal(
+        tmp_path,
+        "Continue the task with the configured OpenCode model",
+    )
     workspace = await _seed_session(
         db_session,
         tmp_path,
@@ -2287,8 +3714,8 @@ async def test_opencode_credits_error_returns_a_billing_required_blocker(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["status"] == "blocked"
-    assert body["outcome"]["status"] == "blocked"
+    assert body["status"] == "blocked_external"
+    assert body["outcome"]["status"] == "blocked_external"
     assert body["outcome"]["blocker"] == {
         "code": "provider_billing_required",
         "provider": "opencode",
@@ -2310,7 +3737,10 @@ async def test_opencode_http_500_returns_a_service_unavailable_blocker(
     monkeypatch,
     tmp_path,
 ) -> None:
-    goal = "Retry the task without hiding an OpenCode provider outage."
+    goal = _verifiable_provider_goal(
+        tmp_path,
+        "Retry the task without hiding an OpenCode provider outage",
+    )
     workspace = await _seed_session(
         db_session,
         tmp_path,
@@ -2381,8 +3811,8 @@ async def test_opencode_http_500_returns_a_service_unavailable_blocker(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["status"] == "blocked"
-    assert body["outcome"]["status"] == "blocked"
+    assert body["status"] == "blocked_external"
+    assert body["outcome"]["status"] == "blocked_external"
     assert body["outcome"]["blocker"] == {
         "code": "provider_service_unavailable",
         "provider": "opencode",
@@ -2401,7 +3831,10 @@ async def test_outdated_codex_cli_returns_the_exact_model_blocker(
     monkeypatch,
     tmp_path,
 ) -> None:
-    goal = "Continue the verified harness workflow in Codex."
+    goal = _verifiable_provider_goal(
+        tmp_path,
+        "Continue the verified harness workflow in Codex",
+    )
     workspace = await _seed_session(
         db_session,
         tmp_path,
@@ -2472,7 +3905,7 @@ async def test_outdated_codex_cli_returns_the_exact_model_blocker(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["status"] == "blocked"
+    assert body["status"] == "blocked_external"
     assert body["outcome"]["blocker"] == {
         "code": "provider_cli_update_required",
         "provider": "codex",
@@ -2481,7 +3914,7 @@ async def test_outdated_codex_cli_returns_the_exact_model_blocker(
             "the configured `gpt-5.6-sol` model."
         ),
         "action": (
-            "Upgrade Codex CLI or configure Context Engine to use a current "
+            "Upgrade Codex CLI or configure DaemonState to use a current "
             "Codex executable, then retry."
         ),
         "affected_tasks": [goal],
@@ -2494,7 +3927,10 @@ async def test_failed_agent_stdout_mentioning_401_is_not_an_auth_blocker(
     monkeypatch,
     tmp_path,
 ) -> None:
-    goal = "Fix the task API's revoked-token regression test."
+    goal = _verifiable_provider_goal(
+        tmp_path,
+        "Fix the task API's revoked-token regression test",
+    )
     workspace = await _seed_session(
         db_session,
         tmp_path,
@@ -2550,7 +3986,7 @@ async def test_failed_agent_stdout_mentioning_401_is_not_an_auth_blocker(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["status"] == "failed"
+    assert body["status"] == "execution_failed"
     assert body["outcome"]["blocker"] == {
         "code": "provider_run_failed",
         "provider": "claude",
@@ -2685,6 +4121,22 @@ async def test_run_continuation_is_local_only(
     app.dependency_overrides.pop(get_access_scope, None)
 
 
+def _verifiable_provider_goal(repo_path: Path, statement: str) -> str:
+    """Give provider-path tests one real, task-linked deterministic verifier."""
+
+    test_path = repo_path / "tests" / "test_continuation_provider_fixture.py"
+    test_path.parent.mkdir(exist_ok=True)
+    test_path.write_text(
+        "def test_continuation_provider_fixture():\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+    return (
+        f"{statement.rstrip().rstrip('.')} as checked by "
+        "tests/test_continuation_provider_fixture.py."
+    )
+
+
 def _initialize_git_repository(repo_path: Path) -> None:
     subprocess.run(
         ["git", "-C", str(repo_path), "init", "-q"],
@@ -2797,11 +4249,26 @@ def _fake_harness_result(
         stderr=command_stderr,
         timed_out=command_timed_out,
     )
+    repository_before = SimpleNamespace(
+        branch="main",
+        head_commit="a" * 40,
+        status_fingerprint="a" * 64,
+    )
+    repository_after = SimpleNamespace(
+        branch="main",
+        head_commit="b" * 40 if changed_files else "a" * 40,
+        status_fingerprint="b" * 64 if changed_files else "a" * 64,
+    )
     return SimpleNamespace(
         status=status,
         command=command_result,
+        repository_before=repository_before,
+        repository_after=repository_after,
+        agent_changed_files=changed_files,
         changed_files=changed_files,
         verification_results=verification_results,
+        runtime_bundle_integrity_passed=True,
+        preservation_passed=True,
         to_dict=lambda: payload,
     )
 
@@ -2917,3 +4384,20 @@ async def _seed_session(
     )
     await db_session.flush()
     return workspace
+
+
+def _test_png(rgb: tuple[int, int, int]) -> bytes:
+    def chunk(kind: bytes, content: bytes) -> bytes:
+        return (
+            len(content).to_bytes(4, "big")
+            + kind
+            + content
+            + (zlib.crc32(kind + content) & 0xFFFFFFFF).to_bytes(4, "big")
+        )
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(b"\x00" + bytes(rgb)))
+        + chunk(b"IEND", b"")
+    )

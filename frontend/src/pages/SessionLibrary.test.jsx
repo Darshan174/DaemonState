@@ -6,7 +6,9 @@ import SessionLibrary from "./SessionLibrary";
 
 
 const mocks = vi.hoisted(() => ({
+  extraSessions: [],
   getSource: vi.fn(),
+  libraryLoading: false,
   openHarness: vi.fn(),
   select: vi.fn(),
   sync: vi.fn(),
@@ -15,8 +17,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock("./useProductWorkspace", () => ({
   useProductWorkspace: () => ({
     activeWorkspaceId: "workspace-1",
-    activeWorkspace: { id: "workspace-1", name: "Context Engine" },
-    workspaces: [{ id: "workspace-1", name: "Context Engine" }],
+    activeWorkspace: { id: "workspace-1", name: "DaemonState" },
+    workspaces: [{ id: "workspace-1", name: "DaemonState" }],
     selectedId: "workspace-1",
     setSelectedId: vi.fn(),
     workspacesQuery: { isLoading: false },
@@ -29,9 +31,9 @@ vi.mock("../api/client", () => ({
 
 vi.mock("../api/hooks", () => ({
   useSessionLibrary: () => ({
-    isLoading: false,
+    isLoading: mocks.libraryLoading,
     isError: false,
-    data: {
+    data: mocks.libraryLoading ? undefined : {
       stats: { sessions: 2, topics: 2, harnesses: 1, live_sessions: 2, checkpoints: 1 },
       harnesses: [
         { connector_type: "codex", name: "Codex", adapter_state: "ready", message: "Detected", session_count: 2 },
@@ -45,6 +47,7 @@ vi.mock("../api/hooks", () => ({
       sessions: [
         { id: "codex:one", session_id: "session-one", source_document_id: "doc-1", connector_type: "codex", harness: "Codex", title: "Alpha launch", topics: ["Alpha billing", "Beta pricing"], latest_topic: "Beta pricing", preview: "Plan Alpha billing", live: true, revision_number: 2, updated_at: "2026-07-18T09:00:00Z", compaction_checkpoints: [{ id: "checkpoint-1", label: "Before context compact", provider: "codex", occurred_at: "2026-07-18T08:30:00Z", turn_count: 3, objective_preview: "Review Beta pricing before launch", restorable: true }] },
         { id: "codex:two", session_id: "session-two", source_document_id: "doc-2", connector_type: "codex", harness: "Codex", title: "Beta onboarding", topics: ["Beta onboarding"], latest_topic: "Beta onboarding", preview: "Review Beta onboarding", live: true, revision_number: 1, updated_at: "2026-07-18T08:00:00Z", forked_from: { session_id: "session-one", title: "Alpha launch", source_document_id: "doc-1" } },
+        ...mocks.extraSessions,
       ],
     },
   }),
@@ -64,6 +67,8 @@ vi.mock("../api/hooks", () => ({
 
 
 beforeEach(() => {
+  mocks.extraSessions = [];
+  mocks.libraryLoading = false;
   mocks.sync.mockReset();
   mocks.getSource.mockReset();
   mocks.openHarness.mockReset();
@@ -74,7 +79,7 @@ beforeEach(() => {
     message: "Opened this session in the Codex desktop app. Topic highlighting stays here.",
   });
   mocks.getSource.mockResolvedValue({
-    content: "[USER]\n<environment_context>Context Engine files</environment_context>\n\n[USER]\n# Files mentioned by the user:\n\n## Screenshot 2026-07-18 at 22.32.05.png: /var/folders/example/Screenshot 2026-07-18 at 22.32.05.png\n\n## My request for Codex:\nPlan Alpha billing for launch.\n<image name=[Image #1] path=\"/var/folders/example/Screenshot.png\">\n</image>\n\n[ASSISTANT]\nAlpha billing will use Stripe with metered plans.\n\n[USER]\nReview Beta pricing.\n\n[ASSISTANT]\nBeta pricing is ready.",
+    content: "[USER]\n<environment_context>DaemonState files</environment_context>\n\n[USER]\n# Files mentioned by the user:\n\n## Screenshot 2026-07-18 at 22.32.05.png: /var/folders/example/Screenshot 2026-07-18 at 22.32.05.png\n\n## My request for Codex:\nPlan Alpha billing for launch.\n<image name=[Image #1] path=\"/var/folders/example/Screenshot.png\">\n</image>\n\n[ASSISTANT]\nAlpha billing will use Stripe with metered plans.\n\n[USER]\nReview Beta pricing.\n\n[ASSISTANT]\nBeta pricing is ready.",
     components: [
       { id: "component-1", name: "Alpha billing decision", value: "Use Stripe with metered plans", fact_type: "decision" },
     ],
@@ -112,12 +117,42 @@ function PrepareDestination() {
 }
 
 
-it("uses the shared page-title scale without the archive eyebrow", () => {
+it("uses the History hero treatment without adding an archive eyebrow", () => {
   renderLibrary();
 
   const heading = screen.getByRole("heading", { name: "Session Library" });
   expect(heading).toHaveClass("text-3xl", "font-black", "tracking-[-0.035em]", "sm:text-4xl");
+  expect(heading.closest("header")).toHaveClass(
+    "daemonstate-resume-header",
+    "min-h-56",
+    "dark:bg-[#0c0c0a]",
+  );
+  expect(document.querySelectorAll(
+    "[data-harness-deck-backdrop] [data-backdrop-harness]",
+  )).toHaveLength(3);
+  expect(screen.getByRole("button", { name: "Sync now" })).toHaveClass(
+    "bg-[#d9ff68]/30",
+    "backdrop-blur-xl",
+    "dark:bg-[#d9ff68]/15",
+  );
   expect(screen.queryByText("Live session archive")).not.toBeInTheDocument();
+});
+
+
+it("shows only numeric progress while the session library opens", () => {
+  mocks.libraryLoading = true;
+
+  renderLibrary();
+
+  const status = screen.getByRole("status", {
+    name: "Opening your session history…",
+  });
+  expect(status).toHaveTextContent(/^8%$/);
+  expect(within(status).getByRole("progressbar", {
+    name: "Loading progress",
+  })).toHaveTextContent("8%");
+  expect(screen.queryByText("Preparing the session archive")).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("Session library harnesses")).not.toBeInTheDocument();
 });
 
 
@@ -137,17 +172,18 @@ it("opens a linked session topic directly in the library evidence drawer", async
 it("organizes sessions behind animated harness cards", async () => {
   renderLibrary();
 
-  await waitFor(() => {
-    expect(mocks.sync).toHaveBeenCalledWith({ workspaceId: "workspace-1" });
-  });
-
   const codex = screen.getByRole("button", { name: "Open Codex sessions" });
   const claude = screen.getByRole("button", { name: "Open Claude Code sessions" });
+  const opencode = screen.getByRole("button", { name: "Open OpenCode sessions" });
   expect(screen.queryByText("Alpha launch")).not.toBeInTheDocument();
+  expect(codex).toHaveAttribute("data-fan-position", "left");
+  expect(claude).toHaveAttribute("data-fan-position", "center");
+  expect(opencode).toHaveAttribute("data-fan-position", "right");
+  expect(codex.parentElement).toHaveClass("daemonstate-harness-fan", "daemonstate-archive-fan");
 
   fireEvent.mouseEnter(codex);
   expect(codex).toHaveAttribute("data-hovered", "true");
-  expect(claude.style.transform).toContain("24px");
+  expect(claude.style.getPropertyValue("--daemonstate-card-x")).toBe("24px");
 
   fireEvent.click(codex);
   expect(screen.getByRole("heading", { name: "Codex sessions" })).toBeInTheDocument();
@@ -171,6 +207,52 @@ it("organizes sessions behind animated harness cards", async () => {
   });
   expect(screen.getByRole("heading", { name: "Alpha launch" })).toBeInTheDocument();
   expect(screen.queryByRole("heading", { name: "Beta onboarding" })).not.toBeInTheDocument();
+});
+
+it("syncs local history only when explicitly requested", () => {
+  renderLibrary();
+
+  expect(mocks.sync).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Sync now" }));
+  expect(mocks.sync).toHaveBeenCalledTimes(1);
+  expect(mocks.sync).toHaveBeenCalledWith({ workspaceId: "workspace-1" });
+});
+
+it.each([
+  { provider: "codex", harness: "Codex", sessionId: "codex:one", title: "Alpha launch" },
+  { provider: "claude", harness: "Claude Code", sessionId: "claude:artwork", title: "Claude architecture" },
+  { provider: "opencode", harness: "OpenCode", sessionId: "opencode:artwork", title: "OpenCode refactor" },
+])("uses large $harness artwork without a small corner logo on Library session cards", ({
+  provider,
+  harness,
+  sessionId,
+  title,
+}) => {
+  if (provider !== "codex") {
+    mocks.extraSessions = [{
+      id: sessionId,
+      session_id: `${provider}-session`,
+      source_document_id: `${provider}-document`,
+      connector_type: provider,
+      harness,
+      title,
+      topics: [`${harness} topic`],
+      latest_topic: `${harness} topic`,
+      preview: `${harness} session preview`,
+      live: true,
+      revision_number: 1,
+      updated_at: "2026-07-18T07:00:00Z",
+      compaction_checkpoints: [],
+    }];
+  }
+
+  renderLibrary();
+  fireEvent.click(screen.getByRole("button", { name: `Open ${harness} sessions` }));
+
+  const sessionCard = document.querySelector(`[data-session-card="${sessionId}"]`);
+  expect(sessionCard).not.toBeNull();
+  expect(sessionCard.querySelector(`[data-harness-artwork="${provider}"]`)).toBeInTheDocument();
+  expect(sessionCard.querySelector("[data-harness-logo]")).not.toBeInTheDocument();
 });
 
 it("keeps archive detection semantics separate from continuation readiness", () => {

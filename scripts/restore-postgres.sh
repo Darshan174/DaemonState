@@ -14,7 +14,7 @@ Replacing an existing database is destructive and requires:
   RESTORE_CONFIRM=replace:TARGET_DATABASE
 
 The app and worker services must be stopped before an existing database can be
-replaced. PRODUCTION_ENV_FILE defaults to /etc/context-engine/production.env.
+replaced. PRODUCTION_ENV_FILE defaults to /etc/daemonstate/production.env.
 EOF
 }
 
@@ -25,7 +25,7 @@ fi
 
 archive_path="$1"
 target_database="$2"
-production_env_file="${3:-${PRODUCTION_ENV_FILE:-/etc/context-engine/production.env}}"
+production_env_file="${3:-${PRODUCTION_ENV_FILE:-/etc/daemonstate/production.env}}"
 script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repository_root="$(cd -- "$script_directory/.." && pwd -P)"
 compose_file="$repository_root/docker-compose.production.yml"

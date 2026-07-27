@@ -1,5 +1,5 @@
 /**
- * React Query hooks for Context Engine API.
+ * React Query hooks for DaemonState API.
  *
  * Each hook tries the real backend first. If the fetch fails (backend
  * down, network error), it falls back to mock fixtures so the UI stays
@@ -68,7 +68,7 @@ function withFallback(apiFn, mockData, { fallbackStatuses = [] } = {}) {
   };
 }
 
-const LS_KEY = "ce:selectedWorkspaceId";
+const LS_KEY = "daemonstate:selectedWorkspaceId";
 const CONNECTOR_CATALOG = {
   slack: {
     type: "slack",
@@ -1700,17 +1700,24 @@ export function useSessionLibrary(workspaceId, { enabled = true } = {}) {
     queryKey: ["session-library", workspaceId],
     queryFn: () => api.get(`/session-library?workspace_id=${encodeURIComponent(workspaceId)}`),
     enabled: Boolean(workspaceId) && enabled,
-    refetchInterval: 30_000,
-    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: false,
   });
 }
 
 export function useSessionContinuity(
   workspaceId,
-  { enabled = true, provider = null, sessionId = null } = {},
+  {
+    enabled = true,
+    provider = null,
+    sessionId = null,
+    limit = null,
+  } = {},
 ) {
   const normalizedProvider = normalizeCheckpointProvider(provider);
   const normalizedSessionId = String(sessionId || "").trim();
+  const normalizedLimit = Number.isInteger(limit) && limit >= 1 && limit <= 100
+    ? limit
+    : null;
   const scoped = Boolean(normalizedProvider && normalizedSessionId);
   const invalidScope = Boolean(normalizedProvider || normalizedSessionId) && !scoped;
   const queryKey = invalidScope
@@ -1720,10 +1727,17 @@ export function useSessionContinuity(
         "invalid-scope",
         normalizedProvider || null,
         normalizedSessionId || null,
+        normalizedLimit,
       ]
     : scoped
-      ? ["session-continuity", workspaceId, normalizedProvider, normalizedSessionId]
-      : ["session-continuity", workspaceId];
+      ? [
+          "session-continuity",
+          workspaceId,
+          normalizedProvider,
+          normalizedSessionId,
+          normalizedLimit,
+        ]
+      : ["session-continuity", workspaceId, normalizedLimit];
   return useQuery({
     queryKey,
     enabled: Boolean(workspaceId) && enabled && !invalidScope,
@@ -1735,6 +1749,7 @@ export function useSessionContinuity(
         params.set("provider", normalizedProvider);
         params.set("session_id", normalizedSessionId);
       }
+      if (normalizedLimit !== null) params.set("limit", String(normalizedLimit));
       return api.get(`/session-continuity?${params}`);
     },
   });
@@ -1758,8 +1773,10 @@ export function usePrepareContinuation() {
 }
 
 export function useContinuationProviders(workspaceId, { enabled = true } = {}) {
-  return useQuery({
-    queryKey: ["continuation-providers", workspaceId],
+  const queryClient = useQueryClient();
+  const queryKey = ["continuation-providers", workspaceId];
+  const query = useQuery({
+    queryKey,
     enabled: Boolean(workspaceId) && enabled,
     refetchInterval: (query) => (
       query.state.data?.active_run ? 3_000 : 30_000
@@ -1769,11 +1786,66 @@ export function useContinuationProviders(workspaceId, { enabled = true } = {}) {
       `/continuations/providers?workspace_id=${encodeURIComponent(workspaceId)}`,
     ),
   });
+  const refreshMutation = useMutation({
+    mutationFn: () => api.get(
+      `/continuations/providers?workspace_id=${encodeURIComponent(workspaceId)}&refresh=true`,
+    ),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["continuation-providers", workspaceId], data);
+    },
+  });
+  return {
+    ...query,
+    isFetching: query.isFetching || refreshMutation.isPending,
+    isError: query.isError || refreshMutation.isError,
+    error: refreshMutation.error || query.error,
+    refreshReadiness: refreshMutation.mutate,
+  };
+}
+
+export function useDesktopOverlayStatus(workspaceId, { enabled = true } = {}) {
+  return useQuery({
+    queryKey: ["desktop-overlay", workspaceId],
+    enabled: Boolean(workspaceId) && enabled,
+    queryFn: () => api.get(
+      `/desktop/overlay?workspace_id=${encodeURIComponent(workspaceId)}`,
+    ),
+    refetchInterval: 3_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    retry: false,
+  });
+}
+
+export function useSetDesktopOverlayVisibility() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ visible, workspaceId }) => api.put("/desktop/overlay", {
+      visible,
+      workspace_id: workspaceId,
+    }),
+    onSuccess: (status, variables) => {
+      queryClient.setQueriesData(
+        { queryKey: ["desktop-overlay"] },
+        status,
+      );
+      queryClient.setQueryData(
+        ["desktop-overlay", variables.workspaceId],
+        status,
+      );
+    },
+  });
 }
 
 export function useRunContinuation() {
   return useMutation({
     mutationFn: (payload) => api.post("/continuations", payload),
+  });
+}
+
+export function useStageContinuation() {
+  return useMutation({
+    mutationFn: (payload) => api.post("/continuations/stage", payload),
   });
 }
 
@@ -1942,6 +2014,15 @@ export function useResumeCheckpoint() {
       api.post(`/checkpoints/${checkpointId}/resume`, {
         workspace_id: workspaceId,
         launch_session: launchSession,
+      }),
+  });
+}
+
+export function useCheckpointHandoff() {
+  return useMutation({
+    mutationFn: ({ workspaceId, checkpointId }) =>
+      api.post(`/checkpoints/${encodeURIComponent(checkpointId)}/handoff`, {
+        workspace_id: workspaceId,
       }),
   });
 }

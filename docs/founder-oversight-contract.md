@@ -135,7 +135,7 @@ Extend `ContextPrepareRequest` in `app/api/context.py`:
 ```json
 {
   "workspace_id": "2a5d9188-2fcb-4d49-a997-b13042eed79b",
-  "repo_path": "/repo/context-engine",
+  "repo_path": "/repo/daemonstate",
   "mode": "task",
   "focus_component_id": "0d08db3d-a187-48ee-9d42-c2196db1ab5f",
   "objective_origin": "source_component",

@@ -149,7 +149,7 @@ async def run_pending_sync_jobs(
     _ensure_sqlite_parent_dir(db_url)
     engine = create_database_engine(
         db_url,
-        application_name="context-engine-sync-worker",
+        application_name="daemonstate-sync-worker",
     )
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     worker_id = worker_id or _default_worker_id()
@@ -462,7 +462,7 @@ async def _dead_letter_expired_exhausted_jobs(
 
 
 def _default_worker_id() -> str:
-    return f"ctxe-sync-worker-{os.getpid()}-{uuid4().hex[:8]}"
+    return f"daemonstate-sync-worker-{os.getpid()}-{uuid4().hex[:8]}"
 
 
 async def _database_now(session: AsyncSession) -> datetime:

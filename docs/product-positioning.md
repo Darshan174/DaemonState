@@ -2,12 +2,12 @@
 
 ## One-line position
 
-Context Engine is the verified handoff layer that lets a coding agent continue
+DaemonState is the verified handoff layer that lets a coding agent continue
 real work without reconstructing the project from scratch.
 
 ## What the product is
 
-Context Engine is an open-source context and evidence layer for coding agents.
+DaemonState is an open-source context and evidence layer for coding agents.
 It collects project history from repositories, issues, pull requests, imported
 agent sessions, decisions, documents, and verification output, then prepares a
 focused, source-backed brief for one current task.
@@ -77,7 +77,7 @@ The wedge is:
 
 **Reliable continuity between coding-agent sessions on real codebases.**
 
-The initial proof is not that Context Engine makes a weak model magically
+The initial proof is not that DaemonState makes a weak model magically
 smarter. It is that better task selection, verified history, less irrelevant
 context, and explicit verification can help cheaper, older, or open models
 complete more useful work than they would with a blank chat or an undirected
@@ -85,7 +85,7 @@ context dump.
 
 ## Not the product
 
-Context Engine is not positioned as:
+DaemonState is not positioned as:
 
 - another autonomous coding agent;
 - a generic company knowledge graph;
@@ -97,14 +97,14 @@ Context Engine is not positioned as:
 
 ## Current honest boundary
 
-Context Engine currently provides a shared continuation service through FastAPI,
-`ctxe continue`, and MCP `resume_task`; audited CLI adapters for Codex, Claude
+DaemonState currently provides a shared continuation service through FastAPI,
+`daemonstate continue`, and MCP `resume_task`; audited CLI adapters for Codex, Claude
 Code, and OpenCode; a context compiler; durable checkpoints; source-backed
 inspection views; and a local harness that records bounded execution evidence.
 
 The browser UI calls a local-only run service, which starts a fresh installed
 provider process and returns observed repository and check results. It cannot do
-that through a remote principal. `ctxe continue --into ...` performs direct
+that through a remote principal. `daemonstate continue --into ...` performs direct
 non-interactive delivery without permission-bypass flags. Neither surface
 claims a verified handoff when no executable check ran. Model-lift reports
 describe observed runs and do not yet prove general model equivalence.

@@ -765,7 +765,11 @@ _SESSION_MEMORY_SECTIONS: dict[
     for heading in headings
 }
 
-_AGENT_RESPONSE_BOUNDARY = "<!-- context-engine-agent-response-boundary -->"
+_AGENT_RESPONSE_BOUNDARY = "<!-- daemonstate-agent-response-boundary -->"
+_AGENT_RESPONSE_BOUNDARY_RE = re.compile(
+    r"<!--\s*[a-z0-9._-]+-agent-response-boundary\s*-->",
+    re.IGNORECASE,
+)
 
 
 def _extract_session_memory_facts(content: str, provenance: str) -> list[ExtractedFact]:
@@ -824,7 +828,7 @@ def _extract_session_memory_facts(content: str, provenance: str) -> list[Extract
     )
 
     for source_line in content.splitlines():
-        if source_line.strip() == _AGENT_RESPONSE_BOUNDARY:
+        if _AGENT_RESPONSE_BOUNDARY_RE.fullmatch(source_line.strip()):
             active_section = None
             continue
 

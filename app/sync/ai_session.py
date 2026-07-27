@@ -7,8 +7,10 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.source_revisions import ingest_source_document_revision
+from app.services.session_checkpoints import list_session_checkpoints
 from app.services.session_events import NormalizedSessionEvent, persist_session_events
+from app.services.session_summary import build_session_library_summary
+from app.services.source_revisions import ingest_source_document_revision
 from app.time import utc_now
 
 
@@ -106,6 +108,19 @@ async def ingest_ai_session(
         metadata["workspace_id"] = workspace_id
     if metadata_extra:
         metadata.update({k: v for k, v in metadata_extra.items() if v not in (None, "", [])})
+    library_summary = build_session_library_summary(
+        full_text,
+        explicit_title=metadata.get("title"),
+        cwd=metadata.get("cwd"),
+        tool=connector_type,
+        session_id=session_id,
+    )
+    library_summary["compaction_checkpoints"] = list_session_checkpoints(
+        full_text,
+        metadata,
+        session_title=str(library_summary["title"]),
+    )
+    metadata["session_library_summary"] = library_summary
     meta = json.dumps(metadata)
 
     result = await ingest_source_document_revision(
