@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     sync_worker_poll_interval_seconds: float = 2.0
     sync_worker_job_timeout_seconds: float = 1800.0
     sync_worker_metrics_port: int = 0
-    sync_worker_health_file: str = "/tmp/context-engine-sync-worker.ready"
+    sync_worker_health_file: str = "/tmp/daemonstate-sync-worker.ready"
     sync_worker_health_interval_seconds: float = 15.0
     source_ingestion_sweep_limit: int = 10
     source_ingestion_timeout_seconds: float = 300.0

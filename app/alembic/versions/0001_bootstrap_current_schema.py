@@ -35,7 +35,7 @@ def _setup_pgvector(bind: Connection) -> None:
         bind.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         bind.execute(text("ALTER TABLE components ADD COLUMN IF NOT EXISTS embedding_vector vector"))
         bind.execute(text("""
-            CREATE OR REPLACE FUNCTION ce_try_vector(raw text) RETURNS vector AS $$
+            CREATE OR REPLACE FUNCTION daemonstate_try_vector(raw text) RETURNS vector AS $$
             BEGIN
                 IF raw IS NULL OR btrim(raw) = '' THEN
                     RETURN NULL;
@@ -48,16 +48,16 @@ def _setup_pgvector(bind: Connection) -> None:
         """))
         bind.execute(text("""
             UPDATE components
-            SET embedding_vector = ce_try_vector(embedding)
+            SET embedding_vector = daemonstate_try_vector(embedding)
             WHERE embedding_vector IS NULL
               AND embedding IS NOT NULL
               AND embedding != ''
         """))
         bind.execute(text("""
-            CREATE OR REPLACE FUNCTION ce_sync_component_embedding_vector()
+            CREATE OR REPLACE FUNCTION daemonstate_sync_component_embedding_vector()
             RETURNS trigger AS $$
             BEGIN
-                NEW.embedding_vector = ce_try_vector(NEW.embedding);
+                NEW.embedding_vector = daemonstate_try_vector(NEW.embedding);
                 RETURN NEW;
             END;
             $$ LANGUAGE plpgsql
@@ -67,7 +67,7 @@ def _setup_pgvector(bind: Connection) -> None:
             CREATE TRIGGER trg_components_embedding_vector
             BEFORE INSERT OR UPDATE OF embedding ON components
             FOR EACH ROW
-            EXECUTE FUNCTION ce_sync_component_embedding_vector()
+            EXECUTE FUNCTION daemonstate_sync_component_embedding_vector()
         """))
 
         dimension = pgvector_index_dimension()
@@ -88,8 +88,8 @@ def _drop_pgvector_helpers(bind: Connection) -> None:
     if bind.dialect.name != "postgresql":
         return
     bind.execute(text("DROP TRIGGER IF EXISTS trg_components_embedding_vector ON components"))
-    bind.execute(text("DROP FUNCTION IF EXISTS ce_sync_component_embedding_vector()"))
-    bind.execute(text("DROP FUNCTION IF EXISTS ce_try_vector(text)"))
+    bind.execute(text("DROP FUNCTION IF EXISTS daemonstate_sync_component_embedding_vector()"))
+    bind.execute(text("DROP FUNCTION IF EXISTS daemonstate_try_vector(text)"))
 
 
 def _setup_postgres_text_search(bind: Connection) -> None:
@@ -100,7 +100,7 @@ def _setup_postgres_text_search(bind: Connection) -> None:
         bind.execute(text("ALTER TABLE source_documents ADD COLUMN IF NOT EXISTS search_tsv tsvector"))
         bind.execute(text("ALTER TABLE components ADD COLUMN IF NOT EXISTS search_tsv tsvector"))
         bind.execute(text("""
-            CREATE OR REPLACE FUNCTION ce_try_jsonb(raw text) RETURNS jsonb AS $$
+            CREATE OR REPLACE FUNCTION daemonstate_try_jsonb(raw text) RETURNS jsonb AS $$
             BEGIN
                 IF raw IS NULL OR btrim(raw) = '' THEN
                     RETURN '{}'::jsonb;
@@ -112,10 +112,10 @@ def _setup_postgres_text_search(bind: Connection) -> None:
             $$ LANGUAGE plpgsql IMMUTABLE
         """))
         bind.execute(text("""
-            CREATE OR REPLACE FUNCTION ce_sync_source_document_search()
+            CREATE OR REPLACE FUNCTION daemonstate_sync_source_document_search()
             RETURNS trigger AS $$
             BEGIN
-                NEW.metadata_jsonb = ce_try_jsonb(NEW.metadata);
+                NEW.metadata_jsonb = daemonstate_try_jsonb(NEW.metadata);
                 NEW.search_tsv =
                     setweight(to_tsvector('english', coalesce(NEW.external_id, '')), 'A') ||
                     setweight(to_tsvector('english', coalesce(NEW.source_type, '')), 'B') ||
@@ -126,7 +126,7 @@ def _setup_postgres_text_search(bind: Connection) -> None:
             $$ LANGUAGE plpgsql
         """))
         bind.execute(text("""
-            CREATE OR REPLACE FUNCTION ce_sync_component_search()
+            CREATE OR REPLACE FUNCTION daemonstate_sync_component_search()
             RETURNS trigger AS $$
             BEGIN
                 NEW.search_tsv =
@@ -145,7 +145,7 @@ def _setup_postgres_text_search(bind: Connection) -> None:
             BEFORE INSERT OR UPDATE OF metadata, content, external_id, source_type, author
             ON source_documents
             FOR EACH ROW
-            EXECUTE FUNCTION ce_sync_source_document_search()
+            EXECUTE FUNCTION daemonstate_sync_source_document_search()
         """))
         bind.execute(text("DROP TRIGGER IF EXISTS trg_components_search ON components"))
         bind.execute(text("""
@@ -153,7 +153,7 @@ def _setup_postgres_text_search(bind: Connection) -> None:
             BEFORE INSERT OR UPDATE OF name, value, fact_type, status, temporal
             ON components
             FOR EACH ROW
-            EXECUTE FUNCTION ce_sync_component_search()
+            EXECUTE FUNCTION daemonstate_sync_component_search()
         """))
         bind.execute(text("""
             CREATE INDEX IF NOT EXISTS ix_source_documents_metadata_jsonb_gin
@@ -176,9 +176,9 @@ def _drop_postgres_text_search(bind: Connection) -> None:
         return
     bind.execute(text("DROP TRIGGER IF EXISTS trg_source_documents_search ON source_documents"))
     bind.execute(text("DROP TRIGGER IF EXISTS trg_components_search ON components"))
-    bind.execute(text("DROP FUNCTION IF EXISTS ce_sync_source_document_search()"))
-    bind.execute(text("DROP FUNCTION IF EXISTS ce_sync_component_search()"))
-    bind.execute(text("DROP FUNCTION IF EXISTS ce_try_jsonb(text)"))
+    bind.execute(text("DROP FUNCTION IF EXISTS daemonstate_sync_source_document_search()"))
+    bind.execute(text("DROP FUNCTION IF EXISTS daemonstate_sync_component_search()"))
+    bind.execute(text("DROP FUNCTION IF EXISTS daemonstate_try_jsonb(text)"))
 
 
 def _pgvector_available(bind: Connection) -> bool:

@@ -36,7 +36,7 @@ async def _workspace_and_connector(
         workspace_id=workspace.id,
         connector_type="github",
         status="connected",
-        config_json=json.dumps({"repositories": ["acme/context-engine"]}),
+        config_json=json.dumps({"repositories": ["acme/daemonstate"]}),
         credentials_json=json.dumps({"access_token": "test-token"}),
     )
     db_session.add_all([workspace, connector])
@@ -76,7 +76,7 @@ async def _provider_source(
         db_session,
         workspace_id=workspace.id,
         source_type="github",
-        external_id="github:acme/context-engine:issue:7",
+        external_id="github:acme/daemonstate:issue:7",
         content=content,
         metadata_json=metadata_json
         or {
@@ -301,7 +301,7 @@ async def test_connector_scope_or_account_change_invalidates_observation(
 
     connector.config_json = json.dumps(
         {
-            "repositories": ["acme/context-engine"],
+            "repositories": ["acme/daemonstate"],
             "items_synced": 42,
             "total_processed_count": 42,
         }
@@ -321,7 +321,7 @@ async def test_connector_scope_or_account_change_invalidates_observation(
         now=observed_at + timedelta(minutes=2),
     )
 
-    connector.config_json = json.dumps({"repositories": ["acme/context-engine"]})
+    connector.config_json = json.dumps({"repositories": ["acme/daemonstate"]})
     connector.credentials_json = json.dumps({"access_token": "rotated-token"})
     await db_session.flush()
     assert not await provider_source_is_fresh(

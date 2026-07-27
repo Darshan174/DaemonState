@@ -172,7 +172,7 @@ class ContinuationRunService:
             workspace_id=workspace_id,
             context_pack_id=pack_id,
             run_key=run_key,
-            tool=f"context-engine:{invocation.provider}",
+            tool=f"daemonstate:{invocation.provider}",
             model=invocation.model or invocation.provider,
             objective=preparation.objective,
             branch=current_repository.get("branch"),
@@ -779,7 +779,7 @@ def _failed_run_blocker(
         code = "provider_cli_update_required"
         message = cli_failure
         action = (
-            "Upgrade Codex CLI or configure Context Engine to use a current "
+            "Upgrade Codex CLI or configure DaemonState to use a current "
             "Codex executable, then retry."
         )
     elif auth_failure == "revoked":

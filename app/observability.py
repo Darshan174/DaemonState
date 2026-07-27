@@ -15,40 +15,40 @@ from app.config import settings
 request_id_context: ContextVar[str] = ContextVar("request_id", default="-")
 
 HTTP_REQUESTS = Counter(
-    "context_engine_http_requests_total",
+    "daemonstate_http_requests_total",
     "HTTP requests handled by the API.",
     ("method", "route", "status"),
 )
 HTTP_REQUEST_DURATION = Histogram(
-    "context_engine_http_request_duration_seconds",
+    "daemonstate_http_request_duration_seconds",
     "HTTP request latency.",
     ("method", "route"),
 )
 HTTP_REQUESTS_IN_PROGRESS = Gauge(
-    "context_engine_http_requests_in_progress",
+    "daemonstate_http_requests_in_progress",
     "HTTP requests currently being handled.",
 )
 HTTP_RATE_LIMITED = Counter(
-    "context_engine_http_rate_limited_total",
+    "daemonstate_http_rate_limited_total",
     "HTTP requests rejected by a rate limit.",
     ("kind",),
 )
 READINESS = Gauge(
-    "context_engine_readiness",
+    "daemonstate_readiness",
     "Whether this API instance passed its most recent readiness check.",
 )
 SYNC_JOBS = Counter(
-    "context_engine_sync_jobs_total",
+    "daemonstate_sync_jobs_total",
     "Connector sync job outcomes observed by this worker process.",
     ("status",),
 )
 SYNC_WORKER_LAST_RUN = Gauge(
-    "context_engine_sync_worker_last_run_unixtime",
+    "daemonstate_sync_worker_last_run_unixtime",
     "Unix time of the most recent sync-worker polling cycle.",
 )
 BUILD_INFO = Info(
-    "context_engine_build",
-    "Context Engine build metadata.",
+    "daemonstate_build",
+    "DaemonState build metadata.",
 )
 BUILD_INFO.info({
     "release_sha": settings.release_sha,

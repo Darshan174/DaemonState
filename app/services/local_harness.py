@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.mcp.server import _record_observation, _stored_manifest
 from app.models import AgentRun, ContextPack
 from app.services.harness_adapters import (
-    is_context_engine_secret_key,
+    is_daemonstate_secret_key,
     minimal_process_environment,
 )
 from app.services.redaction import REDACTED_VALUE, is_sensitive_key, redact_sensitive_text
@@ -253,7 +253,7 @@ class LocalHarnessRunner:
         run.started_at = run.started_at or utc_now()
         await self.session.commit()
 
-        with tempfile.TemporaryDirectory(prefix="context-engine-harness-") as temp_dir:
+        with tempfile.TemporaryDirectory(prefix="daemonstate-harness-") as temp_dir:
             context_file = Path(temp_dir) / "context-pack.md"
             context_file.write_text(pack.markdown, encoding="utf-8")
             context_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
@@ -527,15 +527,15 @@ def _child_environment(
             value_text = str(value)
             if not key_text or "\x00" in key_text or "=" in key_text or "\x00" in value_text:
                 raise ValueError("extra_env contains an invalid environment entry")
-            if is_context_engine_secret_key(key_text):
+            if is_daemonstate_secret_key(key_text):
                 continue
             env[key_text] = value_text
     env.update(
         {
-            "CONTEXT_ENGINE_PACK_PATH": context_path,
-            "CONTEXT_ENGINE_PACK_ID": str(context_pack_id),
-            "CONTEXT_ENGINE_RUN_ID": str(run_id),
-            "CONTEXT_ENGINE_MODEL_PROFILE": model_profile or "",
+            "DAEMONSTATE_PACK_PATH": context_path,
+            "DAEMONSTATE_PACK_ID": str(context_pack_id),
+            "DAEMONSTATE_RUN_ID": str(run_id),
+            "DAEMONSTATE_MODEL_PROFILE": model_profile or "",
         }
     )
     return env

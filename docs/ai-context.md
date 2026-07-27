@@ -2,13 +2,13 @@
 
 AI coding-session memory is the primary product wedge.
 
-Context Engine preserves Codex, Claude Code, OpenCode, and generic agent
+DaemonState preserves Codex, Claude Code, OpenCode, and generic agent
 sessions as raw source evidence, then extracts decisions, tasks, blockers, and
 file references. This lets the project carry useful memory from one agent run to
 the next instead of starting from a blank prompt every time.
 
 The session ID alone is not enough. Current imports require the session content.
-Context Engine does not log in to Codex or Claude and scrape a conversation from
+DaemonState does not log in to Codex or Claude and scrape a conversation from
 an ID.
 
 ## Current Paths

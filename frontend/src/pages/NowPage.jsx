@@ -270,10 +270,10 @@ export default function NowPage() {
   const continuationRunnable = continueAction.kind === "continue";
 
   return (
-    <div className="app-page ce-now-page relative">
-      <header className="ce-now-hero relative overflow-hidden rounded-[1.75rem] border border-black/10 bg-[#171713] text-white shadow-[0_24px_70px_rgba(23,23,19,0.16)] dark:border-[#292929]">
-        <div className="ce-now-grid pointer-events-none absolute inset-0" aria-hidden="true" />
-        <div className="ce-now-orbit pointer-events-none absolute -right-24 -top-32 h-80 w-80 rounded-full border border-white/10" aria-hidden="true" />
+    <div className="app-page daemonstate-now-page relative">
+      <header className="daemonstate-now-hero relative overflow-hidden rounded-[1.75rem] border border-black/10 bg-[#171713] text-white shadow-[0_24px_70px_rgba(23,23,19,0.16)] dark:border-[#292929]">
+        <div className="daemonstate-now-grid pointer-events-none absolute inset-0" aria-hidden="true" />
+        <div className="daemonstate-now-orbit pointer-events-none absolute -right-24 -top-32 h-80 w-80 rounded-full border border-white/10" aria-hidden="true" />
         <div className="relative px-5 pb-6 pt-5 sm:px-7 sm:pb-7 sm:pt-6 lg:px-9 lg:pb-8 lg:pt-7">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-4">
             <p className="text-xs font-semibold text-[#c5c5bc]">{workspace.activeWorkspace?.name || "Project"}</p>
@@ -584,7 +584,7 @@ function CheckpointPanel({
       ? "Older snapshot · reconciled automatically on Continue"
       : "Saved snapshot · boundary time unavailable";
   return (
-    <section id="continuity-checkpoint" className="app-surface ce-recovery-checkpoint relative scroll-mt-24">
+    <section id="continuity-checkpoint" className="app-surface daemonstate-recovery-checkpoint relative scroll-mt-24">
       <header className="flex flex-col gap-4 border-b border-[#deded5] px-6 py-6 dark:border-[#292925] sm:flex-row sm:items-start sm:justify-between sm:px-8 sm:py-7">
         <div className="min-w-0">
           <PanelLabel icon={History}>Saved context</PanelLabel>

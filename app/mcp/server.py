@@ -1,9 +1,9 @@
-"""MCP (Model Context Protocol) server for Context Engine.
+"""MCP (Model Context Protocol) server for DaemonState.
 
 Exposes semantic search, graph expansion, model queries, and status
 over stdio transport for Claude Desktop, Cursor, and other MCP clients.
 
-Launch via: ``ctxe mcp``
+Launch via: ``daemonstate mcp``
 """
 
 from __future__ import annotations
@@ -55,9 +55,9 @@ except Exception as exc:  # pragma: no cover - exercised by import-safety tests
 else:
     _CONTEXT_COMPILER_IMPORT_ERROR = None
 
-logger = logging.getLogger("context-engine.mcp")
+logger = logging.getLogger("daemonstate.mcp")
 
-server = Server("context-engine")
+server = Server("daemonstate")
 
 
 def _text(content: str) -> list[TextContent]:
@@ -92,7 +92,7 @@ async def list_tools() -> list[Tool]:
             name="prepare_task",
             description=(
                 "Compile a context_pack.v2 for a coding-agent task by calling "
-                "Context Engine's ContextCompiler service. Returns markdown and "
+                "DaemonState's ContextCompiler service. Returns markdown and "
                 f"a manifest. {TRUST_WARNING}"
             ),
             inputSchema={
@@ -2304,7 +2304,7 @@ async def run_server() -> None:
 
 
 async def run_mcp_server() -> None:
-    """Entry point for ``ctxe mcp`` CLI command."""
+    """Entry point for ``daemonstate mcp`` CLI command."""
     logging.basicConfig(level=logging.INFO)
     await run_server()
 

@@ -4,11 +4,11 @@ import { resolve } from "node:path";
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import CeIcon from "./CeIcon";
+import DaemonStateIcon from "./DaemonStateIcon";
 
-describe("CeIcon", () => {
+describe("DaemonStateIcon", () => {
   it.each([24, 30, 34])("renders the circular node-path mark at %d px", (size) => {
-    const { container } = render(<CeIcon size={size} className="brand-mark" />);
+    const { container } = render(<DaemonStateIcon size={size} className="brand-mark" />);
     const svg = container.querySelector("svg");
 
     expect(svg).toHaveAttribute("width", String(size));
@@ -32,7 +32,7 @@ describe("CeIcon", () => {
   });
 
   it("keeps the browser favicon aligned with the shared component", () => {
-    const { container } = render(<CeIcon />);
+    const { container } = render(<DaemonStateIcon />);
     const component = container.querySelector("svg");
     const faviconMarkup = readFileSync(resolve(process.cwd(), "public/favicon.svg"), "utf8");
     const favicon = new DOMParser().parseFromString(faviconMarkup, "image/svg+xml").documentElement;

@@ -42,7 +42,7 @@
   </defs>
 
   <!-- Title -->
-  <text class="t-primary" x="340" y="28" text-anchor="middle" font-size="16" font-weight="600">Context Engine — system architecture</text>
+  <text class="t-primary" x="340" y="28" text-anchor="middle" font-size="16" font-weight="600">DaemonState — system architecture</text>
 
   <!-- External Sources -->
   <rect class="bg-src" x="40" y="50" width="120" height="40" rx="8" stroke-width="1"/>

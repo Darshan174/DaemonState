@@ -417,9 +417,9 @@ def test_paired_evaluator_reports_observed_deltas_without_parity_claim():
         },
         {
             "task_id": "task-1",
-            "label": "old_with_context_engine",
+            "label": "old_with_daemonstate",
             "outcome_evidence": _evidence(
-                completed=True, passed=True, blockers=0, evidence_id="ce-1"
+                completed=True, passed=True, blockers=0, evidence_id="daemonstate-1"
             ),
             "cost_usd": 6,
             "duration_seconds": 80,
@@ -442,9 +442,9 @@ def test_paired_evaluator_reports_observed_deltas_without_parity_claim():
         },
         {
             "task_id": "task-2",
-            "label": "old_with_context_engine",
+            "label": "old_with_daemonstate",
             "outcome_evidence": _evidence(
-                completed=True, passed=True, blockers=1, evidence_id="ce-2"
+                completed=True, passed=True, blockers=1, evidence_id="daemonstate-2"
             ),
             "cost_usd": 4,
             "duration_seconds": 90,
