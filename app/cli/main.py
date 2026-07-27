@@ -519,6 +519,7 @@ async def _prepare_and_maybe_run_continuation(args: argparse.Namespace) -> dict:
     from app.services.continuation import ContinuationService
     from app.services.harness_adapters import (
         build_harness_invocation,
+        continuation_provider_model,
         provider_environment,
     )
     from app.services.local_harness import LocalHarnessRunner
@@ -559,7 +560,10 @@ async def _prepare_and_maybe_run_continuation(args: argparse.Namespace) -> dict:
             args.into,
             repo_path=args.repo,
             session_id=None,
-            model=args.provider_model,
+            model=continuation_provider_model(
+                args.into,
+                args.provider_model,
+            ),
         )
 
         pack_id = data.get("context_pack_id") or (
@@ -590,7 +594,11 @@ async def _prepare_and_maybe_run_continuation(args: argparse.Namespace) -> dict:
             context_pack_id=UUID(str(pack_id)),
             run_key=f"continuation:{uuid4()}",
             tool=f"daemonstate:{invocation.provider}",
-            model=str(args.provider_model or args.target_model or invocation.provider),
+            model=str(
+                getattr(invocation, "model", None)
+                or args.target_model
+                or invocation.provider
+            ),
             objective=objective,
             branch=repo_state.get("branch"),
             base_commit=repo_state.get("head_commit") or repo_state.get("base_commit"),

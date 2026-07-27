@@ -12,7 +12,6 @@ import {
   GitFork,
   History,
   Loader2,
-  PackageCheck,
   Radio,
   RefreshCw,
   Search,
@@ -21,7 +20,7 @@ import {
 } from "lucide-react";
 
 import { api } from "../api/client";
-import { useSelectSessionFromLibrary, useSessionLibrary, useSyncSessionLibrary } from "../api/hooks";
+import { useSessionLibrary, useSyncSessionLibrary } from "../api/hooks";
 import {
   HARNESS_META,
   HARNESS_ORDER,
@@ -44,7 +43,6 @@ export default function SessionLibrary() {
   const workspace = useProductWorkspace();
   const libraryQuery = useSessionLibrary(workspace.activeWorkspaceId);
   const syncMutation = useSyncSessionLibrary();
-  const selectMutation = useSelectSessionFromLibrary();
   const syncRef = useRef(syncMutation);
   const sessionsRef = useRef(null);
   const [selectedHarness, setSelectedHarness] = useState(null);
@@ -52,7 +50,6 @@ export default function SessionLibrary() {
   const [search, setSearch] = useState("");
   const [visibleSessionCount, setVisibleSessionCount] = useState(INITIAL_SESSION_COUNT);
   const [evidenceSelection, setEvidenceSelection] = useState(null);
-  const [selectingSessionId, setSelectingSessionId] = useState(null);
   const closeEvidence = useCallback(() => {
     setEvidenceSelection(null);
     navigate("/app/library", { replace: true });
@@ -132,22 +129,20 @@ export default function SessionLibrary() {
     ));
   }, [searchParams, sessions]);
 
-  const selectForNow = async (item, topic) => {
-    if (!workspace.activeWorkspaceId || selectMutation.isPending) return;
-    setSelectingSessionId(`${item.id}:${topic || "__latest__"}`);
-    try {
-      const selection = {
-        workspaceId: workspace.activeWorkspaceId,
-        sourceDocumentId: item.source_document_id,
-      };
-      if (topic) selection.topic = topic;
-      await selectMutation.mutateAsync(selection);
-      navigate("/app");
-    } catch {
-      // The inline notice keeps the user in the library with their search intact.
-    } finally {
-      setSelectingSessionId(null);
+  const selectForNow = (item, topic) => {
+    if (!workspace.activeWorkspaceId) return;
+    const objective = String(topic || item.latest_topic || item.title || "").trim();
+    const params = new URLSearchParams();
+    if (objective) {
+      params.set("objective", objective);
+      if (topic) params.set("objective_source", "session");
     }
+    if (item.cwd) params.set("repo_path", item.cwd);
+    if (item.connector_type && item.session_id) {
+      params.set("source_provider", item.connector_type);
+      params.set("source_session", item.session_id);
+    }
+    navigate({ pathname: "/app", search: params.toString() ? `?${params}` : "" });
   };
 
   useEffect(() => {
@@ -174,7 +169,7 @@ export default function SessionLibrary() {
         <div>
           <h1 className="text-3xl font-black tracking-[-0.035em] sm:text-4xl">Session Library</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
-            The latest session topic appears on Now by default. Choose any session or topic when you want to override it.
+            Choose a session or topic, then finish the handoff from the canonical Continue screen.
           </p>
           {library ? (
             <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-[10px] font-black uppercase tracking-[0.13em] text-[#85857c]">
@@ -205,10 +200,6 @@ export default function SessionLibrary() {
           {syncMutation.data.sync.failed} session{syncMutation.data.sync.failed === 1 ? "" : "s"} could not be read; the remaining history was synced.
         </Notice>
       ) : null}
-      {selectMutation.isError ? (
-        <Notice tone="error">Could not select this session: {selectMutation.error?.message}</Notice>
-      ) : null}
-
       {libraryQuery.isLoading && !library ? (
         <EmptyState title="Opening your session history…" detail="The local adapters are scanning supported harness stores automatically." loading />
       ) : null}
@@ -272,7 +263,7 @@ export default function SessionLibrary() {
                       <span aria-label={`${filteredSessions.length} sessions`} className="rounded-full bg-[#ecece4] px-2.5 py-1 text-[9px] font-black dark:bg-[#252521]">{filteredSessions.length}</span>
                     </div>
                     <p className="mt-1 text-xs leading-5 text-[#68685f] dark:text-[#aaa9a0]">
-                      Use Latest for the session’s newest topic, or open Topics to choose another. Evidence stays separate.
+                      Continue the session’s newest topic, or open Topics to choose another. Evidence stays separate.
                     </p>
                   </div>
                   <label className="relative block">
@@ -296,7 +287,7 @@ export default function SessionLibrary() {
                         item={item}
                         selected={item.selected_for_now}
                         selectedTopic={item.selected_topic}
-                        selectingTopic={selectingSessionId?.startsWith(`${item.id}:`) ? selectingSessionId.slice(item.id.length + 1) : null}
+                        selectingTopic={null}
                         onSelectSession={() => selectForNow(item)}
                         onSelectTopic={(topic) => selectForNow(item, topic)}
                         onOpen={(topic) => setEvidenceSelection({ session: item, topic })}
@@ -335,7 +326,7 @@ export default function SessionLibrary() {
           workspaceId={workspace.activeWorkspaceId}
           onSelectTopic={(topic) => setEvidenceSelection((current) => ({ ...current, topic }))}
           onUseTopic={(topic) => selectForNow(evidenceSelection.session, topic)}
-          selecting={selectingSessionId === `${evidenceSelection.session.id}:${evidenceSelection.topic}`}
+          selecting={false}
           onClose={closeEvidence}
         />,
         document.body,
@@ -369,7 +360,7 @@ function SessionCard({ item, selected, selectedTopic, selectingTopic, onSelectSe
       <div className="flex items-start justify-between gap-3">
         <HarnessLogo type={item.connector_type} size="small" />
         <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.12em] text-[#85857c]">
-          {selected ? <span className="rounded-full bg-[#d9ff68] px-2 py-1 text-[#37420f]">On Now</span> : null}
+          {selected ? <span className="rounded-full bg-[#d9ff68] px-2 py-1 text-[#37420f]">Selected</span> : null}
           {item.forked_from ? (
             <span
               aria-label={`Continued in a new task from ${item.forked_from.title}`}
@@ -407,7 +398,7 @@ function SessionCard({ item, selected, selectedTopic, selectingTopic, onSelectSe
         </p>
       ) : null}
       {selectedTopic || latestTopic ? (
-        <p className="mt-2 line-clamp-1 text-[9px] font-bold text-[#58691c] dark:text-[#d9ff68]">{selectedTopic ? "On Now" : "Latest"} · {selectedTopic || latestTopic}</p>
+        <p className="mt-2 line-clamp-1 text-[9px] font-bold text-[#58691c] dark:text-[#d9ff68]">{selectedTopic ? "Selected" : "Latest"} · {selectedTopic || latestTopic}</p>
       ) : null}
       <div className="mt-3 flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2 text-[10px] font-semibold text-[#77776e] dark:text-[#aaa9a0]">
@@ -422,19 +413,19 @@ function SessionCard({ item, selected, selectedTopic, selectingTopic, onSelectSe
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[#e1e1d8] pt-3 dark:border-[#30302b]">
         <button
           type="button"
-          aria-label={`Use latest topic from ${item.title} on Now`}
+          aria-label={`Continue latest topic from ${item.title}`}
           onClick={onSelectSession}
           disabled={Boolean(selectingTopic)}
           className="inline-flex items-center gap-1.5 text-[9px] font-black uppercase tracking-[0.12em] text-[#58691c] transition hover:text-[#171713] disabled:cursor-wait disabled:opacity-60 dark:text-[#d9ff68] dark:hover:text-white"
         >
-          {selectingTopic === "__latest__" ? "Selecting…" : "Use latest"}
+          {selectingTopic === "__latest__" ? "Selecting…" : "Continue latest"}
           <ArrowRight className="h-3 w-3" />
         </button>
         <div className="flex items-center gap-3">
           {(item.compaction_checkpoints || []).length ? (
             <button
               type="button"
-              aria-label={`Restore context from ${item.title}`}
+              aria-label={`Open checkpoints for ${item.title}`}
               onClick={(event) => {
                 event.stopPropagation();
                 onOpen(selectedTopic || latestTopic);
@@ -479,7 +470,7 @@ function SessionCard({ item, selected, selectedTopic, selectingTopic, onSelectSe
                 type="button"
                 key={topic}
                 tabIndex={revealed ? 0 : -1}
-                aria-label={`Use ${topic} from ${item.title} on Now`}
+                aria-label={`Continue ${topic} from ${item.title}`}
                 onClick={(event) => {
                   event.stopPropagation();
                   onSelectTopic(topic);
@@ -494,7 +485,7 @@ function SessionCard({ item, selected, selectedTopic, selectingTopic, onSelectSe
             )) : <span className="text-[10px] font-semibold text-[#85857c]">No distinct topics extracted.</span>}
           </div>
           <p className="mt-3 inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-[0.12em]" style={{ color: meta.accent }}>
-            Choose a topic for Now <ArrowRight className="h-3 w-3" />
+            Choose a topic for Continue <ArrowRight className="h-3 w-3" />
           </p>
         </div>
       </div>
@@ -510,8 +501,11 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onUseTopic, sel
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [copied, setCopied] = useState(false);
-  const [launchState, setLaunchState] = useState({ status: "idle", message: "" });
-  const [restoreState, setRestoreState] = useState({ status: "idle", data: null, error: "", copied: false });
+  const [checkpointState, setCheckpointState] = useState({
+    status: "idle",
+    checkpointId: null,
+    error: "",
+  });
   const closeRef = useRef(null);
   const meta = HARNESS_META[session.connector_type] || HARNESS_META.codex;
 
@@ -520,7 +514,7 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onUseTopic, sel
     setDetail(null);
     setError(null);
     setLoading(true);
-    setRestoreState({ status: "idle", data: null, error: "", copied: false });
+    setCheckpointState({ status: "idle", checkpointId: null, error: "" });
     const params = new URLSearchParams();
     if (workspaceId) params.set("workspace_id", workspaceId);
     api.get(`/sources/${session.source_document_id}${params.size ? `?${params}` : ""}`)
@@ -553,56 +547,40 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onUseTopic, sel
     }
   };
 
-  const openInHarness = async () => {
-    setLaunchState({ status: "loading", message: "" });
-    try {
-      const result = await api.post("/session-library/open", {
-        workspace_id: workspaceId,
-        source_document_id: session.source_document_id,
-        topic,
-      });
-      setLaunchState({ status: "success", message: result.message });
-    } catch (reason) {
-      setLaunchState({
-        status: reason?.detail?.code === "desktop_app_missing" ? "missing" : "error",
-        message: reason?.message || `Could not open ${meta.name}.`,
-      });
-    }
-  };
-
-  const restoreCheckpoint = async (checkpoint) => {
-    setRestoreState({ status: "loading", data: null, error: "", copied: false });
+  const continueFromCheckpoint = async (checkpoint) => {
+    setCheckpointState({
+      status: "loading",
+      checkpointId: checkpoint.id,
+      error: "",
+    });
     try {
       const data = await api.post("/session-library/checkpoints/restore", {
         workspace_id: workspaceId,
         source_document_id: session.source_document_id,
         checkpoint_id: checkpoint.id,
       });
-      setRestoreState({ status: "success", data, error: "", copied: false });
+      const exactCheckpoint = data?.checkpoint || checkpoint;
+      const objective = String(
+        data?.restore_context?.objective
+        || checkpoint.objective_preview
+        || topic
+        || session.title
+        || "",
+      ).trim();
+      const params = new URLSearchParams({
+        checkpoint: exactCheckpoint.id,
+        checkpoint_source: session.source_document_id,
+      });
+      if (objective) params.set("objective", objective);
+      if (session.cwd) params.set("repo_path", session.cwd);
+      navigate(`/app?${params.toString()}`);
     } catch (reason) {
-      setRestoreState({ status: "error", data: null, error: reason?.message || "This checkpoint could not be restored.", copied: false });
+      setCheckpointState({
+        status: "error",
+        checkpointId: checkpoint.id,
+        error: reason?.message || "This checkpoint could not be prepared for Continue.",
+      });
     }
-  };
-
-  const copyRestoredContext = async () => {
-    try {
-      await navigator.clipboard.writeText(restoreState.data?.restore_context?.markdown || "");
-      setRestoreState((current) => ({ ...current, copied: true }));
-    } catch {
-      setRestoreState((current) => ({ ...current, copied: false, error: "Clipboard access is unavailable." }));
-    }
-  };
-
-  const useCheckpointInHandoff = () => {
-    const restored = restoreState.data?.restore_context;
-    const checkpoint = restoreState.data?.checkpoint;
-    if (!restored || !checkpoint) return;
-    const params = new URLSearchParams({
-      objective: restored.objective,
-      checkpoint_source: session.source_document_id,
-      checkpoint: checkpoint.id,
-    });
-    navigate(`/app/prepare?${params.toString()}`);
   };
 
   return (
@@ -665,10 +643,10 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onUseTopic, sel
                 <section aria-labelledby="checkpoint-heading" className="rounded-2xl border border-[#cfd9b0] bg-[#f3f8e7] p-4 dark:border-[#435026] dark:bg-[#18200d]">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <p className="text-[9px] font-black uppercase tracking-[0.16em] text-[#668020]">03 · Restore context</p>
+                      <p className="text-[9px] font-black uppercase tracking-[0.16em] text-[#668020]">03 · Continue from saved state</p>
                       <h3 id="checkpoint-heading" className="mt-1 text-base font-black">Compaction checkpoints</h3>
                       <p className="mt-1 max-w-lg text-[10px] font-semibold leading-5 text-[#66704d] dark:text-[#bdc7a5]">
-                        Captured automatically before this harness compressed its context. Restoring creates a reviewable copy; it does not change the original session.
+                        Captured automatically before this harness compressed its context. Continue reconciles the selected checkpoint without changing the original session.
                       </p>
                     </div>
                     <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#d9ff68] px-2.5 py-1 text-[8px] font-black uppercase tracking-wide text-[#37420f]">
@@ -678,8 +656,10 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onUseTopic, sel
 
                   <div className="mt-4 space-y-2">
                     {checkpoints.map((checkpoint) => {
-                      const active = restoreState.data?.checkpoint?.id === checkpoint.id;
-                      const loadingCheckpoint = restoreState.status === "loading";
+                      const loadingCheckpoint = (
+                        checkpointState.status === "loading"
+                        && checkpointState.checkpointId === checkpoint.id
+                      );
                       return (
                         <article key={checkpoint.id} className="rounded-xl border border-[#d6dfbd] bg-white/75 p-3 dark:border-[#3e4925] dark:bg-black/15">
                           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -692,12 +672,12 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onUseTopic, sel
                             </div>
                             <button
                               type="button"
-                              onClick={() => restoreCheckpoint(checkpoint)}
-                              disabled={loadingCheckpoint}
+                              onClick={() => continueFromCheckpoint(checkpoint)}
+                              disabled={checkpointState.status === "loading"}
                               className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg bg-[#171713] px-3 text-[9px] font-black text-white disabled:cursor-wait disabled:opacity-60 dark:bg-[#d9ff68] dark:text-[#171713]"
                             >
-                              {loadingCheckpoint ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : active ? <Check className="h-3.5 w-3.5" /> : <History className="h-3.5 w-3.5" />}
-                              {loadingCheckpoint ? "Restoring…" : active ? "Restored" : "Restore context"}
+                              {loadingCheckpoint ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowRight className="h-3.5 w-3.5" />}
+                              {loadingCheckpoint ? "Preparing Continue…" : "Continue from checkpoint"}
                             </button>
                           </div>
                         </article>
@@ -705,27 +685,10 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onUseTopic, sel
                     })}
                   </div>
 
-                  {restoreState.status === "error" ? <p role="alert" className="mt-3 text-[10px] font-bold text-red-700 dark:text-red-300">{restoreState.error}</p> : null}
-                  {restoreState.data ? (
-                    <div className="mt-3 rounded-xl border border-[#bfd16f] bg-white p-4 dark:border-[#596b26] dark:bg-[#10120b]">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="rounded-full bg-[#edf3dc] px-2 py-1 text-[8px] font-black uppercase tracking-wide text-[#66751f] dark:bg-[#283315] dark:text-[#d9ff68]">Transcript-derived</span>
-                        <span className="text-[8px] font-bold uppercase tracking-wide text-[#85857c]">Reported state · not verified truth</span>
-                      </div>
-                      <p className="mt-3 text-[8px] font-black uppercase tracking-[0.15em] text-[#85857c]">Continue from</p>
-                      <p className="mt-1 text-xs font-black leading-5">{restoreState.data.restore_context.objective}</p>
-                      <p className="mt-3 text-[8px] font-black uppercase tracking-[0.15em] text-[#85857c]">Last agent-reported state</p>
-                      <p className="mt-1 line-clamp-4 whitespace-pre-wrap break-words text-[10px] font-semibold leading-5 text-[#68685f] [overflow-wrap:anywhere] dark:text-[#bdbdb4]">{restoreState.data.restore_context.agent_reported_state}</p>
-                      <div className="mt-4 grid gap-2 sm:grid-cols-2">
-                        <button type="button" onClick={copyRestoredContext} className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-[#d6dfbd] text-[9px] font-black dark:border-[#3e4925]">
-                          {restoreState.copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                          {restoreState.copied ? "Context copied" : "Copy restored context"}
-                        </button>
-                        <button type="button" onClick={useCheckpointInHandoff} className="inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-[#d9ff68] px-3 text-[9px] font-black text-[#263008]">
-                          <PackageCheck className="h-3.5 w-3.5" /> Use in agent handoff
-                        </button>
-                      </div>
-                    </div>
+                  {checkpointState.status === "error" ? (
+                    <p role="alert" className="mt-3 text-[10px] font-bold text-red-700 dark:text-red-300">
+                      {checkpointState.error}
+                    </p>
                   ) : null}
                 </section>
               ) : null}
@@ -774,8 +737,8 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onUseTopic, sel
           <div className="min-w-0">
             <p className="text-[8px] font-black uppercase tracking-[0.15em] text-[#85857c]">Source session</p>
             <p className="mt-1 truncate font-mono text-[9px] text-[#68685f] dark:text-[#aaa9a0]">{session.session_id}</p>
-            <p aria-live="polite" className={`mt-1 text-[9px] font-semibold ${launchState.status === "error" || launchState.status === "missing" ? "text-red-600 dark:text-red-300" : launchState.status === "success" ? "text-emerald-700 dark:text-emerald-300" : "text-[#85857c]"}`}>
-              {launchState.message || (session.live ? `Opens the ${meta.name} desktop app; topic highlighting stays here.` : "This source is not linked to local harness history.")}
+            <p className="mt-1 text-[9px] font-semibold text-[#85857c]">
+              Continue starts from the selected topic without reopening or modifying this source session.
             </p>
           </div>
           <div className="grid w-full shrink-0 grid-cols-2 gap-2 sm:flex sm:w-auto">
@@ -786,25 +749,12 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onUseTopic, sel
               className="col-span-2 inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-[#d9ff68] px-3 text-[10px] font-black text-[#263008] shadow-sm transition hover:-translate-y-0.5 disabled:cursor-wait disabled:opacity-70 sm:col-span-1"
             >
               {selecting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowRight className="h-3.5 w-3.5" />}
-              {selecting ? "Selecting topic…" : "Use topic on Now"}
+              {selecting ? "Selecting topic…" : "Continue this topic"}
             </button>
             <button type="button" onClick={copySessionId} className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-[#d8d8cf] px-3 text-[10px] font-black transition hover:bg-white dark:border-[#383832] dark:hover:bg-[#1d1d19]">
               {copied ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
               {copied ? "Copied" : "Copy ID"}
             </button>
-            {session.live ? (
-              <button
-                type="button"
-                onClick={openInHarness}
-                disabled={launchState.status === "loading" || launchState.status === "missing"}
-                title={`Open the ${meta.name} desktop app`}
-                className="inline-flex h-10 items-center justify-center gap-2 rounded-lg px-3 text-[10px] font-black shadow-sm transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-70"
-                style={{ backgroundColor: meta.accent, color: meta.launchText }}
-              >
-                {launchState.status === "loading" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : launchState.status === "success" ? <Check className="h-3.5 w-3.5" /> : <ArrowUpRight className="h-3.5 w-3.5" />}
-                {launchState.status === "success" ? `Opened ${meta.name}` : launchState.status === "missing" ? `${meta.name} app missing` : `Open in ${meta.name}`}
-              </button>
-            ) : null}
           </div>
         </footer>
       </aside>

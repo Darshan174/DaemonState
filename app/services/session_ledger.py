@@ -13,7 +13,7 @@ from app.services.session_summary import (
     extract_delegated_user_request,
     is_continuation_control,
     is_session_instruction_noise,
-    is_substantive_user_request,
+    normalize_substantive_user_request,
 )
 
 
@@ -322,12 +322,8 @@ def render_session_ledger_markdown(
 
 def _event_user_request(event: SessionEvent) -> str | None:
     raw: str | None = None
-    if (
-        event.event_type == "user_request"
-        and not _is_cli_auth_transcript(event.content)
-        and is_substantive_user_request(event.content)
-    ):
-        raw = event.content
+    if event.event_type == "user_request" and not _is_cli_auth_transcript(event.content):
+        raw = normalize_substantive_user_request(event.content)
     elif event.event_type == "runtime_instruction" and event.role == "user":
         raw = extract_delegated_user_request(event.content)
     if not raw or is_continuation_control(raw) or _is_cli_auth_transcript(raw):

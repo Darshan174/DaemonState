@@ -1420,7 +1420,13 @@ def infer_task_frame(
         for related_test in item.get("related_tests") or []
         if related_test.get("path")
     ))
-    test_files = exact_test_files or _relevant_test_files(
+    checkpoint_test_files = [
+        path
+        for path in goal_frame.file_hints
+        if path in set(repo_frame.test_files)
+        and _eligible_automatic_verification_path(path)
+    ]
+    test_files = exact_test_files or checkpoint_test_files or _relevant_test_files(
         relevant_paths,
         repo_frame.test_files,
         goal_frame,
@@ -2837,6 +2843,22 @@ def _relevant_test_files(
 ) -> list[str]:
     if not test_files:
         return []
+    hinted = {item.strip("./").casefold() for item in goal_frame.file_hints}
+    test_files = [
+        path
+        for path in test_files
+        if _eligible_automatic_verification_path(path)
+        or bool(
+            {
+                path.strip("./").casefold(),
+                Path(path).name.casefold(),
+                Path(path).stem.casefold(),
+            }
+            & hinted
+        )
+    ]
+    if not test_files:
+        return []
     direct_matches = {
         path for path in relevant_paths
         if path in set(test_files)
@@ -2881,6 +2903,14 @@ def _relevant_test_files(
     if goal_frame.requires_tests or "test" in goal_frame.domains:
         return sorted(direct_matches | matching)[:6]
     return sorted(direct_matches | matching)[:3]
+
+
+def _eligible_automatic_verification_path(path: str) -> bool:
+    normalized = path.removeprefix("./")
+    return not (
+        normalized.startswith(".agent-runs/")
+        or "/fixture_project/" in f"/{normalized}"
+    )
 
 
 def _verification_commands_for_tests(

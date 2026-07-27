@@ -61,6 +61,7 @@ from app.services.session_summary import (
     is_internal_session_content,
     is_session_instruction_noise,
     is_substantive_user_request,
+    normalize_substantive_user_request,
 )
 from app.services.session_library import selected_session_selection
 from app.services.project_scope import (
@@ -1497,6 +1498,7 @@ def _session_activity(
         "provider": metadata.get("tool") or metadata.get("agent_tool"),
         "tool": metadata.get("tool") or metadata.get("agent_tool"),
         "model": metadata.get("model") or metadata.get("agent_model"),
+        "cwd": metadata.get("cwd") or metadata.get("working_directory"),
         "branch": metadata.get("branch"),
         "started_at": _parse_datetime(
             metadata.get("started_at") or metadata.get("created_at")
@@ -1569,8 +1571,8 @@ def _session_activity_clock(
 def _activity_user_request(
     event: SessionEvent | _SessionActivityEvent,
 ) -> str | None:
-    if event.event_type == "user_request" and is_substantive_user_request(event.content):
-        return str(event.content).strip()
+    if event.event_type == "user_request":
+        return normalize_substantive_user_request(event.content)
     if event.event_type == "runtime_instruction" and event.role == "user":
         return extract_delegated_user_request(event.content)
     return None

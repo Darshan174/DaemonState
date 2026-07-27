@@ -14,9 +14,11 @@ from app.models import AgentRun, ContextPack, RunObservation, SourceDocument, Wo
 from app.services.harness_adapters import provider_environment
 from app.services.local_harness import (
     MAX_CONTEXT_STDIN_BYTES,
+    CommandResult,
     LocalHarnessRunner,
     RepositoryStateChangedError,
     TRUNCATED_OUTPUT,
+    _terminal_status,
 )
 
 
@@ -40,6 +42,89 @@ def _repository(tmp_path: Path) -> Path:
     _git(root, "add", "README.md")
     _git(root, "commit", "-q", "-m", "initial")
     return root
+
+
+def test_structured_provider_error_fails_even_when_cli_exits_zero() -> None:
+    result = CommandResult(
+        argv=("opencode", "run"),
+        exit_code=0,
+        stdout=json.dumps({
+            "type": "error",
+            "error": {
+                "name": "APIError",
+                "data": {"message": "Invalid API Key", "statusCode": 401},
+            },
+        }),
+        stderr="",
+        stdout_truncated=False,
+        stderr_truncated=False,
+        timed_out=False,
+        duration_ms=10,
+    )
+
+    assert _terminal_status(result, ()) == "failed"
+
+
+def test_successful_structured_provider_stream_can_exit_zero() -> None:
+    result = CommandResult(
+        argv=("opencode", "run"),
+        exit_code=0,
+        stdout="\n".join((
+            json.dumps({"type": "step_start"}),
+            json.dumps({"type": "step_finish", "reason": "stop"}),
+        )),
+        stderr="",
+        stdout_truncated=False,
+        stderr_truncated=False,
+        timed_out=False,
+        duration_ms=10,
+    )
+
+    assert _terminal_status(result, ()) == "completed"
+
+
+def test_structured_provider_stream_ending_after_tool_calls_is_incomplete() -> None:
+    result = CommandResult(
+        argv=("opencode", "run"),
+        exit_code=0,
+        stdout="\n".join((
+            json.dumps({"type": "step_start"}),
+            json.dumps({"type": "tool_use", "tool": "read"}),
+            json.dumps({
+                "type": "step_finish",
+                "part": {"reason": "tool-calls"},
+            }),
+        )),
+        stderr="",
+        stdout_truncated=False,
+        stderr_truncated=False,
+        timed_out=False,
+        duration_ms=10,
+    )
+
+    assert _terminal_status(result, ()) == "failed"
+
+
+def test_later_success_envelope_supersedes_an_earlier_stream_error() -> None:
+    result = CommandResult(
+        argv=("provider", "run"),
+        exit_code=0,
+        stdout="\n".join((
+            json.dumps({"type": "error", "error": {"message": "retried"}}),
+            json.dumps({
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+            }),
+        )),
+        stderr="",
+        stdout_truncated=False,
+        stderr_truncated=False,
+        timed_out=False,
+        duration_ms=10,
+    )
+
+    assert _terminal_status(result, ()) == "completed"
 
 
 async def _pack_and_run(
@@ -82,6 +167,65 @@ async def _pack_and_run(
     db_session.add_all([pack, run])
     await db_session.flush()
     return pack, run
+
+
+@pytest.mark.asyncio
+async def test_runner_streams_stdout_to_an_observer_before_command_completion(
+    db_session,
+    tmp_path,
+):
+    root = _repository(tmp_path)
+    pack, run = await _pack_and_run(db_session)
+    observed = bytearray()
+
+    async def observe(chunk: bytes) -> None:
+        observed.extend(chunk)
+
+    result = await LocalHarnessRunner(db_session).run(
+        context_pack_id=pack.id,
+        run_id=run.id,
+        repo_path=root,
+        command=[
+            sys.executable,
+            "-c",
+            (
+                "import json; "
+                "print(json.dumps({'type': 'thread.started', "
+                "'thread_id': 'thread-visible'}), flush=True)"
+            ),
+        ],
+        stdout_chunk_observer=observe,
+    )
+
+    assert result.command.exit_code == 0
+    assert b'"thread_id": "thread-visible"' in observed
+
+
+@pytest.mark.asyncio
+async def test_stdout_observer_failure_does_not_stop_pipe_drainage(
+    db_session,
+    tmp_path,
+):
+    root = _repository(tmp_path)
+    pack, run = await _pack_and_run(db_session)
+
+    async def broken_observer(_chunk: bytes) -> None:
+        raise RuntimeError("observer unavailable")
+
+    result = await LocalHarnessRunner(db_session).run(
+        context_pack_id=pack.id,
+        run_id=run.id,
+        repo_path=root,
+        command=[
+            sys.executable,
+            "-c",
+            "print('provider still completed', flush=True)",
+        ],
+        stdout_chunk_observer=broken_observer,
+    )
+
+    assert result.command.exit_code == 0
+    assert result.command.stdout.strip() == "provider still completed"
 
 
 @pytest.mark.asyncio
@@ -161,6 +305,7 @@ async def test_runner_exposes_context_and_persists_observed_evidence(db_session,
     assert "hunter2" not in result.command.stdout
     assert result.verification_results[0].result.exit_code == 0
     assert "api_key=[redacted]" in result.verification_results[0].result.stdout
+    assert result.agent_changed_files == ("worker-change.txt",)
     assert set(result.changed_files) == {"checks/verification-ran.txt", "worker-change.txt"}
     assert result.verification_results[0].cwd == str(root / "checks")
     assert result.repository_before.dirty is False
@@ -400,6 +545,29 @@ async def test_runner_never_interprets_a_shell_command_string(db_session, tmp_pa
     assert not sentinel.exists()
     await db_session.refresh(run)
     assert run.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_runner_allows_a_bounded_timeout_for_one_continuation(
+    db_session,
+    tmp_path,
+):
+    root = _repository(tmp_path)
+    pack, run = await _pack_and_run(db_session)
+
+    result = await LocalHarnessRunner(db_session).run(
+        context_pack_id=pack.id,
+        run_id=run.id,
+        repo_path=root,
+        command=[sys.executable, "-c", "import time; time.sleep(10)"],
+        command_timeout_seconds=0.05,
+    )
+
+    assert result.status == "failed"
+    assert result.command.timed_out is True
+    await db_session.refresh(run)
+    assert run.status == "failed"
+    assert run.ended_at is not None
 
 
 @pytest.mark.asyncio

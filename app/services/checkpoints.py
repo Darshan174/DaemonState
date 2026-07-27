@@ -35,6 +35,7 @@ from app.services.session_summary import (
     is_continuation_control,
     is_session_instruction_noise,
     is_substantive_user_request,
+    normalize_substantive_user_request,
 )
 from app.time import utc_now
 
@@ -85,6 +86,27 @@ _VERIFICATION_COMMAND = re.compile(
     r"cargo\s+test|go\s+test|vitest|jest|tsc)(?:\s|$)",
     re.IGNORECASE,
 )
+_DERIVED_COMMAND_BLOCKER = re.compile(
+    r"^Latest run of `[^`]+` is failing\.$",
+    re.IGNORECASE,
+)
+_INTERNAL_TOOL_NEXT_ACTION = re.compile(
+    r"^Fix the failure from `tool:[^`]+` and rerun that command\.$",
+    re.IGNORECASE,
+)
+_DERIVED_BLOCKER_NEXT_ACTION = re.compile(
+    r"^Resolve this blocker:\s+",
+    re.IGNORECASE,
+)
+_INACTIVE_BLOCKER_STATES = {
+    "cancelled",
+    "completed",
+    "dismissed",
+    "historical",
+    "rejected",
+    "resolved",
+    "superseded",
+}
 _PATH_PATTERN = re.compile(
     r"(?<![\w])("
     r"(?:/(?:[^\s:'\"`<>|]+/)*[^\s:'\"`<>|]+\.[A-Za-z0-9]{1,12})|"
@@ -156,9 +178,14 @@ async def capture_checkpoint(
     goal_present = bool(sections["goal"])
     next_present = bool(sections["exact_next_action"])
     capture_status = "complete" if goal_present and next_present else "incomplete"
+    active_blockers = [
+        item
+        for item in sections["blockers"]
+        if item.state.strip().lower() not in _INACTIVE_BLOCKER_STATES
+    ]
     continuation_status = (
         "blocked"
-        if sections["blockers"]
+        if active_blockers
         else "ready"
         if capture_status == "complete"
         else "review_required"
@@ -595,6 +622,16 @@ def checkpoint_to_dict(
             ],
         })
     sections, projection = _safe_checkpoint_projection(checkpoint, sections)
+    projected_continuation_status = checkpoint.continuation_status
+    if (
+        projected_continuation_status == "blocked"
+        and not any(
+            str(item.get("state") or "active").strip().lower()
+            not in _INACTIVE_BLOCKER_STATES
+            for item in sections["blockers"]
+        )
+    ):
+        projected_continuation_status = "review_required"
     payload = dict(payload)
     payload["sections"] = {
         category: [
@@ -646,7 +683,7 @@ def checkpoint_to_dict(
             checkpoint.capture_status if projection["valid"] else "incomplete"
         ),
         "continuation_status": (
-            checkpoint.continuation_status if projection["valid"] else "review_required"
+            projected_continuation_status if projection["valid"] else "review_required"
         ),
         "projection": projection,
         "boundary": boundary,
@@ -763,7 +800,7 @@ def _safe_checkpoint_projection(
     checkpoint: WorkCheckpoint,
     sections: dict[str, list[dict[str, Any]]],
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
-    """Make legacy checkpoints safe to display without mutating audit records."""
+    """Make stored checkpoints safe to consume without mutating audit records."""
 
     projected = {category: list(sections.get(category) or []) for category in CHECKPOINT_CATEGORIES}
     goals = [
@@ -787,15 +824,60 @@ def _safe_checkpoint_projection(
     goal = goals[-1]
     projected["goal"] = [goal]
     goal_sequence = _item_sequence(goal)
+    latest_progress_sequence = max(
+        (
+            sequence
+            for item in projected["progress"]
+            if (sequence := _item_sequence(item)) is not None
+        ),
+        default=None,
+    )
     for category in CHECKPOINT_CATEGORIES:
         if category == "goal":
             continue
         safe_items: list[dict[str, Any]] = []
         for item in projected[category]:
             statement = str(item.get("statement") or "")
+            sequence = _item_sequence(item)
             if is_session_instruction_noise(statement):
                 continue
-            sequence = _item_sequence(item)
+            if (
+                category == "blockers"
+                and str(item.get("truth_state") or "").strip().lower() == "reported"
+                and latest_progress_sequence is not None
+                and sequence is not None
+                and sequence < latest_progress_sequence
+            ):
+                # Intermediate agent commentary often announces a blocker and
+                # later reports successful progress. Preserve the earlier
+                # statement as history, but never present it as live authority.
+                item = {**item, "state": "historical"}
+            if (
+                category == "blockers"
+                and _DERIVED_COMMAND_BLOCKER.fullmatch(statement.strip())
+                and str(item.get("payload", {}).get("command") or "").strip()
+            ):
+                # A failed command is execution history, not proof that a new
+                # agent cannot start. It remains available under failed_attempts
+                # and verification evidence.
+                continue
+            if (
+                category == "exact_next_action"
+                and _INTERNAL_TOOL_NEXT_ACTION.fullmatch(statement.strip())
+            ):
+                # Harness plumbing failures such as tool:write_stdin are not a
+                # user task and must never become the next agent's instruction.
+                continue
+            if (
+                category == "exact_next_action"
+                and _DERIVED_BLOCKER_NEXT_ACTION.match(statement.strip())
+                and latest_progress_sequence is not None
+                and sequence is not None
+                and sequence < latest_progress_sequence
+            ):
+                # This instruction was synthesized from a reported blocker that
+                # newer progress has already superseded.
+                continue
             if (
                 checkpoint.schema_version != CHECKPOINT_SCHEMA_VERSION
                 and goal_sequence is not None
@@ -825,7 +907,7 @@ def _checkpoint_activity(
 ) -> dict[str, Any]:
     goals = sections.get("goal") or []
     raw_goal = goals[0].get("statement") if goals else None
-    request = str(raw_goal or "").strip() if is_substantive_user_request(raw_goal) else None
+    request = normalize_substantive_user_request(raw_goal)
     goal_sequence = _item_sequence(goals[0]) if goals else None
     boundary_sequence = boundary.get("sequence_number")
 
@@ -1149,34 +1231,7 @@ def _build_sections(
             payload=payload,
         ))
 
-    latest_by_command: dict[tuple[str, str], SessionEvent] = {}
-    for event in result_events:
-        payload = event_payload(event)
-        command = str(
-            payload.get("command")
-            or (
-                f"tool:{payload.get('tool_name')}"
-                if payload.get("tool_name")
-                else ""
-            )
-        ).strip()
-        if command:
-            latest_by_command[(str(payload.get("cwd") or ""), command)] = event
     blockers: list[DraftItem] = []
-    for (_, command), event in latest_by_command.items():
-        payload = event_payload(event)
-        if payload.get("exit_code") not in (None, 0) or payload.get("passed") is False:
-            blockers.append(DraftItem(
-                category="blockers",
-                statement=f"Latest run of `{_single_line(command, 500)}` is failing.",
-                truth_state="observed",
-                events=[event],
-                payload={
-                    "command": command,
-                    "cwd": payload.get("cwd"),
-                    "exit_code": payload.get("exit_code"),
-                },
-            ))
     for event in events:
         if (
             event.event_type == "assistant_update"
@@ -1191,6 +1246,21 @@ def _build_sections(
                         truth_state="reported",
                         events=[event],
                     ))
+    latest_progress_sequence = max(
+        (
+            item.events[-1].sequence_number
+            for item in progress
+            if item.events
+        ),
+        default=None,
+    )
+    if latest_progress_sequence is not None:
+        for blocker in blockers:
+            if (
+                blocker.events
+                and blocker.events[-1].sequence_number < latest_progress_sequence
+            ):
+                blocker.state = "historical"
     sections["blockers"] = _dedupe_drafts(blockers)[-MAX_ITEMS_PER_CATEGORY:]
 
     latest_verification_by_command: dict[tuple[str, str], DraftItem] = {}
@@ -1239,20 +1309,6 @@ def _derive_next_action(
     blockers: list[DraftItem],
     continuation_event: SessionEvent | None,
 ) -> DraftItem | None:
-    if blockers:
-        blocker = blockers[-1]
-        command = blocker.payload.get("command")
-        statement = (
-            f"Fix the failure from `{_single_line(str(command), 500)}` and rerun that command."
-            if command
-            else f"Resolve this blocker: {blocker.statement}"
-        )
-        return DraftItem(
-            category="exact_next_action",
-            statement=statement,
-            truth_state=blocker.truth_state,
-            events=blocker.events,
-        )
     for event in reversed(events):
         if (
             event.event_type != "assistant_update"
@@ -1270,6 +1326,25 @@ def _derive_next_action(
                     truth_state="reported",
                     events=[event],
                 )
+    active_blockers = [
+        blocker
+        for blocker in blockers
+        if blocker.state.strip().lower() not in _INACTIVE_BLOCKER_STATES
+    ]
+    if active_blockers:
+        blocker = active_blockers[-1]
+        command = blocker.payload.get("command")
+        statement = (
+            f"Fix the failure from `{_single_line(str(command), 500)}` and rerun that command."
+            if command
+            else f"Resolve this blocker: {blocker.statement}"
+        )
+        return DraftItem(
+            category="exact_next_action",
+            statement=statement,
+            truth_state=blocker.truth_state,
+            events=blocker.events,
+        )
     latest_assistant = next(
         (
             event for event in reversed(events)
@@ -1306,8 +1381,8 @@ def _derive_next_action(
 
 
 def _checkpoint_user_request(event: SessionEvent) -> str | None:
-    if event.event_type == "user_request" and is_substantive_user_request(event.content):
-        return str(event.content).strip()
+    if event.event_type == "user_request":
+        return normalize_substantive_user_request(event.content)
     if event.event_type == "runtime_instruction" and event.role == "user":
         return extract_delegated_user_request(event.content)
     return None

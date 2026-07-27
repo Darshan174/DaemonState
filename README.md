@@ -54,7 +54,7 @@ we need results from real projects, not demos.
 | Connect a project | Creates a clean boundary around one real repository and its evidence. |
 | Capture the work | Imports or syncs code state, issues, decisions, AI sessions, changes, and checks from supported sources. |
 | Choose the current goal | Keeps the user in control. Open issues stay backlog until selected. |
-| Capture a checkpoint | When a supported local session is synced and exposes a compaction boundary, preserves its pre-compaction goal, progress, decisions, failures, files, blockers, checks, and next action. A session-tip checkpoint can also be saved manually. |
+| Capture a checkpoint | Continue automatically captures the selected session tip; supported compaction boundaries also preserve exact pre-compaction state. Both retain source-backed goals, progress, decisions, failures, files, blockers, checks, and next actions. |
 | Verify the checkpoint | Continue automatically checks structure, event evidence, repository fingerprint, relevant files, and recorded command evidence without replaying imported commands. |
 | Resume the work | Selecting a ready Codex, Claude Code, or OpenCode card resolves the task, compiles its evidence-linked pack, starts a fresh target agent, runs available checks, and reports the observed outcome. |
 | Explain what matters | Uses the graph to show the relationships behind the current project state and compiled context. |
@@ -68,8 +68,8 @@ with a confident guess.
 | Surface | Actual job |
 |---|---|
 | Continue | Resolves the current repository-scoped task, verifies its latest compatible checkpoint, starts a fresh installed target agent, runs available checks, and reports the outcome. |
-| Runs | Shows real session checkpoints, event evidence, repository freshness, checks, blockers, and resume actions. |
-| Library | Scans local Codex, Claude Code, and OpenCode history while the page is open or when requested, then keeps sessions, topics, and project selection inspectable. |
+| History | Shows task/session history, checkpoints, event evidence, repository freshness, checks, and one route back to Continue. |
+| Library | Scans local Codex, Claude Code, and OpenCode history, lets the user select an exact session/topic, and routes that identity to Continue. |
 | Memory | Organizes active, needs-review, and historical project facts with their evidence. |
 | Explain and agent brief | Uses the project graph to explain evidence and relationships; eligible task records can compile and copy a source-backed brief. |
 | Sources and connectors | Shows raw source previews, extracted components, connection state, and sync results. The API preserves revisions and enforces access scopes. |
@@ -99,7 +99,10 @@ Provider CLIs run non-interactively through direct argv execution. Context is
 delivered through bounded stdin or a permission-restricted temporary file, and
 the local harness records Git state and outcome evidence. `ready` and
 `review_required` evidence continue automatically; only blocked or unknown
-states fail closed.
+states fail closed. Historical failed commands remain continuation context and
+do not become launch blockers. Intermediate blocker language extracted from an
+agent update is advisory unless it is explicitly typed and independently
+observed as a hard continuation blocker.
 
 Continue always runs its compiled verification contract. For arbitrary worker
 commands and explicitly authorized verification, see
@@ -138,15 +141,16 @@ Demo data never marks a connector as authenticated or connected.
 - `daemonstate harness run` still runs only the explicit local command supplied by the
   user. `daemonstate continue --into ...` selects one of three audited built-in
   provider adapters and never adds permission-bypass flags.
-- The legacy macOS resume path can reopen an exact Codex task. The primary
-  Continue workflow deliberately starts a fresh Codex, Claude Code, or OpenCode
-  session. Hermes and other platforms are unsupported.
+- On macOS, browser Continue uses Codex's persistent app-server to reopen an exact Codex task
+  after it is renderable. Providers without an exact-session
+  surface are unavailable rather than invisible; other platforms are unsupported.
 - Scrutiny uses deterministic evidence rules. It is not an autonomous code review.
 - Live retrieval is limited to the local repository and configured manual-token
   GitHub access.
 - Captured command output and repository inspection are deliberately bounded.
-- A provider exit with no executable checks is `completed_unverified`, not a
-  verified handoff. Product acceptance additionally requires a paired real-task
+- A provider exit without both an observed agent repository change and a
+  passing executable check is `completed_unverified`, not a verified handoff.
+  Product acceptance additionally requires a paired real-task
   test showing that another agent continued correctly without re-explanation,
   with less discovery and no stale-context mistake.
 - Model-lift reports describe observed runs. They do not yet prove that an older
@@ -169,7 +173,7 @@ Main API routes:
 |---|---|
 | `POST /api/context/prepare` | Compile and persist a task brief. |
 | `POST /api/continuations/prepare` | Resolve current task state, verify its compatible checkpoint, and compile a continuation pack. |
-| `POST /api/continuations/run` | From the local app, prepare a continuation, start a fresh installed target agent, run available checks, and record the outcome. |
+| `POST /api/continuations` | From the local app, prepare a continuation, start a fresh installed target agent, run available checks, and record the outcome. `/api/continuations/run` remains a compatibility alias. |
 | `POST /api/query` | Query project context with a source trace. |
 | `POST /api/repo/index` | Index repository files, symbols, and exact structural links. |
 | `GET /api/context/run-timeline` | Read observed agent work and scrutiny findings. |

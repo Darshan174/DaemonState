@@ -7,28 +7,52 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
+import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.api.dependencies import get_access_scope
+from app.config import settings
 from app.main import app
 from app.models import (
+    AgentRun,
     CheckpointEvidence,
     CheckpointItem,
     CodeFile,
-    AgentRun,
+    ContextPack,
+    RunObservation,
     SessionEvent,
     SourceDocument,
+    WorkCheckpoint,
     Workspace,
 )
 from app.services.access import AccessScope
 from app.services.checkpoints import capture_checkpoint
 from app.services.continuation import _checkpoint_repo_compatible
 from app.services.harness_adapters import ProviderReadiness
+from app.services.harness_launcher import HarnessVisibility
 from app.services.session_library import sync_local_session_library
 from app.services.session_events import NormalizedSessionEvent, persist_session_events
 from app.sync.session_resolvers import ResolvedSession, SessionDiscoveryResult
 from app.time import utc_now
+
+
+@pytest.fixture(autouse=True)
+def _continuation_tests_have_an_exact_visible_harness(monkeypatch) -> None:
+    """Keep runtime tests independent from apps installed on the test machine."""
+
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.probe_harness_visibility",
+        lambda provider: HarnessVisibility(
+            provider=provider,
+            ready=True,
+            desktop_available=True,
+            exact_session_supported=True,
+            code="visible_harness_ready",
+            message=f"{provider} can show the exact continuation.",
+            action=f"Continue in {provider}.",
+        ),
+    )
 
 
 async def test_prepare_continuation_infers_task_and_captures_session_tip(
@@ -68,6 +92,316 @@ async def test_prepare_continuation_infers_task_and_captures_session_tip(
     assert any(
         item["code"] == "agent_progress_is_reported"
         for item in body["attention"]
+    )
+
+
+async def test_prepare_continuation_recovers_legacy_command_failure_checkpoint(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    goal = "Finish the interrupted continuation workflow."
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=goal,
+        session_id="legacy-command-blocker",
+    )
+    _initialize_git_repository(tmp_path)
+    checkpoint = await capture_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="legacy-command-blocker",
+        trigger="continuation",
+    )
+    checkpoint.continuation_status = "blocked"
+    exact_next = await db_session.scalar(
+        select(CheckpointItem).where(
+            CheckpointItem.checkpoint_id == checkpoint.id,
+            CheckpointItem.category == "exact_next_action",
+        )
+    )
+    assert exact_next is not None
+    exact_next.statement = (
+        "Fix the failure from `tool:write_stdin` and rerun that command."
+    )
+    db_session.add(CheckpointItem(
+        checkpoint_id=checkpoint.id,
+        item_key="blockers:legacy-command-result",
+        category="blockers",
+        ordinal=0,
+        statement="Latest run of `tool:write_stdin` is failing.",
+        state="active",
+        truth_state="observed",
+        payload_json=json.dumps({
+            "command": "tool:write_stdin",
+            "cwd": None,
+            "exit_code": 1,
+        }),
+    ))
+    await db_session.commit()
+
+    response = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "objective": goal,
+            "checkpoint_id": str(checkpoint.id),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["readiness"]["status"] == "review_required"
+    assert body["readiness"]["blocking_issues"] == []
+    assert body["checkpoint"]["continuation_status"] == "review_required"
+    assert body["checkpoint"]["reported_continuation_status"] == "review_required"
+    assert body["verification"]["status"] == "partial"
+    assert "tool:write_stdin" not in body["markdown"]
+
+
+async def test_prepare_continuation_uses_the_exact_requested_source_session(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    goal = "Continue the exact observed coding session."
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=goal,
+        session_id="requested-claude-session",
+        provider="claude",
+        occurred_at="2026-07-23T09:00:00Z",
+    )
+    await _seed_session(
+        db_session,
+        tmp_path,
+        goal=goal,
+        session_id="newer-codex-session",
+        provider="codex",
+        occurred_at="2026-07-23T10:00:00Z",
+        workspace=workspace,
+    )
+
+    response = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "source_provider": "claude_code",
+            "source_session_id": "requested-claude-session",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["objective"] == goal
+    assert body["source_session"]["provider"] == "claude"
+    assert body["source_session"]["session_id"] == "requested-claude-session"
+    assert body["checkpoint"]["goal"] == goal
+    assert body["manifest"]["continuation"]["provider"] == "claude"
+    assert body["manifest"]["continuation"]["session_id"] == (
+        "requested-claude-session"
+    )
+
+
+async def test_reported_checkpoint_blocker_is_advisory_not_launch_authority(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    goal = "Finish the continuation workflow despite reported intermediate issues."
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=goal,
+        session_id="reported-blocker",
+    )
+    document = await db_session.scalar(
+        select(SourceDocument).where(
+            SourceDocument.workspace_id == workspace.id,
+            SourceDocument.external_id == "codex:session:reported-blocker",
+        )
+    )
+    assert document is not None
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="reported-blocker",
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id="reported-blocker:latest",
+                sequence_number=3,
+                event_type="assistant_update",
+                role="assistant",
+                content=(
+                    "Blocker: the agent is waiting for a continuation policy fix."
+                ),
+                payload={"cwd": str(tmp_path)},
+            ),
+        ],
+    )
+    await db_session.commit()
+
+    response = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "source_provider": "codex",
+            "source_session_id": "reported-blocker",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["readiness"]["status"] != "blocked"
+    issue = next(
+        item
+        for item in body["readiness"]["blocking_issues"]
+        if item["code"] == "checkpoint_blocker"
+    )
+    assert issue["blocks_current_execution"] is False
+    assert body["checkpoint"]["continuation_status"] == "review_required"
+    assert body["checkpoint"]["reported_continuation_status"] == "blocked"
+
+
+async def test_exact_source_session_can_resume_an_earlier_compatible_request(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    earlier_goal = "Plan Alpha billing for launch."
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=earlier_goal,
+        session_id="multi-topic-source",
+    )
+    document = await db_session.scalar(
+        select(SourceDocument).where(
+            SourceDocument.workspace_id == workspace.id,
+            SourceDocument.external_id == "codex:session:multi-topic-source",
+        )
+    )
+    assert document is not None
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="multi-topic-source",
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id="multi-topic-source:newer-goal",
+                sequence_number=3,
+                event_type="user_request",
+                role="user",
+                content="Redesign the unrelated onboarding flow.",
+                payload={"cwd": str(tmp_path)},
+            ),
+        ],
+    )
+    await db_session.commit()
+
+    response = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "objective": "Alpha billing",
+            "source_provider": "codex",
+            "source_session_id": "multi-topic-source",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["objective"] == "Alpha billing"
+    assert body["source_session"]["provider"] == "codex"
+    assert body["source_session"]["session_id"] == "multi-topic-source"
+    assert body["manifest"]["continuation"]["session_id"] == "multi-topic-source"
+
+
+async def test_continuation_source_session_requires_a_complete_pair(
+    client,
+    db_session,
+) -> None:
+    workspace = Workspace(
+        id=uuid4(),
+        name="Source session pair",
+        slug=f"source-session-pair-{uuid4().hex[:8]}",
+    )
+    db_session.add(workspace)
+    await db_session.commit()
+
+    for partial in (
+        {"source_provider": "codex"},
+        {"source_session_id": "session-only"},
+    ):
+        response = await client.post(
+            "/api/continuations/prepare",
+            json={
+                "workspace_id": str(workspace.id),
+                "objective": "Continue the selected task.",
+                **partial,
+            },
+        )
+        assert response.status_code == 422, response.text
+        assert (
+            "source_provider and source_session_id must be provided together"
+            in response.text
+        )
+
+
+async def test_exact_source_session_fails_explicitly_when_missing_or_mismatched(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    source_goal = "Implement exact source-session continuation."
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=source_goal,
+        session_id="exact-source",
+    )
+    await db_session.commit()
+    workspace_id = str(workspace.id)
+
+    mismatch = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": workspace_id,
+            "repo_path": str(tmp_path),
+            "objective": "Implement an unrelated billing workflow.",
+            "source_provider": "codex",
+            "source_session_id": "exact-source",
+        },
+    )
+    missing = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": workspace_id,
+            "repo_path": str(tmp_path),
+            "objective": source_goal,
+            "source_provider": "codex",
+            "source_session_id": "missing-source",
+        },
+    )
+
+    assert mismatch.status_code == 422, mismatch.text
+    assert mismatch.json()["detail"]["code"] == (
+        "continuation_source_session_objective_mismatch"
+    )
+    assert missing.status_code == 404, missing.text
+    assert missing.json()["detail"]["code"] == (
+        "continuation_source_session_not_found"
     )
 
 
@@ -687,6 +1021,217 @@ async def test_failed_prepare_rolls_back_sessions_synchronized_in_the_same_reque
     assert persisted is None
 
 
+async def test_automatic_continue_resolves_the_latest_task_after_session_sync(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    old_goal = "Repair the earlier continuation implementation."
+    latest_goal = "Ship the newly observed continuation workflow."
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=old_goal,
+        session_id="previously-imported-session",
+        occurred_at="2026-07-25T09:00:00Z",
+    )
+    db_session.add(CodeFile(
+        workspace_id=workspace.id,
+        repo_root=str(tmp_path),
+        path="app/continuation.py",
+        identity_key=uuid4().hex * 2,
+        language="python",
+        sha256="1" * 64,
+        size=10,
+    ))
+    await db_session.flush()
+    discovered = ResolvedSession(
+        connector_type="codex",
+        session_id="newly-synchronized-session",
+        content=(
+            f"[USER]\n{latest_goal}\n\n"
+            "[ASSISTANT]\nProgress: the newest task is ready to continue."
+        ),
+        metadata={
+            "tool": "codex",
+            "cwd": str(tmp_path),
+            "source_path": str(tmp_path / "newly-synchronized-session.jsonl"),
+            "updated_at": "2026-07-25T10:00:00Z",
+        },
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id="newly-synchronized-session:user",
+                sequence_number=1,
+                event_type="user_request",
+                role="user",
+                occurred_at="2026-07-25T10:00:00Z",
+                content=latest_goal,
+                payload={"cwd": str(tmp_path)},
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="newly-synchronized-session:assistant",
+                sequence_number=2,
+                event_type="assistant_update",
+                role="assistant",
+                occurred_at="2026-07-25T10:00:01Z",
+                content="Progress: the newest task is ready to continue.",
+                payload={"cwd": str(tmp_path)},
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        "app.services.session_library.discover_local_ai_sessions",
+        lambda _types: [
+            SessionDiscoveryResult(
+                connector_type="codex",
+                sessions=[discovered],
+            ),
+        ],
+    )
+
+    response = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "sync_sessions": True,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["objective"] == latest_goal, body.get("sync")
+    assert body["task"]["origin"] == "session"
+    assert body["source_session"]["provider"] == "codex"
+    assert body["source_session"]["session_id"] == (
+        "newly-synchronized-session"
+    )
+    assert body["checkpoint"]["goal"] == latest_goal
+
+
+async def test_automatic_continue_ignores_subagents_and_attachment_reactions(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    goal = "Build a working workflow where a user can continue in another agent."
+    root_session_id = "user-owned-root-session"
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=goal,
+        session_id=root_session_id,
+        occurred_at="2026-07-25T09:00:00Z",
+    )
+    root_source = await db_session.scalar(
+        select(SourceDocument).where(
+            SourceDocument.workspace_id == workspace.id,
+            SourceDocument.external_id == f"codex:session:{root_session_id}",
+        )
+    )
+    assert root_source is not None
+    root_metadata = json.loads(root_source.metadata_json)
+    root_metadata.update({
+        "thread_source": "user",
+        "title": "Continue AI Infra strategy",
+    })
+    root_source.metadata_json = json.dumps(root_metadata)
+    reaction = (
+        "# Files mentioned by the user:\n\n"
+        "## Screenshot 2026-07-25 at 19.57.03.png: "
+        "/Users/example/Screenshot 2026-07-25 at 19.57.03.png\n\n"
+        "## My request for Codex:\n"
+        "ARE U FUCKING KIDDING ME U FUCKING PICEC OF SHITE\n"
+        "<image name=[Image #1] "
+        'path="/Users/example/Screenshot 2026-07-25 at 19.57.03.png"></image>'
+    )
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=root_source,
+        provider="codex",
+        session_id=root_session_id,
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id=f"{root_session_id}:reaction",
+                sequence_number=3,
+                event_type="user_request",
+                role="user",
+                occurred_at="2026-07-25T10:00:00Z",
+                content=reaction,
+                payload={"cwd": str(tmp_path)},
+            ),
+        ],
+    )
+    subagent_session_id = "internal-failure-ui-audit"
+    discovered_subagent = ResolvedSession(
+        connector_type="codex",
+        session_id=subagent_session_id,
+        content=(
+            f"[USER]\n{goal}\n\n"
+            f"[USER]\n{reaction}\n\n"
+            "[ASSISTANT]\nInspecting the failure card."
+        ),
+        metadata={
+            "tool": "codex",
+            "cwd": str(tmp_path),
+            "source_path": str(tmp_path / f"{subagent_session_id}.jsonl"),
+            "updated_at": "2026-07-25T11:00:00Z",
+            "thread_source": "subagent",
+            "parent_thread_id": root_session_id,
+            "title": "Continuing from AI Infra Components",
+        },
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id=f"{subagent_session_id}:goal",
+                sequence_number=1,
+                event_type="user_request",
+                role="user",
+                occurred_at="2026-07-25T11:00:00Z",
+                content=goal,
+                payload={"cwd": str(tmp_path)},
+            ),
+            NormalizedSessionEvent(
+                provider_event_id=f"{subagent_session_id}:reaction",
+                sequence_number=2,
+                event_type="user_request",
+                role="user",
+                occurred_at="2026-07-25T11:00:01Z",
+                content=reaction,
+                payload={"cwd": str(tmp_path)},
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        "app.services.session_library.discover_local_ai_sessions",
+        lambda _types: [
+            SessionDiscoveryResult(
+                connector_type="codex",
+                sessions=[discovered_subagent],
+            ),
+        ],
+    )
+
+    response = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "sync_sessions": True,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["objective"] == goal
+    assert body["source_session"]["session_id"] == root_session_id
+    assert body["checkpoint"]["goal"] == goal
+    assert "Screenshot 2026" not in body["markdown"]
+    assert "PICEC OF SHITE" not in body["markdown"]
+
+
 async def test_run_continuation_switches_provider_and_verifies_automatically(
     client,
     db_session,
@@ -772,9 +1317,15 @@ async def test_run_continuation_switches_provider_and_verifies_automatically(
         "mode": "fresh",
         "context_delivery": "stdin",
         "run_id": body["run"]["run_id"],
+        "provider_model": "claude-test-model",
+        "provider_effort": None,
+        "command_timeout_seconds": settings.continuation_command_timeout_seconds,
     }
     assert runner_calls["verify"] is True
     assert runner_calls["context_stdin"] is True
+    assert runner_calls["command_timeout_seconds"] == (
+        settings.continuation_command_timeout_seconds
+    )
     assert runner_calls["extra_env"]["ANTHROPIC_API_KEY"] == (
         "claude-provider-auth"
     )
@@ -827,6 +1378,179 @@ async def test_run_continuation_switches_provider_and_verifies_automatically(
     assert len(runs) == 1
 
 
+async def test_run_continuation_delivers_real_pack_and_records_lineage(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    goal = (
+        "Finish app/continuation.py so prepare_continuation returns True "
+        "and run the repository tests."
+    )
+    workspace = await _seed_session(
+        db_session,
+        repo,
+        goal=goal,
+        session_id="real-run-source",
+        provider="codex",
+    )
+    (repo / "app" / "__init__.py").write_text("", encoding="utf-8")
+    (repo / "app" / "continuation.py").write_text(
+        "def prepare_continuation():\n    return False\n",
+        encoding="utf-8",
+    )
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_continuation.py").write_text(
+        "from app.continuation import prepare_continuation\n\n"
+        "def test_prepare_continuation():\n"
+        "    assert prepare_continuation() is True\n",
+        encoding="utf-8",
+    )
+    (repo / ".gitignore").write_text(
+        "__pycache__/\n*.pyc\n.pytest_cache/\n",
+        encoding="utf-8",
+    )
+    _initialize_git_repository(repo)
+
+    received_context = tmp_path / "received-context.md"
+    fake_claude = tmp_path / "fake-bin" / "claude"
+    fake_claude.parent.mkdir()
+    fake_claude.write_text(
+        "#!/usr/bin/env python3\n"
+        "from pathlib import Path\n"
+        "import sys\n\n"
+        "if sys.argv[1:4] == ['auth', 'status', '--json']:\n"
+        "    print('{\"loggedIn\": true, \"authMethod\": \"claude.ai\"}')\n"
+        "    raise SystemExit(0)\n\n"
+        "payload = sys.stdin.read()\n"
+        f"Path({str(received_context)!r}).write_text(payload, encoding='utf-8')\n"
+        f"if {goal!r} not in payload or 'app/continuation.py' not in payload:\n"
+        "    print('compiled continuation context was not delivered', file=sys.stderr)\n"
+        "    raise SystemExit(41)\n"
+        "Path('app/continuation.py').write_text(\n"
+        "    'def prepare_continuation():\\n    return True\\n',\n"
+        "    encoding='utf-8',\n"
+        ")\n"
+        "print('{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}')\n",
+        encoding="utf-8",
+    )
+    fake_claude.chmod(0o755)
+
+    async def fake_sync(*_args, **_kwargs):
+        return {"failed": 0, "imported": 0, "updated": 0}
+
+    monkeypatch.setattr(
+        "app.services.continuation.sync_local_session_library",
+        fake_sync,
+    )
+    monkeypatch.setattr(
+        "app.services.harness_adapters.shutil.which",
+        lambda name: str(fake_claude) if name == "claude" else None,
+    )
+
+    response = await client.post(
+        "/api/continuations",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(repo),
+            "idempotency_key": "real-pack-lineage-proof",
+            "target_provider": "claude",
+            "source_provider": "codex",
+            "source_session_id": "real-run-source",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    preparation = body["preparation"]
+    assert body["status"] == "verified"
+    assert preparation["objective"] == goal
+    assert preparation["source_session"] == {
+        "provider": "codex",
+        "session_id": "real-run-source",
+        "source_document_id": preparation["source_session"]["source_document_id"],
+    }
+    source_document_id = UUID(preparation["source_session"]["source_document_id"])
+    checkpoint_id = UUID(preparation["checkpoint"]["id"])
+    pack_id = UUID(preparation["context_pack_id"])
+    run_id = UUID(body["run"]["run_id"])
+    assert body["delivery"] == {
+        "status": "delivered",
+        "provider": "claude",
+        "source_provider": "codex",
+        "provider_switched": True,
+        "mode": "fresh",
+        "context_delivery": "stdin",
+        "run_id": str(run_id),
+        "provider_model": None,
+        "provider_effort": None,
+        "command_timeout_seconds": settings.continuation_command_timeout_seconds,
+    }
+    assert body["outcome"]["verified"] is True
+    assert body["outcome"]["checks"]["status"] == "passed"
+    assert body["outcome"]["checks"]["total"] >= 1
+    assert body["outcome"]["changed_files"] == ["app/continuation.py"]
+    assert received_context.read_text(encoding="utf-8") == preparation["markdown"]
+    assert goal in received_context.read_text(encoding="utf-8")
+    assert "app/continuation.py" in received_context.read_text(encoding="utf-8")
+    assert (repo / "app" / "continuation.py").read_text(encoding="utf-8") == (
+        "def prepare_continuation():\n    return True\n"
+    )
+
+    checkpoint = await db_session.get(WorkCheckpoint, checkpoint_id)
+    pack = await db_session.get(ContextPack, pack_id)
+    run = await db_session.get(AgentRun, run_id)
+    assert checkpoint is not None
+    assert checkpoint.provider == "codex"
+    assert checkpoint.session_id == "real-run-source"
+    assert checkpoint.trigger == "continuation"
+    assert checkpoint.source_document_id == source_document_id
+    assert pack is not None
+    manifest = json.loads(pack.manifest)
+    lineage = manifest["continuation"]
+    assert lineage["task_id"] == preparation["task"]["id"]
+    assert lineage["checkpoint_id"] == str(checkpoint.id)
+    assert lineage["source_document_id"] == str(checkpoint.source_document_id)
+    assert lineage["provider"] == "codex"
+    assert lineage["session_id"] == "real-run-source"
+    assert run is not None
+    assert run.workspace_id == workspace.id
+    assert run.context_pack_id == pack.id
+    assert run.tool == "context-engine:claude"
+    assert run.objective == goal
+    assert run.status == "completed"
+    assert run.ended_at is not None
+
+    observations = list(await db_session.scalars(
+        select(RunObservation)
+        .where(RunObservation.agent_run_id == run.id)
+        .order_by(RunObservation.created_at, RunObservation.id)
+    ))
+    assert {item.event_type for item in observations} == {
+        "command",
+        "patch_summary",
+        "verification",
+        "outcome",
+    }
+    assert all(item.source_document_id is not None for item in observations)
+    verification = next(
+        item for item in observations if item.event_type == "verification"
+    )
+    assert verification.exit_code == 0
+    assert "pytest" in str(verification.command)
+    outcome = next(item for item in observations if item.event_type == "outcome")
+    outcome_payload = json.loads(outcome.payload_json)
+    assert outcome_payload["status"] == "completed"
+    assert outcome_payload["verification_results"]
+    assert all(
+        item["exit_code"] == 0
+        for item in outcome_payload["verification_results"]
+    )
+
+
 async def test_run_continuation_uses_a_fresh_same_provider_when_needed(
     client,
     db_session,
@@ -844,6 +1568,7 @@ async def test_run_continuation_uses_a_fresh_same_provider_when_needed(
     fake_codex = _fake_executable(tmp_path, "codex")
     fake_claude = _fake_executable(tmp_path, "claude")
     runner_calls = {}
+    launched_sessions = []
 
     async def fake_sync(*_args, **_kwargs):
         return {"failed": 0}
@@ -861,6 +1586,10 @@ async def test_run_continuation_uses_a_fresh_same_provider_when_needed(
 
         async def run(self, **kwargs):
             runner_calls.update(kwargs)
+            await kwargs["stdout_chunk_observer"](
+                b'{"type":"thread.started",'
+                b'"thread_id":"019f9a4d-f586-79d3-b305-4844518003bd"}\n'
+            )
             return _fake_harness_result(
                 run_id=str(kwargs["run_id"]),
                 status="completed",
@@ -881,6 +1610,18 @@ async def test_run_continuation_uses_a_fresh_same_provider_when_needed(
         "app.services.continuation_runtime.LocalHarnessRunner",
         FakeRunner,
     )
+    monkeypatch.setattr(
+        "app.services.harness_sessions.launch_harness_session",
+        lambda provider, session_id, **_kwargs: (
+            launched_sessions.append((provider, session_id))
+            or {
+                "launched": True,
+                "mode": "desktop_app",
+                "navigation": "session",
+                "exact_session_supported": True,
+            }
+        ),
+    )
 
     response = await client.post(
         "/api/continuations/run",
@@ -896,8 +1637,99 @@ async def test_run_continuation_uses_a_fresh_same_provider_when_needed(
     assert body["delivery"]["provider"] == "codex"
     assert body["delivery"]["provider_switched"] is False
     assert body["delivery"]["mode"] == "fresh"
+    assert body["delivery"]["harness_session"] == {
+        "provider": "codex",
+        "session_id": "019f9a4d-f586-79d3-b305-4844518003bd",
+        "launched": True,
+        "navigation_requested": True,
+        "navigation_verified": False,
+        "mode": "desktop_app",
+        "navigation": "session",
+        "exact_session_supported": True,
+    }
+    assert launched_sessions == [
+        ("codex", "019f9a4d-f586-79d3-b305-4844518003bd")
+    ]
     assert "resume" not in runner_calls["command"]
     assert body["outcome"]["checks"]["status"] == "not_available"
+
+
+async def test_run_continuation_preserves_exact_source_during_drift_reprepare(
+    client,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    calls: list[dict] = []
+    pack_ids = [uuid4(), uuid4()]
+
+    class FakeContinuationService:
+        def __init__(self, _session):
+            pass
+
+        async def prepare(self, **kwargs):
+            calls.append(kwargs)
+            fingerprint = (
+                "compiled-before-drift"
+                if len(calls) == 1
+                else "repository-after-drift"
+            )
+            return SimpleNamespace(
+                objective="Continue the exact source after repository drift.",
+                task={"workflow": {}},
+                source_session={
+                    "provider": "claude",
+                    "session_id": "pinned-source",
+                },
+                checkpoint=None,
+                verification=None,
+                repository={
+                    "path": str(tmp_path),
+                    "current": {"status_fingerprint": fingerprint},
+                },
+                readiness={
+                    "status": "ready",
+                    "blocking_issues": [],
+                    "affected_tasks": [],
+                },
+                attention=[],
+                context_pack_id=str(pack_ids[min(len(calls) - 1, 1)]),
+            )
+
+    async def repository_after_drift(_repo_path):
+        return SimpleNamespace(status_fingerprint="repository-after-drift")
+
+    async def stop_after_reprepare(**_kwargs):
+        raise ValueError("stopped after drift reprepare")
+
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.ContinuationService",
+        FakeContinuationService,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.capture_repository_snapshot",
+        repository_after_drift,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime._select_ready_invocation",
+        stop_after_reprepare,
+    )
+
+    response = await client.post(
+        "/api/continuations",
+        json={
+            "workspace_id": str(uuid4()),
+            "repo_path": str(tmp_path),
+            "source_provider": "claude_code",
+            "source_session_id": "pinned-source",
+            "target_provider": "claude",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert len(calls) == 2
+    assert [item["sync_sessions"] for item in calls] == [True, False]
+    assert all(item["source_provider"] == "claude" for item in calls)
+    assert all(item["source_session_id"] == "pinned-source" for item in calls)
 
 
 async def test_run_continuation_fails_safely_when_no_agent_cli_is_installed(
@@ -975,7 +1807,7 @@ async def test_provider_readiness_endpoint_returns_structured_local_status(
     }
     monkeypatch.setattr(
         "app.services.continuation_runtime.probe_provider_readiness",
-        lambda provider: statuses[provider],
+        lambda provider, **_kwargs: statuses[provider],
     )
 
     response = await client.get(
@@ -984,12 +1816,112 @@ async def test_provider_readiness_endpoint_returns_structured_local_status(
 
     assert response.status_code == 200, response.text
     assert response.json() == {
+        "active_run": None,
+        "latest_run": None,
         "providers": [statuses[name].to_dict() for name in (
             "codex",
             "claude",
             "opencode",
         )],
     }
+
+
+async def test_running_continuation_is_reported_and_blocks_a_duplicate_workspace_run(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace = Workspace(
+        id=uuid4(),
+        name="Active continuation guard",
+        slug=f"active-continuation-{uuid4().hex[:8]}",
+    )
+    pack = ContextPack(
+        id=uuid4(),
+        workspace_id=workspace.id,
+        objective="Finish the existing OpenCode continuation.",
+        markdown="# Active continuation\n",
+        manifest=json.dumps({"schema_version": "context_pack.v2"}),
+        repo_state_json="{}",
+        idempotency_key=f"active-pack-{uuid4()}",
+    )
+    run = AgentRun(
+        id=uuid4(),
+        workspace_id=workspace.id,
+        context_pack_id=pack.id,
+        run_key=f"continuation:{uuid4().hex}",
+        tool="context-engine:opencode",
+        model="opencode/big-pickle",
+        objective=pack.objective,
+        started_at=utc_now(),
+        status="running",
+    )
+    db_session.add_all([workspace, pack, run])
+    await db_session.commit()
+    workspace_id = workspace.id
+    run_id = run.id
+    run_started_at = run.started_at
+    objective = pack.objective
+
+    status = _provider_status("opencode")
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.probe_provider_readiness",
+        lambda provider, **_kwargs: status,
+    )
+
+    providers = await client.get(
+        f"/api/continuations/providers?workspace_id={workspace_id}"
+    )
+    duplicate = await client.post(
+        "/api/continuations",
+        json={
+            "workspace_id": str(workspace_id),
+            "repo_path": str(tmp_path),
+            "idempotency_key": "different-browser-click",
+            "target_provider": "opencode",
+        },
+    )
+
+    assert providers.status_code == 200, providers.text
+    assert providers.json()["active_run"] == {
+        "run_id": str(run_id),
+        "provider": "opencode",
+        "model": "opencode/big-pickle",
+        "objective": objective,
+        "status": "running",
+        "started_at": f"{run_started_at.isoformat()}Z",
+        "phase": "starting_harness",
+    }
+    assert duplicate.status_code == 409, duplicate.text
+    detail = duplicate.json()["detail"]
+    assert detail["code"] == "continuation_already_running"
+    assert detail["blocker"]["title"] == "Continuation already running"
+    assert detail["blocker"]["active_run"]["run_id"] == str(run_id)
+    assert "No duplicate agent was started" in detail["blocker"]["message"]
+    runs = list(await db_session.scalars(
+        select(AgentRun).where(AgentRun.workspace_id == workspace_id)
+    ))
+    assert [item.id for item in runs] == [run_id]
+
+    run.status = "failed"
+    run.ended_at = utc_now()
+    await db_session.commit()
+
+    terminal = await client.get(
+        f"/api/continuations/providers?workspace_id={workspace_id}"
+    )
+
+    assert terminal.status_code == 200, terminal.text
+    assert terminal.json()["active_run"] is None
+    latest = terminal.json()["latest_run"]
+    assert latest["run_id"] == str(run_id)
+    assert latest["provider"] == "opencode"
+    assert latest["status"] == "failed"
+    assert latest["verified_success"] is False
+    assert latest["outcome_summary"] == (
+        "The run ended before a local harness outcome was recorded."
+    )
 
 
 async def test_local_action_endpoints_reject_remote_clients_even_with_forwarding(
@@ -1091,7 +2023,7 @@ async def test_explicit_provider_selection_never_falls_back(
     )
     monkeypatch.setattr(
         "app.services.continuation_runtime.probe_provider_readiness",
-        lambda provider: statuses[provider],
+        lambda provider, **_kwargs: statuses[provider],
     )
 
     response = await client.post(
@@ -1141,7 +2073,7 @@ async def test_provider_readiness_is_rechecked_immediately_before_launch(
     async def fake_sync(*_args, **_kwargs):
         return {"failed": 0}
 
-    def changing_readiness(_provider):
+    def changing_readiness(_provider, **_kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -1271,6 +2203,194 @@ async def test_revoked_child_auth_failure_returns_a_blocked_outcome(
             "has been revoked (401)."
         ),
         "action": "Run `claude auth login` and try again.",
+        "affected_tasks": [goal],
+    }
+
+
+async def test_opencode_credits_error_returns_a_billing_required_blocker(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    goal = "Continue the task with the configured OpenCode model."
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=goal,
+        session_id="opencode-billing-required",
+    )
+    _initialize_git_repository(tmp_path)
+    fake_opencode = _fake_executable(tmp_path, "opencode")
+
+    async def fake_sync(*_args, **_kwargs):
+        return {"failed": 0}
+
+    class FakeRunner:
+        def __init__(self, _session):
+            pass
+
+        async def run(self, **kwargs):
+            return _fake_harness_result(
+                run_id=str(kwargs["run_id"]),
+                status="failed",
+                changed_files=(),
+                check_exit_code=None,
+                cwd=tmp_path,
+                command_exit_code=0,
+                command_stdout=json.dumps({
+                    "type": "error",
+                    "error": {
+                        "name": "AI_APICallError",
+                        "data": {
+                            "message": "Insufficient balance.",
+                            "statusCode": 401,
+                            "responseBody": json.dumps({
+                                "type": "error",
+                                "error": {
+                                    "type": "CreditsError",
+                                    "message": (
+                                        "Insufficient balance. Manage your billing."
+                                    ),
+                                },
+                            }),
+                        },
+                    },
+                }),
+            )
+
+    monkeypatch.setattr(
+        "app.services.continuation.sync_local_session_library",
+        fake_sync,
+    )
+    monkeypatch.setattr(
+        "app.services.harness_adapters.shutil.which",
+        lambda name: str(fake_opencode) if name == "opencode" else None,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.probe_provider_readiness",
+        lambda provider, **_kwargs: _provider_status(provider),
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.LocalHarnessRunner",
+        FakeRunner,
+    )
+
+    response = await client.post(
+        "/api/continuations/run",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "target_provider": "opencode",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "blocked"
+    assert body["outcome"]["status"] == "blocked"
+    assert body["outcome"]["blocker"] == {
+        "code": "provider_billing_required",
+        "provider": "opencode",
+        "message": (
+            "OpenCode cannot use the selected model because its provider "
+            "account has insufficient balance or billing is not enabled."
+        ),
+        "action": (
+            "Add credits or enable billing for that OpenCode provider, or "
+            "choose another configured model."
+        ),
+        "affected_tasks": [goal],
+    }
+
+
+async def test_opencode_http_500_returns_a_service_unavailable_blocker(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    goal = "Retry the task without hiding an OpenCode provider outage."
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=goal,
+        session_id="opencode-service-unavailable",
+    )
+    _initialize_git_repository(tmp_path)
+    fake_opencode = _fake_executable(tmp_path, "opencode")
+
+    async def fake_sync(*_args, **_kwargs):
+        return {"failed": 0}
+
+    class FakeRunner:
+        def __init__(self, _session):
+            pass
+
+        async def run(self, **kwargs):
+            return _fake_harness_result(
+                run_id=str(kwargs["run_id"]),
+                status="failed",
+                changed_files=(),
+                check_exit_code=None,
+                cwd=tmp_path,
+                command_exit_code=0,
+                command_stdout=json.dumps({
+                    "type": "error",
+                    "error": {
+                        "name": "AI_APICallError",
+                        "data": {
+                            "message": "Internal server error",
+                            "statusCode": 500,
+                        },
+                        "requestBodyValues": {
+                            "messages": [{
+                                "role": "user",
+                                "content": "Fix the repository billing workflow.",
+                            }],
+                        },
+                    },
+                }),
+            )
+
+    monkeypatch.setattr(
+        "app.services.continuation.sync_local_session_library",
+        fake_sync,
+    )
+    monkeypatch.setattr(
+        "app.services.harness_adapters.shutil.which",
+        lambda name: str(fake_opencode) if name == "opencode" else None,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.probe_provider_readiness",
+        lambda provider, **_kwargs: _provider_status(provider),
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.LocalHarnessRunner",
+        FakeRunner,
+    )
+
+    response = await client.post(
+        "/api/continuations/run",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "target_provider": "opencode",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "blocked"
+    assert body["outcome"]["status"] == "blocked"
+    assert body["outcome"]["blocker"] == {
+        "code": "provider_service_unavailable",
+        "provider": "opencode",
+        "message": (
+            "OpenCode's selected model provider is temporarily unavailable "
+            "(HTTP 500)."
+        ),
+        "action": "Retry later or choose another configured model.",
         "affected_tasks": [goal],
     }
 
@@ -1610,7 +2730,7 @@ def _fake_executable(tmp_path: Path, name: str) -> Path:
         ),
         "claude": (
             'if [ "$1 $2 $3" = "auth status --json" ]; then\n'
-            '  printf \'{"loggedIn": true}\\n\'\n'
+            '  printf \'{"loggedIn": true, "authMethod": "claude.ai"}\\n\'\n'
             "  exit 0\n"
             "fi\n"
         ),
@@ -1702,6 +2822,8 @@ def _provider_status(
         code=code,
         message=message or f"{provider} is ready.",
         action=action or f"Continue in {provider}.",
+        desktop_available=True,
+        exact_session_supported=True,
     )
 
 

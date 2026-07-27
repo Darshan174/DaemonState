@@ -149,6 +149,78 @@ def test_verification_inference_keeps_test_runners_and_file_types_separate(tmp_p
     ]
 
 
+def test_verification_inference_excludes_nested_fixture_projects(tmp_path):
+    repo = RepoFrame(
+        repo_path=str(tmp_path),
+        branch="main",
+        base_commit="abc123",
+        head_commit="abc123",
+        dirty=False,
+        changed_files=[],
+        untracked_files=[],
+        indexed_files=[
+            IndexedFile(
+                path="app/services/continuation_sync.py",
+                language="python",
+                sha256="implementation",
+                size=1,
+                is_test=False,
+            ),
+            IndexedFile(
+                path="tests/test_continuation_sync.py",
+                language="python",
+                sha256="root-test",
+                size=1,
+                is_test=True,
+            ),
+            IndexedFile(
+                path=(
+                    "app/evals/context_compiler/fixture_project/repo/"
+                    "tests/test_github_sync.py"
+                ),
+                language="python",
+                sha256="nested-fixture-test",
+                size=1,
+                is_test=True,
+            ),
+            IndexedFile(
+                path="pyproject.toml",
+                language="toml",
+                sha256="manifest",
+                size=1,
+                is_manifest=True,
+            ),
+        ],
+        package_manifests={"pyproject.toml": {"project": "context-engine"}},
+        recent_commits=[],
+        test_files=[
+            (
+                "app/evals/context_compiler/fixture_project/repo/"
+                "tests/test_github_sync.py"
+            ),
+            "tests/test_continuation_sync.py",
+        ],
+        manifest_files=["pyproject.toml"],
+        env_files=[],
+        last_indexed_at="2026-07-25T00:00:00Z",
+    )
+
+    task = infer_task_frame(
+        parse_goal("Repair the continuation sync workflow."),
+        repo,
+        profile_for_target_model("general-coder"),
+    )
+
+    assert task["verification_commands"] == [{
+        "id": "V1",
+        "command": "python3 -m pytest -q tests/test_continuation_sync.py",
+        "cwd": str(tmp_path),
+        "purpose": "Run focused Python tests for the selected implementation surface.",
+        "required": True,
+        "expected": "exit_code == 0",
+    }]
+
+
 async def test_restored_checkpoint_files_drive_continuation_retrieval_and_checks(
     db_session,
     tmp_path,

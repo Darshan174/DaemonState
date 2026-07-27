@@ -633,7 +633,25 @@ def test_checkpoint_blocker_statement_is_structured_with_workflow_impact() -> No
         workflow=workflow,
     )
     assert task_issues[0]["code"] == "checkpoint_blocker"
-    assert task_issues[0]["blocks_current_execution"] is True
+    assert task_issues[0]["blocks_current_execution"] is False
+
+    observed_hard_blocker = {
+        **checkpoint,
+        "sections": {
+            "blockers": [{
+                "id": "blocker-3",
+                "statement": "The repository cannot be accessed safely.",
+                "state": "active",
+                "truth_state": "observed",
+                "payload": {"blocks_current_execution": True},
+            }],
+        },
+    }
+    hard_issues = _checkpoint_blocking_issues(
+        observed_hard_blocker,
+        workflow=workflow,
+    )
+    assert hard_issues[0]["blocks_current_execution"] is True
 
 
 async def _seed_features(

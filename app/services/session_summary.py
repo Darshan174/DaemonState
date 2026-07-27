@@ -28,7 +28,7 @@ _NOISE_MARKERS = (
     "all agents in the team",
     "child agents can also spawn",
     "they may be addressed as to=/root",
-    "collaboration tools cannot be called from inside functions.exec",
+    "collaboration tools cannot be called from inside",
     "# agents.md instructions",
     "permanent repository rules for codex",
     "read agents.md",
@@ -99,6 +99,24 @@ _CONTINUATION_THREAD_RE = re.compile(
     r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
+_CONTINUATION_THREAD_LINE_RE = re.compile(
+    r"(?im)^\s*(?:continue|resume)\s*:\s*"
+    r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\s*$",
+)
+_EXPLICIT_TASK_ACTION_RE = re.compile(
+    r"\b(?:add|build|change|create|debug|diagnose|fix|implement|investigate|"
+    r"make|remove|repair|replace|run|ship|test|update|verify|write)\b",
+    re.IGNORECASE,
+)
+_NON_TASK_REACTION_RE = re.compile(
+    r"\b(?:"
+    r"(?:i\s+(?:think\s+)?)?give\s+up|"
+    r"(?:are|r)\s+(?:you|u)\s+(?:fucking\s+)?kidding\s+me|"
+    r"(?:you(?:'re|\s+are)|u\s+r|ur)\s+(?:fucking\s+)?useless|"
+    r"(?:piece|picec)\s+of\s+(?:shit|shite)"
+    r")\b",
+    re.IGNORECASE,
+)
 _TASK_METADATA_KEYS = frozenset({
     "clientthreadid",
     "conversationid",
@@ -122,6 +140,20 @@ _ATTACHMENT_FILE_RE = re.compile(
 )
 _COMMAND_ONLY_RE = re.compile(
     r"^/(?:model|help|compact|resume|status|clear|reset|init)(?:\s+.*)?$",
+    re.IGNORECASE,
+)
+_TOOL_TRANSCRIPT_REQUEST_RE = re.compile(
+    r"^\s*called the [a-z0-9_.:-]+ tool with the following input\s*:",
+    re.IGNORECASE,
+)
+_CONTEXT_PACK_FILE_PAYLOAD_RE = re.compile(
+    r"^\s*<path>[\s\S]*?context-engine-harness-[^<]*[/\\]"
+    r"context-pack\.md</path>\s*<type>file</type>\s*<content>",
+    re.IGNORECASE,
+)
+_HARNESS_CONTINUATION_MESSAGE_RE = re.compile(
+    r"^\s*[\"']?continue the task using the attached context engine context "
+    r"pack\.\s*verify the current repository state before editing\.?[\"']?\s*$",
     re.IGNORECASE,
 )
 _CORRECTION_PATTERNS = (
@@ -281,7 +313,10 @@ def derive_session_topic(
     for candidate in user_blocks or [text]:
         if _looks_like_bootstrap_noise(candidate):
             continue
-        cleaned = _clean_candidate(candidate)
+        normalized_request = normalize_substantive_user_request(candidate)
+        if not normalized_request:
+            continue
+        cleaned = _clean_candidate(normalized_request)
         if cleaned and _topic_key(cleaned) not in _GENERIC_TOPIC_KEYS:
             return _shorten(cleaned)
     return None
@@ -329,7 +364,10 @@ def derive_session_topics(
     for block in user_blocks:
         if _looks_like_bootstrap_noise(block):
             continue
-        cleaned = _clean_candidate(block)
+        normalized_request = normalize_substantive_user_request(block)
+        if not normalized_request:
+            continue
+        cleaned = _clean_candidate(normalized_request)
         if cleaned:
             candidates.append(_shorten(cleaned, max_words=10, max_chars=72))
 
@@ -363,7 +401,10 @@ def derive_latest_session_topic(
     for block in reversed(user_blocks):
         if _looks_like_bootstrap_noise(block):
             continue
-        cleaned = _clean_candidate(block)
+        normalized_request = normalize_substantive_user_request(block)
+        if not normalized_request:
+            continue
+        cleaned = _clean_candidate(normalized_request)
         normalized = _topic_key(cleaned)
         if cleaned and normalized and normalized not in _GENERIC_TOPIC_KEYS:
             return _shorten(cleaned, max_words=10, max_chars=72)
@@ -432,16 +473,37 @@ def is_task_identifier_noise(value: str | None) -> bool:
     )
 
 
+def normalize_substantive_user_request(value: str | None) -> str | None:
+    """Return executable user work without attachment or continuation transport."""
+
+    text = clean_session_message_text(value)
+    if (
+        len(text) < 4
+        or _TOOL_TRANSCRIPT_REQUEST_RE.match(text)
+        or _CONTEXT_PACK_FILE_PAYLOAD_RE.match(text)
+        or _HARNESS_CONTINUATION_MESSAGE_RE.fullmatch(text)
+        or is_session_instruction_noise(text)
+        or is_continuation_control(text)
+        or is_task_identifier_noise(text)
+    ):
+        return None
+    reaction_candidate = _CONTINUATION_THREAD_LINE_RE.sub(" ", text)
+    reaction_candidate = re.sub(r"\s+", " ", reaction_candidate).strip()
+    if (
+        reaction_candidate
+        and _NON_TASK_REACTION_RE.search(reaction_candidate)
+        and not _EXPLICIT_TASK_ACTION_RE.search(reaction_candidate)
+    ):
+        # A correction or emotional reaction remains useful session evidence,
+        # but it must not replace the earlier executable request.
+        return None
+    return text
+
+
 def is_substantive_user_request(value: str | None) -> bool:
     """Accept user work only when it is neither runtime policy nor a control turn."""
 
-    text = str(value or "").strip()
-    return bool(
-        len(text) >= 4
-        and not is_session_instruction_noise(text)
-        and not is_continuation_control(text)
-        and not is_task_identifier_noise(text)
-    )
+    return normalize_substantive_user_request(value) is not None
 
 
 def extract_delegated_user_request(value: str | None) -> str | None:
@@ -455,8 +517,9 @@ def extract_delegated_user_request(value: str | None) -> str | None:
         return None
     for paragraph in re.split(r"\n\s*\n", match.group(1).strip()):
         candidate = re.sub(r"\s+", " ", paragraph).strip()
-        if is_substantive_user_request(candidate):
-            return candidate
+        normalized = normalize_substantive_user_request(candidate)
+        if normalized:
+            return normalized
     return None
 
 
