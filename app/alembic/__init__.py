@@ -1,1 +1,1 @@
-"""Alembic migration environment for Context Engine."""
+"""Alembic migration environment for DaemonState."""

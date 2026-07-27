@@ -53,7 +53,7 @@ export default function ProductLoadingState({
       <div className={`relative mx-auto flex h-full w-full max-w-2xl flex-col justify-center ${compact ? "gap-5" : "gap-8"}`}>
         <div className="flex items-end justify-between gap-6">
           <div>
-            <p className="font-mono text-[9px] font-semibold uppercase tracking-[0.18em] text-[#d9ff68]">Context Engine</p>
+            <p className="font-mono text-[9px] font-semibold uppercase tracking-[0.18em] text-[#d9ff68]">DaemonState</p>
             <p className={`${compact ? "mt-2 text-sm" : "mt-3 text-base sm:text-lg"} font-semibold tracking-[-0.02em] text-white`}>{label}</p>
           </div>
           <span className={`${compact ? "text-3xl" : "text-5xl sm:text-6xl"} shrink-0 font-medium tracking-[-0.07em] tabular-nums text-white`}>{progress}%</span>

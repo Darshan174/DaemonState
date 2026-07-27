@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible bug in Context Engine.
+description: Report a reproducible bug in DaemonState.
 title: "[Bug]: "
 labels: ["bug", "needs-triage"]
 body:

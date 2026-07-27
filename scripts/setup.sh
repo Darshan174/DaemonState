@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Context Engine — bare-metal setup script
+# DaemonState — bare-metal setup script
 # Run once on a fresh machine: bash scripts/setup.sh
 set -euo pipefail
 
@@ -14,7 +14,7 @@ warn()    { echo -e "${YELLOW}⚠${RESET}  $*"; }
 success() { echo -e "${GREEN}✔${RESET}  $*"; }
 error()   { echo -e "${RED}✖${RESET}  $*" >&2; exit 1; }
 
-echo -e "\n${BOLD}Context Engine — Setup${RESET}\n"
+echo -e "\n${BOLD}DaemonState — Setup${RESET}\n"
 
 # ── Prerequisites check ───────────────────────────────────────────────────────
 info "Checking prerequisites…"
@@ -57,8 +57,8 @@ success "data/ directory ready"
 
 # ── Virtual environment ───────────────────────────────────────────────────────
 VENV_DIR="${VENV_DIR:-.venv}"
-if [[ "${CONTEXT_ENGINE_USE_SYSTEM_PYTHON:-0}" == "1" ]]; then
-  warn "Using system Python because CONTEXT_ENGINE_USE_SYSTEM_PYTHON=1"
+if [[ "${DAEMONSTATE_USE_SYSTEM_PYTHON:-0}" == "1" ]]; then
+  warn "Using system Python because DAEMONSTATE_USE_SYSTEM_PYTHON=1"
   PYTHON_BIN="python3"
 else
   info "Creating Python virtual environment at ${VENV_DIR}…"

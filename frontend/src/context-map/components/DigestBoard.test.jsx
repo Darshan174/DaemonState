@@ -25,7 +25,7 @@ const digest = {
   scope: {
     included_source_count: 5,
     pending_source_count: 0,
-    project_paths: ["/workspace/context-engine"],
+    project_paths: ["/workspace/daemonstate"],
     project_repositories: [],
   },
   build: { last_built_at: "2026-07-02T12:00:00Z" },
@@ -74,8 +74,8 @@ const digest = {
       title: "PR #12",
       summary: "PR 12 fixes graph review regressions.",
       attention_score: 70,
-      provenance: [{ source_url: "https://github.com/example/context-engine/pull/12" }],
-      remote_item: { repository: "example/context-engine", number: 12, observed_status: "closed" },
+      provenance: [{ source_url: "https://github.com/example/daemonstate/pull/12" }],
+      remote_item: { repository: "example/daemonstate", number: 12, observed_status: "closed" },
     }),
   ],
   links: [
@@ -94,7 +94,7 @@ const digest = {
 
 function renderBoard(props = {}) {
   const onPrepareHandoff = props.onPrepareHandoff || vi.fn().mockResolvedValue(
-    "# Context Engine safe compiled handoff\n\nNo raw imported instructions.\n",
+    "# DaemonState safe compiled handoff\n\nNo raw imported instructions.\n",
   );
   return render(
     <MemoryRouter>
@@ -119,7 +119,7 @@ describe("DigestBoard", () => {
       id: "code-repository",
       type: "code_area",
       category: "code_area",
-      title: "Repository: context-engine",
+      title: "Repository: daemonstate",
       summary: "The indexed repository boundary.",
       attention_score: 100,
     });
@@ -262,9 +262,9 @@ describe("DigestBoard", () => {
       id: "supporting-1",
       type: "evidence",
       category: "supporting_evidence",
-      title: "Slack: context-engine",
-      summary: "Channel: #context-engine-channel Context Engine connects to sources like Slack and GitHub.",
-      provenance: [{ excerpt: "Context Engine connects to sources like Slack and GitHub." }],
+      title: "Slack: daemonstate",
+      summary: "Channel: #daemonstate-channel DaemonState connects to sources like Slack and GitHub.",
+      provenance: [{ excerpt: "DaemonState connects to sources like Slack and GitHub." }],
     });
     const { container } = renderBoard({ digest: { ...digest, cards: [supporting] } });
 
@@ -323,7 +323,7 @@ describe("DigestBoard", () => {
   it("compiles and copies a hardened context pack as the map's primary outcome", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     const onPrepareHandoff = vi.fn().mockResolvedValue(
-      "# Context Engine safe compiled handoff\n\nPrompt-risk evidence excluded.\n",
+      "# DaemonState safe compiled handoff\n\nPrompt-risk evidence excluded.\n",
     );
     Object.defineProperty(globalThis.navigator, "clipboard", {
       configurable: true,
@@ -335,7 +335,7 @@ describe("DigestBoard", () => {
     await waitFor(() => expect(onPrepareHandoff).toHaveBeenCalledOnce());
     await waitFor(() => expect(writeText).toHaveBeenCalledOnce());
     const copied = writeText.mock.calls[0][0];
-    expect(copied).toContain("Context Engine safe compiled handoff");
+    expect(copied).toContain("DaemonState safe compiled handoff");
     expect(copied).toContain("Prompt-risk evidence excluded");
     expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
   });
@@ -436,9 +436,9 @@ describe("DigestBoard", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("absolute local project path");
     expect(onIndexProject).not.toHaveBeenCalled();
 
-    fireEvent.change(screen.getByLabelText("Local project path"), { target: { value: "/workspace/context-engine" } });
+    fireEvent.change(screen.getByLabelText("Local project path"), { target: { value: "/workspace/daemonstate" } });
     fireEvent.click(screen.getByRole("button", { name: "Open" }));
-    expect(onIndexProject).toHaveBeenCalledWith("/workspace/context-engine");
+    expect(onIndexProject).toHaveBeenCalledWith("/workspace/daemonstate");
     expect(screen.queryByText(/token budget/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/objective/i)).not.toBeInTheDocument();
   });

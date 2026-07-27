@@ -181,7 +181,7 @@ async def test_unauthorized_workspace_cannot_receive_a_cached_digest(
     )
     denied = await client.get(
         _digest_path(protected.id),
-        headers={"X-Context-Engine-API-Key": "allowed-token"},
+        headers={"X-DaemonState-API-Key": "allowed-token"},
     )
 
     assert denied.status_code == 404

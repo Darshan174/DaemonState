@@ -40,7 +40,7 @@ from app.services.source_revisions import ingest_source_document_revision
 from app.time import utc_now
 
 router = APIRouter()
-logger = logging.getLogger("context-engine.connectors")
+logger = logging.getLogger("daemonstate.connectors")
 DEFAULT_WORKSPACE_ID = UUID("00000000-0000-0000-0000-000000000000")
 
 # ── Catalog ────────────────────────────────────────────────────
@@ -1463,7 +1463,7 @@ async def sync_connector(
         "deduplicated": False,
         "message": (
             f"Sync queued for {connector.connector_type}. "
-            "Run `ctxe worker sync --watch` to drain connector jobs."
+            "Run `daemonstate worker sync --watch` to drain connector jobs."
         ),
     }
 
@@ -1651,7 +1651,7 @@ async def _run_sync_job(
     _ensure_sqlite_parent_dir(database_url)
     engine = create_database_engine(
         database_url,
-        application_name="context-engine-sync-executor",
+        application_name="daemonstate-sync-executor",
     )
     session_factory = async_sessionmaker(
         engine,

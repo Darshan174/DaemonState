@@ -1,5 +1,5 @@
 /**
- * React Query hooks for Context Engine API.
+ * React Query hooks for DaemonState API.
  *
  * Each hook tries the real backend first. If the fetch fails (backend
  * down, network error), it falls back to mock fixtures so the UI stays
@@ -68,7 +68,7 @@ function withFallback(apiFn, mockData, { fallbackStatuses = [] } = {}) {
   };
 }
 
-const LS_KEY = "ce:selectedWorkspaceId";
+const LS_KEY = "daemonstate:selectedWorkspaceId";
 const CONNECTOR_CATALOG = {
   slack: {
     type: "slack",

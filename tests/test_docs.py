@@ -25,8 +25,8 @@ def test_readme_documents_honest_setup_deployment_and_contributing_paths():
     env_example = ENV_EXAMPLE.read_text(encoding="utf-8")
     gitignore = GITIGNORE.read_text(encoding="utf-8")
 
-    assert "github.com/your-org/context-engine.git" not in text
-    assert "git clone https://github.com/Darshan174/Context-Engine.git context-engine" in text
+    assert "github.com/your-org/daemonstate.git" not in text
+    assert "git clone https://github.com/Darshan174/DaemonState.git daemonstate" in text
     assert "cp .env.example .env" in text
     assert "bash scripts/doctor.sh --docker" in text
     assert "docker compose up --build" in text
@@ -49,7 +49,7 @@ def test_readme_documents_honest_setup_deployment_and_contributing_paths():
     assert "fly launch" not in text
 
     assert "DATABASE_URL=sqlite+aiosqlite:///data/context.db" in env_example
-    assert "POSTGRES_PASSWORD=contextengine" in env_example
+    assert "POSTGRES_PASSWORD=daemonstate" in env_example
     assert "LITELLM_API_KEY=" in env_example
     assert "ENCRYPTION_KEY=" in env_example
     assert "GOOGLE_CLIENT_ID=" in env_example
@@ -62,13 +62,13 @@ def test_pyproject_exposes_oss_metadata():
     project = data["project"]
 
     assert project["license"] == {"file": "LICENSE"}
-    assert "Context Engine contributors" in {author["name"] for author in project["authors"]}
+    assert "DaemonState contributors" in {author["name"] for author in project["authors"]}
     assert "self-hosted" in project["keywords"]
     assert "knowledge-graph" in project["keywords"]
     assert "License :: OSI Approved :: MIT License" in project["classifiers"]
     assert "Framework :: FastAPI" in project["classifiers"]
-    assert project["urls"]["Repository"] == "https://github.com/Darshan174/Context-Engine"
-    assert project["urls"]["Issues"] == "https://github.com/Darshan174/Context-Engine/issues"
+    assert project["urls"]["Repository"] == "https://github.com/Darshan174/DaemonState"
+    assert project["urls"]["Issues"] == "https://github.com/Darshan174/DaemonState/issues"
     assert any(
         dependency.startswith("sqlalchemy[asyncio]")
         for dependency in project["dependencies"]
@@ -105,7 +105,7 @@ def test_readme_is_short_plain_language_and_uses_the_product_logo():
     assert "Developers" in readme
     assert "task-sized brief" in readme
     assert "We have not proven that yet" in " ".join(readme.split())
-    assert "Context Engine is not another coding agent" in readme
+    assert "DaemonState is not another coding agent" in readme
     assert "![" not in readme
     assert "docs/assets/board-inspector-demo.jpg" not in readme
     assert "docs/assets/query-trace-demo.jpg" not in readme
@@ -131,11 +131,11 @@ def test_mcp_examples_match_real_cli_entrypoint():
     installed = json.loads((MCP_EXAMPLES_DIR / "installed-cli.json").read_text(encoding="utf-8"))
     local = json.loads((MCP_EXAMPLES_DIR / "local-checkout.json").read_text(encoding="utf-8"))
 
-    installed_server = installed["mcpServers"]["context-engine"]
-    local_server = local["mcpServers"]["context-engine"]
+    installed_server = installed["mcpServers"]["daemonstate"]
+    local_server = local["mcpServers"]["daemonstate"]
 
-    assert installed_server == {"command": "ctxe", "args": ["mcp"]}
-    assert local_server["command"].endswith("/.venv/bin/ctxe")
+    assert installed_server == {"command": "daemonstate", "args": ["mcp"]}
+    assert local_server["command"].endswith("/.venv/bin/daemonstate")
     assert local_server["args"] == ["mcp"]
 
     prompt = (MCP_EXAMPLES_DIR / "agent-system-prompt.md").read_text(encoding="utf-8")

@@ -52,7 +52,7 @@ from app.services.credentials import (
 from app.services.oauth_state import close_oauth_state_backend
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
-logger = logging.getLogger("context-engine.api")
+logger = logging.getLogger("daemonstate.api")
 _startup_complete = False
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _OAUTH_CALLBACK_PATHS = {
@@ -106,7 +106,7 @@ async def lifespan(app: FastAPI):
             if not await schema_is_current(conn):
                 raise RuntimeError(
                     "Database schema is not at the expected Alembic revision; "
-                    "run `ctxe db deploy` before starting API replicas."
+                    "run `daemonstate db deploy` before starting API replicas."
                 )
             if settings.environment.strip().lower() == "production":
                 await validate_connector_credentials(conn)
@@ -129,7 +129,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Context Engine",
+    title="DaemonState",
     lifespan=lifespan,
     default_response_class=UTCJSONResponse,
     docs_url="/docs" if settings.api_docs_enabled else None,
@@ -288,7 +288,7 @@ if cors_origins:
             "Authorization",
             "Content-Type",
             "X-API-Key",
-            "X-Context-Engine-API-Key",
+            "X-DaemonState-API-Key",
             "X-Request-ID",
         ],
         expose_headers=[

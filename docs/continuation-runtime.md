@@ -7,7 +7,7 @@ compiler, and local run evidence into one operation.
 ## Runtime Contract
 
 `POST /api/continuations/prepare`, MCP `resume_task`, and the preparation phase
-of `ctxe continue` share the same sequence:
+of `daemonstate continue` share the same sequence:
 
 1. Refresh repository-scoped local Codex, Claude Code, and OpenCode sessions
    when local sync is enabled.
@@ -26,7 +26,7 @@ of `ctxe continue` share the same sequence:
 7. Persist stable task identity, checkpoint identity, verification state, and
    current repository fingerprint in the pack manifest and replay key.
 
-`POST /api/continuations/run` and `ctxe continue --into ...` continue that
+`POST /api/continuations/run` and `daemonstate continue --into ...` continue that
 sequence by starting a local provider CLI, observing repository changes, and
 running the pack's verification contract after the provider exits. The HTTP run
 endpoint is local-only. The browser exposes Codex, Claude Code, and OpenCode as
@@ -74,7 +74,7 @@ queue.
 Prepare without running another agent:
 
 ```bash
-ctxe continue \
+daemonstate continue \
   --workspace-id <workspace-uuid> \
   --repo .
 ```
@@ -82,7 +82,7 @@ ctxe continue \
 Deliver directly to an installed provider CLI:
 
 ```bash
-ctxe continue \
+daemonstate continue \
   --workspace-id <workspace-uuid> \
   --repo . \
   --into codex
@@ -99,7 +99,7 @@ recovery point. The runtime never silently substitutes a newer checkpoint.
 For a legacy checkpoint shown by Library, pass both identities:
 
 ```bash
-ctxe continue \
+daemonstate continue \
   --workspace-id <workspace-uuid> \
   --repo . \
   --checkpoint-id checkpoint-abc123def456 \
@@ -121,9 +121,9 @@ no adapter adds bypass, danger, or automatic approval flags. Context delivery
 is bounded to 1 MiB and uses stdin for Codex/Claude Code or a
 permission-restricted temporary file for OpenCode.
 
-For Codex, Context Engine prefers the current desktop-bundled executable when
+For Codex, DaemonState prefers the current desktop-bundled executable when
 the PATH candidate is an older npm-global wrapper. Set
-`CONTEXT_ENGINE_CODEX_EXECUTABLE` to an absolute executable path to override
+`DAEMONSTATE_CODEX_EXECUTABLE` to an absolute executable path to override
 that selection. A model/CLI incompatibility is reported as
 `provider_cli_update_required`, including the provider's upgrade action,
 instead of being collapsed into a generic exit-code failure.
@@ -136,7 +136,7 @@ default.
 
 Commands imported from earlier sessions remain untrusted evidence and are never
 replayed automatically. Continue runs only the compiler's structured
-verification contract. The separate `ctxe harness run` developer tool retains
+verification contract. The separate `daemonstate harness run` developer tool retains
 an explicit `--verify` flag because it wraps arbitrary user-supplied commands.
 
 An exited provider process is not automatically a proven handoff. Runtime

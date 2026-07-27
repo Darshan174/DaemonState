@@ -184,9 +184,9 @@ function memoryData({ currentGoal = null, records = [decision, unverifiedDecisio
 const mocks = vi.hoisted(() => ({
   workspace: {
     activeWorkspaceId: "workspace-1",
-    activeWorkspace: { id: "workspace-1", name: "Context Engine" },
+    activeWorkspace: { id: "workspace-1", name: "DaemonState" },
     workspacesQuery: { isLoading: false },
-    workspaces: [{ id: "workspace-1", name: "Context Engine" }],
+    workspaces: [{ id: "workspace-1", name: "DaemonState" }],
     selectedId: "workspace-1",
     setSelectedId: vi.fn(),
   },
@@ -242,11 +242,11 @@ describe("ProjectMemory", () => {
     renderMemory();
 
     expect(screen.getByRole("heading", { name: "Project memory" })).toBeInTheDocument();
-    expect(screen.getByText("Context Engine")).toBeInTheDocument();
+    expect(screen.getByText("DaemonState")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Ship project memory" })).toBeInTheDocument();
     expect(screen.getByText(/transparent relevance match/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Current agenda/ })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: /All Context Engine/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /All DaemonState/ })).toHaveAttribute("aria-pressed", "false");
 
     expect(screen.getByRole("button", { name: "Overview" })).toHaveAttribute("aria-pressed", "true");
     const decisions = screen.getByRole("heading", { name: "Decisions" }).closest("article");
@@ -475,9 +475,9 @@ describe("ProjectMemory", () => {
   it("passes agenda, workspace, source, evidence, time, subtype, and search filters to Memory", async () => {
     renderMemory();
 
-    fireEvent.click(screen.getByRole("button", { name: /All Context Engine/ }));
+    fireEvent.click(screen.getByRole("button", { name: /All DaemonState/ }));
     await waitFor(() => expect(latestMemoryOptions()).toMatchObject({ scope: "workspace" }));
-    expect(screen.getByRole("button", { name: /All Context Engine/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /All DaemonState/ })).toHaveAttribute("aria-pressed", "true");
 
     fireEvent.change(screen.getByRole("searchbox", { name: "Search memory" }), {
       target: { value: "evidence" },

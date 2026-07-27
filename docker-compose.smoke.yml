@@ -4,7 +4,7 @@ services:
     ports:
       - "${SMOKE_PORT:-18080}:8000"
     volumes:
-      - ce_smoke_data:/data
+      - daemonstate_smoke_data:/data
     environment:
       DATABASE_URL: sqlite+aiosqlite:////data/context.db
       DATA_DIR: /data
@@ -19,4 +19,4 @@ services:
       start_period: 15s
 
 volumes:
-  ce_smoke_data:
+  daemonstate_smoke_data:
