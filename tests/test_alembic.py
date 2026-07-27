@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+from pathlib import Path
 from uuid import uuid4
 
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
+
+from app.database import build_alembic_config
+
+
+def test_packaged_alembic_config_uses_absolute_migration_path():
+    config = build_alembic_config("sqlite+aiosqlite:///:memory:")
+
+    script_location = Path(config.get_main_option("script_location"))
+    assert script_location.is_absolute()
+    assert (script_location / "env.py").is_file()
+    assert config.get_main_option("sqlalchemy.url") == "sqlite+aiosqlite:///:memory:"
 
 
 def test_alembic_upgrade_bootstraps_current_sqlite_schema(tmp_path):

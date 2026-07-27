@@ -17,6 +17,23 @@ from sqlalchemy.ext.asyncio import (
 from app.config import settings
 
 
+def build_alembic_config(database_url: str | None = None) -> Config:
+    """Build an Alembic config that also works from an installed wheel.
+
+    A console-script entry point imports ``app`` from site-packages, where the
+    repository-level ``alembic.ini`` is not installed. The migration scripts
+    are package data, so always point Alembic at their absolute package path
+    and use the repository config only when it is available.
+    """
+    package_dir = Path(__file__).resolve().parent
+    config_path = package_dir.parent / "alembic.ini"
+    config = Config(str(config_path)) if config_path.is_file() else Config()
+    config.set_main_option("script_location", str(package_dir / "alembic"))
+    if database_url is not None:
+        config.set_main_option("sqlalchemy.url", database_url)
+    return config
+
+
 def database_wall_clock_expression(dialect_name: str):
     """Return a transaction-independent UTC database clock expression."""
     if dialect_name == "postgresql":
@@ -116,8 +133,7 @@ def create_database_engine(
 
 
 def expected_schema_revisions() -> frozenset[str]:
-    root = Path(__file__).resolve().parent.parent
-    config = Config(str(root / "alembic.ini"))
+    config = build_alembic_config()
     script = ScriptDirectory.from_config(config)
     return frozenset(script.get_heads())
 

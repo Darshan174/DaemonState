@@ -388,7 +388,7 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
         if path.hasSuffix("/api") {
             path.removeLast(4)
         }
-        components.path = "\(path)/app/memory"
+        components.path = "\(path)/app/execute"
             .replacingOccurrences(of: "//", with: "/")
         components.query = nil
         components.fragment = nil

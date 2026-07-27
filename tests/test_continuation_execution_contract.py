@@ -9,16 +9,25 @@ from sqlalchemy import select
 
 from app.api.continuations import ContinuationPrepareRequest
 from app.models import (
+    Claim,
+    ClaimRevision,
+    Component,
     ContextPack,
     ContinuationExecution,
     ContinuationRequirement,
+    EvidenceSpan,
+    Model,
+    SourceDocument,
     Workspace,
 )
 from app.schemas.continuation_execution import (
     ArtifactReference,
     ContinuationArtifactInput,
+    ContinuationExecutionContract,
     FilesystemMode,
     HandoffTruthState,
+    ProjectEvidenceLevel,
+    SelectedTaskLifecycle,
     TaskMode,
     VerifierType,
     build_authoritative_request,
@@ -37,6 +46,8 @@ from app.services.continuation_quality_gate import (
     evaluate_continuation_quality,
 )
 from app.services.execution_prompt_renderer import (
+    PROJECT_FOUNDATION_REQUIRED_HEADINGS,
+    _project_foundation_section,
     render_continuation_staging_context,
 )
 
@@ -48,6 +59,7 @@ async def _compile(
     request: str,
     commands: list[dict] | None = None,
     task_mode: TaskMode | None = TaskMode.CHANGE,
+    selected_task_lifecycle: SelectedTaskLifecycle | None = None,
     manifest_artifacts: list[dict] | None = None,
     selected_context: list[dict] | None = None,
     repository_evidence: dict | None = None,
@@ -56,6 +68,7 @@ async def _compile(
     supporting_context: list[dict] | None = None,
     current_changed_files: list[dict] | None = None,
     manifest_changed_files: list[dict] | None = None,
+    foundation_facts: list[dict] | None = None,
 ):
     workspace = Workspace(
         name=f"Contract {uuid4().hex[:8]}",
@@ -63,6 +76,12 @@ async def _compile(
     )
     db_session.add(workspace)
     await db_session.flush()
+    for fact in foundation_facts or []:
+        await _persist_foundation_fact(
+            db_session,
+            workspace=workspace,
+            **fact,
+        )
     pack = ContextPack(
         workspace_id=workspace.id,
         objective="compile canonical continuation",
@@ -112,9 +131,157 @@ async def _compile(
         },
         restored_checkpoint=restored_checkpoint,
         context_manifest=manifest,
+        selected_task_lifecycle=selected_task_lifecycle,
         execution_focus="compile canonical continuation",
         supporting_context=supporting_context or [],
     )
+
+
+async def _persist_foundation_fact(
+    db_session,
+    *,
+    workspace: Workspace,
+    title: str,
+    statement: str,
+    fact_type: str = "fact",
+    source_type: str = "local_repository",
+    trust_zone: str = "trusted_repo",
+    identity_key: str | None = None,
+    external_id: str | None = None,
+    status: str = "active",
+) -> Component:
+    model = Model(id=uuid4(), name=f"Foundation {uuid4().hex}")
+    source = SourceDocument(
+        id=uuid4(),
+        workspace_id=workspace.id,
+        source_type=source_type,
+        external_id=external_id or f"foundation:{uuid4().hex}",
+        content=statement,
+        content_sha256=hashlib.sha256(statement.encode()).hexdigest(),
+        trust_zone=trust_zone,
+        metadata_json="{}",
+    )
+    evidence = EvidenceSpan(
+        id=uuid4(),
+        workspace_id=workspace.id,
+        source_document_id=source.id,
+        start_char=0,
+        end_char=len(statement),
+        text=statement,
+        text_sha256=hashlib.sha256(statement.encode()).hexdigest(),
+        review_status="verified",
+        trust_zone=trust_zone,
+        extraction_method="deterministic",
+    )
+    claim_key = identity_key or f"foundation:{uuid4().hex}"
+    claim = await db_session.scalar(
+        select(Claim)
+        .where(Claim.workspace_id == workspace.id)
+        .where(Claim.claim_type == fact_type)
+        .where(Claim.identity_key == claim_key)
+        .limit(1)
+    )
+    if claim is None:
+        claim = Claim(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            identity_key=claim_key,
+            scope_identity_sha256="",
+            claim_type=fact_type,
+            status=status,
+            temporal="current",
+        )
+        db_session.add(claim)
+    db_session.add_all([model, source, evidence])
+    await db_session.flush()
+    revision = ClaimRevision(
+        id=uuid4(),
+        claim_id=claim.id,
+        evidence_span_id=evidence.id,
+        revision_key=hashlib.sha256(uuid4().bytes).hexdigest(),
+        value=statement,
+        operation="create",
+        status_after=status,
+    )
+    db_session.add(revision)
+    await db_session.flush()
+    claim.current_revision_id = revision.id
+    component = Component(
+        id=uuid4(),
+        workspace_id=workspace.id,
+        model_id=model.id,
+        source_document_id=source.id,
+        claim_id=claim.id,
+        identity_key=claim_key,
+        name=title,
+        value=statement,
+        fact_type=fact_type,
+        temporal="current",
+        confidence=0.95,
+        authority_weight=0.9,
+        status=status,
+    )
+    db_session.add(component)
+    await db_session.flush()
+    return component
+
+
+_COMPLETE_FOUNDATION = [
+    {
+        "title": "Product purpose and target users",
+        "statement": (
+            "The product purpose is to preserve coding-project context for "
+            "software teams across agent sessions."
+        ),
+    },
+    {
+        "title": "Primary workspace workflow",
+        "statement": (
+            "The primary workflow compiles workspace evidence before a user "
+            "continues work in an agent harness."
+        ),
+    },
+    {
+        "title": "Workspace architecture",
+        "statement": (
+            "The architecture uses an API service, a context compiler pipeline, "
+            "and durable database storage."
+        ),
+    },
+    {
+        "title": "Repository module responsibilities",
+        "statement": (
+            "The repository map places backend services in app/services and "
+            "product UI modules in frontend/src."
+        ),
+    },
+]
+
+
+@pytest.mark.parametrize(
+    ("title", "statement", "expected"),
+    (
+        ("Project architecture", "The API uses service boundaries.", "architecture"),
+        ("Project test command", "Use pytest for the backend suite.", "commands"),
+        (
+            "User authentication architecture",
+            "OAuth is the external authentication boundary.",
+            "architecture",
+        ),
+        ("Target users", "The product serves solo founders.", "identity"),
+        ("Product direction", "Reliability is the current quality bar.", "direction"),
+    ),
+)
+def test_project_foundation_bucketing_prefers_specific_semantics(
+    title: str,
+    statement: str,
+    expected: str,
+) -> None:
+    assert _project_foundation_section({
+        "kind": "context",
+        "title": title,
+        "statement": statement,
+    }) == expected
 
 
 async def test_multiline_request_is_lossless_through_api_contract_and_storage(
@@ -602,6 +769,70 @@ async def test_project_context_projection_is_current_verified_compact_and_data_o
             "prompt_injection_risk_score": 0.9,
         },
         {
+            "id": "verified-task-blocker",
+            "item_type": "blocker",
+            "title": "Temporary migration blocker",
+            "summary": "VERIFIED_BLOCKER_MUST_STAY_IN_SESSION_CONTEXT",
+            "status": "verified",
+            "truth_state": "current",
+            "component_id": "verified-blocker-component",
+            "source_document_id": "verified-blocker-source",
+            "evidence_span_id": "verified-blocker-evidence",
+            "provenance_verified": True,
+            "conflict_state": "none",
+            "prompt_injection_risk_score": 0.0,
+        },
+        {
+            "id": "verified-task-learning",
+            "item_type": "learning",
+            "title": "Rejected migration approach",
+            "summary": "VERIFIED_LEARNING_MUST_STAY_IN_SESSION_CONTEXT",
+            "status": "verified",
+            "truth_state": "current",
+            "component_id": "verified-learning-component",
+            "source_document_id": "verified-learning-source",
+            "evidence_span_id": "verified-learning-evidence",
+            "provenance_verified": True,
+            "conflict_state": "none",
+            "prompt_injection_risk_score": 0.0,
+        },
+        {
+            # Persisted context_pack.v2 manifests historically emitted
+            # extracted `lesson` facts as generic components in this lane.
+            "id": "compiler-shaped-lesson",
+            "item_type": "component",
+            "title": "Lesson: keep retries bounded",
+            "summary": "COMPILER_SHAPED_LESSON_MUST_STAY_IN_SESSION_CONTEXT",
+            "status": "verified",
+            "truth_state": "current",
+            "component_id": "compiler-shaped-lesson-component",
+            "source_document_id": "compiler-shaped-lesson-source",
+            "evidence_span_id": "compiler-shaped-lesson-evidence",
+            "provenance_verified": True,
+            "conflict_state": "none",
+            "prompt_injection_risk_score": 0.0,
+            "lane": "decisions_and_invariants",
+        },
+        {
+            # Failed-attempt components were generic too, with their semantics
+            # represented by the compiler's prior-failures lane.
+            "id": "compiler-shaped-failed-attempt",
+            "item_type": "component",
+            "title": "Failed attempt: replace the provider adapter",
+            "summary": (
+                "COMPILER_SHAPED_FAILED_ATTEMPT_MUST_STAY_IN_SESSION_CONTEXT"
+            ),
+            "status": "verified",
+            "truth_state": "current",
+            "component_id": "compiler-shaped-failed-attempt-component",
+            "source_document_id": "compiler-shaped-failed-attempt-source",
+            "evidence_span_id": "compiler-shaped-failed-attempt-evidence",
+            "provenance_verified": True,
+            "conflict_state": "none",
+            "prompt_injection_risk_score": 0.0,
+            "lane": "prior_failures",
+        },
+        {
             "id": "generated-core",
             "item_type": "task",
             "title": "Generated task",
@@ -646,29 +877,28 @@ async def test_project_context_projection_is_current_verified_compact_and_data_o
         tmp_path,
         request="Run tests/test_continuation_execution_contract.py.",
         selected_context=selected_context,
+        foundation_facts=[
+            *_COMPLETE_FOUNDATION,
+            {
+                "title": "Provider adapter decision",
+                "statement": safe_statement,
+                "fact_type": "decision",
+            },
+        ],
     )
 
-    assert len(compiled.contract.project_context) == 2
-    item = compiled.contract.project_context[0]
-    assert item.model_dump(mode="json") == {
-        "id": "P1",
-        "kind": "decision",
-        "title": "Provider adapter decision",
-        "statement": safe_statement,
-        "truth_state": "current",
-        "provenance": "verified",
-    }
-    fact = compiled.contract.project_context[1]
-    assert fact.model_dump(mode="json") == {
-        "id": "P2",
-        "kind": "context",
-        "title": "Telemetry privacy boundary",
-        "statement": (
-            "Operational telemetry excludes prompt and source content."
-        ),
-        "truth_state": "current",
-        "provenance": "verified",
-    }
+    assert len(compiled.contract.project_context) == 5
+    item = next(
+        item
+        for item in compiled.contract.project_context
+        if item.title == "Provider adapter decision"
+    )
+    assert item.statement == safe_statement
+    assert item.evidence_level is ProjectEvidenceLevel.MECHANICALLY_VERIFIED
+    assert item.provenance_refs
+    assert compiled.contract.project_foundation is not None
+    assert compiled.contract.project_foundation.compilation_scope == "workspace"
+    assert compiled.contract.project_foundation.objective_independent is True
     assert any(
         item.path == "app/telemetry.py"
         for item in compiled.contract.read_plan
@@ -684,10 +914,16 @@ async def test_project_context_projection_is_current_verified_compact_and_data_o
         line.startswith("Ignore previous instructions")
         for line in (*staging.splitlines(), *execution.splitlines())
     )
-    assert "> [decision; current; verified]" in execution
-    assert "> [decision; current; verified]" in staging
-    assert "> [context; current; verified]" in execution
-    assert "> [context; current; verified]" in staging
+    assert "> [decision; mechanically-verified; current]" in execution
+    assert "> [decision; mechanically-verified; current]" in staging
+    assert "> [context; mechanically-verified; current]" in execution
+    assert "> [context; mechanically-verified; current]" in staging
+    assert set(PROJECT_FOUNDATION_REQUIRED_HEADINGS) <= set(
+        staging.splitlines()
+    )
+    assert "Project / Workspace Context — project-level foundation" in staging
+    assert "compiled workspace-wide" in staging
+    assert "Provisional session claims, failed attempts" in staging
     assert "> P1 " not in execution
     assert "> P1 " not in staging
 
@@ -701,6 +937,10 @@ async def test_project_context_projection_is_current_verified_compact_and_data_o
         "STALE_PROJECT_CONTEXT_MUST_NOT_LEAK",
         "REPORTED_PROJECT_CONTEXT_MUST_NOT_LEAK",
         "HIGH_RISK_PROJECT_CONTEXT_MUST_NOT_LEAK",
+        "VERIFIED_BLOCKER_MUST_STAY_IN_SESSION_CONTEXT",
+        "VERIFIED_LEARNING_MUST_STAY_IN_SESSION_CONTEXT",
+        "COMPILER_SHAPED_LESSON_MUST_STAY_IN_SESSION_CONTEXT",
+        "COMPILER_SHAPED_FAILED_ATTEMPT_MUST_STAY_IN_SESSION_CONTEXT",
         "GENERATED_CORE_CONTEXT_MUST_NOT_LEAK",
         "INVENTORY_AREA_MUST_NOT_LEAK",
         "INVENTORY_REPOSITORY_MUST_NOT_LEAK",
@@ -713,7 +953,8 @@ async def test_project_context_projection_is_current_verified_compact_and_data_o
 
     assert "CONTEXT ID:" not in staging
     assert "Status fingerprint:" not in staging
-    assert "sha256" not in staging.casefold()
+    assert "Evidence:" in staging
+    assert "source sha256" in staging
     assert compiled.contract.id not in staging
     assert str(compiled.contract.repository.head_commit) in staging
     assert compiled.contract.task.request_sha256 not in staging
@@ -871,6 +1112,177 @@ async def test_repository_evidence_is_typed_hash_bound_and_separate_from_project
     ] == ["RE3"]
 
 
+async def test_workspace_foundation_uses_evidence_levels_and_controlled_promotion(
+    db_session,
+    tmp_path,
+) -> None:
+    corroborated_statement = (
+        "The supported capability is portable context staging across agent "
+        "harnesses."
+    )
+    conflicted_identity = "capability:conflicted"
+    compiled = await _compile(
+        db_session,
+        tmp_path,
+        request="Inspect an unrelated task with no overlapping files.",
+        selected_context=[{
+            "item_type": "decision",
+            "title": "Prompt-ranked fact must not control the parent",
+            "summary": "This selected item is task-scoped.",
+            "status": "active",
+            "truth_state": "current",
+            "component_id": "selected-only",
+            "source_document_id": "selected-only",
+            "evidence_span_id": "selected-only",
+            "provenance_verified": True,
+            "conflict_state": "none",
+        }],
+        foundation_facts=[
+            *_COMPLETE_FOUNDATION,
+            {
+                "title": "Human-confirmed current direction",
+                "statement": (
+                    "The current product direction prioritizes reliable "
+                    "workspace-wide Project Context."
+                ),
+                "source_type": "agent_session",
+                "trust_zone": "trusted_human",
+                "identity_key": "direction:workspace-foundation",
+            },
+            {
+                "title": "Portable staging capability",
+                "statement": corroborated_statement,
+                "source_type": "agent_session",
+                "trust_zone": "semi_trusted_tool",
+                "identity_key": "capability:portable-staging",
+                "external_id": "session-one",
+            },
+            {
+                "title": "Portable staging capability",
+                "statement": corroborated_statement,
+                "source_type": "agent_session",
+                "trust_zone": "semi_trusted_tool",
+                "identity_key": "capability:portable-staging",
+                "external_id": "session-two",
+            },
+            {
+                "title": "Unconfirmed coding convention",
+                "statement": (
+                    "The coding convention requires a speculative formatter."
+                ),
+                "source_type": "agent_session",
+                "trust_zone": "semi_trusted_tool",
+                "identity_key": "convention:speculative",
+                "external_id": "session-three",
+            },
+            {
+                "title": "Conflicted capability",
+                "statement": "The product supports direct deployment.",
+                "source_type": "agent_session",
+                "trust_zone": "semi_trusted_tool",
+                "identity_key": conflicted_identity,
+                "external_id": "session-four",
+            },
+            {
+                "title": "Conflicted capability",
+                "statement": "The product does not support direct deployment.",
+                "source_type": "agent_session",
+                "trust_zone": "semi_trusted_tool",
+                "identity_key": conflicted_identity,
+                "external_id": "session-five",
+            },
+        ],
+    )
+
+    facts = {
+        item.title: item
+        for item in compiled.contract.project_context
+    }
+    assert facts["Product purpose and target users"].evidence_level is (
+        ProjectEvidenceLevel.MECHANICALLY_VERIFIED
+    )
+    assert facts["Human-confirmed current direction"].evidence_level is (
+        ProjectEvidenceLevel.HUMAN_CONFIRMED
+    )
+    assert facts["Portable staging capability"].evidence_level is (
+        ProjectEvidenceLevel.CORROBORATED
+    )
+    assert facts["Portable staging capability"].corroboration_count == 2
+    assert len(facts["Portable staging capability"].provenance_refs) == 2
+    assert "Unconfirmed coding convention" not in facts
+    assert "Conflicted capability" not in facts
+    assert "Prompt-ranked fact must not control the parent" not in facts
+    assert compiled.contract.project_foundation is not None
+    assert compiled.contract.project_foundation.provisional_fact_count == 1
+    assert (
+        compiled.contract.project_foundation.superseded_conflicting_fact_count
+        == 2
+    )
+
+
+async def test_project_foundation_change_invalidates_persisted_execution_reuse(
+    db_session,
+    tmp_path,
+) -> None:
+    request = "Inspect the current workspace foundation."
+    first = await _compile(
+        db_session,
+        tmp_path,
+        request=request,
+        foundation_facts=_COMPLETE_FOUNDATION,
+    )
+    snapshot = first.contract.project_foundation
+    assert snapshot is not None
+    workspace = await db_session.get(Workspace, snapshot.workspace_id)
+    assert workspace is not None
+    await _persist_foundation_fact(
+        db_session,
+        workspace=workspace,
+        title="Canonical test command",
+        statement=(
+            "The canonical test command is `pytest -q` for the backend suite."
+        ),
+        fact_type="decision",
+        identity_key="command:backend-tests",
+    )
+
+    repository = first.contract.repository
+    manifest = {
+        "repo_state": {
+            "repo_path": repository.root,
+            "branch": repository.branch,
+            "head_commit": repository.head_commit,
+            "state_fingerprint": repository.status_fingerprint,
+            "changed_files": [],
+            "relevant_files": [],
+        },
+        "verification": {"commands": []},
+        "selected_context": [],
+    }
+    second = await compile_and_persist_continuation_execution(
+        db_session,
+        workspace_id=workspace.id,
+        context_pack_id=first.execution.context_pack_id,
+        request_verbatim=request,
+        task_mode=TaskMode.CHANGE,
+        repository={
+            "root": repository.root,
+            "branch": repository.branch,
+            "head_commit": repository.head_commit,
+            "status_fingerprint": repository.status_fingerprint,
+            "status_truncated": False,
+            "changed_files": [],
+        },
+        restored_checkpoint=None,
+        context_manifest=manifest,
+    )
+
+    assert second.execution.id != first.execution.id
+    assert "Canonical test command" in {
+        item.title for item in second.contract.project_context
+    }
+
+
 async def test_quality_gate_blocks_an_omitted_project_context_item(
     db_session,
     tmp_path,
@@ -892,10 +1304,11 @@ async def test_quality_gate_blocks_an_omitted_project_context_item(
             "provenance_verified": True,
             "conflict_state": "none",
         }],
+        foundation_facts=_COMPLETE_FOUNDATION,
     )
     item = compiled.contract.project_context[0]
     first_line = (
-        f"> [{item.kind.value}; current; verified] "
+        f"> [{item.kind.value}; mechanically-verified; current] "
         f"{item.title} — {item.statement}"
     )
     assert first_line in compiled.prompt_markdown
@@ -998,21 +1411,20 @@ async def test_project_context_rejects_raw_conversation_and_historical_tasks(
                 },
             },
         },
+        foundation_facts=_COMPLETE_FOUNDATION,
     )
 
-    assert len(compiled.contract.project_context) == 1
-    assert compiled.contract.project_context[0].title == "Accepted context split"
+    assert len(compiled.contract.project_context) == 4
+    assert "Accepted context split" not in {
+        item.title for item in compiled.contract.project_context
+    }
     staging = render_continuation_staging_context(compiled.contract)
     assert raw_conversation not in staging
     assert "Rewrite the entire continuation runtime." not in staging
     assert "### In progress" not in staging
     assert "### Decisions" not in staging
     assert "MUST status: R1=`remaining`" in staging
-    assert (
-        "> [decision; current; verified] Accepted context split — "
-        "Use Session Context for same-harness recovery and task-relevant "
-        "Project Context when switching harnesses."
-    ) in staging
+    assert "Accepted context split" not in staging
 
 
 async def test_reconciliation_moves_stale_or_conflicting_completion_to_unknowns(
@@ -1223,6 +1635,7 @@ async def test_copy_quality_gate_requires_lead_repo_reconciliation_and_done(
         db_session,
         tmp_path,
         request=request,
+        foundation_facts=_COMPLETE_FOUNDATION,
     )
     staging = render_continuation_staging_context(compiled.contract)
     valid = evaluate_continuation_quality(
@@ -1255,6 +1668,11 @@ async def test_copy_quality_gate_requires_lead_repo_reconciliation_and_done(
         "project_context_copy_reconciliation_missing": staging.replace(
             "### Reconciliation and unresolved state",
             "### Historical notes",
+            1,
+        ),
+        "project_context_copy_foundation_sections_missing": staging.replace(
+            "### Engineering conventions",
+            "### Engineering notes",
             1,
         ),
     }
@@ -1309,11 +1727,116 @@ async def test_project_context_explicitly_reports_when_no_workspace_facts_apply(
     assert "### Task-relevant project context" in staging
     assert "Activation boundary:" in staging
     assert "materially different task" in staging
-    assert (
-        "No current, provenance-verified workspace facts were selected for "
-        "this task."
-    ) in staging
-    assert "Do not infer missing project decisions" in staging
+    assert "No current evidence-backed durable workspace facts were compiled." in staging
+    assert "Foundation readiness: **NOT READY**" in staging
+    report = evaluate_continuation_quality(
+        compiled.contract,
+        prompt_markdown=compiled.prompt_markdown,
+        project_context_markdown=staging,
+    )
+    assert "project_context_foundation_empty" in {
+        issue.code for issue in report.issues
+    }
+
+
+async def test_project_context_quality_gate_rejects_incomplete_conflicting_generic_and_stale_foundations(
+    db_session,
+    tmp_path,
+) -> None:
+    compiled = await _compile(
+        db_session,
+        tmp_path,
+        request="Inspect Project Context quality.",
+        foundation_facts=_COMPLETE_FOUNDATION,
+    )
+    contract = compiled.contract
+    assert contract.project_foundation is not None
+
+    without_identity = contract.model_copy(update={
+        "project_context": tuple(
+            item
+            for item in contract.project_context
+            if item.section.value != "identity"
+        ),
+        "project_foundation": contract.project_foundation.model_copy(update={
+            "included_fact_count": len(contract.project_context) - 1,
+        }),
+    })
+    incomplete = evaluate_continuation_quality(
+        without_identity,
+        prompt_markdown=render_continuation_staging_context(without_identity),
+    )
+    assert "project_context_core_sections_empty" in {
+        issue.code for issue in incomplete.issues
+    }
+
+    first = contract.project_context[0]
+    conflicting_item = first.model_copy(update={
+        "id": "P5",
+        "statement": "The product purpose serves a conflicting audience.",
+    })
+    conflicted = contract.model_copy(update={
+        "project_context": (*contract.project_context, conflicting_item),
+        "project_foundation": contract.project_foundation.model_copy(update={
+            "included_fact_count": 5,
+        }),
+    })
+    conflict_report = evaluate_continuation_quality(
+        conflicted,
+        prompt_markdown=render_continuation_staging_context(conflicted),
+    )
+    assert "project_context_unresolved_fact_conflict" in {
+        issue.code for issue in conflict_report.issues
+    }
+
+    generic_items = tuple(
+        item.model_copy(update={
+            "title": f"Area: section-{index}",
+            "statement": "Contains files.",
+            "identity_key": f"generic:{index}",
+        })
+        for index, item in enumerate(contract.project_context, start=1)
+    )
+    generic = contract.model_copy(update={"project_context": generic_items})
+    generic_report = evaluate_continuation_quality(
+        generic,
+        prompt_markdown=render_continuation_staging_context(generic),
+    )
+    assert "project_context_generic_inventory_dominates" in {
+        issue.code for issue in generic_report.issues
+    }
+
+    stale = contract.model_copy(update={
+        "project_foundation": contract.project_foundation.model_copy(update={
+            "repository_fingerprint": "f" * 64,
+        }),
+    })
+    stale_report = evaluate_continuation_quality(
+        stale,
+        prompt_markdown=render_continuation_staging_context(stale),
+    )
+    assert "project_context_foundation_stale" in {
+        issue.code for issue in stale_report.issues
+    }
+
+    missing_provenance_item = first.model_copy(update={
+        "provenance_refs": (),
+    })
+    missing_provenance = contract.model_copy(update={
+        "project_context": (
+            missing_provenance_item,
+            *contract.project_context[1:],
+        ),
+    })
+    provenance_report = evaluate_continuation_quality(
+        missing_provenance,
+        prompt_markdown=render_continuation_staging_context(
+            missing_provenance
+        ),
+    )
+    assert "project_context_fact_provenance_missing" in {
+        issue.code for issue in provenance_report.issues
+    }
 
 
 def test_legacy_compaction_handoff_preserves_requirements_and_agent_state() -> None:
@@ -1497,7 +2020,12 @@ async def test_prepare_api_preserves_a_long_multiline_request_end_to_end(
     assert body["quality_report"]["launchable"] is False
     assert body["quality_report"]["automatic_execution_ready"] is False
     assert body["quality_report"]["status"] == "blocked"
-    assert body["project_context"]["copy_ready"] is True
+    assert body["project_context"]["copy_ready"] is False
+    assert "project_context_foundation_empty" in {
+        issue["code"]
+        for issue in body["project_context"]["quality_issues"]
+        if issue["blocks_copy"]
+    }
     assert "mandatory_requirement_verification_unexecutable" in {
         issue["code"]
         for issue in body["quality_report"]["blocking_issues"]
@@ -2060,6 +2588,17 @@ async def test_project_compiler_excludes_discovery_only_verifier_and_tool_fact(
             },
         ],
         selected_context=selected_context,
+        foundation_facts=[
+            *_COMPLETE_FOUNDATION,
+            {
+                "title": "Context boundary decision",
+                "statement": (
+                    "Project Context remains workspace-wide and "
+                    "provider-independent."
+                ),
+                "fact_type": "decision",
+            },
+        ],
     )
 
     commands = [
@@ -2072,9 +2611,12 @@ async def test_project_compiler_excludes_discovery_only_verifier_and_tool_fact(
         "test_continuation_execution_contract.py" in command
         for command in commands
     )
-    assert [item.statement for item in compiled.contract.project_context] == [
-        "Project Context remains task-scoped and provider-independent."
-    ]
+    assert "Project Context remains workspace-wide and provider-independent." in {
+        item.statement for item in compiled.contract.project_context
+    }
+    assert "Project Context remains task-scoped and provider-independent." not in {
+        item.statement for item in compiled.contract.project_context
+    }
     assert "browser-control skill" not in compiled.prompt_markdown
     assert "--collect-only" not in compiled.prompt_markdown
 
@@ -2114,6 +2656,7 @@ async def test_exact_requirement_command_mapping_is_launchable(
         db_session,
         tmp_path,
         request=request,
+        foundation_facts=_COMPLETE_FOUNDATION,
         commands=[{
             "id": "V1",
             "command": (
@@ -2146,6 +2689,94 @@ async def test_exact_requirement_command_mapping_is_launchable(
     assert rubric.required is False
 
 
+async def test_completed_selected_task_is_persisted_reference_only_and_not_launchable(
+    db_session,
+    tmp_path,
+) -> None:
+    request = "Run tests/test_continuation_execution_contract.py."
+    compiled = await _compile(
+        db_session,
+        tmp_path,
+        request=request,
+        selected_task_lifecycle=SelectedTaskLifecycle.COMPLETED,
+        foundation_facts=_COMPLETE_FOUNDATION,
+        commands=[{
+            "id": "V1",
+            "command": (
+                "python3 -m pytest -q "
+                "tests/test_continuation_execution_contract.py"
+            ),
+            "cwd": str(tmp_path),
+            "required": True,
+        }],
+    )
+    staged = render_continuation_staging_context(compiled.contract)
+    report = evaluate_continuation_quality(
+        compiled.contract,
+        prompt_markdown=compiled.prompt_markdown,
+        project_context_markdown=staged,
+        expected_contract_sha256=compiled.execution.contract_sha256,
+        expected_prompt_sha256=compiled.execution.prompt_sha256,
+    )
+
+    assert compiled.contract.selected_task_lifecycle is (
+        SelectedTaskLifecycle.COMPLETED
+    )
+    assert report.launchable is False
+    assert report.automatic_execution_ready is False
+    assert {
+        issue.code
+        for issue in report.issues
+        if issue.severity == "blocking"
+    } == {"selected_task_completed"}
+    assert "### Completed goal retained for reference" in staged
+    assert request in staged
+    assert "### Authoritative current lead" not in staged
+    assert "### First action" not in staged
+    assert "### Definition of done" not in staged
+    assert "### Prior-agent scope interpretation" not in staged
+    assert "### Read first" not in staged
+    assert "### Required artifacts" not in staged
+    assert "### User constraints" not in staged
+    assert (
+        "does not authorize continuation, reopening, re-verification, "
+        "or execution of the completed goal"
+    ) in staged
+    missing_boundary = evaluate_continuation_quality(
+        compiled.contract,
+        prompt_markdown=compiled.prompt_markdown,
+        project_context_markdown=staged.replace(
+            "- Reference only: this artifact does not authorize continuation, "
+            "reopening, re-verification, or execution of the completed goal.",
+            "- Historical task reference.",
+        ),
+    )
+    assert "project_context_copy_completed_reference_missing" in {
+        issue.code for issue in missing_boundary.issues
+    }
+    actionable = evaluate_continuation_quality(
+        compiled.contract,
+        prompt_markdown=compiled.prompt_markdown,
+        project_context_markdown=(
+            staged + "\n### First action\n\nRe-run the completed task.\n"
+        ),
+    )
+    assert "project_context_copy_completed_action_present" in {
+        issue.code for issue in actionable.issues
+    }
+
+    persisted = ContinuationExecutionContract.model_validate_json(
+        compiled.execution.contract_json
+    )
+    assert persisted.selected_task_lifecycle is (
+        SelectedTaskLifecycle.COMPLETED
+    )
+    assert render_continuation_staging_context(persisted) == staged
+    assert compiled.execution.contract_sha256 == hashlib.sha256(
+        compiled.execution.contract_json.encode("utf-8")
+    ).hexdigest()
+
+
 async def test_explicit_repository_test_clause_maps_with_multiword_modifier(
     db_session,
     tmp_path,
@@ -2157,6 +2788,7 @@ async def test_explicit_repository_test_clause_maps_with_multiword_modifier(
             "Finish app/continuation.py so prepare_continuation returns True "
             "and run the repository tests."
         ),
+        foundation_facts=_COMPLETE_FOUNDATION,
         commands=[{
             "id": "V1",
             "command": (
@@ -2284,6 +2916,7 @@ async def test_declared_browser_command_replaces_unexecutable_visual_placeholder
         db_session,
         tmp_path,
         request="The provider card appearance matches the required layout.",
+        foundation_facts=_COMPLETE_FOUNDATION,
         commands=[{
             "id": "V1",
             "command": "npm test -- frontend/src/pages/NowPage.test.jsx",

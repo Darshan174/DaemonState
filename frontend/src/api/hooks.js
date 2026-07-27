@@ -1704,68 +1704,6 @@ export function useSessionLibrary(workspaceId, { enabled = true } = {}) {
   });
 }
 
-export function useSessionContinuity(
-  workspaceId,
-  {
-    enabled = true,
-    provider = null,
-    sessionId = null,
-    limit = null,
-  } = {},
-) {
-  const normalizedProvider = normalizeCheckpointProvider(provider);
-  const normalizedSessionId = String(sessionId || "").trim();
-  const normalizedLimit = Number.isInteger(limit) && limit >= 1 && limit <= 100
-    ? limit
-    : null;
-  const scoped = Boolean(normalizedProvider && normalizedSessionId);
-  const invalidScope = Boolean(normalizedProvider || normalizedSessionId) && !scoped;
-  const queryKey = invalidScope
-    ? [
-        "session-continuity",
-        workspaceId,
-        "invalid-scope",
-        normalizedProvider || null,
-        normalizedSessionId || null,
-        normalizedLimit,
-      ]
-    : scoped
-      ? [
-          "session-continuity",
-          workspaceId,
-          normalizedProvider,
-          normalizedSessionId,
-          normalizedLimit,
-        ]
-      : ["session-continuity", workspaceId, normalizedLimit];
-  return useQuery({
-    queryKey,
-    enabled: Boolean(workspaceId) && enabled && !invalidScope,
-    refetchInterval: 30_000,
-    refetchIntervalInBackground: false,
-    queryFn: () => {
-      const params = new URLSearchParams({ workspace_id: workspaceId });
-      if (scoped) {
-        params.set("provider", normalizedProvider);
-        params.set("session_id", normalizedSessionId);
-      }
-      if (normalizedLimit !== null) params.set("limit", String(normalizedLimit));
-      return api.get(`/session-continuity?${params}`);
-    },
-  });
-}
-
-export function useContinueSession() {
-  return useMutation({
-    mutationFn: ({ workspaceId, sourceDocumentId, launchSession = true }) =>
-      api.post("/session-continuity/continue", {
-        workspace_id: workspaceId,
-        source_document_id: sourceDocumentId,
-        launch_session: launchSession,
-      }),
-  });
-}
-
 export function usePrepareContinuation() {
   return useMutation({
     mutationFn: (payload) => api.post("/continuations/prepare", payload),
@@ -1963,7 +1901,9 @@ export function useCaptureCheckpoint() {
         ...(boundaryEventId ? { boundary_event_id: boundaryEventId } : {}),
       }),
     onSuccess: (checkpoint, variables) => {
-      qc.setQueryData(["checkpoints", variables.workspaceId, "latest"], checkpoint);
+      if (variables.updateGenericLatest !== false) {
+        qc.setQueryData(["checkpoints", variables.workspaceId, "latest"], checkpoint);
+      }
       qc.setQueryData(
         [
           "checkpoints",

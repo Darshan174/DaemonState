@@ -9,22 +9,20 @@ import {
   Activity,
   Database,
   LibraryBig,
-  BrainCircuit,
   Ellipsis,
-  History,
   PanelLeftClose,
   PanelLeftOpen,
   PlugZap,
   Waypoints,
+  Workflow,
   X,
 } from "lucide-react";
 
 const ContextMapPage = lazy(() => import("./pages/ContextMapPage"));
 const NowPage        = lazy(() => import("./pages/NowPage"));
 const PreparePage    = lazy(() => import("./pages/PreparePage"));
-const RunsPage       = lazy(() => import("./pages/RunsPage"));
 const SessionLibrary = lazy(() => import("./pages/SessionLibrary"));
-const MemoryNow      = lazy(() => import("./pages/MemoryNow"));
+const ExecutePage    = lazy(() => import("./pages/MemoryNow"));
 const ProjectMemory  = lazy(() => import("./pages/ProjectMemory"));
 const QueryView    = lazy(() => import("./pages/QueryView"));
 const SourceManager = lazy(() => import("./pages/SourceManager"));
@@ -35,12 +33,11 @@ const WorkspacesPage = lazy(() => import("./pages/WorkspacesPage"));
 
 const CONTINUE_NAV_ITEMS = [
   { to: "/app", label: "Continue", icon: Activity, end: true },
+  { to: "/app/execute", label: "Execute", icon: Workflow },
 ];
 
 const INSPECT_NAV_ITEMS = [
   { to: "/app/library", label: "Library", icon: LibraryBig },
-  { to: "/app/runs", label: "History", icon: History },
-  { to: "/app/memory", label: "Memory", icon: BrainCircuit },
   { to: "/app/explain", label: "Evidence", icon: Waypoints },
 ];
 
@@ -56,11 +53,11 @@ const SETUP_NAV_ITEMS = [
 
 const NAV_GROUPS = [
   {
-    label: "Continue",
+    label: "Work",
     items: CONTINUE_NAV_ITEMS,
   },
   {
-    label: "Inspect & history",
+    label: "Inspect",
     items: INSPECT_NAV_ITEMS,
   },
   {
@@ -170,6 +167,8 @@ function AdminShell() {
   const { selectedId } = useWorkspaceSelection();
   const isProjectPage = location.pathname === "/app/explain" || location.pathname === "/app/explain/";
   const isLibraryPage = location.pathname === "/app/library" || location.pathname === "/app/library/";
+  const isExecutePage = location.pathname === "/app/execute" || location.pathname === "/app/execute/";
+  const usesLibraryCanvas = isLibraryPage || isExecutePage;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try { return localStorage.getItem("daemonstate_sidebar_collapsed") === "true"; }
     catch { return false; }
@@ -241,9 +240,13 @@ function AdminShell() {
           </div>
         </header>
 
-        <main data-app-scroll-container className={`app-main ${isLibraryPage ? "" : "daemonstate-app-canvas"} relative min-h-0 flex-1 ${isProjectPage ? "overflow-hidden" : "overflow-y-auto px-4 py-6 sm:px-7 sm:py-8 xl:px-10 xl:py-10"}`}>
+        <main data-app-scroll-container className={`app-main ${usesLibraryCanvas ? "" : "daemonstate-app-canvas"} relative min-h-0 flex-1 ${
+          isProjectPage
+            ? "overflow-hidden"
+            : "overflow-y-auto px-4 py-6 sm:px-7 sm:py-8 xl:px-10 xl:py-10"
+        }`}>
         {!isProjectPage ? (
-          <div className={isLibraryPage
+          <div className={usesLibraryCanvas
             ? "pointer-events-none absolute inset-x-0 top-0 h-48 border-b border-[#e7e7df]/70 bg-[radial-gradient(circle_at_75%_0%,rgba(217,255,104,0.14),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.7),rgba(247,247,242,0))] dark:border-[#171717] dark:bg-[radial-gradient(circle_at_75%_0%,rgba(217,255,104,0.035),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.018),rgba(0,0,0,0))]"
             : "daemonstate-app-ambient pointer-events-none absolute inset-x-0 top-0 h-64"
           } />
@@ -259,10 +262,12 @@ function AdminShell() {
               <Routes>
                 <Route index                                  element={<NowPage />} />
                 <Route path="prepare"                         element={<PreparePage />} />
-                <Route path="runs"                            element={<RunsPage />} />
+                <Route path="runs"                            element={<Navigate to="/app/library" replace />} />
                 <Route path="library"                         element={<SessionLibrary />} />
-                <Route path="memory"                          element={<MemoryEntry />} />
-                <Route path="memory/inspector"                element={<ProjectMemory />} />
+                <Route path="execute"                         element={<ExecutePage />} />
+                <Route path="execute/inspector"               element={<ProjectMemory />} />
+                <Route path="memory"                          element={<LegacyMemoryEntry />} />
+                <Route path="memory/inspector"                element={<LegacyMemoryInspectorEntry />} />
                 <Route path="explain"                         element={<ContextMapPage />} />
                 <Route path="dashboard"                       element={<Navigate to="/app" replace />} />
                 <Route path="graph"                           element={<Navigate to="/app/explain" replace />} />
@@ -300,7 +305,7 @@ function ShellNavGroup({ group, collapsed }) {
   );
 }
 
-function MemoryEntry() {
+function LegacyMemoryEntry() {
   const location = useLocation();
   const params = new URLSearchParams(location.search);
   const legacyInspectorKeys = [
@@ -314,15 +319,20 @@ function MemoryEntry() {
     "kind",
     "q",
   ];
-  if (legacyInspectorKeys.some((key) => params.has(key))) {
-    return (
-      <Navigate
-        replace
-        to={{ pathname: "/app/memory/inspector", search: location.search }}
-      />
-    );
-  }
-  return <MemoryNow />;
+  const pathname = legacyInspectorKeys.some((key) => params.has(key))
+    ? "/app/execute/inspector"
+    : "/app/execute";
+  return <Navigate replace to={{ pathname, search: location.search }} />;
+}
+
+function LegacyMemoryInspectorEntry() {
+  const location = useLocation();
+  return (
+    <Navigate
+      replace
+      to={{ pathname: "/app/execute/inspector", search: location.search }}
+    />
+  );
 }
 
 function ShellNavLink({ to, label, icon: Icon, end, collapsed = false }) {
@@ -383,7 +393,7 @@ function MobileNavigation({ pathname }) {
             <div className="flex items-center justify-between border-b border-line px-4 py-3">
               <div>
                 <p className="text-sm font-semibold text-ink">More</p>
-                <p className="mt-0.5 text-xs text-ink-muted">History, evidence, and setup</p>
+                <p className="mt-0.5 text-xs text-ink-muted">Evidence and setup</p>
               </div>
               <button
                 type="button"

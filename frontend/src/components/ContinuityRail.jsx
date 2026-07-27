@@ -2,8 +2,8 @@ import { Link } from "react-router-dom";
 
 const STAGES = [
   { key: "connect", label: "Connect", to: "/app/connectors", title: "Connect sources and services" },
-  { key: "observe", label: "Observe", to: "/app/memory", title: "Review project memory" },
-  { key: "prepare", label: "Prepare", to: "/app/runs", title: "Review and verify checkpoints" },
+  { key: "observe", label: "Observe", to: "/app/execute/inspector", title: "Review project memory" },
+  { key: "prepare", label: "Prepare", to: "/app/library", title: "Choose a session and review checkpoints" },
   { key: "continue", label: "Continue", to: "/app", title: "Continue from the current project state" },
 ];
 
@@ -41,7 +41,7 @@ export default function ContinuityRail({ pathname, className = "" }) {
 
 export function stageForPath(pathname = "") {
   if (/\/app\/(sources|connectors)(\/|$)/.test(pathname)) return "connect";
-  if (/\/app\/(prepare|runs)(\/|$)/.test(pathname)) return "prepare";
+  if (/\/app\/library(\/|$)/.test(pathname)) return "prepare";
   if (pathname === "/app" || pathname === "/app/") return "continue";
   return "observe";
 }

@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 CONTINUATION_EXECUTION_SCHEMA_VERSION = "continuation_execution.v1"
 MAX_DISPLAY_TITLE = 180
 MAX_CONTINUATION_ARTIFACTS = 12
-MAX_PROJECT_CONTEXT_ITEMS = 16
+MAX_PROJECT_CONTEXT_ITEMS = 48
 MAX_REPOSITORY_EVIDENCE_ITEMS = 24
 MAX_SUPPORTING_CONTEXT_ITEMS = 4
 MAX_SUPPORTING_CONTEXT_CHARS = 30_000
@@ -104,6 +104,14 @@ class TaskMode(StrEnum):
         }
 
 
+class SelectedTaskLifecycle(StrEnum):
+    ACTIVE = "active"
+    COMPLETED = "completed"
+    PAUSED = "paused"
+    DROPPED = "dropped"
+    UNKNOWN = "unknown"
+
+
 class SourceSpanKind(StrEnum):
     REQUIREMENT = "requirement"
     CONSTRAINT = "constraint"
@@ -174,6 +182,37 @@ class ProjectContextKind(StrEnum):
     VERIFICATION = "verification"
     TASK = "task"
     CONTEXT = "context"
+
+
+class ProjectFoundationSection(StrEnum):
+    IDENTITY = "identity"
+    WORKFLOWS = "workflows"
+    ARCHITECTURE = "architecture"
+    DOMAIN = "domain"
+    REPOSITORY = "repository"
+    STACK = "stack"
+    DECISIONS = "decisions"
+    CONVENTIONS = "conventions"
+    COMMANDS = "commands"
+    CAPABILITIES = "capabilities"
+    CONSTRAINTS = "constraints"
+    DIRECTION = "direction"
+
+
+class ProjectEvidenceLevel(StrEnum):
+    MECHANICALLY_VERIFIED = "mechanically_verified"
+    HUMAN_CONFIRMED = "human_confirmed"
+    CORROBORATED = "corroborated"
+    PROVISIONAL = "provisional"
+    SUPERSEDED_CONFLICTING = "superseded_conflicting"
+
+    @property
+    def durable_current(self) -> bool:
+        return self in {
+            ProjectEvidenceLevel.MECHANICALLY_VERIFIED,
+            ProjectEvidenceLevel.HUMAN_CONFIRMED,
+            ProjectEvidenceLevel.CORROBORATED,
+        }
 
 
 class RepositoryEvidenceKind(StrEnum):
@@ -281,6 +320,9 @@ class StructuredHandoff(_FrozenContract):
     remaining: tuple[StructuredHandoffItem, ...] = ()
     decisions: tuple[StructuredHandoffItem, ...] = ()
     failed_approaches: tuple[StructuredHandoffItem, ...] = ()
+    discoveries: tuple[StructuredHandoffItem, ...] = ()
+    useful_commands: tuple[StructuredHandoffItem, ...] = ()
+    open_items: tuple[StructuredHandoffItem, ...] = ()
     blockers: tuple[StructuredHandoffItem, ...] = ()
     referenced_files: tuple[StructuredHandoffItem, ...] = ()
     prior_verification: tuple[StructuredHandoffItem, ...] = ()
@@ -290,20 +332,33 @@ class StructuredHandoff(_FrozenContract):
     )
 
 
-class ProjectContextItem(_FrozenContract):
-    """One compact, current, provenance-verified workspace fact.
+class ProjectContextProvenance(_FrozenContract):
+    """A hash-bound source that supports one durable foundation statement."""
 
-    The durable ContextPack retains source IDs, citations, hashes, ranking,
-    and exclusion metadata. The executable contract carries only the fact
-    needed by the worker.
-    """
+    source_document_id: str = Field(min_length=1)
+    evidence_span_id: str = Field(min_length=1)
+    source_type: str = Field(min_length=1, max_length=80)
+    source_revision_number: int | None = Field(default=None, ge=1)
+    source_content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evidence_text_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ProjectContextItem(_FrozenContract):
+    """One objective-independent, evidence-backed workspace foundation fact."""
 
     id: str = Field(pattern=r"^P[1-9][0-9]*$")
     kind: ProjectContextKind
+    section: ProjectFoundationSection
     title: str = Field(min_length=1, max_length=240)
     statement: str = Field(min_length=1, max_length=1_200)
+    identity_key: str = Field(min_length=1, max_length=500)
+    evidence_level: ProjectEvidenceLevel
+    provenance_refs: tuple[ProjectContextProvenance, ...] = Field(
+        min_length=1,
+        max_length=8,
+    )
+    corroboration_count: int = Field(default=1, ge=1)
     truth_state: Literal["current"] = "current"
-    provenance: Literal["verified"] = "verified"
 
     @field_validator("title")
     @classmethod
@@ -322,6 +377,36 @@ class ProjectContextItem(_FrozenContract):
                 "project context statement must contain visible characters"
             )
         return normalized
+
+    @model_validator(mode="after")
+    def validate_evidence_level(self) -> "ProjectContextItem":
+        if not self.evidence_level.durable_current:
+            raise ValueError(
+                "current Project Context may contain only durable evidence levels"
+            )
+        if (
+            self.evidence_level is ProjectEvidenceLevel.CORROBORATED
+            and self.corroboration_count < 2
+        ):
+            raise ValueError("corroborated Project Context requires two sources")
+        return self
+
+
+class ProjectFoundationSnapshot(_FrozenContract):
+    """Compilation metadata proving workspace scope and repository freshness."""
+
+    schema_version: Literal["project_foundation.v1"] = "project_foundation.v1"
+    workspace_id: UUID
+    compilation_scope: Literal["workspace"] = "workspace"
+    objective_independent: Literal[True] = True
+    repository_fingerprint: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    included_fact_count: int = Field(ge=0)
+    provisional_fact_count: int = Field(default=0, ge=0)
+    superseded_conflicting_fact_count: int = Field(default=0, ge=0)
+    source_document_count: int = Field(default=0, ge=0)
 
 
 class RepositoryEvidenceItem(_FrozenContract):
@@ -645,6 +730,10 @@ class ContinuationExecutionContract(_FrozenContract):
     created_at: datetime
     task_mode: TaskMode
     task: AuthoritativeRequest
+    selected_task_lifecycle: SelectedTaskLifecycle = Field(
+        default=SelectedTaskLifecycle.ACTIVE,
+        exclude_if=lambda value: value is SelectedTaskLifecycle.ACTIVE,
+    )
     task_identity: ContinuationTaskIdentity | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
@@ -655,6 +744,7 @@ class ContinuationExecutionContract(_FrozenContract):
     definition_of_done: tuple[str, ...]
     repository: RepositoryContract
     handoff: StructuredHandoff = Field(default_factory=StructuredHandoff)
+    project_foundation: ProjectFoundationSnapshot | None = None
     project_context: tuple[ProjectContextItem, ...] = Field(
         default=(),
         max_length=MAX_PROJECT_CONTEXT_ITEMS,

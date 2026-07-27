@@ -46,8 +46,32 @@ success "Python ${PYTHON_VERSION}, Node.js $(node --version)"
 if [[ ! -f ".env" ]]; then
   info "Creating .env from .env.example…"
   cp .env.example .env
-  success ".env created — edit it to add AI keys and connectors (optional)"
+  POSTGRES_SECRET="$(
+    python3 -c 'import secrets; print(secrets.token_hex(32))'
+  )"
+  ENCRYPTION_SECRET="$(
+    python3 -c 'import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())'
+  )"
+  TEMP_ENV="$(mktemp ".env.tmp.XXXXXX")"
+  awk \
+    -v postgres_secret="${POSTGRES_SECRET}" \
+    -v encryption_secret="${ENCRYPTION_SECRET}" \
+    '
+      $0 == "POSTGRES_PASSWORD=daemonstate" {
+        print "POSTGRES_PASSWORD=" postgres_secret
+        next
+      }
+      $0 == "ENCRYPTION_KEY=" {
+        print "ENCRYPTION_KEY=" encryption_secret
+        next
+      }
+      { print }
+    ' .env >"${TEMP_ENV}"
+  chmod 0600 "${TEMP_ENV}"
+  mv "${TEMP_ENV}" .env
+  success ".env created with generated local secrets — add AI keys and connectors if needed"
 else
+  chmod 0600 .env
   warn ".env already exists — skipping"
 fi
 
@@ -89,7 +113,7 @@ echo ""
 echo "  Start the app:"
 echo -e "    ${BOLD}bash scripts/start.sh${RESET}"
 echo ""
-echo "  Or run directly:"
+echo "  Or run the API only (no connector sync worker):"
 echo -e "    ${BOLD}${PYTHON_BIN} -m uvicorn app.main:app --host 127.0.0.1 --port 8000${RESET}"
 echo ""
 echo "  App will be available at: http://localhost:8000"

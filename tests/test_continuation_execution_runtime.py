@@ -32,6 +32,10 @@ from app.schemas.continuation_execution import (
     PreexistingChange,
     ProjectContextItem,
     ProjectContextKind,
+    ProjectContextProvenance,
+    ProjectEvidenceLevel,
+    ProjectFoundationSection,
+    ProjectFoundationSnapshot,
     ReadPlanItem,
     RepositoryContract,
     RepositoryEvidenceItem,
@@ -90,7 +94,7 @@ def _git(root: Path, *args: str) -> None:
 def test_worker_projection_version_invalidates_pre_normalization_prompts() -> None:
     assert (
         continuation_execution.WORKER_CONTEXT_PROJECTION_VERSION
-        == "worker_context_projection.v6"
+        == "worker_context_projection.v7"
     )
 
 
@@ -166,6 +170,13 @@ async def _contract(
             status_fingerprint=snapshot.status_fingerprint,
             status_truncated=False,
         ),
+        project_foundation=ProjectFoundationSnapshot(
+            workspace_id=uuid4(),
+            repository_fingerprint=snapshot.status_fingerprint,
+            included_fact_count=4,
+            source_document_count=4,
+        ),
+        project_context=_complete_project_foundation(),
         verification=(verifier,),
         required_capabilities=(
             RequiredCapability.COMMAND_EXECUTION,
@@ -174,6 +185,51 @@ async def _contract(
         ),
         authority=ExecutionAuthority.for_mode(TaskMode.CHANGE),
     )
+
+
+def _complete_project_foundation() -> tuple[ProjectContextItem, ...]:
+    values = (
+        (
+            ProjectFoundationSection.IDENTITY,
+            "Product purpose and target users",
+            "The product purpose is to preserve coding context for software teams.",
+        ),
+        (
+            ProjectFoundationSection.WORKFLOWS,
+            "Primary workflow",
+            "The primary workflow compiles evidence before continuing agent work.",
+        ),
+        (
+            ProjectFoundationSection.ARCHITECTURE,
+            "Runtime architecture",
+            "The architecture uses an API, compiler pipeline, and durable storage.",
+        ),
+        (
+            ProjectFoundationSection.REPOSITORY,
+            "Repository responsibilities",
+            "The repository map places runtime services in app/services.",
+        ),
+    )
+    result = []
+    for index, (section, title, statement) in enumerate(values, start=1):
+        result.append(ProjectContextItem(
+            id=f"P{index}",
+            kind=ProjectContextKind.CONTEXT,
+            section=section,
+            title=title,
+            statement=statement,
+            identity_key=f"runtime-fixture:{section.value}",
+            evidence_level=ProjectEvidenceLevel.MECHANICALLY_VERIFIED,
+            provenance_refs=(ProjectContextProvenance(
+                source_document_id=f"source-{index}",
+                evidence_span_id=f"evidence-{index}",
+                source_type="local_repository",
+                source_revision_number=1,
+                source_content_sha256=f"{index}" * 64,
+                evidence_text_sha256=f"{index}" * 64,
+            ),),
+        ))
+    return tuple(result)
 
 
 def _verification_result(*, exit_code: int = 0) -> VerificationResult:
@@ -421,12 +477,25 @@ async def test_staging_context_separates_current_facts_and_repository_evidence(
     contract = contract.model_copy(update={
         "repository": repository,
         "project_context": (
-            ProjectContextItem(
-                id="P1",
-                kind=ProjectContextKind.INVARIANT,
-                title="Runtime boundary",
-                statement="Workers consume the hash-bound execution contract.",
-            ),
+                ProjectContextItem(
+                    id="P1",
+                    kind=ProjectContextKind.INVARIANT,
+                    section=ProjectFoundationSection.DECISIONS,
+                    title="Runtime boundary",
+                    statement="Workers consume the hash-bound execution contract.",
+                    identity_key="runtime:hash-bound-contract",
+                    evidence_level=(
+                        ProjectEvidenceLevel.MECHANICALLY_VERIFIED
+                    ),
+                    provenance_refs=(ProjectContextProvenance(
+                        source_document_id="source-runtime-boundary",
+                        evidence_span_id="evidence-runtime-boundary",
+                        source_type="local_repository",
+                        source_revision_number=1,
+                        source_content_sha256="a" * 64,
+                        evidence_text_sha256="b" * 64,
+                    ),),
+                ),
         ),
         "repository_evidence": (
             RepositoryEvidenceItem(
@@ -454,7 +523,7 @@ async def test_staging_context_separates_current_facts_and_repository_evidence(
 
     assert "2 pre-existing changes; preserve regardless of authorship" in staged
     assert (
-        "> [invariant; current; verified] Runtime boundary — "
+        "> [invariant; mechanically-verified; current] Runtime boundary — "
         "Workers consume the hash-bound execution contract."
     ) in staged
     assert "### Current repository evidence" in staged
@@ -467,8 +536,9 @@ async def test_staging_context_separates_current_facts_and_repository_evidence(
         "Symbol: `app/services/worker.py`:10-20 — function `run_worker`."
         in executable
     )
-    assert "a" * 64 not in staged
-    assert "a" * 64 not in executable
+    assert "source sha256" in staged
+    assert "evidence sha256" in staged
+    assert "source sha256" in executable
     assert "8. `app/path_8.py`" in staged
     assert "9. `app/path_9.py`" not in staged
     assert "2 additional read-plan items remain in the contract." in staged

@@ -3,7 +3,10 @@
 The floating control is a small native companion for the local DaemonState
 service. At rest it shows only the DaemonState logo above other apps. It
 uses the existing fail-closed Session Context and Project Context pipelines;
-it does not create a third context format.
+it does not create a third context format. Project Context is the durable
+evidence-backed parent foundation for the workspace, and Session Context is the latest
+individual task child under it. The switch selects one of these separate copy
+artifacts; Session Context does not embed the Project Context payload.
 
 ## Interaction
 
@@ -20,8 +23,12 @@ Transient animation and a small status bubble report preparation, success,
 copy-only fallback, or failure; the bubble disappears when idle.
 
 “Workspace Context” is the compact-control label for the existing
-`continuation_staging_context.v1` Project Context. It remains task-relevant and
-quality-gated rather than becoming an unfiltered workspace dump.
+`continuation_staging_context.v1` Project Context. The control inserts the
+quality-gated, workspace-wide durable parent foundation rather than a
+prompt-ranked projection or an unfiltered workspace dump. Session-only
+failures, rejected attempts, and transient blockers are not promoted.
+Mechanically verified, human-confirmed, and corroborated durable facts may
+appear; provisional and superseded/conflicting facts may not.
 
 ## Show or hide it from Continue
 
@@ -88,8 +95,10 @@ The same settings can be supplied as `DAEMONSTATE_WORKSPACE_ID` and
   when needed, and verifies the exact provider, session, checkpoint, boundary,
   `copy_ready` flag, and SHA-256. Missing or ambiguous session identity fails
   closed.
-- Workspace insertion recompiles Project Context for the selected workspace
-  and verifies its schema, scope, `copy_ready` flag, and SHA-256.
+- Workspace insertion recompiles Project Context from all current evidence in
+  the selected workspace, independent of the current lead, and verifies its
+  core-section completeness, evidence provenance, repository freshness,
+  schema, scope, `copy_ready` flag, and SHA-256.
 - The control never silently falls back from Session Context to Workspace
   Context or vice versa.
 - Verified content is written to the clipboard before insertion. If the

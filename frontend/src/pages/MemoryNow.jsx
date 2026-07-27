@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
   ArrowRight,
   BookOpenCheck,
   Clipboard,
   FileCode2,
+  FolderRoot,
   RefreshCw,
+  ShieldCheck,
+  Trash2,
   X,
 } from "lucide-react";
 
@@ -16,9 +19,10 @@ import {
   useCheckpointHandoff,
   useLatestCheckpoint,
   usePrepareContinuation,
+  useSessionLibrary,
 } from "../api/hooks";
-import fountainPen from "../assets/fountain-pen-monochrome.png";
 import HarnessDeckBackdrop from "../components/HarnessDeckBackdrop";
+import { HarnessArtwork } from "../components/HarnessBrand";
 import ProductLoadingState from "../components/ProductLoadingState";
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
 import { useContextDigest, useProjectMemory } from "../context-map/api";
@@ -28,18 +32,25 @@ import {
   requireMatchingContentSha256,
   sessionContextQualityMessage,
 } from "./sessionContinuity";
+import {
+  executeSessionIdentity,
+  MAX_EXECUTE_SESSION_CONTEXTS,
+  readExecuteSessionContexts,
+  resolveExecuteSessionContexts,
+  writeExecuteSessionContexts,
+} from "./executeSessionSelection";
 import { useProductWorkspace } from "./useProductWorkspace";
 
 const SECTION_LINKS = {
-  requirements: "/app/memory/inspector?view=active&category=requirements",
-  decisions: "/app/memory/inspector?view=active&category=decisions",
-  work: "/app/memory/inspector?view=active&category=work",
-  blockers: "/app/memory/inspector?view=active&category=blockers",
-  learnings: "/app/memory/inspector?view=active&category=learnings",
-  deliveries: "/app/memory/inspector?view=active&category=deliveries",
-  conflicts: "/app/memory/inspector?view=review",
-  stale: "/app/memory/inspector?view=freshness",
-  completed: "/app/memory/inspector?view=history&section=completed",
+  requirements: "/app/execute/inspector?view=active&category=requirements",
+  decisions: "/app/execute/inspector?view=active&category=decisions",
+  work: "/app/execute/inspector?view=active&category=work",
+  blockers: "/app/execute/inspector?view=active&category=blockers",
+  learnings: "/app/execute/inspector?view=active&category=learnings",
+  deliveries: "/app/execute/inspector?view=active&category=deliveries",
+  conflicts: "/app/execute/inspector?view=review",
+  stale: "/app/execute/inspector?view=freshness",
+  completed: "/app/execute/inspector?view=history&section=completed",
 };
 
 const INACTIVE_CHECKPOINT_STATES = new Set([
@@ -57,18 +68,24 @@ const SUPPORTED_CHECKPOINT_SCHEMAS = new Set([
   "work_checkpoint.v5",
   "work_checkpoint.v6",
   "work_checkpoint.v7",
+  "work_checkpoint.v8",
 ]);
 const SESSION_NETWORK_RETRY_DELAYS_MS = [120, 300];
-const CONTEXT_PRODUCT_CARD_CLASSNAME = "relative isolate flex min-w-0 flex-col overflow-hidden rounded-[2rem] border border-[#d8d8cf]/80 bg-[#f7f7f1]/70 p-5 shadow-[0_18px_48px_rgba(23,23,19,0.06)] backdrop-blur-xl dark:border-white/10 dark:bg-[#11110f]/70 dark:shadow-[0_22px_60px_rgba(0,0,0,0.28)] sm:p-7 lg:p-8";
 
 
-export default function MemoryNow() {
+export default function ExecutePage() {
   const workspace = useProductWorkspace();
   const digestQuery = useContextDigest(workspace.activeWorkspaceId, { poll: true });
   const memoryQuery = useProjectMemory(workspace.activeWorkspaceId, {
     limit: 6,
     poll: true,
+    scope: "workspace",
   });
+  const sessionLibraryQuery = useSessionLibrary(workspace.activeWorkspaceId);
+  const [storedExecuteSessions, setStoredExecuteSessions] = useState(() => (
+    readExecuteSessionContexts(workspace.activeWorkspaceId)
+  ));
+  const storedExecuteWorkspaceRef = useRef(workspace.activeWorkspaceId);
   const candidateActivity = digestQuery.data?.activity?.primary || null;
   const checkpointGoalAnchor = rawText(
     digestQuery.data?.current_goal?.title
@@ -91,6 +108,54 @@ export default function MemoryNow() {
   );
   const activitySessionId = visibleText(checkpointActivity?.session_id);
   const hasScopedSession = Boolean(activityProvider && activitySessionId);
+  const currentSessionIdentity = executeSessionIdentity({
+    provider: activityProvider,
+    sessionId: activitySessionId,
+  });
+  const selectedExecuteSessions = useMemo(() => {
+    const resolved = resolveExecuteSessionContexts(
+      storedExecuteSessions,
+      sessionLibraryQuery.data
+        ? sessionLibraryQuery.data.sessions || []
+        : undefined,
+    );
+    return resolved
+      .filter((session) => (
+        executeSessionIdentity(session) !== currentSessionIdentity
+      ))
+      .slice(0, MAX_EXECUTE_SESSION_CONTEXTS);
+  }, [
+    currentSessionIdentity,
+    sessionLibraryQuery.data,
+    storedExecuteSessions,
+  ]);
+  const removeExecuteSession = useCallback((session) => {
+    const sourceDocumentId = rawText(
+      session?.sourceDocumentId
+      || session?.source_document_id,
+    );
+    const identity = executeSessionIdentity(session);
+    if (!sourceDocumentId && !identity) return;
+
+    setStoredExecuteSessions((current) => writeExecuteSessionContexts(
+      workspace.activeWorkspaceId,
+      current.filter((item) => {
+        const itemSourceDocumentId = rawText(
+          item?.sourceDocumentId
+          || item?.source_document_id,
+        );
+        const matchesSource = Boolean(
+          sourceDocumentId
+          && itemSourceDocumentId === sourceDocumentId
+        );
+        const matchesIdentity = Boolean(
+          identity
+          && executeSessionIdentity(item) === identity
+        );
+        return !matchesSource && !matchesIdentity;
+      }),
+    ));
+  }, [workspace.activeWorkspaceId]);
   const checkpointLookupEnabled = Boolean(digestQuery.data);
   const checkpointQuery = useLatestCheckpoint(workspace.activeWorkspaceId, {
     provider: hasScopedSession ? activityProvider : null,
@@ -119,6 +184,16 @@ export default function MemoryNow() {
   const autoSessionPreviewKeyRef = useRef(null);
   const sessionLoadPromiseRef = useRef(null);
   const closeSessionPreview = useCallback(() => setSessionPreviewOpen(false), []);
+
+  useEffect(() => {
+    if (storedExecuteWorkspaceRef.current === workspace.activeWorkspaceId) {
+      return;
+    }
+    storedExecuteWorkspaceRef.current = workspace.activeWorkspaceId;
+    setStoredExecuteSessions(
+      readExecuteSessionContexts(workspace.activeWorkspaceId),
+    );
+  }, [workspace.activeWorkspaceId]);
 
   const projection = useMemo(() => projectMemoryNow({
     digest: digestQuery.data,
@@ -560,71 +635,95 @@ export default function MemoryNow() {
 
   if (firstLoad) {
     return (
-      <div className="relative mx-auto w-full max-w-none space-y-6 pb-16">
-        <MemoryIdentityCard />
-        <div className="app-surface">
-          <ProductLoadingState
-            label="Preparing context products…"
-            detail="Reading the active session, current task, repository state, and durable project knowledge."
-            stages={["Detecting the active session", "Reconciling project state", "Preparing prompt previews"]}
-          />
-        </div>
+      <div className="relative mx-auto min-h-full w-full max-w-none">
+        <ExecuteWorkspaceFrame
+          workspace={workspace.activeWorkspace}
+          status="Preparing"
+          busy
+          selectedSessions={selectedExecuteSessions}
+          currentSessionProvider={activityProvider}
+          currentSessionId={activitySessionId}
+        >
+          <div className="p-5 sm:p-7 lg:p-10">
+            <ProductLoadingState
+              label="Preparing the execution workspace…"
+              detail="Reading the durable workspace foundation, repository state, and active session boundary."
+              stages={["Loading workspace context", "Reconciling project state", "Containing the active session"]}
+            />
+          </div>
+        </ExecuteWorkspaceFrame>
       </div>
     );
   }
 
   if (dataUnavailable) {
     return (
-      <div className="relative mx-auto w-full max-w-7xl space-y-6 pb-16">
-        <MemoryIdentityCard />
-        <div role="alert" className="app-surface px-6 py-14 text-center">
-          <AlertTriangle className="mx-auto h-7 w-7 text-attention" aria-hidden="true" />
-          <h2 className="mt-4 text-xl font-semibold tracking-[-0.025em] text-ink">
-            The continuation brief is unavailable
-          </h2>
-          <p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-ink-muted">
-            Current activity and project knowledge could not be loaded, so Memory is not inventing a task state.
-          </p>
-          <Link to="/app/memory/inspector" className="btn-secondary mt-5 min-h-11 text-xs">
-            Open Inspector
-            <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
-          </Link>
-        </div>
+      <div className="relative mx-auto min-h-full w-full max-w-none">
+        <ExecuteWorkspaceFrame
+          workspace={workspace.activeWorkspace}
+          status="Unavailable"
+          attention
+          selectedSessions={selectedExecuteSessions}
+          currentSessionProvider={activityProvider}
+          currentSessionId={activitySessionId}
+        >
+          <div role="alert" className="px-6 py-16 text-center">
+            <AlertTriangle className="mx-auto h-7 w-7 text-attention" aria-hidden="true" />
+            <h2 className="mt-4 text-xl font-semibold tracking-[-0.025em] text-ink">
+              Workspace Context is unavailable
+            </h2>
+            <p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-ink-muted">
+              Current activity and durable project knowledge could not be loaded, so Execute is not inventing an execution state.
+            </p>
+            <Link to="/app/execute/inspector" className="btn-secondary mt-5 min-h-11 text-xs">
+              Inspect context sources
+              <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+            </Link>
+          </div>
+        </ExecuteWorkspaceFrame>
       </div>
     );
   }
 
   return (
-    <div className="relative mx-auto w-full max-w-none space-y-6 pb-16">
-      <MemoryIdentityCard />
+    <div className="relative mx-auto min-h-full w-full max-w-none">
+      <ExecuteWorkspaceFrame
+        workspace={workspace.activeWorkspace}
+        status={partialData ? "Partial context" : "Workspace ready"}
+        attention={partialData}
+        selectedSessions={selectedExecuteSessions}
+        currentSessionProvider={activityProvider}
+        currentSessionId={activitySessionId}
+      >
+        {partialData ? (
+          <div role="status" className="mx-5 mt-5 rounded-control border border-attention/30 bg-attention/10 px-4 py-3 text-xs font-medium leading-5 text-ink sm:mx-7 lg:mx-10">
+            Some live context is temporarily unavailable. Execute is showing only the source-backed context that loaded successfully.
+          </div>
+        ) : null}
 
-      {partialData ? (
-        <div role="status" className="rounded-control border border-attention/30 bg-attention/10 px-4 py-3 text-xs font-medium leading-5 text-ink">
-          Some live context is temporarily unavailable. The previews below show only the source-backed context that loaded successfully.
-        </div>
-      ) : null}
-
-      <ContextProductsPanel
-        projection={projection}
-        preparedContext={currentPreparedContext}
-        projectPreparing={projectPreviewPreparing}
-        projectCopyState={projectCopyState}
-        projectError={previewError}
-        projectRetryable={projectPreviewRetryable}
-        projectDialogOpen={previewOpen}
-        onPreviewProject={generatePreview}
-        onCopyProject={copyProjectContext}
-        sessionAvailable={hasScopedSession}
-        sessionProvider={activityProvider}
-        sessionId={activitySessionId}
-        sessionCheckpoint={checkpointQuery.data}
-        sessionContext={currentSessionContext}
-        sessionPreparing={sessionPreviewPreparing}
-        sessionCopyState={sessionCopyState}
-        sessionError={sessionContextError}
-        onPreviewSession={previewSessionContext}
-        onCopySession={copySessionContext}
-      />
+        <ContextProductsPanel
+          projection={projection}
+          preparedContext={currentPreparedContext}
+          projectPreparing={projectPreviewPreparing}
+          projectCopyState={projectCopyState}
+          projectError={previewError}
+          projectRetryable={projectPreviewRetryable}
+          projectDialogOpen={previewOpen}
+          onPreviewProject={generatePreview}
+          onCopyProject={copyProjectContext}
+          sessionAvailable={hasScopedSession}
+          sessionProvider={activityProvider}
+          sessionContext={currentSessionContext}
+          sessionPreparing={sessionPreviewPreparing}
+          sessionCopyState={sessionCopyState}
+          sessionError={sessionContextError}
+          onPreviewSession={previewSessionContext}
+          onCopySession={copySessionContext}
+          workspaceId={workspace.activeWorkspaceId}
+          selectedSessions={selectedExecuteSessions}
+          onRemoveSelectedSession={removeExecuteSession}
+        />
+      </ExecuteWorkspaceFrame>
 
       {previewOpen ? createPortal(
         <ContextPreviewDialog
@@ -660,23 +759,110 @@ export default function MemoryNow() {
 }
 
 
-function MemoryIdentityCard() {
+function ExecuteWorkspaceFrame({
+  workspace,
+  status,
+  busy = false,
+  attention = false,
+  selectedSessions = [],
+  currentSessionProvider,
+  currentSessionId,
+  children,
+}) {
+  const navigate = useNavigate();
+  const workspaceName = visibleText(workspace?.name) || "Selected workspace";
+  const selectedCount = Math.min(
+    selectedSessions.length,
+    MAX_EXECUTE_SESSION_CONTEXTS,
+  );
+  const openSessionPicker = () => {
+    const params = new URLSearchParams({ mode: "execute-context" });
+    if (currentSessionProvider) {
+      params.set("current_provider", currentSessionProvider);
+    }
+    if (currentSessionId) {
+      params.set("current_session", currentSessionId);
+    }
+    navigate(`/app/library?${params}`);
+  };
+
   return (
-    <header className="daemonstate-resume-header group relative min-h-56 overflow-hidden rounded-[2rem] border border-[#d8d8cf] bg-[#f7f7f1] px-5 py-7 text-[#171713] dark:border-[#292925] dark:bg-[#0c0c0a] dark:text-white sm:px-8 sm:py-9 lg:px-10">
-      <div aria-hidden="true" className="absolute -right-20 -top-24 h-72 w-72 rounded-full bg-[#d9ff68]/25 blur-3xl dark:bg-[#d9ff68]/10" />
-      <HarnessDeckBackdrop />
-      <div className="relative grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-end">
-        <div className="max-w-3xl">
-          <h1 id="memory-title" className="text-4xl font-black tracking-[-0.05em] sm:text-5xl">
-            Memory
-          </h1>
-          <h2 id="context-products-heading" className="mt-4 max-w-2xl text-xl font-semibold tracking-[-0.035em] text-[#4f4f48] dark:text-[#d8d8cf] sm:text-2xl">
-            Choose the context your next agent needs
-          </h2>
+    <div className="relative mx-auto w-full max-w-7xl space-y-8 pb-14">
+      <header
+        aria-labelledby="execute-title"
+        className="daemonstate-resume-header group relative min-h-56 overflow-hidden rounded-[2rem] border border-[#d8d8cf] bg-[#f7f7f1] px-5 py-7 text-[#171713] dark:border-[#292925] dark:bg-[#0c0c0a] dark:text-white sm:px-8 sm:py-9 lg:px-10"
+      >
+        <div aria-hidden="true" className="absolute -right-20 -top-24 h-72 w-72 rounded-full bg-[#d9ff68]/25 blur-3xl dark:bg-[#d9ff68]/10" />
+        <HarnessDeckBackdrop />
+        <div className="relative flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h1 id="execute-title" className="text-3xl font-black tracking-[-0.055em] sm:text-4xl">
+              Execute
+            </h1>
+            <p className="mt-2 max-w-3xl text-sm font-medium leading-6 text-[#68685f] dark:text-[#aaa9a0]">
+              Prepare verified workspace context, with the active session carried inside it.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            aria-pressed={selectedCount > 0}
+            aria-label={
+              selectedCount
+                ? `Edit selected session contexts, ${selectedCount} of ${MAX_EXECUTE_SESSION_CONTEXTS} selected`
+                : "Select session contexts"
+            }
+            onClick={openSessionPicker}
+            className="group inline-flex min-h-11 shrink-0 items-center gap-3 rounded-xl border border-white/50 bg-white/35 px-3.5 text-left text-[#3f3f38] shadow-[0_10px_28px_rgba(23,23,19,0.10)] backdrop-blur-xl backdrop-saturate-150 transition hover:-translate-y-0.5 hover:border-[#b7d957]/70 hover:bg-white/45 dark:border-white/15 dark:bg-black/30 dark:text-[#ecece4] dark:shadow-[0_10px_30px_rgba(0,0,0,0.22)] dark:hover:border-[#d9ff68]/45 dark:hover:bg-black/38"
+          >
+            <span className="hidden sm:block">
+              <span className="block text-[10px] font-black uppercase tracking-[0.12em]">
+                Session contexts
+              </span>
+              <span className="mt-0.5 block text-[9px] font-semibold text-[#85857c] dark:text-[#929289]">
+                {selectedCount} of {MAX_EXECUTE_SESSION_CONTEXTS} selected
+              </span>
+            </span>
+            <span
+              aria-hidden="true"
+              className={`relative h-6 w-11 rounded-full border transition ${
+                selectedCount
+                  ? "border-[#95b52f] bg-[#d9ff68]"
+                  : "border-[#c9c9bf] bg-[#e8e8e0] dark:border-[#44443e] dark:bg-[#292925]"
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 h-[18px] w-[18px] rounded-full bg-[#171713] shadow-sm transition-transform ${
+                  selectedCount ? "translate-x-[1.15rem]" : "translate-x-0.5"
+                }`}
+              />
+            </span>
+          </button>
         </div>
-        <span aria-hidden="true" className="hidden lg:block" />
-      </div>
-    </header>
+
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <span className="inline-flex min-h-8 items-center gap-2 rounded-full border border-[#d8d8cf] bg-white/60 px-3 text-xs font-semibold text-[#77776e] dark:border-[#292925] dark:bg-white/[0.04] dark:text-[#aaa9a0]">
+            <FolderRoot className="h-4 w-4" aria-hidden="true" />
+            {workspaceName}
+          </span>
+          <span
+            className={`inline-flex min-h-8 items-center gap-2 rounded-full border px-3 text-xs font-semibold ${
+              attention
+                ? "border-[#d0a946]/40 bg-[#d0a946]/10 text-[#5f4a12] dark:text-[#e4c875]"
+                : "border-[#d8d8cf] bg-white/60 text-[#68685f] dark:border-[#292925] dark:bg-white/[0.04] dark:text-[#aaa9a0]"
+            }`}
+          >
+            {busy
+              ? <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              : attention
+                ? <AlertTriangle className="h-3.5 w-3.5 text-attention" aria-hidden="true" />
+                : <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />}
+            {status}
+          </span>
+        </div>
+      </header>
+      {children}
+    </div>
   );
 }
 
@@ -693,14 +879,15 @@ function ContextProductsPanel({
   onCopyProject,
   sessionAvailable,
   sessionProvider,
-  sessionId,
-  sessionCheckpoint,
   sessionContext,
   sessionPreparing,
   sessionCopyState,
   sessionError,
   onPreviewSession,
   onCopySession,
+  workspaceId,
+  selectedSessions = [],
+  onRemoveSelectedSession,
 }) {
   const projectContent = preparedContext?.project_context?.content || "";
   const projectCopyReady = (
@@ -711,238 +898,580 @@ function ContextProductsPanel({
     !sessionContext
     || sessionContext?.quality_report?.copy_ready === true
   );
-  const sessionFreshness = sessionContext
-    ? "Prepared from the current session tip"
-    : sessionCheckpointIsCurrent(sessionCheckpoint, sessionProvider, sessionId)
-      ? `Current tip · Updated ${formatTimeAgo(
-        sessionCheckpoint?.boundary?.occurred_at || sessionCheckpoint?.created_at,
-      )}`
-      : sessionAvailable
-        ? "Preparing from the current session tip"
-        : "No linked active session";
-  const repositoryFreshness = humanizeStatus(
-    preparedContext?.repository?.freshness?.status,
-  );
 
   return (
-    <aside
-      aria-labelledby="context-products-heading"
-      className="flex min-h-[calc(100dvh-18rem)] flex-col gap-4"
-    >
-      <div className="grid flex-1 items-stretch gap-4 xl:grid-cols-2">
+    <section aria-label="Execution contexts" className="space-y-8">
+      <div
+        data-session-context-slots
+        className="grid grid-cols-1 items-start gap-5 xl:grid-cols-3"
+      >
         <article
           aria-labelledby="current-session-context-heading"
-          className={CONTEXT_PRODUCT_CARD_CLASSNAME}
+          data-session-context-card
+          data-session-context-slot="current"
+          className="relative isolate flex min-w-0 flex-col overflow-hidden rounded-2xl border border-[#d8d8cf] bg-[#fbfbf6] p-5 text-[#171713] shadow-[0_18px_40px_rgba(23,23,19,0.07)] dark:border-[#292925] dark:bg-[#141411] dark:text-white xl:col-start-2 xl:row-start-1"
         >
-          <ContextCardPenBackdrop motif="session" />
-          <div className="relative z-10 flex min-h-full flex-1 flex-col">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-subtle">Same harness</p>
-                <h3 id="current-session-context-heading" className="mt-1 text-xl font-semibold tracking-[-0.03em] text-ink sm:text-2xl">
-                  Current Session Context
-                </h3>
-              </div>
-              <span className="rounded-full border border-line bg-white/50 px-3 py-1.5 text-[9px] font-semibold uppercase tracking-[0.1em] text-ink-muted backdrop-blur-md dark:bg-black/20">
-                Session only
-              </span>
-            </div>
-            <p className="mt-3 max-w-xl text-sm leading-6 text-ink-muted">
-              Start a new chat in the same harness or refresh a long-running session after compaction.
-            </p>
-            <dl className="mt-6 grid gap-3 rounded-xl border border-line bg-white/45 p-4 text-[10px] backdrop-blur-md dark:bg-black/15 sm:grid-cols-3 sm:gap-4">
-              <ContextDetail
-                label="Source"
-                value={sessionAvailable
-                  ? `${humanizeStatus(sessionProvider)} · ${sessionId}`
-                  : "No linked active session"}
+          {sessionAvailable && sessionProvider ? (
+            <span
+              aria-hidden="true"
+              data-session-provider-background={sessionProvider}
+              className="pointer-events-none absolute -right-[20%] top-[16%] z-10 h-[76%] w-[92%] opacity-[0.055] dark:opacity-[0.09]"
+            >
+              <HarnessArtwork
+                type={sessionProvider}
+                color="#a2a298"
               />
-              <ContextDetail label="Freshness" value={sessionFreshness} />
-              <ContextDetail
-                label="Size"
-                value={sessionContext?.estimated_tokens
-                  ? `${Number(sessionContext.estimated_tokens).toLocaleString()} tokens`
-                  : sessionContext?.content
-                    ? `≈${approximateTokens(sessionContext.content).toLocaleString()} tokens`
-                    : sessionAvailable
-                      ? "Preparing…"
-                      : "Unavailable"}
-              />
-            </dl>
+            </span>
+          ) : null}
 
-            <PromptPreview
-              label="Current Session Context prompt preview"
-              content={sessionContext?.content}
-              loading={sessionPreparing || (sessionAvailable && !sessionContext && !sessionError)}
-              available={sessionAvailable}
-              error={sessionError}
-              unavailableMessage="Link an active session to preview its continuation prompt."
+          <header className="relative z-20">
+            <h2 id="current-session-context-heading" className="text-2xl font-black leading-tight tracking-[-0.055em]">
+              Current Session Context
+            </h2>
+          </header>
+
+          <PromptPreview
+            label="Current Session Context prompt preview"
+            content={sessionContextCardPreviewContent(sessionContext?.content)}
+            loading={sessionPreparing || (sessionAvailable && !sessionContext && !sessionError)}
+            available={sessionAvailable}
+            error={sessionError}
+            unavailableMessage="Choose a session in Library to add its working state here."
+            compact
+            allowAncestorWatermark
+            identityLabel={sessionProvider
+              ? `${sessionProviderLabel(sessionProvider)} · Current session`
+              : ""}
+            copyReady={sessionContext?.quality_report?.copy_ready}
+            className="mt-5 min-h-[210px]"
+          />
+
+          {!sessionAvailable ? (
+            <Link to="/app/library" className="relative z-20 mt-3 inline-flex min-h-11 items-center gap-2 text-xs font-semibold text-evidence">
+              Choose a session in Library
+              <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+            </Link>
+          ) : null}
+
+          <div className="relative z-20 mt-auto grid gap-3 pt-4 sm:grid-cols-2">
+            <button
+              type="button"
+              aria-label="Preview Current Session Context"
+              onClick={(event) => onPreviewSession(event.currentTarget)}
+              disabled={!sessionAvailable}
+              className="btn-secondary min-h-11 px-4 text-xs"
+            >
+              {sessionPreparing
+                ? <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                : <BookOpenCheck className="h-3.5 w-3.5" aria-hidden="true" />}
+              {sessionContext
+                ? "Open full preview"
+                : sessionError
+                  ? "Retry preview"
+                  : "Preparing…"}
+            </button>
+            <ContextCopyButton
+              contextName="Current Session Context"
+              copyState={sessionCopyState}
+              onClick={onCopySession}
+              disabled={!sessionAvailable || !sessionCopyReady}
             />
+          </div>
+          {sessionError ? (
+            <p className="relative z-20 mt-3 text-xs leading-5 text-attention">
+              {sessionError}
+            </p>
+          ) : sessionContext && !sessionCopyReady ? (
+            <p className="relative z-20 mt-3 text-xs leading-5 text-attention">
+              {sessionContextQualityMessage(sessionContext)}
+            </p>
+          ) : null}
+        </article>
 
-            <div className="mt-auto grid grid-cols-2 gap-3 pt-5">
-              <button
-                type="button"
-                aria-label="Preview Current Session Context"
-                onClick={(event) => onPreviewSession(event.currentTarget)}
-                disabled={!sessionAvailable}
-                className="btn-secondary min-h-11 px-4 text-xs"
-              >
-                {sessionPreparing
-                  ? <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                  : <BookOpenCheck className="h-3.5 w-3.5" aria-hidden="true" />}
-                {sessionContext
-                  ? "Open full preview"
-                  : sessionError
+        {selectedSessions.map((session, index) => (
+          <SelectedSessionContextCard
+            key={executeSessionIdentity(session)}
+            workspaceId={workspaceId}
+            session={session}
+            slot={index + 1}
+            onRemove={onRemoveSelectedSession}
+          />
+        ))}
+      </div>
+
+      <section
+        aria-labelledby="workspace-context-heading"
+        className="overflow-hidden rounded-2xl border border-[#d8d8cf] bg-[#fbfbf6] p-5 text-[#171713] shadow-[0_18px_40px_rgba(23,23,19,0.07)] dark:border-[#292925] dark:bg-[#141411] dark:text-white sm:p-7"
+      >
+        <header className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+          <h2 id="workspace-context-heading" className="text-3xl font-black tracking-[-0.055em] sm:text-4xl">
+            Workspace Context
+          </h2>
+
+          <div className="grid w-full gap-3 sm:grid-cols-2 lg:w-auto lg:min-w-[22rem]">
+            <button
+              type="button"
+              aria-label="Preview Project Context"
+              onClick={(event) => onPreviewProject(event.currentTarget)}
+              disabled={
+                !projection.previewAvailable
+                || (!preparedContext && !projectRetryable)
+              }
+              className="btn-secondary min-h-11 px-4 text-xs"
+            >
+              {projectPreparing
+                ? <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                : <BookOpenCheck className="h-3.5 w-3.5" aria-hidden="true" />}
+              {projectContent
+                ? "Open full preview"
+                : projectError
+                  ? projectRetryable
                     ? "Retry preview"
-                    : "Preparing…"}
-              </button>
-              <ContextCopyButton
-                contextName="Current Session Context"
-                copyState={sessionCopyState}
-                onClick={onCopySession}
-                disabled={!sessionAvailable || !sessionCopyReady}
-              />
-            </div>
-            {sessionError ? (
-              <p className="mt-3 text-[10px] leading-4 text-attention">
-                {sessionError}
-              </p>
-            ) : sessionContext && !sessionCopyReady ? (
-              <p className="mt-3 text-[10px] leading-4 text-attention">
-                {sessionContextQualityMessage(sessionContext)}
-              </p>
-            ) : null}
-          </div>
-        </article>
-
-        <article
-          aria-labelledby="project-context-heading"
-          className={CONTEXT_PRODUCT_CARD_CLASSNAME}
-        >
-          <ContextCardPenBackdrop motif="project" />
-          <div className="relative z-10 flex min-h-full flex-1 flex-col">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-subtle">Switch harnesses</p>
-                <h3 id="project-context-heading" className="mt-1 text-xl font-semibold tracking-[-0.03em] text-ink sm:text-2xl">
-                  Project Context
-                </h3>
-              </div>
-              <span className="rounded-full border border-line bg-white/50 px-3 py-1.5 text-[9px] font-semibold uppercase tracking-[0.1em] text-ink-muted backdrop-blur-md dark:bg-black/20">
-                Task relevant
-              </span>
-            </div>
-            <p className="mt-3 max-w-xl text-sm leading-6 text-ink-muted">
-              Switch harnesses with the relevant session, repository state, project decisions, blockers, and learnings.
-            </p>
-            <dl className="mt-6 grid gap-3 rounded-xl border border-line bg-white/45 p-4 text-[10px] backdrop-blur-md dark:bg-black/15 sm:grid-cols-3 sm:gap-4">
-              <ContextDetail
-                label="Scope"
-                value={preparedContext
-                  ? `${preparedContext.execution_contract?.project_context?.length || 0} task-relevant project facts`
-                  : `${projection.included.length} expected memory lanes`}
-              />
-              <ContextDetail
-                label="Freshness"
-                value={preparedContext
-                  ? `Repository ${repositoryFreshness.toLowerCase()}`
-                  : projection.previewAvailable
-                    ? "Compiling against the live project"
-                    : "Unavailable"}
-              />
-              <ContextDetail
-                label="Size"
-                value={projectContent
-                  ? `≈${approximateTokens(projectContent).toLocaleString()} tokens`
-                  : projection.previewAvailable
-                    ? "Preparing…"
-                    : "Unavailable"}
-              />
-            </dl>
-
-            <PromptPreview
-              label="Project Context prompt preview"
-              content={projectContent}
-              loading={projectPreparing || (
-                projection.previewAvailable
-                && !preparedContext
-                && !projectError
-              )}
-              available={projection.previewAvailable}
-              error={projectError}
-              unavailableMessage="Choose an active task to preview its project prompt."
+                    : "Unavailable"
+                  : "Preparing…"}
+            </button>
+            <ContextCopyButton
+              contextName="Project Context"
+              copyState={projectCopyState}
+              onClick={onCopyProject}
+              disabled={
+                !projection.previewAvailable
+                || !projectCopyReady
+                || (!preparedContext && !projectRetryable)
+              }
             />
-
-            <div className="mt-auto grid grid-cols-2 gap-3 pt-5">
-              <button
-                type="button"
-                aria-label="Preview Project Context"
-                onClick={(event) => onPreviewProject(event.currentTarget)}
-                disabled={
-                  !projection.previewAvailable
-                  || (!preparedContext && !projectRetryable)
-                }
-                className="btn-secondary min-h-11 px-4 text-xs"
-              >
-                {projectPreparing
-                  ? <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                  : <BookOpenCheck className="h-3.5 w-3.5" aria-hidden="true" />}
-                {projectContent
-                  ? "Open full preview"
-                  : projectError
-                    ? projectRetryable
-                      ? "Retry preview"
-                      : "Unavailable"
-                    : "Preparing…"}
-              </button>
-              <ContextCopyButton
-                contextName="Project Context"
-                copyState={projectCopyState}
-                onClick={onCopyProject}
-                disabled={
-                  !projection.previewAvailable
-                  || !projectCopyReady
-                  || (!preparedContext && !projectRetryable)
-                }
-              />
-            </div>
-            {projectError ? (
-              <p
-                role={projectDialogOpen ? undefined : "alert"}
-                className="mt-3 text-[10px] leading-4 text-attention"
-              >
-                {projectError}
-              </p>
-            ) : null}
           </div>
-        </article>
-      </div>
+        </header>
 
-      <div className="rounded-2xl border border-[#d8d8cf]/80 bg-[#f7f7f1]/60 px-5 py-4 backdrop-blur-xl dark:border-white/10 dark:bg-[#11110f]/60 sm:px-7">
-        <details className="text-xs text-ink-muted">
-          <summary className="cursor-pointer font-semibold text-ink">Advanced context details</summary>
-          <div className="mt-3 space-y-3">
-            <p>
-              Audit provenance, selection records, hashes, and exclusions stay available for inspection but are never copied as either context product.
-            </p>
-            <ul className="space-y-1.5">
-              {projection.excluded.map((item) => <li key={item}>• {item}</li>)}
-            </ul>
-          </div>
-        </details>
-      </div>
-    </aside>
+        <PromptPreview
+          label="Project Context prompt preview"
+          content={projectContent}
+          loading={projectPreparing || (
+            projection.previewAvailable
+            && !preparedContext
+            && !projectError
+          )}
+          available={projection.previewAvailable}
+          error={projectError}
+          unavailableMessage="Choose an active task to compile the workspace foundation for execution."
+          className="mt-5 min-h-[360px]"
+        />
+        {projectError ? (
+          <p
+            role={projectDialogOpen ? undefined : "alert"}
+            className="mt-3 text-xs leading-5 text-attention"
+          >
+            {projectError}
+          </p>
+        ) : null}
+      </section>
+    </section>
   );
 }
 
 
-function ContextDetail({ label, value }) {
-  return (
-    <div className="min-w-0 border-t border-line pt-3 first:border-t-0 first:pt-0 sm:border-l sm:border-t-0 sm:pl-4 sm:pt-0 sm:first:border-l-0 sm:first:pl-0">
-      <dt className="font-semibold uppercase tracking-[0.09em] text-ink-subtle">{label}</dt>
-      <dd className="mt-1 break-words font-medium leading-4 text-ink-muted">{value}</dd>
-    </div>
+function SelectedSessionContextCard({
+  workspaceId,
+  session,
+  slot,
+  onRemove,
+}) {
+  const provider = normalizeProvider(session?.provider);
+  const sessionId = rawText(session?.sessionId);
+  const title = visibleText(session?.title) || "Selected session";
+  const contextName = `${title} Session Context`;
+  const headingId = `selected-session-context-${slot}`;
+  const checkpointQuery = useLatestCheckpoint(workspaceId, {
+    provider,
+    sessionId,
+    enabled: Boolean(workspaceId && provider && sessionId),
+  });
+  const captureCheckpoint = useCaptureCheckpoint();
+  const checkpointHandoff = useCheckpointHandoff();
+  const [context, setContext] = useState(null);
+  const [contextCheckpoint, setContextCheckpoint] = useState(null);
+  const [error, setError] = useState(null);
+  const [retryable, setRetryable] = useState(true);
+  const [copyState, setCopyState] = useState("idle");
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const previewReturnFocusRef = useRef(null);
+  const loadPromiseRef = useRef(null);
+  const identity = executeSessionIdentity(session);
+  const requestKey = JSON.stringify([workspaceId || "", identity]);
+  const activeRequestKeyRef = useRef(requestKey);
+  const autoPreviewKeyRef = useRef(null);
+  activeRequestKeyRef.current = requestKey;
+  const closePreview = useCallback(() => setPreviewOpen(false), []);
+
+  useEffect(() => {
+    setContext(null);
+    setContextCheckpoint(null);
+    setError(null);
+    setRetryable(true);
+    setCopyState("idle");
+    setPreviewOpen(false);
+    loadPromiseRef.current = null;
+    autoPreviewKeyRef.current = null;
+  }, [requestKey]);
+
+  const recordFailure = useCallback((reason, fallback) => {
+    const failure = sessionContextFailure(reason, fallback);
+    setError(failure.message);
+    setRetryable(failure.retryable);
+  }, []);
+
+  const loadContext = useCallback(async ({
+    forceCapture = false,
+    retryTransientNetworkFailure = false,
+  } = {}) => {
+    if (!workspaceId || !provider || !sessionId) {
+      throw new Error("This selected session no longer has a valid Library identity.");
+    }
+    if (loadPromiseRef.current?.key === requestKey) {
+      try {
+        return await loadPromiseRef.current.promise;
+      } catch (reason) {
+        if (
+          !forceCapture
+          && (
+            !retryTransientNetworkFailure
+            || !isTransientNetworkFailure(reason)
+          )
+        ) {
+          throw reason;
+        }
+      }
+    }
+
+    const operation = (async () => {
+      const captureSelectedTip = () => retryTransientNetworkRequest(
+        () => captureCheckpoint.mutateAsync({
+          workspaceId,
+          provider,
+          sessionId,
+          updateGenericLatest: false,
+        }),
+        retryTransientNetworkFailure,
+      );
+      let checkpoint = forceCapture ? await captureSelectedTip() : checkpointQuery.data;
+      if (
+        !forceCapture
+        && !sessionCheckpointIsCurrent(checkpoint, provider, sessionId)
+      ) {
+        checkpoint = await captureSelectedTip();
+      }
+      if (!checkpoint?.id) {
+        throw new Error("The selected session checkpoint could not be captured.");
+      }
+
+      const requestHandoff = (checkpointId) => retryTransientNetworkRequest(
+        () => checkpointHandoff.mutateAsync({
+          workspaceId,
+          checkpointId,
+        }),
+        retryTransientNetworkFailure,
+      );
+      let handoffResponse;
+      try {
+        handoffResponse = await requestHandoff(checkpoint.id);
+      } catch (reason) {
+        if (!forceCapture && sessionGoalIsUnavailable(reason)) {
+          const refreshed = await captureSelectedTip();
+          if (
+            refreshed?.id
+            && rawText(refreshed.id) !== rawText(checkpoint.id)
+          ) {
+            checkpoint = refreshed;
+            handoffResponse = await requestHandoff(checkpoint.id);
+          } else {
+            throw unavailableSessionGoalError();
+          }
+        } else {
+          throw reason;
+        }
+      }
+      const handoff = validateSessionContext(handoffResponse, {
+        provider,
+        sessionId,
+        checkpointId: checkpoint.id,
+        boundarySequence: checkpoint.boundary?.sequence_number,
+      });
+      if (activeRequestKeyRef.current !== requestKey) {
+        throw new Error(
+          "The selected session changed while its Session Context was preparing.",
+        );
+      }
+      setContext(handoff);
+      setContextCheckpoint(checkpoint);
+      setError(null);
+      setRetryable(true);
+      return { handoff, checkpoint };
+    })();
+    loadPromiseRef.current = { key: requestKey, promise: operation };
+    try {
+      return await operation;
+    } finally {
+      if (loadPromiseRef.current?.promise === operation) {
+        loadPromiseRef.current = null;
+      }
+    }
+  }, [
+    captureCheckpoint,
+    checkpointHandoff,
+    checkpointQuery.data,
+    provider,
+    requestKey,
+    sessionId,
+    workspaceId,
+  ]);
+
+  useEffect(() => {
+    if (
+      !workspaceId
+      || !provider
+      || !sessionId
+      || (checkpointQuery.isLoading && !checkpointQuery.data)
+      || context
+      || error
+      || captureCheckpoint.isPending
+      || checkpointHandoff.isPending
+    ) return;
+    if (autoPreviewKeyRef.current === requestKey) return;
+    autoPreviewKeyRef.current = requestKey;
+
+    setError(null);
+    setRetryable(true);
+    loadContext().catch((reason) => {
+      if (activeRequestKeyRef.current === requestKey) {
+        recordFailure(
+          reason,
+          `${title} Session Context could not be prepared.`,
+        );
+      }
+    });
+  }, [
+    captureCheckpoint.isPending,
+    checkpointHandoff.isPending,
+    checkpointQuery.data,
+    checkpointQuery.isLoading,
+    context,
+    error,
+    loadContext,
+    provider,
+    recordFailure,
+    requestKey,
+    sessionId,
+    title,
+    workspaceId,
+  ]);
+
+  const previewContext = async (trigger) => {
+    previewReturnFocusRef.current = trigger || document.activeElement;
+    setPreviewOpen(true);
+    if (
+      context
+      || captureCheckpoint.isPending
+      || checkpointHandoff.isPending
+      || (checkpointQuery.isLoading && !checkpointQuery.data)
+    ) {
+      return;
+    }
+    setError(null);
+    setRetryable(true);
+    try {
+      await loadContext();
+    } catch (reason) {
+      recordFailure(
+        reason,
+        `${title} Session Context could not be prepared.`,
+      );
+    }
+  };
+
+  const retryContext = async () => {
+    setContext(null);
+    setContextCheckpoint(null);
+    setError(null);
+    setRetryable(true);
+    try {
+      await loadContext({ forceCapture: true });
+    } catch (reason) {
+      recordFailure(
+        reason,
+        `${title} Session Context could not be prepared.`,
+      );
+    }
+  };
+
+  const copyContext = async () => {
+    setCopyState("copying");
+    setError(null);
+    setRetryable(true);
+    try {
+      const result = await loadContext({
+        retryTransientNetworkFailure: true,
+      });
+      const handoff = result?.handoff || result;
+      const checkpoint = result?.checkpoint || contextCheckpoint || checkpointQuery.data;
+      await writeClipboard(await copyReadySessionContextContent(handoff, {
+        provider,
+        sessionId,
+        checkpointId: checkpoint?.id,
+        boundarySequence: checkpoint?.boundary?.sequence_number,
+      }));
+      setCopyState("copied");
+      return true;
+    } catch (reason) {
+      setCopyState("error");
+      recordFailure(
+        reason,
+        `${title} Session Context could not be copied.`,
+      );
+      return false;
+    }
+  };
+
+  const preparing = Boolean(
+    captureCheckpoint.isPending
+    || checkpointHandoff.isPending
+    || (
+      workspaceId
+      && provider
+      && sessionId
+      && !context
+      && !error
+    )
   );
+  const copyReady = !context || context?.quality_report?.copy_ready === true;
+  const columnClass = slot === 1
+    ? "xl:col-start-1"
+    : "xl:col-start-3";
+
+  return (
+    <>
+      <article
+        aria-labelledby={headingId}
+        data-session-context-card
+        data-session-context-slot={`selected-${slot}`}
+        className={`relative isolate flex min-w-0 flex-col overflow-hidden rounded-2xl border border-[#d8d8cf] bg-[#fbfbf6] p-5 text-[#171713] shadow-[0_18px_40px_rgba(23,23,19,0.07)] dark:border-[#292925] dark:bg-[#141411] dark:text-white ${columnClass} xl:row-start-1`}
+      >
+        <button
+          type="button"
+          aria-label={`Remove ${title} from Execute`}
+          title={`Remove ${title} from Execute`}
+          onClick={() => onRemove?.(session)}
+          className="absolute right-3 top-3 z-30 inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[#d8d8cf] bg-[#fbfbf6]/90 text-[#77776e] shadow-sm backdrop-blur-sm transition hover:border-red-300 hover:bg-red-50 hover:text-red-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400/60 dark:border-[#383832] dark:bg-[#141411]/90 dark:text-[#aaa9a0] dark:hover:border-red-800 dark:hover:bg-red-950/40 dark:hover:text-red-300"
+        >
+          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
+
+        <span
+          aria-hidden="true"
+          data-session-provider-background={provider}
+          className="pointer-events-none absolute -right-[20%] top-[16%] z-10 h-[76%] w-[92%] opacity-[0.055] dark:opacity-[0.09]"
+        >
+          <HarnessArtwork type={provider} color="#a2a298" />
+        </span>
+
+        <header className="relative z-20 pr-9">
+          <p className="text-[9px] font-black uppercase tracking-[0.14em] text-[#77776e] dark:text-[#aaa9a0]">
+            Selected Session Context
+          </p>
+          <h2 id={headingId} className="mt-1 line-clamp-2 text-xl font-black leading-tight tracking-[-0.04em]">
+            {title}
+          </h2>
+          <p className="mt-2 line-clamp-1 text-[10px] font-semibold text-[#77776e] dark:text-[#aaa9a0]">
+            {sessionProviderLabel(provider)}
+            {session?.topic ? ` · ${session.topic}` : ""}
+          </p>
+        </header>
+
+        <PromptPreview
+          label={`${title} Session Context prompt preview`}
+          content={sessionContextCardPreviewContent(context?.content)}
+          loading={preparing}
+          available={Boolean(context)}
+          error={error}
+          unavailableMessage="Open the preview to prepare this selected session’s exact context."
+          compact
+          allowAncestorWatermark
+          identityLabel={`${sessionProviderLabel(provider)} · ${title}`}
+          copyReady={context?.quality_report?.copy_ready}
+          className="mt-5 min-h-[210px]"
+        />
+
+        <div className="relative z-20 mt-auto grid gap-3 pt-4 sm:grid-cols-2">
+          <button
+            type="button"
+            aria-label={`Preview ${contextName}`}
+            onClick={(event) => previewContext(event.currentTarget)}
+            className="btn-secondary min-h-11 px-4 text-xs"
+          >
+            {preparing
+              ? <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              : <BookOpenCheck className="h-3.5 w-3.5" aria-hidden="true" />}
+            {preparing
+              ? "Preparing…"
+              : context
+              ? "Open full preview"
+              : error
+                ? retryable ? "Retry preview" : "Unavailable"
+                : "Prepare preview"}
+          </button>
+          <ContextCopyButton
+            contextName={contextName}
+            copyState={copyState}
+            onClick={copyContext}
+            disabled={preparing || !copyReady || (!context && error && !retryable)}
+          />
+        </div>
+
+        {error ? (
+          <p className="relative z-20 mt-3 text-xs leading-5 text-attention">
+            {error}
+          </p>
+        ) : context && !copyReady ? (
+          <p className="relative z-20 mt-3 text-xs leading-5 text-attention">
+            {sessionContextQualityMessage(context, contextName)}
+          </p>
+        ) : null}
+      </article>
+
+      {previewOpen ? createPortal(
+        <SessionContextPreviewDialog
+          result={context}
+          loading={preparing}
+          error={error}
+          canRetry={retryable}
+          copyState={copyState}
+          onCopy={copyContext}
+          onRetry={retryContext}
+          onClose={closePreview}
+          returnFocusRef={previewReturnFocusRef}
+          contextName={contextName}
+          previewTitle={`${title} Session Context Preview`}
+          eyebrow={`Selected task child · ${sessionProviderLabel(provider)}`}
+        />,
+        document.body,
+      ) : null}
+    </>
+  );
+}
+
+
+function sessionContextCardPreviewContent(content) {
+  const fullContent = rawText(content);
+  if (!fullContent) return "";
+
+  const goalHeading = "## Current main goal";
+  const goalOffset = fullContent.indexOf(goalHeading);
+  if (goalOffset <= 0) return fullContent;
+
+  return [
+    "# Session Context — task-level working memory",
+    "",
+    fullContent.slice(goalOffset),
+  ].join("\n");
 }
 
 
@@ -953,36 +1482,66 @@ function PromptPreview({
   available,
   error,
   unavailableMessage,
+  compact = false,
+  allowAncestorWatermark = false,
+  identityLabel = "",
+  copyReady,
+  className = "",
 }) {
+  const blocked = Boolean(content && copyReady === false);
   return (
     <section
       aria-label={label}
-      className="relative isolate mt-6 flex min-h-[320px] flex-1 flex-col overflow-hidden rounded-2xl border border-[#2b2b26] bg-[#171713] text-[#f4f4ec] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
+      aria-busy={loading || undefined}
+      className={`relative flex flex-1 flex-col overflow-hidden rounded-2xl border border-[#2b2b26] bg-[#171713] text-[#f4f4ec] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] ${
+        allowAncestorWatermark ? "" : "isolate"
+      } ${className}`}
     >
-      <header className="relative z-10 flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
+      <header className="relative z-20 flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
         <div className="flex items-center gap-2">
           <FileCode2 className="h-3.5 w-3.5 text-[#d9ff68]" aria-hidden="true" />
-          <span className="font-mono text-[9px] font-semibold uppercase tracking-[0.14em] text-white/60">
+          <span className="font-mono text-xs font-semibold uppercase tracking-[0.12em] text-white/70">
             Prompt preview
           </span>
         </div>
-        <span className="inline-flex items-center gap-1.5 text-[9px] font-semibold uppercase tracking-[0.1em] text-white/40">
+        <span className={`inline-flex items-center gap-1.5 text-xs font-semibold ${
+          blocked ? "text-amber-300" : "text-white/60"
+        }`}>
           <span className={`h-1.5 w-1.5 rounded-full ${
-            content ? "bg-[#d9ff68]" : loading ? "animate-pulse bg-white/60" : "bg-white/25"
+            blocked
+              ? "bg-amber-400"
+              : content
+                ? "bg-[#d9ff68]"
+                : loading
+                  ? "animate-pulse bg-white/60"
+                  : "bg-white/25"
           }`} />
-          {content ? "Prepared" : loading ? "Preparing" : "Unavailable"}
+          {blocked
+            ? "Not copy-ready"
+            : content
+              ? "Prepared"
+              : loading
+                ? "Preparing"
+                : "Unavailable"}
         </span>
       </header>
+      {identityLabel ? (
+        <div className="relative z-20 border-b border-white/10 bg-white/[0.025] px-4 py-2 font-mono text-[10px] font-semibold uppercase tracking-[0.1em] text-white/50 sm:px-5">
+          {identityLabel}
+        </div>
+      ) : null}
       {content ? (
         <pre
           tabIndex={0}
           aria-label={`${label} content`}
-          className="relative z-10 max-h-[460px] flex-1 overflow-auto whitespace-pre-wrap break-words p-4 font-mono text-[11px] leading-5 text-white/78 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-3px] focus-visible:outline-[#d9ff68] sm:p-5"
+          className={`relative z-20 flex-1 overflow-auto whitespace-pre-wrap break-words p-4 font-mono text-xs leading-5 text-white/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-3px] focus-visible:outline-[#d9ff68] sm:p-5 ${
+            compact ? "max-h-[320px]" : "max-h-[620px]"
+          }`}
         >
           {content}
         </pre>
       ) : (
-        <div className="relative z-10 flex flex-1 items-center justify-center p-6 text-center">
+        <div className="relative z-20 flex flex-1 items-center justify-center p-6 text-center">
           <div className="max-w-sm">
             {loading ? (
               <RefreshCw className="mx-auto h-5 w-5 animate-spin text-[#d9ff68]" aria-hidden="true" />
@@ -1006,20 +1565,6 @@ function PromptPreview({
 }
 
 
-function ContextCardPenBackdrop({ motif }) {
-  return (
-    <div aria-hidden="true" className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
-      <img
-        src={fountainPen}
-        alt=""
-        data-pen-motif={motif}
-        className="absolute -right-20 -top-16 w-[22rem] max-w-none rotate-[12deg] select-none opacity-[0.055] dark:invert dark:opacity-[0.09] sm:-right-16 sm:w-[24rem] lg:w-[26rem]"
-      />
-    </div>
-  );
-}
-
-
 function copyActionLabel(state, contextName) {
   if (state === "copying") return "Copying…";
   if (state === "copied") return "Copied";
@@ -1034,6 +1579,15 @@ function ContextCopyButton({
   onClick,
   disabled,
 }) {
+  const artifactLabel = contextName === "Project Context" ? "workspace" : "session";
+  const visibleLabel = copyState === "copying"
+    ? "Copying…"
+    : copyState === "copied"
+      ? "Copied"
+      : copyState === "error"
+        ? "Try copy again"
+        : `Copy ${artifactLabel}`;
+
   return (
     <button
       type="button"
@@ -1043,7 +1597,14 @@ function ContextCopyButton({
       className="btn-primary min-h-11 px-4 text-xs"
     >
       <Clipboard className="h-3.5 w-3.5" aria-hidden="true" />
-      {copyActionLabel(copyState, "").trim()}
+      {visibleLabel}
+      <span className="sr-only" aria-live="polite">
+        {copyState === "copied"
+          ? `${contextName} copied`
+          : copyState === "error"
+            ? `${contextName} could not be copied`
+            : ""}
+      </span>
     </button>
   );
 }
@@ -1142,12 +1703,12 @@ function ContextPreviewDialog({
       >
         <header className="flex items-start justify-between gap-4 border-b border-line bg-surface-raised px-5 py-5 sm:px-6">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-subtle">Cross-harness handoff</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-subtle">Parent foundation · cross-harness</p>
             <h2 id="context-preview-title" className="mt-1 text-xl font-semibold tracking-[-0.03em] text-ink">
               Project Context Preview
             </h2>
             <p className="mt-1 text-xs leading-5 text-ink-muted">
-              Task-relevant project knowledge compiled for the current lead. If the task changes materially, compile a fresh Project Context.
+              The workspace-wide durable parent foundation. Mechanically verified, human-confirmed, and corroborated facts can appear; provisional and conflicting claims stay out.
             </p>
           </div>
           <button
@@ -1165,7 +1726,7 @@ function ContextPreviewDialog({
           <ProductLoadingState
             compact
             label="Compiling Project Context…"
-            detail="Reconciling the active task, current repository, and relevant project knowledge."
+            detail="Reconciling the active task, current repository, and durable verified project foundation."
             stages={["Resolving the task", "Checking repository state", "Rendering Project Context"]}
             className="m-5 sm:m-6"
           />
@@ -1184,7 +1745,7 @@ function ContextPreviewDialog({
         ) : result ? (
           <>
             <div className="grid grid-cols-2 gap-px border-b border-line bg-line sm:grid-cols-4">
-              <PreviewMetric label="Scope" value="Task-relevant project" />
+              <PreviewMetric label="Scope" value="Verified parent projection" />
               <PreviewMetric
                 label="Estimated size"
                 value={Number.isFinite(projectTokens) ? `≈${projectTokens.toLocaleString()} tokens` : "Not reported"}
@@ -1288,6 +1849,9 @@ function SessionContextPreviewDialog({
   onRetry,
   onClose,
   returnFocusRef,
+  contextName = "Current Session Context",
+  previewTitle = "Current Session Context Preview",
+  eyebrow = "Task child · same harness",
 }) {
   const closeRef = useRef(null);
   const dialogRef = useRef(null);
@@ -1337,19 +1901,19 @@ function SessionContextPreviewDialog({
       >
         <header className="flex items-start justify-between gap-4 border-b border-line bg-surface-raised px-5 py-5 sm:px-6">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-subtle">Same-session handoff</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-subtle">{eyebrow}</p>
             <h2 id="session-context-preview-title" className="mt-1 text-xl font-semibold tracking-[-0.03em] text-ink">
-              Current Session Context Preview
+              {previewTitle}
             </h2>
             <p className="mt-1 text-xs leading-5 text-ink-muted">
-              A compact handoff from one session boundary for a new chat in the same harness.
+              The latest individual session's child working memory. Its Project Context parent is a separate artifact; failed attempts and transient blockers stay here.
             </p>
           </div>
           <button
             ref={closeRef}
             type="button"
             onClick={onClose}
-            aria-label="Close Current Session Context Preview"
+            aria-label={`Close ${previewTitle}`}
             className="icon-button shrink-0"
           >
             <X className="h-4 w-4" aria-hidden="true" />
@@ -1359,15 +1923,15 @@ function SessionContextPreviewDialog({
         {loading ? (
           <ProductLoadingState
             compact
-            label="Preparing Current Session Context…"
-            detail="Capturing the current session tip and rendering its compact handoff."
+            label={`Preparing ${contextName}…`}
+            detail="Capturing the latest task child while preserving its separate Project Context boundary."
             stages={["Capturing the session tip", "Restoring structured progress", "Rendering Session Context"]}
             className="m-5 sm:m-6"
           />
         ) : error ? (
           <div role="alert" className="px-6 py-14 text-center">
             <AlertTriangle className="mx-auto h-7 w-7 text-attention" aria-hidden="true" />
-            <h3 className="mt-4 text-base font-semibold text-ink">Current Session Context could not be prepared</h3>
+            <h3 className="mt-4 text-base font-semibold text-ink">{contextName} could not be prepared</h3>
             <p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-ink-muted">{error}</p>
             {canRetry ? (
               <button type="button" onClick={onRetry} className="btn-secondary mt-5 min-h-11 text-xs">
@@ -1394,12 +1958,12 @@ function SessionContextPreviewDialog({
             </div>
             {!copyReady ? (
               <div role="status" className="border-b border-attention/30 bg-attention/10 px-5 py-3 text-xs font-medium leading-5 text-ink sm:px-6">
-                {sessionContextQualityMessage(result)}
+                {sessionContextQualityMessage(result, contextName)}
               </div>
             ) : null}
             <div className="min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
               <div className="flex items-center justify-between gap-3">
-                <p className="text-xs font-semibold text-ink">Current Session Context</p>
+                <p className="text-xs font-semibold text-ink">{contextName}</p>
                 <button
                   type="button"
                   onClick={onCopy}
@@ -1407,12 +1971,12 @@ function SessionContextPreviewDialog({
                   className="inline-flex min-h-9 items-center gap-2 rounded-lg px-3 text-[10px] font-semibold text-ink-muted hover:bg-surface-muted hover:text-ink"
                 >
                   <Clipboard className="h-3.5 w-3.5" aria-hidden="true" />
-                  {copyActionLabel(copyState, "Current Session Context")}
+                  {copyActionLabel(copyState, contextName)}
                 </button>
               </div>
               <pre
                 tabIndex={0}
-                aria-label="Current Session Context prompt content"
+                aria-label={`${contextName} prompt content`}
                 className="mt-3 max-h-[56vh] overflow-auto whitespace-pre-wrap rounded-xl border border-line bg-[#171713] p-4 font-mono text-[11px] leading-5 text-[#f4f4ec]"
               >
                 {result.content}
@@ -1724,7 +2288,7 @@ function projectMemoryNow({
       label: "Task mismatch",
       title: "Recent activity belongs to a different task",
       summary: `Project focus is “${currentGoal}”; the newest session reports “${activityGoal}”. Its state and files were excluded.`,
-      href: "/app/runs",
+      href: "/app/library",
     });
   }
   if (activityOutcomeNeedsAttention(activity)) {
@@ -1733,7 +2297,7 @@ function projectMemoryNow({
       label: humanizeStatus(activity?.state || activity?.outcome?.status || "Run"),
       title: "Latest run did not complete successfully",
       summary: visibleText(activity?.outcome?.summary || activity?.latest_update),
-      href: "/app/runs",
+      href: "/app/library",
     });
   }
   if (activityVerificationFailed) {
@@ -1742,7 +2306,7 @@ function projectMemoryNow({
       label: "Verification",
       title: "Latest observed verification failed",
       summary: activityVerification,
-      href: "/app/runs",
+      href: "/app/library",
     });
   }
   if (checkpointUnavailableForBrief) {
@@ -1751,7 +2315,7 @@ function projectMemoryNow({
       label: "Checkpoint",
       title: "Saved checkpoint is not current and complete",
       summary: checkpointSafetySummary(checkpoint),
-      href: "/app/runs",
+      href: "/app/library",
     });
   }
   if (checkpointStatusNeedsReview) {
@@ -1762,7 +2326,7 @@ function projectMemoryNow({
         ? "Checkpoint reports a blocked continuation"
         : "Checkpoint requires review before continuation",
       summary: "The checkpoint can inform the brief, but it is not treated as launch-ready.",
-      href: "/app/runs",
+      href: "/app/library",
     });
   }
   if (checkpointVerificationItems.length && !checkpointVerificationBoundToSnapshot) {
@@ -1775,7 +2339,7 @@ function projectMemoryNow({
         : checkpointVerificationStatus
         ? `Verification status is ${humanizeStatus(checkpointVerificationStatus)}.`
         : "No verified checkpoint result is attached to this repository state.",
-      href: "/app/runs",
+      href: "/app/library",
     });
   }
 
@@ -1833,21 +2397,21 @@ function projectMemoryNow({
     objective,
     continuable,
     currentState,
-    currentStateSource: latestUpdate ? "/app/runs" : SECTION_LINKS.work,
+    currentStateSource: latestUpdate ? "/app/library" : SECTION_LINKS.work,
     lastCompleted,
-    lastCompletedSource: outcomeSummary ? "/app/runs" : SECTION_LINKS.completed,
+    lastCompletedSource: outcomeSummary ? "/app/library" : SECTION_LINKS.completed,
     nextAction,
-    nextActionSource: checkpointNextAction ? "/app/runs" : SECTION_LINKS.work,
+    nextActionSource: checkpointNextAction ? "/app/library" : SECTION_LINKS.work,
     blockers,
     verification,
-    verificationSource: activityVerification || checkpointVerification.length ? "/app/runs" : SECTION_LINKS.deliveries,
+    verificationSource: activityVerification || checkpointVerification.length ? "/app/library" : SECTION_LINKS.deliveries,
     files,
     filesSource: activity?.changed_files?.length || checkpointSections.relevant_files?.length
-      ? "/app/runs"
+      ? "/app/library"
       : SECTION_LINKS.deliveries,
     decisions,
     failedAttempts,
-    failedAttemptsSource: checkpointSections.failed_attempts?.length ? "/app/runs" : SECTION_LINKS.learnings,
+    failedAttemptsSource: checkpointSections.failed_attempts?.length ? "/app/library" : SECTION_LINKS.learnings,
     timeline,
     attentionItems: attention.slice(0, 3),
     attentionTotal,
@@ -2291,8 +2855,8 @@ function normalizeProvider(value) {
   const normalized = visibleText(value)
     .toLowerCase()
     .replace(/^daemonstate:/, "");
-  if (normalized === "claude_code" || normalized === "claude-code") return "claude";
-  if (normalized === "open_code" || normalized === "open-code") return "opencode";
+  if (["claude code", "claude_code", "claude-code"].includes(normalized)) return "claude";
+  if (["open code", "open_code", "open-code"].includes(normalized)) return "opencode";
   return normalized;
 }
 
@@ -2324,6 +2888,15 @@ function auditItemReason(item) {
 function humanizeStatus(value) {
   const text = visibleText(value).replaceAll("_", " ");
   return text ? `${text.charAt(0).toUpperCase()}${text.slice(1)}` : "Unknown";
+}
+
+
+function sessionProviderLabel(value) {
+  const provider = normalizeProvider(value);
+  if (provider === "codex") return "Codex";
+  if (provider === "claude") return "Claude";
+  if (provider === "opencode") return "OpenCode";
+  return humanizeStatus(provider);
 }
 
 
@@ -2449,7 +3022,7 @@ function sessionGoalIsUnavailable(error) {
 
 function unavailableSessionGoalError() {
   const error = new Error(
-    "This session no longer retains its original user request, so a trustworthy Current Session Context cannot be produced. Choose another session or checkpoint in History.",
+    "This session no longer retains its original user request, so a trustworthy Current Session Context cannot be produced. Choose another session or checkpoint in Library.",
   );
   error.code = "session_goal_unavailable";
   error.retryable = false;

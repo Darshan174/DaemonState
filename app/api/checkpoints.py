@@ -28,8 +28,10 @@ from app.services.checkpoints import (
     resolve_session_handoff_attachment_descriptors,
     resolve_session_handoff_request_verbatim,
     resolve_session_handoff_supporting_context,
+    session_handoff_render_issues,
 )
 from app.services.harness_launcher import HarnessLaunchError, launch_harness_session
+from app.services.session_scope import normalize_session_key, session_provider_values
 
 
 router = APIRouter()
@@ -156,13 +158,22 @@ async def create_checkpoint(
     access_scope: AccessScope = Depends(get_access_scope),
 ) -> dict:
     await _require_workspace(session, body.workspace_id, access_scope)
+    session_key = normalize_session_key(body.provider, body.session_id)
+    if session_key is None:
+        raise HTTPException(
+            status_code=422,
+            detail="provider and session_id must be non-empty",
+        )
+    normalized_provider, normalized_session_id = session_key
     event = await session.scalar(
         select(SessionEvent)
         .join(SourceDocument, SessionEvent.source_document_id == SourceDocument.id)
         .where(
             SessionEvent.workspace_id == body.workspace_id,
-            SessionEvent.provider == body.provider.strip().lower(),
-            SessionEvent.session_id == body.session_id.strip(),
+            SessionEvent.provider.in_(
+                session_provider_values(normalized_provider)
+            ),
+            SessionEvent.session_id == normalized_session_id,
             source_access_predicate(access_scope, workspace_id=body.workspace_id),
         )
         .order_by(SessionEvent.sequence_number.desc())
@@ -173,8 +184,10 @@ async def create_checkpoint(
     session_source_ids = set(await session.scalars(
         select(SessionEvent.source_document_id).where(
             SessionEvent.workspace_id == body.workspace_id,
-            SessionEvent.provider == body.provider.strip().lower(),
-            SessionEvent.session_id == body.session_id.strip(),
+            SessionEvent.provider.in_(
+                session_provider_values(normalized_provider)
+            ),
+            SessionEvent.session_id == normalized_session_id,
         ).distinct()
     ))
     if not await _source_ids_allowed(
@@ -185,8 +198,8 @@ async def create_checkpoint(
         checkpoint = await capture_checkpoint(
             session,
             workspace_id=body.workspace_id,
-            provider=body.provider.strip().lower(),
-            session_id=body.session_id.strip(),
+            provider=event.provider,
+            session_id=event.session_id,
             boundary_event_id=body.boundary_event_id,
             trigger="manual",
         )
@@ -373,6 +386,17 @@ async def create_session_handoff(
             contract=contract,
             checkpoint_data=data,
         )
+        render_issues = session_handoff_render_issues(content)
+        if render_issues:
+            quality = contract["quality_report"]
+            quality["status"] = "blocked"
+            quality["copy_ready"] = False
+            quality["automatic_execution_ready"] = False
+            quality["checks"] = [*quality["checks"], *render_issues]
+            quality["blocking_issues"] = [
+                *quality["blocking_issues"],
+                *render_issues,
+            ]
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {

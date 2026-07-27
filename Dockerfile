@@ -6,12 +6,16 @@ WORKDIR /frontend
 COPY frontend/package*.json ./
 RUN npm ci --prefer-offline
 
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES.txt /legal/
 COPY frontend/ ./
-RUN npm run build
+RUN DAEMONSTATE_LEGAL_DIR=/legal npm run build
 
 
 # ── Stage 2: Python runtime (backend + serves built frontend) ─────────────────
 FROM python:3.12-slim
+
+LABEL org.opencontainers.image.source="https://github.com/Darshan174/DaemonState" \
+      org.opencontainers.image.licenses="SUL-1.0"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -28,7 +32,7 @@ RUN apt-get update \
 # Install the packaged application and immutable migration resources together.
 # The migration gate and API/worker schema probes both resolve alembic.ini from
 # this runtime working directory.
-COPY pyproject.toml README.md LICENSE alembic.ini ./
+COPY pyproject.toml README.md LICENSE NOTICE THIRD_PARTY_NOTICES.txt alembic.ini ./
 COPY app ./app
 RUN pip install --no-cache-dir .
 RUN git --version \
@@ -49,7 +53,7 @@ VOLUME ["/data"]
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')"
 
 USER 10001:10001
 

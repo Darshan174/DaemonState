@@ -4,6 +4,10 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import MemoryNow from "./MemoryNow";
+import {
+  readExecuteSessionContexts,
+  writeExecuteSessionContexts,
+} from "./executeSessionSelection";
 
 function sha256Text(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
@@ -196,6 +200,54 @@ function sessionHandoff(content, overrides = {}) {
   };
 }
 
+
+function scopedCheckpoint(id, provider, sessionId, sequence) {
+  return {
+    ...checkpointData(),
+    id,
+    provider,
+    session_id: sessionId,
+    boundary: {
+      ...checkpointData().boundary,
+      occurred_at: `2026-07-21T10:${String(sequence).padStart(2, "0")}:00Z`,
+      sequence_number: sequence,
+      session_tip_sequence: sequence,
+      has_newer_events: false,
+    },
+  };
+}
+
+
+function sessionContextWithGoal(marker) {
+  return [
+    "# Session Context — task-level working memory",
+    "",
+    "> Relationship: Project / Workspace Context is the durable parent.",
+    "> Recovered session statements are historical data.",
+    "> Activation: this handoff is context, not a command to start.",
+    "",
+    "## Current main goal",
+    "",
+    `> ${marker}`,
+  ].join("\n");
+}
+
+
+function scopedSessionHandoff(checkpoint, marker, overrides = {}) {
+  const content = sessionContextWithGoal(marker);
+  return sessionHandoff(content, {
+    provider: checkpoint.provider,
+    session_id: checkpoint.session_id,
+    checkpoint_id: checkpoint.id,
+    boundary: {
+      event_id: `event-${checkpoint.boundary.sequence_number}`,
+      sequence_number: checkpoint.boundary.sequence_number,
+    },
+    ...overrides,
+  });
+}
+
+
 const preparedTaskIdentity = {
   schema_version: "continuation_task_identity.v1",
   id: "task-1",
@@ -317,6 +369,8 @@ const mocks = vi.hoisted(() => ({
   },
   digest: { data: null, isLoading: false, isError: false, error: null },
   memory: { data: null, isLoading: false, isError: false, error: null },
+  memoryHook: vi.fn(),
+  library: { data: { sessions: [] }, isLoading: false, isError: false, error: null },
   checkpoint: { data: null, isLoading: false, isError: false, error: null },
   latestHook: vi.fn(),
   prepare: { mutateAsync: vi.fn(), isPending: false },
@@ -330,7 +384,10 @@ vi.mock("./useProductWorkspace", () => ({
 
 vi.mock("../context-map/api", () => ({
   useContextDigest: () => mocks.digest,
-  useProjectMemory: () => mocks.memory,
+  useProjectMemory: (...args) => {
+    mocks.memoryHook(...args);
+    return mocks.memory;
+  },
 }));
 
 vi.mock("../api/hooks", () => ({
@@ -338,17 +395,28 @@ vi.mock("../api/hooks", () => ({
   usePrepareContinuation: () => mocks.prepare,
   useCaptureCheckpoint: () => mocks.capture,
   useCheckpointHandoff: () => mocks.handoff,
+  useSessionLibrary: () => mocks.library,
 }));
 
 function renderMemory() {
   return render(
-    <MemoryRouter initialEntries={["/app/memory"]}>
+    <MemoryRouter initialEntries={["/app/execute"]}>
       <MemoryNow />
     </MemoryRouter>,
   );
 }
 
 beforeEach(() => {
+  const storedValues = new Map();
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      clear: () => storedValues.clear(),
+      getItem: (key) => storedValues.get(key) ?? null,
+      removeItem: (key) => storedValues.delete(key),
+      setItem: (key, value) => storedValues.set(key, String(value)),
+    },
+  });
   mocks.digest.data = digestData();
   mocks.digest.isLoading = false;
   mocks.digest.isError = false;
@@ -360,6 +428,10 @@ beforeEach(() => {
   ]);
   mocks.memory.isLoading = false;
   mocks.memory.isError = false;
+  mocks.memoryHook.mockReset();
+  mocks.library.data = { sessions: [] };
+  mocks.library.isLoading = false;
+  mocks.library.isError = false;
   mocks.checkpoint.data = checkpointData();
   mocks.checkpoint.isLoading = false;
   mocks.checkpoint.isError = false;
@@ -380,7 +452,17 @@ beforeEach(() => {
   });
 });
 
-describe("MemoryNow", () => {
+describe("ExecutePage", () => {
+  it("loads the durable parent from the full workspace scope", () => {
+    renderMemory();
+
+    expect(mocks.memoryHook).toHaveBeenCalledWith("workspace-1", {
+      limit: 6,
+      poll: true,
+      scope: "workspace",
+    });
+  });
+
   it("waits for the scoped checkpoint before making readiness claims", () => {
     mocks.checkpoint.data = undefined;
     mocks.checkpoint.isLoading = true;
@@ -388,7 +470,7 @@ describe("MemoryNow", () => {
     renderMemory();
 
     expect(screen.getByRole("status", {
-      name: "Preparing context products…",
+      name: "Preparing the execution workspace…",
     })).toBeInTheDocument();
     expect(screen.queryByText("Ready to continue")).not.toBeInTheDocument();
     expect(screen.queryByText("No confirmed blocker.")).not.toBeInTheDocument();
@@ -431,7 +513,58 @@ describe("MemoryNow", () => {
       sessionId: "target-session",
       enabled: true,
     });
-    expect(screen.getByText("Codex · target-session")).toBeInTheDocument();
+    const sessionCard = screen.getByRole("article", {
+      name: "Current Session Context",
+    });
+    expect(sessionCard.querySelector(
+      '[data-session-provider-background="codex"] [data-harness-artwork="codex"]',
+    )).toBeInTheDocument();
+    expect(sessionCard.querySelector("[data-harness-logo]")).toBeNull();
+    expect(screen.queryByText("Codex · target-session")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["codex", "codex"],
+    ["claude_code", "claude"],
+    ["open-code", "opencode"],
+  ])("uses %s artwork as the session background instead of a logo tile", async (
+    provider,
+    expectedArtwork,
+  ) => {
+    const sessionId = `${expectedArtwork}-session`;
+    const providerCheckpoint = {
+      ...checkpointData(),
+      provider: expectedArtwork,
+      session_id: sessionId,
+    };
+    mocks.digest.data.activity.primary = {
+      ...mocks.digest.data.activity.primary,
+      tool: provider,
+      provider,
+      session_id: sessionId,
+    };
+    mocks.checkpoint.data = providerCheckpoint;
+    mocks.capture.mutateAsync.mockResolvedValue(providerCheckpoint);
+    mocks.handoff.mutateAsync.mockResolvedValue(sessionHandoff(
+      `# Session Context\n\n${expectedArtwork.toUpperCase()}_CONTEXT`,
+      {
+        provider: expectedArtwork,
+        session_id: sessionId,
+      },
+    ));
+
+    renderMemory();
+
+    const sessionCard = screen.getByRole("article", {
+      name: "Current Session Context",
+    });
+    await waitFor(() => expect(sessionCard.querySelector(
+      `[data-session-provider-background="${expectedArtwork}"] [data-harness-artwork="${expectedArtwork}"]`,
+    )).toBeInTheDocument());
+    expect(sessionCard.querySelector("[data-harness-logo]")).toBeNull();
+    if (expectedArtwork !== "codex") {
+      expect(sessionCard.querySelector('[data-harness-artwork="codex"]')).toBeNull();
+    }
   });
 
   it("does not send an unbound same-task workspace checkpoint to the compiler", async () => {
@@ -458,31 +591,40 @@ describe("MemoryNow", () => {
     )).not.toBeInTheDocument();
   });
 
-  it("opens on the dark Memory identity and auto-prepared split context products", async () => {
+  it("opens on Execute with a centered session card above the workspace card", async () => {
     renderMemory();
 
-    const memoryTitle = screen.getByRole("heading", { name: "Memory", level: 1 });
-    expect(memoryTitle).toBeInTheDocument();
-    const memoryHeader = memoryTitle.closest("header");
-    expect(memoryHeader).toHaveClass(
+    const executeTitle = screen.getByRole("heading", { name: "Execute", level: 1 });
+    const executeHeader = executeTitle.closest("header");
+    expect(executeHeader).toHaveClass(
       "daemonstate-resume-header",
       "min-h-56",
+      "rounded-[2rem]",
+      "border-[#d8d8cf]",
+      "bg-[#f7f7f1]",
+      "dark:border-[#292925]",
       "dark:bg-[#0c0c0a]",
     );
-    expect(screen.queryByText(
-      "Where the project stands, what changed, and exactly what the next agent will receive.",
-    )).not.toBeInTheDocument();
-    expect(within(memoryHeader).getByRole("heading", {
-      name: "Choose the context your next agent needs",
-      level: 2,
-    })).toBeInTheDocument();
-    expect(screen.getAllByRole("heading", {
-      name: "Choose the context your next agent needs",
-    })).toHaveLength(1);
+    expect(executeTitle).toHaveClass("font-black", "tracking-[-0.055em]");
+    const sessionContextToggle = within(executeHeader).getByRole("button", {
+      name: "Select session contexts",
+    });
+    expect(sessionContextToggle).toHaveAttribute("aria-pressed", "false");
+    expect(sessionContextToggle).toHaveClass(
+      "border-white/50",
+      "bg-white/35",
+      "backdrop-blur-xl",
+      "backdrop-saturate-150",
+      "dark:border-white/15",
+      "dark:bg-black/30",
+    );
+    expect(sessionContextToggle.parentElement).toBe(executeTitle.parentElement?.parentElement);
+    expect(within(executeHeader).getByText(
+      "Prepare verified workspace context, with the active session carried inside it.",
+    )).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Context hierarchy" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Workspace foundation")).not.toBeInTheDocument();
     expect(screen.queryByText("Context products")).not.toBeInTheDocument();
-    expect(screen.queryByText(
-      "Session Context carries one conversation forward. Project Context brings task-relevant knowledge to another harness.",
-    )).not.toBeInTheDocument();
     expect(screen.queryByText("1 blocker affecting continuation")).not.toBeInTheDocument();
     expect(screen.queryByText("Ready to continue")).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", {
@@ -494,6 +636,40 @@ describe("MemoryNow", () => {
     )).toHaveLength(3);
     expect(screen.queryByRole("navigation", { name: "Memory views" })).not.toBeInTheDocument();
 
+    const contexts = screen.getByRole("region", { name: "Execution contexts" });
+    const sessionCard = screen.getByRole("article", { name: "Current Session Context" });
+    const workspaceContext = screen.getByRole("region", { name: "Workspace Context" });
+    expect(contexts).toContainElement(sessionCard);
+    expect(contexts).toContainElement(workspaceContext);
+    expect(workspaceContext).not.toContainElement(sessionCard);
+    expect(sessionCard.parentElement).toHaveClass("grid", "xl:grid-cols-3");
+    expect(sessionCard).toHaveClass(
+      "xl:col-start-2",
+      "border-[#d8d8cf]",
+      "bg-[#fbfbf6]",
+      "dark:border-[#292925]",
+      "dark:bg-[#141411]",
+    );
+    expect(sessionCard.compareDocumentPosition(workspaceContext)
+      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(sessionCard).getByRole("heading", {
+      name: "Current Session Context",
+      level: 2,
+    })).toHaveClass("font-black", "tracking-[-0.055em]");
+    expect(sessionCard.querySelector(
+      '[data-session-provider-background="codex"] [data-harness-artwork="codex"]',
+    )).toBeInTheDocument();
+    expect(sessionCard.querySelector("[data-harness-logo]")).toBeNull();
+    expect(within(workspaceContext).getByRole("heading", {
+      name: "Workspace Context",
+      level: 2,
+    })).toHaveClass("font-black", "tracking-[-0.055em]");
+    expect(workspaceContext).toHaveClass(
+      "border-[#d8d8cf]",
+      "bg-[#fbfbf6]",
+      "dark:border-[#292925]",
+      "dark:bg-[#141411]",
+    );
     const sessionPreview = screen.getByRole("region", {
       name: "Current Session Context prompt preview",
     });
@@ -521,40 +697,441 @@ describe("MemoryNow", () => {
     expect(screen.queryByRole("link", { name: /Continue and reconcile context/ })).not.toBeInTheDocument();
   });
 
-  it("shows distinct Session Context and Project Context products with their intended uses", async () => {
+  it("auto-prepares isolated selected sessions beside the current one and can persistently remove one", async () => {
+    const selectedSessions = [
+      {
+        id: "claude:selected-one",
+        source_document_id: "document-selected-one",
+        connector_type: "claude",
+        session_id: "selected-one",
+        title: "Architecture review",
+        harness: "Claude Code",
+        latest_topic: "Architecture",
+      },
+      {
+        id: "opencode:selected-two",
+        source_document_id: "document-selected-two",
+        connector_type: "opencode",
+        session_id: "selected-two",
+        title: "Refactor follow-up",
+        harness: "OpenCode",
+        latest_topic: "Refactor",
+      },
+    ];
+    mocks.library.data = { sessions: selectedSessions };
+    writeExecuteSessionContexts("workspace-1", [
+      {
+        ...selectedSessions[0],
+        source_document_id: "document-selected-one-previous-revision",
+      },
+      selectedSessions[1],
+    ]);
+    const currentCheckpoint = checkpointData();
+    const claudeCheckpoint = scopedCheckpoint(
+      "checkpoint-claude",
+      "claude",
+      "selected-one",
+      31,
+    );
+    const openCodeCheckpoint = scopedCheckpoint(
+      "checkpoint-opencode",
+      "opencode",
+      "selected-two",
+      32,
+    );
+    const checkpoints = new Map([
+      ["codex:session-1", currentCheckpoint],
+      ["claude:selected-one", claudeCheckpoint],
+      ["opencode:selected-two", openCodeCheckpoint],
+    ]);
+    mocks.latestHook.mockImplementation((_workspaceId, options = {}) => ({
+      ...mocks.checkpoint,
+      data: checkpoints.get(`${options.provider}:${options.sessionId}`) || null,
+      isLoading: false,
+    }));
+    const handoffs = new Map([
+      [
+        currentCheckpoint.id,
+        scopedSessionHandoff(currentCheckpoint, "MIDDLE_CODEX_ONLY"),
+      ],
+      [
+        claudeCheckpoint.id,
+        scopedSessionHandoff(claudeCheckpoint, "CLAUDE_SELECTED_ONLY"),
+      ],
+      [
+        openCodeCheckpoint.id,
+        scopedSessionHandoff(openCodeCheckpoint, "OPENCODE_SELECTED_ONLY"),
+      ],
+    ]);
+    mocks.handoff.mutateAsync.mockImplementation(async ({ checkpointId }) => {
+      const handoff = handoffs.get(checkpointId);
+      if (!handoff) throw new Error(`Unexpected checkpoint ${checkpointId}`);
+      return handoff;
+    });
+
     renderMemory();
 
-    const sessionCard = screen.getByRole("heading", {
+    const current = screen.getByRole("article", {
       name: "Current Session Context",
-      level: 3,
-    }).closest("article");
-    const projectCard = screen.getByRole("heading", {
-      name: "Project Context",
-      level: 3,
-    }).closest("article");
-    const sessionPen = sessionCard.querySelector('[data-pen-motif="session"]');
-    const projectPen = projectCard.querySelector('[data-pen-motif="project"]');
+    });
+    const left = screen.getByRole("article", {
+      name: "Architecture review",
+    });
+    const right = screen.getByRole("article", {
+      name: "Refactor follow-up",
+    });
+    expect(current).toHaveAttribute("data-session-context-slot", "current");
+    expect(current).toHaveClass("xl:col-start-2", "xl:row-start-1");
+    expect(within(current).queryByRole("button", {
+      name: "Remove Current Session Context from Execute",
+    })).not.toBeInTheDocument();
+    expect(left).toHaveAttribute("data-session-context-slot", "selected-1");
+    expect(left).toHaveClass("xl:col-start-1", "xl:row-start-1");
+    expect(right).toHaveAttribute("data-session-context-slot", "selected-2");
+    expect(right).toHaveClass("xl:col-start-3", "xl:row-start-1");
+    expect(document.querySelectorAll("[data-session-context-card]")).toHaveLength(3);
 
-    expect(sessionCard).toHaveClass(
-      "bg-[#f7f7f1]/70",
-      "backdrop-blur-xl",
-      "dark:bg-[#11110f]/70",
+    const toggle = screen.getByRole("button", {
+      name: "Edit selected session contexts, 2 of 2 selected",
+    });
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    expect(within(left).getByText("Selected Session Context")).toBeInTheDocument();
+    expect(within(right).getByText("Selected Session Context")).toBeInTheDocument();
+    expect(within(left).getByText(
+      "Claude · Architecture review",
+    )).toBeInTheDocument();
+    expect(within(right).getByText(
+      "OpenCode · Refactor follow-up",
+    )).toBeInTheDocument();
+
+    await waitFor(() => {
+      const currentPreview = within(current).getByLabelText(
+        "Current Session Context prompt preview content",
+      );
+      const claudePreview = within(left).getByLabelText(
+        "Architecture review Session Context prompt preview content",
+      );
+      const openCodePreview = within(right).getByLabelText(
+        "Refactor follow-up Session Context prompt preview content",
+      );
+      expect(currentPreview).toHaveTextContent("MIDDLE_CODEX_ONLY");
+      expect(currentPreview).not.toHaveTextContent("CLAUDE_SELECTED_ONLY");
+      expect(claudePreview).toHaveTextContent("CLAUDE_SELECTED_ONLY");
+      expect(claudePreview).not.toHaveTextContent("MIDDLE_CODEX_ONLY");
+      expect(claudePreview).not.toHaveTextContent(
+        "Relationship: Project / Workspace Context",
+      );
+      expect(openCodePreview).toHaveTextContent("OPENCODE_SELECTED_ONLY");
+      expect(openCodePreview).not.toHaveTextContent("CLAUDE_SELECTED_ONLY");
+    });
+    expect(within(left).getByRole("button", {
+      name: "Preview Architecture review Session Context",
+    })).toHaveTextContent("Open full preview");
+    expect(within(right).getByRole("button", {
+      name: "Preview Refactor follow-up Session Context",
+    })).toHaveTextContent("Open full preview");
+    expect(mocks.capture.mutateAsync).not.toHaveBeenCalled();
+    expect(mocks.handoff.mutateAsync).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      checkpointId: "checkpoint-claude",
+    });
+    expect(mocks.handoff.mutateAsync).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      checkpointId: "checkpoint-opencode",
+    });
+
+    fireEvent.click(within(left).getByRole("button", {
+      name: "Remove Architecture review from Execute",
+    }));
+
+    expect(screen.queryByRole("article", {
+      name: "Architecture review",
+    })).not.toBeInTheDocument();
+    expect(screen.getByRole("article", {
+      name: "Refactor follow-up",
+    })).toHaveAttribute("data-session-context-slot", "selected-1");
+    expect(screen.getByRole("button", {
+      name: "Edit selected session contexts, 1 of 2 selected",
+    })).toHaveAttribute("aria-pressed", "true");
+    expect(document.querySelectorAll("[data-session-context-card]")).toHaveLength(2);
+    expect(readExecuteSessionContexts("workspace-1")).toEqual([
+      expect.objectContaining({
+        sourceDocumentId: "document-selected-two",
+        sessionId: "selected-two",
+      }),
+    ]);
+  });
+
+  it("captures the exact selected Claude tip without reusing the middle Codex handoff", async () => {
+    const selectedSession = {
+      id: "claude:selected-one",
+      source_document_id: "document-selected-one",
+      connector_type: "claude",
+      session_id: "selected-one",
+      title: "Architecture review",
+      harness: "Claude Code",
+      latest_topic: "Architecture",
+    };
+    mocks.library.data = { sessions: [selectedSession] };
+    writeExecuteSessionContexts("workspace-1", [selectedSession]);
+
+    const currentCheckpoint = checkpointData();
+    const claudeCheckpoint = scopedCheckpoint(
+      "checkpoint-claude",
+      "claude",
+      "selected-one",
+      31,
     );
-    expect(projectCard.className).toBe(sessionCard.className);
-    expect(sessionPen).not.toBeNull();
-    expect(projectPen).not.toBeNull();
-    expect(sessionPen.className).toBe(projectPen.className);
+    mocks.latestHook.mockImplementation((_workspaceId, options = {}) => ({
+      ...mocks.checkpoint,
+      data: options.provider === "codex"
+        && options.sessionId === "session-1"
+        ? currentCheckpoint
+        : null,
+      isLoading: false,
+    }));
+    mocks.capture.mutateAsync.mockImplementation(async (args) => {
+      if (
+        args.provider === "claude"
+        && args.sessionId === "selected-one"
+      ) {
+        return claudeCheckpoint;
+      }
+      throw new Error(`Unexpected capture ${args.provider}:${args.sessionId}`);
+    });
+    mocks.handoff.mutateAsync.mockImplementation(async ({ checkpointId }) => {
+      if (checkpointId === currentCheckpoint.id) {
+        return scopedSessionHandoff(currentCheckpoint, "MIDDLE_CODEX_ONLY");
+      }
+      if (checkpointId === claudeCheckpoint.id) {
+        return scopedSessionHandoff(claudeCheckpoint, "CLAUDE_SELECTED_ONLY");
+      }
+      throw new Error(`Unexpected checkpoint ${checkpointId}`);
+    });
+
+    renderMemory();
+
+    const claudeCard = screen.getByRole("article", {
+      name: "Architecture review",
+    });
+    await waitFor(() => {
+      const preview = within(claudeCard).getByLabelText(
+        "Architecture review Session Context prompt preview content",
+      );
+      expect(preview).toHaveTextContent("CLAUDE_SELECTED_ONLY");
+      expect(preview).not.toHaveTextContent("MIDDLE_CODEX_ONLY");
+    });
+    expect(mocks.capture.mutateAsync).toHaveBeenCalledTimes(1);
+    expect(mocks.capture.mutateAsync).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      provider: "claude",
+      sessionId: "selected-one",
+      updateGenericLatest: false,
+    });
+    expect(mocks.handoff.mutateAsync).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      checkpointId: "checkpoint-claude",
+    });
+    expect(within(claudeCard).getByRole("button", {
+      name: "Preview Architecture review Session Context",
+    })).toHaveTextContent("Open full preview");
+  });
+
+  it("copies a newly observed selected-session checkpoint instead of its auto-prepared cache", async () => {
+    const selectedSession = {
+      id: "claude:selected-one",
+      source_document_id: "document-selected-one",
+      connector_type: "claude",
+      session_id: "selected-one",
+      title: "Architecture review",
+      harness: "Claude Code",
+      latest_topic: "Architecture",
+    };
+    mocks.library.data = { sessions: [selectedSession] };
+    writeExecuteSessionContexts("workspace-1", [selectedSession]);
+
+    const currentCheckpoint = checkpointData();
+    const originalCheckpoint = scopedCheckpoint(
+      "checkpoint-claude-original",
+      "claude",
+      "selected-one",
+      31,
+    );
+    const newerCheckpoint = scopedCheckpoint(
+      "checkpoint-claude-newer",
+      "claude",
+      "selected-one",
+      32,
+    );
+    let selectedLatest = originalCheckpoint;
+    mocks.latestHook.mockImplementation((_workspaceId, options = {}) => ({
+      ...mocks.checkpoint,
+      data: options.provider === "claude"
+        ? selectedLatest
+        : currentCheckpoint,
+      isLoading: false,
+    }));
+    const currentHandoff = scopedSessionHandoff(
+      currentCheckpoint,
+      "MIDDLE_CODEX_ONLY",
+    );
+    const originalHandoff = scopedSessionHandoff(
+      originalCheckpoint,
+      "CLAUDE_ORIGINAL_ONLY",
+    );
+    const newerHandoff = scopedSessionHandoff(
+      newerCheckpoint,
+      "CLAUDE_NEWER_ONLY",
+    );
+    const handoffs = new Map([
+      [currentCheckpoint.id, currentHandoff],
+      [originalCheckpoint.id, originalHandoff],
+      [newerCheckpoint.id, newerHandoff],
+    ]);
+    mocks.handoff.mutateAsync.mockImplementation(async ({ checkpointId }) => {
+      const handoff = handoffs.get(checkpointId);
+      if (!handoff) throw new Error(`Unexpected checkpoint ${checkpointId}`);
+      return handoff;
+    });
+
+    const view = renderMemory();
+    const selectedCard = screen.getByRole("article", {
+      name: "Architecture review",
+    });
+    await waitFor(() => {
+      expect(within(selectedCard).getByLabelText(
+        "Architecture review Session Context prompt preview content",
+      )).toHaveTextContent("CLAUDE_ORIGINAL_ONLY");
+    });
+
+    selectedLatest = newerCheckpoint;
+    view.rerender(
+      <MemoryRouter initialEntries={["/app/execute"]}>
+        <MemoryNow />
+      </MemoryRouter>,
+    );
+    fireEvent.click(within(selectedCard).getByRole("button", {
+      name: "Copy Architecture review Session Context",
+    }));
+
+    await waitFor(() => {
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+        newerHandoff.content,
+      );
+    });
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalledWith(
+      originalHandoff.content,
+    );
+    expect(mocks.handoff.mutateAsync).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      checkpointId: "checkpoint-claude-newer",
+    });
+  });
+
+  it("names the selected session in its full-preview quality warning", async () => {
+    const selectedSession = {
+      id: "claude:selected-one",
+      source_document_id: "document-selected-one",
+      connector_type: "claude",
+      session_id: "selected-one",
+      title: "Architecture review",
+      harness: "Claude Code",
+      latest_topic: "Architecture",
+    };
+    mocks.library.data = { sessions: [selectedSession] };
+    writeExecuteSessionContexts("workspace-1", [selectedSession]);
+
+    const currentCheckpoint = checkpointData();
+    const claudeCheckpoint = scopedCheckpoint(
+      "checkpoint-claude",
+      "claude",
+      "selected-one",
+      31,
+    );
+    mocks.latestHook.mockImplementation((_workspaceId, options = {}) => ({
+      ...mocks.checkpoint,
+      data: options.provider === "claude"
+        ? claudeCheckpoint
+        : currentCheckpoint,
+      isLoading: false,
+    }));
+    mocks.handoff.mutateAsync.mockImplementation(async ({ checkpointId }) => {
+      if (checkpointId === currentCheckpoint.id) {
+        return scopedSessionHandoff(currentCheckpoint, "MIDDLE_CODEX_ONLY");
+      }
+      if (checkpointId === claudeCheckpoint.id) {
+        return scopedSessionHandoff(
+          claudeCheckpoint,
+          "CLAUDE_SELECTED_ONLY",
+          {
+            quality_report: {
+              status: "blocked",
+              copy_ready: false,
+              automatic_execution_ready: false,
+              blocking_issues: [{
+                code: "required_attachments_resolved",
+                severity: "blocking",
+                message: "The selected visual attachment is not hash-verified.",
+              }],
+              warnings: [],
+            },
+          },
+        );
+      }
+      throw new Error(`Unexpected checkpoint ${checkpointId}`);
+    });
+
+    renderMemory();
+    const selectedCard = screen.getByRole("article", {
+      name: "Architecture review",
+    });
+    await waitFor(() => expect(within(selectedCard).getByRole("button", {
+      name: "Preview Architecture review Session Context",
+    })).toHaveTextContent("Open full preview"));
+
+    fireEvent.click(within(selectedCard).getByRole("button", {
+      name: "Preview Architecture review Session Context",
+    }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "Architecture review Session Context Preview",
+    });
+    expect(within(dialog).getByRole("status")).toHaveTextContent(
+      "Architecture review Session Context is not copy-ready.",
+    );
+    expect(within(dialog).getByRole("status")).not.toHaveTextContent(
+      "Current Session Context is not copy-ready.",
+    );
+  });
+
+  it("removes explanatory chrome while preserving separate context artifacts", async () => {
+    renderMemory();
+
+    const workspaceContext = screen.getByRole("region", { name: "Workspace Context" });
+    const sessionCard = screen.getByRole("article", {
+      name: "Current Session Context",
+    });
+
+    expect(workspaceContext).not.toContainElement(sessionCard);
+    expect(within(sessionCard).queryByText("Contained context")).not.toBeInTheDocument();
+    expect(within(sessionCard).queryByText("Session-specific")).not.toBeInTheDocument();
+    expect(within(sessionCard).queryByText("Context relationship")).not.toBeInTheDocument();
+    expect(within(sessionCard).queryByText(/Uses Workspace Context/)).not.toBeInTheDocument();
+    expect(within(sessionCard).queryByText(/^Source$/)).not.toBeInTheDocument();
+    expect(within(sessionCard).queryByText(/^Freshness$/)).not.toBeInTheDocument();
+    expect(within(sessionCard).queryByText(/^Size$/)).not.toBeInTheDocument();
+    expect(sessionCard.querySelector("dl")).toBeNull();
     expect(within(sessionCard).getByRole("region", {
       name: "Current Session Context prompt preview",
     }).querySelector("[data-pen-motif]")).toBeNull();
-    expect(within(projectCard).getByRole("region", {
+    expect(within(workspaceContext).getByRole("region", {
       name: "Project Context prompt preview",
     }).querySelector("[data-pen-motif]")).toBeNull();
 
-    expect(within(sessionCard).getByText(
-      /Start a new chat in the same harness or refresh a long-running session/,
-    )).toBeInTheDocument();
-    expect(within(sessionCard).getByText(/Current tip · Updated/)).toBeInTheDocument();
+    expect(within(sessionCard).queryByText(
+      /Inherits the verified workspace foundation.*adds only this session's current task state/i,
+    )).not.toBeInTheDocument();
+    expect(within(sessionCard).queryByText(/Current tip · Updated/)).not.toBeInTheDocument();
     await waitFor(() => expect(within(sessionCard).getByRole("button", {
       name: "Preview Current Session Context",
     })).toHaveTextContent("Open full preview"));
@@ -564,28 +1141,33 @@ describe("MemoryNow", () => {
     expect(sessionCopy).toBeEnabled();
     expect(sessionCopy).toHaveClass("btn-primary");
 
-    expect(within(projectCard).getByText(
-      /Switch harnesses with the relevant session, repository state, project decisions/,
-    )).toBeInTheDocument();
-    await waitFor(() => expect(within(projectCard).getByRole("button", {
+    expect(within(workspaceContext).queryByText("Parent context")).not.toBeInTheDocument();
+    expect(within(workspaceContext).queryByText("Workspace-wide · source-backed")).not.toBeInTheDocument();
+    expect(within(workspaceContext).queryByText(
+      /durable Project Context foundation every continuation inherits.*active session is contained below/i,
+    )).not.toBeInTheDocument();
+    expect(within(workspaceContext).queryByText(/^Workspace scope$/)).not.toBeInTheDocument();
+    expect(within(workspaceContext).queryByText(/^Repository$/)).not.toBeInTheDocument();
+    expect(within(workspaceContext).queryByText(/^Compiled size$/)).not.toBeInTheDocument();
+    expect(workspaceContext.querySelector("dl")).toBeNull();
+    await waitFor(() => expect(within(workspaceContext).getByRole("button", {
       name: "Preview Project Context",
     })).toHaveTextContent("Open full preview"));
-    const projectCopy = within(projectCard).getByRole("button", {
+    const projectCopy = within(workspaceContext).getByRole("button", {
       name: "Copy Project Context",
     });
     expect(projectCopy).toBeEnabled();
     expect(projectCopy).toHaveClass("btn-primary");
-    expect(sessionCopy.className).toBe(projectCopy.className);
-    expect(screen.getByText("Advanced context details").closest("details")).not.toHaveAttribute("open");
+    expect(screen.queryByText("Advanced context details")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Inspect context sources" })).not.toBeInTheDocument();
   });
 
   it("freshly revalidates the prepared session prompt before copying it", async () => {
     renderMemory();
 
-    const sessionCard = screen.getByRole("heading", {
+    const sessionCard = screen.getByRole("article", {
       name: "Current Session Context",
-      level: 3,
-    }).closest("article");
+    });
     const preview = within(sessionCard).getByRole("button", {
       name: "Preview Current Session Context",
     });
@@ -624,10 +1206,9 @@ describe("MemoryNow", () => {
   it("retries a transient session-copy fetch failure before copying", async () => {
     renderMemory();
 
-    const sessionCard = screen.getByRole("heading", {
+    const sessionCard = screen.getByRole("article", {
       name: "Current Session Context",
-      level: 3,
-    }).closest("article");
+    });
     await waitFor(() => expect(within(sessionCard).getByRole("button", {
       name: "Preview Current Session Context",
     })).toHaveTextContent("Open full preview"));
@@ -652,10 +1233,9 @@ describe("MemoryNow", () => {
   it("keeps a persistent session-copy network failure safe and actionable", async () => {
     renderMemory();
 
-    const sessionCard = screen.getByRole("heading", {
+    const sessionCard = screen.getByRole("article", {
       name: "Current Session Context",
-      level: 3,
-    }).closest("article");
+    });
     await waitFor(() => expect(within(sessionCard).getByRole("button", {
       name: "Preview Current Session Context",
     })).toHaveTextContent("Open full preview"));
@@ -697,10 +1277,9 @@ describe("MemoryNow", () => {
     ));
     renderMemory();
 
-    const sessionCard = screen.getByRole("heading", {
+    const sessionCard = screen.getByRole("article", {
       name: "Current Session Context",
-      level: 3,
-    }).closest("article");
+    });
     fireEvent.click(within(sessionCard).getByRole("button", {
       name: "Preview Current Session Context",
     }));
@@ -717,6 +1296,7 @@ describe("MemoryNow", () => {
     expect(within(sessionCard).getByRole("button", {
       name: "Copy Current Session Context",
     })).toBeDisabled();
+    expect(within(sessionCard).getByText("Not copy-ready")).toBeInTheDocument();
     expect(within(sessionCard).getByText(
       /Current Session Context is not copy-ready.*completion conflicts/,
     )).toBeInTheDocument();
@@ -745,10 +1325,9 @@ describe("MemoryNow", () => {
     ));
     renderMemory();
 
-    const sessionCard = screen.getByRole("heading", {
+    const sessionCard = screen.getByRole("article", {
       name: "Current Session Context",
-      level: 3,
-    }).closest("article");
+    });
     fireEvent.click(within(sessionCard).getByRole("button", {
       name: "Copy Current Session Context",
     }));
@@ -784,10 +1363,9 @@ describe("MemoryNow", () => {
       ));
     renderMemory();
 
-    const sessionCard = screen.getByRole("heading", {
+    const sessionCard = screen.getByRole("article", {
       name: "Current Session Context",
-      level: 3,
-    }).closest("article");
+    });
     fireEvent.click(within(sessionCard).getByRole("button", {
       name: "Preview Current Session Context",
     }));
@@ -819,10 +1397,9 @@ describe("MemoryNow", () => {
     ));
     renderMemory();
 
-    const sessionCard = screen.getByRole("heading", {
+    const sessionCard = screen.getByRole("article", {
       name: "Current Session Context",
-      level: 3,
-    }).closest("article");
+    });
     fireEvent.click(within(sessionCard).getByRole("button", {
       name: "Preview Current Session Context",
     }));
@@ -846,10 +1423,9 @@ describe("MemoryNow", () => {
     ));
     renderMemory();
 
-    const sessionCard = screen.getByRole("heading", {
+    const sessionCard = screen.getByRole("article", {
       name: "Current Session Context",
-      level: 3,
-    }).closest("article");
+    });
     fireEvent.click(within(sessionCard).getByRole("button", {
       name: "Preview Current Session Context",
     }));
@@ -874,11 +1450,8 @@ describe("MemoryNow", () => {
   it("copies Project Context directly from its card, never audit or execution text", async () => {
     renderMemory();
 
-    const projectCard = screen.getByRole("heading", {
-      name: "Project Context",
-      level: 3,
-    }).closest("article");
-    fireEvent.click(within(projectCard).getByRole("button", {
+    const workspaceContext = screen.getByRole("region", { name: "Workspace Context" });
+    fireEvent.click(within(workspaceContext).getByRole("button", {
       name: "Copy Project Context",
     }));
 
@@ -899,11 +1472,8 @@ describe("MemoryNow", () => {
     });
     renderMemory();
 
-    const projectCard = screen.getByRole("heading", {
-      name: "Project Context",
-      level: 3,
-    }).closest("article");
-    fireEvent.click(within(projectCard).getByRole("button", {
+    const workspaceContext = screen.getByRole("region", { name: "Workspace Context" });
+    fireEvent.click(within(workspaceContext).getByRole("button", {
       name: "Copy Project Context",
     }));
 
@@ -952,11 +1522,8 @@ describe("MemoryNow", () => {
     });
     renderMemory();
 
-    const projectCard = screen.getByRole("heading", {
-      name: "Project Context",
-      level: 3,
-    }).closest("article");
-    fireEvent.click(within(projectCard).getByRole("button", {
+    const workspaceContext = screen.getByRole("region", { name: "Workspace Context" });
+    fireEvent.click(within(workspaceContext).getByRole("button", {
       name: "Copy Project Context",
     }));
 
@@ -1027,7 +1594,7 @@ describe("MemoryNow", () => {
     })).toBeDisabled();
     expect(screen.getByRole("region", {
       name: "Current Session Context prompt preview",
-    })).toHaveTextContent("Link an active session");
+    })).toHaveTextContent("Choose a session in Library");
     expect(screen.queryByText("Changed an unrelated billing form")).not.toBeInTheDocument();
     expect(screen.queryByText("billing/Form.jsx")).not.toBeInTheDocument();
     expect(screen.queryByText("codex/billing")).not.toBeInTheDocument();
@@ -1437,7 +2004,7 @@ describe("MemoryNow", () => {
     fireEvent.click(previewTrigger);
 
     const dialog = await screen.findByRole("dialog", { name: "Project Context Preview" });
-    expect(within(dialog).getByText("Task-relevant project")).toBeInTheDocument();
+    expect(within(dialog).getByText("Verified parent projection")).toBeInTheDocument();
     expect(within(dialog).getByText("continuation_staging_context.v1")).toBeInTheDocument();
     expect(within(dialog).getByText(/Run the real Codex continuation/)).toBeInTheDocument();
     expect(within(dialog).getByText(/PROJECT_CONTEXT_ONLY/)).toBeInTheDocument();
@@ -2032,10 +2599,10 @@ describe("MemoryNow", () => {
 
     expect(screen.getByRole("region", {
       name: "Current Session Context prompt preview",
-    })).toHaveTextContent("Link an active session");
+    })).toHaveTextContent("Choose a session in Library");
     expect(screen.getByRole("region", {
       name: "Project Context prompt preview",
-    })).toHaveTextContent("Choose an active task");
+    })).toHaveTextContent("Choose an active task to compile the workspace foundation");
     expect(screen.getByRole("button", {
       name: "Preview Current Session Context",
     })).toBeDisabled();
@@ -2054,11 +2621,11 @@ describe("MemoryNow", () => {
 
     renderMemory();
 
-    expect(screen.getByRole("alert")).toHaveTextContent("continuation brief is unavailable");
+    expect(screen.getByRole("alert")).toHaveTextContent("Workspace Context is unavailable");
     expect(screen.queryByText("Ready to continue")).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open Inspector" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Inspect context sources" })).toHaveAttribute(
       "href",
-      "/app/memory/inspector",
+      "/app/execute/inspector",
     );
   });
 });

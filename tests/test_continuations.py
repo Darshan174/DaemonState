@@ -19,10 +19,15 @@ from app.config import settings
 from app.main import app
 from app.models import (
     AgentRun,
+    Claim,
+    ClaimRevision,
     CheckpointEvidence,
     CheckpointItem,
     CodeFile,
+    Component,
     ContextPack,
+    EvidenceSpan,
+    Model,
     RunObservation,
     SessionEvent,
     SourceDocument,
@@ -132,6 +137,89 @@ async def test_prepare_continuation_infers_task_and_captures_session_tip(
     assert any(
         item["code"] == "agent_progress_is_reported"
         for item in body["attention"]
+    )
+
+
+async def test_completed_selected_task_blocks_execution_but_allows_project_context_copy(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    goal = "Preserve completed-task execution safety while allowing context copy."
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=goal,
+        session_id="completed-task-copy",
+    )
+    source_document = await db_session.scalar(
+        select(SourceDocument).where(
+            SourceDocument.workspace_id == workspace.id,
+            SourceDocument.external_id == "codex:session:completed-task-copy",
+        )
+    )
+    assert source_document is not None
+    model = Model(
+        id=uuid4(),
+        name=f"Completed task {uuid4().hex}",
+    )
+    completed_task = Component(
+        id=uuid4(),
+        workspace_id=workspace.id,
+        model_id=model.id,
+        source_document_id=source_document.id,
+        name=goal,
+        value=goal,
+        fact_type="task",
+        temporal="current",
+        confidence=0.95,
+        authority_weight=0.9,
+        status="completed",
+    )
+    db_session.add_all([model, completed_task])
+    await db_session.flush()
+
+    response = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "objective": goal,
+            "target_model": "general-coder",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["quality_report"]["launchable"] is False
+    assert body["quality_report"]["automatic_execution_ready"] is False
+    assert any(
+        item["code"] == "selected_task_completed"
+        for item in body["quality_report"]["blocking_issues"]
+    )
+    assert body["readiness"]["status"] == "blocked"
+    assert body["project_context"]["copy_ready"] is True
+    assert body["execution_contract"]["selected_task_lifecycle"] == "completed"
+    project_content = body["project_context"]["content"]
+    assert "### Completed goal retained for reference" in project_content
+    assert "### Authoritative current lead" not in project_content
+    assert "### First action" not in project_content
+    assert "### Definition of done" not in project_content
+    assert "### Read first" not in project_content
+    assert (
+        "does not authorize continuation, reopening, re-verification, "
+        "or execution of the completed goal"
+    ) in project_content
+    completed_issue = next(
+        item
+        for item in body["project_context"]["quality_issues"]
+        if item["code"] == "selected_task_completed"
+    )
+    assert completed_issue.get("blocks_current_execution", True) is True
+    assert completed_issue["blocks_copy"] is False
+    assert any(
+        item["code"] == "selected_task_completed"
+        for item in body["readiness"]["blocking_issues"]
     )
 
 
@@ -4320,6 +4408,8 @@ async def _seed_session(
             slug=f"continuation-{session_id}-{uuid4().hex[:8]}",
         )
         db_session.add(workspace)
+    await db_session.flush()
+    await _seed_project_foundation(db_session, workspace)
     content = (
         f"[USER]\n{goal}\n\n"
         "[ASSISTANT]\n"
@@ -4384,6 +4474,121 @@ async def _seed_session(
     )
     await db_session.flush()
     return workspace
+
+
+async def _seed_project_foundation(
+    db_session,
+    workspace: Workspace,
+) -> None:
+    existing = await db_session.scalar(
+        select(Component)
+        .where(Component.workspace_id == workspace.id)
+        .where(Component.identity_key == "fixture:project-purpose")
+        .limit(1)
+    )
+    if existing is not None:
+        return
+    facts = (
+        (
+            "fixture:project-purpose",
+            "Product purpose and target users",
+            (
+                "The product purpose is to preserve coding-project context for "
+                "software teams across agent sessions."
+            ),
+        ),
+        (
+            "fixture:project-workflow",
+            "Primary workspace workflow",
+            (
+                "The primary workflow compiles workspace evidence before a "
+                "user continues work in an agent harness."
+            ),
+        ),
+        (
+            "fixture:project-architecture",
+            "Workspace architecture",
+            (
+                "The architecture uses an API service, a context compiler "
+                "pipeline, and durable database storage."
+            ),
+        ),
+        (
+            "fixture:repository-map",
+            "Repository module responsibilities",
+            (
+                "The repository map places backend services in app/services "
+                "and product UI modules in frontend/src."
+            ),
+        ),
+    )
+    for identity_key, title, statement in facts:
+        model = Model(id=uuid4(), name=f"Foundation {uuid4().hex}")
+        document = SourceDocument(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            source_type="local_repository",
+            external_id=f"foundation:{identity_key}",
+            content=statement,
+            content_sha256=hashlib.sha256(statement.encode()).hexdigest(),
+            source_identity_sha256=hashlib.sha256(
+                f"{workspace.id}:{identity_key}".encode()
+            ).hexdigest(),
+            revision_number=1,
+            trust_zone="trusted_repo",
+            metadata_json="{}",
+        )
+        evidence = EvidenceSpan(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            source_document_id=document.id,
+            start_char=0,
+            end_char=len(statement),
+            text=statement,
+            text_sha256=hashlib.sha256(statement.encode()).hexdigest(),
+            review_status="verified",
+            trust_zone="trusted_repo",
+            extraction_method="deterministic",
+        )
+        claim = Claim(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            identity_key=identity_key,
+            scope_identity_sha256="",
+            claim_type="fact",
+            status="active",
+            temporal="current",
+        )
+        db_session.add_all([model, document, evidence, claim])
+        await db_session.flush()
+        revision = ClaimRevision(
+            id=uuid4(),
+            claim_id=claim.id,
+            evidence_span_id=evidence.id,
+            revision_key="",
+            value=statement,
+            operation="create",
+            status_after="active",
+        )
+        db_session.add(revision)
+        await db_session.flush()
+        claim.current_revision_id = revision.id
+        db_session.add(Component(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            model_id=model.id,
+            source_document_id=document.id,
+            claim_id=claim.id,
+            identity_key=identity_key,
+            name=title,
+            value=statement,
+            fact_type="fact",
+            temporal="current",
+            confidence=0.95,
+            authority_weight=0.9,
+            status="active",
+        ))
+    await db_session.flush()
 
 
 def _test_png(rgb: tuple[int, int, int]) -> bytes:

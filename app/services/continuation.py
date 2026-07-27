@@ -92,6 +92,9 @@ _EXECUTION_ONLY_QUALITY_CODES = frozenset({
     "provider_capability_missing",
     "handoff_semantic_conflict",
 })
+_PROJECT_CONTEXT_COPY_NON_BLOCKING_CODES = frozenset({
+    "selected_task_completed",
+})
 _MAX_REQUEST_EVENTS = 2_000
 _GOAL_STOP_WORDS = frozenset(
     {
@@ -1207,6 +1210,11 @@ class ContinuationService:
                 restored_checkpoint=restored_checkpoint,
                 context_manifest=pack.manifest,
                 task_identity=task_identity,
+                selected_task_lifecycle=(
+                    workflow_resolution.workflow["selected_intent"][
+                        "lifecycle"
+                    ]
+                ),
                 checkpoint_id=selected_checkpoint_key,
                 execution_focus=execution_objective,
                 artifacts=effective_artifacts,
@@ -1331,6 +1339,8 @@ class ContinuationService:
                         issue["blocks_current_execution"]
                         and str(issue.get("code") or "")
                         not in _EXECUTION_ONLY_QUALITY_CODES
+                        and str(issue.get("code") or "")
+                        not in _PROJECT_CONTEXT_COPY_NON_BLOCKING_CODES
                     )
                     or str(issue.get("code") or "").startswith(
                         "project_context_copy_"
@@ -1397,7 +1407,9 @@ class ContinuationService:
             existing_project_issue_codes.add(code)
             project_context_quality_issues.append({
                 **issue,
-                "blocks_copy": True,
+                "blocks_copy": (
+                    code not in _PROJECT_CONTEXT_COPY_NON_BLOCKING_CODES
+                ),
             })
         project_context["quality_issues"] = project_context_quality_issues
         project_context["copy_ready"] = not any(

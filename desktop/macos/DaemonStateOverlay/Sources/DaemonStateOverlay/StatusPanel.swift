@@ -39,7 +39,8 @@ final class StatusPanelController: NSWindowController {
 
         label.alignment = .center
         label.font = .systemFont(ofSize: 12.5, weight: .semibold)
-        label.lineBreakMode = .byTruncatingTail
+        label.lineBreakMode = .byWordWrapping
+        label.maximumNumberOfLines = 2
         label.frame = NSRect(x: 14, y: 10, width: 232, height: 20)
         label.autoresizingMask = [.width]
         effectView.addSubview(label)
@@ -104,7 +105,24 @@ final class StatusPanelController: NSWindowController {
         let attributes: [NSAttributedString.Key: Any] = [.font: label.font as Any]
         let measured = (message as NSString).size(withAttributes: attributes).width
         let width = min(max(measured + 36, 170), 340)
-        window?.setContentSize(NSSize(width: width, height: 42))
+        let textWidth = width - 28
+        let bounds = (message as NSString).boundingRect(
+            with: NSSize(
+                width: textWidth,
+                height: .greatestFiniteMagnitude
+            ),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: attributes
+        )
+        let textHeight = min(max(ceil(bounds.height), 20), 36)
+        let height = max(textHeight + 20, 42)
+        window?.setContentSize(NSSize(width: width, height: height))
+        label.frame = NSRect(
+            x: 14,
+            y: (height - textHeight) / 2,
+            width: textWidth,
+            height: textHeight
+        )
     }
 
     private func position(relativeTo anchor: NSWindow?) {

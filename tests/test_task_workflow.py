@@ -8,7 +8,10 @@ from uuid import uuid4
 import pytest
 
 from app.models import (
+    Claim,
+    ClaimRevision,
     Component,
+    EvidenceSpan,
     Model,
     Relationship,
     SessionEvent,
@@ -499,6 +502,7 @@ async def test_reported_claude_auth_blocker_does_not_globally_block_continuation
     )
     db_session.add_all([workspace, source])
     await db_session.flush()
+    await _seed_project_foundation(db_session, workspace)
     occurred_at = utc_now()
     events = [
         SessionEvent(
@@ -670,6 +674,7 @@ async def _seed_features(
     )
     db_session.add_all([workspace, model])
     await db_session.flush()
+    await _seed_project_foundation(db_session, workspace)
 
     features: dict[int, Component] = {}
     for number, status in statuses.items():
@@ -700,6 +705,91 @@ async def _seed_features(
         features[number] = component
     await db_session.flush()
     return workspace, features
+
+
+async def _seed_project_foundation(
+    db_session,
+    workspace: Workspace,
+) -> None:
+    existing = next(
+        (
+            component
+            for component in workspace.components
+            if component.identity_key == "workflow-fixture:identity"
+        ),
+        None,
+    ) if "components" in workspace.__dict__ else None
+    if existing is not None:
+        return
+    facts = (
+        ("identity", "Product purpose", "The product purpose serves software teams that need durable coding context."),
+        ("workflows", "Primary workflow", "The primary workflow compiles workspace evidence before continuation."),
+        ("architecture", "Runtime architecture", "The architecture uses an API, compiler pipeline, and durable storage."),
+        ("repository", "Repository map", "The repository map places services under app/services."),
+    )
+    for key, title, statement in facts:
+        model = Model(id=uuid4(), name=f"Workflow foundation {uuid4().hex}")
+        source = SourceDocument(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            source_type="local_repository",
+            external_id=f"workflow-foundation:{key}",
+            content=statement,
+            content_sha256=hashlib.sha256(statement.encode()).hexdigest(),
+            trust_zone="trusted_repo",
+            metadata_json="{}",
+        )
+        evidence = EvidenceSpan(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            source_document_id=source.id,
+            start_char=0,
+            end_char=len(statement),
+            text=statement,
+            text_sha256=hashlib.sha256(statement.encode()).hexdigest(),
+            review_status="verified",
+            trust_zone="trusted_repo",
+            extraction_method="deterministic",
+        )
+        claim = Claim(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            identity_key=f"workflow-fixture:{key}",
+            scope_identity_sha256="",
+            claim_type="fact",
+            status="active",
+            temporal="current",
+        )
+        db_session.add_all([model, source, evidence, claim])
+        await db_session.flush()
+        revision = ClaimRevision(
+            id=uuid4(),
+            claim_id=claim.id,
+            evidence_span_id=evidence.id,
+            revision_key="",
+            value=statement,
+            operation="create",
+            status_after="active",
+        )
+        db_session.add(revision)
+        await db_session.flush()
+        claim.current_revision_id = revision.id
+        db_session.add(Component(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            model_id=model.id,
+            source_document_id=source.id,
+            claim_id=claim.id,
+            identity_key=claim.identity_key,
+            name=title,
+            value=statement,
+            fact_type="fact",
+            temporal="current",
+            confidence=0.95,
+            authority_weight=0.9,
+            status="active",
+        ))
+    await db_session.flush()
 
 
 async def _seed_task_session(

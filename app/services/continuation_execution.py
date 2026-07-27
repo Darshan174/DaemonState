@@ -18,7 +18,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import ContinuationExecution, ContinuationRequirement
 from app.schemas.continuation_execution import (
     MAX_CONTINUATION_ARTIFACTS,
-    MAX_PROJECT_CONTEXT_ITEMS,
     MAX_REPOSITORY_EVIDENCE_ITEMS,
     AtomicRequirement,
     ArtifactReference,
@@ -31,7 +30,6 @@ from app.schemas.continuation_execution import (
     HandoffReconciliation,
     HandoffTruthState,
     PreexistingChange,
-    ProjectContextItem,
     ProjectContextKind,
     ReadPlanItem,
     RepositoryEvidenceItem,
@@ -44,6 +42,7 @@ from app.schemas.continuation_execution import (
     StructuredHandoff,
     StructuredHandoffItem,
     SupportingContextItem,
+    SelectedTaskLifecycle,
     TaskMode,
     VerificationSpec,
     VerifierType,
@@ -57,10 +56,13 @@ from app.services.execution_prompt_renderer import (
     canonical_contract_json,
     render_continuation_execution_prompt,
 )
+from app.services.project_foundation import (
+    compile_workspace_project_foundation,
+)
 from app.time import utc_now
 
 
-WORKER_CONTEXT_PROJECTION_VERSION = "worker_context_projection.v6"
+WORKER_CONTEXT_PROJECTION_VERSION = "worker_context_projection.v7"
 _TOOL_SELECTION_DECISION_RE = re.compile(
     r"\b(?:i|we)\s*(?:(?:'ll|’ll|will|would|should|can)\s+|"
     r"(?:am|are|'m|’m|'re|’re)\s+(?:now\s+)?)"
@@ -86,6 +88,34 @@ _READ_ONLY_PROJECT_COMMANDS = {
     "type",
     "which",
 }
+_SESSION_ONLY_PROJECT_CONTEXT_ITEM_TYPES = frozenset({
+    "failed_approach",
+    "failed_approaches",
+    "failed_attempt",
+    "failed_attempts",
+    "learning",
+    "lesson",
+    "lessons",
+    "prior_failure",
+    "prior_failures",
+    "takeaway",
+})
+_GENERIC_PROJECT_CONTEXT_ITEM_TYPES = frozenset({
+    "",
+    "component",
+    "context",
+    "fact",
+    "file",
+    "relationship",
+})
+_LEGACY_SESSION_ONLY_TITLE_PREFIXES = (
+    "failed approach:",
+    "failed attempt:",
+    "learning:",
+    "lesson:",
+    "prior failure:",
+    "takeaway:",
+)
 
 
 @dataclass(frozen=True)
@@ -106,6 +136,7 @@ async def compile_and_persist_continuation_execution(
     restored_checkpoint: dict[str, Any] | None,
     context_manifest: dict[str, Any],
     task_identity: ContinuationTaskIdentity | dict[str, Any] | None = None,
+    selected_task_lifecycle: SelectedTaskLifecycle | str | None = None,
     checkpoint_id: UUID | str | None = None,
     execution_focus: str | None = None,
     artifacts: Iterable[
@@ -120,6 +151,13 @@ async def compile_and_persist_continuation_execution(
     """
 
     authoritative_request = build_authoritative_request(request_verbatim)
+    selected_lifecycle = (
+        selected_task_lifecycle
+        if isinstance(selected_task_lifecycle, SelectedTaskLifecycle)
+        else SelectedTaskLifecycle(str(selected_task_lifecycle).strip())
+        if selected_task_lifecycle is not None
+        else SelectedTaskLifecycle.ACTIVE
+    )
     mode = resolve_task_mode(
         authoritative_request.request_verbatim,
         task_mode,
@@ -172,7 +210,11 @@ async def compile_and_persist_continuation_execution(
         repository=repository_contract,
         manifest=context_manifest,
     )
-    project_context = _project_context_items(context_manifest)
+    project_foundation = await compile_workspace_project_foundation(
+        session,
+        workspace_id=workspace_id,
+        repository_fingerprint=repository_contract.status_fingerprint,
+    )
     repository_evidence = _repository_evidence_items(
         context_manifest,
         repository=repository_contract,
@@ -193,6 +235,7 @@ async def compile_and_persist_continuation_execution(
         created_at=created_at,
         task_mode=mode,
         task=authoritative_request,
+        selected_task_lifecycle=selected_lifecycle,
         task_identity=task_identity_contract,
         execution_focus=(
             str(execution_focus).strip() if execution_focus else None
@@ -206,7 +249,8 @@ async def compile_and_persist_continuation_execution(
         ),
         repository=repository_contract,
         handoff=handoff,
-        project_context=project_context,
+        project_foundation=project_foundation.snapshot,
+        project_context=project_foundation.items,
         repository_evidence=repository_evidence,
         supporting_context=supporting_context_items,
         artifacts=artifact_references,
@@ -222,8 +266,20 @@ async def compile_and_persist_continuation_execution(
         context_pack_id=str(context_pack_id),
         request_sha256=authoritative_request.request_sha256,
         task_mode=mode,
+        selected_task_lifecycle=selected_lifecycle,
         checkpoint_id=checkpoint_key,
         repository_fingerprint=repository_contract.status_fingerprint,
+        project_foundation_sha256=sha256_text(json.dumps(
+            {
+                "snapshot": project_foundation.snapshot.model_dump(mode="json"),
+                "items": [
+                    item.model_dump(mode="json")
+                    for item in project_foundation.items
+                ],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )),
         execution_focus=execution_focus,
         artifacts=artifact_references,
         supporting_context=supporting_context_items,
@@ -335,6 +391,18 @@ def structured_handoff_from_checkpoint(
         sections.get("failed_attempts"),
         category="failed_attempts",
     )
+    discoveries = _handoff_items(
+        sections.get("discoveries"),
+        category="discoveries",
+    )
+    useful_commands = _handoff_items(
+        sections.get("useful_commands"),
+        category="useful_commands",
+    )
+    open_items = _handoff_items(
+        sections.get("open_items"),
+        category="open_items",
+    )
     blockers = _handoff_items(sections.get("blockers"), category="blockers")
     files = _handoff_items(
         sections.get("relevant_files"),
@@ -429,6 +497,9 @@ def structured_handoff_from_checkpoint(
         remaining=remaining,
         decisions=decisions,
         failed_approaches=failed,
+        discoveries=discoveries,
+        useful_commands=useful_commands,
+        open_items=open_items,
         blockers=blockers,
         referenced_files=files,
         prior_verification=prior_verification,
@@ -455,6 +526,15 @@ def _project_handoff_sections(
             str(item.get("statement") or "")
         )
     ]
+    projected["discoveries"] = _dedupe_raw_handoff_items(
+        projected.get("discoveries", [])
+    )
+    projected["open_items"] = _dedupe_raw_handoff_items(
+        projected.get("open_items", [])
+    )
+    projected["useful_commands"] = _dedupe_raw_command_items(
+        projected.get("useful_commands", [])
+    )
     projected["verification"] = [
         item
         for item in projected.get("verification", [])
@@ -491,6 +571,40 @@ def _project_handoff_sections(
         retained_failures.append(item)
     projected["failed_attempts"] = retained_failures
     return projected
+
+
+def _dedupe_raw_handoff_items(
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    retained: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in reversed(items):
+        key = " ".join(
+            re.sub(
+                r"[^a-z0-9/_.-]+",
+                " ",
+                str(item.get("statement") or "").casefold(),
+            ).split()
+        )
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        retained.append(item)
+    return list(reversed(retained))
+
+
+def _dedupe_raw_command_items(
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    retained: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in reversed(items):
+        key = _handoff_command_key(item)
+        if key is None or key in seen:
+            continue
+        seen.add(key)
+        retained.append(item)
+    return list(reversed(retained))
 
 
 def _is_tool_selection_statement(statement: str) -> bool:
@@ -1108,69 +1222,6 @@ def _dedupe_handoff_items(
     return result
 
 
-def _project_context_items(
-    manifest: dict[str, Any],
-) -> tuple[ProjectContextItem, ...]:
-    """Project only current, provenance-verified, task-relevant workspace facts.
-
-    Selection scores, citations, source IDs, hashes, and exclusion metadata
-    remain in ContextPack. They must never leak into the worker contract.
-    Historical tasks, raw conversations, and generic repository inventory are
-    deliberately excluded even when they happened to rank into the audit pack.
-    """
-
-    selected = manifest.get("selected_context")
-    if not isinstance(selected, list):
-        return ()
-
-    result: list[ProjectContextItem] = []
-    seen_identities: set[str] = set()
-    seen_statements: set[str] = set()
-    for raw in selected:
-        if not isinstance(raw, dict):
-            continue
-        kind = _project_context_kind(raw)
-        if not _eligible_project_context_raw(raw, kind=kind):
-            continue
-
-        title = _project_context_title(raw.get("title"))
-        statement = _project_context_statement(raw.get("summary"))
-        if (
-            not title
-            or not statement
-            or re.match(r"^(?:area|repository)\s*:", title, re.IGNORECASE)
-            or (
-                kind in {
-                    ProjectContextKind.DECISION,
-                    ProjectContextKind.INVARIANT,
-                }
-                and _is_tool_selection_statement(f"{title}\n{statement}")
-            )
-        ):
-            continue
-        identity = str(
-            raw.get("claim_id") or raw.get("identity_key") or ""
-        ).strip()
-        statement_key = _project_context_dedupe_key(statement)
-        if (
-            (identity and identity in seen_identities)
-            or statement_key in seen_statements
-        ):
-            continue
-        if identity:
-            seen_identities.add(identity)
-        seen_statements.add(statement_key)
-        result.append(ProjectContextItem(
-            id=f"P{len(result) + 1}",
-            kind=kind,
-            title=title,
-            statement=statement,
-        ))
-        if len(result) >= MAX_PROJECT_CONTEXT_ITEMS:
-            break
-    return tuple(result)
-
-
 def _repository_evidence_items(
     manifest: dict[str, Any],
     *,
@@ -1286,20 +1337,22 @@ def _repository_evidence_file_matches(
         return False
 
 
-def _eligible_project_context_raw(
+def _eligible_session_context_reference(
     raw: dict[str, Any],
     *,
     kind: ProjectContextKind | None = None,
 ) -> bool:
-    kind = kind or _project_context_kind(raw)
+    kind = kind or _selected_context_kind(raw)
     allowed_kinds = {
         ProjectContextKind.DECISION,
         ProjectContextKind.INVARIANT,
-        ProjectContextKind.BLOCKER,
         ProjectContextKind.RISK,
-        ProjectContextKind.LEARNING,
         ProjectContextKind.CONTEXT,
     }
+    # Failed approaches, task-specific learnings, and active blockers belong to
+    # the Session Context child even when their source span is verified. A
+    # durable constraint must be promoted explicitly as a current risk,
+    # invariant, decision, or context fact before it can enter the parent.
     if kind not in allowed_kinds:
         return False
     if (
@@ -1312,7 +1365,7 @@ def _eligible_project_context_raw(
         not in {"active", "verified"}
         or str(raw.get("conflict_state") or "none").strip().casefold()
         not in {"", "none"}
-        or _project_context_prompt_risk(raw) >= 0.70
+        or _selected_context_prompt_risk(raw) >= 0.70
     ):
         return False
     title = str(raw.get("title") or "")
@@ -1344,12 +1397,6 @@ def _looks_like_conversation_dump(value: str) -> bool:
         return True
     # Atomic project facts should not contain an embedded multi-section essay.
     return len(re.findall(r"(?m)^\s*#{1,6}\s+\S", value)) >= 3
-
-
-def _project_context_dedupe_key(value: str) -> str:
-    return " ".join(
-        re.sub(r"[^a-z0-9/_.-]+", " ", value.casefold()).split()
-    )
 
 
 def _continuation_task_identity(
@@ -1416,13 +1463,26 @@ def _continuation_task_identity(
     )
 
 
-def _project_context_kind(value: dict[str, Any]) -> ProjectContextKind:
+def _selected_context_kind(value: dict[str, Any]) -> ProjectContextKind:
     item_type = str(value.get("item_type") or "").strip().casefold()
+    lane = str(value.get("lane") or "").strip().casefold()
+    title = " ".join(str(value.get("title") or "").casefold().split())
+    if item_type in _SESSION_ONLY_PROJECT_CONTEXT_ITEM_TYPES:
+        return ProjectContextKind.LEARNING
+    if item_type in _GENERIC_PROJECT_CONTEXT_ITEM_TYPES and (
+        lane == "prior_failures"
+        or title.startswith(_LEGACY_SESSION_ONLY_TITLE_PREFIXES)
+    ):
+        # Older context_pack.v2 manifests represented extracted lessons and
+        # failed attempts as generic components. Keep those persisted shapes
+        # session-only as well as the compiler's newer semantic item type.
+        return ProjectContextKind.LEARNING
     direct = {
         "decision": ProjectContextKind.DECISION,
         "invariant": ProjectContextKind.INVARIANT,
         "blocker": ProjectContextKind.BLOCKER,
         "risk": ProjectContextKind.RISK,
+        "learning": ProjectContextKind.LEARNING,
         "verification": ProjectContextKind.VERIFICATION,
         "task": ProjectContextKind.TASK,
         "component": ProjectContextKind.CONTEXT,
@@ -1430,7 +1490,6 @@ def _project_context_kind(value: dict[str, Any]) -> ProjectContextKind:
     }
     if item_type in direct:
         return direct[item_type]
-    lane = str(value.get("lane") or "").strip().casefold()
     if lane == "prior_failures":
         return ProjectContextKind.LEARNING
     if lane == "verification":
@@ -1442,7 +1501,7 @@ def _project_context_kind(value: dict[str, Any]) -> ProjectContextKind:
     return ProjectContextKind.CONTEXT
 
 
-def _project_context_title(value: Any) -> str:
+def _selected_context_title(value: Any) -> str:
     normalized = " ".join(str(value or "").split())
     return normalized[:240].rstrip()
 
@@ -1454,7 +1513,7 @@ def _project_context_statement(value: Any) -> str:
     return normalized[:1_199].rstrip() + "…"
 
 
-def _project_context_prompt_risk(value: dict[str, Any]) -> float:
+def _selected_context_prompt_risk(value: dict[str, Any]) -> float:
     try:
         return float(value.get("prompt_injection_risk_score") or 0.0)
     except (TypeError, ValueError):
@@ -2264,13 +2323,15 @@ def _read_plan(
             None,
         ))
     selected_context = manifest.get("selected_context")
+    # Task-ranked Session Context can improve the task's read plan, but it is
+    # never an input to the objective-independent Project Context foundation.
     for raw in selected_context if isinstance(selected_context, list) else []:
         if not isinstance(raw, dict):
             continue
-        kind = _project_context_kind(raw)
-        if not _eligible_project_context_raw(raw, kind=kind):
+        kind = _selected_context_kind(raw)
+        if not _eligible_session_context_reference(raw, kind=kind):
             continue
-        title = _project_context_title(raw.get("title"))
+        title = _selected_context_title(raw.get("title"))
         file_refs = raw.get("file_refs")
         if not isinstance(file_refs, list):
             files = raw.get("files")
@@ -2494,8 +2555,10 @@ def _execution_idempotency_key(
     context_pack_id: str,
     request_sha256: str,
     task_mode: TaskMode,
+    selected_task_lifecycle: SelectedTaskLifecycle,
     checkpoint_id: str | None,
     repository_fingerprint: str | None,
+    project_foundation_sha256: str,
     execution_focus: str | None,
     artifacts: tuple[ArtifactReference, ...],
     supporting_context: tuple[SupportingContextItem, ...],
@@ -2507,6 +2570,7 @@ def _execution_idempotency_key(
         "task_mode": task_mode.value,
         "checkpoint_id": checkpoint_id,
         "repository_fingerprint": repository_fingerprint,
+        "project_foundation_sha256": project_foundation_sha256,
         "execution_focus": str(execution_focus or "").strip() or None,
         "artifacts": [
             artifact.model_dump(mode="json")
@@ -2517,6 +2581,8 @@ def _execution_idempotency_key(
             for item in supporting_context
         ],
     }
+    if selected_task_lifecycle is not SelectedTaskLifecycle.ACTIVE:
+        payload["selected_task_lifecycle"] = selected_task_lifecycle.value
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
