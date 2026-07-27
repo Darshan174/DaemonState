@@ -14,7 +14,7 @@ export function useContextDigest(workspaceId, { poll = false } = {}) {
     queryKey: ["context-digest", workspaceId],
     queryFn: () => api.get(digestPath(workspaceId)),
     enabled: Boolean(workspaceId),
-    refetchInterval: poll ? 4000 : false,
+    refetchInterval: poll ? 15_000 : false,
     refetchIntervalInBackground: false,
     retry: 1,
   });
@@ -84,7 +84,7 @@ export function useProjectMemory(workspaceId, options = {}) {
       limit,
     })),
     enabled: Boolean(workspaceId) && enabled,
-    refetchInterval: poll ? 15_000 : false,
+    refetchInterval: poll ? 60_000 : false,
     refetchIntervalInBackground: false,
     retry: 1,
   });
@@ -150,7 +150,7 @@ export function useLinkedAISessionRefresh(
       return result;
     },
     enabled: Boolean(workspaceId) && enabled && delayElapsed,
-    refetchInterval: 30_000,
+    refetchInterval: 120_000,
     refetchIntervalInBackground: false,
     retry: false,
   });

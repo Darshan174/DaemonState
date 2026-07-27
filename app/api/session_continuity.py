@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -31,7 +32,8 @@ from app.services.session_scope import (
     session_reference,
     workspace_session_scope,
 )
-from app.services.session_summary import derive_session_topic, is_internal_session_content
+from app.services.session_summary import derive_session_topic
+from app.services.session_visibility import internal_session_document_ids
 from app.services.workspace_scope import current_source_documents
 
 
@@ -49,6 +51,7 @@ async def get_session_continuity(
     workspace_id: UUID,
     provider: str | None = Query(default=None, min_length=1, max_length=50),
     session_id: str | None = Query(default=None, min_length=1, max_length=255),
+    limit: int | None = Query(default=None, ge=1, le=100),
     session: AsyncSession = Depends(get_db_session),
     access_scope: AccessScope = Depends(get_access_scope),
 ) -> dict:
@@ -75,14 +78,35 @@ async def get_session_continuity(
             )
         ))
     documents = list(await session.scalars(
-        select(SourceDocument).where(*document_conditions)
+        select(SourceDocument)
+        .where(*document_conditions)
+        .options(load_only(
+            SourceDocument.id,
+            SourceDocument.source_type,
+            SourceDocument.external_id,
+            SourceDocument.metadata_json,
+            SourceDocument.content_sha256,
+            SourceDocument.source_identity_sha256,
+            SourceDocument.revision_number,
+            SourceDocument.source_created_at,
+            SourceDocument.ingested_at,
+        ))
     ))
     current_documents, _ = current_source_documents(documents)
+    internal_document_ids = await internal_session_document_ids(
+        session,
+        current_documents,
+    )
     current_documents = [
         document
         for document in current_documents
-        if not is_internal_session_content(document.content)
+        if document.id not in internal_document_ids
     ]
+    if limit is not None:
+        current_documents.sort(
+            key=_document_activity_key,
+            reverse=True,
+        )
     active_scope = (
         await workspace_session_scope(
             session,
@@ -98,6 +122,7 @@ async def get_session_continuity(
         workspace_id,
         current_documents,
         scope=active_scope,
+        limit=limit,
     )
     allowed_sessions = {
         normalize_session_key(*session_reference(document))
@@ -118,6 +143,8 @@ async def get_session_continuity(
             SessionEvent.provider.in_(session_provider_values(normalized_provider)),
             SessionEvent.session_id == normalized_session_id,
         ))
+    elif limit is not None:
+        event_conditions.append(_allowed_session_predicate(allowed_sessions))
     events = list(await session.scalars(
         select(SessionEvent)
         .join(SourceDocument, SessionEvent.source_document_id == SourceDocument.id)
@@ -290,3 +317,51 @@ def _ledger_event_predicate():
         SessionEvent.event_type.in_(SESSION_LEDGER_EVENT_TYPES),
         and_(SessionEvent.event_type == "tool_call", file_edit_tool),
     )
+
+
+def _allowed_session_predicate(
+    allowed_sessions: set[tuple[str, str]],
+):
+    return or_(*(
+        and_(
+            SessionEvent.provider.in_(session_provider_values(provider)),
+            SessionEvent.session_id == session_id,
+        )
+        for provider, session_id in sorted(allowed_sessions)
+    ))
+
+
+def _document_activity_key(document: SourceDocument) -> tuple[str, str, str]:
+    metadata = _metadata(document.metadata_json)
+    activity = _latest_datetime_iso(
+        metadata.get("updated_at"),
+        metadata.get("ended_at"),
+        metadata.get("source_modified_at"),
+        metadata.get("started_at"),
+        document.source_created_at,
+    ) or _latest_datetime_iso(
+        metadata.get("ingested_at"),
+        document.ingested_at,
+    )
+    return activity or "", str(document.ingested_at or ""), str(document.id)
+
+
+def _latest_datetime_iso(*values: object) -> str | None:
+    parsed: list[datetime] = []
+    for value in values:
+        candidate: datetime | None = None
+        if isinstance(value, datetime):
+            candidate = value
+        elif isinstance(value, str) and value.strip():
+            try:
+                candidate = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+        if candidate is None:
+            continue
+        if candidate.tzinfo is None:
+            candidate = candidate.replace(tzinfo=timezone.utc)
+        else:
+            candidate = candidate.astimezone(timezone.utc)
+        parsed.append(candidate)
+    return max(parsed).isoformat() if parsed else None

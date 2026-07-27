@@ -10,6 +10,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
 from app.models import Connector, SourceDocument, Workspace
 from app.services.access import AccessScope, source_access_predicate
@@ -21,9 +22,8 @@ from app.services.session_scope import (
     workspace_session_scope,
 )
 from app.services.session_summary import (
-    derive_latest_session_topic,
-    derive_session_topic,
-    derive_session_topics,
+    SESSION_LIBRARY_SUMMARY_VERSION,
+    build_session_library_summary,
     is_internal_session_content,
 )
 from app.services.workspace_scope import current_source_documents
@@ -100,12 +100,24 @@ async def sync_local_session_library(
     }
 
     for result in discovery:
-        scanned_sessions = [
-            item for item in result.sessions
-            if not is_internal_session_content(item.content)
-        ]
-        for item in scanned_sessions:
+        scanned_sessions = []
+        for item in result.sessions:
             item.metadata = enrich_session_scope_metadata(item.metadata, item.events)
+            library_summary = build_session_library_summary(
+                item.content,
+                explicit_title=item.metadata.get("title"),
+                cwd=item.metadata.get("cwd"),
+                tool=result.connector_type,
+                session_id=item.session_id,
+            )
+            library_summary["compaction_checkpoints"] = list_session_checkpoints(
+                item.content,
+                item.metadata,
+                session_title=str(library_summary["title"]),
+            )
+            item.metadata["session_library_summary"] = library_summary
+            if not library_summary["internal"]:
+                scanned_sessions.append(item)
         user_sessions = [
             item
             for item in scanned_sessions
@@ -284,6 +296,7 @@ async def build_session_library(
     active_access_scope = access_scope or AccessScope.local()
     documents = [] if workspace.kind == "demo" else list(await session.scalars(
         select(SourceDocument)
+        .options(defer(SourceDocument.content, raiseload=True))
         .where(
             SourceDocument.workspace_id == workspace_id,
             SourceDocument.source_type == "agent_session",
@@ -294,11 +307,36 @@ async def build_session_library(
     current, _ = current_source_documents(documents)
     current = await scoped_session_documents(session, workspace_id, current)
 
-    sessions = [
-        _session_entry(document)
+    summaries = {
+        document.id: _session_library_summary(document)
         for document in current
-        if not is_internal_session_content(document.content)
-    ]
+    }
+    legacy_ids = {
+        document.id
+        for document in current
+        if summaries[document.id] is None
+    }
+    legacy_contents = (
+        await _load_legacy_session_contents(session, legacy_ids)
+        if legacy_ids
+        else {}
+    )
+    sessions = []
+    for document in current:
+        summary = summaries[document.id]
+        content = legacy_contents.get(document.id)
+        if summary is not None:
+            if summary["internal"]:
+                continue
+        elif is_internal_session_content(content):
+            continue
+        sessions.append(
+            _session_entry(
+                document,
+                content=content,
+                summary=summary,
+            )
+        )
     sessions.sort(key=lambda item: item["updated_at"] or "", reverse=True)
 
     topic_sessions: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -553,7 +591,107 @@ async def _get_or_create_connector(
     return connector
 
 
-def _session_entry(document: SourceDocument) -> dict[str, Any]:
+async def _load_legacy_session_contents(
+    session: AsyncSession,
+    document_ids: set[UUID],
+) -> dict[UUID, str]:
+    if not document_ids:
+        return {}
+    rows = await session.execute(
+        select(SourceDocument.id, SourceDocument.content).where(
+            SourceDocument.id.in_(document_ids)
+        )
+    )
+    return {document_id: content for document_id, content in rows}
+
+
+def _session_library_summary(
+    document: SourceDocument,
+) -> dict[str, Any] | None:
+    metadata = _loads_dict(document.metadata_json)
+    raw = metadata.get("session_library_summary")
+    try:
+        schema_version = (
+            int(raw.get("schema_version") or 0)
+            if isinstance(raw, dict)
+            else 0
+        )
+    except (TypeError, ValueError):
+        schema_version = 0
+    if isinstance(raw, dict) and schema_version == SESSION_LIBRARY_SUMMARY_VERSION:
+        checkpoints = raw.get("compaction_checkpoints")
+        if (
+            document.content_sha256
+            and raw.get("content_sha256") == document.content_sha256
+            and isinstance(raw.get("internal"), bool)
+            and isinstance(raw.get("title"), str)
+            and isinstance(raw.get("topics"), list)
+            and all(isinstance(item, str) for item in raw["topics"])
+            and (
+                raw.get("latest_topic") is None
+                or isinstance(raw.get("latest_topic"), str)
+            )
+            and isinstance(raw.get("preview"), str)
+            and isinstance(checkpoints, list)
+            and all(isinstance(item, dict) for item in checkpoints)
+        ):
+            return {
+                "internal": raw["internal"],
+                "title": raw["title"],
+                "topics": list(raw["topics"]),
+                "latest_topic": raw.get("latest_topic"),
+                "preview": raw["preview"],
+                "compaction_checkpoints": [
+                    dict(item) for item in checkpoints
+                ],
+            }
+
+    # Sessions imported before summary metadata was introduced already carry
+    # resolver-derived title/topics/checkpoint descriptors. They are safe to
+    # render without the transcript; the exact transcript remains available to
+    # detail and checkpoint-restore endpoints. Ambiguous hand-authored legacy
+    # rows still take the content fallback below.
+    title = metadata.get("title")
+    topics = metadata.get("topics")
+    source_path = str(metadata.get("source_path") or "").strip()
+    if (
+        not source_path
+        or not isinstance(title, str)
+        or not title.strip()
+        or not isinstance(topics, list)
+        or not topics
+        or not all(isinstance(item, str) and item.strip() for item in topics)
+    ):
+        return None
+    normalized_topics = [item.strip() for item in topics]
+    summary_text = " ".join([title, *normalized_topics]).lower()
+    internal = (
+        "the following is the codex agent history whose request action you are assessing"
+        in summary_text
+        and "transcript start" in summary_text
+    )
+    latest_topic = metadata.get("latest_topic")
+    if not isinstance(latest_topic, str) or not latest_topic.strip():
+        latest_topic = normalized_topics[-1]
+    preview = metadata.get("preview")
+    if not isinstance(preview, str) or not preview.strip():
+        preview = title.strip()
+    return {
+        "internal": internal,
+        "title": title.strip(),
+        "topics": normalized_topics,
+        "latest_topic": latest_topic.strip(),
+        "preview": preview.strip(),
+        "compaction_checkpoints": None,
+    }
+
+
+def _session_entry(
+    document: SourceDocument,
+    *,
+    content: str | None = None,
+    summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     metadata = _loads_dict(document.metadata_json)
     connector_type = str(
         metadata.get("connector_type") or metadata.get("tool") or "unknown"
@@ -561,40 +699,30 @@ def _session_entry(document: SourceDocument) -> dict[str, Any]:
     if connector_type == "claude_code":
         connector_type = "claude"
     session_id = str(metadata.get("session_id") or document.external_id.rsplit(":", 1)[-1])
-    title = derive_session_topic(
-        document.content,
-        explicit_title=metadata.get("title"),
-        tool=connector_type,
-        session_id=session_id,
-    ) or "Untitled session"
-    topics = derive_session_topics(
-        document.content,
-        explicit_title=title,
-        cwd=metadata.get("cwd"),
-        tool=connector_type,
-        session_id=session_id,
-    )
-    latest_topic = derive_latest_session_topic(
-        document.content,
-        explicit_title=metadata.get("title"),
-        tool=connector_type,
-        session_id=session_id,
-    )
-    compaction_checkpoints = list_session_checkpoints(
-        document.content,
-        metadata,
-        session_title=title,
-    )
-    if latest_topic:
-        latest_key = _topic_key(latest_topic)
-        matching_topic = next(
-            (item for item in topics if _topic_key(item) == latest_key),
-            None,
+    resolved_summary = summary or _session_library_summary(document)
+    transcript = content
+    if resolved_summary is None:
+        transcript = document.content if content is None else content
+        resolved_summary = build_session_library_summary(
+            transcript,
+            explicit_title=metadata.get("title"),
+            cwd=metadata.get("cwd"),
+            tool=connector_type,
+            session_id=session_id,
         )
-        topics = [item for item in topics if _topic_key(item) != latest_key]
-        if matching_topic is None and len(topics) >= 6:
-            topics = topics[:5]
-        topics.append(matching_topic or latest_topic)
+    title = str(resolved_summary["title"])
+    topics = list(resolved_summary["topics"])
+    latest_topic = resolved_summary.get("latest_topic")
+    persisted_checkpoints = resolved_summary.get("compaction_checkpoints")
+    compaction_checkpoints = (
+        [dict(item) for item in persisted_checkpoints]
+        if isinstance(persisted_checkpoints, list)
+        else list_session_checkpoints(
+            transcript or "",
+            metadata,
+            session_title=title,
+        )
+    )
     updated_at = _latest_datetime_iso(
         metadata.get("updated_at"),
         metadata.get("ended_at"),
@@ -626,7 +754,7 @@ def _session_entry(document: SourceDocument) -> dict[str, Any]:
             "source_type": document.source_type,
             "linked_to_local_history": bool(metadata.get("source_path")),
         },
-        "preview": _session_preview(document.content),
+        "preview": resolved_summary["preview"],
         "compaction_checkpoints": compaction_checkpoints,
     }
 
@@ -673,36 +801,6 @@ def _connector_type_for_document(document: SourceDocument) -> str:
         or ""
     ).strip().lower()
     return "claude" if connector_type == "claude_code" else connector_type
-
-
-def _session_preview(content: str, limit: int = 180) -> str:
-    blocks = re.findall(
-        r"(?ms)^\[(?:USER|HUMAN|YOU)\]\s*(.*?)(?=^\[[A-Z_ -]+\]\s*|\Z)",
-        content or "",
-    )
-    noise_markers = (
-        "request_user_input availability",
-        "<skills_instructions>",
-        "<permissions instructions>",
-        "# agents.md instructions",
-        "the following is the codex agent history",
-        "at the start of your turn",
-        "all agents in the team",
-        "child agents can also spawn",
-        "they may be addressed as to=/root",
-        "permanent repository rules for codex",
-    )
-    value = next(
-        (
-            item for item in blocks
-            if item.strip() and not any(marker in item.lower() for marker in noise_markers)
-        ),
-        "",
-    )
-    if not value:
-        value = next((topic for topic in derive_session_topics(content) if topic), "")
-    clean = re.sub(r"\s+", " ", value).strip()
-    return clean if len(clean) <= limit else f"{clean[: limit - 1].rstrip()}…"
 
 
 def _loads_dict(value: Any) -> dict[str, Any]:

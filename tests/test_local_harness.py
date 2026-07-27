@@ -170,6 +170,28 @@ async def _pack_and_run(
 
 
 @pytest.mark.asyncio
+async def test_continuation_run_cannot_fall_back_to_audit_pack(
+    db_session,
+    tmp_path,
+) -> None:
+    root = _repository(tmp_path)
+    pack, run = await _pack_and_run(db_session)
+    run.run_key = f"continuation:{uuid4().hex}"
+    await db_session.flush()
+
+    with pytest.raises(
+        ValueError,
+        match="requires the canonical ContinuationExecution prompt",
+    ):
+        await LocalHarnessRunner(db_session).run(
+            context_pack_id=pack.id,
+            run_id=run.id,
+            repo_path=root,
+            command=(sys.executable, "-c", "print('must not start')"),
+        )
+
+
+@pytest.mark.asyncio
 async def test_runner_streams_stdout_to_an_observer_before_command_completion(
     db_session,
     tmp_path,
@@ -504,8 +526,10 @@ async def test_runner_bounds_output_and_verification_is_opt_in(db_session, tmp_p
 
     assert result.status == "completed"
     assert result.command.stdout_truncated is True
-    assert result.command.stdout == TRUNCATED_OUTPUT
+    assert TRUNCATED_OUTPUT in result.command.stdout
+    assert "password=[redacted]" in result.command.stdout
     assert "secret" not in result.command.stdout
+    assert len(result.command.stdout.encode("utf-8")) <= 128
     assert "argv-secret" not in " ".join(result.command.argv)
     assert result.command.argv[-1] == "[redacted]"
     assert result.verification_results == ()
@@ -525,6 +549,93 @@ async def test_runner_bounds_output_and_verification_is_opt_in(db_session, tmp_p
         )
     )
     assert "argv-secret" not in stored
+
+
+@pytest.mark.asyncio
+async def test_runner_drops_a_partial_tail_that_can_begin_inside_a_secret(
+    db_session,
+    tmp_path,
+):
+    root = _repository(tmp_path)
+    pack, run = await _pack_and_run(db_session)
+    child_code = "import sys; sys.stdout.write('password=' + ('S' * 10000))"
+
+    result = await LocalHarnessRunner(db_session, output_limit_bytes=128).run(
+        context_pack_id=pack.id,
+        run_id=run.id,
+        repo_path=root,
+        command=[sys.executable, "-c", child_code],
+    )
+
+    assert result.status == "completed"
+    assert result.command.stdout_truncated is True
+    assert "password=[redacted]" in result.command.stdout
+    assert "S" not in result.command.stdout
+    assert len(result.command.stdout.encode("utf-8")) <= 128
+
+
+@pytest.mark.asyncio
+async def test_runner_tracks_oversized_terminal_error_and_skips_verification(
+    db_session,
+    tmp_path,
+):
+    root = _repository(tmp_path)
+    verification_code = "from pathlib import Path; Path('must-not-run').touch()"
+    pack, run = await _pack_and_run(
+        db_session,
+        verification_commands=[
+            {
+                "id": "V1",
+                "command": shlex.join([sys.executable, "-c", verification_code]),
+                "required": True,
+            }
+        ],
+    )
+    terminal_error = json.dumps({
+        "type": "error",
+        "error": {"message": "provider failed " + ("E" * 1_000)},
+    })
+    child_code = (
+        "import sys; "
+        "sys.stdout.write('api_key=stdout-secret\\n' + ('x' * 10000) + "
+        "'\\n' + sys.argv[1] + '\\n')"
+    )
+
+    result = await LocalHarnessRunner(db_session, output_limit_bytes=256).run(
+        context_pack_id=pack.id,
+        run_id=run.id,
+        repo_path=root,
+        command=[sys.executable, "-c", child_code, terminal_error],
+        verify=True,
+    )
+
+    assert result.status == "failed"
+    assert result.command.exit_code == 0
+    assert result.command.stdout_truncated is True
+    assert TRUNCATED_OUTPUT in result.command.stdout
+    assert "api_key=[redacted]" in result.command.stdout
+    assert "stdout-secret" not in result.command.stdout
+    assert "E" * 20 not in result.command.stdout
+    assert result.command.structured_terminal_error is True
+    assert "structured_terminal_error" not in result.command.to_dict()
+    assert len(result.command.stdout.encode("utf-8")) <= 256
+    assert result.verification_results == ()
+    assert not (root / "must-not-run").exists()
+    event_types = list(
+        await db_session.scalars(
+            select(RunObservation.event_type).where(RunObservation.agent_run_id == run.id)
+        )
+    )
+    assert "verification" not in event_types
+    stored = "\n".join(
+        await db_session.scalars(
+            select(SourceDocument.content).where(
+                SourceDocument.source_type == "agent_run_observation",
+                SourceDocument.workspace_id == pack.workspace_id,
+            )
+        )
+    )
+    assert "stdout-secret" not in stored
 
 
 @pytest.mark.asyncio

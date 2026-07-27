@@ -9,6 +9,7 @@ import {
   Database,
   FileCode2,
   GitBranch,
+  History,
   MessagesSquare,
   PlugZap,
   ShieldCheck,
@@ -62,55 +63,68 @@ const HANDOFF_ROWS = [
 
 const PRODUCT_SURFACES = [
   {
-    id: "observe",
+    id: "continue",
     number: "01",
-    label: "Observe",
-    surfaces: "Now + Runs",
-    title: "See current work without mistaking history for the present.",
-    body: "Now shows live observed activity and the safest checkpoint to continue from. Runs preserves the execution trail behind that state.",
-    payoff: "Current activity stays current. Recovery boundaries remain immutable.",
-    tags: ["active work", "run evidence", "checkpoints"],
+    label: "Continue",
+    surfaces: "Project + Session Context",
+    title: "Start fresh or recover after compaction without losing the task.",
+    body: "Resolve the current goal against repository state, then compile only the sessions, decisions, blockers, files, and checks needed for this continuation.",
+    payoff: "The same work can move into a fresh session or a supported harness without a full rediscovery pass.",
+    tags: ["current goal", "exact next action", "cross-harness"],
     to: "/app",
-    action: "Open Now",
+    action: "Continue work",
     icon: Activity,
   },
   {
-    id: "recall",
+    id: "review",
     number: "02",
-    label: "Recall",
-    surfaces: "Library + Memory",
-    title: "Choose the right session, then keep only the memory that lasts.",
-    body: "Library selects the workstream that matters now. Memory turns its durable decisions, requirements, blockers, and outcomes into reviewable project knowledge.",
-    payoff: "A deliberate archive, not a transcript dump.",
-    tags: ["session archive", "durable facts", "human review"],
+    label: "Review",
+    surfaces: "Library + History",
+    title: "Find the exact session and see what actually happened.",
+    body: "Search work by harness, topic, and checkpoint. Review requests, outcomes, Git changes, checks, blockers, and places where context is still incomplete.",
+    payoff: "Session selection becomes deliberate, and the execution trail stays inspectable.",
+    tags: ["session library", "run history", "checkpoints"],
+    to: "/app/library",
+    action: "Browse sessions",
+    icon: History,
+  },
+  {
+    id: "remember",
+    number: "03",
+    label: "Remember",
+    surfaces: "Project Memory",
+    title: "Keep the decisions and learnings that should outlive one chat.",
+    body: "Turn requirements, decisions, blockers, risks, learnings, and outcomes into reviewable memory with provenance, freshness, and conflict states.",
+    payoff: "Durable project knowledge stays useful without becoming an opaque transcript dump.",
+    tags: ["durable facts", "freshness", "human review"],
     to: "/app/memory",
     action: "Inspect memory",
     icon: BrainCircuit,
   },
   {
     id: "explain",
-    number: "03",
+    number: "04",
     label: "Explain",
-    surfaces: "Graph + Evidence",
-    title: "Trace each conclusion back to the evidence that earned it.",
-    body: "Explain reveals how goals, decisions, files, risks, and sources relate—without making users reverse-engineer the compiled handoff.",
-    payoff: "The agent gets focus. The person keeps auditability.",
+    surfaces: "Evidence",
+    title: "Trace every important conclusion back to what earned it.",
+    body: "Follow goals, decisions, files, risks, checks, and source revisions through their relationships instead of trusting an unexplained summary.",
+    payoff: "The agent gets focus. The person keeps provenance and auditability.",
     tags: ["relationships", "provenance", "conflicts"],
     to: "/app/explain",
-    action: "Explain the project",
+    action: "Trace the evidence",
     icon: Waypoints,
   },
   {
     id: "connect",
-    number: "04",
+    number: "05",
     label: "Connect",
-    surfaces: "Sources + Connectors",
+    surfaces: "Sources + Integrations",
     title: "Grow the evidence layer without weakening source boundaries.",
-    body: "Sources preserves raw material and revisions. Connectors bring configured systems into the same evidence model without silently promoting them to truth.",
+    body: "Preserve raw material and its revisions, then bring configured systems into the same evidence model without silently promoting every imported claim to truth.",
     payoff: "Broad input coverage. Narrow, source-backed output.",
     tags: ["source revisions", "ingestion", "boundaries"],
     to: "/app/connectors",
-    action: "Manage connectors",
+    action: "Manage integrations",
     icon: PlugZap,
   },
 ];
@@ -128,28 +142,28 @@ export default function Landing() {
           <div className="daemonstate-hero-copy relative z-10">
             <p className="daemonstate-kicker">
               <span className="daemonstate-live-dot" aria-hidden="true" />
-              Continuity infrastructure for coding agents
+              Verified continuity for coding agents
             </p>
             <h1 className="mt-7 max-w-5xl text-[clamp(3.35rem,7vw,7.25rem)] font-semibold leading-[0.88] tracking-[-0.065em]">
               Your next coding agent should not start from zero.
             </h1>
             <p className="mt-8 max-w-2xl text-lg leading-8 text-[#5f5f57] sm:text-xl sm:leading-9">
-              DaemonState turns sessions, code changes, decisions, and test evidence into one verified handoff for the next run.
+              DaemonState turns coding sessions, repository state, decisions, blockers, and test evidence into task-relevant Project Context—ready for the harness you choose.
             </p>
 
             <div className="mt-9 flex flex-col gap-3 sm:flex-row">
               <Link to="/app" className="daemonstate-cta-primary">
-                Open your context <ArrowRight className="h-4 w-4" />
+                Open DaemonState <ArrowRight className="h-4 w-4" />
               </Link>
               <a href="#handoff" className="daemonstate-cta-secondary">
-                See a real handoff
+                See the handoff
               </a>
             </div>
 
             <div className="mt-8 flex flex-wrap gap-x-6 gap-y-3 text-sm text-[#6d6d64]">
               <span className="inline-flex items-center gap-2"><Check className="h-4 w-4" />Source-backed</span>
-              <span className="inline-flex items-center gap-2"><Check className="h-4 w-4" />Agent-agnostic</span>
-              <span className="inline-flex items-center gap-2"><Check className="h-4 w-4" />Open source</span>
+              <span className="inline-flex items-center gap-2"><Check className="h-4 w-4" />Codex · Claude Code · OpenCode</span>
+              <span className="inline-flex items-center gap-2"><Check className="h-4 w-4" />Open source · self-hosted · active alpha</span>
             </div>
           </div>
 
@@ -325,7 +339,7 @@ function ContinuityVisual() {
           <span className="inline-flex items-center gap-2 text-xs font-semibold text-[#d9ff68]">
             <ShieldCheck className="h-4 w-4" />Verified checkpoint
           </span>
-          <span className="font-mono text-[11px] text-[#8f8f86]">context_pack.v2</span>
+          <span className="font-mono text-[11px] text-[#8f8f86]">Project Context</span>
         </div>
         <p className="mt-8 text-xs font-semibold text-[#9f9f96]">Exact next action</p>
         <h2 className="mt-2 max-w-lg text-2xl font-semibold leading-tight tracking-[-0.035em] sm:text-3xl">
@@ -447,7 +461,7 @@ function SectionHeading({ number, label, title, body }) {
 }
 
 function ProductAtlas() {
-  const [activeId, setActiveId] = useState("observe");
+  const [activeId, setActiveId] = useState("continue");
 
   return (
     <section id="product" className="daemonstate-product-atlas border-y border-[#9fb64a]">
@@ -455,10 +469,10 @@ function ProductAtlas() {
         <div data-daemonstate-reveal="rise" className="lg:sticky lg:top-28 lg:self-start">
           <p className="daemonstate-kicker">02 · Product atlas</p>
           <h2 className="mt-7 max-w-xl text-[clamp(2.8rem,5vw,5.5rem)] font-semibold leading-[0.94] tracking-[-0.055em]">
-            One engine. Four continuity surfaces.
+            Everything continuity needs. Five focused surfaces.
           </h2>
           <p className="mt-7 max-w-lg text-base leading-7 text-[#465212]">
-            Open a layer to see where it lives, what it protects, and why it belongs in the product loop.
+            Continue the work, inspect what happened, preserve what matters, trace the evidence, and control what comes in.
           </p>
         </div>
 
@@ -495,7 +509,11 @@ function ProductAtlas() {
                           <Icon className="h-4 w-4" />
                         </div>
                         <p className="mt-5 max-w-xl text-sm leading-6 opacity-80">{surface.body}</p>
-                        <Link to={surface.to} className="daemonstate-atlas-link mt-6 inline-flex items-center gap-2 text-sm font-semibold">
+                        <Link
+                          to={surface.to}
+                          tabIndex={open ? undefined : -1}
+                          className="daemonstate-atlas-link mt-6 inline-flex items-center gap-2 text-sm font-semibold"
+                        >
                           {surface.action} <ArrowRight className="h-4 w-4" />
                         </Link>
                       </div>

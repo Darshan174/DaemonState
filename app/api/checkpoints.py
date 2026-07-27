@@ -15,12 +15,19 @@ from app.models import SessionEvent, SourceDocument, Workspace, WorkCheckpoint
 from app.services.access import AccessScope, source_access_predicate
 from app.services.checkpoint_verifier import compare_checkpoint_repository, verify_checkpoint
 from app.services.checkpoints import (
+    SESSION_HANDOFF_SCHEMA_VERSION,
+    build_session_handoff_contract,
     capture_checkpoint,
+    checkpoint_to_dict,
     checkpoints_to_dicts,
     get_checkpoint,
     latest_checkpoint,
     list_checkpoints,
     render_resume_bundle,
+    render_session_handoff,
+    resolve_session_handoff_attachment_descriptors,
+    resolve_session_handoff_request_verbatim,
+    resolve_session_handoff_supporting_context,
 )
 from app.services.harness_launcher import HarnessLaunchError, launch_harness_session
 
@@ -43,6 +50,10 @@ class CheckpointVerifyRequest(BaseModel):
 class CheckpointResumeRequest(BaseModel):
     workspace_id: UUID
     launch_session: bool = False
+
+
+class CheckpointHandoffRequest(BaseModel):
+    workspace_id: UUID
 
 
 @router.get("/checkpoints")
@@ -288,6 +299,97 @@ async def create_resume_bundle(
         "content": bundle,
         "sha256": hashlib.sha256(bundle.encode("utf-8")).hexdigest(),
         "launch": launch,
+    }
+
+
+@router.post("/checkpoints/{checkpoint_id}/handoff")
+async def create_session_handoff(
+    checkpoint_id: UUID,
+    body: CheckpointHandoffRequest,
+    session: AsyncSession = Depends(get_db_session),
+    access_scope: AccessScope = Depends(get_access_scope),
+) -> dict:
+    checkpoint = await _accessible_checkpoint(
+        session, checkpoint_id, body.workspace_id, access_scope
+    )
+    request_verbatim = await resolve_session_handoff_request_verbatim(
+        session,
+        checkpoint,
+        access_scope=access_scope,
+    )
+    if request_verbatim is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "The checkpoint does not contain a lossless session goal and its "
+                "original goal event is unavailable."
+            ),
+        )
+    supporting_context = await resolve_session_handoff_supporting_context(
+        session,
+        checkpoint,
+        request_verbatim=request_verbatim,
+        access_scope=access_scope,
+    )
+    attachment_descriptors = (
+        await resolve_session_handoff_attachment_descriptors(
+            session,
+            checkpoint,
+            request_verbatim=request_verbatim,
+            access_scope=access_scope,
+        )
+    )
+    current_projection = (
+        await checkpoints_to_dicts(
+            session,
+            [checkpoint],
+            access_scope=access_scope,
+        )
+    )[0]
+    current_boundary = current_projection.get("boundary") or {}
+    data = checkpoint_to_dict(
+        checkpoint,
+        recovered_goal=request_verbatim,
+        session_tip={
+            "sequence_number": current_boundary.get("session_tip_sequence"),
+            "occurred_at": current_boundary.get("session_tip_at"),
+        },
+    )
+    repository_comparison = await compare_checkpoint_repository(checkpoint)
+    try:
+        contract = build_session_handoff_contract(
+            checkpoint,
+            request_verbatim=request_verbatim,
+            supporting_context=supporting_context,
+            trusted_attachment_descriptors=attachment_descriptors,
+            allow_local_artifacts=access_scope.principal_id == "local",
+            checkpoint_data=data,
+            repository_comparison=repository_comparison,
+        )
+        content = render_session_handoff(
+            checkpoint,
+            request_verbatim=request_verbatim,
+            supporting_context=supporting_context,
+            contract=contract,
+            checkpoint_data=data,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "schema_version": SESSION_HANDOFF_SCHEMA_VERSION,
+        "scope": "session",
+        "provider": data["provider"],
+        "session_id": data["session_id"],
+        "checkpoint_id": data["id"],
+        "source_document_id": data["source_document_id"],
+        "boundary": data["boundary"],
+        "snapshot_phase": data["boundary"].get("snapshot_phase"),
+        "captured_at": data["boundary"].get("occurred_at"),
+        "currentness": data.get("currentness"),
+        **contract,
+        "content": content,
+        "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "estimated_tokens": max(1, (len(content) + 3) // 4),
     }
 
 

@@ -12,6 +12,7 @@ from app.models import (
     Workspace,
     WorkspaceGoal,
 )
+from app.services.workspace_goals import resolve_current_goal
 
 
 async def _project(db_session):
@@ -166,6 +167,51 @@ async def test_active_run_temporarily_overrides_selected_goal(client, db_session
     assert goal["title"] == "Implement the active task"
     assert goal["source_kind"] == "active_agent_run"
     assert goal["can_clear"] is False
+
+
+async def test_restricted_active_run_focus_falls_back_to_visible_goal(db_session):
+    workspace, task = await _project(db_session)
+    fallback = WorkspaceGoal(
+        workspace_id=workspace.id,
+        title="Continue the visible selected goal",
+        status="active",
+    )
+    pack = ContextPack(
+        id=uuid4(),
+        workspace_id=workspace.id,
+        objective="Restricted active objective",
+        focus_component_id=task.id,
+        objective_source_document_id=task.source_document_id,
+        objective_origin="source_component",
+        markdown="# Active brief",
+        manifest="{}",
+    )
+    run = AgentRun(
+        id=uuid4(),
+        workspace_id=workspace.id,
+        context_pack_id=pack.id,
+        objective="Restricted active objective",
+        tool="codex",
+        status="running",
+    )
+    db_session.add_all([fallback, pack, run])
+    await db_session.flush()
+
+    unconstrained = await resolve_current_goal(
+        db_session,
+        workspace_id=workspace.id,
+    )
+    constrained = await resolve_current_goal(
+        db_session,
+        workspace_id=workspace.id,
+        allowed_component_ids=set(),
+        allowed_source_document_ids={task.source_document_id},
+    )
+
+    assert unconstrained["source_kind"] == "active_agent_run"
+    assert unconstrained["title"] == "Restricted active objective"
+    assert constrained["source_kind"] == "user_selected"
+    assert constrained["title"] == "Continue the visible selected goal"
 
 
 async def test_rejects_ineligible_goal_component(client, db_session):

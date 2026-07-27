@@ -77,7 +77,16 @@ def create_database_engine(
     async_url = _make_async_url(url)
     parsed = make_url(async_url)
     options: dict = {"pool_pre_ping": True}
-    if parsed.get_backend_name() == "postgresql":
+    if parsed.get_backend_name() == "sqlite":
+        # Continuation compilation performs a short write after repository and
+        # checkpoint inspection. The local UI and sync worker may briefly hold
+        # read locks on the same SQLite database; honor the configured
+        # connection timeout instead of failing after sqlite3's shorter
+        # default busy wait.
+        options["connect_args"] = {
+            "timeout": max(1.0, settings.database_connect_timeout_seconds),
+        }
+    elif parsed.get_backend_name() == "postgresql":
         effective_statement_timeout = (
             settings.database_statement_timeout_ms
             if statement_timeout_ms is None

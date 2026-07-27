@@ -52,6 +52,12 @@ frontend/.cache/
 *.tsbuildinfo
 
 # ===========================
+# Swift / macOS companion
+# ===========================
+.build/
+.swiftpm/
+
+# ===========================
 # Alembic
 # ===========================
 alembic/versions/*.pyc
