@@ -9,7 +9,7 @@ Usage: scripts/backup-postgres.sh BACKUP_DIRECTORY [PRODUCTION_ENV_FILE]
 Creates an atomic PostgreSQL custom-format dump and SHA-256 checksum by using
 the running production Compose database service. BACKUP_DIRECTORY must not be
 the filesystem root. PRODUCTION_ENV_FILE defaults to
-/etc/context-engine/production.env.
+/etc/daemonstate/production.env.
 EOF
 }
 
@@ -19,7 +19,7 @@ if (( $# < 1 || $# > 2 )); then
 fi
 
 backup_directory="$1"
-production_env_file="${2:-${PRODUCTION_ENV_FILE:-/etc/context-engine/production.env}}"
+production_env_file="${2:-${PRODUCTION_ENV_FILE:-/etc/daemonstate/production.env}}"
 script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repository_root="$(cd -- "$script_directory/.." && pwd -P)"
 compose_file="$repository_root/docker-compose.production.yml"

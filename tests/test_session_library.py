@@ -22,10 +22,10 @@ async def test_library_and_resume_share_the_indexed_project_boundary(
     db_session,
     tmp_path: Path,
 ) -> None:
-    repo = tmp_path / "context-engine"
+    repo = tmp_path / "daemonstate"
     repo.mkdir()
     (repo / ".git").mkdir()
-    worktree = tmp_path / "codex-worktrees" / "task" / "context-engine"
+    worktree = tmp_path / "codex-worktrees" / "task" / "daemonstate"
     worktree.mkdir(parents=True)
     worktree_git_dir = repo / ".git" / "worktrees" / "task"
     worktree_git_dir.mkdir(parents=True)
@@ -358,7 +358,7 @@ async def test_library_and_resume_enforce_session_source_read_grants(
         }),
         raising=False,
     )
-    headers = {"X-Context-Engine-API-Key": "alice-token"}
+    headers = {"X-DaemonState-API-Key": "alice-token"}
 
     library = await client.get(
         "/api/session-library",
@@ -551,7 +551,7 @@ def test_codex_discovery_marks_continued_tasks_as_forks(tmp_path: Path, monkeypa
             "payload": {
                 "id": "parent-session",
                 "timestamp": "2026-07-18T08:00:00Z",
-                "cwd": "/workspace/context-engine",
+                "cwd": "/workspace/daemonstate",
                 "thread_source": "user",
             },
         },
@@ -564,7 +564,7 @@ def test_codex_discovery_marks_continued_tasks_as_forks(tmp_path: Path, monkeypa
             "payload": {
                 "id": "child-session",
                 "timestamp": "2026-07-18T09:00:00Z",
-                "cwd": "/workspace/context-engine",
+                "cwd": "/workspace/daemonstate",
                 "thread_source": "user",
             },
         },
@@ -669,7 +669,7 @@ async def test_library_sync_discovers_ingests_and_groups_sessions(
     await db_session.flush()
     db_session.add(CodeFile(
         workspace_id=workspace.id,
-        repo_root="/workspace/context-engine",
+        repo_root="/workspace/daemonstate",
         path="app.py",
         identity_key=uuid4().hex * 2,
         language="python",
@@ -691,7 +691,7 @@ async def test_library_sync_discovers_ingests_and_groups_sessions(
                 "tool": "codex",
                 "source_path": "/tmp/codex-alpha-beta.jsonl",
                 "source_modified_at": "2026-07-18T08:00:00+00:00",
-                "cwd": "/workspace/context-engine",
+                "cwd": "/workspace/daemonstate",
                 "title": "Alpha and Beta planning",
                 "topics": ["Alpha billing", "Beta onboarding"],
                 "compaction_checkpoints": [{
@@ -717,7 +717,7 @@ async def test_library_sync_discovers_ingests_and_groups_sessions(
                 "tool": "codex",
                 "source_path": "/tmp/codex-release.jsonl",
                 "source_modified_at": "2026-07-18T09:00:00+00:00",
-                "cwd": "/workspace/context-engine",
+                "cwd": "/workspace/daemonstate",
                 "title": "Alpha release",
                 "topics": ["Alpha billing", "Release readiness"],
                 "forked_from_session_id": "codex-alpha-beta",

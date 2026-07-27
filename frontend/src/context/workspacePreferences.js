@@ -1,4 +1,4 @@
-const STORAGE_PREFIX = "ce:workspace-preferences:";
+const STORAGE_PREFIX = "daemonstate:workspace-preferences:";
 
 function storageKey(workspaceId) {
   return workspaceId ? `${STORAGE_PREFIX}${workspaceId}` : null;

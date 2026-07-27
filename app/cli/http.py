@@ -19,7 +19,7 @@ def api_request(
     api_key: str | None = None,
 ) -> Any:
     url = f"{base_url.rstrip('/')}{path}"
-    headers = {"X-Context-Engine-API-Key": api_key} if api_key else None
+    headers = {"X-DaemonState-API-Key": api_key} if api_key else None
     try:
         with httpx.Client(timeout=timeout) as client:
             if method == "GET":

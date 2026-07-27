@@ -30,7 +30,7 @@ describe("Landing", () => {
     expect(screen.getByRole("link", { name: /Open your context/ })).toHaveAttribute("href", "/app");
     expect(screen.getByRole("link", { name: "See a real handoff" })).toHaveAttribute("href", "#handoff");
     expect(screen.queryByRole("button", { name: /mode/i })).not.toBeInTheDocument();
-    expect(container.querySelector(".ce-landing")).toHaveAttribute("data-landing-theme", "fixed");
+    expect(container.querySelector(".daemonstate-landing")).toHaveAttribute("data-landing-theme", "fixed");
     expect(screen.getAllByRole("link", { name: "GitHub" })).toHaveLength(2);
     expect(screen.getByText("context_pack.v2")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Every source keeps its identity. The handoff keeps only what matters." })).toBeInTheDocument();
@@ -57,14 +57,14 @@ describe("Landing", () => {
     expect(screen.queryByText("Recently indexed")).not.toBeInTheDocument();
     expect(screen.queryByText("Auth refactor")).not.toBeInTheDocument();
     expect(screen.queryByText("PR #184")).not.toBeInTheDocument();
-    expect(screen.queryByText("$ ctxe mcp")).not.toBeInTheDocument();
+    expect(screen.queryByText("$ daemonstate mcp")).not.toBeInTheDocument();
     expect(screen.queryByText(/Trusted by/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/10,000/i)).not.toBeInTheDocument();
 
-    const pixelCurtains = container.querySelectorAll(".ce-pixel-curtain");
+    const pixelCurtains = container.querySelectorAll(".daemonstate-pixel-curtain");
     expect(pixelCurtains).toHaveLength(4);
     pixelCurtains.forEach((curtain) => expect(curtain.children).toHaveLength(48));
-    expect(container.querySelectorAll('[data-ce-reveal][data-visible="true"]')).toHaveLength(13);
+    expect(container.querySelectorAll('[data-daemonstate-reveal][data-visible="true"]')).toHaveLength(13);
   });
 
   it("reveals everything immediately when reduced motion is preferred", () => {
@@ -75,10 +75,10 @@ describe("Landing", () => {
     vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: true })));
 
     const { container } = renderLanding();
-    const landing = container.querySelector(".ce-landing");
+    const landing = container.querySelector(".daemonstate-landing");
 
     expect(Observer).not.toHaveBeenCalled();
-    expect(landing).not.toHaveClass("ce-motion-ready");
-    expect(container.querySelectorAll('[data-ce-reveal][data-visible="true"]')).toHaveLength(13);
+    expect(landing).not.toHaveClass("daemonstate-motion-ready");
+    expect(container.querySelectorAll('[data-daemonstate-reveal][data-visible="true"]')).toHaveLength(13);
   });
 });

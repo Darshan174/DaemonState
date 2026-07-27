@@ -1,2 +1,2 @@
-"""Evaluation harnesses for Context Engine quality checks."""
+"""Evaluation harnesses for DaemonState quality checks."""
 

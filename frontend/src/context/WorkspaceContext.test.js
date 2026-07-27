@@ -3,7 +3,7 @@ import { resolveWorkspaceId } from "./WorkspaceContext";
 
 const workspaces = [
   { id: "ws-default", name: "Default" },
-  { id: "ws-engine", name: "Context engine" },
+  { id: "ws-engine", name: "DaemonState" },
 ];
 
 describe("resolveWorkspaceId", () => {

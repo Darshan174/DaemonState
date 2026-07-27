@@ -9,7 +9,7 @@ integrated.
 ## Mission
 
 Decide whether a non-technical founder can use the Project map to understand and
-challenge AI-agent work without learning Context Engine internals.
+challenge AI-agent work without learning DaemonState internals.
 
 ## Review questions
 

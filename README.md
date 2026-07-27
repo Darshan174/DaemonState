@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="frontend/public/favicon.svg" width="88" height="88" alt="Context Engine logo">
+  <img src="frontend/public/favicon.svg" width="88" height="88" alt="DaemonState logo">
 </p>
 
-<h1 align="center">Context Engine</h1>
+<h1 align="center">DaemonState</h1>
 
 <p align="center">
   Verified project history in. Minimum task-ready context out.
@@ -13,10 +13,10 @@
 
 ## What it is
 
-Context Engine is an open-source context and evidence layer for coding agents. It compiles verified project history
+DaemonState is an open-source context and evidence layer for coding agents. It compiles verified project history
 into the task-sized brief an agent needs to continue real work on a long-running codebase.
 
-Context Engine is not another coding agent or a generic knowledge graph. The verified continuation runtime is the core
+DaemonState is not another coding agent or a generic knowledge graph. The verified continuation runtime is the core
 product. The compiler, checkpoints, Library, and graph support that handoff and explain what was selected and why.
 
 ## The problem
@@ -30,7 +30,7 @@ A larger context window does not fix this. More text can mean more old plans, du
 
 ## Who it is for
 
-Context Engine is built first for solo founders and tiny teams using coding agents every day. Developers get the exact
+DaemonState is built first for solo founders and tiny teams using coding agents every day. Developers get the exact
 sources, files, constraints, checks, and run evidence for the next task. Founders and non-technical users get a readable
 view of the same project state without living in terminal logs.
 
@@ -39,7 +39,7 @@ view of the same project state without living in terminal logs.
 You should not need the newest, most expensive model for every task just because
 an older or cheaper model was given poor context.
 
-Context Engine does not make a weak model magically smarter. It removes an
+DaemonState does not make a weak model magically smarter. It removes an
 avoidable handicap: unclear goals, missing project history, irrelevant context,
 and no execution discipline. The local harness and outcome reports are built to
 measure whether that lets less capable models complete more useful work.
@@ -75,7 +75,7 @@ with a confident guess.
 | Sources and connectors | Shows raw source previews, extracted components, connection state, and sync results. The API preserves revisions and enforces access scopes. |
 | Local harness | Wraps one user-supplied worker command and records bounded output, Git changes, checks, and outcome evidence. |
 
-The React app uses the FastAPI API. The `ctxe` CLI and MCP server expose the
+The React app uses the FastAPI API. The `daemonstate` CLI and MCP server expose the
 agent-native continuation runtime, context preparation, query, repository, and
 run-evidence workflows rather than every UI view. Local development
 uses SQLite; Docker can use PostgreSQL/pgvector.
@@ -87,7 +87,7 @@ compatible checkpoint, compile the pack, and run it directly in another
 installed coding harness:
 
 ```bash
-ctxe continue \
+daemonstate continue \
   --workspace-id <workspace-uuid> \
   --repo . \
   --into codex
@@ -131,15 +131,15 @@ Demo data never marks a connector as authenticated or connected.
   readiness-checked Codex, Claude Code, and OpenCode targets, refreshes evidence,
   starts a fresh explicitly selected provider CLI, observes the repository, and
   runs available checks; it is unavailable to remote principals. Explicit
-  choices never silently fall back. `ctxe continue --into ...` launches an
+  choices never silently fall back. `daemonstate continue --into ...` launches an
   explicitly selected provider CLI. MCP `resume_task` returns the pack to its
   calling agent without starting another process.
 - There is no system-wide agent monitor. Library scans while its page is open;
   Continue refreshes linked local histories; other integrations must report events.
 - HTTP and MCP run records contain observations supplied by their caller. The
   local harness is the path that independently inspects Git state and commands.
-- `ctxe harness run` still runs only the explicit local command supplied by the
-  user. `ctxe continue --into ...` selects one of three audited built-in
+- `daemonstate harness run` still runs only the explicit local command supplied by the
+  user. `daemonstate continue --into ...` selects one of three audited built-in
   provider adapters and never adds permission-bypass flags.
 - On macOS, browser Continue uses Codex's persistent app-server to reopen an exact Codex task
   after it is renderable. Providers without an exact-session
@@ -154,7 +154,7 @@ Demo data never marks a connector as authenticated or connected.
   test showing that another agent continued correctly without re-explanation,
   with less discovery and no stale-context mistake.
 - Model-lift reports describe observed runs. They do not yet prove that an older
-  model matches a newer one because of Context Engine.
+  model matches a newer one because of DaemonState.
 - The production profile is deliberately single-tenant. Per-principal API keys are rejected until action-level
   authorization covers every HTTP and MCP operation.
 - MCP is a trusted local stdio surface; expose the authenticated HTTP API, not the MCP process, across a network.
@@ -183,16 +183,16 @@ Main API routes:
 Useful CLI commands:
 
 ```text
-ctxe prepare
-ctxe continue
-ctxe query
-ctxe repo index
-ctxe repo watch
-ctxe harness run
-ctxe harness report
-ctxe eval harness
-ctxe mcp
-ctxe db deploy
+daemonstate prepare
+daemonstate continue
+daemonstate query
+daemonstate repo index
+daemonstate repo watch
+daemonstate harness run
+daemonstate harness report
+daemonstate eval harness
+daemonstate mcp
+daemonstate db deploy
 ```
 
 The MCP server can prepare or query context and record run evidence. It cannot
@@ -208,8 +208,8 @@ exploration and the seeded demo.
 ### Docker
 
 ```bash
-git clone https://github.com/Darshan174/Context-Engine.git context-engine
-cd context-engine
+git clone https://github.com/Darshan174/DaemonState.git daemonstate
+cd daemonstate
 cp .env.example .env
 bash scripts/doctor.sh --docker
 docker compose up --build
@@ -221,8 +221,8 @@ and pgvector.
 ### Bare metal
 
 ```bash
-git clone https://github.com/Darshan174/Context-Engine.git context-engine
-cd context-engine
+git clone https://github.com/Darshan174/DaemonState.git daemonstate
+cd daemonstate
 cp .env.example .env
 bash scripts/doctor.sh --bare-metal
 bash scripts/setup.sh
@@ -244,7 +244,7 @@ exposes only a TLS proxy, keeps PostgreSQL/pgvector and Redis internal, drops ru
 resources, and includes backup and guarded restore tooling.
 
 The production profile requires immutable image references, file-backed
-secrets, an explicit read-only repository root, and `ctxe db deploy` before API
+secrets, an explicit read-only repository root, and `daemonstate db deploy` before API
 startup. Validate it in staging and complete the runbook's load, restore, and
 security checks against your own SLO/RPO/RTO before serving real traffic.
 

@@ -686,7 +686,7 @@ function ProjectEmptyState({ onIndexProject, indexing, result, error, onCancel }
         </span>
         <h2 className="mt-5 text-2xl font-semibold">Open your project</h2>
         <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-[#77776e] dark:text-[#aaa9a0]">
-          Add the repository once. Context Engine will use it as the boundary for sessions and project evidence.
+          Add the repository once. DaemonState will use it as the boundary for sessions and project evidence.
         </p>
 
         <form onSubmit={submit} className="mx-auto mt-6 flex max-w-md gap-2" noValidate>
@@ -784,7 +784,7 @@ function supportingNodeTitle(card) {
     && !/\bhub for messages\b|^(?:slack\s+)?channel\s*[:#]|^source type\s*:/i.test(String(value).trim())
   ));
   const evidenceText = String(selected || card?.summary || card?.title || "")
-    .replace(/^#?\s*Context Engine\s*(?:[-\u2013\u2014:]\s*)?/i, "");
+    .replace(/^#?\s*DaemonState\s*(?:[-\u2013\u2014:]\s*)?/i, "");
   return sentenceCase(preciseLine(evidenceText, 7));
 }
 

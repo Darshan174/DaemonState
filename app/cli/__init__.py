@@ -1,1 +1,1 @@
-"""Context Engine command-line interface."""
+"""DaemonState command-line interface."""

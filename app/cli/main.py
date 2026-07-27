@@ -12,7 +12,7 @@ DEFAULT_BASE_URL = "http://localhost:8000"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="ctxe", description="Context Engine CLI.")
+    parser = argparse.ArgumentParser(prog="daemonstate", description="DaemonState CLI.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     ingest_parser = subparsers.add_parser("ingest", help="Ingest files or directories.")
@@ -593,7 +593,7 @@ async def _prepare_and_maybe_run_continuation(args: argparse.Namespace) -> dict:
             workspace_id=workspace_id,
             context_pack_id=UUID(str(pack_id)),
             run_key=f"continuation:{uuid4()}",
-            tool=f"context-engine:{invocation.provider}",
+            tool=f"daemonstate:{invocation.provider}",
             model=str(
                 getattr(invocation, "model", None)
                 or args.target_model
@@ -1029,20 +1029,20 @@ def run_sync_worker(args: argparse.Namespace) -> int:
 
     configure_logging()
     validate_runtime_configuration()
-    logger = logging.getLogger("context-engine.sync-worker")
+    logger = logging.getLogger("daemonstate.sync-worker")
 
     async def _verify_schema() -> None:
         if settings.auto_migrate:
             return
         check_engine = create_database_engine(
             settings.database_url,
-            application_name="context-engine-worker-schema-check",
+            application_name="daemonstate-worker-schema-check",
         )
         try:
             async with check_engine.connect() as conn:
                 if not await schema_is_current(conn):
                     raise RuntimeError(
-                        "Database schema is not current; run `ctxe db deploy` first"
+                        "Database schema is not current; run `daemonstate db deploy` first"
                     )
                 if settings.environment.strip().lower() == "production":
                     await validate_connector_credentials(conn)
@@ -1072,7 +1072,7 @@ def run_sync_worker(args: argparse.Namespace) -> int:
 
         redrive_engine = create_database_engine(
             settings.database_url,
-            application_name="context-engine-source-redrive",
+            application_name="daemonstate-source-redrive",
         )
         try:
             factory = async_sessionmaker(
@@ -1094,7 +1094,7 @@ def run_sync_worker(args: argparse.Namespace) -> int:
         health_path = Path(settings.sync_worker_health_file)
         health_engine = create_database_engine(
             settings.database_url,
-            application_name="context-engine-worker-health",
+            application_name="daemonstate-worker-health",
         )
         interval = max(1.0, settings.sync_worker_health_interval_seconds)
         try:
@@ -1323,7 +1323,7 @@ def run_mcp(args: argparse.Namespace) -> int:
 
 
 def _api_key(args: argparse.Namespace) -> str | None:
-    return getattr(args, "api_key", None) or os.environ.get("CONTEXT_ENGINE_API_KEY") or None
+    return getattr(args, "api_key", None) or os.environ.get("DAEMONSTATE_API_KEY") or None
 
 
 def _alembic_config(database_url: str | None = None):
@@ -1360,7 +1360,7 @@ async def _deploy_database(database_url: str | None = None) -> dict:
     configured_url = database_url or settings.database_url
     migration_engine = create_database_engine(
         configured_url,
-        application_name="context-engine-migrator",
+        application_name="daemonstate-migrator",
         statement_timeout_ms=settings.migration_statement_timeout_ms,
         lock_timeout_ms=settings.migration_lock_timeout_ms,
     )

@@ -59,14 +59,14 @@ async def test_seed_demo_creates_source_backed_workspace(client, db_session):
     assert connector is not None
     assert connector.status == "disconnected"
     assert connector.credentials_json == "{}"
-    assert json.loads(connector.config_json)["repositories"] == ["your-org/context-engine"]
+    assert json.loads(connector.config_json)["repositories"] == ["your-org/daemonstate"]
 
     digest = await client.get(
         "/api/context/digest", params={"workspace_id": data["workspaceId"]}
     )
     assert digest.status_code == 200
     digest_data = digest.json()
-    assert digest_data["scope"]["project_repositories"] == ["your-org/context-engine"]
+    assert digest_data["scope"]["project_repositories"] == ["your-org/daemonstate"]
     assert digest_data["cards"]
 
 

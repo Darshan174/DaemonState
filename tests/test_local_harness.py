@@ -283,10 +283,10 @@ async def test_runner_exposes_context_and_persists_observed_evidence(db_session,
     child_code = (
         "import os, sys; from pathlib import Path; "
         "context = Path(sys.argv[1]); "
-        "assert context == Path(os.environ['CONTEXT_ENGINE_PACK_PATH']); "
+        "assert context == Path(os.environ['DAEMONSTATE_PACK_PATH']); "
         "assert context.read_text().startswith('# Context pack'); "
-        "assert os.environ['CONTEXT_ENGINE_PACK_ID']; "
-        "assert os.environ['CONTEXT_ENGINE_RUN_ID']; "
+        "assert os.environ['DAEMONSTATE_PACK_ID']; "
+        "assert os.environ['DAEMONSTATE_RUN_ID']; "
         "Path('worker-change.txt').write_text('implemented'); "
         "print('password=hunter2')"
     )
@@ -406,7 +406,7 @@ async def test_runner_strips_server_secrets_and_preserves_provider_auth(
     environment = {
         **provider_environment("claude"),
         # The runner keeps the denylist as a second line of defense even if a
-        # caller accidentally includes a Context Engine secret.
+        # caller accidentally includes a DaemonState secret.
         "DATABASE_URL": "explicit-server-secret",
     }
 

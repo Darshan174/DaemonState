@@ -532,6 +532,8 @@ def _project_name_from_cwd(cwd: str | None) -> str | None:
         return None
     if not name or name.lower() in {"home", "users", "desktop", "workspace", "tmp", "private"}:
         return None
+    if name.casefold() == "daemonstate":
+        return "DaemonState"
     cleaned = re.sub(r"[-_]+", " ", name)
     return _shorten(cleaned, max_words=6, max_chars=48)
 

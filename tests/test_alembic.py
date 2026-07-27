@@ -148,6 +148,58 @@ def test_alembic_upgrade_bootstraps_current_sqlite_schema(tmp_path):
         engine.dispose()
 
 
+def test_brand_cutover_migrates_system_owned_workspace_and_run_identifiers(tmp_path):
+    db_path = tmp_path / "brand-cutover.db"
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{db_path}")
+    command.upgrade(config, "0013_source_ingestion_jobs")
+
+    previous_slug = "-".join(("context", "engine"))
+    previous_display = " ".join(("Context", "Engine"))
+    workspace_id = uuid4().hex
+    run_id = uuid4().hex
+    engine = create_engine(f"sqlite:///{db_path}")
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO workspaces (id, name, slug)
+                    VALUES (:id, :name, :slug)
+                """),
+                {
+                    "id": workspace_id,
+                    "name": f"{previous_display} Demo",
+                    "slug": f"{previous_slug}-demo",
+                },
+            )
+            conn.execute(
+                text("""
+                    INSERT INTO agent_runs (id, tool, status)
+                    VALUES (:id, :tool, 'completed')
+                """),
+                {
+                    "id": run_id,
+                    "tool": f"{previous_slug}:codex",
+                },
+            )
+
+        command.upgrade(config, "head")
+
+        with engine.connect() as conn:
+            workspace = conn.execute(
+                text("SELECT name, slug FROM workspaces WHERE id = :id"),
+                {"id": workspace_id},
+            ).one()
+            tool = conn.execute(
+                text("SELECT tool FROM agent_runs WHERE id = :id"),
+                {"id": run_id},
+            ).scalar_one()
+        assert workspace == ("DaemonState Demo", "daemonstate-demo")
+        assert tool == "daemonstate:codex"
+    finally:
+        engine.dispose()
+
+
 def test_digest_read_indexes_downgrade_and_upgrade_cleanly(tmp_path):
     db_path = tmp_path / "context.db"
     config = Config("alembic.ini")

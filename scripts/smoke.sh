@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Context Engine — launch smoke checks
+# DaemonState — launch smoke checks
 # Usage:
 #   bash scripts/smoke.sh
 #   bash scripts/smoke.sh --docker
@@ -7,7 +7,7 @@ set -euo pipefail
 
 RUN_DOCKER_SMOKE=0
 SMOKE_PORT="${SMOKE_PORT:-18080}"
-PROJECT_NAME="${SMOKE_PROJECT_NAME:-context-engine-smoke}"
+PROJECT_NAME="${SMOKE_PROJECT_NAME:-daemonstate-smoke}"
 
 for arg in "$@"; do
   case "$arg" in

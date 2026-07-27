@@ -15,8 +15,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock("./useProductWorkspace", () => ({
   useProductWorkspace: () => ({
     activeWorkspaceId: "workspace-1",
-    activeWorkspace: { id: "workspace-1", name: "Context Engine" },
-    workspaces: [{ id: "workspace-1", name: "Context Engine" }],
+    activeWorkspace: { id: "workspace-1", name: "DaemonState" },
+    workspaces: [{ id: "workspace-1", name: "DaemonState" }],
     selectedId: "workspace-1",
     setSelectedId: vi.fn(),
     workspacesQuery: { isLoading: false },
@@ -74,7 +74,7 @@ beforeEach(() => {
     message: "Opened this session in the Codex desktop app. Topic highlighting stays here.",
   });
   mocks.getSource.mockResolvedValue({
-    content: "[USER]\n<environment_context>Context Engine files</environment_context>\n\n[USER]\n# Files mentioned by the user:\n\n## Screenshot 2026-07-18 at 22.32.05.png: /var/folders/example/Screenshot 2026-07-18 at 22.32.05.png\n\n## My request for Codex:\nPlan Alpha billing for launch.\n<image name=[Image #1] path=\"/var/folders/example/Screenshot.png\">\n</image>\n\n[ASSISTANT]\nAlpha billing will use Stripe with metered plans.\n\n[USER]\nReview Beta pricing.\n\n[ASSISTANT]\nBeta pricing is ready.",
+    content: "[USER]\n<environment_context>DaemonState files</environment_context>\n\n[USER]\n# Files mentioned by the user:\n\n## Screenshot 2026-07-18 at 22.32.05.png: /var/folders/example/Screenshot 2026-07-18 at 22.32.05.png\n\n## My request for Codex:\nPlan Alpha billing for launch.\n<image name=[Image #1] path=\"/var/folders/example/Screenshot.png\">\n</image>\n\n[ASSISTANT]\nAlpha billing will use Stripe with metered plans.\n\n[USER]\nReview Beta pricing.\n\n[ASSISTANT]\nBeta pricing is ready.",
     components: [
       { id: "component-1", name: "Alpha billing decision", value: "Use Stripe with metered plans", fact_type: "decision" },
     ],

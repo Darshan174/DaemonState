@@ -235,6 +235,6 @@ it("collapses the desktop sidebar with an accessible persisted control", async (
   fireEvent.click(collapse);
   const expand = screen.getByRole("button", { name: "Expand sidebar" });
   expect(expand).toHaveAttribute("aria-expanded", "false");
-  expect(localStorage.getItem("ce_sidebar_collapsed")).toBe("true");
+  expect(localStorage.getItem("daemonstate_sidebar_collapsed")).toBe("true");
   expect(screen.getAllByRole("link", { name: "Continue" }).length).toBeGreaterThan(0);
 });

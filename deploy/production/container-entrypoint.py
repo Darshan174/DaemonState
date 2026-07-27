@@ -128,8 +128,8 @@ def _load_environment() -> None:
     if not 1 <= port <= 65535:
         raise ConfigurationError("POSTGRES_PORT must be between 1 and 65535")
 
-    database = _require_identifier("POSTGRES_DB", "context_engine")
-    username = _require_identifier("POSTGRES_APP_USER", "ce_app")
+    database = _require_identifier("POSTGRES_DB", "daemonstate")
+    username = _require_identifier("POSTGRES_APP_USER", "daemonstate_app")
     os.environ["DATABASE_URL"] = (
         f"postgresql://{quote(username, safe='')}:{quote(password, safe='')}"
         f"@{host}:{port}/{quote(database, safe='')}"

@@ -2,7 +2,7 @@ import { useLayoutEffect, useState } from "react";
 import { Moon, Sun } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 
-const THEME_STORAGE_KEY = "ce-theme";
+const THEME_STORAGE_KEY = "daemonstate-theme";
 
 function getDocumentTheme(fallback) {
   if (typeof document === "undefined") return fallback;

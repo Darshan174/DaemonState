@@ -5,7 +5,7 @@ import sqlalchemy as sa
 
 
 revision = "0014_continuation_idempotency"
-down_revision = "0013_source_ingestion_jobs"
+down_revision = "0014_daemonstate_brand"
 branch_labels = None
 depends_on = None
 

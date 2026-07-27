@@ -1953,7 +1953,7 @@ async def test_local_action_endpoints_reject_remote_clients_even_with_forwarding
     )
     async with AsyncClient(
         transport=transport,
-        base_url="http://context-engine.test",
+        base_url="http://daemonstate.test",
     ) as remote:
         providers = await remote.get(
             "/api/continuations/providers",
@@ -2481,7 +2481,7 @@ async def test_outdated_codex_cli_returns_the_exact_model_blocker(
             "the configured `gpt-5.6-sol` model."
         ),
         "action": (
-            "Upgrade Codex CLI or configure Context Engine to use a current "
+            "Upgrade Codex CLI or configure DaemonState to use a current "
             "Codex executable, then retry."
         ),
         "affected_tasks": [goal],
