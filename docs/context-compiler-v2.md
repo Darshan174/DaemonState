@@ -34,7 +34,7 @@ must build against. It preserves the current launch baseline:
   components plus one-hop relationships. It is not the v2 compiler.
 - The current checkout includes an in-progress `app/services/context_compiler.py`,
   `app/api/context.py`, router registration for `/api/context/prepare`, and
-  `ctxe prepare`. Treat those as implementation leads, not proof that the final
+  `daemonstate prepare`. Treat those as implementation leads, not proof that the final
   v2 contract is satisfied.
 - Observed contract gaps in the in-progress compiler: manifest health is under
   `context_health` rather than required top-level `health_score`; excluded
@@ -689,7 +689,7 @@ Persistence invariants:
 - Selected item rows must match returned selected manifest items by
   `item_type`, `claim_id`, `component_id`, `evidence_span_id`,
   `source_document_id`, `score`, `inclusion_reason`, and `token_cost`.
-- `ctxe prepare` must either use the same durable persistence path or emit a
+- `daemonstate prepare` must either use the same durable persistence path or emit a
   tested `persistence.mode = "file_output_only"` manifest with
   `context_pack_id = null`; it must not return a fake pack ID.
 
@@ -711,8 +711,8 @@ states that explicitly.
 | Surface | Markdown | Manifest | Durable `context_pack_id` | `ContextPackItem` audit rows | Health score | Selected citations | Excluded reasons |
 |---|---|---|---|---|---|---|---|
 | `POST /api/context/prepare` | Returned and stored exactly in `ContextPack.markdown`. | Returned and stored exactly in `ContextPack.manifest`. | Required UUID, committed before response. | Required for every selected context item. | Returned as `health_score` and included in manifest. | Required in manifest. | Required in manifest. |
-| `ctxe prepare` database mode | Written to stdout/`--out` and stored exactly. | Written to stdout/`--manifest-out`/JSON and stored exactly. | Required UUID when persistence is available. | Required when persistence is available. | Required in CLI output and manifest. | Required in manifest. | Required in manifest. |
-| `ctxe prepare` file-output-only mode | Written to stdout/`--out`; not stored. | Written with `persistence.mode = "file_output_only"`. | Must be `null`; no fake ID. | None; count must be `0`. | Required in manifest. | Required in manifest. | Required in manifest. |
+| `daemonstate prepare` database mode | Written to stdout/`--out` and stored exactly. | Written to stdout/`--manifest-out`/JSON and stored exactly. | Required UUID when persistence is available. | Required when persistence is available. | Required in CLI output and manifest. | Required in manifest. | Required in manifest. |
+| `daemonstate prepare` file-output-only mode | Written to stdout/`--out`; not stored. | Written with `persistence.mode = "file_output_only"`. | Must be `null`; no fake ID. | None; count must be `0`. | Required in manifest. | Required in manifest. | Required in manifest. |
 | MCP `prepare_task` | Returned exactly; must match stored row. | Returned exactly; must match stored row. | Required UUID, committed before return. | Required for every selected context item. | Returned as `health_score` and included in manifest. | Required in manifest. | Required in manifest. |
 | Persisted `ContextPack` | Stores final markdown. | Stores final manifest JSON. | Row `id` equals manifest `context_pack_id`. | Related rows must exist for selected items. | Stores column value matching response. | Stored in manifest. | Stored in manifest. |
 | Persisted `ContextPackItem` | Not stored on item row. | Not stored on item row. | References parent pack. | Stores selected item audit fields. | Not stored on item row. | Stores IDs/references; full citation remains in manifest. | Not applicable. |
@@ -874,7 +874,7 @@ Known conflict files:
 - `docs/mcp.md`: Agent 1 writes contract; Agent 4 later adds runtime usage.
 - `app/agents/context_pack.py`: current v1 pack generator; Agent 3 may adapt or
   wrap it. Agent 4 must not duplicate compiler logic here.
-- `app/cli/main.py`: Agent 3 owns `ctxe prepare`; Agent 4 should not edit.
+- `app/cli/main.py`: Agent 3 owns `daemonstate prepare`; Agent 4 should not edit.
 - `app/models.py`: Agent 2 owns all v2 schema changes.
 - `tests/test_cli.py`: Agent 3 owns prepare CLI tests; Codex resolves overlap.
 
@@ -892,7 +892,7 @@ Codex post-merge checks for the review follow-ups:
   `POST /api/context/prepare` returns a durable pack ID and committed item
   rows.
 - CLI persistence or compatibility mode:
-  `ctxe prepare` either writes durable rows through the configured database or
+  `daemonstate prepare` either writes durable rows through the configured database or
   returns tested `persistence.mode = "file_output_only"` metadata.
 - Stored manifest/markdown consistency:
   `ContextPack.manifest` and `ContextPack.markdown` match the final response

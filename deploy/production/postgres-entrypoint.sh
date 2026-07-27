@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 umask 077
 
-staging_directory="/run/context-engine-secrets"
+staging_directory="/run/daemonstate-secrets"
 postgres_uid="$(id -u postgres)"
 postgres_gid="$(id -g postgres)"
 

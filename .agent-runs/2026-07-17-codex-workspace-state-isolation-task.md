@@ -14,7 +14,7 @@ project boundaries while preserving each workspace's durable configuration.
   mounted page components.
 - SQLite evidence shows stock-radar was created at `2026-07-17 16:56:01` and its
   goal was explicitly inserted at `16:56:47`; the backend did not copy the
-  cleared Context engine goal.
+  cleared DaemonState goal.
 
 ## Contract
 
@@ -37,7 +37,7 @@ project boundaries while preserving each workspace's durable configuration.
 - `ruff check .`: passed.
 - `git diff --check`: passed.
 - Live browser: clicking `Open stock radar` selected it and navigated to
-  `/app`; an unsaved goal draft disappeared after switching to Context engine
+  `/app`; an unsaved goal draft disappeared after switching to DaemonState
   and back; the saved stock-radar goal remained workspace-specific until it was
   deliberately cleared through the UI.
 

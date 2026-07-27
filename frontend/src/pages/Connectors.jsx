@@ -235,7 +235,7 @@ export default function Connectors() {
   const startGenericOAuth = (installHref, connectorType) => {
     setActionError(null);
     setActionNotice(null);
-    const popup = window.open(installHref, `ce-${connectorType}-oauth`, "popup=yes,width=640,height=820");
+    const popup = window.open(installHref, `daemonstate-${connectorType}-oauth`, "popup=yes,width=640,height=820");
     if (!popup) {
       window.location.assign(installHref);
       return;
@@ -281,7 +281,7 @@ export default function Connectors() {
 
     const popup = window.open(
       installHref,
-      "ce-slack-oauth",
+      "daemonstate-slack-oauth",
       "popup=yes,width=640,height=820",
     );
 
@@ -954,7 +954,7 @@ function ConnectorCard({
                   github.com/settings/tokens/new
                 </a>
               </li>
-              <li>Under <strong>Note</strong>, enter a name like <em>Context Engine</em></li>
+              <li>Under <strong>Note</strong>, enter a name like <em>DaemonState</em></li>
               <li>
                 Select scope{" "}
                 <span className="rounded bg-sky-100 dark:bg-sky-900/50 px-1.5 py-0.5 font-mono font-bold">repo</span>
@@ -1420,7 +1420,7 @@ function SlackConnectModal({ mode, redirectUri, onCancel, onContinue }) {
         </div>
         <div className="flex items-center justify-center gap-4">
           <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-gradient-to-br from-brand-400 to-brand-600 text-white text-xl font-bold shadow-lg">
-            CE
+            DS
           </div>
           <div className="flex gap-1">
             <span className="inline-block h-2 w-2 rounded-full bg-gray-300 dark:bg-gray-600" />
@@ -1433,7 +1433,7 @@ function SlackConnectModal({ mode, redirectUri, onCancel, onContinue }) {
         </div>
         <div className="mt-6 text-center">
           <h3 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">
-            Connect Context Engine to Slack
+            Connect DaemonState to Slack
           </h3>
           <p className="mt-2 text-sm text-gray-500">
             {isManaged ? "Managed install" : "Self-hosted Slack app"}
@@ -1444,7 +1444,7 @@ function SlackConnectModal({ mode, redirectUri, onCancel, onContinue }) {
           <div>
             <p className="font-semibold text-gray-900 dark:text-gray-100">Read-only access</p>
             <p className="mt-1.5 leading-relaxed text-sm">
-              Context Engine only reads channel history. No messages are posted or modified. Revoke access anytime from your Slack workspace settings.
+              DaemonState only reads channel history. No messages are posted or modified. Revoke access anytime from your Slack workspace settings.
             </p>
             <div className="mt-3 flex flex-wrap gap-1.5">
               {["channels:history", "channels:join", "channels:read", "groups:history", "groups:read", "users:read", "team:read"].map((scope) => (
@@ -1472,7 +1472,7 @@ function SlackConnectModal({ mode, redirectUri, onCancel, onContinue }) {
           <div>
             <p className="font-semibold text-gray-900 dark:text-gray-100">You're in control</p>
             <p className="mt-1.5 leading-relaxed text-sm">
-              Disconnect the workspace from Context Engine at any time from this page.
+              Disconnect the workspace from DaemonState at any time from this page.
             </p>
           </div>
         </div>

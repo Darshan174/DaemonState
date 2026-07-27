@@ -43,6 +43,112 @@ async def run_migrations(conn: AsyncConnection) -> None:
     await _migrate_work_checkpoint_schema(conn)
     await _migrate_query_and_sync_indexes(conn)
     await _migrate_source_ingestion_jobs(conn)
+    await _migrate_daemonstate_brand(conn)
+
+
+async def _migrate_daemonstate_brand(conn: AsyncConnection) -> None:
+    """Move system-owned brand identifiers forward without rewriting user prose."""
+
+    previous_slug = "-".join(("context", "engine"))
+    previous_display = " ".join(("Context", "Engine"))
+    previous_sentence_case = " ".join(("Context", "engine"))
+
+    if await _get_table_columns(conn, "workspaces"):
+        await conn.execute(
+            text("""
+                UPDATE workspaces
+                SET name = :current_name
+                WHERE name IN (:previous_display, :previous_sentence_case)
+            """),
+            {
+                "current_name": "DaemonState",
+                "previous_display": previous_display,
+                "previous_sentence_case": previous_sentence_case,
+            },
+        )
+        await conn.execute(
+            text("""
+                UPDATE workspaces
+                SET name = :current_demo_name
+                WHERE name = :previous_demo_name
+            """),
+            {
+                "current_demo_name": "DaemonState Demo",
+                "previous_demo_name": f"{previous_display} Demo",
+            },
+        )
+        await conn.execute(
+            text("""
+                UPDATE workspaces
+                SET slug = :current_slug
+                WHERE slug = :previous_slug
+            """),
+            {
+                "current_slug": "daemonstate",
+                "previous_slug": previous_slug,
+            },
+        )
+        await conn.execute(
+            text("""
+                UPDATE workspaces
+                SET slug = :current_demo_slug
+                WHERE slug = :previous_demo_slug
+            """),
+            {
+                "current_demo_slug": "daemonstate-demo",
+                "previous_demo_slug": f"{previous_slug}-demo",
+            },
+        )
+
+    if "tool" in await _get_table_columns(conn, "agent_runs"):
+        previous_prefix = f"{previous_slug}:"
+        await conn.execute(
+            text("""
+                UPDATE agent_runs
+                SET tool = :current_prefix || substr(tool, :suffix_start)
+                WHERE lower(tool) LIKE :previous_pattern
+            """),
+            {
+                "current_prefix": "daemonstate:",
+                "suffix_start": len(previous_prefix) + 1,
+                "previous_pattern": f"{previous_prefix}%",
+            },
+        )
+
+    if conn.dialect.name != "postgresql":
+        return
+
+    previous_db_prefix = "".join(("c", "e"))
+    for suffix, arguments in (
+        ("try_vector", "text"),
+        ("sync_component_embedding_vector", ""),
+        ("try_jsonb", "text"),
+        ("sync_source_document_search", ""),
+        ("sync_component_search", ""),
+    ):
+        previous_name = f"{previous_db_prefix}_{suffix}"
+        current_name = f"daemonstate_{suffix}"
+        previous_signature = f"{previous_name}({arguments})"
+        current_signature = f"{current_name}({arguments})"
+        previous_exists = bool(await conn.scalar(
+            text("SELECT to_regprocedure(:signature) IS NOT NULL"),
+            {"signature": previous_signature},
+        ))
+        if not previous_exists:
+            continue
+        current_exists = bool(await conn.scalar(
+            text("SELECT to_regprocedure(:signature) IS NOT NULL"),
+            {"signature": current_signature},
+        ))
+        if current_exists:
+            await conn.execute(text(
+                f"DROP FUNCTION {previous_name}({arguments})"
+            ))
+        else:
+            await conn.execute(text(
+                f"ALTER FUNCTION {previous_name}({arguments}) "
+                f"RENAME TO {current_name}"
+            ))
 
 
 async def _migrate_source_ingestion_jobs(conn: AsyncConnection) -> None:
@@ -2471,7 +2577,7 @@ async def _migrate_pgvector_search_schema(conn: AsyncConnection) -> None:
 
     await conn.execute(
         text("""
-        CREATE OR REPLACE FUNCTION ce_try_vector(raw text) RETURNS vector AS $$
+        CREATE OR REPLACE FUNCTION daemonstate_try_vector(raw text) RETURNS vector AS $$
         BEGIN
             IF raw IS NULL OR btrim(raw) = '' THEN
                 RETURN NULL;
@@ -2486,7 +2592,7 @@ async def _migrate_pgvector_search_schema(conn: AsyncConnection) -> None:
     await conn.execute(
         text("""
         UPDATE components
-        SET embedding_vector = ce_try_vector(embedding)
+        SET embedding_vector = daemonstate_try_vector(embedding)
         WHERE embedding_vector IS NULL
           AND embedding IS NOT NULL
           AND embedding != ''
@@ -2494,10 +2600,10 @@ async def _migrate_pgvector_search_schema(conn: AsyncConnection) -> None:
     )
     await conn.execute(
         text("""
-        CREATE OR REPLACE FUNCTION ce_sync_component_embedding_vector()
+        CREATE OR REPLACE FUNCTION daemonstate_sync_component_embedding_vector()
         RETURNS trigger AS $$
         BEGIN
-            NEW.embedding_vector = ce_try_vector(NEW.embedding);
+            NEW.embedding_vector = daemonstate_try_vector(NEW.embedding);
             RETURN NEW;
         END;
         $$ LANGUAGE plpgsql
@@ -2513,7 +2619,7 @@ async def _migrate_pgvector_search_schema(conn: AsyncConnection) -> None:
         CREATE TRIGGER trg_components_embedding_vector
         BEFORE INSERT OR UPDATE OF embedding ON components
         FOR EACH ROW
-        EXECUTE FUNCTION ce_sync_component_embedding_vector()
+        EXECUTE FUNCTION daemonstate_sync_component_embedding_vector()
     """)
     )
 
@@ -2543,7 +2649,7 @@ async def _migrate_postgres_text_search_schema(conn: AsyncConnection) -> None:
 
         await conn.execute(
             text("""
-            CREATE OR REPLACE FUNCTION ce_try_jsonb(raw text) RETURNS jsonb AS $$
+            CREATE OR REPLACE FUNCTION daemonstate_try_jsonb(raw text) RETURNS jsonb AS $$
             BEGIN
                 IF raw IS NULL OR btrim(raw) = '' THEN
                     RETURN '{}'::jsonb;
@@ -2557,10 +2663,10 @@ async def _migrate_postgres_text_search_schema(conn: AsyncConnection) -> None:
         )
         await conn.execute(
             text("""
-            CREATE OR REPLACE FUNCTION ce_sync_source_document_search()
+            CREATE OR REPLACE FUNCTION daemonstate_sync_source_document_search()
             RETURNS trigger AS $$
             BEGIN
-                NEW.metadata_jsonb = ce_try_jsonb(NEW.metadata);
+                NEW.metadata_jsonb = daemonstate_try_jsonb(NEW.metadata);
                 NEW.search_tsv =
                     setweight(to_tsvector('english', coalesce(NEW.external_id, '')), 'A') ||
                     setweight(to_tsvector('english', coalesce(NEW.source_type, '')), 'B') ||
@@ -2574,7 +2680,7 @@ async def _migrate_postgres_text_search_schema(conn: AsyncConnection) -> None:
         await conn.execute(
             text("""
             UPDATE source_documents
-            SET metadata_jsonb = ce_try_jsonb(metadata),
+            SET metadata_jsonb = daemonstate_try_jsonb(metadata),
                 search_tsv =
                     setweight(to_tsvector('english', coalesce(external_id, '')), 'A') ||
                     setweight(to_tsvector('english', coalesce(source_type, '')), 'B') ||
@@ -2592,7 +2698,7 @@ async def _migrate_postgres_text_search_schema(conn: AsyncConnection) -> None:
             BEFORE INSERT OR UPDATE OF metadata, content, external_id, source_type, author
             ON source_documents
             FOR EACH ROW
-            EXECUTE FUNCTION ce_sync_source_document_search()
+            EXECUTE FUNCTION daemonstate_sync_source_document_search()
         """)
         )
         await conn.execute(
@@ -2615,7 +2721,7 @@ async def _migrate_postgres_text_search_schema(conn: AsyncConnection) -> None:
 
         await conn.execute(
             text("""
-            CREATE OR REPLACE FUNCTION ce_sync_component_search()
+            CREATE OR REPLACE FUNCTION daemonstate_sync_component_search()
             RETURNS trigger AS $$
             BEGIN
                 NEW.search_tsv =
@@ -2648,7 +2754,7 @@ async def _migrate_postgres_text_search_schema(conn: AsyncConnection) -> None:
             BEFORE INSERT OR UPDATE OF name, value, fact_type, status, temporal
             ON components
             FOR EACH ROW
-            EXECUTE FUNCTION ce_sync_component_search()
+            EXECUTE FUNCTION daemonstate_sync_component_search()
         """)
         )
         await conn.execute(

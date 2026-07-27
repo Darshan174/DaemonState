@@ -11,8 +11,8 @@ async def test_api_routes_require_key_when_server_api_key_is_configured(client, 
     monkeypatch.setattr("app.config.settings.server_api_key", "server-secret", raising=False)
 
     missing = await client.get("/api/workspaces")
-    wrong = await client.get("/api/workspaces", headers={"X-Context-Engine-API-Key": "wrong"})
-    correct = await client.get("/api/workspaces", headers={"X-Context-Engine-API-Key": "server-secret"})
+    wrong = await client.get("/api/workspaces", headers={"X-DaemonState-API-Key": "wrong"})
+    correct = await client.get("/api/workspaces", headers={"X-DaemonState-API-Key": "server-secret"})
 
     assert missing.status_code == 401
     assert wrong.status_code == 401

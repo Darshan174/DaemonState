@@ -99,7 +99,7 @@ export default function QueryView() {
           </div>
           <div>
             <p className="eyebrow">Grounded query</p>
-            <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">Ask Context Engine</h1>
+            <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">Ask DaemonState</h1>
           </div>
         </div>
         <p className="max-w-xl text-sm leading-relaxed text-slate-500 dark:text-neutral-400">

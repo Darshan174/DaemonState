@@ -192,7 +192,7 @@ describe("context digest adapter", () => {
   it("reserves repository roots and relevant sessions while promoting search matches", () => {
     const architecture = [
       card({ id: "area-z", category: "code_area", type: "file", title: "File: Area: z", attention_score: 100 }),
-      card({ id: "repo-root", category: "code_area", type: "file", title: "File: Repository: context-engine", attention_score: 1 }),
+      card({ id: "repo-root", category: "code_area", type: "file", title: "File: Repository: daemonstate", attention_score: 1 }),
     ];
     const sessions = [
       card({ id: "different", category: "agent_session", type: "agent_session", attention_score: 100, workspace_relevance: { status: "not_relevant" } }),
@@ -272,8 +272,8 @@ describe("context digest adapter", () => {
         card({
           id: "hub",
           category: "supporting_evidence",
-          title: "Slack channel #context-engine",
-          summary: "Slack channel #context-engine — hub for messages ingested from this channel.",
+          title: "Slack channel #daemonstate",
+          summary: "Slack channel #daemonstate — hub for messages ingested from this channel.",
         }),
         card({
           id: "message",
@@ -294,8 +294,8 @@ describe("context digest adapter", () => {
       cards: [card({
         id: "channel-root",
         category: "supporting_evidence",
-        title: "Channel: context-engine",
-        summary: "Channel: context-engine",
+        title: "Channel: daemonstate",
+        summary: "Channel: daemonstate",
       })],
     });
 
@@ -306,8 +306,8 @@ describe("context digest adapter", () => {
   it("keeps untyped PR lookalikes out of the project map", () => {
     const projection = buildEvidenceGraph({
       cards: [
-        card({ id: "typed-pr", category: "pull_request", type: "source", remote_item: { repository: "acme/context-engine", number: 12 } }),
-        card({ id: "duplicate-pr", category: "supporting_evidence", type: "evidence", title: "PR 12: Fix graph", remote_item: { repository: "acme/context-engine", number: 12 } }),
+        card({ id: "typed-pr", category: "pull_request", type: "source", remote_item: { repository: "acme/daemonstate", number: 12 } }),
+        card({ id: "duplicate-pr", category: "supporting_evidence", type: "evidence", title: "PR 12: Fix graph", remote_item: { repository: "acme/daemonstate", number: 12 } }),
       ],
       links: [],
     });

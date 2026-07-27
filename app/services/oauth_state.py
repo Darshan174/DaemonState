@@ -168,7 +168,7 @@ async def _get_redis_client():
 
 def _nonce_key(nonce: str) -> str:
     digest = hashlib.sha256(nonce.encode("utf-8")).hexdigest()
-    return f"context-engine:oauth-state:{digest}"
+    return f"daemonstate:oauth-state:{digest}"
 
 
 def _purge_local_states() -> None:

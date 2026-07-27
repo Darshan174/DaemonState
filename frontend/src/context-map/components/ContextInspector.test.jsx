@@ -25,7 +25,7 @@ const card = {
     session_id: "019f4cfe-f6d7-7a80-b727-c3011aa08252",
     tool: "codex",
     model: "gpt-5",
-    cwd: "/repo/context-engine",
+    cwd: "/repo/daemonstate",
     branch: "codex/graph-truth",
     message_count: 24,
   },
@@ -76,7 +76,7 @@ describe("ContextInspector", () => {
     );
 
     expect(screen.getByText(card.session.session_id)).toBeInTheDocument();
-    expect(screen.getByText("/repo/context-engine")).toBeInTheDocument();
+    expect(screen.getByText("/repo/daemonstate")).toBeInTheDocument();
     expect(screen.getByText("No repository match is available.")).toBeInTheDocument();
 
     await waitFor(() => expect(api.get).toHaveBeenCalledWith(
@@ -135,7 +135,7 @@ describe("ContextInspector", () => {
       summary: "Issue #1: Rewrite README State: open Labels: none The README undersells the shipped product. Acceptance criteria: explain the current surface.",
       remote_item: {
         kind: "issue",
-        repository: "acme/context-engine",
+        repository: "acme/daemonstate",
         number: 1,
         title: "Rewrite README",
         observed_status: "open",

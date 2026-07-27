@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "context-engine": {
-      "command": "ctxe",
+    "daemonstate": {
+      "command": "daemonstate",
       "args": ["mcp"]
     }
   }

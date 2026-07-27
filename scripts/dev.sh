@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Context Engine — development mode (hot reload on both backend and frontend)
+# DaemonState — development mode (hot reload on both backend and frontend)
 # Usage: bash scripts/dev.sh
 set -euo pipefail
 
-echo "Starting Context Engine in development mode…"
+echo "Starting DaemonState in development mode…"
 echo "  Backend:  http://localhost:8000"
 echo "  Frontend: http://localhost:5000"
 echo ""

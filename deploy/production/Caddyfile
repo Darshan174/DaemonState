@@ -8,7 +8,7 @@
 	}
 }
 
-{$CONTEXT_ENGINE_DOMAIN} {
+{$DAEMONSTATE_DOMAIN} {
 	encode zstd gzip
 
 	header {

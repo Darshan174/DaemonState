@@ -481,7 +481,7 @@ Required fields:
 
 ```json
 {
-  "repo_path": "/Users/darshann/Desktop/context-engine",
+  "repo_path": "/Users/darshann/Desktop/daemonstate",
   "branch": "feature/github-pagination",
   "base_commit": "abc123-or-null",
   "head_commit": "def456-or-null",
@@ -644,7 +644,7 @@ Command shape:
 {
   "id": "V1",
   "command": "python3 -m pytest tests/test_connectors.py -q",
-  "cwd": "/Users/darshann/Desktop/context-engine",
+  "cwd": "/Users/darshann/Desktop/daemonstate",
   "purpose": "Verify GitHub connector pagination and connector status guards.",
   "required": true,
   "expected": "exit_code == 0"
@@ -743,7 +743,7 @@ CLI file-output compatibility shape:
 
 Compatibility rules:
 
-- File-output-only mode is allowed only for `ctxe prepare` when explicitly
+- File-output-only mode is allowed only for `daemonstate prepare` when explicitly
   requested or when tests document the no-database path.
 - File-output-only mode must never be returned by HTTP prepare or MCP
   `prepare_task`.
@@ -824,7 +824,7 @@ Constraints attached to this example:
     "context_budget_tokens": 12000
   },
   "repo_state": {
-    "repo_path": "/Users/darshann/Desktop/context-engine",
+    "repo_path": "/Users/darshann/Desktop/daemonstate",
     "branch": "feature/github-pagination",
     "base_commit": "abc123",
     "head_commit": "def456",
@@ -1013,7 +1013,7 @@ Constraints attached to this example:
       {
         "id": "V1",
         "command": "python3 -m pytest tests/test_connectors.py -q",
-        "cwd": "/Users/darshann/Desktop/context-engine",
+        "cwd": "/Users/darshann/Desktop/daemonstate",
         "purpose": "Verify GitHub connector pagination and connector status guards.",
         "required": true,
         "expected": "exit_code == 0"
@@ -1021,7 +1021,7 @@ Constraints attached to this example:
       {
         "id": "V2",
         "command": "bash scripts/smoke.sh",
-        "cwd": "/Users/darshann/Desktop/context-engine",
+        "cwd": "/Users/darshann/Desktop/daemonstate",
         "purpose": "Run release smoke when connector behavior changed.",
         "required": true,
         "expected": "exit_code == 0"
@@ -1133,8 +1133,8 @@ Finish GitHub connector pagination and add tests.
 
 ## Verification Commands
 
-- `cd /Users/darshann/Desktop/context-engine && python3 -m pytest tests/test_connectors.py -q`
-- `cd /Users/darshann/Desktop/context-engine && bash scripts/smoke.sh`
+- `cd /Users/darshann/Desktop/daemonstate && python3 -m pytest tests/test_connectors.py -q`
+- `cd /Users/darshann/Desktop/daemonstate && bash scripts/smoke.sh`
 
 ## Evidence Citations
 
@@ -1182,7 +1182,7 @@ Agent 3 compiler tests must assert:
 - stored `ContextPack.manifest` equals the returned final manifest after pack
   identifiers and persistence metadata are added.
 - stored `ContextPack.markdown` equals the returned final markdown exactly.
-- `ctxe prepare` either persists through the configured database and proves the
+- `daemonstate prepare` either persists through the configured database and proves the
   pack/items can be read back, or explicitly emits tested
   `persistence.mode = "file_output_only"` with `context_pack_id = null`.
 

@@ -70,7 +70,7 @@ _ensure_sqlite_parent_dir(_db_url)
 def create_database_engine(
     url: str,
     *,
-    application_name: str = "context-engine-api",
+    application_name: str = "daemonstate-api",
     statement_timeout_ms: int | None = None,
     lock_timeout_ms: int | None = None,
 ) -> AsyncEngine:

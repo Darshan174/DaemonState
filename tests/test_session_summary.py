@@ -54,14 +54,14 @@ Now review onboarding for the Beta product.
     topics = derive_session_topics(
         content,
         explicit_title="Product planning",
-        cwd="/Users/example/work/context-engine",
+        cwd="/Users/example/work/daemonstate",
         tool="codex",
         session_id="session-1",
     )
 
     assert topics == [
         "Product planning",
-        "Context engine",
+        "DaemonState",
         "Plan billing for the Alpha product",
         "Review onboarding for the Beta product",
     ]
