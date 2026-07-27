@@ -1913,7 +1913,7 @@ def _core_candidates(
     is_snapshot = goal_frame.objective_kind == "project_snapshot"
     objective_title = "Project snapshot purpose" if is_snapshot else "Task objective"
     objective_trust = "trusted_system" if is_snapshot else "trusted_human"
-    objective_source = "context_engine_snapshot" if is_snapshot else "user_task"
+    objective_source = "daemonstate_snapshot" if is_snapshot else "user_task"
     candidates = [
         ContextCandidate(
             id=f"objective:{_stable_hash(goal_frame.objective)}",

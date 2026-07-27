@@ -72,7 +72,7 @@ async def _pack_and_run(session, workspace, focus, source, *, run_key, minute=0)
             }]},
         }),
         repo_state_json=json.dumps({
-            "repo_path": "/project/context-engine",
+            "repo_path": "/project/daemonstate",
             "head_commit": "verified-head",
             "snapshot_fingerprint": "snapshot-1",
         }),
@@ -231,7 +231,7 @@ async def test_playbook_requires_verified_run_and_second_run_approves(db_session
     compatible = await service.compatible_playbook(
         workspace_id=workspace.id,
         objective="Make agent verification durable",
-        repo_state={"repo_path": "/project/context-engine", "head_commit": "verified-head"},
+        repo_state={"repo_path": "/project/daemonstate", "head_commit": "verified-head"},
     )
     assert compatible is not None
     assert compatible["compatible"] is True

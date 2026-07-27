@@ -3,16 +3,16 @@ x-app-environment: &app-environment
   RELEASE_SHA: ${RELEASE_SHA:?Set RELEASE_SHA}
   POSTGRES_HOST: db
   POSTGRES_PORT: "5432"
-  POSTGRES_DB: ${POSTGRES_DB:-context_engine}
-  POSTGRES_APP_USER: ${POSTGRES_APP_USER:-ce_app}
+  POSTGRES_DB: ${POSTGRES_DB:-daemonstate}
+  POSTGRES_APP_USER: ${POSTGRES_APP_USER:-daemonstate_app}
   DATA_DIR: /data
   AUTO_MIGRATE: "false"
   APP_WORKERS: ${APP_WORKERS:-1}
   SERVE_FRONTEND: "false"
   REDIS_URL: redis://redis:6379/0
   RATE_LIMIT_FAIL_OPEN: "false"
-  ALLOWED_HOSTS: ${CONTEXT_ENGINE_DOMAIN:?Set CONTEXT_ENGINE_DOMAIN},127.0.0.1,localhost,app
-  CORS_ALLOWED_ORIGINS: https://${CONTEXT_ENGINE_DOMAIN:?Set CONTEXT_ENGINE_DOMAIN}
+  ALLOWED_HOSTS: ${DAEMONSTATE_DOMAIN:?Set DAEMONSTATE_DOMAIN},127.0.0.1,localhost,app
+  CORS_ALLOWED_ORIGINS: https://${DAEMONSTATE_DOMAIN:?Set DAEMONSTATE_DOMAIN}
   TRUST_PROXY_HEADERS: "true"
   ALLOWED_REPO_ROOTS: /workspace
   API_DOCS_ENABLED: "false"
@@ -44,14 +44,14 @@ x-app-environment: &app-environment
   SYNC_WORKER_POLL_INTERVAL_SECONDS: ${SYNC_WORKER_POLL_INTERVAL_SECONDS:-2}
   SYNC_WORKER_JOB_TIMEOUT_SECONDS: ${SYNC_WORKER_JOB_TIMEOUT_SECONDS:-1800}
   SYNC_WORKER_METRICS_PORT: ${SYNC_WORKER_METRICS_PORT:-9101}
-  SYNC_WORKER_HEALTH_FILE: /tmp/context-engine-sync-worker.ready
+  SYNC_WORKER_HEALTH_FILE: /tmp/daemonstate-sync-worker.ready
   SYNC_WORKER_HEALTH_INTERVAL_SECONDS: ${SYNC_WORKER_HEALTH_INTERVAL_SECONDS:-15}
   SOURCE_INGESTION_SWEEP_LIMIT: ${SOURCE_INGESTION_SWEEP_LIMIT:-10}
   SOURCE_INGESTION_TIMEOUT_SECONDS: ${SOURCE_INGESTION_TIMEOUT_SECONDS:-300}
   SOURCE_INGESTION_MAX_ATTEMPTS: ${SOURCE_INGESTION_MAX_ATTEMPTS:-5}
   CONTEXT_DIGEST_CACHE_TTL_SECONDS: ${CONTEXT_DIGEST_CACHE_TTL_SECONDS:-30}
   CONTEXT_DIGEST_CACHE_MAX_ENTRIES: ${CONTEXT_DIGEST_CACHE_MAX_ENTRIES:-128}
-  PUBLIC_BASE_URL: https://${CONTEXT_ENGINE_DOMAIN:?Set CONTEXT_ENGINE_DOMAIN}
+  PUBLIC_BASE_URL: https://${DAEMONSTATE_DOMAIN:?Set DAEMONSTATE_DOMAIN}
   GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
   GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
   SLACK_CLIENT_ID: ${SLACK_CLIENT_ID:-}
@@ -103,10 +103,10 @@ services:
     image: ${POSTGRES_IMAGE:?Set POSTGRES_IMAGE to an immutable pgvector image reference}
     pull_policy: ${PULL_POLICY:-always}
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-context_engine}
-      POSTGRES_USER: ${POSTGRES_ADMIN_USER:-ce_admin}
-      POSTGRES_APP_USER: ${POSTGRES_APP_USER:-ce_app}
-      POSTGRES_PASSWORD_FILE: /run/context-engine-secrets/postgres_admin_password
+      POSTGRES_DB: ${POSTGRES_DB:-daemonstate}
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:-daemonstate_admin}
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER:-daemonstate_app}
+      POSTGRES_PASSWORD_FILE: /run/daemonstate-secrets/postgres_admin_password
       POSTGRES_INITDB_ARGS: >-
         --auth-host=scram-sha-256
         --data-checksums
@@ -160,7 +160,7 @@ services:
       - no-new-privileges:true
     pids_limit: 256
     tmpfs:
-      - /run/context-engine-secrets:rw,noexec,nosuid,nodev,size=1m,mode=0700
+      - /run/daemonstate-secrets:rw,noexec,nosuid,nodev,size=1m,mode=0700
     healthcheck:
       test:
         - CMD-SHELL
@@ -227,7 +227,7 @@ services:
     logging: *json-logging
 
   data-init:
-    image: ${CONTEXT_ENGINE_IMAGE:?Set CONTEXT_ENGINE_IMAGE to an immutable image reference}
+    image: ${DAEMONSTATE_IMAGE:?Set DAEMONSTATE_IMAGE to an immutable image reference}
     pull_policy: ${PULL_POLICY:-always}
     user: "0:0"
     read_only: true
@@ -252,20 +252,20 @@ services:
 
   migrate:
     <<: *app-security
-    image: ${CONTEXT_ENGINE_IMAGE:?Set CONTEXT_ENGINE_IMAGE to an immutable image reference}
+    image: ${DAEMONSTATE_IMAGE:?Set DAEMONSTATE_IMAGE to an immutable image reference}
     pull_policy: ${PULL_POLICY:-always}
     entrypoint:
       - python
-      - /opt/context-engine/production-entrypoint.py
+      - /opt/daemonstate/production-entrypoint.py
     command:
-      - ctxe
+      - daemonstate
       - db
       - deploy
     environment: *app-environment
     secrets: *app-secrets
     volumes:
       - app_data:/data
-      - ./deploy/production/container-entrypoint.py:/opt/context-engine/production-entrypoint.py:ro
+      - ./deploy/production/container-entrypoint.py:/opt/daemonstate/production-entrypoint.py:ro
     networks:
       - backend
     depends_on:
@@ -286,11 +286,11 @@ services:
 
   app:
     <<: *app-security
-    image: ${CONTEXT_ENGINE_IMAGE:?Set CONTEXT_ENGINE_IMAGE to an immutable image reference}
+    image: ${DAEMONSTATE_IMAGE:?Set DAEMONSTATE_IMAGE to an immutable image reference}
     pull_policy: ${PULL_POLICY:-always}
     entrypoint:
       - python
-      - /opt/context-engine/production-entrypoint.py
+      - /opt/daemonstate/production-entrypoint.py
     command:
       - uvicorn
       - app.main:app
@@ -314,8 +314,8 @@ services:
     secrets: *app-secrets
     volumes:
       - app_data:/data
-      - ${CONTEXT_ENGINE_PROJECT_PATH:?Set CONTEXT_ENGINE_PROJECT_PATH}:/workspace:ro
-      - ./deploy/production/container-entrypoint.py:/opt/context-engine/production-entrypoint.py:ro
+      - ${DAEMONSTATE_PROJECT_PATH:?Set DAEMONSTATE_PROJECT_PATH}:/workspace:ro
+      - ./deploy/production/container-entrypoint.py:/opt/daemonstate/production-entrypoint.py:ro
     networks:
       - backend
       - egress
@@ -328,7 +328,7 @@ services:
       test:
         - CMD
         - python
-        - /opt/context-engine/production-entrypoint.py
+        - /opt/daemonstate/production-entrypoint.py
         - python
         - -c
         - >-
@@ -355,13 +355,13 @@ services:
 
   worker:
     <<: *app-security
-    image: ${CONTEXT_ENGINE_IMAGE:?Set CONTEXT_ENGINE_IMAGE to an immutable image reference}
+    image: ${DAEMONSTATE_IMAGE:?Set DAEMONSTATE_IMAGE to an immutable image reference}
     pull_policy: ${PULL_POLICY:-always}
     entrypoint:
       - python
-      - /opt/context-engine/production-entrypoint.py
+      - /opt/daemonstate/production-entrypoint.py
     command:
-      - ctxe
+      - daemonstate
       - worker
       - sync
       - --watch
@@ -369,8 +369,8 @@ services:
     secrets: *app-secrets
     volumes:
       - app_data:/data
-      - ${CONTEXT_ENGINE_PROJECT_PATH:?Set CONTEXT_ENGINE_PROJECT_PATH}:/workspace:ro
-      - ./deploy/production/container-entrypoint.py:/opt/context-engine/production-entrypoint.py:ro
+      - ${DAEMONSTATE_PROJECT_PATH:?Set DAEMONSTATE_PROJECT_PATH}:/workspace:ro
+      - ./deploy/production/container-entrypoint.py:/opt/daemonstate/production-entrypoint.py:ro
     networks:
       - backend
       - egress
@@ -383,7 +383,7 @@ services:
       test:
         - CMD
         - python
-        - /opt/context-engine/production-entrypoint.py
+        - /opt/daemonstate/production-entrypoint.py
         - python
         - -c
         - >-
@@ -461,7 +461,7 @@ services:
     image: ${CADDY_IMAGE:?Set CADDY_IMAGE to an immutable Caddy image reference}
     pull_policy: ${PULL_POLICY:-always}
     environment:
-      CONTEXT_ENGINE_DOMAIN: ${CONTEXT_ENGINE_DOMAIN:?Set CONTEXT_ENGINE_DOMAIN}
+      DAEMONSTATE_DOMAIN: ${DAEMONSTATE_DOMAIN:?Set DAEMONSTATE_DOMAIN}
       ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL}
       MAX_REQUEST_BODY_SIZE: ${MAX_REQUEST_BODY_SIZE:-16MB}
     ports:

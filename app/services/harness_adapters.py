@@ -18,7 +18,7 @@ InvocationMode = Literal["fresh", "session"]
 
 CONTEXT_FILE_PLACEHOLDER = "{context_file}"
 OPENCODE_CONTINUATION_MESSAGE = (
-    "Continue the task using the attached Context Engine context pack. "
+    "Continue the task using the attached DaemonState context pack. "
     "Verify the current repository state before editing."
 )
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$")
@@ -42,7 +42,7 @@ PROVIDER_READINESS_COMMANDS: dict[ProviderName, tuple[str, ...]] = {
     "claude": ("auth", "status", "--json"),
     "opencode": ("auth", "list"),
 }
-CODEX_EXECUTABLE_OVERRIDE_ENV = "CONTEXT_ENGINE_CODEX_EXECUTABLE"
+CODEX_EXECUTABLE_OVERRIDE_ENV = "DAEMONSTATE_CODEX_EXECUTABLE"
 CODEX_APP_EXECUTABLES = (
     Path("/Applications/ChatGPT.app/Contents/Resources/codex"),
     Path("/Applications/Codex.app/Contents/Resources/codex"),
@@ -140,7 +140,7 @@ PROVIDER_ENVIRONMENT_KEYS: dict[ProviderName, frozenset[str]] = {
         "AWS_DEFAULT_REGION",
     }),
 }
-CONTEXT_ENGINE_SECRET_KEYS = frozenset({
+DAEMONSTATE_SECRET_KEYS = frozenset({
     "DATABASE_URL",
     "SERVER_API_KEY",
     "PRINCIPAL_API_KEYS",
@@ -292,10 +292,10 @@ def provider_environment(
     return _selected_environment(environment, allowed)
 
 
-def is_context_engine_secret_key(key: str) -> bool:
+def is_daemonstate_secret_key(key: str) -> bool:
     normalized = str(key or "").strip().upper()
     return (
-        normalized in CONTEXT_ENGINE_SECRET_KEYS
+        normalized in DAEMONSTATE_SECRET_KEYS
         or normalized.endswith("_CLIENT_SECRET")
     )
 
@@ -311,7 +311,7 @@ def _selected_environment(
         value = str(raw_value)
         if (
             normalized_key not in allowed
-            or is_context_engine_secret_key(normalized_key)
+            or is_daemonstate_secret_key(normalized_key)
             or not key
             or "\x00" in key
             or "=" in key

@@ -10,14 +10,14 @@ const mocks = vi.hoisted(() => ({
     activeWorkspaceId: "workspace-1",
     activeWorkspace: {
       id: "workspace-1",
-      name: "Context Engine",
-      repo_path: "/workspace/context-engine",
+      name: "DaemonState",
+      repo_path: "/workspace/daemonstate",
     },
     workspacesQuery: { isLoading: false },
     workspaces: [{
       id: "workspace-1",
-      name: "Context Engine",
-      repo_path: "/workspace/context-engine",
+      name: "DaemonState",
+      repo_path: "/workspace/daemonstate",
     }],
     selectedId: "workspace-1",
     setSelectedId: vi.fn(),
@@ -146,8 +146,8 @@ beforeEach(() => {
   Object.values(mocks.hookCalls).forEach((calls) => calls.splice(0));
   mocks.workspace.activeWorkspace = {
     id: "workspace-1",
-    name: "Context Engine",
-    repo_path: "/workspace/context-engine",
+    name: "DaemonState",
+    repo_path: "/workspace/daemonstate",
   };
   mocks.workspace.workspaces = [mocks.workspace.activeWorkspace];
   mocks.digest.data = baseDigest();
@@ -173,7 +173,7 @@ beforeEach(() => {
       title: "Harden checkpoint capture",
       preview: "Harden checkpoint capture",
       updated_at: "2026-07-21T10:00:00Z",
-      cwd: "/workspace/context-engine",
+      cwd: "/workspace/daemonstate",
       live: true,
       compaction_checkpoints: [{ id: "compaction-1" }],
     }],
@@ -589,7 +589,7 @@ Remove screenshot IDs and temporary paths from the Now page.
     await waitFor(() => expect(mocks.continuation.mutateAsync).toHaveBeenCalledWith({
       idempotency_key: expect.any(String),
       objective: "Harden checkpoint capture",
-      repo_path: "/workspace/context-engine",
+      repo_path: "/workspace/daemonstate",
       target_provider: "claude",
       workspace_id: "workspace-1",
     }));
@@ -756,7 +756,7 @@ Remove screenshot IDs and temporary paths from the Now page.
       checkpoint_id: "checkpoint-legacy",
       checkpoint_source_id: "source-legacy",
       idempotency_key: expect.any(String),
-      repo_path: "/workspace/context-engine",
+      repo_path: "/workspace/daemonstate",
       target_provider: "codex",
       workspace_id: "workspace-1",
     }));
@@ -873,7 +873,7 @@ Remove screenshot IDs and temporary paths from the Now page.
 
     mocks.workspace.activeWorkspace = {
       ...mocks.workspace.activeWorkspace,
-      repo_path: "/workspace/context-engine-next",
+      repo_path: "/workspace/daemonstate-next",
     };
     view.rerender(<MemoryRouter><NowPage /></MemoryRouter>);
 
@@ -882,7 +882,7 @@ Remove screenshot IDs and temporary paths from the Now page.
     fireEvent.click(screen.getByRole("button", { name: "Continue in Codex" }));
     expect(await screen.findByRole("status")).toHaveTextContent("Observed run passed verification");
     await waitFor(() => expect(mocks.continuation.mutateAsync).toHaveBeenLastCalledWith(
-      expect.objectContaining({ repo_path: "/workspace/context-engine-next" }),
+      expect.objectContaining({ repo_path: "/workspace/daemonstate-next" }),
     ));
 
     mocks.digest.data.current_goal = { title: "Verify the new continuation target" };
@@ -895,7 +895,7 @@ Remove screenshot IDs and temporary paths from the Now page.
   });
 
   it("leads to session selection when no linked work can be continued", () => {
-    mocks.workspace.activeWorkspace = { id: "workspace-1", name: "Context Engine" };
+    mocks.workspace.activeWorkspace = { id: "workspace-1", name: "DaemonState" };
     mocks.workspace.workspaces = [mocks.workspace.activeWorkspace];
     mocks.latest.data = null;
     mocks.history.data = { checkpoints: [] };
@@ -1017,7 +1017,7 @@ Remove screenshot IDs and temporary paths from the Now page.
     await waitFor(() => expect(mocks.continuation.mutateAsync).toHaveBeenCalledWith({
       idempotency_key: expect.any(String),
       objective: "Harden checkpoint capture",
-      repo_path: "/workspace/context-engine",
+      repo_path: "/workspace/daemonstate",
       target_provider: "codex",
       workspace_id: "workspace-1",
     }));
@@ -1046,7 +1046,7 @@ Remove screenshot IDs and temporary paths from the Now page.
     expect(screen.getByText(/Showing the latest 1 of 7 session updates/)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Progress" })).toBeInTheDocument();
     expect(screen.getByText("Implemented normalized session events")).toBeInTheDocument();
-    expect(screen.queryByText("/Users/darshann/Desktop/context-engine/tests/test_session_library.py")).not.toBeInTheDocument();
+    expect(screen.queryByText("/Users/darshann/Desktop/daemonstate/tests/test_session_library.py")).not.toBeInTheDocument();
     expect(screen.queryByText("Run checks")).not.toBeInTheDocument();
     expect(screen.queryByText(/Repair/)).not.toBeInTheDocument();
     expect(mocks.verify.mutate).not.toHaveBeenCalled();
@@ -1194,7 +1194,7 @@ function sessionLedgerFixture() {
     files: [
       ledgerItem(
         "file-1",
-        "/Users/darshann/Desktop/context-engine/tests/test_session_library.py",
+        "/Users/darshann/Desktop/daemonstate/tests/test_session_library.py",
         "file",
         "observed",
         3,

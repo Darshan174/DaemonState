@@ -52,7 +52,7 @@ export default function ProjectWorkspaceForm({ onCreated, compact = false }) {
           <div>
             <h3 className="text-sm font-bold text-slate-950 dark:text-white">Connect a real project</h3>
             <p className="mt-0.5 text-xs leading-5 text-slate-500 dark:text-neutral-400">
-              Point Context Engine at a local repository. It creates the workspace and indexes project structure as source evidence.
+              Point DaemonState at a local repository. It creates the workspace and indexes project structure as source evidence.
             </p>
           </div>
         </div>
@@ -71,7 +71,7 @@ export default function ProjectWorkspaceForm({ onCreated, compact = false }) {
           className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 font-mono text-sm text-slate-900 outline-none transition placeholder:font-sans placeholder:text-slate-400 focus:border-slate-400 focus:ring-4 focus:ring-slate-200/70 dark:border-neutral-700 dark:bg-black dark:text-white dark:focus:border-slate-500 dark:focus:ring-neutral-800"
         />
         <p className="mt-1.5 text-[11px] leading-4 text-slate-400 dark:text-neutral-500">
-          Read locally by the running Context Engine instance. Files are not uploaded to a third party.
+          Read locally by the running DaemonState instance. Files are not uploaded to a third party.
         </p>
       </div>
 

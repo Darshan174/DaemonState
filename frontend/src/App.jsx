@@ -1,7 +1,7 @@
 import { Suspense, lazy, useEffect, useState } from "react";
 import { Routes, Route, NavLink, Navigate, Link, useLocation } from "react-router-dom";
 import ThemeToggle from "./components/ThemeToggle";
-import CeIcon from "./components/CeIcon";
+import DaemonStateIcon from "./components/DaemonStateIcon";
 import ProductLoadingState from "./components/ProductLoadingState";
 import WorkspaceSwitcher from "./components/WorkspaceSwitcher";
 import { useWorkspaceSelection } from "./context/WorkspaceContext";
@@ -100,24 +100,24 @@ function AdminShell() {
   const isProjectPage = location.pathname === "/app/explain" || location.pathname === "/app/explain/";
   const isLibraryPage = location.pathname === "/app/library" || location.pathname === "/app/library/";
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    try { return localStorage.getItem("ce_sidebar_collapsed") === "true"; }
+    try { return localStorage.getItem("daemonstate_sidebar_collapsed") === "true"; }
     catch { return false; }
   });
 
   const toggleSidebar = () => {
     setSidebarCollapsed((current) => {
       const next = !current;
-      try { localStorage.setItem("ce_sidebar_collapsed", String(next)); } catch {}
+      try { localStorage.setItem("daemonstate_sidebar_collapsed", String(next)); } catch {}
       window.setTimeout(() => window.dispatchEvent(new Event("resize")), 220);
       return next;
     });
   };
 
   return (
-    <div className="app-shell ce-app-shell flex h-screen h-[100dvh] overflow-hidden text-ink transition-colors duration-300">
+    <div className="app-shell daemonstate-app-shell flex h-screen h-[100dvh] overflow-hidden text-ink transition-colors duration-300">
       <aside
         id="desktop-sidebar"
-        className={`ce-app-sidebar relative hidden shrink-0 flex-col border-r border-line p-3 transition-[width] duration-300 ease-out lg:flex ${sidebarCollapsed ? "w-[76px]" : "w-[248px]"}`}
+        className={`daemonstate-app-sidebar relative hidden shrink-0 flex-col border-r border-line p-3 transition-[width] duration-300 ease-out lg:flex ${sidebarCollapsed ? "w-[76px]" : "w-[248px]"}`}
       >
         <button
           type="button"
@@ -130,10 +130,10 @@ function AdminShell() {
         >
           {sidebarCollapsed ? <PanelLeftOpen className="h-3.5 w-3.5" /> : <PanelLeftClose className="h-3.5 w-3.5" />}
         </button>
-        <Link to="/" title={sidebarCollapsed ? "Context Engine" : undefined} className={`group flex h-16 items-center rounded-2xl text-[#171713] transition-colors hover:bg-[#f6f6f3] dark:text-white dark:hover:bg-white/[0.04] ${sidebarCollapsed ? "justify-center px-0" : "gap-3 px-2"}`}>
-          <span className="transition-transform duration-300 ease-out group-hover:-rotate-3 group-hover:scale-105"><CeIcon size={34} /></span>
+        <Link to="/" title={sidebarCollapsed ? "DaemonState" : undefined} className={`group flex h-16 items-center rounded-2xl text-[#171713] transition-colors hover:bg-[#f6f6f3] dark:text-white dark:hover:bg-white/[0.04] ${sidebarCollapsed ? "justify-center px-0" : "gap-3 px-2"}`}>
+          <span className="transition-transform duration-300 ease-out group-hover:-rotate-3 group-hover:scale-105"><DaemonStateIcon size={34} /></span>
           <span className={sidebarCollapsed ? "sr-only" : "min-w-0"}>
-            <span className="block truncate text-[17px] font-semibold leading-none tracking-[-0.025em]">Context Engine</span>
+            <span className="block truncate text-[17px] font-semibold leading-none tracking-[-0.025em]">DaemonState</span>
           </span>
         </Link>
 
@@ -157,11 +157,11 @@ function AdminShell() {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="ce-mobile-header relative z-40 shrink-0 border-b border-line backdrop-blur-xl lg:hidden">
+        <header className="daemonstate-mobile-header relative z-40 shrink-0 border-b border-line backdrop-blur-xl lg:hidden">
           <div className="flex items-center justify-between gap-3 px-4 py-3 sm:px-6">
-            <Link to="/" aria-label="Context Engine home" className="flex min-w-0 items-center gap-2.5">
-              <CeIcon size={30} />
-              <span className="hidden truncate text-sm font-semibold sm:block">Context Engine</span>
+            <Link to="/" aria-label="DaemonState home" className="flex min-w-0 items-center gap-2.5">
+              <DaemonStateIcon size={30} />
+              <span className="hidden truncate text-sm font-semibold sm:block">DaemonState</span>
             </Link>
             <div className="flex min-w-0 items-center gap-2">
               <WorkspaceSwitcher />
@@ -170,11 +170,11 @@ function AdminShell() {
           </div>
         </header>
 
-        <main className={`app-main ${isLibraryPage ? "" : "ce-app-canvas"} relative min-h-0 flex-1 ${isProjectPage ? "overflow-hidden" : "overflow-y-auto px-4 py-6 sm:px-7 sm:py-8 xl:px-10 xl:py-10"}`}>
+        <main className={`app-main ${isLibraryPage ? "" : "daemonstate-app-canvas"} relative min-h-0 flex-1 ${isProjectPage ? "overflow-hidden" : "overflow-y-auto px-4 py-6 sm:px-7 sm:py-8 xl:px-10 xl:py-10"}`}>
         {!isProjectPage ? (
           <div className={isLibraryPage
             ? "pointer-events-none absolute inset-x-0 top-0 h-48 border-b border-[#e7e7df]/70 bg-[radial-gradient(circle_at_75%_0%,rgba(217,255,104,0.14),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.7),rgba(247,247,242,0))] dark:border-[#171717] dark:bg-[radial-gradient(circle_at_75%_0%,rgba(217,255,104,0.035),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.018),rgba(0,0,0,0))]"
-            : "ce-app-ambient pointer-events-none absolute inset-x-0 top-0 h-64"
+            : "daemonstate-app-ambient pointer-events-none absolute inset-x-0 top-0 h-64"
           } />
         ) : null}
         <div
@@ -277,7 +277,7 @@ function MobileNavigation({ pathname }) {
           <section
             id="mobile-more-destinations"
             aria-label="More destinations"
-            className="ce-mobile-more-panel absolute inset-x-3 bottom-[calc(100%+0.75rem)] z-10 overflow-hidden rounded-stage border border-line bg-surface shadow-elevation-3"
+            className="daemonstate-mobile-more-panel absolute inset-x-3 bottom-[calc(100%+0.75rem)] z-10 overflow-hidden rounded-stage border border-line bg-surface shadow-elevation-3"
           >
             <div className="flex items-center justify-between border-b border-line px-4 py-3">
               <div>
@@ -316,7 +316,7 @@ function MobileNavigation({ pathname }) {
         </>
       ) : null}
 
-      <nav aria-label="Mobile navigation" className="ce-mobile-navigation relative z-20 grid grid-cols-5 border-t border-line bg-surface">
+      <nav aria-label="Mobile navigation" className="daemonstate-mobile-navigation relative z-20 grid grid-cols-5 border-t border-line bg-surface">
         {MOBILE_PRIMARY_ITEMS.map((item) => (
           <MobileNavLink key={item.to} {...item} />
         ))}

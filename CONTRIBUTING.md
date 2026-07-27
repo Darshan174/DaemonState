@@ -1,6 +1,6 @@
 # Contributing
 
-Context Engine is source-backed project memory for AI agents. Contributions
+DaemonState is source-backed project memory for AI agents. Contributions
 should preserve the core contract: raw `SourceDocument` rows first, extracted
 facts second, relationships only with evidence, and honest connector states.
 

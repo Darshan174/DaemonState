@@ -362,7 +362,7 @@ export function validateContextPackResponse(result) {
 
 function getAiSettings() {
   try {
-    return JSON.parse(localStorage.getItem("ce_ai_settings") || "{}");
+    return JSON.parse(localStorage.getItem("daemonstate_ai_settings") || "{}");
   } catch {
     return {};
   }

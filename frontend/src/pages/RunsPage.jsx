@@ -153,7 +153,7 @@ export default function RunsPage() {
 
   return (
     <div className="relative mx-auto w-full max-w-7xl space-y-7 pb-12 text-[#171713] dark:text-white">
-      <header className="ce-resume-header group relative overflow-hidden rounded-[2rem] border border-[#d8d8cf] bg-[#f7f7f1] px-5 py-7 dark:border-[#292925] dark:bg-[#0c0c0a] sm:px-8 sm:py-9 lg:px-10">
+      <header className="daemonstate-resume-header group relative overflow-hidden rounded-[2rem] border border-[#d8d8cf] bg-[#f7f7f1] px-5 py-7 dark:border-[#292925] dark:bg-[#0c0c0a] sm:px-8 sm:py-9 lg:px-10">
         <div aria-hidden="true" className="absolute -right-20 -top-24 h-72 w-72 rounded-full bg-[#d9ff68]/25 blur-3xl dark:bg-[#d9ff68]/10" />
         <HarnessDeckBackdrop />
         <div className="relative grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-end">
@@ -329,7 +329,7 @@ function SessionLedgerCard({ card, index, onContinue }) {
     <article
       aria-labelledby={titleId}
       data-session-ledger={card.id}
-      className="ce-session-ledger group relative"
+      className="daemonstate-session-ledger group relative"
       style={{
         "--session-accent": meta.accent,
         "--session-soft": meta.soft,
@@ -337,8 +337,8 @@ function SessionLedgerCard({ card, index, onContinue }) {
         "--session-delay": `${Math.min(index, 8) * 55}ms`,
       }}
     >
-      <div className="ce-session-ledger__paper relative overflow-hidden rounded-[1.75rem] border border-[#d4d4ca] bg-[#fbfbf6] shadow-[0_18px_48px_rgba(23,23,19,0.08)] dark:border-[#34342f] dark:bg-[#11110e] dark:shadow-[0_24px_70px_rgba(0,0,0,0.42)]">
-        <span aria-hidden="true" className="ce-session-ledger__accent absolute inset-x-0 top-0 h-1 origin-left" />
+      <div className="daemonstate-session-ledger__paper relative overflow-hidden rounded-[1.75rem] border border-[#d4d4ca] bg-[#fbfbf6] shadow-[0_18px_48px_rgba(23,23,19,0.08)] dark:border-[#34342f] dark:bg-[#11110e] dark:shadow-[0_24px_70px_rgba(0,0,0,0.42)]">
+        <span aria-hidden="true" className="daemonstate-session-ledger__accent absolute inset-x-0 top-0 h-1 origin-left" />
         <span aria-hidden="true" className="absolute -right-[9%] top-12 h-44 w-52 origin-center opacity-[0.055] transition-[transform,opacity] duration-700 ease-out group-hover:-translate-x-3 group-hover:scale-110 group-hover:opacity-[0.09] dark:opacity-[0.08] dark:group-hover:opacity-[0.12]">
           <HarnessArtwork type={card.provider} />
         </span>
@@ -394,7 +394,7 @@ function SessionLedgerCard({ card, index, onContinue }) {
           onSelect={selectSection}
         />
 
-        <div className={`ce-ledger-reveal ${expanded ? "is-open" : ""}`} aria-hidden={!expanded}>
+        <div className={`daemonstate-ledger-reveal ${expanded ? "is-open" : ""}`} aria-hidden={!expanded}>
           <div>
             {expanded ? (
               <ContextLedgerPanel
@@ -406,8 +406,8 @@ function SessionLedgerCard({ card, index, onContinue }) {
           </div>
         </div>
 
-        <div className="ce-session-ledger__footer relative border-t border-[#deded5] dark:border-[#292925]">
-          <div className="ce-session-ledger__footer-meta flex min-h-[4.5rem] min-w-0 flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3 sm:px-6">
+        <div className="daemonstate-session-ledger__footer relative border-t border-[#deded5] dark:border-[#292925]">
+          <div className="daemonstate-session-ledger__footer-meta flex min-h-[4.5rem] min-w-0 flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3 sm:px-6">
             <button
               type="button"
               aria-expanded={expanded}
@@ -431,7 +431,7 @@ function SessionLedgerCard({ card, index, onContinue }) {
             ) : null}
           </div>
 
-          <div className="ce-session-ledger__actions flex min-h-[4.5rem] flex-wrap items-center justify-end gap-2 border-t border-[#deded5] bg-[#f5f5ef] px-4 py-3 dark:border-[#292925] dark:bg-[#0c0c09]">
+          <div className="daemonstate-session-ledger__actions flex min-h-[4.5rem] flex-wrap items-center justify-end gap-2 border-t border-[#deded5] bg-[#f5f5ef] px-4 py-3 dark:border-[#292925] dark:bg-[#0c0c09]">
             <button
               type="button"
               onClick={() => onContinue(card)}
@@ -464,7 +464,7 @@ function LedgerRail({ sections, activeSection, expanded, onSelect }) {
               type="button"
               aria-pressed={active}
               onClick={() => onSelect(section.key)}
-              className={`ce-ledger-tab relative min-h-[5.4rem] border-r border-[#e2e2da] px-3 py-3 text-left transition-colors last:border-r-0 dark:border-[#292925] ${active ? "is-active" : ""}`}
+              className={`daemonstate-ledger-tab relative min-h-[5.4rem] border-r border-[#e2e2da] px-3 py-3 text-left transition-colors last:border-r-0 dark:border-[#292925] ${active ? "is-active" : ""}`}
               style={{ "--ledger-accent": tone.accent }}
             >
               <span className="flex items-center justify-between gap-2">
@@ -604,7 +604,7 @@ function LedgerItemList({ items, sectionKey, compact = false }) {
       {items.map((item, itemIndex) => (
         <li
           key={item.id || `${sectionKey}-${itemIndex}`}
-          className="ce-ledger-row rounded-xl border border-black/10 bg-white/75 p-3.5 dark:border-white/10 dark:bg-black/15"
+          className="daemonstate-ledger-row rounded-xl border border-black/10 bg-white/75 p-3.5 dark:border-white/10 dark:bg-black/15"
           style={{ "--row-delay": `${Math.min(itemIndex, 8) * 42}ms` }}
         >
           <p className="text-xs font-semibold leading-5">
@@ -643,7 +643,7 @@ function HarnessDeckBackdrop() {
           <span
             key={type}
             data-backdrop-harness={type}
-            className="ce-resume-deck-card absolute block h-64 w-44 overflow-hidden rounded-[1.65rem] border border-black/30 bg-[#efefe9] text-[#171713] opacity-[0.13] shadow-2xl grayscale dark:border-white/35 dark:bg-[#d6d6cf] dark:opacity-[0.16]"
+            className="daemonstate-resume-deck-card absolute block h-64 w-44 overflow-hidden rounded-[1.65rem] border border-black/30 bg-[#efefe9] text-[#171713] opacity-[0.13] shadow-2xl grayscale dark:border-white/35 dark:bg-[#d6d6cf] dark:opacity-[0.16]"
             style={{
               left,
               top,

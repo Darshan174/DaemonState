@@ -1,6 +1,6 @@
 # Architecture
 
-Context Engine is a self-hosted context compiler for AI-native builders.
+DaemonState is a self-hosted context compiler for AI-native builders.
 Its job is to reconstruct the current project state from AI coding sessions,
 code-host activity, conversations, documents, and repo state, then prepare
 trustworthy context for the next human or agent action.
@@ -132,7 +132,7 @@ non-semantic hash-vector ranking.
 
 Observed legacy context packs can still be generated from either the full graph
 or a selected component plus one-hop neighbors. The v2 path is available through
-`POST /api/context/prepare`, `ctxe prepare`, and MCP `prepare_task`, with
+`POST /api/context/prepare`, `daemonstate prepare`, and MCP `prepare_task`, with
 remaining hardening focused on final manifest consistency and idempotency.
 
 The intended high-level outputs are:

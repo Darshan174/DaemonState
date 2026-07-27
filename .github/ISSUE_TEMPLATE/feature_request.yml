@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Context Engine is not a pipeline canvas or a separate vector KB. Feature requests should preserve source-backed memory, provenance, and honest connector states.
+        DaemonState is not a pipeline canvas or a separate vector KB. Feature requests should preserve source-backed memory, provenance, and honest connector states.
   - type: textarea
     id: problem
     attributes:

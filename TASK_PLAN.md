@@ -1,4 +1,4 @@
-# Immediate Context Engine Strengthening Plan
+# Immediate DaemonState Strengthening Plan
 
 ## 2026-07-17 workspace navigation and state isolation — implementation complete
 
@@ -111,7 +111,7 @@ limits for genuine source candidates.
 
 ### Product outcome
 
-Explain Context Engine in the language of the person using it: coding agents
+Explain DaemonState in the language of the person using it: coding agents
 lose project state between sessions, the user pays the context tax, and the
 product turns scattered evidence into a clean handoff for whatever agent or
 model works next.
@@ -179,7 +179,7 @@ the product to validate against a real external repository rather than demos.
   dedicated management surface.
 - The native selector is replaced by a project picker that separates projects
   from samples and always exposes Add project and Manage actions.
-- First-use setup is repository-first: Context Engine creates a real-project
+- First-use setup is repository-first: DaemonState creates a real-project
   workspace only when local repository indexing succeeds, and rolls back a
   failed creation instead of leaving an empty workspace.
 - Sessions with unknown repository relevance are called out on Now and remain
@@ -188,7 +188,7 @@ the product to validate against a real external repository rather than demos.
 ### Remaining validation
 
 - Run the complete capture -> goal -> prepare -> harness -> outcome -> explain
-  loop on a user-supplied external project. The existing Context Engine and demo
+  loop on a user-supplied external project. The existing DaemonState and demo
   workspaces are smoke-test evidence only, not external product validation.
 
 ### Release gates
@@ -240,7 +240,7 @@ runs, and explain why evidence and relationships mattered. Internal terms such a
 
 - Existing evidence, access-scope, and context-pack contracts remain intact.
 - The UI never claims a run was verified without harness-owned passing evidence.
-- Comparison UI distinguishes observed Context Engine runs from a paired causal
+- Comparison UI distinguishes observed DaemonState runs from a paired causal
   experiment and does not claim model parity.
 - Empty states explain what evidence is missing and what action creates it.
 - Focused backend/frontend tests, production build, diff checks, and live browser
@@ -284,7 +284,7 @@ knowledge graph into the default landing page.
 
 ### Product outcome
 
-Make Context Engine able to wrap one local coding-agent command, automatically
+Make DaemonState able to wrap one local coding-agent command, automatically
 preserve what actually happened, enforce a small-model-friendly execution
 contract, and report verified outcomes by model/profile. This is the first
 measurable step toward the narrow claim that an older model can perform closer
@@ -302,10 +302,10 @@ execution discipline.
    context size: required planning, diff review, verification, retry bounds, and
    context refresh behavior. Render that policy in the pack and lockfile.
 3. Add deterministic outcome reporting grouped by model and model profile, plus
-   an offline paired-result evaluator for `old_alone`, `old_with_context_engine`,
+   an offline paired-result evaluator for `old_alone`, `old_with_daemonstate`,
    and `new_alone` experiments. Do not claim model lift from fixture quality.
 4. Expose the runner and evaluator through the CLI and document the honest
-   boundary: Context Engine wraps a user-selected worker; it is not a new
+   boundary: DaemonState wraps a user-selected worker; it is not a new
    autonomous coding agent.
 
 ### Release gates
@@ -429,7 +429,7 @@ logs, or add provider-specific integrations in this milestone.
   ineligible and the inspector explains that they are delivery evidence.
 - Structured API errors show their message instead of serialized JSON.
 - Project-map refresh reindexes the active local repository before rebuilding the
-  graph. The current Context engine workspace was reindexed to 1 repository root,
+  graph. The current DaemonState workspace was reindexed to 1 repository root,
   9 code areas, 267 files, and 4,423 symbols.
 - Empty System, Direction, Next, and Docs lanes use compact truthful copy.
 - Ruff passed; backend `525 passed`; frontend `74 passed`; production build passed;
@@ -472,7 +472,7 @@ future agent should repeat, or why a fact/file is safe to use.
 1. Add honest `indexed`, `live`, and `combined` retrieval modes. Initial live
    support is bounded to the local repository and configured GitHub connector;
    unsupported providers return explicit unsupported errors.
-2. Add `ctxe repo watch` to incrementally index changed repository snapshots and
+2. Add `daemonstate repo watch` to incrementally index changed repository snapshots and
    record normalized, redacted repository events without uploading terminal logs.
 3. Expose retrieval mode and freshness in manifests/traces, not as new primary UI
    navigation.
@@ -515,7 +515,7 @@ page for internal infrastructure.
 - Query, CLI, and MCP support honest indexed/live/combined modes for bounded local
   repository and configured GitHub retrieval. Live results become immutable source
   evidence; failures remain explicit.
-- `ctxe repo watch` records bounded, redacted repository-change evidence and
+- `daemonstate repo watch` records bounded, redacted repository-change evidence and
   incrementally refreshes the deterministic repository index.
 - The existing Project map exposes only the useful product surfaces: one compact
   open-loop/review trigger, the existing right rail for action and evidence,
@@ -534,7 +534,7 @@ page for internal infrastructure.
 
 ### Product outcome
 
-The selected-item inspector must explain what Context Engine actually knows in
+The selected-item inspector must explain what DaemonState actually knows in
 plain language. Provider state should replace internal review/confidence labels,
 repository matches must be presented as suggestions rather than confirmed edit
 targets, and empty/unknown states must tell the user what has or has not happened.
@@ -572,7 +572,7 @@ targets, and empty/unknown states must tell the user what has or has not happene
 
 ### Product outcome
 
-When a founder prepares an evidence-backed task, Context Engine should identify
+When a founder prepares an evidence-backed task, DaemonState should identify
 the likely implementation files and relevant tests from deterministic repository
 structure, explain why each file is present, and keep that compiled structure
 current without rebuilding unchanged file/symbol rows.
@@ -669,7 +669,7 @@ understanding in this slice.
 
 ### End product
 
-Context Engine is the source-backed project-state and scrutiny layer for AI-built
+DaemonState is the source-backed project-state and scrutiny layer for AI-built
 software. It gives a founder a bird's-eye view of what agents changed, left
 incomplete, failed to verify, or supplied no completion evidence for; prepares the
 next agent with exact project context; and updates that context from the observed
@@ -849,7 +849,7 @@ AI code criticism while the focused founder-oversight loop is incomplete.
 ### Objective
 
 Finish the useful non-UI lessons from Meshery without duplicating infrastructure
-that Context Engine already has. This pass strengthens the graph as a trusted,
+that DaemonState already has. This pass strengthens the graph as a trusted,
 source-backed projection; Cytoscape, decorative canvas work, provider webhooks,
 and connector scheduling remain separate later work.
 
@@ -1245,7 +1245,7 @@ connect to PRs and issues, and what blockers or document problems remain.
 Turn the factual digest graph into a calm, professional evidence map that gives
 the canvas back to the user's project. Preserve the source/provenance contract
 from Codex task `019f4cfe-f6d7-7a80-b727-c3011aa08252`, while applying the
-objective-first and relationship-first direction from the “Context Engine Design
+objective-first and relationship-first direction from the “DaemonState Design
 Ideas” conversation.
 
 ### Acceptance contract
@@ -1419,11 +1419,11 @@ internals.
 - Full backend/frontend verification and a production build pass, and the live UI
   is checked at desktop and 390px widths in light and dark modes.
 
-## 2026-07-13 Context Engine logo integration
+## 2026-07-13 DaemonState logo integration
 
 ### Objective
 
-Adopt the user-supplied circular node-path mark as the Context Engine logo across
+Adopt the user-supplied circular node-path mark as the DaemonState logo across
 the existing product brand surfaces without changing unrelated product work.
 
 ### Work plan

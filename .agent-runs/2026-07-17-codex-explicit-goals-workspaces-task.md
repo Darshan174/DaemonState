@@ -11,7 +11,7 @@ project validation path.
 
 - The Now page inferred Current goal from the newest old context pack that had a
   focus component, even when newer prepared objectives had no focus component.
-- The selected Context engine workspace explicitly tracked this repository and
+- The selected DaemonState workspace explicitly tracked this repository and
   included one AI session whose repository relevance was unknown.
 - Every unresolved issue category was rendered under Needs attention.
 - Workspace creation accepted only a name; rename, archive, and delete were not

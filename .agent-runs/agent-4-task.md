@@ -3,7 +3,7 @@
 ## Role
 
 You are Agent 4 working in
-`/Users/darshann/Desktop/context-engine`.
+`/Users/darshann/Desktop/daemonstate`.
 
 You are the long-context repo reviewer, docs/UX/OSS readiness reviewer, and MCP
 runtime bridge implementer for Context Compiler v2. Your work must stay honest:
@@ -260,7 +260,7 @@ run. It is acceptable to document the intended benchmark shape as proposed.
 
 Update docs to say:
 
-- Context Engine is a context compiler for AI engineering.
+- DaemonState is a context compiler for AI engineering.
 - The core loop is prepare -> agent works -> observe -> ingest -> improve next
   context.
 - `context_pack.v2` is markdown plus manifest.
