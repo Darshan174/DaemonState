@@ -21,7 +21,7 @@ export default function StatusView({ query, empty = "Nothing here yet.", loading
       query.error?.message || query.error?.detail || "Something went wrong.";
     const isNetworkError = rawMsg.toLowerCase().includes("failed to fetch") || rawMsg.toLowerCase().includes("network error");
     const actionableText = isNetworkError
-      ? "Check if your Context Engine backend is running. The frontend cannot reach the API."
+      ? "Check if your DaemonState backend is running. The frontend cannot reach the API."
       : rawMsg;
 
     return (

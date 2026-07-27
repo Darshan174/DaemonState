@@ -28,9 +28,18 @@ from app.services.harness_sessions import recorded_harness_session
 from app.services.continuation_runtime import (
     ContinuationRunError,
     ContinuationRunService,
+    ContinuationStageService,
     active_continuation_run,
     active_continuation_run_payload,
+    awaiting_continuation_handoff,
     provider_readiness,
+    reconcile_awaiting_continuation_handoffs,
+    staged_continuation_payload,
+)
+from app.schemas.continuation_execution import (
+    MAX_CONTINUATION_ARTIFACTS,
+    ContinuationArtifactInput,
+    TaskMode,
 )
 
 
@@ -40,7 +49,9 @@ router = APIRouter()
 class _ContinuationRequest(BaseModel):
     workspace_id: UUID
     repo_path: str | None = Field(default=None, min_length=1)
-    objective: str | None = Field(default=None, min_length=1, max_length=2_000)
+    objective: str | None = Field(default=None, min_length=1)
+    objective_is_user_edited: bool = False
+    task_mode: TaskMode | None = None
     checkpoint_id: str | None = Field(default=None, min_length=1, max_length=255)
     checkpoint_source_id: UUID | None = None
     source_provider: str | None = Field(default=None, min_length=1, max_length=50)
@@ -51,6 +62,10 @@ class _ContinuationRequest(BaseModel):
     )
     target_model: str | None = Field(default=None, min_length=1, max_length=255)
     token_budget: int | None = Field(default=None, ge=300)
+    artifacts: tuple[ContinuationArtifactInput, ...] = Field(
+        default=(),
+        max_length=MAX_CONTINUATION_ARTIFACTS,
+    )
 
     @field_validator(
         "repo_path",
@@ -81,19 +96,24 @@ class _ContinuationRequest(BaseModel):
 
     @field_validator("objective")
     @classmethod
-    def normalize_objective(cls, value: str | None) -> str | None:
+    def validate_objective(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        normalized = " ".join(value.split())
-        if not normalized:
+        if not value.strip():
             raise ValueError("value must contain visible characters")
-        return normalized
+        # The executable request is an immutable input. Matching and display
+        # derivatives are compiled separately and must never replace it.
+        return value
 
     @model_validator(mode="after")
     def validate_source_session_pair(self) -> "_ContinuationRequest":
         if (self.source_provider is None) != (self.source_session_id is None):
             raise ValueError(
                 "source_provider and source_session_id must be provided together"
+            )
+        if self.objective_is_user_edited and self.objective is None:
+            raise ValueError(
+                "objective_is_user_edited requires an objective"
             )
         return self
 
@@ -135,6 +155,7 @@ class ContinuationHarnessOpenRequest(BaseModel):
 async def get_continuation_providers(
     request: Request,
     workspace_id: UUID | None = None,
+    refresh: bool = False,
     session: AsyncSession = Depends(get_db_session),
     access_scope: AccessScope = Depends(get_access_scope),
 ) -> dict[str, Any]:
@@ -149,7 +170,16 @@ async def get_continuation_providers(
         )
     if workspace_id is not None and not access_scope.allows_workspace(workspace_id):
         raise HTTPException(status_code=404, detail="Workspace not found")
-    providers = await provider_readiness()
+    providers = (
+        await provider_readiness(force_refresh=True)
+        if refresh
+        else await provider_readiness()
+    )
+    if workspace_id is not None:
+        await reconcile_awaiting_continuation_handoffs(
+            session,
+            workspace_id=workspace_id,
+        )
     active_run = (
         await active_continuation_run(session, workspace_id=workspace_id)
         if workspace_id is not None
@@ -162,9 +192,18 @@ async def get_continuation_providers(
         if workspace_id is not None
         else None
     )
+    staged_handoff = (
+        await awaiting_continuation_handoff(
+            session,
+            workspace_id=workspace_id,
+        )
+        if workspace_id is not None
+        else None
+    )
     return {
         "providers": [item.to_dict() for item in providers],
         "active_run": active_continuation_run_payload(active_run),
+        "staged_handoff": staged_continuation_payload(staged_handoff),
         "latest_run": latest_run,
     }
 
@@ -240,18 +279,21 @@ async def prepare_continuation(
     session: AsyncSession = Depends(get_db_session),
     access_scope: AccessScope = Depends(get_access_scope),
 ) -> dict[str, Any]:
-    if payload.sync_sessions:
+    if payload.sync_sessions or payload.artifacts:
         _require_loopback_client(request)
     if not access_scope.allows_workspace(payload.workspace_id):
         raise HTTPException(status_code=404, detail="Workspace not found")
-    if payload.sync_sessions and access_scope.principal_id != "local":
+    if (
+        (payload.sync_sessions or payload.artifacts)
+        and access_scope.principal_id != "local"
+    ):
         raise HTTPException(
             status_code=403,
             detail={
                 "code": "local_action_required",
                 "message": (
-                    "Session sync and command verification are available only "
-                    "from the local app."
+                    "Session sync, command verification, and local artifacts "
+                    "are available only from the local app."
                 ),
             },
         )
@@ -273,12 +315,15 @@ async def prepare_continuation(
             access_scope=access_scope,
             repo_path=payload.repo_path,
             objective=payload.objective,
+            objective_is_user_edited=payload.objective_is_user_edited,
             checkpoint_id=payload.checkpoint_id,
             checkpoint_source_id=payload.checkpoint_source_id,
             source_provider=payload.source_provider,
             source_session_id=payload.source_session_id,
             target_model=payload.target_model,
             token_budget=payload.token_budget,
+            task_mode=payload.task_mode,
+            artifacts=payload.artifacts,
             sync_sessions=payload.sync_sessions,
         )
         await session.commit()
@@ -325,6 +370,85 @@ async def prepare_continuation(
     return result.to_dict()
 
 
+@router.post("/continuations/stage")
+async def stage_continuation(
+    payload: ContinuationRunRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    access_scope: AccessScope = Depends(get_access_scope),
+) -> dict[str, Any]:
+    """Load context into a persistent harness thread without starting a turn."""
+
+    _require_loopback_client(request)
+    try:
+        result = await ContinuationStageService(session).stage(
+            workspace_id=payload.workspace_id,
+            access_scope=access_scope,
+            repo_path=payload.repo_path,
+            objective=payload.objective,
+            objective_is_user_edited=payload.objective_is_user_edited,
+            checkpoint_id=payload.checkpoint_id,
+            checkpoint_source_id=payload.checkpoint_source_id,
+            source_provider=payload.source_provider,
+            source_session_id=payload.source_session_id,
+            target_model=payload.target_model,
+            target_provider=payload.target_provider,
+            provider_model=payload.provider_model,
+            provider_effort=payload.provider_effort,
+            token_budget=payload.token_budget,
+            idempotency_key=payload.idempotency_key,
+            task_mode=payload.task_mode,
+            artifacts=payload.artifacts,
+        )
+    except (ContinuationRunError, ContinuationError) as exc:
+        await session.rollback()
+        detail: dict[str, Any] = {"code": exc.code, "message": str(exc)}
+        if isinstance(exc, ContinuationRunError):
+            if exc.readiness is not None:
+                detail["readiness"] = exc.readiness
+            if exc.blocker is not None:
+                detail["blocker"] = exc.blocker
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=detail,
+        ) from exc
+    except ContextBudgetExceededError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "context_budget_too_small",
+                "message": str(exc),
+                "minimum_required_tokens": exc.minimum_required_tokens,
+            },
+        ) from exc
+    except (InvalidGoalError, InvalidRepoPathError, ValueError) as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "continuation_invalid_request",
+                "message": str(exc),
+            },
+        ) from exc
+    except ContextPersistenceError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "continuation_persistence_failed",
+                "message": str(exc),
+            },
+        ) from exc
+    except Exception as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "continuation_stage_failed", "message": str(exc)},
+        ) from exc
+    return result.to_dict()
+
+
 @router.post("/continuations")
 @router.post("/continuations/run")
 async def run_continuation(
@@ -340,6 +464,7 @@ async def run_continuation(
             access_scope=access_scope,
             repo_path=payload.repo_path,
             objective=payload.objective,
+            objective_is_user_edited=payload.objective_is_user_edited,
             checkpoint_id=payload.checkpoint_id,
             checkpoint_source_id=payload.checkpoint_source_id,
             source_provider=payload.source_provider,
@@ -350,6 +475,8 @@ async def run_continuation(
             provider_effort=payload.provider_effort,
             token_budget=payload.token_budget,
             idempotency_key=payload.idempotency_key,
+            task_mode=payload.task_mode,
+            artifacts=payload.artifacts,
         )
     except (ContinuationRunError, ContinuationError) as exc:
         await session.rollback()

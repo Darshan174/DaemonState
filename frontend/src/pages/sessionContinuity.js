@@ -23,7 +23,10 @@ export function buildSessionContinuity({
     const key = sessionKey(session.connector_type, session.session_id);
     const ledger = ledgersBySession.get(key) || emptyLedger(session);
     const versions = checkpointsBySession.get(key) || [];
-    const checkpoint = versions.find(isUsableCheckpoint) || versions[0] || null;
+    // Never fall back from an unusable newest boundary to an older task. The
+    // backend recovers source-backed historical goals for list projections;
+    // if that recovery still fails, the safe UI state is unavailable.
+    const checkpoint = versions[0] || null;
     return prepareSessionCard(session, ledger, versions, checkpoint);
   });
 
@@ -58,6 +61,100 @@ export function isUsableCheckpoint(checkpoint) {
     && checkpoint.sections?.goal?.[0]?.statement
     && checkpoint.sections?.exact_next_action?.[0]?.statement
   );
+}
+
+export async function copyReadySessionContextContent(handoff, expected = {}) {
+  if (
+    handoff?.schema_version !== "session_handoff.v1"
+    || handoff.scope !== "session"
+    || typeof handoff.provider !== "string"
+    || !handoff.provider.trim()
+    || typeof handoff.session_id !== "string"
+    || !handoff.session_id.trim()
+    || typeof handoff.content !== "string"
+    || !handoff.content.trim()
+    || typeof handoff.sha256 !== "string"
+    || !handoff.sha256.trim()
+    || !handoff.checkpoint_id
+    || typeof handoff.boundary !== "object"
+    || handoff.boundary === null
+    || !handoff.boundary.event_id
+    || !Number.isInteger(handoff.boundary.sequence_number)
+    || typeof handoff.quality_report !== "object"
+    || handoff.quality_report === null
+    || typeof handoff.quality_report.copy_ready !== "boolean"
+  ) {
+    throw new Error(
+      "The checkpoint service returned an incomplete Current Session Context.",
+    );
+  }
+  if (handoff.quality_report.copy_ready !== true) {
+    throw new Error(sessionContextQualityMessage(handoff));
+  }
+  if (
+    expected.provider
+    && normalizeProvider(handoff.provider) !== normalizeProvider(expected.provider)
+  ) {
+    throw new Error("Current Session Context belongs to a different harness.");
+  }
+  if (
+    expected.sessionId
+    && cleanText(handoff.session_id) !== cleanText(expected.sessionId)
+  ) {
+    throw new Error("Current Session Context belongs to a different session.");
+  }
+  if (
+    expected.checkpointId
+    && cleanText(handoff.checkpoint_id) !== cleanText(expected.checkpointId)
+  ) {
+    throw new Error("Current Session Context belongs to a different checkpoint.");
+  }
+  if (
+    Number.isInteger(expected.boundarySequence)
+    && handoff.boundary.sequence_number !== expected.boundarySequence
+  ) {
+    throw new Error("Current Session Context belongs to a different session boundary.");
+  }
+  await requireMatchingContentSha256(
+    handoff.content,
+    handoff.sha256,
+    "Current Session Context",
+  );
+  return handoff.content;
+}
+
+export async function requireMatchingContentSha256(content, expected, label) {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle || typeof globalThis.TextEncoder !== "function") {
+    throw new Error(`${label} integrity could not be verified in this browser.`);
+  }
+  const digest = await subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(String(content)),
+  );
+  const actual = Array.from(new Uint8Array(digest), (value) => (
+    value.toString(16).padStart(2, "0")
+  )).join("");
+  if (actual !== String(expected || "").trim().toLowerCase()) {
+    throw new Error(`${label} failed its content integrity check.`);
+  }
+}
+
+export function sessionContextQualityMessage(handoff) {
+  const report = handoff?.quality_report;
+  const issues = Array.isArray(report?.blocking_issues)
+    ? report.blocking_issues
+    : Array.isArray(report?.issues)
+      ? report.issues.filter((issue) => issue?.severity === "blocking")
+      : [];
+  const detail = issues
+    .map((issue) => cleanText(issue?.message))
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(" ");
+  return detail
+    ? `Current Session Context is not copy-ready. ${detail}`
+    : "Current Session Context is not copy-ready because its quality gate did not pass.";
 }
 
 export function ledgerSections(ledger) {
@@ -176,8 +273,8 @@ function sessionKey(provider, sessionId) {
 }
 
 function normalizeProvider(value) {
-  const provider = String(value || "unknown").toLocaleLowerCase();
-  return provider === "claude_code" ? "claude" : provider;
+  const provider = cleanText(value).toLocaleLowerCase().replace(/[\s_-]+/g, "");
+  return provider === "claudecode" ? "claude" : provider || "unknown";
 }
 
 function providerLabel(value) {

@@ -24,16 +24,16 @@ import { useSessionLibrary, useSyncSessionLibrary } from "../api/hooks";
 import {
   HARNESS_META,
   HARNESS_ORDER,
+  HarnessArtwork,
   HarnessLogo,
 } from "../components/HarnessBrand";
 import { HarnessArchiveCard } from "../components/HarnessCard";
+import HarnessDeckBackdrop from "../components/HarnessDeckBackdrop";
 import ProductLoadingState from "../components/ProductLoadingState";
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
 import { formatTimeAgo } from "../context-map/digest";
 import { useProductWorkspace } from "./useProductWorkspace";
 
-
-const AUTO_SYNC_INTERVAL_MS = 60_000;
 const INITIAL_SESSION_COUNT = 24;
 
 
@@ -43,7 +43,6 @@ export default function SessionLibrary() {
   const workspace = useProductWorkspace();
   const libraryQuery = useSessionLibrary(workspace.activeWorkspaceId);
   const syncMutation = useSyncSessionLibrary();
-  const syncRef = useRef(syncMutation);
   const sessionsRef = useRef(null);
   const [selectedHarness, setSelectedHarness] = useState(null);
   const [hoveredHarness, setHoveredHarness] = useState(null);
@@ -54,26 +53,6 @@ export default function SessionLibrary() {
     setEvidenceSelection(null);
     navigate("/app/library", { replace: true });
   }, [navigate]);
-
-  useEffect(() => {
-    syncRef.current = syncMutation;
-  }, [syncMutation]);
-
-  useEffect(() => {
-    if (!workspace.activeWorkspaceId) return undefined;
-    const sync = () => {
-      if (!syncRef.current.isPending) {
-        syncRef.current.mutate({ workspaceId: workspace.activeWorkspaceId });
-      }
-    };
-    sync();
-    const interval = window.setInterval(sync, AUTO_SYNC_INTERVAL_MS);
-    window.addEventListener("focus", sync);
-    return () => {
-      window.clearInterval(interval);
-      window.removeEventListener("focus", sync);
-    };
-  }, [workspace.activeWorkspaceId]);
 
   const library = libraryQuery.data;
   const sessions = library?.sessions || [];
@@ -165,35 +144,39 @@ export default function SessionLibrary() {
 
   return (
     <div className="relative mx-auto w-full max-w-7xl space-y-8 pb-14">
-      <header className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
-        <div>
-          <h1 className="text-3xl font-black tracking-[-0.035em] sm:text-4xl">Session Library</h1>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
-            Choose a session or topic, then finish the handoff from the canonical Continue screen.
-          </p>
-          {library ? (
-            <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-[10px] font-black uppercase tracking-[0.13em] text-[#85857c]">
-              <span>{library.stats?.sessions || 0} sessions</span>
-              <span className="h-1 w-1 rounded-full bg-[#b8dc45]" />
-              <span>{library.stats?.topics || 0} topics</span>
-              <span className="h-1 w-1 rounded-full bg-[#b8dc45]" />
-              <span>{library.stats?.harnesses || 0} harnesses detected</span>
-            </div>
-          ) : null}
+      <header className="daemonstate-resume-header group relative min-h-56 overflow-hidden rounded-[2rem] border border-[#d8d8cf] bg-[#f7f7f1] px-5 py-7 text-[#171713] dark:border-[#292925] dark:bg-[#0c0c0a] dark:text-white sm:px-8 sm:py-9 lg:px-10">
+        <div aria-hidden="true" className="absolute -right-20 -top-24 h-72 w-72 rounded-full bg-[#d9ff68]/25 blur-3xl dark:bg-[#d9ff68]/10" />
+        <HarnessDeckBackdrop />
+        <div className="relative flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <h1 className="text-3xl font-black tracking-[-0.035em] sm:text-4xl">Session Library</h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
+              Choose a session or topic, then finish the handoff from the canonical Continue screen.
+            </p>
+            {library ? (
+              <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-[10px] font-black uppercase tracking-[0.13em] text-[#85857c]">
+                <span>{library.stats?.sessions || 0} sessions</span>
+                <span className="h-1 w-1 rounded-full bg-[#b8dc45]" />
+                <span>{library.stats?.topics || 0} topics</span>
+                <span className="h-1 w-1 rounded-full bg-[#b8dc45]" />
+                <span>{library.stats?.harnesses || 0} harnesses detected</span>
+              </div>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            onClick={() => syncMutation.mutate({ workspaceId: workspace.activeWorkspaceId })}
+            disabled={!workspace.activeWorkspaceId || syncMutation.isPending}
+            className="inline-flex h-11 items-center justify-center gap-2 self-start rounded-xl border border-[#9dbc47]/45 bg-[#d9ff68]/30 px-5 text-xs font-black text-[#37420f] shadow-[0_8px_24px_rgba(157,188,71,0.14),inset_0_1px_0_rgba(255,255,255,0.28)] backdrop-blur-xl transition hover:-translate-y-0.5 hover:border-[#9dbc47]/65 hover:bg-[#d9ff68]/40 disabled:cursor-not-allowed disabled:opacity-60 dark:border-[#d9ff68]/35 dark:bg-[#d9ff68]/15 dark:text-[#eaffaa] dark:shadow-[0_8px_28px_rgba(217,255,104,0.08),inset_0_1px_0_rgba(255,255,255,0.1)] dark:hover:border-[#d9ff68]/55 dark:hover:bg-[#d9ff68]/25 lg:self-auto"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${syncMutation.isPending ? "animate-spin" : ""}`} />
+            {syncMutation.isPending ? "Syncing local history…" : "Sync now"}
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={() => syncMutation.mutate({ workspaceId: workspace.activeWorkspaceId })}
-          disabled={!workspace.activeWorkspaceId || syncMutation.isPending}
-          className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-[#171713] px-5 text-xs font-black text-white shadow-[0_8px_24px_rgba(23,23,19,0.12)] transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-[#d9ff68] dark:text-[#171713]"
-        >
-          <RefreshCw className={`h-3.5 w-3.5 ${syncMutation.isPending ? "animate-spin" : ""}`} />
-          {syncMutation.isPending ? "Syncing local history…" : "Sync now"}
-        </button>
       </header>
 
       {syncMutation.isError ? (
-        <Notice tone="error">Automatic sync failed: {syncMutation.error?.message}</Notice>
+        <Notice tone="error">Sync failed: {syncMutation.error?.message}</Notice>
       ) : null}
       {syncMutation.data?.sync?.failed ? (
         <Notice tone="warning">
@@ -201,7 +184,7 @@ export default function SessionLibrary() {
         </Notice>
       ) : null}
       {libraryQuery.isLoading && !library ? (
-        <EmptyState title="Opening your session history…" detail="The local adapters are scanning supported harness stores automatically." loading />
+        <EmptyState title="Opening your session history…" detail="Loading the saved session index for this project." loading />
       ) : null}
       {libraryQuery.isError ? (
         <EmptyState title="Could not load the session library" detail={libraryQuery.error?.message} error />
@@ -220,7 +203,11 @@ export default function SessionLibrary() {
               </p>
             </div>
 
-            <div className="relative mx-auto flex min-h-[330px] max-w-4xl items-center justify-center overflow-visible px-2 py-7 sm:min-h-[430px] sm:px-8" onMouseLeave={() => setHoveredHarness(null)}>
+            <div
+              className="daemonstate-harness-fan daemonstate-archive-fan relative -mx-4 flex snap-x snap-mandatory items-stretch justify-start gap-4 overflow-x-auto overscroll-x-contain pb-8 pt-5 sm:-mx-7 md:mx-auto md:max-w-4xl md:snap-none md:gap-0 md:overflow-visible md:px-0 md:py-0"
+              aria-label="Session library harnesses"
+              onMouseLeave={() => setHoveredHarness(null)}
+            >
               {harnesses.map((item, index) => {
                 const hoverIndex = harnesses.findIndex((candidate) => candidate.connector_type === hoveredHarness);
                 const hovered = hoveredHarness === item.connector_type;
@@ -357,136 +344,144 @@ function SessionCard({ item, selected, selectedTopic, selectingTopic, onSelectSe
       style={{ borderColor: revealed ? meta.accent : undefined }}
     >
       <span className="absolute inset-x-0 top-0 h-0.5 origin-left scale-x-0 transition-transform duration-500 group-hover:scale-x-100 group-focus-visible:scale-x-100" style={{ backgroundColor: meta.accent }} />
-      <div className="flex items-start justify-between gap-3">
-        <HarnessLogo type={item.connector_type} size="small" />
-        <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.12em] text-[#85857c]">
-          {selected ? <span className="rounded-full bg-[#d9ff68] px-2 py-1 text-[#37420f]">Selected</span> : null}
-          {item.forked_from ? (
-            <span
-              aria-label={`Continued in a new task from ${item.forked_from.title}`}
-              title={`Continued in a new task from ${item.forked_from.title}`}
-              className="inline-flex items-center gap-1 rounded-full border border-[#d8d8cf] px-2 py-1 text-[#68685f] dark:border-[#3a3a34] dark:text-[#c7c7bd]"
-            >
-              <GitFork className="h-3 w-3" /> Fork
-            </span>
-          ) : null}
-          {(item.compaction_checkpoints || []).length ? (
-            <button
-              type="button"
-              aria-label={`Open ${item.compaction_checkpoints.length} context checkpoints for ${item.title}`}
-              title="Open context captured automatically before harness compaction"
-              onClick={(event) => {
-                event.stopPropagation();
-                onOpen(selectedTopic || latestTopic);
-              }}
-              className="inline-flex items-center gap-1 rounded-full border border-[#b8ca7b] bg-[#f2f7df] px-2 py-1 text-[#58691c] transition hover:border-[#8aa62a] hover:bg-[#eaf3cb] dark:border-[#53602f] dark:bg-[#d9ff68]/[0.07] dark:text-[#d9ff68]"
-            >
-              <History className="h-3 w-3" /> {item.compaction_checkpoints.length} checkpoints
-            </button>
-          ) : null}
-          {item.live ? <Radio className="h-3 w-3 text-emerald-600" /> : null}
-          {item.updated_at ? formatTimeAgo(item.updated_at) : "Unknown time"}
-        </div>
-      </div>
-
-      <p className="mt-4 text-[8px] font-black uppercase tracking-[0.16em] text-[#85857c]">Session title</p>
-      <h3 className="mt-1 line-clamp-2 text-base font-black leading-6 tracking-[-0.015em]">{item.title}</h3>
-      {item.forked_from ? (
-        <p className="mt-1.5 flex min-w-0 items-center gap-1.5 text-[9px] font-semibold text-[#77776e] dark:text-[#aaa9a0]">
-          <GitFork className="h-3 w-3 shrink-0" aria-hidden="true" />
-          <span className="truncate">Continued from · {item.forked_from.title}</span>
-        </p>
-      ) : null}
-      {selectedTopic || latestTopic ? (
-        <p className="mt-2 line-clamp-1 text-[9px] font-bold text-[#58691c] dark:text-[#d9ff68]">{selectedTopic ? "Selected" : "Latest"} · {selectedTopic || latestTopic}</p>
-      ) : null}
-      <div className="mt-3 flex items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-2 text-[10px] font-semibold text-[#77776e] dark:text-[#aaa9a0]">
-          {folder ? <><FolderGit2 className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{folder}</span></> : <span>Local session</span>}
-        </div>
-        <div className="shrink-0 rounded-xl bg-[#efefe7] px-3 py-2 text-right dark:bg-[#252521]">
-          <span className="block text-lg font-black leading-none">{topics.length}</span>
-          <span className="mt-1 block text-[8px] font-black uppercase tracking-[0.13em] text-[#85857c]">topics</span>
-        </div>
-      </div>
-
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[#e1e1d8] pt-3 dark:border-[#30302b]">
-        <button
-          type="button"
-          aria-label={`Continue latest topic from ${item.title}`}
-          onClick={onSelectSession}
-          disabled={Boolean(selectingTopic)}
-          className="inline-flex items-center gap-1.5 text-[9px] font-black uppercase tracking-[0.12em] text-[#58691c] transition hover:text-[#171713] disabled:cursor-wait disabled:opacity-60 dark:text-[#d9ff68] dark:hover:text-white"
-        >
-          {selectingTopic === "__latest__" ? "Selecting…" : "Continue latest"}
-          <ArrowRight className="h-3 w-3" />
-        </button>
-        <div className="flex items-center gap-3">
-          {(item.compaction_checkpoints || []).length ? (
-            <button
-              type="button"
-              aria-label={`Open checkpoints for ${item.title}`}
-              onClick={(event) => {
-                event.stopPropagation();
-                onOpen(selectedTopic || latestTopic);
-              }}
-              className="inline-flex items-center gap-1 text-[8px] font-bold uppercase tracking-[0.12em] text-[#58691c] transition hover:text-[#171713] dark:text-[#d9ff68] dark:hover:text-white"
-            >
-              Checkpoints <History className="h-3 w-3" />
-            </button>
-          ) : null}
-          <button
-            type="button"
-            aria-label={`Choose a topic from ${item.title}`}
-            aria-expanded={revealed}
-            onClick={() => setRevealed(true)}
-            className="text-[8px] font-bold uppercase tracking-[0.12em] text-[#85857c] transition hover:text-[#171713] dark:hover:text-white"
-          >
-            Topics
-          </button>
-        <button
-          type="button"
-          aria-label={`Inspect evidence for ${item.title}`}
-          onClick={(event) => {
-            event.stopPropagation();
-            onOpen(selectedTopic || latestTopic);
-          }}
-          className="inline-flex items-center gap-1 text-[8px] font-bold uppercase tracking-[0.12em] text-[#85857c] transition hover:text-[#171713] dark:hover:text-white"
-        >
-          Evidence <ArrowUpRight className="h-3 w-3" />
-        </button>
-        </div>
-      </div>
-
-      <div
-        aria-hidden={!revealed}
-        className={`overflow-hidden transition-all duration-500 ease-out ${revealed ? "mt-4 max-h-52 opacity-100" : "max-h-0 opacity-0"}`}
+      <span
+        aria-hidden="true"
+        className="pointer-events-none absolute -right-[9%] top-12 h-44 w-52 origin-center opacity-[0.055] transition-[transform,opacity] duration-700 ease-out group-hover:-translate-x-3 group-hover:scale-110 group-hover:opacity-[0.09] dark:opacity-[0.08] dark:group-hover:opacity-[0.12]"
       >
-        <div className="border-t border-[#e1e1d8] pt-3 dark:border-[#30302b]">
-          <p className="mb-2 text-[8px] font-black uppercase tracking-[0.16em] text-[#85857c]">Topics discussed</p>
-          <div className="flex flex-wrap gap-1.5">
-            {topics.length ? topics.map((topic) => (
+        <HarnessArtwork type={item.connector_type} />
+      </span>
+
+      <div className="relative">
+        <div className="flex items-start justify-end gap-3">
+          <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.12em] text-[#85857c]">
+            {selected ? <span className="rounded-full bg-[#d9ff68] px-2 py-1 text-[#37420f]">Selected</span> : null}
+            {item.forked_from ? (
+              <span
+                aria-label={`Continued in a new task from ${item.forked_from.title}`}
+                title={`Continued in a new task from ${item.forked_from.title}`}
+                className="inline-flex items-center gap-1 rounded-full border border-[#d8d8cf] px-2 py-1 text-[#68685f] dark:border-[#3a3a34] dark:text-[#c7c7bd]"
+              >
+                <GitFork className="h-3 w-3" /> Fork
+              </span>
+            ) : null}
+            {(item.compaction_checkpoints || []).length ? (
               <button
                 type="button"
-                key={topic}
-                tabIndex={revealed ? 0 : -1}
-                aria-label={`Continue ${topic} from ${item.title}`}
+                aria-label={`Open ${item.compaction_checkpoints.length} context checkpoints for ${item.title}`}
+                title="Open context captured automatically before harness compaction"
                 onClick={(event) => {
                   event.stopPropagation();
-                  onSelectTopic(topic);
+                  onOpen(selectedTopic || latestTopic);
                 }}
-                className="inline-flex items-center gap-1 rounded-lg border border-[#d8d8cf] bg-white/80 px-2.5 py-1.5 text-left text-[9px] font-bold leading-4 transition hover:border-transparent disabled:cursor-wait disabled:opacity-60 dark:border-[#3b3b35] dark:bg-black/20"
-                disabled={Boolean(selectingTopic)}
-                style={{ color: meta.accent }}
+                className="inline-flex items-center gap-1 rounded-full border border-[#b8ca7b] bg-[#f2f7df] px-2 py-1 text-[#58691c] transition hover:border-[#8aa62a] hover:bg-[#eaf3cb] dark:border-[#53602f] dark:bg-[#d9ff68]/[0.07] dark:text-[#d9ff68]"
               >
-                {selectingTopic === topic ? "Selecting…" : topic}
-                <ArrowRight className="h-2.5 w-2.5 shrink-0" />
+                <History className="h-3 w-3" /> {item.compaction_checkpoints.length} checkpoints
               </button>
-            )) : <span className="text-[10px] font-semibold text-[#85857c]">No distinct topics extracted.</span>}
+            ) : null}
+            {item.live ? <Radio className="h-3 w-3 text-emerald-600" /> : null}
+            {item.updated_at ? formatTimeAgo(item.updated_at) : "Unknown time"}
           </div>
-          <p className="mt-3 inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-[0.12em]" style={{ color: meta.accent }}>
-            Choose a topic for Continue <ArrowRight className="h-3 w-3" />
+        </div>
+
+        <p className="mt-4 text-[8px] font-black uppercase tracking-[0.16em] text-[#85857c]">Session title</p>
+        <h3 className="mt-1 line-clamp-2 text-base font-black leading-6 tracking-[-0.015em]">{item.title}</h3>
+        {item.forked_from ? (
+          <p className="mt-1.5 flex min-w-0 items-center gap-1.5 text-[9px] font-semibold text-[#77776e] dark:text-[#aaa9a0]">
+            <GitFork className="h-3 w-3 shrink-0" aria-hidden="true" />
+            <span className="truncate">Continued from · {item.forked_from.title}</span>
           </p>
+        ) : null}
+        {selectedTopic || latestTopic ? (
+          <p className="mt-2 line-clamp-1 text-[9px] font-bold text-[#58691c] dark:text-[#d9ff68]">{selectedTopic ? "Selected" : "Latest"} · {selectedTopic || latestTopic}</p>
+        ) : null}
+        <div className="mt-3 flex items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-2 text-[10px] font-semibold text-[#77776e] dark:text-[#aaa9a0]">
+            {folder ? <><FolderGit2 className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{folder}</span></> : <span>Local session</span>}
+          </div>
+          <div className="shrink-0 rounded-xl bg-[#efefe7] px-3 py-2 text-right dark:bg-[#252521]">
+            <span className="block text-lg font-black leading-none">{topics.length}</span>
+            <span className="mt-1 block text-[8px] font-black uppercase tracking-[0.13em] text-[#85857c]">topics</span>
+          </div>
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[#e1e1d8] pt-3 dark:border-[#30302b]">
+          <button
+            type="button"
+            aria-label={`Continue latest topic from ${item.title}`}
+            onClick={onSelectSession}
+            disabled={Boolean(selectingTopic)}
+            className="inline-flex items-center gap-1.5 text-[9px] font-black uppercase tracking-[0.12em] text-[#58691c] transition hover:text-[#171713] disabled:cursor-wait disabled:opacity-60 dark:text-[#d9ff68] dark:hover:text-white"
+          >
+            {selectingTopic === "__latest__" ? "Selecting…" : "Continue latest"}
+            <ArrowRight className="h-3 w-3" />
+          </button>
+          <div className="flex items-center gap-3">
+            {(item.compaction_checkpoints || []).length ? (
+              <button
+                type="button"
+                aria-label={`Open checkpoints for ${item.title}`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onOpen(selectedTopic || latestTopic);
+                }}
+                className="inline-flex items-center gap-1 text-[8px] font-bold uppercase tracking-[0.12em] text-[#58691c] transition hover:text-[#171713] dark:text-[#d9ff68] dark:hover:text-white"
+              >
+                Checkpoints <History className="h-3 w-3" />
+              </button>
+            ) : null}
+            <button
+              type="button"
+              aria-label={`Choose a topic from ${item.title}`}
+              aria-expanded={revealed}
+              onClick={() => setRevealed(true)}
+              className="text-[8px] font-bold uppercase tracking-[0.12em] text-[#85857c] transition hover:text-[#171713] dark:hover:text-white"
+            >
+              Topics
+            </button>
+            <button
+              type="button"
+              aria-label={`Inspect evidence for ${item.title}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpen(selectedTopic || latestTopic);
+              }}
+              className="inline-flex items-center gap-1 text-[8px] font-bold uppercase tracking-[0.12em] text-[#85857c] transition hover:text-[#171713] dark:hover:text-white"
+            >
+              Evidence <ArrowUpRight className="h-3 w-3" />
+            </button>
+          </div>
+        </div>
+
+        <div
+          aria-hidden={!revealed}
+          className={`overflow-hidden transition-all duration-500 ease-out ${revealed ? "mt-4 max-h-52 opacity-100" : "max-h-0 opacity-0"}`}
+        >
+          <div className="border-t border-[#e1e1d8] pt-3 dark:border-[#30302b]">
+            <p className="mb-2 text-[8px] font-black uppercase tracking-[0.16em] text-[#85857c]">Topics discussed</p>
+            <div className="flex flex-wrap gap-1.5">
+              {topics.length ? topics.map((topic) => (
+                <button
+                  type="button"
+                  key={topic}
+                  tabIndex={revealed ? 0 : -1}
+                  aria-label={`Continue ${topic} from ${item.title}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onSelectTopic(topic);
+                  }}
+                  className="inline-flex items-center gap-1 rounded-lg border border-[#d8d8cf] bg-white/80 px-2.5 py-1.5 text-left text-[9px] font-bold leading-4 transition hover:border-transparent disabled:cursor-wait disabled:opacity-60 dark:border-[#3b3b35] dark:bg-black/20"
+                  disabled={Boolean(selectingTopic)}
+                  style={{ color: meta.accent }}
+                >
+                  {selectingTopic === topic ? "Selecting…" : topic}
+                  <ArrowRight className="h-2.5 w-2.5 shrink-0" />
+                </button>
+              )) : <span className="text-[10px] font-semibold text-[#85857c]">No distinct topics extracted.</span>}
+            </div>
+            <p className="mt-3 inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-[0.12em]" style={{ color: meta.accent }}>
+              Choose a topic for Continue <ArrowRight className="h-3 w-3" />
+            </p>
+          </div>
         </div>
       </div>
     </article>

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Context Engine - read-only first-run diagnostics
+# DaemonState - read-only first-run diagnostics
 # Usage:
 #   bash scripts/doctor.sh
 #   bash scripts/doctor.sh --docker
@@ -39,9 +39,9 @@ cd "$repo_root" || exit 1
 
 section "Checkout"
 if [[ -f "pyproject.toml" && -f "app/main.py" && -d "frontend" ]]; then
-  ok "running from Context Engine repo root"
+  ok "running from DaemonState repo root"
 else
-  fail "run this from the Context Engine repository root"
+  fail "run this from the DaemonState repository root"
 fi
 
 if [[ -f ".env.example" ]]; then

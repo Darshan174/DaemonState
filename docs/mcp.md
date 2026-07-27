@@ -1,9 +1,9 @@
 # MCP
 
-Context Engine ships a Model Context Protocol server so AI coding agents can ask
+DaemonState ships a Model Context Protocol server so AI coding agents can ask
 for source-backed project memory without scraping the UI.
 
-Observed current behavior: MCP runs over stdio through `ctxe mcp` and reads the
+Observed current behavior: MCP runs over stdio through `daemonstate mcp` and reads the
 same database as the FastAPI app.
 
 MCP acts as the agent-native continuation and observation bridge: resolve the
@@ -19,7 +19,7 @@ service instead of inventing compiler logic inside MCP.
 ## Start The Server
 
 ```bash
-ctxe mcp
+daemonstate mcp
 ```
 
 Claude Desktop style config:
@@ -27,8 +27,8 @@ Claude Desktop style config:
 ```json
 {
   "mcpServers": {
-    "context-engine": {
-      "command": "ctxe",
+    "daemonstate": {
+      "command": "daemonstate",
       "args": ["mcp"]
     }
   }
@@ -42,16 +42,16 @@ The MCP server reads the same database as the FastAPI app.
 Example configs live in [examples/mcp](../examples/mcp/):
 
 - [installed-cli.json](../examples/mcp/installed-cli.json) for environments
-  where `ctxe` is already on `PATH`.
+  where `daemonstate` is already on `PATH`.
 - [local-checkout.json](../examples/mcp/local-checkout.json) for a cloned repo
   after `bash scripts/setup.sh`; replace the placeholder command with the
-  absolute path to `.venv/bin/ctxe`.
+  absolute path to `.venv/bin/daemonstate`.
 - [agent-system-prompt.md](../examples/mcp/agent-system-prompt.md) for agents
-  that should query Context Engine before planning or editing code.
+  that should query DaemonState before planning or editing code.
 
 Most MCP clients expose a JSON config with a `command` and `args` field. If your
 client uses a different wrapper, keep the same executable behavior:
-`ctxe mcp` over stdio.
+`daemonstate mcp` over stdio.
 
 ## Tools
 
@@ -344,7 +344,7 @@ to exact pack items.
 The outcome is stored as a `RunObservation` backed by an immutable
 `SourceDocument(source_type = "agent_run_observation")`. Structured
 `verification_results` are evaluated and shown in the founder timeline, but
-Context Engine does not execute those commands. An identical retry returns the
+DaemonState does not execute those commands. An identical retry returns the
 original observation; a changed payload under the same key returns
 `event_identity_conflict`.
 

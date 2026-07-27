@@ -22,7 +22,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../api/hooks", () => ({
   useWorkspaces: () => ({
-    data: [{ id: "workspace-1", name: "Context engine" }],
+    data: [{ id: "workspace-1", name: "DaemonState" }],
     isLoading: false,
   }),
 }));

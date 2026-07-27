@@ -99,7 +99,7 @@ async def index_repo(
         source_type="local_repository",
         external_id="active-project-inventory",
         content=inventory_content,
-        author="Context Engine repository indexer",
+        author="DaemonState repository indexer",
         source_url=None,
         metadata_json=inventory_metadata,
         trust_zone="trusted_repo",

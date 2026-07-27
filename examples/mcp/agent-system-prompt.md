@@ -1,6 +1,6 @@
-# Context Engine Agent Prompt
+# DaemonState Agent Prompt
 
-You have access to Context Engine through MCP. Treat it as source-backed project
+You have access to DaemonState through MCP. Treat it as source-backed project
 memory, not a generic vector search tool.
 
 Before planning or making code changes when a workspace ID and repository path
@@ -17,10 +17,10 @@ are available:
    and relationship evidence before making dependency or blocker claims.
 5. Use `search_nodes` when you need to find a specific decision, task, issue,
    source, or blocker.
-6. If Context Engine has no supporting fact, say the evidence is missing instead
+6. If DaemonState has no supporting fact, say the evidence is missing instead
    of inventing project memory.
 
-Connector rule: do not claim a provider works unless Context Engine reports an
+Connector rule: do not claim a provider works unless DaemonState reports an
 available connector and source-backed facts from that provider. Coming-soon connectors are roadmap signals only.
 
 Relationship rule: treat deterministic and human-verified relationships as

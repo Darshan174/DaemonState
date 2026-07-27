@@ -1,9 +1,9 @@
-"""MCP (Model Context Protocol) server for Context Engine.
+"""MCP (Model Context Protocol) server for DaemonState.
 
 Exposes semantic search, graph expansion, model queries, and status
 over stdio transport for Claude Desktop, Cursor, and other MCP clients.
 
-Launch via: ``ctxe mcp``
+Launch via: ``daemonstate mcp``
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ from app.models import (
     Component,
     ContextPack,
     ContextPackItem,
+    ContinuationRequirement,
     Model,
     Relationship,
     RunObservation,
@@ -55,9 +56,9 @@ except Exception as exc:  # pragma: no cover - exercised by import-safety tests
 else:
     _CONTEXT_COMPILER_IMPORT_ERROR = None
 
-logger = logging.getLogger("context-engine.mcp")
+logger = logging.getLogger("daemonstate.mcp")
 
-server = Server("context-engine")
+server = Server("daemonstate")
 
 
 def _text(content: str) -> list[TextContent]:
@@ -92,7 +93,7 @@ async def list_tools() -> list[Tool]:
             name="prepare_task",
             description=(
                 "Compile a context_pack.v2 for a coding-agent task by calling "
-                "Context Engine's ContextCompiler service. Returns markdown and "
+                "DaemonState's ContextCompiler service. Returns markdown and "
                 f"a manifest. {TRUST_WARNING}"
             ),
             inputSchema={
@@ -135,7 +136,9 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Resolve the current repository-scoped task without Library curation, "
                 "verify its latest durable checkpoint, and compile the resulting "
-                "context_pack.v2 for this agent to continue immediately. "
+                "provider-neutral continuation_execution.v1 contract and canonical "
+                "execution prompt for this agent to continue immediately. The "
+                "context_pack.v2 remains included as a separate audit record. "
                 f"{TRUST_WARNING}"
             ),
             inputSchema={
@@ -729,6 +732,19 @@ async def _validate_runtime_references(
             raise ValueError("resolves_event_key must identify an earlier blocker in this run")
     requirement_id = str(payload.get("requirement_id") or "").strip()
     if requirement_id:
+        if run.continuation_execution_id is not None:
+            known = await session.scalar(
+                select(ContinuationRequirement.id).where(
+                    ContinuationRequirement.continuation_execution_id
+                    == run.continuation_execution_id,
+                    ContinuationRequirement.requirement_key == requirement_id,
+                )
+            )
+            if known is None:
+                raise ValueError(
+                    f"unknown continuation requirement_id: {requirement_id}"
+                )
+            return
         if run.context_pack_id is None:
             raise ValueError("requirement_id requires a linked ContextPack")
         pack = await session.get(ContextPack, run.context_pack_id)
@@ -2304,7 +2320,7 @@ async def run_server() -> None:
 
 
 async def run_mcp_server() -> None:
-    """Entry point for ``ctxe mcp`` CLI command."""
+    """Entry point for ``daemonstate mcp`` CLI command."""
     logging.basicConfig(level=logging.INFO)
     await run_server()
 

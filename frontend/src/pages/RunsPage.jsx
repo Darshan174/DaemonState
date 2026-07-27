@@ -5,6 +5,7 @@ import {
   ArrowRight,
   CheckCircle2,
   ChevronDown,
+  Clipboard,
   FileCode2,
   FolderGit2,
   GitBranch,
@@ -20,12 +21,14 @@ import {
 
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
 import ProductLoadingState from "../components/ProductLoadingState";
+import HarnessDeckBackdrop from "../components/HarnessDeckBackdrop";
 import {
   HarnessArtwork,
   HarnessLogo,
   harnessMeta,
 } from "../components/HarnessBrand";
 import {
+  useCheckpointHandoff,
   useCheckpoints,
   useSessionContinuity,
   useSessionLibrary,
@@ -34,6 +37,8 @@ import { cleanDisplayText, formatTimeAgo } from "../context-map/digest";
 import { useProductWorkspace } from "./useProductWorkspace";
 import {
   buildSessionContinuity,
+  copyReadySessionContextContent,
+  isUsableCheckpoint,
   ledgerSections,
   sessionSearchText,
 } from "./sessionContinuity";
@@ -74,14 +79,24 @@ export default function RunsPage() {
   const navigate = useNavigate();
   const workspace = useProductWorkspace();
   const libraryQuery = useSessionLibrary(workspace.activeWorkspaceId);
-  const continuityQuery = useSessionContinuity(workspace.activeWorkspaceId);
+  const continuityQuery = useSessionContinuity(
+    workspace.activeWorkspaceId,
+    { limit: 50 },
+  );
   const checkpointsQuery = useCheckpoints(
     workspace.activeWorkspaceId,
     CHECKPOINT_PAGE_LIMIT,
   );
+  const checkpointHandoff = useCheckpointHandoff();
   const [search, setSearch] = useState("");
   const [providerFilter, setProviderFilter] = useState("all");
   const [visibleCount, setVisibleCount] = useState(INITIAL_SESSION_COUNT);
+  const [sessionCopyState, setSessionCopyState] = useState({
+    cardKey: null,
+    checkpointId: null,
+    status: "idle",
+    message: null,
+  });
 
   const cards = useMemo(() => buildSessionContinuity({
     sessions: libraryQuery.data?.sessions || [],
@@ -128,9 +143,45 @@ export default function RunsPage() {
     navigate({ pathname: "/app", search: params.toString() ? `?${params}` : "" });
   };
 
+  const copySessionContext = async (card) => {
+    const checkpoint = latestSessionContextCheckpoint(card);
+    if (!workspace.activeWorkspaceId || !checkpoint) return;
+    setSessionCopyState({
+      cardKey: card.key,
+      checkpointId: checkpoint.id,
+      status: "copying",
+      message: null,
+    });
+    try {
+      const handoff = await checkpointHandoff.mutateAsync({
+        workspaceId: workspace.activeWorkspaceId,
+        checkpointId: checkpoint.id,
+      });
+      await writeClipboard(await copyReadySessionContextContent(handoff, {
+        provider: card.provider,
+        sessionId: card.sessionId,
+        checkpointId: checkpoint.id,
+        boundarySequence: checkpoint.boundary?.sequence_number,
+      }));
+      setSessionCopyState({
+        cardKey: card.key,
+        checkpointId: checkpoint.id,
+        status: "copied",
+        message: null,
+      });
+    } catch (error) {
+      setSessionCopyState({
+        cardKey: card.key,
+        checkpointId: checkpoint.id,
+        status: "error",
+        message: error?.message || "Session context could not be copied.",
+      });
+    }
+  };
+
   return (
     <div className="relative mx-auto w-full max-w-7xl space-y-7 pb-12 text-[#171713] dark:text-white">
-      <header className="ce-resume-header group relative overflow-hidden rounded-[2rem] border border-[#d8d8cf] bg-[#f7f7f1] px-5 py-7 dark:border-[#292925] dark:bg-[#0c0c0a] sm:px-8 sm:py-9 lg:px-10">
+      <header className="daemonstate-resume-header group relative min-h-56 overflow-hidden rounded-[2rem] border border-[#d8d8cf] bg-[#f7f7f1] px-5 py-7 dark:border-[#292925] dark:bg-[#0c0c0a] sm:px-8 sm:py-9 lg:px-10">
         <div aria-hidden="true" className="absolute -right-20 -top-24 h-72 w-72 rounded-full bg-[#d9ff68]/25 blur-3xl dark:bg-[#d9ff68]/10" />
         <HarnessDeckBackdrop />
         <div className="relative grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-end">
@@ -214,6 +265,9 @@ export default function RunsPage() {
               <div>
                 <p className="text-[10px] font-black uppercase tracking-[0.18em] text-[#77776e] dark:text-[#aaa9a0]">Task history</p>
                 <h2 id="session-ledger-heading" className="mt-1 text-xl font-black tracking-[-0.025em]">One card. One session.</h2>
+                <p className="mt-2 max-w-3xl text-xs font-medium leading-5 text-[#68685f] dark:text-[#aaa9a0]">
+                  Continue builds task-relevant Project Context. Copy Session Context uses only this session&apos;s latest captured immutable checkpoint; it never launches or submits an agent.
+                </p>
               </div>
               <p role="status" className="text-xs font-semibold text-[#68685f] dark:text-[#aaa9a0]">
                 {matchingCards.length} {matchingCards.length === 1 ? "session" : "sessions"}
@@ -228,6 +282,9 @@ export default function RunsPage() {
                       card={card}
                       index={index}
                       onContinue={continueFromCard}
+                      onCopySessionContext={copySessionContext}
+                      copyState={sessionCopyState}
+                      handoffPending={checkpointHandoff.isPending}
                     />
                   </li>
                 ))}
@@ -264,6 +321,9 @@ function SessionLedgerCard({
   card,
   index,
   onContinue,
+  onCopySessionContext,
+  copyState,
+  handoffPending,
 }) {
   const [expanded, setExpanded] = useState(false);
   const [activeSection, setActiveSection] = useState("added");
@@ -275,6 +335,13 @@ function SessionLedgerCard({
   const baseText = card.ledger?.base?.[0]?.text;
   const readiness = continuationReadiness(card);
   const ReadinessIcon = readiness.icon;
+  const contextCheckpoint = latestSessionContextCheckpoint(card);
+  const thisCopyState = copyState.cardKey === card.key
+    && copyState.checkpointId === contextCheckpoint?.id
+    ? copyState
+    : { status: "idle", message: null };
+  const copying = thisCopyState.status === "copying";
+  const copied = thisCopyState.status === "copied";
 
   const selectSection = (key) => {
     setActiveSection(key);
@@ -285,7 +352,7 @@ function SessionLedgerCard({
     <article
       aria-labelledby={titleId}
       data-session-ledger={card.id}
-      className="ce-session-ledger group relative"
+      className="daemonstate-session-ledger group relative"
       style={{
         "--session-accent": meta.accent,
         "--session-soft": meta.soft,
@@ -293,8 +360,8 @@ function SessionLedgerCard({
         "--session-delay": `${Math.min(index, 8) * 55}ms`,
       }}
     >
-      <div className="ce-session-ledger__paper relative overflow-hidden rounded-[1.75rem] border border-[#d4d4ca] bg-[#fbfbf6] shadow-[0_18px_48px_rgba(23,23,19,0.08)] dark:border-[#34342f] dark:bg-[#11110e] dark:shadow-[0_24px_70px_rgba(0,0,0,0.42)]">
-        <span aria-hidden="true" className="ce-session-ledger__accent absolute inset-x-0 top-0 h-1 origin-left" />
+      <div className="daemonstate-session-ledger__paper relative overflow-hidden rounded-[1.75rem] border border-[#d4d4ca] bg-[#fbfbf6] shadow-[0_18px_48px_rgba(23,23,19,0.08)] dark:border-[#34342f] dark:bg-[#11110e] dark:shadow-[0_24px_70px_rgba(0,0,0,0.42)]">
+        <span aria-hidden="true" className="daemonstate-session-ledger__accent absolute inset-x-0 top-0 h-1 origin-left" />
         <span aria-hidden="true" className="absolute -right-[9%] top-12 h-44 w-52 origin-center opacity-[0.055] transition-[transform,opacity] duration-700 ease-out group-hover:-translate-x-3 group-hover:scale-110 group-hover:opacity-[0.09] dark:opacity-[0.08] dark:group-hover:opacity-[0.12]">
           <HarnessArtwork type={card.provider} />
         </span>
@@ -350,7 +417,7 @@ function SessionLedgerCard({
           onSelect={selectSection}
         />
 
-        <div className={`ce-ledger-reveal ${expanded ? "is-open" : ""}`} aria-hidden={!expanded}>
+        <div className={`daemonstate-ledger-reveal ${expanded ? "is-open" : ""}`} aria-hidden={!expanded}>
           <div>
             {expanded ? (
               <ContextLedgerPanel
@@ -362,8 +429,8 @@ function SessionLedgerCard({
           </div>
         </div>
 
-        <div className="ce-session-ledger__footer relative border-t border-[#deded5] dark:border-[#292925]">
-          <div className="ce-session-ledger__footer-meta flex min-h-[4.5rem] min-w-0 flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3 sm:px-6">
+        <div className="daemonstate-session-ledger__footer relative border-t border-[#deded5] dark:border-[#292925]">
+          <div className="daemonstate-session-ledger__footer-meta flex min-h-[4.5rem] min-w-0 flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3 sm:px-6">
             <button
               type="button"
               aria-expanded={expanded}
@@ -387,7 +454,35 @@ function SessionLedgerCard({
             ) : null}
           </div>
 
-          <div className="ce-session-ledger__actions flex min-h-[4.5rem] flex-wrap items-center justify-end gap-2 border-t border-[#deded5] bg-[#f5f5ef] px-4 py-3 dark:border-[#292925] dark:bg-[#0c0c09]">
+          <div className="daemonstate-session-ledger__actions flex min-h-[4.5rem] flex-wrap items-center justify-end gap-2 border-t border-[#deded5] bg-[#f5f5ef] px-4 py-3 dark:border-[#292925] dark:bg-[#0c0c09]">
+            <div className="mr-auto min-w-0">
+              <button
+                type="button"
+                onClick={() => onCopySessionContext(card)}
+                disabled={!contextCheckpoint || handoffPending}
+                aria-label={contextCheckpoint
+                  ? `Copy session context: ${card.title}`
+                  : `Session context unavailable: ${card.title}`}
+                title={contextCheckpoint
+                  ? "Copy the latest captured immutable context for this session."
+                  : "No usable captured context is available for this session."}
+                className="btn-secondary h-11 min-w-40 shrink-0 whitespace-nowrap px-4 text-[10px] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Clipboard className="h-3.5 w-3.5" aria-hidden="true" />
+                {copied
+                  ? "Session context copied"
+                  : copying
+                    ? "Copying session context…"
+                    : contextCheckpoint
+                      ? "Copy session context"
+                      : "Session context unavailable"}
+              </button>
+              {thisCopyState.status === "error" ? (
+                <p role="alert" className="mt-1 max-w-64 text-[10px] font-bold text-red-700 dark:text-red-300">
+                  {thisCopyState.message}
+                </p>
+              ) : null}
+            </div>
             <button
               type="button"
               onClick={() => onContinue(card)}
@@ -419,7 +514,7 @@ function LedgerRail({ sections, activeSection, expanded, onSelect }) {
               type="button"
               aria-pressed={active}
               onClick={() => onSelect(section.key)}
-              className={`ce-ledger-tab relative min-h-[5.4rem] border-r border-[#e2e2da] px-3 py-3 text-left transition-colors last:border-r-0 dark:border-[#292925] ${active ? "is-active" : ""}`}
+              className={`daemonstate-ledger-tab relative min-h-[5.4rem] border-r border-[#e2e2da] px-3 py-3 text-left transition-colors last:border-r-0 dark:border-[#292925] ${active ? "is-active" : ""}`}
               style={{ "--ledger-accent": tone.accent }}
             >
               <span className="flex items-center justify-between gap-2">
@@ -559,7 +654,7 @@ function LedgerItemList({ items, sectionKey, compact = false }) {
       {items.map((item, itemIndex) => (
         <li
           key={item.id || `${sectionKey}-${itemIndex}`}
-          className="ce-ledger-row rounded-xl border border-black/10 bg-white/75 p-3.5 dark:border-white/10 dark:bg-black/15"
+          className="daemonstate-ledger-row rounded-xl border border-black/10 bg-white/75 p-3.5 dark:border-white/10 dark:bg-black/15"
           style={{ "--row-delay": `${Math.min(itemIndex, 8) * 42}ms` }}
         >
           <p className="text-xs font-semibold leading-5">
@@ -573,58 +668,6 @@ function LedgerItemList({ items, sectionKey, compact = false }) {
         </li>
       ))}
     </ul>
-  );
-}
-
-function HarnessDeckBackdrop() {
-  const cards = [
-    { type: "codex", left: "3.5rem", top: "4.5rem", rotation: "-10deg", delay: "0ms" },
-    { type: "claude", left: "12.5rem", top: "1.25rem", rotation: "-1deg", delay: "750ms" },
-    { type: "opencode", left: "21.5rem", top: "4rem", rotation: "9deg", delay: "1500ms" },
-  ];
-  return (
-    <div
-      aria-hidden="true"
-      data-harness-deck-backdrop
-      className="pointer-events-none absolute -right-8 -top-10 hidden h-[23rem] w-[37rem] select-none overflow-hidden sm:block"
-      style={{
-        maskImage: "linear-gradient(to right, transparent 0%, black 25%, black 100%)",
-        WebkitMaskImage: "linear-gradient(to right, transparent 0%, black 25%, black 100%)",
-      }}
-    >
-      {cards.map(({ type, left, top, rotation, delay }) => {
-        const meta = harnessMeta(type);
-        return (
-          <span
-            key={type}
-            data-backdrop-harness={type}
-            className="ce-resume-deck-card absolute block h-64 w-44 overflow-hidden rounded-[1.65rem] border border-black/30 bg-[#efefe9] text-[#171713] opacity-[0.13] shadow-2xl grayscale dark:border-white/35 dark:bg-[#d6d6cf] dark:opacity-[0.16]"
-            style={{
-              left,
-              top,
-              "--deck-rotation": rotation,
-              "--deck-delay": delay,
-            }}
-          >
-            <span className="absolute inset-x-0 top-0 h-1 bg-[#171713]" />
-            <span className="absolute -right-[24%] top-[14%] h-[48%] w-[94%] opacity-45">
-              <HarnessArtwork type={type} monochrome />
-            </span>
-            <span className="absolute inset-x-0 top-0 flex items-start justify-end px-4 pt-4">
-              <span className="text-[7px] font-black uppercase tracking-[0.15em]">{meta.company}</span>
-            </span>
-            <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-[#efefe9] via-[#efefe9]/95 to-transparent px-4 pb-5 pt-16">
-              <span className="block text-xl font-black tracking-[-0.04em]">{meta.name}</span>
-              <span className="mt-2 block h-px w-full bg-black/35" />
-              <span className="mt-3 grid grid-cols-2 gap-3">
-                <span className="h-5 rounded-sm bg-black/15" />
-                <span className="h-5 rounded-sm bg-black/10" />
-              </span>
-            </span>
-          </span>
-        );
-      })}
-    </div>
   );
 }
 
@@ -645,6 +688,43 @@ function continuationReadiness(card) {
     return { label: "Ready for Continue — review context gaps", icon: AlertTriangle };
   }
   return { label: "Ready for Continue", icon: CheckCircle2 };
+}
+
+function latestSessionContextCheckpoint(card) {
+  const newest = (card?.versions || [])
+    .filter((checkpoint) => (
+      ["pre_compaction", "session_tip"].includes(
+        checkpoint?.boundary?.snapshot_phase,
+      )
+    ))
+    .sort(compareCheckpointBoundariesNewestFirst)[0] || null;
+  return isUsableCheckpoint(newest) ? newest : null;
+}
+
+function compareCheckpointBoundariesNewestFirst(left, right) {
+  const leftSequence = checkpointSequence(left);
+  const rightSequence = checkpointSequence(right);
+  if (leftSequence !== null || rightSequence !== null) {
+    if (leftSequence === null) return 1;
+    if (rightSequence === null) return -1;
+    if (leftSequence !== rightSequence) return rightSequence - leftSequence;
+  }
+  const timeDelta = checkpointTimestamp(right) - checkpointTimestamp(left);
+  if (timeDelta) return timeDelta;
+  return String(right?.id || "").localeCompare(String(left?.id || ""));
+}
+
+function checkpointSequence(checkpoint) {
+  const raw = checkpoint?.boundary?.sequence_number;
+  if (raw === null || raw === undefined || raw === "") return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
+}
+
+function checkpointTimestamp(checkpoint) {
+  const value = checkpoint?.boundary?.occurred_at || checkpoint?.created_at;
+  const parsed = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function sectionCountLabel(section) {
@@ -699,6 +779,23 @@ function safeId(value) {
     hash = ((hash << 5) - hash + character.charCodeAt(0)) | 0;
   }
   return Math.abs(hash).toString(36);
+}
+
+async function writeClipboard(value) {
+  if (globalThis.navigator?.clipboard?.writeText) {
+    await globalThis.navigator.clipboard.writeText(value);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand?.("copy");
+  textarea.remove();
+  if (!copied) throw new Error("Clipboard unavailable");
 }
 
 function EmptyState({ title, detail, error = false }) {

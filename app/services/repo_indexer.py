@@ -90,7 +90,9 @@ MAX_INDEXED_FILES = 5_000
 MAX_INDEXED_BYTES = 50_000_000
 MAX_INDEXED_FILE_BYTES = 400_000
 ENV_FILE_RE = re.compile(r"(^|/)\.env($|[.\-])|\.env\.example$|config\.(?:py|js|ts|json|ya?ml)$")
-RANKING_VERSION = "objective_file_rank.v3"
+RANKING_VERSION = "objective_file_rank.v4"
+REPOSITORY_EVIDENCE_VERSION = "repository_evidence.v1"
+MAX_REPOSITORY_EVIDENCE_ITEMS = 24
 _REPO_INDEX_LOCKS: dict[str, asyncio.Lock] = {}
 _GENERIC_GOAL_TERMS = {
     "a",
@@ -176,8 +178,15 @@ _GENERIC_GOAL_TERMS = {
     "provide",
     "publish",
     "published",
+    "remove",
+    "removed",
+    "removing",
     "repo",
     "run",
+    "screenshot",
+    "show",
+    "showing",
+    "shown",
     "should",
     "state",
     "support",
@@ -330,6 +339,7 @@ class RepoFrame:
                 str,
                 list[str],
                 list[dict[str, int]],
+                list[dict[str, Any]],
                 dict[str, list[str]],
             ]
         ] = []
@@ -349,7 +359,11 @@ class RepoFrame:
             import_tokens = set(_tokenize(" ".join(indexed.imports)))
             route_tokens = set(_tokenize(" ".join(indexed.route_hints)))
             matched_path = sorted(retrieval_terms & path_tokens)
-            matched_file_name = sorted(retrieval_terms & file_identity)
+            # Generic action words must not pull in every file containing a
+            # similarly named symbol or directory. Preserve the stronger
+            # exact-file identity signal, though: a lead naming `remove.py`
+            # should still resolve that file.
+            matched_file_name = sorted(normalized_keywords & file_identity)
             matched_symbols = sorted(retrieval_terms & symbol_tokens)
             matched_imports = sorted(retrieval_terms & import_tokens)
             matched_routes = sorted(retrieval_terms & route_tokens)
@@ -378,7 +392,18 @@ class RepoFrame:
                 score += 0.20
             if score <= 0:
                 continue
-            line_ranges = _matching_symbol_ranges(indexed, retrieval_terms)
+            matched_symbol_declarations = _matching_symbols(
+                indexed,
+                retrieval_terms,
+                include_all=explicit_hint,
+            )
+            line_ranges = [
+                {
+                    "start_line": item["start_line"],
+                    "end_line": item["end_line"],
+                }
+                for item in matched_symbol_declarations
+            ]
             reason = (
                 "explicit_goal_file_hint"
                 if explicit_hint
@@ -390,6 +415,7 @@ class RepoFrame:
                 reason,
                 matched_terms,
                 line_ranges,
+                matched_symbol_declarations,
                 {
                     "file_name": matched_file_name,
                     "path": matched_path,
@@ -408,7 +434,7 @@ class RepoFrame:
                 *self.manifest_files[:3],
             ]
             top = [
-                (0.1, path, "repo_state_fallback", [], [], {})
+                (0.1, path, "repo_state_fallback", [], [], [], {})
                 for path in dict.fromkeys(fallback_paths)
             ]
 
@@ -422,12 +448,21 @@ class RepoFrame:
                 "matched_terms": matched_terms,
                 "match_basis": match_basis,
                 "line_ranges": line_ranges,
+                "matched_symbols": matched_symbols,
                 "lane": "code_and_tests",
                 "exists": path in indexed_by_path or (Path(self.repo_path) / path).exists(),
                 "sha256": indexed_by_path[path].sha256 if path in indexed_by_path else _sha256_file(Path(self.repo_path) / path),
                 "is_test": indexed_by_path[path].is_test if path in indexed_by_path else _is_test_file(path, ""),
             }
-            for score, path, reason, matched_terms, line_ranges, match_basis in top
+            for (
+                score,
+                path,
+                reason,
+                matched_terms,
+                line_ranges,
+                matched_symbols,
+                match_basis,
+            ) in top
         ]
 
     def affected_code_for_goal(
@@ -538,6 +573,7 @@ class RepoFrame:
                 "why": _human_file_reason(item),
                 "sha256": item["sha256"],
                 "line_ranges": list(item.get("line_ranges") or []),
+                "matched_symbols": list(item.get("matched_symbols") or []),
                 "evidence": [{
                     "kind": (
                         "explicit_file"
@@ -559,6 +595,148 @@ class RepoFrame:
             },
             "files": files,
             "truncated": len(objective_matches) > 12,
+        }
+
+    def repository_evidence_for_goal(
+        self,
+        keywords: set[str],
+        file_hints: list[str],
+    ) -> dict[str, Any]:
+        """Project bounded, snapshot-current repository facts into the manifest.
+
+        This is intentionally not a prose context lane. Every item has a fixed
+        shape and is derived from the current index, an exact current edge, or
+        a parsed package manifest. Source snippets, docstrings, and inferred
+        architectural claims are excluded.
+        """
+        relevant = [
+            item
+            for item in self.relevant_files_for_goal(keywords, file_hints)
+            if item.get("reason") != "repo_state_fallback"
+            and item.get("sha256")
+        ]
+        indexed_by_path = {item.path: item for item in self.indexed_files}
+        relevant_paths = {str(item["path"]) for item in relevant}
+
+        symbol_items: list[dict[str, Any]] = []
+        for file_item in relevant:
+            path = str(file_item["path"])
+            file_sha256 = str(file_item["sha256"])
+            for symbol in file_item.get("matched_symbols") or []:
+                symbol_items.append({
+                    "kind": "symbol_declaration",
+                    "path": path,
+                    "file_sha256": file_sha256,
+                    "symbol_type": str(symbol["symbol_type"]),
+                    "symbol_name": str(symbol["name"]),
+                    "start_line": int(symbol["start_line"]),
+                    "end_line": int(symbol["end_line"]),
+                })
+
+        test_link_items: list[dict[str, Any]] = []
+        current_test_edges = sorted(
+            (
+                edge
+                for edge in self.exact_edges
+                if edge.get("snapshot_fingerprint") == self.snapshot_fingerprint
+                and edge.get("rule_id") == "test_path_match.v1"
+                and str(edge.get("target_path") or "") in relevant_paths
+            ),
+            key=lambda edge: (
+                str(edge.get("target_path") or ""),
+                str(edge.get("source_path") or ""),
+                str(edge.get("edge_key") or ""),
+            ),
+        )
+        for edge in current_test_edges:
+            test_path = str(edge.get("source_path") or "")
+            target_path = str(edge.get("target_path") or "")
+            test_file = indexed_by_path.get(test_path)
+            target_file = indexed_by_path.get(target_path)
+            if (
+                test_file is None
+                or target_file is None
+                or not test_file.sha256
+                or not target_file.sha256
+            ):
+                continue
+            test_link_items.append({
+                "kind": "test_link",
+                "test_path": test_path,
+                "test_sha256": test_file.sha256,
+                "target_path": target_path,
+                "target_sha256": target_file.sha256,
+                "rule_id": str(edge["rule_id"]),
+                "rule_version": str(edge["rule_version"]),
+                "edge_key": str(edge["edge_key"]),
+            })
+
+        normalized_keywords = set(_tokenize(" ".join(sorted(keywords))))
+        dependency_terms = normalized_keywords - _GENERIC_GOAL_TERMS
+        dependency_items: list[dict[str, Any]] = []
+        for manifest_path in sorted(self.package_manifests):
+            manifest_file = indexed_by_path.get(manifest_path)
+            if manifest_file is None or not manifest_file.sha256:
+                continue
+            manifest = self.package_manifests[manifest_path]
+            for group, dependency_name, declaration in _manifest_dependencies(manifest):
+                dependency_tokens = set(
+                    _tokenize(f"{dependency_name} {declaration}")
+                )
+                if not dependency_terms & dependency_tokens:
+                    continue
+                dependency_items.append({
+                    "kind": "manifest_dependency",
+                    "manifest_path": manifest_path,
+                    "manifest_sha256": manifest_file.sha256,
+                    "dependency_group": group,
+                    "dependency_name": dependency_name,
+                    "declaration": declaration,
+                })
+
+        implementation_symbols = [
+            item
+            for item in symbol_items
+            if not indexed_by_path[str(item["path"])].is_test
+        ]
+        test_symbols = [
+            item
+            for item in symbol_items
+            if indexed_by_path[str(item["path"])].is_test
+        ]
+        test_symbols.sort(key=lambda item: (
+            not str(item["symbol_name"]).startswith("test_"),
+            str(item["path"]),
+            int(item["start_line"]),
+        ))
+        primary_symbols = implementation_symbols[:10]
+        remaining_symbol_slots = max(0, 10 - len(primary_symbols))
+        selected_test_symbols = test_symbols[:remaining_symbol_slots]
+        # Put implementation declarations and dependency declarations ahead
+        # of test function names in the model-facing prefix. Exact test edges
+        # remain stronger than name-shaped test evidence when available.
+        bounded_items = [
+            *primary_symbols,
+            *dependency_items[:8],
+            *test_link_items[:6],
+            *selected_test_symbols,
+        ]
+        selected_items = bounded_items[:MAX_REPOSITORY_EVIDENCE_ITEMS]
+        items = [
+            {"id": f"RE{index}", **item}
+            for index, item in enumerate(selected_items, start=1)
+        ]
+        return {
+            "schema_version": REPOSITORY_EVIDENCE_VERSION,
+            "snapshot_fingerprint": self.snapshot_fingerprint,
+            "head_commit": self.head_commit,
+            "items": items,
+            "truncated": (
+                len(symbol_items) > 10
+                or len(test_link_items) > 6
+                or len(dependency_items) > 8
+                or len(bounded_items) > MAX_REPOSITORY_EVIDENCE_ITEMS
+            ),
         }
 
     def to_manifest(self, keywords: set[str] | None = None, file_hints: list[str] | None = None) -> dict[str, Any]:
@@ -2227,31 +2405,81 @@ def _sha256_file(path: Path) -> str | None:
 
 
 def _tokenize(value: str) -> list[str]:
-    return [
+    raw = str(value or "")
+    camel_split = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", raw)
+    tokens = [
         token
-        for token in re.findall(r"[a-z0-9]+", str(value or "").lower())
+        for candidate in (raw.lower(), camel_split.lower())
+        for token in re.findall(r"[a-z0-9]+", candidate)
         if len(token) > 1
     ]
+    return list(dict.fromkeys(tokens))
 
 
-def _matching_symbol_ranges(
+def _matching_symbols(
     indexed: IndexedFile,
     retrieval_terms: set[str],
-) -> list[dict[str, int]]:
-    ranges: list[dict[str, int]] = []
-    seen: set[tuple[int, int]] = set()
+    *,
+    include_all: bool = False,
+) -> list[dict[str, Any]]:
+    declarations: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, int, int]] = set()
     for symbol in indexed.symbols:
-        if not retrieval_terms & set(_tokenize(symbol.name)):
+        if symbol.symbol_type not in {
+            "async_function",
+            "class",
+            "component",
+            "function",
+            "test",
+        }:
+            continue
+        if (
+            not include_all
+            and not retrieval_terms & set(_tokenize(symbol.name))
+        ):
             continue
         if symbol.start_line is None:
             continue
         start_line = int(symbol.start_line)
         end_line = int(symbol.end_line or symbol.start_line)
-        if (start_line, end_line) in seen:
+        key = (symbol.symbol_type, symbol.name, start_line, end_line)
+        if key in seen:
             continue
-        seen.add((start_line, end_line))
-        ranges.append({"start_line": start_line, "end_line": end_line})
-    return ranges[:12]
+        seen.add(key)
+        declarations.append({
+            "name": symbol.name,
+            "symbol_type": symbol.symbol_type,
+            "start_line": start_line,
+            "end_line": end_line,
+        })
+    return declarations[:12]
+
+
+def _manifest_dependencies(
+    manifest: dict[str, Any],
+) -> list[tuple[str, str, str]]:
+    dependencies: list[tuple[str, str, str]] = []
+    for group in ("dependencies", "dev_dependencies"):
+        values = manifest.get(group)
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            declaration = str(value or "").strip()[:256]
+            if not declaration:
+                continue
+            match = re.match(
+                r"(@[A-Za-z0-9._-]+/[A-Za-z0-9._-]+|"
+                r"[A-Za-z0-9][A-Za-z0-9._-]*)",
+                declaration,
+            )
+            if match is None:
+                continue
+            dependencies.append((
+                group,
+                match.group(1).lower(),
+                declaration,
+            ))
+    return dependencies
 
 
 def _file_reason(indexed: IndexedFile, keywords: set[str]) -> str:

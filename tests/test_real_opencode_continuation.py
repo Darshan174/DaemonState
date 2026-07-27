@@ -1,7 +1,7 @@
 """Opt-in smoke test for the real OpenCode continuation boundary.
 
 Run with:
-CONTEXT_ENGINE_REAL_OPENCODE_SMOKE=1 \
+DAEMONSTATE_REAL_OPENCODE_SMOKE=1 \
   pytest -q tests/test_real_opencode_continuation.py
 """
 
@@ -29,7 +29,7 @@ from app.services.session_events import (
 
 pytestmark = pytest.mark.skipif(
     (
-        os.environ.get("CONTEXT_ENGINE_REAL_OPENCODE_SMOKE") != "1"
+        os.environ.get("DAEMONSTATE_REAL_OPENCODE_SMOKE") != "1"
         or not os.environ.get(OPENCODE_MODEL_ENV)
     ),
     reason=(
@@ -71,7 +71,7 @@ async def test_real_opencode_continues_from_the_compiled_context(
         "def test_opencode_continuation_marker():\n"
         "    marker = Path('OPENCODE_CONTINUATION_OK.txt')\n"
         "    assert marker.read_text(encoding='utf-8') == "
-        "'context-engine-opencode-continuation-ok\\n'\n",
+        "'daemonstate-opencode-continuation-ok\\n'\n",
         encoding="utf-8",
     )
     nested_fixture_tests = (
@@ -99,7 +99,7 @@ async def test_real_opencode_continues_from_the_compiled_context(
     await db_session.flush()
     goal = (
         "Create OPENCODE_CONTINUATION_OK.txt in the repository root with exactly "
-        "the line context-engine-opencode-continuation-ok so the tests pass."
+        "the line daemonstate-opencode-continuation-ok so the tests pass."
     )
     reaction = (
         "# Files mentioned by the user:\n\n"
@@ -248,7 +248,7 @@ async def test_real_opencode_continues_from_the_compiled_context(
     body = response.json()
     command = body["run"]["command"]
     argv = command["argv"]
-    assert body["status"] == "verified", body
+    assert body["status"] == "verified_complete", body
     assert body["preparation"]["objective"] == goal
     assert body["preparation"]["source_session"]["session_id"] == session_id
     assert "Screenshot 2026" not in body["preparation"]["markdown"]
@@ -271,7 +271,7 @@ async def test_real_opencode_continues_from_the_compiled_context(
     assert Path(argv[-1]).name == "context-pack.md"
     assert (repo / "OPENCODE_CONTINUATION_OK.txt").read_text(
         encoding="utf-8"
-    ) == "context-engine-opencode-continuation-ok\n"
+    ) == "daemonstate-opencode-continuation-ok\n"
     checks = body["outcome"]["checks"]
     assert checks["status"] == "passed"
     assert checks["passed"] >= 1
@@ -280,8 +280,8 @@ async def test_real_opencode_continues_from_the_compiled_context(
 def _initialize_repository(repo: Path) -> None:
     commands = (
         ("init", "-q"),
-        ("config", "user.email", "smoke@context-engine.local"),
-        ("config", "user.name", "Context Engine Smoke"),
+        ("config", "user.email", "smoke@daemonstate.local"),
+        ("config", "user.name", "DaemonState Smoke"),
         ("add", "."),
         ("commit", "-q", "-m", "Initialize real continuation smoke"),
     )

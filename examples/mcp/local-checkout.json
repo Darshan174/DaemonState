@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "context-engine": {
-      "command": "/absolute/path/to/context-engine/.venv/bin/ctxe",
+    "daemonstate": {
+      "command": "/absolute/path/to/daemonstate/.venv/bin/daemonstate",
       "args": ["mcp"]
     }
   }

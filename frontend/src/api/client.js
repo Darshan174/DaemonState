@@ -1,5 +1,5 @@
 /**
- * Centralized API client for Context Engine.
+ * Centralized API client for DaemonState.
  *
  * - In dev, Vite proxies /api → http://localhost:8000/api
  * - Every request goes through `apiFetch`, which returns the JSON body

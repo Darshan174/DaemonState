@@ -39,7 +39,7 @@ limiting, and an orchestrator.
 
 Use a supported Linux host with Docker Engine and Docker Compose v2, time
 synchronization, disk monitoring, and a firewall that allows inbound TCP
-80/443 and UDP 443. DNS for `CONTEXT_ENGINE_DOMAIN` must resolve to the host.
+80/443 and UDP 443. DNS for `DAEMONSTATE_DOMAIN` must resolve to the host.
 Allow outbound HTTPS for ACME, model providers, and connectors.
 
 Run Compose from a dedicated operations account with access to the Docker
@@ -55,11 +55,11 @@ and 8 GiB RAM.
 ### 1. Publish an immutable application image
 
 Build the existing `Dockerfile` in CI, scan it, generate an SBOM, push it to a
-private registry, and record its digest. Set `CONTEXT_ENGINE_IMAGE` to the
+private registry, and record its digest. Set `DAEMONSTATE_IMAGE` to the
 digest-qualified reference:
 
 ```text
-registry.example.com/context-engine@sha256:<64-hex-character-digest>
+registry.example.com/daemonstate@sha256:<64-hex-character-digest>
 ```
 
 Pin the Caddy, pgvector, and Redis images by digest as well. Do not deploy
@@ -71,15 +71,15 @@ The following example creates only the mandatory secrets. It intentionally
 writes outside the repository.
 
 ```bash
-sudo install -d -o "$(id -un)" -g "$(id -gn)" -m 0750 /etc/context-engine
-sudo install -d -o "$(id -un)" -g "$(id -gn)" -m 0700 /etc/context-engine/secrets
-sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/context-engine/secrets/postgres_admin_password'
-sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/context-engine/secrets/postgres_app_password'
-sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/context-engine/secrets/server_api_key'
-sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/context-engine/secrets/metrics_bearer_token'
-sudo sh -c 'umask 077; python3 -c "import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())" > /etc/context-engine/secrets/encryption_key'
-sudo chown "$(id -un):$(id -gn)" /etc/context-engine/secrets/*
-sudo chmod 0600 /etc/context-engine/secrets/*
+sudo install -d -o "$(id -un)" -g "$(id -gn)" -m 0750 /etc/daemonstate
+sudo install -d -o "$(id -un)" -g "$(id -gn)" -m 0700 /etc/daemonstate/secrets
+sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/daemonstate/secrets/postgres_admin_password'
+sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/daemonstate/secrets/postgres_app_password'
+sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/daemonstate/secrets/server_api_key'
+sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/daemonstate/secrets/metrics_bearer_token'
+sudo sh -c 'umask 077; python3 -c "import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())" > /etc/daemonstate/secrets/encryption_key'
+sudo chown "$(id -un):$(id -gn)" /etc/daemonstate/secrets/*
+sudo chmod 0600 /etc/daemonstate/secrets/*
 ```
 
 The encryption key is a Fernet key. Losing it makes encrypted connector
@@ -93,14 +93,14 @@ HTTP and MCP operation. Keep optional secret files owned by the dedicated
 operations account and mode `0600`. Never put secret values directly in the
 Compose environment file.
 
-Create `CONTEXT_ENGINE_PROJECT_PATH` as a dedicated host directory containing
+Create `DAEMONSTATE_PROJECT_PATH` as a dedicated host directory containing
 only repositories this service may inspect. It is mounted read-only at
 `/workspace`; canonical-path checks reject traversal and symlink escapes.
 
 ### 3. Configure and validate
 
 Copy `deploy/production/production.env.example` to
-`/etc/context-engine/production.env`, replace every example value, then protect
+`/etc/daemonstate/production.env`, replace every example value, then protect
 it:
 
 ```bash
@@ -109,8 +109,8 @@ sudo install \
   -g "$(id -gn)" \
   -m 0600 \
   deploy/production/production.env.example \
-  /etc/context-engine/production.env
-sudoedit /etc/context-engine/production.env
+  /etc/daemonstate/production.env
+sudoedit /etc/daemonstate/production.env
 ```
 
 Configure an OAuth provider only when its client ID, secret file, and HTTPS
@@ -127,7 +127,7 @@ Validate interpolation and render the effective configuration before pulling:
 
 ```bash
 docker compose \
-  --env-file /etc/context-engine/production.env \
+  --env-file /etc/daemonstate/production.env \
   --file docker-compose.production.yml \
   config --quiet
 ```
@@ -139,12 +139,12 @@ contains no secret values, but it does reveal host secret-file paths.
 
 ```bash
 docker compose \
-  --env-file /etc/context-engine/production.env \
+  --env-file /etc/daemonstate/production.env \
   --file docker-compose.production.yml \
   pull
 
 docker compose \
-  --env-file /etc/context-engine/production.env \
+  --env-file /etc/daemonstate/production.env \
   --file docker-compose.production.yml \
   up --detach
 ```
@@ -154,7 +154,7 @@ exit with status zero:
 
 ```bash
 docker compose \
-  --env-file /etc/context-engine/production.env \
+  --env-file /etc/daemonstate/production.env \
   --file docker-compose.production.yml \
   ps --all
 
@@ -173,7 +173,7 @@ Use Compose with the same environment and file arguments for every command:
 
 ```bash
 docker compose \
-  --env-file /etc/context-engine/production.env \
+  --env-file /etc/daemonstate/production.env \
   --file docker-compose.production.yml \
   ps
 ```
@@ -183,7 +183,7 @@ central log platform:
 
 ```bash
 docker compose \
-  --env-file /etc/context-engine/production.env \
+  --env-file /etc/daemonstate/production.env \
   --file docker-compose.production.yml \
   logs --since 30m app worker db redis proxy
 ```
@@ -213,7 +213,7 @@ Projection is performed by leased `source_ingestion_jobs` with heartbeats,
 bounded retries, claim-token fencing, and dead-letter state. A worker poll does
 not hold a database lock while waiting on extraction or embedding providers.
 After correcting a provider/configuration fault, operators can run
-`ctxe worker sync --redrive-dead-letter --limit 10` to safely requeue unfinished
+`daemonstate worker sync --redrive-dead-letter --limit 10` to safely requeue unfinished
 dead letters; inspect the JSON worker result before declaring recovery complete.
 
 The hardened profile is API-only: it sets `SERVE_FRONTEND=false` because the
@@ -229,8 +229,8 @@ deployment checkout:
 
 ```bash
 scripts/backup-postgres.sh \
-  /srv/context-engine/backups \
-  /etc/context-engine/production.env
+  /srv/daemonstate/backups \
+  /etc/daemonstate/production.env
 ```
 
 Schedule it with a service manager and a single-instance lock. Upload both the
@@ -251,9 +251,9 @@ is a new database name:
 
 ```bash
 scripts/restore-postgres.sh \
-  /srv/context-engine/backups/context_engine-YYYYMMDDTHHMMSSZ.dump \
-  context_engine_restore_test \
-  /etc/context-engine/production.env
+  /srv/daemonstate/backups/daemonstate-YYYYMMDDTHHMMSSZ.dump \
+  daemonstate_restore_test \
+  /etc/daemonstate/production.env
 ```
 
 The script verifies the sidecar checksum when present, validates the archive,
@@ -269,18 +269,18 @@ archive. Then:
 
 ```bash
 docker compose \
-  --env-file /etc/context-engine/production.env \
+  --env-file /etc/daemonstate/production.env \
   --file docker-compose.production.yml \
   stop proxy app worker
 
-RESTORE_CONFIRM=replace:context_engine \
+RESTORE_CONFIRM=replace:daemonstate \
   scripts/restore-postgres.sh \
-    /srv/context-engine/backups/context_engine-YYYYMMDDTHHMMSSZ.dump \
-    context_engine \
-    /etc/context-engine/production.env
+    /srv/daemonstate/backups/daemonstate-YYYYMMDDTHHMMSSZ.dump \
+    daemonstate \
+    /etc/daemonstate/production.env
 
 docker compose \
-  --env-file /etc/context-engine/production.env \
+  --env-file /etc/daemonstate/production.env \
   --file docker-compose.production.yml \
   up --detach app worker proxy
 ```
@@ -338,7 +338,7 @@ For encryption-key rotation:
 2. Put the new Fernet key in `encryption_key` and the old key in
    `previous_encryption_keys`.
 3. Enter maintenance and run `docker compose ... run --rm migrate`. The
-   `ctxe db deploy` command decrypts with the current/previous key set and
+   `daemonstate db deploy` command decrypts with the current/previous key set and
    transactionally re-encrypts populated rows with the new current key.
 4. Recreate app and worker containers, then verify readiness and connector
    access.

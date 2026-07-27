@@ -349,11 +349,11 @@ async def _persist_watch_event(
         source_type=WATCH_SOURCE_TYPE,
         external_id=external_id,
         content=content,
-        author="Context Engine repository watcher",
+        author="DaemonState repository watcher",
         source_url=None,
         metadata_json={
             **payload,
-            "ingested_via": "ctxe_repo_watch",
+            "ingested_via": "daemonstate_repo_watch",
             "repo_root_sha256": root_hash,
         },
         source_created_at=utc_now(),

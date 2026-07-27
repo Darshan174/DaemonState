@@ -7,9 +7,9 @@ import { api } from "../api/client";
 const mocks = vi.hoisted(() => ({
   workspace: {
     activeWorkspaceId: "workspace-1",
-    activeWorkspace: { id: "workspace-1", name: "Context Engine" },
+    activeWorkspace: { id: "workspace-1", name: "DaemonState" },
     workspacesQuery: { isLoading: false },
-    workspaces: [{ id: "workspace-1", name: "Context Engine" }],
+    workspaces: [{ id: "workspace-1", name: "DaemonState" }],
     selectedId: "workspace-1",
     setSelectedId: vi.fn(),
   },
@@ -35,9 +35,9 @@ describe("SourceManager", () => {
     api.get.mockReset();
     api.post.mockReset();
     mocks.workspace.activeWorkspaceId = "workspace-1";
-    mocks.workspace.activeWorkspace = { id: "workspace-1", name: "Context Engine" };
+    mocks.workspace.activeWorkspace = { id: "workspace-1", name: "DaemonState" };
     mocks.workspace.workspacesQuery = { isLoading: false };
-    mocks.workspace.workspaces = [{ id: "workspace-1", name: "Context Engine" }];
+    mocks.workspace.workspaces = [{ id: "workspace-1", name: "DaemonState" }];
     mocks.workspace.selectedId = "workspace-1";
     mocks.workspace.setSelectedId.mockReset();
   });
@@ -246,7 +246,7 @@ describe("SourceManager", () => {
     mocks.workspace.activeWorkspaceId = "workspace-2";
     mocks.workspace.activeWorkspace = { id: "workspace-2", name: "Second project" };
     mocks.workspace.workspaces = [
-      { id: "workspace-1", name: "Context Engine" },
+      { id: "workspace-1", name: "DaemonState" },
       { id: "workspace-2", name: "Second project" },
     ];
     mocks.workspace.selectedId = "workspace-2";

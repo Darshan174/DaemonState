@@ -1036,6 +1036,10 @@ class TestAISessionIngest:
         assert unchanged.json()["changed"] == 0
         assert unchanged.json()["metadata_updated"] == 1
         assert unchanged.json()["unchanged"] == 1
+        assert unchanged.json()["refreshed_sessions"] == [{
+            "connector_type": "codex",
+            "session_id": "live-session",
+        }]
 
         current_document = await db_session.scalar(
             select(SourceDocument)
@@ -1135,6 +1139,10 @@ class TestAISessionIngest:
 
         assert response.status_code == 200
         assert response.json()["linked_sessions"] == 8
+        assert {
+            item["session_id"]
+            for item in response.json()["refreshed_sessions"]
+        } == set(resolved_ids)
         assert len(resolved_ids) == 8
         assert "active-session" in resolved_ids
 

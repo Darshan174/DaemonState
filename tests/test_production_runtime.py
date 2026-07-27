@@ -318,7 +318,7 @@ async def test_metrics_require_the_dedicated_bearer_token(monkeypatch):
     assert wrong.status_code == 401
     assert allowed.status_code == 200
     assert allowed.headers["content-type"].startswith("text/plain")
-    assert "context_engine_http_requests_total" in allowed.text
+    assert "daemonstate_http_requests_total" in allowed.text
 
 
 class _FakeRateLimitRedis:
@@ -348,7 +348,7 @@ async def test_distributed_rate_limit_uses_redis_counter(monkeypatch):
     assert limited == (False, 58, 0)
     assert get_client.await_count == 3
     assert all(call[1] == 1 and call[3] == 61 for call in fake.calls)
-    assert all("context-engine:rate-limit:api:" in call[2] for call in fake.calls)
+    assert all("daemonstate:rate-limit:api:" in call[2] for call in fake.calls)
     assert all("sensitive-api-key" not in call[2] for call in fake.calls)
 
 

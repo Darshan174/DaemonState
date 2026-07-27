@@ -23,7 +23,7 @@ from app.services.redaction import redact_sensitive_text
 from app.time import utc_now
 
 
-logger = logging.getLogger("context-engine.source-ingestion")
+logger = logging.getLogger("daemonstate.source-ingestion")
 SOURCE_JOB_DUE_STATUSES = ("pending", "retrying")
 SOURCE_JOB_DEAD_LETTER_STATUS = "dead_letter"
 
@@ -188,7 +188,7 @@ async def run_enqueued_source_document(
     _ensure_sqlite_parent_dir(db_url)
     engine = create_database_engine(
         db_url,
-        application_name="context-engine-source-background-claim",
+        application_name="daemonstate-source-background-claim",
     )
     worker_id = f"api-background-{uuid4().hex}"
     lease_seconds = max(3, settings.sync_worker_lease_seconds)
@@ -310,7 +310,7 @@ async def run_source_ingestion_job(
     _ensure_sqlite_parent_dir(db_url)
     engine = create_database_engine(
         db_url,
-        application_name="context-engine-source-ingestion",
+        application_name="daemonstate-source-ingestion",
     )
     session_factory = async_sessionmaker(
         engine,

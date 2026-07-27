@@ -130,13 +130,52 @@ async def scoped_session_documents(
     documents: Iterable[SourceDocument],
     *,
     scope: WorkspaceSessionScope | None = None,
+    limit: int | None = None,
 ) -> list[SourceDocument]:
-    active_scope = scope or await workspace_session_scope(session, workspace_id)
-    return [
+    document_list = list(documents)
+    if scope is not None:
+        matches = [
+            document
+            for document in document_list
+            if scope.matches_document(document)
+        ]
+        return matches[:limit] if limit is not None else matches
+
+    # Most imported sessions persist cwd/repository evidence in compact source
+    # metadata. Match that first; only inspect the large event ledger for
+    # legacy documents whose metadata cannot establish project membership.
+    repositories, paths, commits = await workspace_references(
+        session,
+        workspace_id,
+    )
+    active_scope = WorkspaceSessionScope(
+        repositories=repositories,
+        paths=paths,
+        commits=commits,
+    )
+    direct_matches: list[SourceDocument] = []
+    unresolved_ids: set[UUID] = set()
+    for document in document_list:
+        if active_scope.matches_document(document):
+            direct_matches.append(document)
+        elif limit is None or len(direct_matches) < limit:
+            # When callers provide newest-first documents, an unresolved row
+            # older than `limit` direct matches cannot enter the bounded result.
+            # Avoid parsing its potentially enormous legacy event history.
+            unresolved_ids.add(document.id)
+    if unresolved_ids:
+        active_scope.observed_matches = await _observed_project_session_keys(
+            session,
+            workspace_id,
+            paths,
+            source_document_ids=unresolved_ids,
+        )
+    matches = [
         document
-        for document in documents
+        for document in document_list
         if active_scope.matches_document(document)
     ]
+    return matches[:limit] if limit is not None else matches
 
 
 async def session_document_is_in_scope(
@@ -300,17 +339,23 @@ async def _observed_project_session_keys(
         ).where(*conditions)
     )
     matches: set[tuple[str, str]] = set()
+    cwd_scope_matches: dict[str, bool] = {}
+
+    def cwd_matches_scope(cwd: str) -> bool:
+        if cwd not in cwd_scope_matches:
+            cwd_scope_matches[cwd] = (
+                any(path_is_within(cwd, root) for root in workspace_paths)
+                or _git_common_root(cwd) in workspace_paths
+            )
+        return cwd_scope_matches[cwd]
+
     for provider, session_id, payload_json in rows:
         try:
             payload = json.loads(payload_json or "{}")
         except (TypeError, json.JSONDecodeError):
             continue
         working_directories = _payload_working_directories(payload)
-        if not any(
-            any(path_is_within(cwd, root) for root in workspace_paths)
-            or _git_common_root(cwd) in workspace_paths
-            for cwd in working_directories
-        ):
+        if not any(cwd_matches_scope(cwd) for cwd in working_directories):
             continue
         key = normalize_session_key(provider, session_id)
         if key:
