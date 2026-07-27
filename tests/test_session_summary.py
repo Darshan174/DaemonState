@@ -7,7 +7,9 @@ from app.services.session_summary import (
     extract_delegated_user_request,
     is_continuation_control,
     is_internal_session_content,
+    is_session_instruction_noise,
     is_substantive_user_request,
+    normalize_substantive_user_request,
 )
 
 
@@ -93,6 +95,61 @@ wait what did u remove?? the banner i asked for is still displayed
         "The banner I asked for is still displayed"
     )
     assert "Screenshot 2026" not in clean_session_message_text(content)
+
+
+def test_attachment_reaction_does_not_replace_the_executable_request() -> None:
+    goal = (
+        "I need a working workflow where a user can continue from another agent."
+    )
+    reaction = """
+# Files mentioned by the user:
+
+## Screenshot 2026-07-25 at 19.57.03.png: /Users/example/Screenshot 2026-07-25 at 19.57.03.png
+
+## My request for Codex:
+ARE U FUCKING KIDDING ME U FUCKING PICEC OF SHITE
+<image name=[Image #1] path="/Users/example/Screenshot 2026-07-25 at 19.57.03.png">
+</image>
+"""
+    content = f"[USER]\n{goal}\n\n[ASSISTANT]\nDone.\n\n[USER]\n{reaction}"
+
+    assert normalize_substantive_user_request(reaction) is None
+    assert is_substantive_user_request(reaction) is False
+    assert derive_latest_session_topic(content) == (
+        "I need a working workflow where a user can continue..."
+    )
+
+
+def test_continuation_reference_plus_reaction_is_not_a_new_task() -> None:
+    reaction = (
+        "continue: 019f99ac-387e-7cb2-b41b-a8b1f6ca92ec\n"
+        "i think i give up, ur useless at this"
+    )
+
+    assert normalize_substantive_user_request(reaction) is None
+    assert is_substantive_user_request(reaction) is False
+
+
+def test_provider_context_pack_transport_is_not_user_work() -> None:
+    values = (
+        (
+            "Called the Read tool with the following input: "
+            '{"filePath":"/private/tmp/context-engine-harness-123/context-pack.md"}'
+        ),
+        (
+            "<path>/private/tmp/context-engine-harness-123/context-pack.md</path>\n"
+            "<type>file</type>\n"
+            "<content>\n1: # Objective\n2: Repair continuation\n</content>"
+        ),
+        (
+            '"Continue the task using the attached Context Engine context pack. '
+            'Verify the current repository state before editing."'
+        ),
+    )
+
+    for value in values:
+        assert normalize_substantive_user_request(value) is None
+        assert is_substantive_user_request(value) is False
 
 
 def test_screenshot_reference_intro_resolves_to_the_actual_issue() -> None:
@@ -186,6 +243,12 @@ Fix Prepare so it uses the actual user task.
     topics = derive_session_topics(content)
     assert "Fix Prepare so it uses the actual user task" in topics
     assert all("collaboration tools" not in topic.lower() for topic in topics)
+    assert is_session_instruction_noise(
+        "Note that collaboration tools cannot be called from inside functions"
+    )
+    assert not is_substantive_user_request(
+        "Note that collaboration tools cannot be called from inside functions"
+    )
 
 
 def test_continuation_controls_are_not_substantive_goals() -> None:

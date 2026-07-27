@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.dependencies import get_access_scope
 from app.database import get_db_session
+from app.models import AgentRun
 from app.services.access import AccessScope
 from app.services.context_compiler import (
     ContextBudgetExceededError,
@@ -18,9 +22,14 @@ from app.services.context_compiler import (
     InvalidRepoPathError,
 )
 from app.services.continuation import ContinuationError, ContinuationService
+from app.services.harness_outcomes import HarnessOutcomeService
+from app.services.harness_launcher import HarnessLaunchError, launch_harness_session
+from app.services.harness_sessions import recorded_harness_session
 from app.services.continuation_runtime import (
     ContinuationRunError,
     ContinuationRunService,
+    active_continuation_run,
+    active_continuation_run_payload,
     provider_readiness,
 )
 
@@ -34,15 +43,38 @@ class _ContinuationRequest(BaseModel):
     objective: str | None = Field(default=None, min_length=1, max_length=2_000)
     checkpoint_id: str | None = Field(default=None, min_length=1, max_length=255)
     checkpoint_source_id: UUID | None = None
+    source_provider: str | None = Field(default=None, min_length=1, max_length=50)
+    source_session_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+    )
     target_model: str | None = Field(default=None, min_length=1, max_length=255)
     token_budget: int | None = Field(default=None, ge=300)
 
-    @field_validator("repo_path", "target_model", "checkpoint_id")
+    @field_validator(
+        "repo_path",
+        "target_model",
+        "checkpoint_id",
+        "source_session_id",
+    )
     @classmethod
     def strip_optional_text(cls, value: str | None) -> str | None:
         if value is None:
             return None
         normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must contain visible characters")
+        return normalized
+
+    @field_validator("source_provider")
+    @classmethod
+    def normalize_source_provider(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        if normalized == "claude_code":
+            normalized = "claude"
         if not normalized:
             raise ValueError("value must contain visible characters")
         return normalized
@@ -57,6 +89,14 @@ class _ContinuationRequest(BaseModel):
             raise ValueError("value must contain visible characters")
         return normalized
 
+    @model_validator(mode="after")
+    def validate_source_session_pair(self) -> "_ContinuationRequest":
+        if (self.source_provider is None) != (self.source_session_id is None):
+            raise ValueError(
+                "source_provider and source_session_id must be provided together"
+            )
+        return self
+
 
 class ContinuationPrepareRequest(_ContinuationRequest):
     sync_sessions: bool = False
@@ -67,6 +107,14 @@ class ContinuationRunRequest(_ContinuationRequest):
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=120)
     target_provider: Literal["codex", "claude", "opencode", "auto"] = "auto"
     provider_model: str | None = Field(default=None, min_length=1, max_length=255)
+    provider_effort: Literal[
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+    ] | None = None
 
     @field_validator("idempotency_key", "provider_model")
     @classmethod
@@ -79,10 +127,15 @@ class ContinuationRunRequest(_ContinuationRequest):
         return normalized
 
 
+class ContinuationHarnessOpenRequest(BaseModel):
+    workspace_id: UUID
+
+
 @router.get("/continuations/providers")
 async def get_continuation_providers(
     request: Request,
     workspace_id: UUID | None = None,
+    session: AsyncSession = Depends(get_db_session),
     access_scope: AccessScope = Depends(get_access_scope),
 ) -> dict[str, Any]:
     _require_loopback_client(request)
@@ -97,7 +150,87 @@ async def get_continuation_providers(
     if workspace_id is not None and not access_scope.allows_workspace(workspace_id):
         raise HTTPException(status_code=404, detail="Workspace not found")
     providers = await provider_readiness()
-    return {"providers": [item.to_dict() for item in providers]}
+    active_run = (
+        await active_continuation_run(session, workspace_id=workspace_id)
+        if workspace_id is not None
+        else None
+    )
+    latest_run = (
+        await HarnessOutcomeService(session).latest_continuation(
+            workspace_id=workspace_id,
+        )
+        if workspace_id is not None
+        else None
+    )
+    return {
+        "providers": [item.to_dict() for item in providers],
+        "active_run": active_continuation_run_payload(active_run),
+        "latest_run": latest_run,
+    }
+
+
+@router.post("/continuations/{run_id}/open")
+async def open_continuation_harness(
+    run_id: UUID,
+    payload: ContinuationHarnessOpenRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    access_scope: AccessScope = Depends(get_access_scope),
+) -> dict[str, Any]:
+    _require_loopback_client(request)
+    if access_scope.principal_id != "local":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "local_action_required",
+                "message": "Harness sessions can be opened only from the local app.",
+            },
+        )
+    if not access_scope.allows_workspace(payload.workspace_id):
+        raise HTTPException(status_code=404, detail="Continuation run not found")
+    run = await session.scalar(
+        select(AgentRun)
+        .options(selectinload(AgentRun.observations))
+        .where(
+            AgentRun.id == run_id,
+            AgentRun.workspace_id == payload.workspace_id,
+            AgentRun.run_key.like("continuation:%"),
+        )
+    )
+    if run is None:
+        raise HTTPException(status_code=404, detail="Continuation run not found")
+    harness_session = recorded_harness_session(run.observations)
+    if harness_session is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "harness_session_pending",
+                "message": (
+                    "The target harness has not reported a session that can be "
+                    "opened yet."
+                ),
+            },
+        )
+    provider = str(harness_session["provider"])
+    session_id = str(harness_session["session_id"])
+    try:
+        launch = await asyncio.to_thread(
+            launch_harness_session,
+            provider,
+            session_id,
+            cwd=str(harness_session.get("cwd") or "") or None,
+        )
+    except HarnessLaunchError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    return {
+        "run_id": str(run.id),
+        "provider": provider,
+        "session_id": session_id,
+        "launch": launch,
+    }
 
 
 @router.post("/continuations/prepare")
@@ -142,6 +275,8 @@ async def prepare_continuation(
             objective=payload.objective,
             checkpoint_id=payload.checkpoint_id,
             checkpoint_source_id=payload.checkpoint_source_id,
+            source_provider=payload.source_provider,
+            source_session_id=payload.source_session_id,
             target_model=payload.target_model,
             token_budget=payload.token_budget,
             sync_sessions=payload.sync_sessions,
@@ -190,6 +325,7 @@ async def prepare_continuation(
     return result.to_dict()
 
 
+@router.post("/continuations")
 @router.post("/continuations/run")
 async def run_continuation(
     payload: ContinuationRunRequest,
@@ -206,9 +342,12 @@ async def run_continuation(
             objective=payload.objective,
             checkpoint_id=payload.checkpoint_id,
             checkpoint_source_id=payload.checkpoint_source_id,
+            source_provider=payload.source_provider,
+            source_session_id=payload.source_session_id,
             target_model=payload.target_model,
             target_provider=payload.target_provider,
             provider_model=payload.provider_model,
+            provider_effort=payload.provider_effort,
             token_budget=payload.token_budget,
             idempotency_key=payload.idempotency_key,
         )

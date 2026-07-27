@@ -24,6 +24,19 @@ class DesktopAppSpec:
     install_product: str
 
 
+@dataclass(frozen=True)
+class HarnessVisibility:
+    """Whether a continuation can be shown in the provider's own UI."""
+
+    provider: str
+    ready: bool
+    desktop_available: bool
+    exact_session_supported: bool
+    code: str
+    message: str
+    action: str
+
+
 MACOS_DESKTOP_APPS = {
     "codex": DesktopAppSpec(
         bundle_ids=("com.openai.codex",),
@@ -49,6 +62,70 @@ class HarnessLaunchError(Exception):
     def __init__(self, message: str, *, code: str = "launch_failed") -> None:
         super().__init__(message)
         self.code = code
+
+
+def probe_harness_visibility(connector_type: str) -> HarnessVisibility:
+    """Fail closed unless the exact running session can be shown locally."""
+
+    connector_type = connector_type.strip().lower()
+    if connector_type == "claude_code":
+        connector_type = "claude"
+    if connector_type not in MACOS_DESKTOP_APPS:
+        raise HarnessLaunchError(f"Unsupported AI harness: {connector_type}")
+
+    label = HARNESS_LABELS[connector_type]
+    spec = MACOS_DESKTOP_APPS[connector_type]
+    if platform.system() != "Darwin":
+        return HarnessVisibility(
+            provider=connector_type,
+            ready=False,
+            desktop_available=False,
+            exact_session_supported=False,
+            code="desktop_app_unsupported",
+            message=f"{label} visible continuation is not supported on this system.",
+            action=f"Run Context Engine on macOS with {spec.install_product}.",
+        )
+
+    desktop_available = _macos_desktop_app_installed(spec)
+    exact_session_supported = connector_type == "codex"
+    if not desktop_available:
+        return HarnessVisibility(
+            provider=connector_type,
+            ready=False,
+            desktop_available=False,
+            exact_session_supported=exact_session_supported,
+            code="desktop_app_missing",
+            message=(
+                f"{label} cannot show this continuation because its desktop "
+                "app is not installed."
+            ),
+            action=f"Install {spec.install_product}, then check again.",
+        )
+    if not exact_session_supported:
+        return HarnessVisibility(
+            provider=connector_type,
+            ready=False,
+            desktop_available=True,
+            exact_session_supported=False,
+            code="visible_session_unsupported",
+            message=(
+                f"{label} is installed, but it cannot open the exact local "
+                "automation session yet."
+            ),
+            action=(
+                "Use a provider that can show the exact running continuation "
+                "in its own harness."
+            ),
+        )
+    return HarnessVisibility(
+        provider=connector_type,
+        ready=True,
+        desktop_available=True,
+        exact_session_supported=True,
+        code="visible_harness_ready",
+        message=f"{label} can show the exact running continuation.",
+        action=f"Continue in {label}.",
+    )
 
 
 def launch_harness_session(
@@ -83,6 +160,8 @@ def launch_harness_session(
 
     return {
         "launched": True,
+        "navigation_requested": True,
+        "navigation_verified": False,
         "connector_type": connector_type,
         "harness": HARNESS_LABELS[connector_type],
         "session_id": session_id,
@@ -91,6 +170,19 @@ def launch_harness_session(
         "exact_session_supported": navigation == "session",
         "topic_anchor_supported": False,
     }
+
+
+def _macos_desktop_app_installed(spec: DesktopAppSpec) -> bool:
+    roots = (
+        Path("/Applications"),
+        Path("/System/Applications"),
+        Path.home() / "Applications",
+    )
+    return any(
+        (root / f"{app_name}.app").is_dir()
+        for root in roots
+        for app_name in spec.app_names
+    )
 
 
 def _open_registered_macos_app(

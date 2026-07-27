@@ -5,8 +5,9 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -21,6 +22,7 @@ OPENCODE_CONTINUATION_MESSAGE = (
     "Continue the task using the attached DaemonState context pack. "
     "Verify the current repository state before editing."
 )
+OPENCODE_MODEL_ENV = "CONTEXT_ENGINE_OPENCODE_MODEL"
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$")
 PROVIDER_EXECUTABLES: dict[ProviderName, str] = {
     "codex": "codex",
@@ -47,8 +49,20 @@ CODEX_APP_EXECUTABLES = (
     Path("/Applications/ChatGPT.app/Contents/Resources/codex"),
     Path("/Applications/Codex.app/Contents/Resources/codex"),
 )
+CODEX_APP_SERVER_CLIENT = Path(__file__).with_name("codex_app_server_client.py")
 PROVIDER_READINESS_TIMEOUT_SECONDS = 5.0
 PROVIDER_READINESS_OUTPUT_LIMIT = 8_192
+CODEX_MODEL_CATALOG_TIMEOUT_SECONDS = 5.0
+CODEX_MODEL_CATALOG_OUTPUT_LIMIT = 2_000_000
+CODEX_REASONING_EFFORTS = frozenset({
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra",
+})
+MODEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,254}$")
 ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 BASE_PROCESS_ENVIRONMENT_KEYS = frozenset({
     "PATH",
@@ -164,6 +178,77 @@ class HarnessExecutableNotFound(HarnessAdapterError):
 
 
 @dataclass(frozen=True)
+class ProviderModelOption:
+    id: str
+    label: str
+    default: bool
+    reasoning_efforts: tuple[str, ...]
+    default_reasoning_effort: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "label": self.label,
+            "default": self.default,
+            "reasoning_efforts": list(self.reasoning_efforts),
+            "default_reasoning_effort": self.default_reasoning_effort,
+        }
+
+
+CODEX_FALLBACK_MODELS = (
+    ProviderModelOption(
+        id="gpt-5.6-sol",
+        label="GPT-5.6-Sol",
+        default=True,
+        reasoning_efforts=("low", "medium", "high", "xhigh", "max", "ultra"),
+        default_reasoning_effort="low",
+    ),
+    ProviderModelOption(
+        id="gpt-5.6-terra",
+        label="GPT-5.6-Terra",
+        default=False,
+        reasoning_efforts=("low", "medium", "high", "xhigh", "max", "ultra"),
+        default_reasoning_effort="medium",
+    ),
+    ProviderModelOption(
+        id="gpt-5.6-luna",
+        label="GPT-5.6-Luna",
+        default=False,
+        reasoning_efforts=("low", "medium", "high", "xhigh", "max"),
+        default_reasoning_effort="medium",
+    ),
+    ProviderModelOption(
+        id="gpt-5.5",
+        label="GPT-5.5",
+        default=False,
+        reasoning_efforts=("low", "medium", "high", "xhigh"),
+        default_reasoning_effort="medium",
+    ),
+    ProviderModelOption(
+        id="gpt-5.4",
+        label="GPT-5.4",
+        default=False,
+        reasoning_efforts=("low", "medium", "high", "xhigh"),
+        default_reasoning_effort="medium",
+    ),
+    ProviderModelOption(
+        id="gpt-5.4-mini",
+        label="GPT-5.4-Mini",
+        default=False,
+        reasoning_efforts=("low", "medium", "high", "xhigh"),
+        default_reasoning_effort="medium",
+    ),
+    ProviderModelOption(
+        id="gpt-5.3-codex-spark",
+        label="GPT-5.3-Codex-Spark",
+        default=False,
+        reasoning_efforts=("low", "medium", "high", "xhigh"),
+        default_reasoning_effort="high",
+    ),
+)
+
+
+@dataclass(frozen=True)
 class ProviderReadiness:
     provider: ProviderName
     ready: bool
@@ -171,6 +256,9 @@ class ProviderReadiness:
     code: str
     message: str
     action: str
+    models: tuple[ProviderModelOption, ...] = field(default_factory=tuple)
+    desktop_available: bool | None = None
+    exact_session_supported: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -180,6 +268,9 @@ class ProviderReadiness:
             "code": self.code,
             "message": self.message,
             "action": self.action,
+            "models": [model.to_dict() for model in self.models],
+            "desktop_available": self.desktop_available,
+            "exact_session_supported": self.exact_session_supported,
         }
 
 
@@ -193,11 +284,13 @@ class HarnessInvocation:
     repo_path: str
     session_id: str | None
     model: str | None
+    effort: str | None = None
 
 
 def probe_provider_readiness(
     provider: str,
     *,
+    provider_model: str | None = None,
     timeout_seconds: float = PROVIDER_READINESS_TIMEOUT_SECONDS,
 ) -> ProviderReadiness:
     """Fail-closed local CLI/authentication preflight with bounded output."""
@@ -264,8 +357,24 @@ def probe_provider_readiness(
     if normalized_provider == "claude":
         return _claude_readiness(result.returncode, stdout, stderr, combined)
     if normalized_provider == "codex":
-        return _codex_readiness(result.returncode, combined)
-    return _opencode_readiness(result.returncode, combined)
+        readiness = _codex_readiness(result.returncode, combined)
+        if not readiness.ready:
+            return readiness
+        return replace(
+            readiness,
+            models=codex_model_catalog(
+                executable=executable,
+                timeout_seconds=timeout_seconds,
+            ),
+        )
+    return _opencode_readiness(
+        result.returncode,
+        combined,
+        provider_model=(
+            provider_model
+            or continuation_provider_model("opencode", None)
+        ),
+    )
 
 
 def minimal_process_environment(
@@ -290,6 +399,56 @@ def provider_environment(
     )
     environment = os.environ if source is None else source
     return _selected_environment(environment, allowed)
+
+
+def continuation_provider_model(
+    provider: str,
+    requested_model: str | None,
+) -> str | None:
+    """Resolve the explicit model used by DaemonState continuation runs."""
+
+    normalized_provider = _provider_name(provider)
+    if requested_model is not None:
+        return requested_model
+    if normalized_provider != "opencode":
+        return None
+    return str(os.environ.get(OPENCODE_MODEL_ENV) or "").strip() or None
+
+
+def codex_model_catalog(
+    *,
+    executable: str | None = None,
+    timeout_seconds: float = CODEX_MODEL_CATALOG_TIMEOUT_SECONDS,
+) -> tuple[ProviderModelOption, ...]:
+    """Return safe, user-visible Codex model choices with a stable fallback."""
+
+    resolved_executable = executable or _provider_executable("codex")
+    if not resolved_executable or "\x00" in resolved_executable:
+        return CODEX_FALLBACK_MODELS
+    try:
+        result = subprocess.run(
+            (resolved_executable, "debug", "models"),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+            check=False,
+            env=provider_environment("codex"),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return CODEX_FALLBACK_MODELS
+    if result.returncode != 0:
+        return CODEX_FALLBACK_MODELS
+    payload = _json_object(
+        ANSI_ESCAPE_PATTERN.sub("", str(result.stdout or ""))[
+            :CODEX_MODEL_CATALOG_OUTPUT_LIMIT
+        ]
+    )
+    models = _codex_models_from_payload(payload)
+    return models or CODEX_FALLBACK_MODELS
 
 
 def is_daemonstate_secret_key(key: str) -> bool:
@@ -328,6 +487,8 @@ def build_harness_invocation(
     repo_path: str | Path,
     session_id: str | None = None,
     model: str | None = None,
+    effort: str | None = None,
+    visible: bool = False,
 ) -> HarnessInvocation:
     """Build a non-interactive provider argv without executing it."""
 
@@ -335,6 +496,7 @@ def build_harness_invocation(
     normalized_repo = _repository_path(repo_path)
     normalized_session_id = _session_id(session_id)
     normalized_model = _model(model)
+    normalized_effort = _reasoning_effort(effort)
     executable_name = PROVIDER_EXECUTABLES[normalized_provider]
     executable = _provider_executable(normalized_provider)
     if not executable:
@@ -343,16 +505,36 @@ def build_harness_invocation(
         )
     if "\x00" in executable:
         raise HarnessAdapterError("provider executable path is invalid")
+    if normalized_effort is not None and normalized_provider != "codex":
+        raise HarnessAdapterError(
+            "reasoning effort is only supported by the Codex provider"
+        )
 
     mode: InvocationMode = (
         "session" if normalized_session_id is not None else "fresh"
     )
     if normalized_provider == "codex":
-        argv = _codex_argv(
-            executable,
-            normalized_repo,
-            normalized_session_id,
-            normalized_model,
+        _validate_codex_model_effort(
+            model=normalized_model,
+            effort=normalized_effort,
+            executable=executable,
+        )
+        argv = (
+            _codex_visible_argv(
+                executable,
+                normalized_repo,
+                normalized_session_id,
+                normalized_model,
+                normalized_effort,
+            )
+            if visible
+            else _codex_argv(
+                executable,
+                normalized_repo,
+                normalized_session_id,
+                normalized_model,
+                normalized_effort,
+            )
         )
         delivery: ContextDelivery = "stdin"
     elif normalized_provider == "claude":
@@ -381,6 +563,7 @@ def build_harness_invocation(
         repo_path=normalized_repo,
         session_id=normalized_session_id,
         model=normalized_model,
+        effort=normalized_effort,
     )
 
 
@@ -450,9 +633,29 @@ def _claude_readiness(
         or _json_object(combined)
     )
     if payload is not None:
-        if return_code == 0 and payload.get("loggedIn") is True:
-            return _ready("claude")
-        if payload.get("loggedIn") is False:
+        auth_method = str(payload.get("authMethod") or "").strip().casefold()
+        if (
+            return_code == 0
+            and payload.get("loggedIn") is True
+            and auth_method
+            and auth_method != "none"
+        ):
+            return ProviderReadiness(
+                provider="claude",
+                ready=True,
+                status="configured",
+                code="provider_configured",
+                message=(
+                    "Claude Code CLI has authentication configured. "
+                    "Live Claude Code plan or API access is not verified until "
+                    "a run starts."
+                ),
+                action="Continue in Claude Code.",
+            )
+        if (
+            payload.get("loggedIn") is False
+            or auth_method == "none"
+        ):
             return _authentication_required("claude")
     if return_code != 0:
         return _probe_failed("claude")
@@ -494,51 +697,153 @@ def _codex_readiness(return_code: int, combined: str) -> ProviderReadiness:
     )
 
 
-def _opencode_readiness(return_code: int, combined: str) -> ProviderReadiness:
+def _opencode_readiness(
+    return_code: int,
+    combined: str,
+    *,
+    provider_model: str | None,
+) -> ProviderReadiness:
     auth_failure = _authentication_readiness("opencode", combined)
     if auth_failure is not None:
         return auth_failure
-    normalized = combined.casefold()
     if return_code != 0:
         return _probe_failed("opencode")
+    normalized = combined.casefold()
     credential_match = re.search(r"\b(\d+)\s+credentials?\b", normalized)
-    if credential_match and int(credential_match.group(1)) > 0:
-        return _ready("opencode")
+    model_provider = (
+        _opencode_model_provider(provider_model)
+        if provider_model
+        else None
+    )
     if (
         (credential_match and int(credential_match.group(1)) == 0)
         or "no credentials" in normalized
     ):
-        return _authentication_required("opencode")
+        if model_provider != "opencode":
+            return _authentication_required("opencode")
+        credential_providers: set[str] = set()
+    else:
+        credential_providers = _opencode_credential_providers(combined)
+    if not credential_providers:
+        return ProviderReadiness(
+            provider="opencode",
+            ready=False,
+            status="unavailable",
+            code="provider_readiness_invalid",
+            message=(
+                "OpenCode listed credentials, but their providers could not "
+                "be identified."
+            ),
+            action="Update OpenCode, then check provider access again.",
+        )
+    if not provider_model:
+        return ProviderReadiness(
+            provider="opencode",
+            ready=False,
+            status="configuration_required",
+            code="provider_model_configuration_required",
+            message=(
+                "OpenCode CLI has connected providers, but Context Engine has "
+                "no execution model selected. Installed credentials do not "
+                "prove an active OpenCode Go or Zen subscription."
+            ),
+            action=(
+                f"Set `{OPENCODE_MODEL_ENV}` to a `provider/model` available "
+                "from one of the connected providers, then check again."
+            ),
+        )
+    if (
+        model_provider not in credential_providers
+    ):
+        provider_label = _opencode_provider_label(model_provider)
+        return ProviderReadiness(
+            provider="opencode",
+            ready=False,
+            status="access_required",
+            code="provider_model_access_required",
+            message=(
+                "OpenCode CLI is installed, but "
+                f"`{provider_model}` has no matching {provider_label} credential."
+            ),
+            action=(
+                f"Connect {provider_label} in OpenCode, or configure a model "
+                "from one of the connected providers."
+            ),
+        )
     return ProviderReadiness(
         provider="opencode",
-        ready=False,
-        status="unavailable",
-        code="provider_readiness_invalid",
-        message="OpenCode did not report any usable provider credentials.",
-        action="Run `opencode auth login` and try again.",
+        ready=True,
+        status="configured",
+        code="provider_configured",
+        message=(
+            f"OpenCode CLI is configured to try `{provider_model}`. "
+            "Live model access, service availability, and balance are not "
+            "verified until a run starts."
+        ),
+        action="Continue in OpenCode.",
     )
+
+
+def _opencode_credential_providers(output: str) -> set[str]:
+    providers: set[str] = set()
+    for raw_line in str(output or "").splitlines():
+        line = raw_line.strip().lstrip("●○│└┌─ ").strip()
+        match = re.fullmatch(r"(.+?)\s+(?:api|oauth|wellknown)", line, re.IGNORECASE)
+        if match is None:
+            continue
+        provider = _normalized_provider_id(match.group(1))
+        if provider:
+            providers.add(provider)
+    return providers
+
+
+def _opencode_model_provider(model: str) -> str:
+    provider = str(model or "").split("/", 1)[0]
+    return _normalized_provider_id(provider)
+
+
+def _normalized_provider_id(value: str) -> str:
+    normalized = re.sub(
+        r"[^a-z0-9]+",
+        "-",
+        str(value or "").strip().casefold(),
+    ).strip("-")
+    return {
+        "opencode-zen": "opencode",
+    }.get(normalized, normalized)
+
+
+def _opencode_provider_label(provider: str) -> str:
+    return {
+        "opencode": "OpenCode Zen",
+        "opencode-go": "OpenCode Go",
+        "openai": "OpenAI",
+        "anthropic": "Anthropic",
+    }.get(provider, provider)
 
 
 def _ready(provider: ProviderName) -> ProviderReadiness:
     display_name = PROVIDER_DISPLAY_NAMES[provider]
+    cli_name = "Claude Code CLI" if provider == "claude" else f"{display_name} CLI"
     return ProviderReadiness(
         provider=provider,
         ready=True,
         status="ready",
         code="provider_ready",
-        message=f"{display_name} is installed and authenticated.",
+        message=f"{cli_name} is installed and signed in.",
         action=f"Continue in {display_name}.",
     )
 
 
 def _authentication_required(provider: ProviderName) -> ProviderReadiness:
     display_name = PROVIDER_DISPLAY_NAMES[provider]
+    cli_name = "Claude Code CLI" if provider == "claude" else f"{display_name} CLI"
     return ProviderReadiness(
         provider=provider,
         ready=False,
         status="authentication_required",
         code="provider_authentication_required",
-        message=f"{display_name} is not authenticated.",
+        message=f"{cli_name} is installed, but it is not signed in.",
         action=PROVIDER_AUTH_ACTIONS[provider],
     )
 
@@ -658,12 +963,126 @@ def _model(value: str | None) -> str | None:
     normalized = str(value).strip()
     if (
         not normalized
-        or "\x00" in normalized
-        or len(normalized) > 255
-        or normalized.startswith("-")
+        or not MODEL_ID_PATTERN.fullmatch(normalized)
     ):
         raise HarnessAdapterError("model is not safe to pass to a provider CLI")
     return normalized
+
+
+def _reasoning_effort(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    if normalized not in CODEX_REASONING_EFFORTS:
+        raise HarnessAdapterError(
+            "reasoning effort is not supported by the Codex CLI"
+        )
+    return normalized
+
+
+def _validate_codex_model_effort(
+    *,
+    model: str | None,
+    effort: str | None,
+    executable: str,
+) -> None:
+    if effort is None:
+        return
+    catalog = codex_model_catalog(executable=executable)
+    selected = next(
+        (
+            option
+            for option in catalog
+            if option.id == model or (model is None and option.default)
+        ),
+        None,
+    )
+    if selected is not None and effort not in selected.reasoning_efforts:
+        raise HarnessAdapterError(
+            f"reasoning effort `{effort}` is not supported by model "
+            f"`{selected.id}`"
+        )
+
+
+def _codex_models_from_payload(
+    payload: dict[str, Any] | None,
+) -> tuple[ProviderModelOption, ...]:
+    raw_models = payload.get("models") if payload is not None else None
+    if not isinstance(raw_models, list):
+        return ()
+    parsed: list[tuple[int, int, str, str, tuple[str, ...], str]] = []
+    seen: set[str] = set()
+    for index, raw_model in enumerate(raw_models):
+        if not isinstance(raw_model, dict):
+            continue
+        model_id = str(raw_model.get("slug") or "").strip()
+        if (
+            str(raw_model.get("visibility") or "").strip().casefold() != "list"
+            or not model_id.startswith("gpt-")
+            or not MODEL_ID_PATTERN.fullmatch(model_id)
+            or model_id in seen
+        ):
+            continue
+        raw_levels = raw_model.get("supported_reasoning_levels")
+        if not isinstance(raw_levels, list):
+            continue
+        efforts: list[str] = []
+        for raw_level in raw_levels:
+            raw_effort = (
+                raw_level.get("effort")
+                if isinstance(raw_level, dict)
+                else raw_level
+            )
+            normalized_effort = str(raw_effort or "").strip().casefold()
+            if (
+                normalized_effort in CODEX_REASONING_EFFORTS
+                and normalized_effort not in efforts
+            ):
+                efforts.append(normalized_effort)
+        if not efforts:
+            continue
+        default_effort = str(
+            raw_model.get("default_reasoning_level") or ""
+        ).strip().casefold()
+        if default_effort not in efforts:
+            default_effort = "medium" if "medium" in efforts else efforts[0]
+        raw_label = str(raw_model.get("display_name") or model_id).strip()
+        label = re.sub(r"[\x00-\x1f\x7f]", "", raw_label)[:128] or model_id
+        raw_priority = raw_model.get("priority")
+        priority = (
+            raw_priority
+            if isinstance(raw_priority, int) and not isinstance(raw_priority, bool)
+            else 10_000
+        )
+        seen.add(model_id)
+        parsed.append(
+            (
+                priority,
+                index,
+                model_id,
+                label,
+                tuple(efforts),
+                default_effort,
+            )
+        )
+    parsed.sort(key=lambda item: (item[0], item[1]))
+    return tuple(
+        ProviderModelOption(
+            id=model_id,
+            label=label,
+            default=index == 0,
+            reasoning_efforts=efforts,
+            default_reasoning_effort=default_effort,
+        )
+        for index, (
+            _priority,
+            _source_index,
+            model_id,
+            label,
+            efforts,
+            default_effort,
+        ) in enumerate(parsed)
+    )
 
 
 def _codex_argv(
@@ -671,6 +1090,7 @@ def _codex_argv(
     repo_path: str,
     session_id: str | None,
     model: str | None,
+    effort: str | None,
 ) -> tuple[str, ...]:
     prefix = (
         executable,
@@ -679,11 +1099,42 @@ def _codex_argv(
         "--sandbox",
         "workspace-write",
         *((("-m", model)) if model is not None else ()),
+        *(
+            (("-c", f"model_reasoning_effort={effort}"))
+            if effort is not None
+            else ()
+        ),
         "exec",
     )
     if session_id is None:
         return (*prefix, "--json", "-")
     return (*prefix, "resume", "--json", session_id, "-")
+
+
+def _codex_visible_argv(
+    executable: str,
+    repo_path: str,
+    session_id: str | None,
+    model: str | None,
+    effort: str | None,
+) -> tuple[str, ...]:
+    if session_id is not None:
+        raise HarnessAdapterError(
+            "visible Codex continuation currently requires a fresh app-server thread"
+        )
+    argv = (
+        sys.executable,
+        str(CODEX_APP_SERVER_CLIENT),
+        "--codex-bin",
+        executable,
+        "--cwd",
+        repo_path,
+    )
+    if model is not None:
+        argv = (*argv, "--model", model)
+    if effort is not None:
+        argv = (*argv, "--effort", effort)
+    return argv
 
 
 def _claude_argv(
@@ -730,7 +1181,10 @@ def _opencode_argv(
         argv = (*argv, "--session", session_id)
     return (
         *argv,
+        # OpenCode's --file option is an array. Every following positional
+        # token is otherwise consumed as another attachment, so the message
+        # must appear before -f.
+        OPENCODE_CONTINUATION_MESSAGE,
         "-f",
         CONTEXT_FILE_PLACEHOLDER,
-        OPENCODE_CONTINUATION_MESSAGE,
     )

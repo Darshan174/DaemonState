@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
   ArrowRight,
   CheckCircle2,
   ChevronDown,
-  Clipboard,
   FileCode2,
   FolderGit2,
   GitBranch,
@@ -19,7 +19,6 @@ import {
 } from "lucide-react";
 
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
-import SessionContinuationDialog from "../components/SessionContinuationDialog";
 import ProductLoadingState from "../components/ProductLoadingState";
 import {
   HarnessArtwork,
@@ -27,9 +26,7 @@ import {
   harnessMeta,
 } from "../components/HarnessBrand";
 import {
-  useCheckpointComparison,
   useCheckpoints,
-  useContinueSession,
   useSessionContinuity,
   useSessionLibrary,
 } from "../api/hooks";
@@ -74,6 +71,7 @@ const LEDGER_TONES = {
 
 
 export default function RunsPage() {
+  const navigate = useNavigate();
   const workspace = useProductWorkspace();
   const libraryQuery = useSessionLibrary(workspace.activeWorkspaceId);
   const continuityQuery = useSessionContinuity(workspace.activeWorkspaceId);
@@ -81,17 +79,9 @@ export default function RunsPage() {
     workspace.activeWorkspaceId,
     CHECKPOINT_PAGE_LIMIT,
   );
-  const continueSession = useContinueSession();
   const [search, setSearch] = useState("");
   const [providerFilter, setProviderFilter] = useState("all");
   const [visibleCount, setVisibleCount] = useState(INITIAL_SESSION_COUNT);
-  const [selectedCard, setSelectedCard] = useState(null);
-  const [continueState, setContinueState] = useState("idle");
-  const [continueNotice, setContinueNotice] = useState("");
-  const selectedComparison = useCheckpointComparison(
-    workspace.activeWorkspaceId,
-    selectedCard?.checkpoint?.id,
-  );
 
   const cards = useMemo(() => buildSessionContinuity({
     sessions: libraryQuery.data?.sessions || [],
@@ -122,33 +112,20 @@ export default function RunsPage() {
     );
   }
 
-  const openContinue = (card) => {
-    setContinueState("idle");
-    setContinueNotice("");
-    setSelectedCard(card);
-  };
-  const confirmContinue = async () => {
-    if (!selectedCard) return;
-    setContinueState("preparing");
-    setContinueNotice("");
-    try {
-      const bundle = await continueSession.mutateAsync({
-        workspaceId: workspace.activeWorkspaceId,
-        sourceDocumentId: selectedCard.sourceDocumentId,
-        launchSession: true,
-      });
-      await navigator.clipboard.writeText(bundle.content);
-      const copiedOnly = bundle.launch?.launched === false;
-      setContinueState(copiedOnly ? "copied_only" : "copied");
-      setContinueNotice(
-        copiedOnly
-          ? bundle.launch?.message || "Recovered context copied. The linked desktop session could not be opened."
-          : "Original session opened and recovered context copied.",
-      );
-      setSelectedCard(null);
-    } catch {
-      setContinueState("error");
+  const continueFromCard = (card) => {
+    if (!workspace.activeWorkspaceId || !card?.sourceDocumentId) return;
+    const params = new URLSearchParams();
+    const objective = cleanDisplayText(card.ledger?.base?.[0]?.text);
+    if (objective) {
+      params.set("objective", objective);
+      params.set("objective_source", "session");
     }
+    if (card.cwd) params.set("repo_path", card.cwd);
+    if (card.provider && card.sessionId) {
+      params.set("source_provider", card.provider);
+      params.set("source_session", card.sessionId);
+    }
+    navigate({ pathname: "/app", search: params.toString() ? `?${params}` : "" });
   };
 
   return (
@@ -160,11 +137,11 @@ export default function RunsPage() {
           <div className="max-w-3xl">
             <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.18em] text-[#77776e] dark:text-[#aaa9a0]">
               <span className="h-px w-8 bg-[#9dbc47]" aria-hidden="true" />
-              Session continuity
+              Task history
             </div>
-            <h1 className="mt-4 text-3xl font-black tracking-[-0.045em] sm:text-4xl lg:text-5xl">Resume sessions</h1>
+            <h1 className="mt-4 text-3xl font-black tracking-[-0.045em] sm:text-4xl lg:text-5xl">History</h1>
             <p className="mt-4 max-w-2xl text-sm font-medium leading-6 text-[#68685f] dark:text-[#aaa9a0]">
-              Review what you asked for, what happened since, and any context gaps before resuming a task.
+              Review what you asked for, what happened since, and any context gaps before choosing a task for Continue.
             </p>
           </div>
           {!loading && cards.length ? (
@@ -179,8 +156,8 @@ export default function RunsPage() {
       {loading ? (
         <ProductLoadingState
           label="Reconstructing session context…"
-          detail="Reading source-backed history and preparing one resume card per session."
-          stages={["Finding agent sessions", "Rebuilding session history", "Linking resume actions"]}
+          detail="Reading source-backed history and preparing one history card per session."
+          stages={["Finding agent sessions", "Rebuilding session history", "Linking Continue actions"]}
         />
       ) : null}
       {error ? <EmptyState title="Could not reconstruct session context" detail={error.message} error /> : null}
@@ -235,7 +212,7 @@ export default function RunsPage() {
           <section aria-labelledby="session-ledger-heading">
             <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
               <div>
-                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-[#77776e] dark:text-[#aaa9a0]">Resume history</p>
+                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-[#77776e] dark:text-[#aaa9a0]">Task history</p>
                 <h2 id="session-ledger-heading" className="mt-1 text-xl font-black tracking-[-0.025em]">One card. One session.</h2>
               </div>
               <p role="status" className="text-xs font-semibold text-[#68685f] dark:text-[#aaa9a0]">
@@ -250,7 +227,7 @@ export default function RunsPage() {
                     <SessionLedgerCard
                       card={card}
                       index={index}
-                      onContinue={openContinue}
+                      onContinue={continueFromCard}
                     />
                   </li>
                 ))}
@@ -275,40 +252,19 @@ export default function RunsPage() {
       {!loading && !error && !cards.length ? (
         <EmptyState
           title="No agent sessions yet"
-          detail="Sync Codex, Claude Code, or OpenCode from Library. A source-backed resume card will appear here for every session."
+          detail="Sync Codex, Claude Code, or OpenCode from Library. A source-backed history card will appear here for every session."
         />
       ) : null}
 
-      {continueNotice ? (
-        <p role="status" className={`rounded-2xl border px-4 py-3 text-xs font-bold ${
-          continueState === "copied_only"
-            ? "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-200"
-            : "border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-900/70 dark:bg-emerald-950/30 dark:text-emerald-200"
-        }`}>
-          {continueNotice}
-        </p>
-      ) : null}
-      {continueState === "error" || continueSession.error ? (
-        <p role="alert" className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-bold text-red-700 dark:border-red-900/70 dark:bg-red-950/30 dark:text-red-200">
-          {continueSession.error?.message || "Could not open the session or copy its recovered context."}
-        </p>
-      ) : null}
-
-      {selectedCard ? (
-        <SessionContinuationDialog
-          card={selectedCard}
-          repositoryComparison={selectedComparison.data}
-          repositoryComparisonLoading={selectedComparison.isLoading}
-          isPending={continueSession.isPending || continueState === "preparing"}
-          onCancel={() => setSelectedCard(null)}
-          onConfirm={confirmContinue}
-        />
-      ) : null}
     </div>
   );
 }
 
-function SessionLedgerCard({ card, index, onContinue }) {
+function SessionLedgerCard({
+  card,
+  index,
+  onContinue,
+}) {
   const [expanded, setExpanded] = useState(false);
   const [activeSection, setActiveSection] = useState("added");
   const sections = ledgerSections(card.ledger);
@@ -317,7 +273,7 @@ function SessionLedgerCard({ card, index, onContinue }) {
   const titleId = `session-ledger-${safeId(card.key)}`;
   const panelId = `${titleId}-panel`;
   const baseText = card.ledger?.base?.[0]?.text;
-  const readiness = resumeReadiness(card);
+  const readiness = continuationReadiness(card);
   const ReadinessIcon = readiness.icon;
 
   const selectSection = (key) => {
@@ -435,12 +391,11 @@ function SessionLedgerCard({ card, index, onContinue }) {
             <button
               type="button"
               onClick={() => onContinue(card)}
-              disabled={!card.canResume}
-              aria-label={`Resume task: ${card.title}`}
+              disabled={!card.sourceDocumentId}
+              aria-label={`Continue task: ${card.title}`}
               className="btn-primary h-11 min-w-40 shrink-0 whitespace-nowrap px-4 text-[10px] disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <Clipboard className="h-3.5 w-3.5" aria-hidden="true" />
-              {card.canResume ? "Resume task" : "Resume unavailable"}
+              {card.sourceDocumentId ? "Continue this task" : "Continue unavailable"}
               <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
             </button>
           </div>
@@ -453,7 +408,7 @@ function SessionLedgerCard({ card, index, onContinue }) {
 function LedgerRail({ sections, activeSection, expanded, onSelect }) {
   return (
     <div className="overflow-x-auto border-t border-[#deded5] bg-white/50 dark:border-[#292925] dark:bg-black/10">
-      <div className="grid min-w-[28rem] grid-cols-5 sm:min-w-0" aria-label="Session resume history">
+      <div className="grid min-w-[28rem] grid-cols-5 sm:min-w-0" aria-label="Session task history">
         {sections.map((section) => {
           const tone = LEDGER_TONES[section.key];
           const Icon = tone.icon;
@@ -682,14 +637,14 @@ function HeaderMetric({ value, label }) {
   );
 }
 
-function resumeReadiness(card) {
-  if (!card.canResume) {
-    return { label: "Resume unavailable", icon: AlertTriangle };
+function continuationReadiness(card) {
+  if (!card.sourceDocumentId) {
+    return { label: "Continue unavailable", icon: AlertTriangle };
   }
   if (card.hasUnknownContextGaps) {
-    return { label: "Ready to resume — review context gaps", icon: AlertTriangle };
+    return { label: "Ready for Continue — review context gaps", icon: AlertTriangle };
   }
-  return { label: "Ready to resume", icon: CheckCircle2 };
+  return { label: "Ready for Continue", icon: CheckCircle2 };
 }
 
 function sectionCountLabel(section) {

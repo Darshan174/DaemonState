@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import shlex
 import signal
 import stat
 import tempfile
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -38,6 +39,10 @@ MAX_STATUS_PATHS = 500
 MAX_HASHED_FILE_BYTES = 1_048_576
 CONTEXT_FILE_PLACEHOLDER = "{context_file}"
 TRUNCATED_OUTPUT = "[output truncated by local harness; captured content omitted]"
+StdoutChunkObserver = Callable[[bytes], Awaitable[None]]
+
+
+logger = logging.getLogger(__name__)
 
 
 class RepositoryStateChangedError(RuntimeError):
@@ -123,6 +128,7 @@ class LocalHarnessResult:
     command: CommandResult
     repository_before: RepositorySnapshot
     repository_after: RepositorySnapshot
+    agent_changed_files: tuple[str, ...]
     changed_files: tuple[str, ...]
     verification_results: tuple[VerificationResult, ...]
 
@@ -134,6 +140,7 @@ class LocalHarnessResult:
             "command": self.command.to_dict(),
             "repository_before": self.repository_before.to_dict(),
             "repository_after": self.repository_after.to_dict(),
+            "agent_changed_files": list(self.agent_changed_files),
             "changed_files": list(self.changed_files),
             "verification_results": [item.to_dict() for item in self.verification_results],
         }
@@ -213,7 +220,16 @@ class LocalHarnessRunner:
         context_stdin: bool = False,
         extra_env: Mapping[str, str] | None = None,
         expected_status_fingerprint: str | None = None,
+        command_timeout_seconds: float | None = None,
+        stdout_chunk_observer: StdoutChunkObserver | None = None,
     ) -> LocalHarnessResult:
+        effective_command_timeout = (
+            self.command_timeout_seconds
+            if command_timeout_seconds is None
+            else command_timeout_seconds
+        )
+        if effective_command_timeout <= 0:
+            raise ValueError("command_timeout_seconds must be positive")
         pack_uuid = _uuid(context_pack_id, "context_pack_id")
         run_uuid = _uuid(run_id, "run_id")
         argv = _explicit_argv(command)
@@ -271,21 +287,30 @@ class LocalHarnessRunner:
                 cwd=repo_root,
                 env=child_env,
                 output_limit_bytes=self.output_limit_bytes,
-                timeout_seconds=self.command_timeout_seconds,
+                timeout_seconds=effective_command_timeout,
                 stdin_data=context_input,
+                stdout_chunk_observer=stdout_chunk_observer,
             )
             after_command = await _repository_snapshot(repo_root)
-            changed_files = await _observed_changed_files(repo_root, before, after_command)
+            agent_changed_files = await _observed_changed_files(
+                repo_root,
+                before,
+                after_command,
+            )
             await self._record_command(
                 run=run,
                 result=child_result,
-                changed_files=changed_files,
+                changed_files=agent_changed_files,
                 before=before,
                 after=after_command,
             )
 
             verification_results: list[VerificationResult] = []
-            if verify and child_result.exit_code == 0:
+            if (
+                verify
+                and child_result.exit_code == 0
+                and not _structured_terminal_error(child_result.stdout)
+            ):
                 for index, item in enumerate(verification_commands, start=1):
                     verification_argv = tuple(
                         context_path if arg == CONTEXT_FILE_PLACEHOLDER else arg
@@ -340,6 +365,7 @@ class LocalHarnessRunner:
             command=child_result,
             repository_before=before,
             repository_after=after,
+            agent_changed_files=tuple(agent_changed_files),
             changed_files=tuple(changed_files),
             verification_results=tuple(verification_results),
         )
@@ -549,6 +575,7 @@ async def _run_command(
     output_limit_bytes: int,
     timeout_seconds: float,
     stdin_data: bytes | None = None,
+    stdout_chunk_observer: StdoutChunkObserver | None = None,
 ) -> CommandResult:
     if stdin_data is not None:
         if not isinstance(stdin_data, bytes):
@@ -586,7 +613,13 @@ async def _run_command(
 
     assert process.stdout is not None
     assert process.stderr is not None
-    stdout_task = asyncio.create_task(_read_bounded(process.stdout, output_limit_bytes))
+    stdout_task = asyncio.create_task(
+        _read_bounded(
+            process.stdout,
+            output_limit_bytes,
+            chunk_observer=stdout_chunk_observer,
+        )
+    )
     stderr_task = asyncio.create_task(_read_bounded(process.stderr, output_limit_bytes))
     stdin_task = (
         asyncio.create_task(_write_stdin(process, stdin_data))
@@ -703,13 +736,24 @@ async def _terminate_process(process: asyncio.subprocess.Process) -> None:
 async def _read_bounded(
     stream: asyncio.StreamReader,
     limit_bytes: int,
+    *,
+    chunk_observer: StdoutChunkObserver | None = None,
 ) -> tuple[bytes, bool]:
     captured = bytearray()
     truncated = False
+    observer_failed = False
     while True:
         chunk = await stream.read(8_192)
         if not chunk:
             break
+        if chunk_observer is not None and not observer_failed:
+            try:
+                await chunk_observer(chunk)
+            except Exception:
+                # Observability must never stop pipe draining or kill the
+                # provider process. The captured command remains authoritative.
+                observer_failed = True
+                logger.exception("Local harness stdout observer failed")
         remaining = limit_bytes - len(captured)
         if remaining > 0:
             captured.extend(chunk[:remaining])
@@ -938,11 +982,57 @@ def _terminal_status(
     child_result: CommandResult,
     verification_results: Sequence[VerificationResult],
 ) -> str:
-    if child_result.exit_code != 0:
+    if (
+        child_result.exit_code != 0
+        or _structured_terminal_error(child_result.stdout)
+    ):
         return "failed"
     if any(item.result.exit_code != 0 for item in verification_results):
         return "failed"
     return "completed"
+
+
+def _structured_terminal_error(output: str) -> bool:
+    """Detect provider streams that report failure while exiting with code zero."""
+
+    for raw_line in reversed(output.splitlines()[-200:]):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        payload_type = str(payload.get("type") or "").casefold()
+        subtype = str(payload.get("subtype") or "").casefold()
+        is_error = (
+            payload.get("is_error") is True
+            or payload_type in {"error", "error_message"}
+            or subtype.startswith("error")
+            or bool(payload.get("error"))
+        )
+        if is_error:
+            return True
+        if payload_type == "step_finish":
+            part = payload.get("part")
+            reason = str(
+                payload.get("reason")
+                or (part.get("reason") if isinstance(part, Mapping) else "")
+                or ""
+            ).casefold()
+            if reason in {"tool-calls", "tool_calls"}:
+                # OpenCode can exit zero after a tool call without ever
+                # returning for a final assistant turn. That is an incomplete
+                # provider run, not a successful handoff.
+                return True
+        if (
+            payload_type in {"result", "step_finish", "turn.completed"}
+            or subtype in {"success", "completed"}
+        ):
+            return False
+    return False
 
 
 def _command_content(label: str, result: CommandResult) -> str:

@@ -335,6 +335,11 @@ class RepoFrame:
         ] = []
         for indexed in self.indexed_files:
             explicit_hint = _matches_file_hint(indexed.path, hinted)
+            if (
+                not explicit_hint
+                and not _eligible_automatic_context_path(indexed.path)
+            ):
+                continue
             path_tokens = set(_tokenize(indexed.path))
             file_identity = {
                 Path(indexed.path).name.lower(),
@@ -2181,16 +2186,26 @@ def _language_for(path: Path) -> str | None:
 
 def _is_test_file(rel: str, text: str) -> bool:
     path = rel.lower()
-    return (
-        "/tests/" in f"/{path}"
-        or path.startswith("tests/")
-        or path.endswith(".test.js")
+    name = Path(path).name
+    path_match = (
+        path.endswith(".test.js")
         or path.endswith(".test.jsx")
         or path.endswith(".test.ts")
         or path.endswith(".test.tsx")
-        or path.startswith("test_")
-        or bool(re.search(r"\b(pytest|describe|it|test)\s*\(", text))
+        or path.endswith(".spec.js")
+        or path.endswith(".spec.jsx")
+        or path.endswith(".spec.ts")
+        or path.endswith(".spec.tsx")
+        or (path.endswith(".py") and name.startswith("test_"))
+        or path.endswith("_test.py")
     )
+    if path_match:
+        return True
+    if path.endswith(".py"):
+        return bool(re.search(r"(?m)^\s*(?:async\s+)?def\s+test_", text))
+    if path.endswith((".js", ".jsx", ".ts", ".tsx")):
+        return bool(re.search(r"(?m)^\s*(?:describe|it|test)\s*\(", text))
+    return False
 
 
 def _decode(raw: bytes) -> str | None:
@@ -2291,11 +2306,15 @@ def _file_match_strength(item: dict[str, Any]) -> str:
 
 
 def _eligible_affected_path(path: str) -> bool:
+    return _eligible_automatic_context_path(path)
+
+
+def _eligible_automatic_context_path(path: str) -> bool:
     normalized = path.removeprefix("./")
     return not (
         normalized.startswith(".agent-runs/")
         or normalized.startswith(".github/ISSUE_TEMPLATE/")
-        or "/fixture_project/sources/" in f"/{normalized}"
+        or "/fixture_project/" in f"/{normalized}"
     )
 
 

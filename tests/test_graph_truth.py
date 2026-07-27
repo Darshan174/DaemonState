@@ -63,7 +63,6 @@ def test_reported_summary_is_scannable_without_another_model():
         "This trailing explanation should not make the card excessively tall.",
         max_chars=200,
     )
-
     assert summary == (
         "The adapter can extract the latest final answer and use it as the summary. "
         "Verification remains a separate evidence layer for files, tests, builds, commits, and pull requests."
@@ -644,6 +643,7 @@ async def test_digest_defaults_to_latest_session_topic_until_user_selects_one(cl
             "session_id": "activity",
             "tool": "codex",
             "repository": "acme/project",
+            "cwd": "/workspace/context-engine",
             "branch": "codex/auth-redirect",
         }),
     )
@@ -672,6 +672,7 @@ async def test_digest_defaults_to_latest_session_topic_until_user_selects_one(cl
     assert activity["primary"]["latest_topic"] == "The redirect is still broken in the app"
     assert activity["primary"]["title"] == "The redirect is still broken in the app"
     assert activity["primary"]["evidence_level"] == "session_reported"
+    assert activity["primary"]["cwd"] == "/workspace/context-engine"
     assert activity["primary"]["result_summary"] is None
     assert activity["primary"]["latest_update"] == (
         "I’m using the in-app browser to review the rendered page"
@@ -703,6 +704,7 @@ async def test_digest_defaults_to_latest_session_topic_until_user_selects_one(cl
     assert activity["primary"]["selected_for_now"] is True
     assert activity["primary"]["selected_topic"] == "Fix the authentication redirect loop"
     assert activity["primary"]["session_title"] == "Fix the authentication redirect loop"
+    assert activity["primary"]["cwd"] == "/workspace/context-engine"
     assert activity["primary"]["request"] == "The redirect is still broken in the app"
     assert activity["primary"]["latest_update"] == (
         "I’m using the in-app browser to review the rendered page"

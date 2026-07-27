@@ -40,7 +40,7 @@ def test_readme_documents_honest_setup_deployment_and_contributing_paths():
     assert "reopen an exact Codex task" in text
     assert "There is no system-wide agent monitor" in text
     assert "local harness is the path that independently inspects Git state" in " ".join(text.split())
-    assert "When a supported local session is synced" in text
+    assert "Continue automatically captures the selected session tip" in text
     assert "Explain and agent brief" in text
     assert "rather than every UI" in " ".join(text.split())
     assert "The API preserves revisions and enforces access scopes" in text
