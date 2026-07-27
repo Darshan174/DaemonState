@@ -9,9 +9,10 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview",
+    "preview": "npm run build && wrangler dev",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {
     "@fontsource-variable/archivo": "^5.3.0",
@@ -22,6 +23,7 @@
     "react-router-dom": "^6.26.2"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.47.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
@@ -31,6 +33,7 @@
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.13",
     "vite": "^6.4.3",
-    "vitest": "^4.1.2"
+    "vitest": "^4.1.2",
+    "wrangler": "^4.114.0"
   }
 }
