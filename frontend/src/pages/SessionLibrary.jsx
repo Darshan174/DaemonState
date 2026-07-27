@@ -20,7 +20,11 @@ import {
 } from "lucide-react";
 
 import { api } from "../api/client";
-import { useSessionLibrary, useSyncSessionLibrary } from "../api/hooks";
+import {
+  useSelectSessionFromLibrary,
+  useSessionLibrary,
+  useSyncSessionLibrary,
+} from "../api/hooks";
 import {
   HARNESS_META,
   HARNESS_ORDER,
@@ -32,6 +36,13 @@ import HarnessDeckBackdrop from "../components/HarnessDeckBackdrop";
 import ProductLoadingState from "../components/ProductLoadingState";
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
 import { formatTimeAgo } from "../context-map/digest";
+import {
+  executeSessionIdentity,
+  MAX_EXECUTE_SESSION_CONTEXTS,
+  readExecuteSessionContexts,
+  resolveExecuteSessionContexts,
+  writeExecuteSessionContexts,
+} from "./executeSessionSelection";
 import { useProductWorkspace } from "./useProductWorkspace";
 
 const INITIAL_SESSION_COUNT = 24;
@@ -43,16 +54,37 @@ export default function SessionLibrary() {
   const workspace = useProductWorkspace();
   const libraryQuery = useSessionLibrary(workspace.activeWorkspaceId);
   const syncMutation = useSyncSessionLibrary();
+  const selectMutation = useSelectSessionFromLibrary();
+  const executeSelectionMode = searchParams.get("mode") === "execute-context";
+  const currentExecuteSessionIdentity = executeSessionIdentity({
+    provider: searchParams.get("current_provider"),
+    sessionId: searchParams.get("current_session"),
+  });
+  const libraryHomePath = useMemo(() => {
+    if (!executeSelectionMode) return "/app/library";
+    const params = new URLSearchParams({ mode: "execute-context" });
+    if (searchParams.get("current_provider")) {
+      params.set("current_provider", searchParams.get("current_provider"));
+    }
+    if (searchParams.get("current_session")) {
+      params.set("current_session", searchParams.get("current_session"));
+    }
+    return `/app/library?${params}`;
+  }, [currentExecuteSessionIdentity, executeSelectionMode, searchParams]);
   const sessionsRef = useRef(null);
   const [selectedHarness, setSelectedHarness] = useState(null);
   const [hoveredHarness, setHoveredHarness] = useState(null);
   const [search, setSearch] = useState("");
   const [visibleSessionCount, setVisibleSessionCount] = useState(INITIAL_SESSION_COUNT);
   const [evidenceSelection, setEvidenceSelection] = useState(null);
+  const [selectingSessionId, setSelectingSessionId] = useState(null);
+  const [executeSessionContexts, setExecuteSessionContexts] = useState(() => (
+    readExecuteSessionContexts(workspace.activeWorkspaceId)
+  ));
   const closeEvidence = useCallback(() => {
     setEvidenceSelection(null);
-    navigate("/app/library", { replace: true });
-  }, [navigate]);
+    navigate(libraryHomePath, { replace: true });
+  }, [libraryHomePath, navigate]);
 
   const library = libraryQuery.data;
   const sessions = library?.sessions || [];
@@ -89,6 +121,77 @@ export default function SessionLibrary() {
     });
   }, [search, selectedHarness, sessions]);
   const visibleSessions = filteredSessions.slice(0, visibleSessionCount);
+  const selectedExecuteSourceIds = useMemo(
+    () => new Set(executeSessionContexts.map((item) => item.sourceDocumentId)),
+    [executeSessionContexts],
+  );
+  const sessionLibraryResolutionKey = sessions
+    .map((item) => [
+      item.source_document_id,
+      item.connector_type,
+      item.session_id,
+      item.revision_number,
+    ].join(":"))
+    .join("|");
+
+  const toggleExecuteSessionContext = (item) => {
+    const sourceDocumentId = String(item.source_document_id || "").trim();
+    if (!sourceDocumentId) return;
+    setExecuteSessionContexts((current) => {
+      const selected = current.some(
+        (session) => session.sourceDocumentId === sourceDocumentId,
+      );
+      if (selected) {
+        return current.filter(
+          (session) => session.sourceDocumentId !== sourceDocumentId,
+        );
+      }
+      if (
+        current.length >= MAX_EXECUTE_SESSION_CONTEXTS
+        || executeSessionIdentity(item) === currentExecuteSessionIdentity
+      ) return current;
+      return resolveExecuteSessionContexts(
+        [...current, item],
+        [...sessions, item],
+      );
+    });
+  };
+
+  const applyExecuteSessionContexts = () => {
+    const selected = writeExecuteSessionContexts(
+      workspace.activeWorkspaceId,
+      resolveExecuteSessionContexts(executeSessionContexts, sessions),
+    );
+    setExecuteSessionContexts(selected);
+    navigate("/app/execute");
+  };
+
+  useEffect(() => {
+    const stored = readExecuteSessionContexts(workspace.activeWorkspaceId)
+      .filter((session) => (
+        executeSessionIdentity(session) !== currentExecuteSessionIdentity
+      ));
+    setExecuteSessionContexts((current) => (
+      JSON.stringify(current) === JSON.stringify(stored) ? current : stored
+    ));
+  }, [currentExecuteSessionIdentity, workspace.activeWorkspaceId]);
+
+  useEffect(() => {
+    if (!executeSelectionMode || !library) return;
+    setExecuteSessionContexts((current) => {
+      const resolved = resolveExecuteSessionContexts(current, sessions)
+        .filter((session) => (
+          executeSessionIdentity(session) !== currentExecuteSessionIdentity
+        ));
+      return JSON.stringify(current) === JSON.stringify(resolved)
+        ? current
+        : resolved;
+    });
+  }, [
+    currentExecuteSessionIdentity,
+    executeSelectionMode,
+    sessionLibraryResolutionKey,
+  ]);
 
   useEffect(() => {
     const requestedSourceId = searchParams.get("source");
@@ -108,8 +211,8 @@ export default function SessionLibrary() {
     ));
   }, [searchParams, sessions]);
 
-  const selectForNow = (item, topic) => {
-    if (!workspace.activeWorkspaceId) return;
+  const selectForNow = async (item, topic) => {
+    if (!workspace.activeWorkspaceId || selectMutation.isPending) return;
     const objective = String(topic || item.latest_topic || item.title || "").trim();
     const params = new URLSearchParams();
     if (objective) {
@@ -121,7 +224,19 @@ export default function SessionLibrary() {
       params.set("source_provider", item.connector_type);
       params.set("source_session", item.session_id);
     }
-    navigate({ pathname: "/app", search: params.toString() ? `?${params}` : "" });
+    setSelectingSessionId(`${item.id}:${topic || "__latest__"}`);
+    try {
+      await selectMutation.mutateAsync({
+        workspaceId: workspace.activeWorkspaceId,
+        sourceDocumentId: item.source_document_id,
+        ...(topic ? { topic } : {}),
+      });
+      navigate({ pathname: "/app", search: params.toString() ? `?${params}` : "" });
+    } catch {
+      // Keep the user in Library so the inline error remains visible.
+    } finally {
+      setSelectingSessionId(null);
+    }
   };
 
   useEffect(() => {
@@ -151,7 +266,9 @@ export default function SessionLibrary() {
           <div>
             <h1 className="text-3xl font-black tracking-[-0.035em] sm:text-4xl">Session Library</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
-              Choose a session or topic, then finish the handoff from the canonical Continue screen.
+              {executeSelectionMode
+                ? "Choose up to two sessions to place beside Current Session Context in Execute."
+                : "Choose a session or topic, then finish the handoff from the canonical Continue screen."}
             </p>
             {library ? (
               <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-[10px] font-black uppercase tracking-[0.13em] text-[#85857c]">
@@ -163,15 +280,43 @@ export default function SessionLibrary() {
               </div>
             ) : null}
           </div>
-          <button
-            type="button"
-            onClick={() => syncMutation.mutate({ workspaceId: workspace.activeWorkspaceId })}
-            disabled={!workspace.activeWorkspaceId || syncMutation.isPending}
-            className="inline-flex h-11 items-center justify-center gap-2 self-start rounded-xl border border-[#9dbc47]/45 bg-[#d9ff68]/30 px-5 text-xs font-black text-[#37420f] shadow-[0_8px_24px_rgba(157,188,71,0.14),inset_0_1px_0_rgba(255,255,255,0.28)] backdrop-blur-xl transition hover:-translate-y-0.5 hover:border-[#9dbc47]/65 hover:bg-[#d9ff68]/40 disabled:cursor-not-allowed disabled:opacity-60 dark:border-[#d9ff68]/35 dark:bg-[#d9ff68]/15 dark:text-[#eaffaa] dark:shadow-[0_8px_28px_rgba(217,255,104,0.08),inset_0_1px_0_rgba(255,255,255,0.1)] dark:hover:border-[#d9ff68]/55 dark:hover:bg-[#d9ff68]/25 lg:self-auto"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${syncMutation.isPending ? "animate-spin" : ""}`} />
-            {syncMutation.isPending ? "Syncing local history…" : "Sync now"}
-          </button>
+          {executeSelectionMode ? (
+            <div className="relative z-20 flex flex-wrap items-center gap-2 self-start lg:self-auto">
+              <span
+                aria-live="polite"
+                className="mr-1 text-xs font-black text-[#68685f] dark:text-[#c7c7bd]"
+              >
+                {executeSessionContexts.length} of {MAX_EXECUTE_SESSION_CONTEXTS} selected
+              </span>
+              <button
+                type="button"
+                onClick={() => navigate("/app/execute")}
+                className="inline-flex h-11 items-center justify-center rounded-xl border border-[#d8d8cf] bg-white/70 px-4 text-xs font-black text-[#68685f] transition hover:border-[#aaa99f] hover:text-[#171713] dark:border-[#383832] dark:bg-white/[0.04] dark:text-[#c7c7bd] dark:hover:text-white"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={applyExecuteSessionContexts}
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-[#9dbc47]/55 bg-[#d9ff68] px-5 text-xs font-black text-[#28310a] shadow-[0_8px_24px_rgba(157,188,71,0.18)] transition hover:-translate-y-0.5 hover:bg-[#e4ff91]"
+              >
+                <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                {executeSessionContexts.length
+                  ? `Use ${executeSessionContexts.length} session${executeSessionContexts.length === 1 ? "" : "s"}`
+                  : "Clear selected sessions"}
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => syncMutation.mutate({ workspaceId: workspace.activeWorkspaceId })}
+              disabled={!workspace.activeWorkspaceId || syncMutation.isPending}
+              className="inline-flex h-11 items-center justify-center gap-2 self-start rounded-xl border border-[#9dbc47]/45 bg-[#d9ff68]/30 px-5 text-xs font-black text-[#37420f] shadow-[0_8px_24px_rgba(157,188,71,0.14),inset_0_1px_0_rgba(255,255,255,0.28)] backdrop-blur-xl transition hover:-translate-y-0.5 hover:border-[#9dbc47]/65 hover:bg-[#d9ff68]/40 disabled:cursor-not-allowed disabled:opacity-60 dark:border-[#d9ff68]/35 dark:bg-[#d9ff68]/15 dark:text-[#eaffaa] dark:shadow-[0_8px_28px_rgba(217,255,104,0.08),inset_0_1px_0_rgba(255,255,255,0.1)] dark:hover:border-[#d9ff68]/55 dark:hover:bg-[#d9ff68]/25 lg:self-auto"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${syncMutation.isPending ? "animate-spin" : ""}`} />
+              {syncMutation.isPending ? "Syncing local history…" : "Sync now"}
+            </button>
+          )}
         </div>
       </header>
 
@@ -182,6 +327,9 @@ export default function SessionLibrary() {
         <Notice tone="warning">
           {syncMutation.data.sync.failed} session{syncMutation.data.sync.failed === 1 ? "" : "s"} could not be read; the remaining history was synced.
         </Notice>
+      ) : null}
+      {selectMutation.isError ? (
+        <Notice tone="error">Could not select this session: {selectMutation.error?.message}</Notice>
       ) : null}
       {libraryQuery.isLoading && !library ? (
         <EmptyState title="Opening your session history…" detail="Loading the saved session index for this project." loading />
@@ -250,7 +398,9 @@ export default function SessionLibrary() {
                       <span aria-label={`${filteredSessions.length} sessions`} className="rounded-full bg-[#ecece4] px-2.5 py-1 text-[9px] font-black dark:bg-[#252521]">{filteredSessions.length}</span>
                     </div>
                     <p className="mt-1 text-xs leading-5 text-[#68685f] dark:text-[#aaa9a0]">
-                      Continue the session’s newest topic, or open Topics to choose another. Evidence stays separate.
+                      {executeSelectionMode
+                        ? "Check a session to add it to Execute. You can choose across different AI harnesses."
+                        : "Continue the session’s newest topic, or open Topics to choose another. Evidence stays separate."}
                     </p>
                   </div>
                   <label className="relative block">
@@ -274,7 +424,23 @@ export default function SessionLibrary() {
                         item={item}
                         selected={item.selected_for_now}
                         selectedTopic={item.selected_topic}
-                        selectingTopic={null}
+                        selectingTopic={selectingSessionId?.startsWith(`${item.id}:`)
+                          ? selectingSessionId.slice(item.id.length + 1)
+                          : null}
+                        selectionPending={selectMutation.isPending}
+                        contextSelectionMode={executeSelectionMode}
+                        contextSelected={selectedExecuteSourceIds.has(item.source_document_id)}
+                        contextSelectionDisabled={
+                          executeSessionIdentity(item) === currentExecuteSessionIdentity
+                          || (
+                            executeSessionContexts.length >= MAX_EXECUTE_SESSION_CONTEXTS
+                            && !selectedExecuteSourceIds.has(item.source_document_id)
+                          )
+                        }
+                        currentExecuteSession={
+                          executeSessionIdentity(item) === currentExecuteSessionIdentity
+                        }
+                        onToggleContext={() => toggleExecuteSessionContext(item)}
                         onSelectSession={() => selectForNow(item)}
                         onSelectTopic={(topic) => selectForNow(item, topic)}
                         onOpen={(topic) => setEvidenceSelection({ session: item, topic })}
@@ -313,7 +479,7 @@ export default function SessionLibrary() {
           workspaceId={workspace.activeWorkspaceId}
           onSelectTopic={(topic) => setEvidenceSelection((current) => ({ ...current, topic }))}
           onUseTopic={(topic) => selectForNow(evidenceSelection.session, topic)}
-          selecting={false}
+          selecting={selectMutation.isPending}
           onClose={closeEvidence}
         />,
         document.body,
@@ -323,7 +489,21 @@ export default function SessionLibrary() {
 }
 
 
-function SessionCard({ item, selected, selectedTopic, selectingTopic, onSelectSession, onSelectTopic, onOpen }) {
+function SessionCard({
+  item,
+  selected,
+  selectedTopic,
+  selectingTopic,
+  selectionPending = false,
+  contextSelectionMode = false,
+  contextSelected = false,
+  contextSelectionDisabled = false,
+  currentExecuteSession = false,
+  onToggleContext,
+  onSelectSession,
+  onSelectTopic,
+  onOpen,
+}) {
   const [revealed, setRevealed] = useState(false);
   const folder = item.cwd ? item.cwd.split("/").filter(Boolean).at(-1) : null;
   const topics = item.topics || [];
@@ -352,7 +532,46 @@ function SessionCard({ item, selected, selectedTopic, selectingTopic, onSelectSe
       </span>
 
       <div className="relative">
-        <div className="flex items-start justify-end gap-3">
+        <div className="flex items-start justify-between gap-3">
+          {contextSelectionMode ? (
+            <label
+              className={`inline-flex min-h-8 items-center gap-2 rounded-lg border px-2.5 text-[9px] font-black uppercase tracking-[0.1em] transition ${
+                contextSelected
+                  ? "border-[#9dbc47] bg-[#d9ff68] text-[#28310a]"
+                  : contextSelectionDisabled
+                    ? "cursor-not-allowed border-[#d8d8cf] bg-[#ecece4] text-[#999990] opacity-70 dark:border-[#34342f] dark:bg-[#252521]"
+                    : "cursor-pointer border-[#c9c9bf] bg-white/80 text-[#68685f] hover:border-[#9dbc47] dark:border-[#383832] dark:bg-black/20 dark:text-[#c7c7bd]"
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={contextSelected}
+                disabled={contextSelectionDisabled}
+                onChange={onToggleContext}
+                aria-label={
+                  currentExecuteSession
+                    ? `${item.title} is already the current session`
+                    : `Select ${item.title} for Execute`
+                }
+                className="sr-only"
+              />
+              <span
+                aria-hidden="true"
+                className={`flex h-4 w-4 items-center justify-center rounded border ${
+                  contextSelected
+                    ? "border-[#526619] bg-[#526619] text-white"
+                    : "border-current bg-transparent"
+                }`}
+              >
+                {contextSelected ? <Check className="h-3 w-3" /> : null}
+              </span>
+              {currentExecuteSession
+                ? "Current"
+                : contextSelected
+                  ? "Selected"
+                  : "Add to Execute"}
+            </label>
+          ) : <span aria-hidden="true" />}
           <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.12em] text-[#85857c]">
             {selected ? <span className="rounded-full bg-[#d9ff68] px-2 py-1 text-[#37420f]">Selected</span> : null}
             {item.forked_from ? (
@@ -404,85 +623,99 @@ function SessionCard({ item, selected, selectedTopic, selectingTopic, onSelectSe
           </div>
         </div>
 
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[#e1e1d8] pt-3 dark:border-[#30302b]">
-          <button
-            type="button"
-            aria-label={`Continue latest topic from ${item.title}`}
-            onClick={onSelectSession}
-            disabled={Boolean(selectingTopic)}
-            className="inline-flex items-center gap-1.5 text-[9px] font-black uppercase tracking-[0.12em] text-[#58691c] transition hover:text-[#171713] disabled:cursor-wait disabled:opacity-60 dark:text-[#d9ff68] dark:hover:text-white"
-          >
-            {selectingTopic === "__latest__" ? "Selecting…" : "Continue latest"}
-            <ArrowRight className="h-3 w-3" />
-          </button>
-          <div className="flex items-center gap-3">
-            {(item.compaction_checkpoints || []).length ? (
+        {contextSelectionMode ? (
+          <div className="mt-4 border-t border-[#e1e1d8] pt-3 text-[9px] font-black uppercase tracking-[0.11em] text-[#77776e] dark:border-[#30302b] dark:text-[#aaa9a0]">
+            {currentExecuteSession
+              ? "Already shown as Current Session Context"
+              : contextSelected
+                ? "Will appear beside the current session"
+                : contextSelectionDisabled
+                  ? "Two-session maximum reached"
+                  : "Use the checkbox to add this session"}
+          </div>
+        ) : (
+          <>
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[#e1e1d8] pt-3 dark:border-[#30302b]">
               <button
                 type="button"
-                aria-label={`Open checkpoints for ${item.title}`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onOpen(selectedTopic || latestTopic);
-                }}
-                className="inline-flex items-center gap-1 text-[8px] font-bold uppercase tracking-[0.12em] text-[#58691c] transition hover:text-[#171713] dark:text-[#d9ff68] dark:hover:text-white"
+                aria-label={`Continue latest topic from ${item.title}`}
+                onClick={onSelectSession}
+                disabled={selectionPending || Boolean(selectingTopic)}
+                className="inline-flex items-center gap-1.5 text-[9px] font-black uppercase tracking-[0.12em] text-[#58691c] transition hover:text-[#171713] disabled:cursor-wait disabled:opacity-60 dark:text-[#d9ff68] dark:hover:text-white"
               >
-                Checkpoints <History className="h-3 w-3" />
+                {selectingTopic === "__latest__" ? "Selecting…" : "Continue latest"}
+                <ArrowRight className="h-3 w-3" />
               </button>
-            ) : null}
-            <button
-              type="button"
-              aria-label={`Choose a topic from ${item.title}`}
-              aria-expanded={revealed}
-              onClick={() => setRevealed(true)}
-              className="text-[8px] font-bold uppercase tracking-[0.12em] text-[#85857c] transition hover:text-[#171713] dark:hover:text-white"
-            >
-              Topics
-            </button>
-            <button
-              type="button"
-              aria-label={`Inspect evidence for ${item.title}`}
-              onClick={(event) => {
-                event.stopPropagation();
-                onOpen(selectedTopic || latestTopic);
-              }}
-              className="inline-flex items-center gap-1 text-[8px] font-bold uppercase tracking-[0.12em] text-[#85857c] transition hover:text-[#171713] dark:hover:text-white"
-            >
-              Evidence <ArrowUpRight className="h-3 w-3" />
-            </button>
-          </div>
-        </div>
-
-        <div
-          aria-hidden={!revealed}
-          className={`overflow-hidden transition-all duration-500 ease-out ${revealed ? "mt-4 max-h-52 opacity-100" : "max-h-0 opacity-0"}`}
-        >
-          <div className="border-t border-[#e1e1d8] pt-3 dark:border-[#30302b]">
-            <p className="mb-2 text-[8px] font-black uppercase tracking-[0.16em] text-[#85857c]">Topics discussed</p>
-            <div className="flex flex-wrap gap-1.5">
-              {topics.length ? topics.map((topic) => (
+              <div className="flex items-center gap-3">
+                {(item.compaction_checkpoints || []).length ? (
+                  <button
+                    type="button"
+                    aria-label={`Open checkpoints for ${item.title}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onOpen(selectedTopic || latestTopic);
+                    }}
+                    className="inline-flex items-center gap-1 text-[8px] font-bold uppercase tracking-[0.12em] text-[#58691c] transition hover:text-[#171713] dark:text-[#d9ff68] dark:hover:text-white"
+                  >
+                    Checkpoints <History className="h-3 w-3" />
+                  </button>
+                ) : null}
                 <button
                   type="button"
-                  key={topic}
-                  tabIndex={revealed ? 0 : -1}
-                  aria-label={`Continue ${topic} from ${item.title}`}
+                  aria-label={`Choose a topic from ${item.title}`}
+                  aria-expanded={revealed}
+                  onClick={() => setRevealed(true)}
+                  className="text-[8px] font-bold uppercase tracking-[0.12em] text-[#85857c] transition hover:text-[#171713] dark:hover:text-white"
+                >
+                  Topics
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Inspect evidence for ${item.title}`}
                   onClick={(event) => {
                     event.stopPropagation();
-                    onSelectTopic(topic);
+                    onOpen(selectedTopic || latestTopic);
                   }}
-                  className="inline-flex items-center gap-1 rounded-lg border border-[#d8d8cf] bg-white/80 px-2.5 py-1.5 text-left text-[9px] font-bold leading-4 transition hover:border-transparent disabled:cursor-wait disabled:opacity-60 dark:border-[#3b3b35] dark:bg-black/20"
-                  disabled={Boolean(selectingTopic)}
-                  style={{ color: meta.accent }}
+                  className="inline-flex items-center gap-1 text-[8px] font-bold uppercase tracking-[0.12em] text-[#85857c] transition hover:text-[#171713] dark:hover:text-white"
                 >
-                  {selectingTopic === topic ? "Selecting…" : topic}
-                  <ArrowRight className="h-2.5 w-2.5 shrink-0" />
+                  Evidence <ArrowUpRight className="h-3 w-3" />
                 </button>
-              )) : <span className="text-[10px] font-semibold text-[#85857c]">No distinct topics extracted.</span>}
+              </div>
             </div>
-            <p className="mt-3 inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-[0.12em]" style={{ color: meta.accent }}>
-              Choose a topic for Continue <ArrowRight className="h-3 w-3" />
-            </p>
-          </div>
-        </div>
+
+            <div
+              aria-hidden={!revealed}
+              className={`overflow-hidden transition-all duration-500 ease-out ${revealed ? "mt-4 max-h-52 opacity-100" : "max-h-0 opacity-0"}`}
+            >
+              <div className="border-t border-[#e1e1d8] pt-3 dark:border-[#30302b]">
+                <p className="mb-2 text-[8px] font-black uppercase tracking-[0.16em] text-[#85857c]">Topics discussed</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {topics.length ? topics.map((topic) => (
+                    <button
+                      type="button"
+                      key={topic}
+                      tabIndex={revealed ? 0 : -1}
+                      aria-label={`Continue ${topic} from ${item.title}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onSelectTopic(topic);
+                      }}
+                      className="inline-flex items-center gap-1 rounded-lg border border-[#d8d8cf] bg-white/80 px-2.5 py-1.5 text-left text-[9px] font-bold leading-4 transition hover:border-transparent disabled:cursor-wait disabled:opacity-60 dark:border-[#3b3b35] dark:bg-black/20"
+                      disabled={selectionPending || Boolean(selectingTopic)}
+                      style={{ color: meta.accent }}
+                    >
+                      {selectingTopic === topic ? "Selecting…" : topic}
+                      <ArrowRight className="h-2.5 w-2.5 shrink-0" />
+                    </button>
+                  )) : <span className="text-[10px] font-semibold text-[#85857c]">No distinct topics extracted.</span>}
+                </div>
+                <p className="mt-3 inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-[0.12em]" style={{ color: meta.accent }}>
+                  Choose a topic for Continue <ArrowRight className="h-3 w-3" />
+                </p>
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </article>
   );

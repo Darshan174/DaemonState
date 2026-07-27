@@ -1599,7 +1599,7 @@ class WorkCheckpoint(Base):
     )
     trigger: Mapped[str] = mapped_column(String(50), nullable=False)
     schema_version: Mapped[str] = mapped_column(
-        String(50), nullable=False, default="work_checkpoint.v7"
+        String(50), nullable=False, default="work_checkpoint.v8"
     )
     capture_status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="complete"

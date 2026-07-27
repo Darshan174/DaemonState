@@ -35,7 +35,12 @@ import {
   useContextDigest,
   useLinkedAISessionRefresh,
 } from "../context-map/api";
-import { cleanDisplayText, formatTimeAgo, sessionIdentity } from "../context-map/digest";
+import {
+  cleanDisplayText,
+  formatTimeAgo,
+  parseApiTimestamp,
+  sessionIdentity,
+} from "../context-map/digest";
 import { copyReadySessionContextContent } from "./sessionContinuity";
 import { useProductWorkspace } from "./useProductWorkspace";
 
@@ -322,7 +327,7 @@ export default function NowPage() {
       setContinuationError({
         title: "Choose work to continue",
         message: (
-          "Choose a saved session or select work in Memory before loading "
+          "Choose a saved session or select work in Execute before loading "
           + "Project Context into a harness."
         ),
         affectedTasks: [],
@@ -404,10 +409,10 @@ export default function NowPage() {
         ? {
             kind: "continue",
             description: digestUnavailable
-              ? "Live activity is unavailable. Continue will compile Project Context for the resolved task before loading it into the selected harness."
+              ? "Live activity is unavailable. Continue will compile the workspace-wide Project Context foundation before loading the resolved task into the selected harness."
               : continuationLeadAvailable
-                ? "Compile task-relevant Project Context for the resolved task, reconcile the repository, then load the bound handoff into the selected harness."
-                : "Resolve the lossless user lead from the selected source, then compile and load Project Context bound to that exact task.",
+                ? "Compile workspace-wide Project Context, reconcile the repository, then load it with the resolved task handoff into the selected harness."
+                : "Resolve the lossless user lead from the selected source, then compile the objective-independent Project Context foundation and load both.",
           }
         : continuationAnchorAvailable
           ? {
@@ -539,23 +544,11 @@ export default function NowPage() {
         <div className="daemonstate-now-grid pointer-events-none absolute inset-0" aria-hidden="true" />
         <div className="daemonstate-now-orbit pointer-events-none absolute -right-24 -top-32 h-80 w-80 rounded-full border border-white/10" aria-hidden="true" />
         <div className="relative px-4 pb-5 pt-4 sm:px-6 sm:pb-6 sm:pt-5 lg:px-8">
-          <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-white/10 pb-3">
-            <p className="text-xs font-semibold text-[#c5c5bc]">{workspace.activeWorkspace?.name || "Project"}</p>
-            <div className="flex max-w-full flex-wrap items-start justify-end gap-2">
-              <span className="inline-flex min-h-11 items-center rounded-full border border-white/12 bg-white/[0.05] px-3 py-1 text-xs font-semibold text-[#d0d0c8]">
-                {digestPending
-                  ? "Loading activity"
-                  : digestUnavailable
-                    ? "Activity unavailable"
-                    : activity
-                      ? "Activity in view"
-                      : "Waiting for activity"}
-              </span>
-              <FloatingContextToggle workspaceId={workspace.activeWorkspaceId} />
-            </div>
+          <div className="flex justify-end">
+            <FloatingContextToggle workspaceId={workspace.activeWorkspaceId} />
           </div>
 
-          <div className="mt-4 sm:mt-5">
+          <div className="mt-3 sm:mt-4">
             <div className="max-w-3xl">
               <p className="text-xs font-black uppercase tracking-[0.18em] text-[#d9ff68]">
                 Choose the next harness
@@ -597,7 +590,7 @@ export default function NowPage() {
                 <ArrowRight className="h-4 w-4 shrink-0 text-white/35 transition-transform group-hover:translate-x-0.5 group-hover:text-[#d9ff68]" aria-hidden="true" />
               </Link>
               <Link
-                to="/app/memory"
+                to="/app/execute"
                 aria-label="Continue to a different session or harness"
                 className="group flex h-full min-h-20 items-center gap-3 rounded-2xl border border-white/[0.12] bg-white/[0.045] px-4 py-3.5 text-left backdrop-blur-md transition hover:-translate-y-0.5 hover:border-[#d9ff68]/45 hover:bg-white/[0.075] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#d9ff68]/70 motion-reduce:hover:translate-y-0"
               >
@@ -606,7 +599,7 @@ export default function NowPage() {
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block text-sm font-semibold text-white">Continue to a different session or harness</span>
-                  <span className="mt-1 block text-[11px] leading-4 text-white/50">Choose the context from Memory.</span>
+                  <span className="mt-1 block text-[11px] leading-4 text-white/50">Assemble the workspace envelope in Execute.</span>
                 </span>
                 <ArrowRight className="h-4 w-4 shrink-0 text-white/35 transition-transform group-hover:translate-x-0.5 group-hover:text-[#d9ff68]" aria-hidden="true" />
               </Link>
@@ -828,58 +821,6 @@ const CONTEXT_GROUP_META = {
   },
 };
 
-const CONTEXT_PROVENANCE_META = {
-  observed: {
-    label: "Repository-verified",
-    color: "#d9ff68",
-    border: "rgba(217,255,104,0.34)",
-    background: "rgba(217,255,104,0.12)",
-  },
-  human: {
-    label: "User-authoritative",
-    color: "#ffffff",
-    border: "rgba(255,255,255,0.3)",
-    background: "rgba(255,255,255,0.1)",
-  },
-  reported: {
-    label: "Agent-reported",
-    color: "#e2a86d",
-    border: "rgba(226,168,109,0.38)",
-    background: "rgba(226,168,109,0.13)",
-  },
-  review: {
-    label: "Needs review",
-    color: "#e2a86d",
-    border: "rgba(226,168,109,0.32)",
-    background: "rgba(226,168,109,0.09)",
-  },
-  mixed: {
-    label: "Mixed provenance",
-    color: "#b8b8af",
-    border: "rgba(184,184,175,0.28)",
-    background: "rgba(184,184,175,0.09)",
-  },
-  summary: {
-    label: "Recorded summary",
-    color: "#b8b8af",
-    border: "rgba(184,184,175,0.26)",
-    background: "rgba(184,184,175,0.08)",
-  },
-  excluded: {
-    label: "Excluded / superseded",
-    color: "#73736b",
-    border: "rgba(184,184,175,0.2)",
-    background: "rgba(184,184,175,0.045)",
-  },
-};
-
-const CONTEXT_PROVENANCE_LEGEND = [
-  CONTEXT_PROVENANCE_META.observed,
-  CONTEXT_PROVENANCE_META.human,
-  CONTEXT_PROVENANCE_META.reported,
-  CONTEXT_PROVENANCE_META.excluded,
-];
-
 const CHECKPOINT_GROUPS = [
   ["goal", "Task goal", "instructions", "Task"],
   ["progress", "Current state", "supporting_context", "Current"],
@@ -1068,7 +1009,7 @@ function CarriedContextPanel({
                   ? `The exact context package delivered to ${deliveryProvider}, including what was selected, excluded, and verified.`
                   : "The exact context package prepared for this run. Delivery did not complete, so this is not presented as carried over."
               : checkpoint
-                ? "A source-backed inventory of the saved task boundary. Nothing is presented as carried until launch-time selection and repository reconciliation finish. Continue uses task-relevant Project Context; Copy Session Context uses only this session’s latest captured immutable checkpoint."
+                ? "A source-backed inventory of the saved task boundary. Nothing is presented as carried until repository reconciliation finishes. Continue uses the workspace-wide Project Context parent; Copy Session Context uses only this session’s latest captured immutable checkpoint."
                 : "The linked task is ready. Continue will inspect the repository, compile the final package, and load it before you start the first turn."}
           </p>
         </div>
@@ -1192,7 +1133,7 @@ function CarriedContextPanel({
                 <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3" aria-label="Supporting context counters">
                   {counterGroups.map((group) => {
                   const provenance = contextGroupProvenance(group.items);
-                  const visual = contextProvenanceVisual(provenance.kind, group.items.length);
+                  const visual = contextCategoryVisual(group);
                   return (
                     <button
                       key={group.id}
@@ -1212,8 +1153,9 @@ function CarriedContextPanel({
                         backgroundColor: visual.background,
                         borderColor: visual.border,
                       }}
+                      data-context-color={visual.color}
                       data-provenance={group.items.length ? provenance.kind || "mixed" : "excluded"}
-                      aria-label={`${group.label}: ${group.items.length} ${compiled ? "selected" : "captured"} item${group.items.length === 1 ? "" : "s"}. ${provenance.label}. Inspect details.`}
+                      aria-label={`${group.label}: ${group.items.length} ${compiled ? "selected" : "saved"} record${group.items.length === 1 ? "" : "s"}. ${provenance.label}. Inspect details.`}
                     >
                       <span className="min-w-0">
                         <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: visual.color }} aria-hidden="true" />
@@ -1233,7 +1175,7 @@ function CarriedContextPanel({
                 </div>
               ) : null}
 
-              <ContextProvenanceLegend />
+              <ContextCountSemantics compiled={compiled} />
             </div>
           </div>
         </div>
@@ -1387,7 +1329,7 @@ function CarriedContextPanel({
               )}
             </div>
             <footer className="border-t border-[#deded5] px-5 py-4 dark:border-[#292925] sm:px-7">
-              <Link to={drawer.mode === "excluded" ? "/app/memory?view=review" : "/app/memory"} className="group inline-flex min-h-11 items-center gap-2 text-xs font-semibold text-[#171713] dark:text-[#d9ff68]">
+              <Link to={drawer.mode === "excluded" ? "/app/execute/inspector?view=review" : "/app/execute/inspector"} className="group inline-flex min-h-11 items-center gap-2 text-xs font-semibold text-[#171713] dark:text-[#d9ff68]">
                 Open project memory <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
               </Link>
             </footer>
@@ -1558,13 +1500,16 @@ function CarriedContextLoading() {
 }
 
 function ContextBriefRow({ item, compiled, onOpen }) {
-  const visual = contextProvenanceVisual(item.provenance.kind, item.group?.items?.length || (item.text ? 1 : 0));
   const count = item.group?.items?.length || 0;
+  const visual = contextCategoryVisual(item.group);
   const content = (
     <>
-      <span className="flex items-center gap-2">
-        <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: visual.color }} aria-hidden="true" />
-        <span className="text-[10px] font-black uppercase tracking-[0.13em] text-white/55">{item.label}</span>
+      <span className="flex items-center justify-between gap-3">
+        <span className="flex items-center gap-2">
+          <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: visual.color }} aria-hidden="true" />
+          <span className="text-[10px] font-black uppercase tracking-[0.13em] text-white/55">{item.label}</span>
+        </span>
+        <span className="text-[9px] font-semibold text-white/55">{item.provenance.label}</span>
       </span>
       <span className="mt-1.5 block text-xs font-semibold leading-5 text-white">
         {item.text}
@@ -1578,7 +1523,12 @@ function ContextBriefRow({ item, compiled, onOpen }) {
   };
   if (!onOpen) {
     return (
-      <div className={`${className} opacity-75`} style={style} data-provenance={item.provenance.kind || "mixed"}>
+      <div
+        className={`${className} opacity-75`}
+        style={style}
+        data-context-color={visual.color}
+        data-provenance={item.provenance.kind || "mixed"}
+      >
         {content}
       </div>
     );
@@ -1589,8 +1539,9 @@ function ContextBriefRow({ item, compiled, onOpen }) {
       onClick={onOpen}
       className={`${className} hover:-translate-y-0.5 hover:brightness-110 motion-reduce:hover:translate-y-0`}
       style={style}
+      data-context-color={visual.color}
       data-provenance={item.provenance.kind || "mixed"}
-      aria-label={`${item.label}: ${count} ${compiled ? "selected" : "captured"} item${count === 1 ? "" : "s"}. ${item.provenance.label}. Inspect details.`}
+      aria-label={`${item.label}: ${count} ${compiled ? "selected" : "saved"} record${count === 1 ? "" : "s"}. ${item.provenance.label}. Inspect details.`}
     >
       {content}
     </button>
@@ -1599,7 +1550,7 @@ function ContextBriefRow({ item, compiled, onOpen }) {
 
 function ContextCompositionPie({ groups, compiled }) {
   const total = groups.reduce((sum, group) => sum + group.items.length, 0);
-  const categoryLabel = compiled ? "selected" : "boundary";
+  const recordLabel = compiled ? "selected" : "saved";
   const slices = [];
   let cursor = 0;
 
@@ -1609,7 +1560,7 @@ function ContextCompositionPie({ groups, compiled }) {
     cursor += count;
     const end = cursor / total;
     const provenance = contextGroupProvenance(group.items);
-    const visual = contextProvenanceVisual(provenance.kind, count);
+    const visual = contextCategoryVisual(group);
     slices.push({
       ...group,
       count,
@@ -1622,8 +1573,8 @@ function ContextCompositionPie({ groups, compiled }) {
   });
 
   const chartLabel = (
-    `Context composition pie chart: ${total} ${categoryLabel} `
-    + `item${total === 1 ? "" : "s"} across ${groups.length} categor${groups.length === 1 ? "y" : "ies"}`
+    `Context composition pie chart: ${total} ${recordLabel} `
+    + `record${total === 1 ? "" : "s"} across ${groups.length} section${groups.length === 1 ? "" : "s"}`
   );
 
   return (
@@ -1656,8 +1607,9 @@ function ContextCompositionPie({ groups, compiled }) {
               stroke="rgba(255,255,255,0.24)"
               strokeWidth="1.25"
               data-context-pie-slice={slices[0].id}
+              data-context-color={slices[0].color}
             >
-              <title>{`${slices[0].label}: ${slices[0].count} ${categoryLabel} item. ${slices[0].provenance.label}.`}</title>
+              <title>{`${slices[0].label}: ${slices[0].count} ${recordLabel} record. ${slices[0].provenance.label}.`}</title>
             </circle>
           ) : (
             slices.map((slice) => (
@@ -1671,8 +1623,9 @@ function ContextCompositionPie({ groups, compiled }) {
                 strokeLinejoin="round"
                 className="origin-center transition-[opacity,filter] duration-300 hover:opacity-100 hover:[filter:brightness(1.12)] motion-reduce:transition-none"
                 data-context-pie-slice={slice.id}
+                data-context-color={slice.color}
               >
-                <title>{`${slice.label}: ${slice.count} ${categoryLabel} item${slice.count === 1 ? "" : "s"} (${Math.round((slice.count / total) * 100)}%). ${slice.provenance.label}.`}</title>
+                <title>{`${slice.label}: ${slice.count} ${recordLabel} record${slice.count === 1 ? "" : "s"} (${Math.round((slice.count / total) * 100)}%). ${slice.provenance.label}.`}</title>
               </path>
             ))
           )}
@@ -1688,17 +1641,18 @@ function ContextCompositionPie({ groups, compiled }) {
         <span className="mt-1.5 flex items-baseline justify-center gap-2 sm:justify-start">
           <strong className="text-3xl font-semibold leading-none tracking-[-0.055em] text-white">{total}</strong>
           <span className="text-xs font-semibold text-white/65">
-            {categoryLabel} item{total === 1 ? "" : "s"} · {groups.length} categor{groups.length === 1 ? "y" : "ies"}
+            {recordLabel} record{total === 1 ? "" : "s"} · {groups.length} section{groups.length === 1 ? "" : "s"}
           </span>
         </span>
         <span className="mt-1.5 block text-[10px] leading-4 text-white/45">
-          Slice size reflects item count. Color identifies the context category.
+          Slice size is the stored record count. Color identifies the checkpoint section.
         </span>
         <ul className="mt-3 flex flex-wrap justify-center gap-1.5 sm:justify-start" aria-label="Pie chart categories">
           {slices.map((slice) => (
             <li
               key={slice.id}
               className="inline-flex items-center gap-1.5 rounded-full border border-white/[0.1] bg-black/10 px-2.5 py-1 text-[10px] font-semibold text-white/70 backdrop-blur-md"
+              data-context-color={slice.color}
             >
               <span
                 className="h-1.5 w-1.5 shrink-0 rounded-full"
@@ -1739,23 +1693,16 @@ function contextPiePoint(ratio, center, radius) {
   };
 }
 
-function ContextProvenanceLegend() {
+function ContextCountSemantics({ compiled }) {
   return (
-    <div
-      className="mt-4 flex flex-wrap gap-x-4 gap-y-2 border-t border-white/10 pt-3"
-      aria-label="Context provenance legend"
+    <p
+      className="mt-4 border-t border-white/10 pt-3 text-[10px] font-semibold leading-5 text-white/55"
+      aria-label="Context count semantics"
     >
-      {CONTEXT_PROVENANCE_LEGEND.map((item) => (
-        <span key={item.label} className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-white/65">
-          <span
-            className="h-2 w-2 rounded-full border"
-            style={{ backgroundColor: item.color, borderColor: item.border }}
-            aria-hidden="true"
-          />
-          {item.label}
-        </span>
-      ))}
-    </div>
+      Colors identify sections. Counts are {compiled
+        ? "records selected by the compiler, not all available context"
+        : "records stored in this bounded checkpoint, not totals across the whole session"}; evidence status appears on each card.
+    </p>
   );
 }
 
@@ -2312,13 +2259,11 @@ function checkpointContextGroups(checkpoint) {
   const sections = checkpoint?.sections || {};
   return CHECKPOINT_GROUPS.map(([section, label, groupId, shortLabel]) => {
     const sourceItems = Array.isArray(sections[section]) ? sections[section] : [];
-    const items = section === "decisions"
-      ? atomicDecisionItems(sourceItems)
-      : sourceItems.map((item) => (
-          section === "goal"
-            ? { ...item, trust_zone: item.trust_zone || "trusted_human" }
-            : item
-        ));
+    const items = sourceItems.map((item) => (
+      section === "goal"
+        ? { ...item, trust_zone: item.trust_zone || "trusted_human" }
+        : item
+    ));
     return {
       id: section,
       label,
@@ -2526,52 +2471,6 @@ function contextGoalBriefScore(value) {
   return Math.min(text.length, 240) - trailingFragmentPenalty;
 }
 
-function atomicDecisionItems(items = []) {
-  const atoms = [];
-  const seen = new Set();
-  items.forEach((item, itemIndex) => {
-    const narrative = normalizeContextNarrativeText(item.statement || item.summary || item.title);
-    decisionNarrativeFragments(narrative).forEach((fragment, fragmentIndex) => {
-      const comparable = contextBriefComparableText(fragment);
-      if (!comparable || seen.has(comparable)) return;
-      seen.add(comparable);
-      atoms.push({
-        ...item,
-        id: item.id ? `${item.id}:decision:${fragmentIndex}` : undefined,
-        item_key: `${item.item_key || `decision:${itemIndex}`}:atom:${fragmentIndex}`,
-        title: fragment,
-        statement: fragment,
-        summary: "",
-        item_type: "decision",
-      });
-    });
-  });
-  return atoms.slice(-12);
-}
-
-function decisionNarrativeFragments(value) {
-  const directive = /(?:^(?:always|avoid|collapse|compile|delete|distinguish|do not|don't|exclude|hide|keep|make|move|never|only|prefer|put|record|remove|render|replace|select|show|split|strip|treat|use)\b|\b(?:must|should|will use|needs? to)\b)/i;
-  const nonDecisionHeading = /^(?:what (?:is|was)|why\b|implementation brief\b|visual design\b|context quality\b|the problem\b|the evidence\b)/i;
-  const missingSubject = /^(?:(?:(?:both|each|either|neither|one|ones|they|them|their|it|its|this|that|these|those)\s+(?:can(?:not|'t)?|do(?:es)?\s+not|must|needs?\s+to|should|will)\b)|(?:(?:only\s+)?(?:the\s+)?(?:first|second|third|former|latter|last|next|previous)\b))/i;
-  return String(value || "")
-    .split(/\n+/)
-    .flatMap((line) => line.split(/(?:(?<=[.!?;])\s+|:\s+)(?=[A-Z“"'])/))
-    .map((line) => line
-      .replace(/^(?:#{1,6}\s*|[•*-]\s*|\d+[.)]\s*)/, "")
-      .replace(/\*\*/g, "")
-      .replace(/^["“]|["”]$/g, "")
-      .trim())
-    .filter((line) => (
-      line.length >= 8
-      && line.length <= 360
-      && !line.endsWith("?")
-      && !nonDecisionHeading.test(line)
-      && !missingSubject.test(line)
-      && directive.test(line)
-    ))
-    .map((line) => truncateContextBrief(line.replace(/:\s*$/, "."), 260));
-}
-
 function checkpointSnapshotItems(snapshot) {
   return CHECKPOINT_GROUPS.flatMap(([section, label]) => (
     (snapshot?.sections?.[section] || []).map((item) => ({
@@ -2649,9 +2548,13 @@ function contextPresentationGroupId(item = {}) {
   return CONTEXT_GROUP_META[item.lane] ? item.lane : "supporting_context";
 }
 
-function contextProvenanceVisual(kind, itemCount) {
-  if (!itemCount) return CONTEXT_PROVENANCE_META.excluded;
-  return CONTEXT_PROVENANCE_META[kind] || CONTEXT_PROVENANCE_META.mixed;
+function contextCategoryVisual(group = {}) {
+  const meta = group.meta || CONTEXT_GROUP_META.supporting_context;
+  return {
+    color: meta.color,
+    border: `${meta.color}66`,
+    background: meta.soft,
+  };
 }
 
 function contextGroupProvenance(items) {
@@ -2813,8 +2716,8 @@ function CheckpointPanel({
                 <p className="relative mt-3 text-xs leading-5 text-white/60 dark:text-black/55">
                   It is kept in history and is not being used as the current task’s next action.
                 </p>
-                <Link to="/app/runs" className="group relative mt-5 inline-flex min-h-11 items-center gap-2 text-xs font-semibold">
-                  View recovery history <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-1" />
+                <Link to="/app/library" className="group relative mt-5 inline-flex min-h-11 items-center gap-2 text-xs font-semibold">
+                  Browse saved sessions <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-1" />
                 </Link>
               </article>
             ) : null}
@@ -2984,7 +2887,7 @@ function ProjectMemorySummary({ memory, loading, error }) {
         </>
       )}
 
-      <Link to="/app/memory" className="group mt-5 inline-flex min-h-11 items-center gap-2 text-xs font-semibold text-[#171713] dark:text-[#d9ff68]">
+      <Link to="/app/execute/inspector" className="group mt-5 inline-flex min-h-11 items-center gap-2 text-xs font-semibold text-[#171713] dark:text-[#d9ff68]">
         Open project memory <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-1" />
       </Link>
     </section>
@@ -3003,7 +2906,7 @@ function SessionCompactions({ checkpoints, displayedCheckpointId }) {
           <span className="rounded-full bg-[#f0f0e9] px-3 py-1.5 text-xs font-semibold text-[#68685f] dark:bg-white/[0.06] dark:text-[#aaa9a0]">
             {checkpoints.length} saved
           </span>
-          <Link to="/app/runs" className="inline-flex min-h-11 items-center text-xs font-semibold underline decoration-[#aaa99f] underline-offset-4">View all</Link>
+          <Link to="/app/library" className="inline-flex min-h-11 items-center text-xs font-semibold underline decoration-[#aaa99f] underline-offset-4">Open Library</Link>
         </div>
       </div>
       <ol className="grid gap-3 border-t border-[#deded5] px-6 py-6 dark:border-[#292925] sm:px-8 md:grid-cols-2">
@@ -3055,21 +2958,12 @@ function TaskStatusRibbon({ activity, checkpoint, loading = false, error = false
           tone: "text-red-200",
         }
       : activityEvidenceStatus(activity);
-  const updatedAt = activity?.updated_at || checkpoint?.boundary?.captured_at;
-  const freshnessValue = loading
-    ? "Checking freshness"
-    : error
-      ? "Time unavailable"
-      : updatedAt
-        ? `Updated ${formatTimeAgo(updatedAt)}`
-        : "Time unavailable";
-  const freshnessDetail = loading
-    ? "Loading the latest available record"
-    : error
-      ? "Retry current activity"
-      : activity?.live
-        ? "Live session activity"
-        : "Latest available record";
+  const freshness = activityFreshnessStatus({
+    activity,
+    checkpoint,
+    loading,
+    error,
+  });
 
   return (
     <dl className="relative grid border-t border-white/10 bg-black/10 sm:grid-cols-2" aria-label="Observed work status">
@@ -3081,12 +2975,86 @@ function TaskStatusRibbon({ activity, checkpoint, loading = false, error = false
       />
       <StatusRibbonItem
         label="Freshness"
-        value={freshnessValue}
-        detail={freshnessDetail}
+        value={freshness.value}
+        detail={freshness.detail}
         tone="text-white"
       />
     </dl>
   );
+}
+
+function activityFreshnessStatus({
+  activity,
+  checkpoint,
+  loading = false,
+  error = false,
+}) {
+  if (loading) {
+    return {
+      value: "Checking freshness",
+      detail: "Reading the activity timestamp",
+    };
+  }
+  if (error) {
+    return {
+      value: "Time unavailable",
+      detail: "Current activity could not be loaded",
+    };
+  }
+
+  const activityTimestamp = activity?.updated_at;
+  const checkpointTimestamp = checkpoint?.boundary?.captured_at;
+  const timestamp = activityTimestamp || checkpointTimestamp;
+  if (!timestamp || !parseApiTimestamp(timestamp)) {
+    return {
+      value: "Time unavailable",
+      detail: "No valid source timestamp was recorded",
+    };
+  }
+
+  const age = formatTimeAgo(timestamp);
+  const exact = formatExactActivityTime(timestamp);
+  if (!activityTimestamp) {
+    return {
+      value: `Captured ${age}`,
+      detail: `Checkpoint capture time · ${exact}`,
+    };
+  }
+  if (activity.evidence_level === "observed_run") {
+    return {
+      value: `Observed ${age}`,
+      detail: `${activity.live ? "Latest recorded live-run event" : "Last persisted run event"} · ${exact}`,
+    };
+  }
+  if (activity.evidence_level === "checkpoint_boundary") {
+    return {
+      value: `Captured ${age}`,
+      detail: `Saved checkpoint boundary · ${exact}`,
+    };
+  }
+  if (activity.recency_basis === "imported_at_fallback") {
+    return {
+      value: `Imported ${age}`,
+      detail: `Import time; source activity time unavailable · ${exact}`,
+    };
+  }
+  return {
+    value: `Source activity ${age}`,
+    detail: `Provider session timestamp · ${exact}`,
+  };
+}
+
+function formatExactActivityTime(value) {
+  const parsed = parseApiTimestamp(value);
+  if (!parsed) return "time unavailable";
+  return parsed.toLocaleString([], {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
 }
 
 function StatusRibbonItem({ label, value, detail, tone }) {
@@ -3156,7 +3124,7 @@ function ObservedWork({ activity, loading = false, error = false }) {
   const latestUpdate = displayActivityText(activity.latest_update);
   const detailUrl = activity.source_card_id
     ? explainCardUrl(activity.source_card_id)
-    : "/app/runs";
+    : "/app/library";
 
   return (
     <article className="app-surface relative overflow-hidden p-6 sm:p-7 xl:p-8">

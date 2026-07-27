@@ -9,13 +9,21 @@ from typing import Any
 from app.schemas.continuation_execution import (
     ContinuationExecutionContract,
     HandoffTruthState,
+    ProjectEvidenceLevel,
     RequirementPriority,
+    SelectedTaskLifecycle,
     VerifierType,
 )
 from app.services.execution_prompt_renderer import (
+    PROJECT_FOUNDATION_REQUIRED_HEADINGS,
     RENDERED_REPOSITORY_EVIDENCE_LIMIT,
     canonical_contract_json,
     execution_prompt_sha256,
+    project_context_rendered_lines,
+)
+from app.services.project_foundation_sections import (
+    PROJECT_FOUNDATION_CORE_SECTIONS,
+    looks_like_generic_inventory,
 )
 from app.services.provider_capabilities import check_provider_capabilities
 
@@ -124,6 +132,18 @@ def evaluate_continuation_quality(
     prompt_sha256 = execution_prompt_sha256(prompt_markdown)
     issues: list[ContinuationQualityIssue] = []
     if (
+        contract.selected_task_lifecycle
+        is SelectedTaskLifecycle.COMPLETED
+    ):
+        issues.append(ContinuationQualityIssue(
+            code="selected_task_completed",
+            severity="blocking",
+            message=(
+                "The selected task is already completed and cannot be "
+                "launched or executed again."
+            ),
+        ))
+    if (
         _REFERENCED_CONTEXT_DEPENDENCY_RE.search(
             contract.task.request_verbatim
         )
@@ -223,14 +243,19 @@ def evaluate_continuation_quality(
                 requirement_id=requirement.id,
             ))
 
+    _check_project_foundation_quality(contract, issues=issues)
     for item in contract.project_context:
-        if item.truth_state != "current" or item.provenance != "verified":
+        if (
+            item.truth_state != "current"
+            or not item.evidence_level.durable_current
+            or not item.provenance_refs
+        ):
             issues.append(ContinuationQualityIssue(
                 code="project_context_untrusted",
                 severity="blocking",
                 message=(
-                    f"Project context item {item.id} is not current and "
-                    "provenance-verified."
+                    f"Project Context item {item.id} is not current durable "
+                    "evidence or lacks provenance."
                 ),
                 project_context_id=item.id,
             ))
@@ -244,20 +269,11 @@ def evaluate_continuation_quality(
                 ),
                 project_context_id=item.id,
             ))
-        statement_lines = item.statement.splitlines() or [""]
-        expected_first_line = (
-            f"> [{item.kind.value}; current; verified] "
-            f"{item.title} — {statement_lines[0]}"
-        )
-        expected_continuations = [
-            f"> {line}" if line else ">"
-            for line in statement_lines[1:]
-        ]
+        expected_lines = project_context_rendered_lines(item)
         if (
-            expected_first_line not in prompt_markdown.splitlines()
-            or any(
+            any(
                 line not in prompt_markdown.splitlines()
-                for line in expected_continuations
+                for line in expected_lines
             )
         ):
             issues.append(ContinuationQualityIssue(
@@ -269,10 +285,9 @@ def evaluate_continuation_quality(
                 project_context_id=item.id,
             ))
         if project_context_markdown is not None and (
-            expected_first_line not in project_context_markdown.splitlines()
-            or any(
+            any(
                 line not in project_context_markdown.splitlines()
-                for line in expected_continuations
+                for line in expected_lines
             )
         ):
             issues.append(ContinuationQualityIssue(
@@ -543,6 +558,150 @@ def evaluate_continuation_quality(
     )
 
 
+def _check_project_foundation_quality(
+    contract: ContinuationExecutionContract,
+    *,
+    issues: list[ContinuationQualityIssue],
+) -> None:
+    """Reject structural shells that do not explain the actual workspace."""
+
+    snapshot = contract.project_foundation
+    if snapshot is None:
+        issues.append(ContinuationQualityIssue(
+            code="project_context_foundation_metadata_missing",
+            severity="blocking",
+            message=(
+                "Project Context has no workspace-wide foundation compilation "
+                "metadata."
+            ),
+        ))
+    else:
+        if (
+            snapshot.compilation_scope != "workspace"
+            or snapshot.objective_independent is not True
+        ):
+            issues.append(ContinuationQualityIssue(
+                code="project_context_not_workspace_wide",
+                severity="blocking",
+                message=(
+                    "Project Context was not compiled as an objective-independent "
+                    "workspace foundation."
+                ),
+            ))
+        if snapshot.included_fact_count != len(contract.project_context):
+            issues.append(ContinuationQualityIssue(
+                code="project_context_foundation_count_mismatch",
+                severity="blocking",
+                message=(
+                    "Project Context foundation metadata does not match its "
+                    "included durable facts."
+                ),
+            ))
+        if (
+            contract.repository.status_fingerprint
+            and snapshot.repository_fingerprint
+            != contract.repository.status_fingerprint
+        ):
+            issues.append(ContinuationQualityIssue(
+                code="project_context_foundation_stale",
+                severity="blocking",
+                message=(
+                    "Project Context foundation is stale relative to the bound "
+                    "repository snapshot."
+                ),
+            ))
+
+    if not contract.project_context:
+        issues.append(ContinuationQualityIssue(
+            code="project_context_foundation_empty",
+            severity="blocking",
+            message=(
+                "Project Context is empty. It is not ready and must not be "
+                "copied or staged."
+            ),
+        ))
+        return
+
+    section_counts: dict[str, int] = {}
+    identity_values: dict[str, set[str]] = {}
+    generic_count = 0
+    for item in contract.project_context:
+        section_counts[item.section.value] = (
+            section_counts.get(item.section.value, 0) + 1
+        )
+        identity_values.setdefault(item.identity_key, set()).add(
+            _normalized_foundation_statement(item.statement)
+        )
+        if looks_like_generic_inventory(item.title, item.statement):
+            generic_count += 1
+        if not item.provenance_refs:
+            issues.append(ContinuationQualityIssue(
+                code="project_context_fact_provenance_missing",
+                severity="blocking",
+                message=(
+                    f"Project Context fact {item.id} lacks evidence provenance."
+                ),
+                project_context_id=item.id,
+            ))
+        if item.evidence_level in {
+            ProjectEvidenceLevel.PROVISIONAL,
+            ProjectEvidenceLevel.SUPERSEDED_CONFLICTING,
+        }:
+            issues.append(ContinuationQualityIssue(
+                code="project_context_non_durable_evidence_level",
+                severity="blocking",
+                message=(
+                    f"Project Context fact {item.id} has excluded evidence "
+                    f"level {item.evidence_level.value}."
+                ),
+                project_context_id=item.id,
+            ))
+
+    missing_core = sorted(
+        section.value
+        for section in PROJECT_FOUNDATION_CORE_SECTIONS
+        if section_counts.get(section.value, 0) == 0
+    )
+    if missing_core:
+        issues.append(ContinuationQualityIssue(
+            code="project_context_core_sections_empty",
+            severity="blocking",
+            message=(
+                "Project Context cannot yet explain what the project does, how "
+                "it works, and where its important parts live. Empty core "
+                "sections: "
+                + ", ".join(missing_core)
+                + "."
+            ),
+        ))
+
+    conflicting_identities = sorted(
+        identity
+        for identity, values in identity_values.items()
+        if len(values) > 1
+    )
+    if conflicting_identities:
+        issues.append(ContinuationQualityIssue(
+            code="project_context_unresolved_fact_conflict",
+            severity="blocking",
+            message=(
+                "Project Context contains unresolved conflicting current facts: "
+                + ", ".join(conflicting_identities[:5])
+                + "."
+            ),
+        ))
+
+    if generic_count * 2 >= len(contract.project_context):
+        issues.append(ContinuationQualityIssue(
+            code="project_context_generic_inventory_dominates",
+            severity="blocking",
+            message=(
+                "Project Context is mostly generic inventory instead of a "
+                "usable product and technical foundation."
+            ),
+        ))
+
+
 def _check_worker_handoff_shape(
     contract: ContinuationExecutionContract,
     *,
@@ -551,11 +710,20 @@ def _check_worker_handoff_shape(
     issues: list[ContinuationQualityIssue],
     issue_prefix: str = "worker_handoff",
 ) -> None:
+    completed_project_reference = bool(
+        issue_prefix == "project_context_copy"
+        and contract.selected_task_lifecycle
+        is SelectedTaskLifecycle.COMPLETED
+    )
     lead_section = _markdown_section(
         markdown,
         headings=(
-            "## Authoritative request",
-            "### Authoritative current lead",
+            ("### Completed goal retained for reference",)
+            if completed_project_reference
+            else (
+                "## Authoritative request",
+                "### Authoritative current lead",
+            )
         ),
     )
     expected_lead = contract.task.request_verbatim.rstrip("\r\n")
@@ -590,34 +758,35 @@ def _check_worker_handoff_shape(
             message=f"{context_name} omits current repository state.",
         ))
 
-    done_section = _markdown_section(
-        markdown,
-        headings=(
-            "## Definition of done",
-            "### Definition of done",
-        ),
-    )
-    if not done_section:
-        issues.append(ContinuationQualityIssue(
-            code=f"{issue_prefix}_definition_of_done_missing",
-            severity="blocking",
-            message=f"{context_name} omits the definition of done.",
-        ))
-    else:
-        requirements = {item.id: item for item in contract.requirements}
-        for requirement_id in contract.definition_of_done:
-            requirement = requirements.get(requirement_id)
-            if requirement is None or requirement.text in done_section:
-                continue
+    if not completed_project_reference:
+        done_section = _markdown_section(
+            markdown,
+            headings=(
+                "## Definition of done",
+                "### Definition of done",
+            ),
+        )
+        if not done_section:
             issues.append(ContinuationQualityIssue(
-                code=f"{issue_prefix}_definition_of_done_incomplete",
+                code=f"{issue_prefix}_definition_of_done_missing",
                 severity="blocking",
-                message=(
-                    f"{context_name} omits definition-of-done requirement "
-                    f"{requirement_id}."
-                ),
-                requirement_id=requirement_id,
+                message=f"{context_name} omits the definition of done.",
             ))
+        else:
+            requirements = {item.id: item for item in contract.requirements}
+            for requirement_id in contract.definition_of_done:
+                requirement = requirements.get(requirement_id)
+                if requirement is None or requirement.text in done_section:
+                    continue
+                issues.append(ContinuationQualityIssue(
+                    code=f"{issue_prefix}_definition_of_done_incomplete",
+                    severity="blocking",
+                    message=(
+                        f"{context_name} omits definition-of-done requirement "
+                        f"{requirement_id}."
+                    ),
+                    requirement_id=requirement_id,
+                ))
 
     if "Reconciliation and unresolved state" not in markdown:
         issues.append(ContinuationQualityIssue(
@@ -625,6 +794,69 @@ def _check_worker_handoff_shape(
             severity="blocking",
             message=f"{context_name} omits repository/checkpoint reconciliation.",
         ))
+    if issue_prefix == "project_context_copy":
+        lines = set(markdown.splitlines())
+        missing_foundation_sections = [
+            heading
+            for heading in PROJECT_FOUNDATION_REQUIRED_HEADINGS
+            if heading not in lines
+        ]
+        if missing_foundation_sections:
+            issues.append(ContinuationQualityIssue(
+                code="project_context_copy_foundation_sections_missing",
+                severity="blocking",
+                message=(
+                    "Project Context omits required parent-foundation or "
+                    "task-specific child sections: "
+                    + ", ".join(missing_foundation_sections)
+                    + "."
+                ),
+            ))
+    if completed_project_reference:
+        required_reference_markers = (
+            "### Completed goal retained for reference",
+            "- Selected task lifecycle: `completed`.",
+            (
+                "- Reference only: this artifact does not authorize "
+                "continuation, reopening, re-verification, or execution of "
+                "the completed goal."
+            ),
+        )
+        if any(
+            marker not in markdown
+            for marker in required_reference_markers
+        ):
+            issues.append(ContinuationQualityIssue(
+                code="project_context_copy_completed_reference_missing",
+                severity="blocking",
+                message=(
+                    "Completed-task Project Context omits its terminal "
+                    "reference-only boundary."
+                ),
+            ))
+        forbidden_action_headings = {
+            "### Authoritative current lead",
+            "### First action",
+            "### Definition of done",
+            "### Prior-agent scope interpretation",
+            "### Read first",
+            "### Required artifacts",
+            "### User constraints",
+        }
+        present_action_headings = sorted(
+            forbidden_action_headings & set(markdown.splitlines())
+        )
+        if present_action_headings:
+            issues.append(ContinuationQualityIssue(
+                code="project_context_copy_completed_action_present",
+                severity="blocking",
+                message=(
+                    "Completed-task Project Context contains action-oriented "
+                    "sections: "
+                    + ", ".join(present_action_headings)
+                    + "."
+                ),
+            ))
 
 
 def _markdown_section(
@@ -670,6 +902,12 @@ def _looks_like_conversation_dump(value: str) -> bool:
         len(json_roles) >= 2
         or len(line_roles) >= 2
         or len(re.findall(r"(?m)^\s*#{1,6}\s+\S", value)) >= 3
+    )
+
+
+def _normalized_foundation_statement(value: str) -> str:
+    return " ".join(
+        re.sub(r"[^a-z0-9/_.:-]+", " ", value.casefold()).split()
     )
 
 

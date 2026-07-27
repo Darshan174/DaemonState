@@ -9,9 +9,7 @@ base.
 ```bash
 git clone https://github.com/Darshan174/DaemonState.git daemonstate
 cd daemonstate
-cp .env.example .env
-bash scripts/doctor.sh --docker
-docker compose up --build
+bash scripts/self-host.sh
 ```
 
 Seed the demo workspace directly:
@@ -33,9 +31,10 @@ opens immediately. It does not store credentials or mark any provider connected.
 
 When running in Docker, the local-path importer sees container paths. Compose
 mounts the current checkout read-only at `/workspace` by default. To inspect a
-different host project, start with
-`DAEMONSTATE_PROJECT_PATH=/absolute/host/path docker compose up --build`,
-then enter `/workspace` when connecting the project.
+different host project, set `DAEMONSTATE_PROJECT_PATH` to its absolute path in
+`.env`, rerun `bash scripts/self-host.sh`, then enter `/workspace` when
+connecting the project. The wrapper validates the mount before recreating the
+services.
 
 ## What To Inspect
 

@@ -501,7 +501,7 @@ struct DaemonStateAPITests {
           "workspace_id": "workspace-1",
           "provider": "codex",
           "session_id": "session-1",
-          "schema_version": "work_checkpoint.v5",
+          "schema_version": "work_checkpoint.v8",
           "capture_status": "complete",
           "projection": {"valid": true},
           "currentness": {"state": "captured"},

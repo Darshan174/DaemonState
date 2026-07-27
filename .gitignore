@@ -2,6 +2,7 @@
 # Environment & Secrets
 # ===========================
 .env
+.env.tmp.*
 .env.local
 .env.*.local
 .env.production
@@ -120,7 +121,6 @@ AGENTS.ms
 !.agent-runs/
 .agent-runs/*
 !.agent-runs/agent-*-task.md
-SECURITY.md
 project.md
 instructions.md
 AGENTS.md

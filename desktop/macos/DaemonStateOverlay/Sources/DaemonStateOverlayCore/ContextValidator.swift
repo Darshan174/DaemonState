@@ -2,7 +2,14 @@ import CryptoKit
 import Foundation
 
 enum ContextValidator {
-    static let checkpointSchema = "work_checkpoint.v5"
+    static let checkpointSchemas = Set([
+        "work_checkpoint.v5",
+        "work_checkpoint.v6",
+        "work_checkpoint.v7",
+        "work_checkpoint.v8",
+    ])
+    static let checkpointSchemaExpectation =
+        "work_checkpoint.v5, work_checkpoint.v6, work_checkpoint.v7, or work_checkpoint.v8"
     static let sessionSchema = "session_handoff.v1"
     static let continuationSchema = "continuation.v1"
     static let projectSchema = "continuation_staging_context.v1"
@@ -97,7 +104,7 @@ enum ContextValidator {
             }
             guard identities.count == 1 else {
                 throw DaemonStateError.activeSessionUnavailable(
-                    "multiple project-relevant sessions remain plausible; select the active session explicitly"
+                    "choose an active session in Library, then try again"
                 )
             }
         }
@@ -213,7 +220,7 @@ enum ContextValidator {
     }
 
     static func isCurrentSessionTip(_ checkpoint: LatestCheckpointEnvelope) -> Bool {
-        guard checkpoint.schemaVersion == checkpointSchema,
+        guard checkpoint.schemaVersion.map(checkpointSchemas.contains) == true,
               normalizedKey(checkpoint.captureStatus) == "complete",
               checkpoint.projection?.valid == true,
               normalizedKey(checkpoint.currentness?.state) == "captured",
@@ -230,9 +237,9 @@ enum ContextValidator {
     }
 
     static func requireCurrentSessionTip(_ checkpoint: LatestCheckpointEnvelope) throws {
-        guard checkpoint.schemaVersion == checkpointSchema else {
+        guard checkpoint.schemaVersion.map(checkpointSchemas.contains) == true else {
             throw DaemonStateError.unsupportedSchema(
-                expected: checkpointSchema,
+                expected: checkpointSchemaExpectation,
                 actual: checkpoint.schemaVersion
             )
         }

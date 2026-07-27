@@ -1,6 +1,6 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import Landing from "./Landing";
 import { ThemeProvider } from "../context/ThemeContext";
@@ -15,77 +15,81 @@ function renderLanding() {
   );
 }
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
-
 describe("Landing", () => {
-  it("presents a source-backed continuity story without fake activity", () => {
+  it("mirrors the current product surfaces and removes retired navigation", () => {
     const { container } = renderLanding();
 
     expect(
-      screen.getByRole("heading", { name: "Your next coding agent should not start from zero." }),
+      screen.getByRole("heading", { name: "Continue the work. Not the explanation." }),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("textbox", { name: /search/i })).not.toBeInTheDocument();
-    const openContextLinks = screen.getAllByRole("link", { name: /Open DaemonState/ });
-    expect(openContextLinks).toHaveLength(2);
-    openContextLinks.forEach((link) => expect(link).toHaveAttribute("href", "/app"));
-    expect(screen.getByRole("link", { name: "See the handoff" })).toHaveAttribute("href", "#handoff");
-    expect(screen.queryByRole("button", { name: /mode/i })).not.toBeInTheDocument();
-    expect(container.querySelector(".daemonstate-landing")).toHaveAttribute("data-landing-theme", "fixed");
-    expect(screen.getAllByRole("link", { name: "GitHub" })).toHaveLength(2);
-    expect(screen.getByText("Project Context")).toBeInTheDocument();
-    expect(screen.queryByText("context_pack.v2")).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Every source keeps its identity. The handoff keeps only what matters." })).toBeInTheDocument();
-    expect(screen.getByRole("img", { name: "Evidence becomes a verified handoff" })).toBeInTheDocument();
-    expect(screen.getByText("Many evidence streams. One verified continuation.")).toBeInTheDocument();
-    expect(screen.getByText("A project should accumulate understanding—not lose it between runs.")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Connect" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Observe" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Prepare" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Continue" })).toBeInTheDocument();
-    expect(screen.getByText("Everything continuity needs. Five focused surfaces.")).toBeInTheDocument();
-    const continueSurface = screen.getByRole("button", { name: "Explore Continue" });
-    const reviewSurface = screen.getByRole("button", { name: "Explore Review" });
-    expect(continueSurface).toHaveAttribute("aria-expanded", "true");
-    expect(reviewSurface).toHaveAttribute("aria-expanded", "false");
-    expect(screen.getByRole("link", { name: /Continue work/ })).toHaveAttribute("href", "/app");
-    fireEvent.click(reviewSurface);
-    expect(continueSurface).toHaveAttribute("aria-expanded", "false");
-    expect(reviewSurface).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("link", { name: /Browse sessions/ })).toHaveAttribute("href", "/app/library");
-    container.querySelectorAll('.daemonstate-atlas-panel[aria-hidden="true"] a').forEach((link) => {
-      expect(link).toHaveAttribute("tabindex", "-1");
+    expect(
+      screen.getByText("Source-available continuity for coding agents"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Open-source continuity/i)).not.toBeInTheDocument();
+    expect(container.querySelector(".daemonstate-landing")).toHaveAttribute(
+      "data-landing-theme",
+      "fixed",
+    );
+
+    const openContinueLinks = screen.getAllByRole("link", { name: "Open Continue" });
+    expect(openContinueLinks).toHaveLength(2);
+    openContinueLinks.forEach((link) => expect(link).toHaveAttribute("href", "/app"));
+    expect(screen.getByRole("link", { name: "See how it works" })).toHaveAttribute(
+      "href",
+      "#how-it-works",
+    );
+
+    const productDestinations = [
+      ["Open Execute", "/app/execute"],
+      ["Browse sessions", "/app/library"],
+      ["Trace the evidence", "/app/explain"],
+      ["Review sources", "/app/sources"],
+      ["Manage integrations", "/app/connectors"],
+    ];
+    productDestinations.forEach(([name, href]) => {
+      expect(screen.getByRole("link", { name })).toHaveAttribute("href", href);
     });
-    expect(screen.getByText("The handoff is deliberately finite. Every included claim is inspectable, every exclusion is explicit, and missing evidence remains missing.")).toBeInTheDocument();
-    expect(screen.getByText("Illustrative continuation bundle")).toBeInTheDocument();
-    expect(screen.getByText("More context is not better context. Relevant context is.")).toBeInTheDocument();
-    expect(screen.getByText("Compiled for agents. Explainable to people.")).toBeInTheDocument();
-    expect(screen.queryByText("Recently indexed")).not.toBeInTheDocument();
-    expect(screen.queryByText("Auth refactor")).not.toBeInTheDocument();
-    expect(screen.queryByText("PR #184")).not.toBeInTheDocument();
-    expect(screen.queryByText("$ daemonstate mcp")).not.toBeInTheDocument();
+
+    expect(screen.queryByText("Runs")).not.toBeInTheDocument();
+    expect(screen.queryByText("Run history")).not.toBeInTheDocument();
+    expect(container.querySelectorAll('a[href="/app/memory"]')).toHaveLength(0);
+    expect(screen.queryByRole("textbox", { name: /search/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/Trusted by/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/10,000/i)).not.toBeInTheDocument();
-
-    const pixelCurtains = container.querySelectorAll(".daemonstate-pixel-curtain");
-    expect(pixelCurtains).toHaveLength(4);
-    pixelCurtains.forEach((curtain) => expect(curtain.children).toHaveLength(48));
-    expect(container.querySelectorAll('[data-daemonstate-reveal][data-visible="true"]')).toHaveLength(13);
   });
 
-  it("reveals everything immediately when reduced motion is preferred", () => {
-    const Observer = vi.fn(function Observer() {
-      return { observe: vi.fn(), unobserve: vi.fn(), disconnect: vi.fn() };
-    });
-    vi.stubGlobal("IntersectionObserver", Observer);
-    vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: true })));
+  it("keeps Project Context and Session Context separate and qualifies delivery support", () => {
+    renderLanding();
 
-    const { container } = renderLanding();
-    const landing = container.querySelector(".daemonstate-landing");
+    expect(screen.getAllByText("Project Context").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Current Session Context").length).toBeGreaterThan(0);
+    expect(screen.getByText("Durable workspace parent")).toBeInTheDocument();
+    expect(screen.getByText("Task-specific checkpoint")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Failed attempts and transient blockers stay in Session Context/i),
+    ).toBeInTheDocument();
 
-    expect(Observer).not.toHaveBeenCalled();
-    expect(landing).not.toHaveClass("daemonstate-motion-ready");
-    expect(container.querySelectorAll('[data-daemonstate-reveal][data-visible="true"]')).toHaveLength(13);
+    expect(screen.getByText("Codex on macOS")).toBeInTheDocument();
+    expect(screen.getByText("Codex · Claude Code · OpenCode")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Codex waits for you to confirm or narrow the compiled lead/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/GitHub, Slack, Gmail, and Drive paths never masquerade as connected/i),
+    ).toBeInTheDocument();
+  });
+
+  it("describes observed outcomes without inventing verification", () => {
+    renderLanding();
+
+    expect(
+      screen.getByRole("heading", { name: "“Done” is not a verification result." }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Verified complete")).toBeInTheDocument();
+    expect(screen.getByText("Requirements unproven")).toBeInTheDocument();
+    expect(screen.getByText("Blocked external")).toBeInTheDocument();
+    expect(screen.getByText("Blocked ambiguity")).toBeInTheDocument();
+    expect(screen.getByText("Execution failed")).toBeInTheDocument();
+    expect(screen.getByText("No silent verification")).toBeInTheDocument();
   });
 });

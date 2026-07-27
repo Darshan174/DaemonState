@@ -1304,13 +1304,10 @@ def _api_key(args: argparse.Namespace) -> str | None:
 
 
 def _alembic_config(database_url: str | None = None):
-    from alembic.config import Config
     from app.config import settings
+    from app.database import build_alembic_config
 
-    root = Path(__file__).resolve().parents[2]
-    config = Config(str(root / "alembic.ini"))
-    config.set_main_option("sqlalchemy.url", database_url or settings.database_url)
-    return config
+    return build_alembic_config(database_url or settings.database_url)
 
 
 async def _deploy_database(database_url: str | None = None) -> dict:

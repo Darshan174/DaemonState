@@ -65,6 +65,18 @@ PROMPT_INJECTION_PATTERNS = (
     "print secrets",
     "disable safety",
 )
+_SESSION_ONLY_LEARNING_FACT_TYPES = frozenset({
+    "failed_approach",
+    "failed_approaches",
+    "failed_attempt",
+    "failed_attempts",
+    "learning",
+    "lesson",
+    "lessons",
+    "prior_failure",
+    "prior_failures",
+    "takeaway",
+})
 
 
 class ContextCompilerError(ValueError):
@@ -153,6 +165,7 @@ class ContextCandidate:
     rank_features: dict[str, Any] = field(default_factory=dict)
     provenance_verified: bool | None = None
     truth_state: str = "unknown"
+    evidence_level: str = "provisional"
     rank: int = 0
 
     def to_manifest_item(self) -> dict[str, Any]:
@@ -191,6 +204,7 @@ class ContextCandidate:
             "score_breakdown": self.rank_features,
             "rank": self.rank,
             "truth_state": self.truth_state,
+            "evidence_level": self.evidence_level,
             "selection_decision": "selected",
             "provenance_verified": self.provenance_verified,
         }
@@ -218,6 +232,7 @@ class ExcludedContextCandidate:
     source_revision_number: int | None = None
     file_refs: list[dict[str, Any]] = field(default_factory=list)
     truth_state: str = "unknown"
+    evidence_level: str = "provisional"
 
     def to_manifest_item(self) -> dict[str, Any]:
         return {
@@ -243,6 +258,7 @@ class ExcludedContextCandidate:
             "file_refs": self.file_refs,
             "selection_decision": "excluded",
             "truth_state": self.truth_state,
+            "evidence_level": self.evidence_level,
         }
 
 
@@ -1189,10 +1205,12 @@ class ContextCompiler:
                     "current_claim_revision": revision is not None,
                     "trust_basis": trust_assessment.basis,
                     "trust_verification": trust_assessment.verification,
+                    "evidence_level": trust_assessment.evidence_level,
                     "current_truth": trust_assessment.current_truth,
                 },
                 provenance_verified=trust_assessment.current_truth,
                 truth_state=truth_state,
+                evidence_level=trust_assessment.evidence_level,
             ))
         return candidates
 
@@ -2205,6 +2223,9 @@ def _render_structured_checkpoint_for_audit(value: Any) -> str:
         ("Remaining", value.remaining),
         ("Decisions", value.decisions),
         ("Failed approaches", value.failed_approaches),
+        ("Relevant discoveries", value.discoveries),
+        ("Useful commands", value.useful_commands),
+        ("Risks, assumptions, constraints, and open questions", value.open_items),
         ("Blockers", value.blockers),
         ("Relevant files", value.referenced_files),
         ("Prior verification", value.prior_verification),
@@ -2681,6 +2702,8 @@ def _item_type_for_component(component: Component) -> str:
     fact_type = (component.fact_type or "").lower()
     model_name = (component.model.name if component.model else "").lower()
     text = f"{fact_type} {model_name} {component.name}".lower()
+    if fact_type in _SESSION_ONLY_LEARNING_FACT_TYPES:
+        return "learning"
     if "blocker" in text:
         return "blocker"
     if "risk" in text:
@@ -2798,6 +2821,7 @@ def _exclude(candidate: ContextCandidate, reason: str, detail: str) -> ExcludedC
         source_revision_number=candidate.source_revision_number,
         file_refs=candidate.file_refs,
         truth_state=candidate.truth_state,
+        evidence_level=candidate.evidence_level,
     )
 
 
@@ -3142,6 +3166,8 @@ def _lane_for_item(item_type: str, status: str, text: str) -> str:
     lowered = f"{item_type} {status} {text}".lower()
     if item_type in {"blocker", "risk", "relationship"} or "question" in lowered:
         return "blockers_and_questions"
+    if item_type in _SESSION_ONLY_LEARNING_FACT_TYPES:
+        return "prior_failures"
     if item_type == "verification":
         return "verification"
     if item_type == "file":
@@ -3715,6 +3741,8 @@ def _render_task_workflow(
     if (
         selected_objective
         and execution_objective
+        and isinstance(selected, dict)
+        and isinstance(execution, dict)
         and selected.get("id") != execution.get("id")
     ):
         lines.append(

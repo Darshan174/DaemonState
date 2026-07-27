@@ -14,9 +14,15 @@ import pytest
 
 from app.models import (
     AgentRun,
+    Claim,
+    ClaimRevision,
+    Component,
     ContextPack,
     ContinuationExecution,
     ContinuationRequirement,
+    EvidenceSpan,
+    Model,
+    SourceDocument,
     Workspace,
 )
 from app.schemas.continuation_execution import (
@@ -26,6 +32,12 @@ from app.schemas.continuation_execution import (
     ExecutionAuthority,
     HandoffTruthState,
     PreexistingChange,
+    ProjectContextItem,
+    ProjectContextKind,
+    ProjectContextProvenance,
+    ProjectEvidenceLevel,
+    ProjectFoundationSection,
+    ProjectFoundationSnapshot,
     RepositoryContract,
     RequiredCapability,
     RequirementPriority,
@@ -318,6 +330,9 @@ def _contract(
             })
             for requirement in requirements
         ]
+    fingerprint = (
+        status_fingerprint or sha256_text("continuation-eval-repository")
+    )
     return ContinuationExecutionContract(
         id=str(execution_id or uuid4()),
         context_pack_id=str(context_pack_id or uuid4()),
@@ -335,16 +350,50 @@ def _contract(
             root=str(root),
             branch="main",
             head_commit="a" * 40,
-            status_fingerprint=(
-                status_fingerprint or sha256_text("continuation-eval-repository")
-            ),
+            status_fingerprint=fingerprint,
             preexisting_changes=preexisting_changes,
         ),
+        project_foundation=ProjectFoundationSnapshot(
+            workspace_id=uuid4(),
+            repository_fingerprint=fingerprint,
+            included_fact_count=4,
+            source_document_count=4,
+        ),
+        project_context=_project_foundation_items(),
         handoff=handoff or StructuredHandoff(),
         artifacts=artifacts,
         verification=tuple(verification),
         required_capabilities=(RequiredCapability.FILE_CONTEXT,),
         authority=ExecutionAuthority.for_mode(mode),
+    )
+
+
+def _project_foundation_items() -> tuple[ProjectContextItem, ...]:
+    facts = (
+        (ProjectFoundationSection.IDENTITY, "Product purpose", "The product purpose serves software teams that need durable coding context."),
+        (ProjectFoundationSection.WORKFLOWS, "Primary workflow", "The primary workflow compiles workspace evidence before continuation."),
+        (ProjectFoundationSection.ARCHITECTURE, "Runtime architecture", "The architecture uses an API, compiler pipeline, and storage."),
+        (ProjectFoundationSection.REPOSITORY, "Repository map", "The repository map places services under app/services."),
+    )
+    return tuple(
+        ProjectContextItem(
+            id=f"P{index}",
+            kind=ProjectContextKind.CONTEXT,
+            section=section,
+            title=title,
+            statement=statement,
+            identity_key=f"eval:{section.value}",
+            evidence_level=ProjectEvidenceLevel.MECHANICALLY_VERIFIED,
+            provenance_refs=(ProjectContextProvenance(
+                source_document_id=f"source-{index}",
+                evidence_span_id=f"evidence-{index}",
+                source_type="local_repository",
+                source_revision_number=1,
+                source_content_sha256=f"{index}" * 64,
+                evidence_text_sha256=f"{index}" * 64,
+            ),),
+        )
+        for index, (section, title, statement) in enumerate(facts, start=1)
     )
 
 
@@ -363,6 +412,7 @@ async def _compile(
     )
     db_session.add(workspace)
     await db_session.flush()
+    await _persist_project_foundation(db_session, workspace)
     pack = ContextPack(
         workspace_id=workspace.id,
         objective=request,
@@ -402,6 +452,73 @@ async def _compile(
         context_manifest=manifest,
         artifacts=artifacts,
     )
+
+
+async def _persist_project_foundation(db_session, workspace: Workspace) -> None:
+    for item in _project_foundation_items():
+        statement = item.statement
+        model = Model(id=uuid4(), name=f"Eval foundation {uuid4().hex}")
+        document = SourceDocument(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            source_type="local_repository",
+            external_id=f"eval-foundation:{item.section.value}",
+            content=statement,
+            content_sha256=sha256_text(statement),
+            trust_zone="trusted_repo",
+            metadata_json="{}",
+        )
+        evidence = EvidenceSpan(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            source_document_id=document.id,
+            start_char=0,
+            end_char=len(statement),
+            text=statement,
+            text_sha256=sha256_text(statement),
+            review_status="verified",
+            trust_zone="trusted_repo",
+            extraction_method="deterministic",
+        )
+        claim = Claim(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            identity_key=item.identity_key,
+            scope_identity_sha256="",
+            claim_type="fact",
+            status="active",
+            temporal="current",
+        )
+        db_session.add_all([model, document, evidence, claim])
+        await db_session.flush()
+        revision = ClaimRevision(
+            id=uuid4(),
+            claim_id=claim.id,
+            evidence_span_id=evidence.id,
+            revision_key="",
+            value=statement,
+            operation="create",
+            status_after="active",
+        )
+        db_session.add(revision)
+        await db_session.flush()
+        claim.current_revision_id = revision.id
+        db_session.add(Component(
+            id=uuid4(),
+            workspace_id=workspace.id,
+            model_id=model.id,
+            source_document_id=document.id,
+            claim_id=claim.id,
+            identity_key=item.identity_key,
+            name=item.title,
+            value=statement,
+            fact_type="fact",
+            temporal="current",
+            confidence=0.95,
+            authority_weight=0.9,
+            status="active",
+        ))
+    await db_session.flush()
 
 
 def _checkpoint_for(case: HandoffEvalCase) -> dict:

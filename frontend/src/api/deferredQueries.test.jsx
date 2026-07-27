@@ -6,7 +6,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   useCheckpoints,
   useLatestCheckpoint,
-  useSessionContinuity,
   useSessionLibrary,
 } from "./hooks";
 import {
@@ -46,7 +45,7 @@ describe("deferred Now queries", () => {
     queryClient.clear();
   });
 
-  it("keeps secondary reads idle until enabled, then preserves their session scope", async () => {
+  it("keeps secondary reads idle until enabled, then preserves checkpoint scope", async () => {
     const { rerender } = renderHook(
       ({ enabled }) => {
         useLatestCheckpoint("workspace-1", {
@@ -60,12 +59,6 @@ describe("deferred Now queries", () => {
           enabled,
         });
         useSessionLibrary("workspace-1", { enabled });
-        useSessionContinuity("workspace-1", {
-          provider: "claude_code",
-          sessionId: "session-1",
-          limit: 50,
-          enabled,
-        });
         useProjectMemory("workspace-1", { limit: 1, enabled });
       },
       { wrapper, initialProps: { enabled: false } },
@@ -75,19 +68,13 @@ describe("deferred Now queries", () => {
 
     rerender({ enabled: true });
 
-    await waitFor(() => expect(apiMock.get).toHaveBeenCalledTimes(5));
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalledTimes(4));
     expect(apiMock.get).toHaveBeenCalledWith(
       "/checkpoints/latest?workspace_id=workspace-1&provider=claude&session_id=session-1",
     );
     expect(apiMock.get).toHaveBeenCalledWith(
       "/checkpoints?workspace_id=workspace-1&limit=12&provider=claude&session_id=session-1",
     );
-    expect(apiMock.get).toHaveBeenCalledWith(
-      "/session-continuity?workspace_id=workspace-1&provider=claude&session_id=session-1&limit=50",
-    );
-    expect(queryClient.getQueryCache().find({
-      queryKey: ["session-continuity", "workspace-1", "claude", "session-1", 50],
-    })).toBeDefined();
     expect(apiMock.get).toHaveBeenCalledWith(
       "/session-library?workspace_id=workspace-1",
     );

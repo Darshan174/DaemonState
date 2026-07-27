@@ -4,26 +4,59 @@ The continuation runtime is the primary product path. It composes existing
 session ingestion, durable checkpoints, repository verification, the context
 compiler, and local run evidence into one operation.
 
-## Session Context vs Project Context
+## Project / Workspace Context and Session Context
 
 DaemonState exposes two user-facing context products and keeps both separate
 from its audit and automatic-execution artifacts:
 
+**Project Context is the parent.** It is the durable, provenance-backed
+foundation for a workspace: what the project is, how it works, its architecture
+and domain model, repository and technology map, persistent decisions and
+invariants, engineering conventions and canonical commands, supported and
+unsupported capabilities, long-term constraints and risks, and current product
+direction and quality requirements. Every session inherits this foundation as
+its logical parent. The two copy artifacts remain separate: Session Context
+contains the task-local child state, while Project Context staging renders the
+workspace-wide parent together with the active task child. “Workspace
+Context” is the delivery-surface label for the same Project Context, not a
+third context product.
+
+**Session Context is the child.** It captures the latest individual session's
+task-level working memory: the current goal and acceptance criteria, completed
+and in-progress state, exact next step, active decisions and reasoning,
+failed or rejected attempts and their evidence, changes and discoveries,
+meaningful commands and results, verification state, blockers and risks,
+assumptions and open questions, fixes and confirmation, scope and non-goals,
+and current repository state.
+
 | Artifact | Scope and purpose | Behavior |
 |---|---|---|
-| **Session Context** | A compact handoff from one session's latest captured immutable tip. It contains that session's lossless goal, reconciled requirement state, decisions, blockers, files, checks, and failed attempts. Repository freshness is checked at handoff time and the current snapshot is used when available; workspace-wide knowledge is not retrieved. | Use it to refresh a long session or start a new session in the same harness. The user reviews or copies it, then writes the immediate lead. |
-| **Project Context** | A task-relevant handoff compiled across the workspace from compatible session state, current provenance-verified project facts, and hash-bound repository evidence. Durable project facts and syntax-level repository observations remain separate. It explicitly reports when neither applies; it is not a dump of the whole workspace. | Its staging rendering, `continuation_staging_context.v1`, loads a compact truth capsule into a fresh supported harness thread and waits. The next user-authored message is the immediate lead; staging does not start a turn. |
+| **Session Context** | The task-specific child captured from one session's latest immutable tip. It records that session's current working state and its relationship to the Project Context parent; it does not duplicate the parent facts. Repository freshness is checked at handoff time and the current snapshot is used when available. | Use it to refresh a long session or start a new session in the same harness. Failed attempts, rejected approaches, temporary blockers, and other task-local details remain here. The user reviews or copies it, then writes the immediate lead. |
+| **Project / Workspace Context** | The durable parent foundation shared by every session in the workspace. It is compiled from all current workspace evidence without using the current prompt, objective, file overlap, selected session, or task ranking. Durable project facts and syntax-level repository observations remain separate. | Mechanically verified, human-confirmed, and corroborated durable facts may enter the current parent. Provisional claims stay outside it; superseded or conflicting facts remain historical. The staging rendering, `continuation_staging_context.v1`, combines the parent with the active task child, loads it into a fresh supported harness thread, and waits. |
 | **Execution Prompt** | The provider-neutral worker command rendered as `continuation_execution_prompt.v1` from the typed `continuation_execution.v1` contract. | Used only by an automatic run path that starts the worker, observes it, and applies requirement-linked verification. |
 | **Audit ContextPack** | `context_pack.v2`, with complete selection, exclusion, provenance, citation, risk, and reconciliation records. | Durable audit and advanced inspection only. Its Markdown is never the continuation worker instruction. |
 
-The model-facing Session and Project renderings contain only the current lead,
-reconciled per-requirement state, an exact next action, bounded relevant
-evidence, and proof obligations. Event numbers, capture timestamps, selection
-scores, full dirty-file inventories, and other audit metadata remain in the
-structured contract or Audit ContextPack. A generic “continue the current
-request” record cannot reopen a requirement with a newer scoped completion
-claim. Prior-agent interpretations that make a deictic request self-contained
-are retained only as explicitly unverified historical scope.
+Promotion is one-way and evidence-gated. A session outcome may enter Project
+Context only when it describes a durable architectural, workflow, product,
+constraint, repository, command, or convention change. Mechanically verified
+repository facts and human-confirmed intent are directly eligible. Repeated
+session claims may become corroborated when they agree across distinct sessions
+and do not conflict with repository evidence. Failed or
+rejected attempts, temporary blockers, unverified claims, noisy command output,
+and other task-specific details remain in the Session Context. The current
+runtime does not turn a copied Session Context into a new foundation revision,
+and it never rewrites the source session or its immutable checkpoint.
+
+The model-facing Session and Project renderings remain bounded. Session Context
+contains the latest task state and an explicit parent-child boundary without
+duplicating the parent facts. Project Context staging contains the
+objective-independent durable parent plus the active task child.
+Event numbers, capture timestamps, selection scores, full dirty-file
+inventories, and other audit metadata remain in the structured contract or
+Audit ContextPack. A generic “continue the current request” record cannot
+reopen a requirement with a newer scoped completion claim. Prior-agent
+interpretations that make a deictic request self-contained are retained only as
+explicitly unverified historical scope.
 
 Repository evidence uses fixed, non-prose item shapes for symbol declarations,
 exact test links, and parsed manifest dependencies. Every item is bound to the
@@ -49,6 +82,13 @@ referenced conversations, incomplete repository snapshots, missing required
 artifacts, contradictory authority, and malformed handoff sections remain
 previewable with explicit issues but cannot be copied. Automatic execution has
 the stricter `automatic_execution_ready`/`launchable` gates.
+
+Project Context also fails closed when its core purpose, workflow,
+architecture, or repository sections are empty; a statement lacks hash-bound
+provenance; current facts conflict; generic inventory dominates; or its
+foundation fingerprint is stale relative to the repository. Headings alone do
+not satisfy this gate. An empty foundation is explicitly **not ready** and is
+never copyable.
 
 Clipboard delivery is integrity-checked in the browser: the rendered content
 must match its server-provided SHA-256, and Session Context must also match the
@@ -325,9 +365,9 @@ no re-explanation, less discovery, and no stale-context mistake.
 The Continue page calls the canonical local-only staging endpoint and exposes
 one card for each target provider. Each card distinguishes ordinary provider
 readiness from safe context-staging support. Continue carries the exact
-selected History/Library session identity through preparation so an equally
+selected Library session identity through preparation so an equally
 worded newer session cannot replace it.
-History also binds a multi-request session card to its source-backed original
+Library also binds a multi-request session card to its source-backed original
 user request; the shortened card title is display-only and cannot silently
 select a different request from the same session.
 Selecting a ready card resolves the task, refreshes evidence,
@@ -336,7 +376,7 @@ and provider capability gates, loads Context + Direction + Execution loop into
 a fresh Codex thread, opens that exact thread, and waits. It does not submit a
 task, claim agent activity, run verifiers, or report changed files before the
 user types the new lead. There is no clipboard fallback or manual
-checkpoint-review step in this primary workflow. Library, History, Memory, and
+checkpoint-review step in this primary workflow. Library, Memory, and
 Evidence remain optional inspection surfaces.
 
 ## Surface Differences

@@ -9,7 +9,7 @@ from dataclasses import replace
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from app.models import (
     CheckpointEvidence,
@@ -22,9 +22,12 @@ from app.models import (
 )
 from app.services.checkpoints import (
     CHECKPOINT_CATEGORIES,
+    SESSION_CONTEXT_REQUIRED_HEADINGS,
     _derive_session_requirements,
     _handoff_presentation_sections,
     _infer_session_task_mode,
+    _is_useful_discovery_command,
+    _is_useful_verification_command,
     _reconcile_session_handoff,
     build_session_handoff_contract,
     capture_checkpoint,
@@ -34,6 +37,7 @@ from app.services.checkpoints import (
     get_checkpoint,
     latest_checkpoint,
     render_session_handoff,
+    session_handoff_render_issues,
 )
 from app.services.checkpoint_verifier import (
     AUTOMATIC_REPLAY_DISABLED_REASON,
@@ -82,7 +86,7 @@ async def test_checkpoint_capture_is_structured_evidenced_and_idempotent(
     assert await db_session.scalar(select(func.count()).select_from(WorkCheckpoint)) == 1
     loaded = await get_checkpoint(db_session, first[0].id)
     data = checkpoint_to_dict(loaded)
-    assert data["schema_version"] == "work_checkpoint.v7"
+    assert data["schema_version"] == "work_checkpoint.v8"
     assert data["capture_status"] == "complete"
     assert data["continuation_status"] == "ready"
     assert data["boundary"]["snapshot_phase"] == "pre_compaction"
@@ -154,7 +158,7 @@ async def test_current_checkpoint_schema_backfills_from_unchanged_normalized_eve
             WorkCheckpoint.session_id == "schema-upgrade",
         )
     ))
-    assert versions == {"work_checkpoint.v5", "work_checkpoint.v7"}
+    assert versions == {"work_checkpoint.v5", "work_checkpoint.v8"}
     current = await latest_checkpoint(
         db_session,
         workspace_id=workspace.id,
@@ -162,7 +166,7 @@ async def test_current_checkpoint_schema_backfills_from_unchanged_normalized_eve
         session_id="schema-upgrade",
     )
     assert current is not None
-    assert current.schema_version == "work_checkpoint.v7"
+    assert current.schema_version == "work_checkpoint.v8"
     assert current.supersedes_checkpoint_id == legacy.id
     assert checkpoint_to_dict(current)["sections"]["goal"][0]["statement"] == (
         "Implement durable checkpoints for session compaction."
@@ -369,6 +373,232 @@ async def test_session_handoff_rendering_deduplicates_and_bounds_file_inventory(
     assert "protected baseline state regardless of authorship" in evidence_section
     assert "git status --short" in evidence_section
     assert "## Files" not in handoff["content"]
+
+
+async def test_session_context_carries_complete_latest_task_memory(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    events = [
+        NormalizedSessionEvent(
+            provider_event_id="complete-user",
+            sequence_number=1,
+            event_type="user_request",
+            role="user",
+            content=(
+                "Implement complete Session Context memory.\n\n"
+                "- Preserve the project/session parent-child boundary.\n"
+                "- Show the current repository and verification state."
+            ),
+        ),
+        NormalizedSessionEvent(
+            provider_event_id="complete-update",
+            sequence_number=2,
+            event_type="assistant_update",
+            role="assistant",
+            content=(
+                "Fixed incomplete Session Context rendering in "
+                "app/services/checkpoints.py because every task handoff needs "
+                "the same contract and PASSWORD=fix-secret stays private. "
+                "We will keep transient blockers in Session Context because "
+                "they are task-specific and API_KEY=decision-secret stays private. "
+                "Located ContextValidator in "
+                "desktop/macos/DaemonStateOverlay/Sources/"
+                "DaemonStateOverlayCore/ContextValidator.swift; it depends on "
+                "the checkpoint schema allowlist. "
+                "Rejected embedding the complete transcript because it would "
+                "promote conversation noise and TOKEN=rejected-secret stays private. "
+                "Risks: historical checkpoints may use older schemas. "
+                "Assumptions: the checkpoint schema allowlist remains authoritative. "
+                "Constraints: transient blockers stay session-scoped. "
+                "Open questions: whether older v5 rows need another migration. "
+                "Next action: run the focused checkpoint tests."
+            ),
+        ),
+        NormalizedSessionEvent(
+            provider_event_id="complete-rg-result",
+            sequence_number=3,
+            event_type="command_result",
+            role="tool",
+            content=(
+                "8: static let supportedCheckpointSchemas = [v5, v6, v7, v8]\n"
+                "API_KEY=super-secret"
+            ),
+            payload={
+                "command": "rg -n supportedCheckpointSchemas desktop/macos",
+                "cwd": str(tmp_path),
+                "exit_code": 0,
+                "passed": True,
+            },
+        ),
+        NormalizedSessionEvent(
+            provider_event_id="complete-failed-result",
+            sequence_number=4,
+            event_type="command_result",
+            role="tool",
+            content="ERROR: file or directory not found: tests/test_missing.py",
+            payload={
+                "command": "pytest -q tests/test_missing.py",
+                "cwd": str(tmp_path),
+                "exit_code": 4,
+                "passed": False,
+            },
+        ),
+        NormalizedSessionEvent(
+            provider_event_id="complete-history-result",
+            sequence_number=5,
+            event_type="command_result",
+            role="tool",
+            content="abc123 historical commit",
+            payload={
+                "command": "git log -1 --oneline",
+                "cwd": str(tmp_path),
+                "exit_code": 0,
+                "passed": True,
+            },
+        ),
+        NormalizedSessionEvent(
+            provider_event_id="complete-test-result",
+            sequence_number=6,
+            event_type="command_result",
+            role="tool",
+            content="2 passed",
+            payload={
+                "command": "pytest -q tests/test_checkpoints.py",
+                "cwd": str(tmp_path),
+                "exit_code": 0,
+                "passed": True,
+            },
+        ),
+        NormalizedSessionEvent(
+            provider_event_id="complete-boundary",
+            sequence_number=7,
+            event_type="compaction_boundary",
+            payload={"window_id": "complete-window"},
+        ),
+    ]
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="complete-session-context",
+        events=events,
+    )
+    snapshot = _snapshot(tmp_path)
+    monkeypatch.setattr(
+        "app.services.checkpoints.capture_repository_snapshot",
+        _async_value(snapshot),
+    )
+    checkpoint = (await capture_missing_compaction_checkpoints(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="complete-session-context",
+    ))[0]
+    await db_session.commit()
+    monkeypatch.setattr(
+        "app.api.checkpoints.compare_checkpoint_repository",
+        _async_value({
+            "status": "unchanged",
+            "reason": "The current checkout matches the captured checkpoint.",
+            "checked_at": utc_now(),
+            "current": snapshot.to_dict(),
+        }),
+    )
+
+    response = await client.post(
+        f"/api/checkpoints/{checkpoint.id}/handoff",
+        json={"workspace_id": str(workspace.id)},
+    )
+
+    assert response.status_code == 200, response.text
+    handoff = response.json()
+    assert checkpoint.schema_version == "work_checkpoint.v8"
+    assert set(SESSION_CONTEXT_REQUIRED_HEADINGS) <= set(
+        handoff["content"].splitlines()
+    )
+    assert session_handoff_render_issues(handoff["content"]) == []
+    assert handoff["decisions"][0]["payload"]["reason"] == (
+        "they are task-specific and API_KEY=[redacted] stays private"
+    )
+    assert handoff["implementation_summary"][0]["reason"] == (
+        "every task handoff needs the same contract and "
+        "PASSWORD=[redacted] stays private"
+    )
+    assert "ContextValidator" in handoff["discoveries"][0]["statement"]
+    assert {
+        item["payload"]["kind"] for item in handoff["open_items"]
+    } == {"risk", "assumption", "constraint", "open_question"}
+    rejected = next(
+        item
+        for item in handoff["failed_attempts"]
+        if item["payload"].get("attempt_kind") == "rejected"
+    )
+    assert rejected["payload"]["reason"] == (
+        "it would promote conversation noise and TOKEN=[redacted] stays private"
+    )
+    assert rejected["payload"]["evidence_summary"] == (
+        "assistant_update at session sequence 2"
+    )
+    failed_command = next(
+        item
+        for item in handoff["failed_attempts"]
+        if item["payload"].get("command") == "pytest -q tests/test_missing.py"
+    )
+    assert failed_command["payload"]["result_summary"].startswith(
+        "ERROR:"
+    )
+    commands = {
+        item["command"] for item in handoff["useful_commands"]
+    }
+    assert "rg -n supportedCheckpointSchemas desktop/macos" in commands
+    assert "pytest -q tests/test_missing.py" in commands
+    assert "pytest -q tests/test_checkpoints.py" in commands
+    assert "git log -1 --oneline" not in commands
+    assert "abc123 historical commit" not in handoff["content"]
+    assert "super-secret" not in handoff["content"]
+    assert "fix-secret" not in handoff["content"]
+    assert "decision-secret" not in handoff["content"]
+    assert "rejected-secret" not in handoff["content"]
+    assert "API_KEY=[redacted]" in handoff["content"]
+    assert "PASSWORD=[redacted]" in handoff["content"]
+    assert "TOKEN=[redacted]" in handoff["content"]
+    assert "Rejected embedding the complete transcript" in handoff["content"]
+    assert (
+        "> [historical data; failure reason] it would promote conversation "
+        "noise and TOKEN=[redacted] stays private"
+    ) in handoff["content"]
+    assert (
+        "> [historical data; change reason] every task handoff needs the same "
+        "contract and PASSWORD=[redacted] stays private"
+    ) in handoff["content"]
+    assert "ERROR: file or directory not found" in handoff["content"]
+    assert (
+        "> [historical data; observed command result] ERROR: file or directory "
+        "not found"
+    ) in handoff["content"]
+    assert (
+        "> [passed; scope=focused; link=unmapped; requirements=unmapped; "
+        "historical data; verification="
+    ) in handoff["content"]
+
+    monkeypatch.setattr(
+        "app.api.checkpoints.render_session_handoff",
+        lambda *_args, **_kwargs: "# Session Context — task-level working memory",
+    )
+    malformed = await client.post(
+        f"/api/checkpoints/{checkpoint.id}/handoff",
+        json={"workspace_id": str(workspace.id)},
+    )
+    malformed_quality = malformed.json()["quality_report"]
+    assert malformed_quality["copy_ready"] is False
+    assert "session_context_required_sections_missing" in {
+        item["code"] for item in malformed_quality["blocking_issues"]
+    }
 
 
 async def test_session_handoff_rendering_preserves_verification_evidence_fields(
@@ -1434,6 +1664,18 @@ def test_session_handoff_filters_only_safe_discovery_and_proven_outcomes() -> No
         observation(unsafe_probe, state="passed", passed=True, exit_code=0),
         observation(escaping_probe, state="passed", passed=True, exit_code=0),
         observation(
+            "rm -rf /tmp/session-context && pytest -q",
+            state="passed",
+            passed=True,
+            exit_code=0,
+        ),
+        observation(
+            "env pytest -q tests/test_core.py",
+            state="passed",
+            passed=True,
+            exit_code=0,
+        ),
+        observation(
             "pytest -q tests/test_real_bug.py",
             state="failed",
             passed=False,
@@ -1441,19 +1683,173 @@ def test_session_handoff_filters_only_safe_discovery_and_proven_outcomes() -> No
         ),
         observation("ruff check app", state="passed"),
     ]
+    sections["useful_commands"] = [
+        observation(
+            "rg -n SessionContext app/services/checkpoints.py",
+            state="passed",
+            passed=True,
+            exit_code=0,
+        ),
+        observation(
+            "git --no-pager status --short",
+            state="passed",
+            passed=True,
+            exit_code=0,
+        ),
+        observation(
+            "git --no-pager log -1 --oneline",
+            state="passed",
+            passed=True,
+            exit_code=0,
+        ),
+        observation(
+            "cat .env",
+            state="passed",
+            passed=True,
+            exit_code=0,
+        ),
+        observation(
+            "command rg -n SessionContext app",
+            state="passed",
+            passed=True,
+            exit_code=0,
+        ),
+        observation(
+            "git reset --hard && pytest -q",
+            state="passed",
+            passed=True,
+            exit_code=0,
+        ),
+    ]
 
     projected = _handoff_presentation_sections(sections)
     commands = [
         item["payload"]["command"] for item in projected["verification"]
     ]
+    useful_commands = [
+        item["payload"]["command"] for item in projected["useful_commands"]
+    ]
 
     assert discovery not in commands
     assert "pytest -q" not in commands
     assert mixed_build in commands
-    assert unsafe_probe in commands
-    assert escaping_probe in commands
+    assert unsafe_probe not in commands
+    assert escaping_probe not in commands
+    assert "rm -rf /tmp/session-context && pytest -q" not in commands
+    assert "env pytest -q tests/test_core.py" not in commands
     assert "pytest -q tests/test_real_bug.py" in commands
     assert "ruff check app" in commands
+    assert useful_commands == [
+        "rg -n SessionContext app/services/checkpoints.py",
+        "git --no-pager status --short",
+    ]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'rg -n "Session Context" app/services/checkpoints.py',
+        "rg -n ContextValidator app tests | head -20",
+        "cat pyproject.toml",
+        "find app -name '*.py'",
+        "git status --short",
+        "git --no-pager status --short",
+        "git -C . status --short",
+        "git branch --show-current",
+        "pytest --collect-only -q tests/test_checkpoints.py",
+    ],
+)
+def test_useful_discovery_command_accepts_only_observational_reads(
+    command: str,
+) -> None:
+    assert _is_useful_discovery_command(command) is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "env",
+        "printenv API_KEY",
+        "env rg -n SessionContext app",
+        "command rg -n SessionContext app",
+        "cat .env",
+        "head ~/.aws/credentials",
+        "sed -n 1p /etc/shadow",
+        "rg token .env.production",
+        "git --no-pager log -1 --oneline",
+        "git --paginate show HEAD",
+        "git --no-pager diff --stat",
+        "git reset --hard",
+        "git clean -fd",
+        "git checkout -- app/core.py",
+        "git add app/core.py",
+        "git commit -m unsafe",
+        "git branch -D obsolete",
+        "git -c alias.status='!rm -rf /tmp/x' status",
+        "find . -delete",
+        "rg --pre rm Context app",
+        "sed -i.bak 1d app/core.py",
+        "rg Context app\nrm -rf /tmp/x",
+    ],
+)
+def test_useful_discovery_command_rejects_wrapped_sensitive_or_mutating_reads(
+    command: str,
+) -> None:
+    assert _is_useful_discovery_command(command) is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pytest -q tests/test_checkpoints.py",
+        ".venv/bin/python3 -m pytest -q tests/test_checkpoints.py",
+        "npm test -- src/checkpoints.test.ts",
+        "npm run build",
+        "pnpm lint",
+        "yarn run typecheck",
+        "ruff check app tests",
+        "ruff format --check app tests",
+        "cargo test",
+        "go test ./...",
+        "swift test",
+        "dotnet test",
+        (
+            "node -e \"const p=require('./frontend/package.json'); "
+            "console.log(Object.keys(p.scripts||{}))\" && npm run build"
+        ),
+        "pytest -q tests/test_checkpoints.py | tail -20",
+    ],
+)
+def test_useful_verification_command_accepts_allowlisted_checks(
+    command: str,
+) -> None:
+    assert _is_useful_verification_command(command) is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "env pytest -q tests/test_checkpoints.py",
+        "env API_KEY=value pytest -q",
+        "command pytest -q",
+        "sh -c 'pytest -q'",
+        "rm -rf /tmp/session-context && pytest -q",
+        "pytest -q && git reset --hard",
+        "git --no-pager log -1 && pytest -q",
+        "pytest -q; cat .env",
+        "pytest -q\nrm -rf /tmp/session-context",
+        "pytest -q > /tmp/result.txt",
+        "ruff check --fix app",
+        "ruff format app",
+        "python -c 'print(\"pytest\")'",
+        "npm publish",
+        "pytest --collect-only -q",
+    ],
+)
+def test_useful_verification_command_rejects_wrappers_and_side_effects(
+    command: str,
+) -> None:
+    assert _is_useful_verification_command(command) is False
 
 
 async def test_session_handoff_narrows_context_dependency_and_recovers_prior_turns(
@@ -1849,7 +2245,7 @@ async def test_session_handoff_api_recovers_verbatim_goal_for_historical_v5_row(
 
     assert response.status_code == 200
     content = response.json()["content"]
-    assert "## Carried goal from this session" in content
+    assert "## Current main goal" in content
     assert "> [user-authored carried context] Implement the historical" in content
     assert "> - Requirement 30: preserve exact multiline context marker 30." in content
     assert "> FINAL_VERBATIM_MARKER_MUST_SURVIVE" in content
@@ -2017,12 +2413,12 @@ async def test_session_handoff_recovers_truncated_goal_from_its_source_revision(
     assert "[output truncated]" not in content
     assert (
         "Continue the complete recovered request shown under "
-        "“Carried goal from this session.”"
+        "“Current main goal.”"
         not in content
     )
     assert "## Exact next action" in content
     assert "Inspect the current repository" in content
-    assert "keep every item linked to event evidence" not in content
+    assert "keep every item linked to event evidence" in content
     assert "Historical implementation claims" not in content
 
 
@@ -2137,7 +2533,7 @@ async def test_session_handoff_api_renders_latest_captured_session_tip(
         item["statement"] == "Implemented more work after compaction."
         for item in handoff["implementation_summary"]
     )
-    assert "Implemented more work after compaction." not in handoff["content"]
+    assert "Implemented more work after compaction." in handoff["content"]
     assert str(checkpoint.id) not in handoff["content"]
     assert str(checkpoint.boundary_event_id) not in handoff["content"]
 
@@ -2864,6 +3260,53 @@ async def test_checkpoint_api_captures_verifies_and_builds_resume_bundle(
         "session_id": "checkpoint-session",
         "cwd": str(tmp_path),
     }
+
+
+async def test_checkpoint_api_capture_accepts_claude_provider_alias(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="claude_code",
+        session_id="claude-alias-session",
+        events=_events(),
+    )
+    await db_session.execute(
+        update(SessionEvent)
+        .where(
+            SessionEvent.workspace_id == workspace.id,
+            SessionEvent.session_id == "claude-alias-session",
+        )
+        .values(provider="claude_code")
+    )
+    await db_session.commit()
+    persisted_providers = set(await db_session.scalars(
+        select(SessionEvent.provider).where(
+            SessionEvent.workspace_id == workspace.id,
+            SessionEvent.session_id == "claude-alias-session",
+        )
+    ))
+    assert persisted_providers == {"claude_code"}
+    monkeypatch.setattr(
+        "app.services.checkpoints.capture_repository_snapshot",
+        _async_value(_snapshot(tmp_path)),
+    )
+
+    captured = await client.post("/api/checkpoints/capture", json={
+        "workspace_id": str(workspace.id),
+        "provider": "claude",
+        "session_id": "claude-alias-session",
+    })
+
+    assert captured.status_code == 200
+    assert captured.json()["provider"] == "claude"
+    assert captured.json()["session_id"] == "claude-alias-session"
 
 
 async def test_explicit_verification_keeps_imported_commands_as_untrusted_evidence(

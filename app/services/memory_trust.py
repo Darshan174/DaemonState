@@ -37,6 +37,13 @@ MemoryTruthState = Literal[
     "historical",
     "unknown",
 ]
+MemoryEvidenceLevel = Literal[
+    "mechanically_verified",
+    "human_confirmed",
+    "corroborated",
+    "provisional",
+    "superseded_conflicting",
+]
 
 AGENT_REPORTED_ACTIVITY_FACT_TYPES = frozenset(
     {
@@ -89,6 +96,7 @@ class MemoryTrustAssessment:
     evidence_exact: bool
     trust_zone: str
     basis: str
+    evidence_level: MemoryEvidenceLevel
     source_is_agent: bool
     source_is_remote: bool
 
@@ -221,7 +229,7 @@ def assess_memory_trust(
             evidence_exact=evidence_exact,
             trust_zone=trust_zone,
             basis=(
-                "agent_assertion_requires_human_confirmation"
+                "agent_assertion_provisional"
                 if evidence_exact
                 else "agent_assertion_lacks_exact_evidence"
             ),
@@ -287,7 +295,7 @@ def assess_memory_trust(
         evidence_exact=evidence_exact,
         trust_zone=trust_zone,
         basis=(
-            "source_assertion_requires_human_confirmation"
+            "source_assertion_provisional"
             if evidence_exact
             else "missing_or_inexact_evidence"
         ),
@@ -423,7 +431,27 @@ def _assessment(
     current_truth: bool = False,
     requires_review: bool = False,
     reported_activity: bool = False,
+    evidence_level: MemoryEvidenceLevel | None = None,
 ) -> MemoryTrustAssessment:
+    if evidence_level is None:
+        if truth_state in {
+            "stale",
+            "contested",
+            "resolved",
+            "superseded",
+            "rejected",
+            "historical",
+        }:
+            evidence_level = "superseded_conflicting"
+        elif basis == "human_confirmed_exact_evidence":
+            evidence_level = "human_confirmed"
+        elif (
+            trust_zone in {"trusted_repo", "trusted_system"}
+            or basis == "fresh_provider_structured_observation"
+        ) and evidence_exact:
+            evidence_level = "mechanically_verified"
+        else:
+            evidence_level = "provisional"
     return MemoryTrustAssessment(
         verification=verification,
         truth_state=truth_state,
@@ -434,6 +462,7 @@ def _assessment(
         evidence_exact=evidence_exact,
         trust_zone=trust_zone,
         basis=basis,
+        evidence_level=evidence_level,
         source_is_agent=source_is_agent,
         source_is_remote=source_is_remote,
     )

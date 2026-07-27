@@ -53,10 +53,11 @@ struct ContextValidatorTests {
             )
             Issue.record("Expected ambiguous active-session identity to fail")
         } catch let error as DaemonStateError {
-            guard case .activeSessionUnavailable = error else {
-                Issue.record("Unexpected error: \(error)")
-                return
-            }
+            #expect(
+                error == .activeSessionUnavailable(
+                    "choose an active session in Library, then try again"
+                )
+            )
         }
     }
 
@@ -262,11 +263,47 @@ struct ContextValidatorTests {
         }
     }
 
+    @Test
+    func supportedCheckpointSchemasPreserveCurrentTipValidation() throws {
+        for schemaVersion in [
+            "work_checkpoint.v5",
+            "work_checkpoint.v6",
+            "work_checkpoint.v7",
+            "work_checkpoint.v8",
+        ] {
+            let candidate = try checkpoint(schemaVersion: schemaVersion)
+            #expect(ContextValidator.isCurrentSessionTip(candidate))
+            try ContextValidator.requireCurrentSessionTip(candidate)
+        }
+    }
+
+    @Test
+    func unsupportedCheckpointSchemaStillFailsClosed() throws {
+        let candidate = try checkpoint(schemaVersion: "work_checkpoint.v9")
+        #expect(!ContextValidator.isCurrentSessionTip(candidate))
+
+        do {
+            try ContextValidator.requireCurrentSessionTip(candidate)
+            Issue.record("Expected an unsupported checkpoint schema to fail")
+        } catch let error as DaemonStateError {
+            #expect(
+                error == .unsupportedSchema(
+                    expected: (
+                        "work_checkpoint.v5, work_checkpoint.v6, "
+                        + "work_checkpoint.v7, or work_checkpoint.v8"
+                    ),
+                    actual: "work_checkpoint.v9"
+                )
+            )
+        }
+    }
+
     private var activeSession: ActiveSessionIdentity {
         ActiveSessionIdentity(provider: "codex", sessionID: "session-1")
     }
 
     private func checkpoint(
+        schemaVersion: String = "work_checkpoint.v8",
         boundaryEventID: String? = "event-20"
     ) throws -> LatestCheckpointEnvelope {
         let eventIdentity = boundaryEventID.map {
@@ -280,7 +317,7 @@ struct ContextValidatorTests {
               "workspace_id": "workspace-1",
               "provider": "codex",
               "session_id": "session-1",
-              "schema_version": "work_checkpoint.v5",
+              "schema_version": "\(schemaVersion)",
               "capture_status": "complete",
               "projection": {"valid": true},
               "currentness": {"state": "captured"},

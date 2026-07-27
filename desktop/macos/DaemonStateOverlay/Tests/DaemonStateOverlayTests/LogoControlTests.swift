@@ -18,6 +18,28 @@ struct LogoControlTests {
 
     @Test
     @MainActor
+    func longStatusMessageWrapsWithoutGrowingPastItsPanel() {
+        let controller = StatusPanelController()
+        defer { controller.hide() }
+
+        controller.show(
+            "Current Session Context is unavailable: choose an active session in Library, then try again",
+            relativeTo: nil,
+            dismissAfter: nil
+        )
+
+        let panel = controller.window
+        let label = panel?.contentView?.subviews
+            .compactMap { $0 as? NSTextField }
+            .first
+        #expect(panel?.frame.width == 340)
+        #expect(panel?.frame.height ?? 0 > 42)
+        #expect(label?.frame.width == 312)
+        #expect(label?.maximumNumberOfLines == 2)
+    }
+
+    @Test
+    @MainActor
     func heldSubsequentPressesCancelInsertionBeforeTheirRelease() async throws {
         let control = LogoControl(frame: NSRect(x: 0, y: 0, width: 56, height: 56))
         var insertions = 0

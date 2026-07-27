@@ -107,7 +107,7 @@ async def test_session_continuity_builds_one_truthful_ledger_per_session(
                 event_type="assistant_update",
                 role="assistant",
                 content=(
-                    "Implemented the ledger in frontend/src/pages/RunsPage.jsx. "
+                    "Implemented the ledger in frontend/src/pages/SessionLibrary.jsx. "
                     "We will keep repository comparison read-only. "
                     "The digest uses hashlib.sha256. "
                     "The example name hashlib.sh is not a project path."
@@ -227,7 +227,7 @@ async def test_session_continuity_builds_one_truthful_ledger_per_session(
     assert any(item["kind"] == "decision" for item in ledger["added"])
     assert not any(item["kind"] == "file" for item in ledger["added"])
     assert not any(item["kind"] == "check" for item in ledger["added"])
-    assert "frontend/src/pages/RunsPage.jsx" in {
+    assert "frontend/src/pages/SessionLibrary.jsx" in {
         item["text"] for item in ledger["files"]
     }
     assert any(

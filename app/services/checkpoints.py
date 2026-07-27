@@ -37,6 +37,7 @@ from app.services.request_artifacts import (
     resolve_trusted_request_image_artifacts,
     trusted_request_image_descriptors_from_payload,
 )
+from app.services.redaction import redact_sensitive_text
 from app.services.session_events import event_payload
 from app.services.session_scope import (
     normalize_optional_session_key,
@@ -54,13 +55,36 @@ from app.services.session_summary import (
 from app.time import utc_now
 
 
-CHECKPOINT_SCHEMA_VERSION = "work_checkpoint.v7"
+CHECKPOINT_SCHEMA_VERSION = "work_checkpoint.v8"
 SESSION_HANDOFF_SCHEMA_VERSION = "session_handoff.v1"
+SESSION_CONTEXT_REQUIRED_HEADINGS = (
+    "# Session Context — task-level working memory",
+    "## Current main goal",
+    "## Scope and non-goals",
+    "## Acceptance criteria",
+    "## Current state",
+    "## Exact next action",
+    "## Active decisions that still hold",
+    "## Failed or rejected attempts",
+    "## Changes made",
+    "## Relevant discoveries",
+    "## Useful commands executed",
+    (
+        "## Latest blockers, risks, assumptions, constraints, "
+        "and open questions"
+    ),
+    "## What was fixed and how it was confirmed",
+    "### Current repository state",
+    "## Verification state",
+)
 CHECKPOINT_CATEGORIES = (
     "goal",
     "progress",
     "decisions",
     "failed_attempts",
+    "discoveries",
+    "useful_commands",
+    "open_items",
     "relevant_files",
     "blockers",
     "verification",
@@ -96,10 +120,54 @@ _COMPLETION_SIGNAL = re.compile(
     r"work is fully implemented|finished end to end)\b",
     re.IGNORECASE,
 )
-_VERIFICATION_COMMAND = re.compile(
-    r"(?:^|\s)(?:pytest|python\s+-m\s+pytest|npm\s+(?:test|run\s+(?:test|build|lint))|"
-    r"pnpm\s+(?:test|build|lint)|yarn\s+(?:test|build|lint)|ruff|mypy|pyright|"
-    r"cargo\s+test|go\s+test|vitest|jest|tsc)(?:\s|$)",
+_FAILED_OR_REJECTED_ATTEMPT_SIGNAL = re.compile(
+    r"(?:^|\b(?:i|we|the\s+team)\s+)"
+    r"(?:tried|attempted|rejected|ruled\s+out|abandoned|rolled\s+back|"
+    r"reverted)\b|"
+    r"\b(?:did\s+not|didn't|could\s+not|couldn't|failed\s+to)\s+"
+    r"(?:work|pass|build|compile|resolve|fix|complete|succeed)\b",
+    re.IGNORECASE,
+)
+_FAILED_ATTEMPT_CONTRAST_REASON = re.compile(
+    r"\b(?:but|however)\s+(.+?)(?:[.!?])?$",
+    re.IGNORECASE,
+)
+_DISCOVERY_SIGNAL = re.compile(
+    r"\b(?:found|located|discovered|confirmed|observed|identified|traced|"
+    r"defined\s+in|implemented\s+in|lives?\s+in|depends?\s+on|imports?|"
+    r"calls?|routes?\s+(?:to|through)|maps?\s+to|reads?\s+from|"
+    r"writes?\s+to|uses?\s+(?:the\s+)?)\b",
+    re.IGNORECASE,
+)
+_OPEN_ITEM_SIGNAL = re.compile(
+    r"\b(?:assumptions?|assume[ds]?|risks?|caveats?|constraints?|"
+    r"open questions?|unknowns?|unclear|uncertain|not yet verified|"
+    r"remains? unverified)\b",
+    re.IGNORECASE,
+)
+_REASON_CLAUSE = re.compile(
+    r"\b(?:because|since|so that|in order to|to avoid|to preserve|due to)\s+"
+    r"(.+?)(?:[.!?])?$",
+    re.IGNORECASE,
+)
+# This marker retains imported test/build commands as untrusted audit evidence
+# so explicit verification can report that replay was refused. It must never
+# decide whether a command is promoted into rendered Session Context; only
+# _is_useful_verification_command is allowed to do that.
+_UNTRUSTED_VERIFICATION_COMMAND_MARKER = re.compile(
+    r"(?:^|\s)(?:pytest|python\d*(?:\.\d+)?\s+-m\s+pytest|"
+    r"npm\s+(?:test|run\s+(?:test|build|lint|check|typecheck))|"
+    r"pnpm\s+(?:test|build|lint|check|typecheck)|"
+    r"yarn\s+(?:test|build|lint|check|typecheck)|"
+    r"ruff|mypy|pyright|cargo\s+(?:test|check|clippy)|"
+    r"go\s+(?:test|vet)|swift\s+(?:test|build)|vitest|jest|tsc)"
+    r"(?:\s|$)",
+    re.IGNORECASE,
+)
+_LOW_VALUE_DISCOVERY_COMMAND = re.compile(
+    r"^(?:(?:which|type)\s+\S+|command\s+-v\s+\S+|pwd|"
+    r"(?:python\d*(?:\.\d+)?|node|npm|pnpm|yarn|git|ruff|pytest)"
+    r"\s+(?:--version|-v|version))$",
     re.IGNORECASE,
 )
 _DERIVED_COMMAND_BLOCKER = re.compile(
@@ -143,13 +211,10 @@ _TRUNCATED_OUTPUT_SUFFIXES = (
 _MIN_RECOVERY_PREFIX_CHARS = 256
 _READ_ONLY_INSPECTION_COMMANDS = {
     "cat",
-    "command",
-    "env",
     "find",
     "grep",
     "head",
     "ls",
-    "printenv",
     "pwd",
     "rg",
     "sed",
@@ -158,6 +223,60 @@ _READ_ONLY_INSPECTION_COMMANDS = {
     "type",
     "which",
 }
+_SENSITIVE_COMMAND_PATH_BASENAMES = {
+    ".env",
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    "application_default_credentials.json",
+    "authorized_keys",
+    "credentials",
+    "credentials.json",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "id_rsa",
+    "known_hosts",
+    "secrets",
+    "secrets.json",
+    "shadow",
+}
+_SENSITIVE_COMMAND_PATH_SUFFIXES = (
+    ".key",
+    ".p12",
+    ".pem",
+    ".pfx",
+)
+_GIT_READ_ONLY_GLOBAL_FLAGS = {
+    "--glob-pathspecs",
+    "--icase-pathspecs",
+    "--literal-pathspecs",
+    "--no-optional-locks",
+    "--no-pager",
+    "--no-replace-objects",
+    "--noglob-pathspecs",
+    "--paginate",
+}
+_GIT_MUTATING_BRANCH_FLAGS = {
+    "-c",
+    "-C",
+    "-d",
+    "-D",
+    "-m",
+    "-M",
+    "--copy",
+    "--delete",
+    "--edit-description",
+    "--move",
+    "--set-upstream-to",
+    "--unset-upstream",
+}
+_SESSION_CONTEXT_EXTRA_SECRET = re.compile(
+    r"(?i)(\b(?:"
+    r"(?:[A-Z0-9]+_)*(?:token|secret|password|private_key|api_key|"
+    r"access_key|credentials?)|database_url|connection_string|dsn"
+    r")\b\s*[:=]\s*)([\"']?)[^\"'\s,;}]+(\2)"
+)
 _EXTERNAL_SESSION_CONTEXT_DEPENDENCY_RE = re.compile(
     r"(?:chatgpt-conversation://|https?://(?:www\.)?chatgpt\.com/)",
     re.IGNORECASE,
@@ -1183,7 +1302,7 @@ def _safe_checkpoint_projection(
                     **item,
                     "statement": (
                         "Continue the complete recovered request shown under "
-                        "“Carried goal from this session.”"
+                        "“Current main goal.”"
                     ),
                     "payload": {
                         **(item.get("payload") or {}),
@@ -1307,7 +1426,7 @@ def _safe_checkpoint_projection(
             "item_key": "exact_next_action:continue-recovered-goal",
             "statement": (
                 "Continue the complete recovered request shown under "
-                "“Carried goal from this session.”"
+                "“Current main goal.”"
             ),
             "state": "active",
             "truth_state": "derived",
@@ -1523,7 +1642,14 @@ def _is_compound_discovery_command(command: str) -> bool:
 
 
 def _shell_command_segments(command: str) -> list[list[str]] | None:
-    if not command.strip() or "$(" in command or "`" in command:
+    if (
+        not command.strip()
+        or "\x00" in command
+        or "\n" in command
+        or "\r" in command
+        or "$(" in command
+        or "`" in command
+    ):
         return None
     try:
         lexer = shlex.shlex(
@@ -1553,7 +1679,172 @@ def _shell_command_segments(command: str) -> list[list[str]] | None:
     return segments
 
 
+def _command_token_references_sensitive_material(value: str) -> bool:
+    candidates = [value]
+    if "=" in value:
+        candidates.append(value.split("=", 1)[1])
+    for candidate in candidates:
+        normalized = candidate.strip(" \t\"'").replace("\\", "/").rstrip(",;")
+        if not normalized:
+            continue
+        lowered = normalized.casefold()
+        basename = lowered.rsplit("/", 1)[-1]
+        if (
+            basename in _SENSITIVE_COMMAND_PATH_BASENAMES
+            or basename.startswith(".env.")
+            or basename.startswith(".env-")
+            or basename.endswith(_SENSITIVE_COMMAND_PATH_SUFFIXES)
+            or (
+                "/proc/" in f"/{lowered.lstrip('/')}"
+                and basename in {"cmdline", "environ"}
+            )
+            or re.fullmatch(
+                r"(?:credentials?|secrets?)(?:\.[a-z0-9_-]+)?",
+                basename,
+                re.IGNORECASE,
+            )
+        ):
+            return True
+    return False
+
+
+def _segment_references_sensitive_material(segment: list[str]) -> bool:
+    return any(
+        _command_token_references_sensitive_material(value)
+        for value in segment
+    )
+
+
+def _git_subcommand_and_arguments(
+    segment: list[str],
+) -> tuple[str, list[str]] | None:
+    if not segment or Path(segment[0]).name.casefold() != "git":
+        return None
+    index = 1
+    while index < len(segment):
+        token = segment[index]
+        if token in _GIT_READ_ONLY_GLOBAL_FLAGS:
+            index += 1
+            continue
+        if token == "-C":
+            if index + 1 >= len(segment):
+                return None
+            index += 2
+            continue
+        if token.startswith("-C") and len(token) > 2:
+            index += 1
+            continue
+        if token.startswith("-"):
+            # Git's remaining global options can alter configuration, source
+            # values from the environment, or replace the executable path.
+            return None
+        return token.casefold(), segment[index + 1 :]
+    return None
+
+
+def _is_safe_git_branch_inspection(arguments: list[str]) -> bool:
+    safe_exact = {
+        "-a",
+        "-r",
+        "-v",
+        "-vv",
+        "--all",
+        "--color",
+        "--list",
+        "--no-color",
+        "--remotes",
+        "--show-current",
+        "--verbose",
+    }
+    safe_value_prefixes = (
+        "--abbrev=",
+        "--color=",
+        "--column=",
+        "--contains=",
+        "--format=",
+        "--list=",
+        "--merged=",
+        "--no-contains=",
+        "--no-merged=",
+        "--points-at=",
+        "--sort=",
+    )
+    for argument in arguments:
+        if (
+            argument in _GIT_MUTATING_BRANCH_FLAGS
+            or any(
+                argument.startswith(f"{flag}=")
+                for flag in _GIT_MUTATING_BRANCH_FLAGS
+                if flag.startswith("--")
+            )
+        ):
+            return False
+        if (
+            argument in safe_exact
+            or argument.startswith(safe_value_prefixes)
+            or re.fullmatch(r"-[arv]+", argument)
+        ):
+            continue
+        # A positional branch name creates a branch; unknown switches are
+        # rejected rather than guessed to be observational.
+        return False
+    return True
+
+
+def _is_safe_git_inspection_segment(segment: list[str]) -> bool:
+    parsed = _git_subcommand_and_arguments(segment)
+    if parsed is None:
+        return False
+    subcommand, arguments = parsed
+    if subcommand in {"status", "ls-files", "rev-parse"}:
+        return True
+    if subcommand == "branch":
+        return _is_safe_git_branch_inspection(arguments)
+    # Raw diffs and history are intentionally omitted from task memory, while
+    # all state-changing Git subcommands fail closed.
+    return False
+
+
+def _is_read_only_inspection_segment(segment: list[str]) -> bool:
+    if not segment or _segment_references_sensitive_material(segment):
+        return False
+    executable = Path(segment[0]).name.casefold()
+    if executable == "git":
+        return _is_safe_git_inspection_segment(segment)
+    if executable not in _READ_ONLY_INSPECTION_COMMANDS:
+        return False
+    arguments = [value.casefold() for value in segment[1:]]
+    if executable == "sed" and any(
+        argument == "--in-place"
+        or argument.startswith("--in-place=")
+        or (
+            argument.startswith("-")
+            and not argument.startswith("--")
+            and "i" in argument[1:]
+        )
+        for argument in arguments
+    ):
+        return False
+    if executable == "find" and any(
+        argument == "-delete"
+        or argument.startswith("-exec")
+        or argument.startswith("-ok")
+        or argument.startswith("-fprint")
+        or argument == "-fls"
+        for argument in arguments
+    ):
+        return False
+    if executable == "rg" and any(
+        argument == "--pre" or argument.startswith("--pre=")
+        for argument in arguments
+    ):
+        return False
+    return True
+
+
 def _is_read_only_discovery_segment(segment: list[str]) -> bool:
+    if not segment or _segment_references_sensitive_material(segment):
+        return False
     executable = Path(segment[0]).name.casefold()
     arguments = [value.casefold() for value in segment[1:]]
     if executable == "node":
@@ -1570,7 +1861,83 @@ def _is_read_only_discovery_segment(segment: list[str]) -> bool:
         return arguments in (["run"], ["pkg", "get", "scripts"])
     if executable == "yarn":
         return arguments == ["run"]
-    return _is_read_only_inspection_command(shlex.join(segment))
+    return _is_read_only_inspection_segment(segment)
+
+
+def _is_safe_verification_segment(segment: list[str]) -> bool:
+    if not segment or _segment_references_sensitive_material(segment):
+        return False
+    executable = Path(segment[0]).name.casefold()
+    arguments = [value.casefold() for value in segment[1:]]
+    if any(
+        argument in {"--fix", "--write"}
+        or argument.startswith(("--fix=", "--output="))
+        for argument in arguments
+    ):
+        return False
+    if executable in {"pytest", "py.test"}:
+        return "--collect-only" not in arguments
+    if executable.startswith("python"):
+        return bool(
+            len(arguments) >= 2
+            and arguments[:2] == ["-m", "pytest"]
+            and "--collect-only" not in arguments[2:]
+        )
+    if executable in {"npm", "pnpm", "yarn", "bun"}:
+        if not arguments:
+            return False
+        if arguments[0] == "test":
+            return True
+        if arguments[0] == "run" and len(arguments) >= 2:
+            script = arguments[1]
+        elif executable in {"pnpm", "yarn", "bun"}:
+            script = arguments[0]
+        else:
+            return False
+        return script.split(":", 1)[0] in {
+            "build",
+            "check",
+            "lint",
+            "test",
+            "typecheck",
+        }
+    if executable == "ruff":
+        if arguments and arguments[0] == "format":
+            return "--check" in arguments or "--diff" in arguments
+        return not arguments or arguments[0] == "check"
+    if executable in {
+        "eslint",
+        "jest",
+        "mypy",
+        "pyright",
+        "tsc",
+        "vitest",
+    }:
+        return True
+    if executable == "cargo":
+        return bool(arguments and arguments[0] in {"check", "clippy", "test"})
+    if executable == "go":
+        return bool(arguments and arguments[0] in {"test", "vet"})
+    if executable == "swift":
+        return bool(arguments and arguments[0] in {"build", "test"})
+    if executable == "dotnet":
+        return bool(arguments and arguments[0] in {"build", "test"})
+    return False
+
+
+def _is_useful_verification_command(command: str) -> bool:
+    segments = _shell_command_segments(command)
+    if segments is None:
+        return False
+    found_verification = False
+    for segment in segments:
+        if _is_safe_verification_segment(segment):
+            found_verification = True
+            continue
+        if _is_read_only_discovery_segment(segment):
+            continue
+        return False
+    return found_verification
 
 
 def _is_safe_package_script_probe(segment: list[str]) -> bool:
@@ -1750,80 +2117,11 @@ def _dedupe_presentation_items(
 
 
 def _is_read_only_inspection_command(command: str) -> bool:
-    if not command.strip() or "$(" in command or "`" in command or "\n" in command:
-        return False
-    try:
-        lexer = shlex.shlex(
-            command,
-            posix=True,
-            punctuation_chars=";&|<>",
-        )
-        lexer.whitespace_split = True
-        lexer.commenters = ""
-        tokens = list(lexer)
-    except ValueError:
-        return False
-
-    segments: list[list[str]] = [[]]
-    for token in tokens:
-        if token in {"&&", "||", ";", "|"}:
-            if not segments[-1]:
-                return False
-            segments.append([])
-            continue
-        if token and set(token) <= set(";&|<>"):
-            # Redirection and background execution can write or launch work.
-            return False
-        segments[-1].append(token)
-    if not segments or any(not segment for segment in segments):
-        return False
-
-    for segment in segments:
-        executable = Path(segment[0]).name.casefold()
-        if executable == "git":
-            subcommand = next(
-                (
-                    value.casefold()
-                    for value in segment[1:]
-                    if not value.startswith("-")
-                ),
-                "",
-            )
-            if subcommand in {
-                "branch",
-                "diff",
-                "log",
-                "ls-files",
-                "rev-parse",
-                "show",
-                "status",
-            }:
-                continue
-            return False
-        if executable not in _READ_ONLY_INSPECTION_COMMANDS:
-            return False
-        arguments = {value.casefold() for value in segment[1:]}
-        if executable == "sed" and any(
-            argument == "--in-place"
-            or argument.startswith("--in-place=")
-            or (
-                argument.startswith("-")
-                and not argument.startswith("--")
-                and "i" in argument[1:]
-            )
-            for argument in arguments
-        ):
-            return False
-        if executable == "find" and any(
-            argument == "-delete"
-            or argument.startswith("-exec")
-            or argument.startswith("-ok")
-            or argument.startswith("-fprint")
-            or argument == "-fls"
-            for argument in arguments
-        ):
-            return False
-    return True
+    segments = _shell_command_segments(command)
+    return bool(
+        segments is not None
+        and all(_is_read_only_inspection_segment(segment) for segment in segments)
+    )
 
 
 def _parse_datetime(value: Any) -> datetime | None:
@@ -1863,6 +2161,9 @@ def render_resume_bundle(checkpoint: WorkCheckpoint) -> str:
         "progress": "Progress",
         "decisions": "Decisions",
         "failed_attempts": "Failed attempts",
+        "discoveries": "Relevant discoveries",
+        "useful_commands": "Useful commands",
+        "open_items": "Risks, assumptions, constraints, and open questions",
         "relevant_files": "Relevant files",
         "blockers": "Blockers",
         "verification": "Verification evidence",
@@ -3399,14 +3700,22 @@ def build_session_handoff_contract(
     )
     implementation_summary = [
         {
-            "statement": str(item["statement"]),
+            "statement": _redacted_historical_text(item["statement"]),
             "truth_state": str(item.get("truth_state") or "reported"),
             "authority": (
                 "observed_session_evidence"
                 if str(item.get("truth_state") or "").casefold() == "observed"
                 else "agent_reported"
             ),
-            "files": _extract_paths(str(item["statement"])),
+            "files": _extract_paths(
+                _redacted_historical_text(item["statement"])
+            ),
+            "reason": (
+                _redacted_historical_text(
+                    (item.get("payload") or {}).get("reason")
+                ).strip()
+                or None
+            ),
         }
         for item in sections["progress"]
     ]
@@ -3459,6 +3768,11 @@ def build_session_handoff_contract(
         "decisions": _handoff_historical_items(sections["decisions"]),
         "blockers": _handoff_historical_items(sections["blockers"]),
         "failed_attempts": _handoff_historical_items(sections["failed_attempts"]),
+        "discoveries": _handoff_historical_items(sections["discoveries"]),
+        "useful_commands": _session_handoff_commands(
+            sections["useful_commands"]
+        ),
+        "open_items": _handoff_historical_items(sections["open_items"]),
         "quality_report": quality,
     }
 
@@ -3547,14 +3861,20 @@ def _session_handoff_verification(
             )
         result.append({
             "id": f"V{index}",
-            "statement": statement,
-            "command": command or None,
-            "cwd": payload.get("cwd"),
+            "statement": _redacted_historical_text(statement),
+            "command": _redacted_historical_text(command).strip() or None,
+            "cwd": (
+                _redacted_historical_text(payload.get("cwd")).strip()
+                or None
+            ),
             "exit_code": exit_code if isinstance(exit_code, int) else None,
             "passed": passed if isinstance(passed, bool) else None,
             "status": status,
             "observed_at": _handoff_scalar(observed_at),
-            "scope": _handoff_scalar(scope),
+            "scope": (
+                _redacted_historical_text(_handoff_scalar(scope)).strip()
+                or None
+            ),
             "truth_state": str(item.get("truth_state") or "observed"),
             "requirement_ids": requirement_ids,
             "link_kind": link_kind,
@@ -4431,17 +4751,102 @@ def _session_handoff_quality(
     }
 
 
+def _redacted_historical_text(value: Any) -> str:
+    redacted = redact_sensitive_text(str(value or "")) or ""
+    return _SESSION_CONTEXT_EXTRA_SECRET.sub(
+        lambda match: (
+            f"{match.group(1)}{match.group(2)}[redacted]{match.group(3)}"
+        ),
+        redacted,
+    )
+
+
+def _redacted_historical_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _redacted_historical_value(child)
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [_redacted_historical_value(child) for child in value]
+    if isinstance(value, tuple):
+        return [_redacted_historical_value(child) for child in value]
+    if isinstance(value, str):
+        return _redacted_historical_text(value)
+    return value
+
+
 def _handoff_historical_items(
     items: Iterable[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    return [
-        {
-            "statement": str(item.get("statement") or ""),
+    result: list[dict[str, Any]] = []
+    for item in items:
+        raw_payload = (
+            dict(item.get("payload"))
+            if isinstance(item.get("payload"), dict)
+            else {}
+        )
+        payload = _redacted_historical_value(raw_payload)
+        result.append({
+            "statement": _redacted_historical_text(
+                item.get("statement")
+            ),
             "state": str(item.get("state") or "active"),
             "truth_state": str(item.get("truth_state") or "reported"),
-        }
-        for item in items
-    ]
+            "payload": payload,
+            "evidence": list(item.get("evidence") or []),
+        })
+    return result
+
+
+def _session_handoff_commands(
+    items: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for index, item in enumerate(items, start=1):
+        payload = (
+            item.get("payload")
+            if isinstance(item.get("payload"), dict)
+            else {}
+        )
+        command = _redacted_historical_text(
+            payload.get("command")
+        ).strip() or None
+        result.append({
+            "id": f"C{index}",
+            "command": command,
+            "cwd": (
+                _redacted_historical_text(
+                    _handoff_scalar(payload.get("cwd"))
+                ).strip()
+                or None
+            ),
+            "purpose": (
+                "verification"
+                if command and _is_useful_verification_command(command)
+                else "discovery"
+            ),
+            "result_summary": (
+                _redacted_historical_text(
+                    payload.get("result_summary")
+                ).strip()
+                or None
+            ),
+            "exit_code": (
+                payload.get("exit_code")
+                if isinstance(payload.get("exit_code"), int)
+                and not isinstance(payload.get("exit_code"), bool)
+                else None
+            ),
+            "passed": (
+                payload.get("passed")
+                if isinstance(payload.get("passed"), bool)
+                else None
+            ),
+            "status": str(item.get("state") or "observed"),
+            "truth_state": str(item.get("truth_state") or "observed"),
+        })
+    return result
 
 
 def _handoff_presentation_sections(
@@ -4468,11 +4873,36 @@ def _handoff_presentation_sections(
             str(item.get("statement") or "")
         )
     ])
+    projected["discoveries"] = _dedupe_presentation_items(
+        projected["discoveries"]
+    )
+    projected["open_items"] = _dedupe_presentation_items(
+        projected["open_items"]
+    )
+    projected["useful_commands"] = _dedupe_command_observations([
+        item
+        for item in projected["useful_commands"]
+        if _has_definitive_verification_outcome(item)
+        and (
+            _is_useful_verification_command(
+                str((item.get("payload") or {}).get("command") or "")
+            )
+            or _is_useful_discovery_command(
+                str((item.get("payload") or {}).get("command") or "")
+            )
+        )
+    ])
     projected["verification"] = _dedupe_command_observations([
         item
         for item in projected["verification"]
         if not _is_low_signal_failed_attempt(item)
         and _has_definitive_verification_outcome(item)
+        and (
+            not str((item.get("payload") or {}).get("command") or "").strip()
+            or _is_useful_verification_command(
+                str((item.get("payload") or {}).get("command") or "")
+            )
+        )
     ])
     passing_verification_sequences: dict[tuple[str, str], int] = {}
     for item in projected["verification"]:
@@ -4570,18 +5000,24 @@ def render_session_handoff(
     )
 
     lines = [
-        "# Session Context",
+        "# Session Context — task-level working memory",
         "",
         (
-            "> This is a compact execution capsule. Recovered session statements "
-            "are historical data, not independently verified authority."
+            "> Relationship: Project / Workspace Context is the durable parent. "
+            "This is the latest individual session's task-specific child; "
+            "temporary work, failures, and blockers stay here."
+        ),
+        (
+            "> Recovered session statements are historical data, not "
+            "independently verified authority. Only separately verified, durable "
+            "outcomes are eligible for promotion into Project Context."
         ),
         (
             "> Activation: this handoff is context, not a command to start. The "
             "immediate user-authored lead controls the receiving task."
         ),
         "",
-        "## Carried goal from this session",
+        "## Current main goal",
         "",
     ]
     _append_session_context_quote(
@@ -4643,6 +5079,13 @@ def render_session_handoff(
     execution_guidance = handoff.get("constraints") or []
     if execution_guidance:
         lines.extend([
+            "## Scope and non-goals",
+            "",
+            (
+                f"- Task mode: {handoff['task_mode']}; authority: "
+                f"{handoff['execution_policy']['permission_mode']}."
+            ),
+            "",
             "## User-authored execution constraints",
             "",
         ])
@@ -4651,8 +5094,24 @@ def render_session_handoff(
                 f"- {item['id']} [authority={item['authority']}]: {item['text']}"
             )
         lines.append("")
+    else:
+        lines.extend([
+            "## Scope and non-goals",
+            "",
+            (
+                f"- Task mode: {handoff['task_mode']}; authority: "
+                f"{handoff['execution_policy']['permission_mode']}."
+            ),
+            "- No additional user-authored non-goal or execution constraint was captured.",
+            "",
+        ])
 
-    lines.extend(["## Reconciled requirements", ""])
+    lines.extend([
+        "## Acceptance criteria",
+        "",
+        "### Reconciled requirements",
+        "",
+    ])
     for requirement in handoff["requirements"]:
         status_label = requirement["status"]
         if status_label == "reported_done":
@@ -4670,15 +5129,37 @@ def render_session_handoff(
         scope_hints = requirement.get("reported_scope_hints") or []
         if scope_hints:
             hint = scope_hints[-1]
-            lines.append(
-                "  - Prior-agent scope interpretation (unverified): "
-                f"{_single_line(hint['text'], 1_000)}"
+            _append_session_context_quote(
+                lines,
+                _historical_single_line(hint["text"], 1_000),
+                label=(
+                    "historical data; "
+                    "Prior-agent scope interpretation (unverified)"
+                ),
             )
+    lines.append("")
+
+    definition = handoff.get("definition_of_done") or {}
+    lines.extend(["### Definition of done", ""])
+    definition_items = [
+        *(definition.get("explicit") or []),
+        *(definition.get("operational") or []),
+    ]
+    if definition_items:
+        for item in definition_items:
+            links = ", ".join(item.get("requirement_ids") or []) or "all/task"
+            lines.append(
+                f"- [{links}] {_single_line(str(item.get('text') or ''), 1_000)}"
+            )
+    else:
+        lines.append("- Complete and verify every accepted requirement.")
     lines.append("")
 
     reconciliation = handoff["reconciliation"]
     lines.extend([
-        "## Reconciled status",
+        "## Current state",
+        "",
+        "### Reconciled status",
         "",
         f"- State: {reconciliation['state']}",
         (
@@ -4694,17 +5175,301 @@ def render_session_handoff(
             "- Prior completion and continuation claims conflict. Neither is "
             "treated as current truth until repository inspection resolves it."
         )
+    completed_requirements = [
+        item
+        for item in handoff["requirements"]
+        if item["status"] in {"done", "reported_done"}
+    ]
+    remaining_requirements = [
+        item
+        for item in handoff["requirements"]
+        if item["status"] not in {"done", "reported_done"}
+    ]
+    lines.extend(["", "### Completed", ""])
+    if completed_requirements:
+        for item in completed_requirements:
+            label = (
+                "reported complete; unverified"
+                if item["status"] == "reported_done"
+                else "confirmed complete"
+            )
+            lines.append(f"- {item['id']} [{label}]: {item['text']}")
+    else:
+        lines.append("- No requirement is currently classified as complete.")
+    lines.extend(["", "### In progress or remaining", ""])
+    if remaining_requirements:
+        for item in remaining_requirements:
+            lines.append(
+                f"- {item['id']} [{item['status']}]: {item['text']}"
+            )
+    else:
+        lines.append("- No requirement is currently classified as remaining.")
     lines.extend(["", "## Exact next action", ""])
     _append_session_context_quote(
         lines,
-        handoff["exact_next_action"]["text"],
-        label=handoff["exact_next_action"]["truth_state"],
+        _historical_single_line(
+            handoff["exact_next_action"]["text"],
+            1_200,
+        ),
+        label=(
+            "historical data; "
+            f"{handoff['exact_next_action']['truth_state']}"
+        ),
     )
+    lines.append("")
+
+    lines.extend(["## Active decisions that still hold", ""])
+    active_decisions = [
+        item
+        for item in handoff.get("decisions") or []
+        if str(item.get("state") or "active").casefold()
+        not in _INACTIVE_BLOCKER_STATES
+    ]
+    if active_decisions:
+        for item in active_decisions[:8]:
+            _append_session_context_quote(
+                lines,
+                _historical_single_line(item["statement"], 1_000),
+                label=f"historical data; {item['truth_state']}; active",
+            )
+            reason = str((item.get("payload") or {}).get("reason") or "").strip()
+            if reason:
+                _append_session_context_quote(
+                    lines,
+                    _historical_single_line(reason, 800),
+                    label="historical data; decision reason",
+                )
+            else:
+                lines.append("- Reason: not separately captured.")
+    else:
+        lines.append("- No active session decision was captured.")
+    lines.append("")
+
+    lines.extend(["## Failed or rejected attempts", "", "### Failed attempts", ""])
+    if handoff.get("failed_attempts"):
+        for item in handoff["failed_attempts"][:8]:
+            _append_session_context_quote(
+                lines,
+                _historical_single_line(item["statement"], 1_000),
+                label=f"historical data; {item['truth_state']}",
+            )
+            payload = item.get("payload") or {}
+            reason = str(payload.get("reason") or "").strip()
+            if reason:
+                _append_session_context_quote(
+                    lines,
+                    _historical_single_line(reason, 800),
+                    label="historical data; failure reason",
+                )
+            evidence_bits = []
+            if payload.get("command"):
+                evidence_bits.append(
+                    "command="
+                    f"`{_historical_single_line(payload['command'], 800)}`"
+                )
+            if payload.get("exit_code") is not None:
+                evidence_bits.append(f"exit={payload['exit_code']}")
+            if not evidence_bits and payload.get("evidence_summary"):
+                _append_session_context_quote(
+                    lines,
+                    _historical_single_line(payload["evidence_summary"], 700),
+                    label="historical data; failed-attempt evidence source",
+                )
+            if evidence_bits:
+                _append_session_context_quote(
+                    lines,
+                    "; ".join(evidence_bits) + ".",
+                    label="historical data; failed-attempt evidence metadata",
+                )
+            if payload.get("result_summary"):
+                _append_session_context_quote(
+                    lines,
+                    _historical_single_line(payload["result_summary"], 700),
+                    label="historical data; observed command result",
+                )
+    else:
+        lines.append("- No failed or rejected attempt with meaningful evidence was captured.")
+    lines.append("")
+
+    lines.extend(["## Changes made", ""])
+    implementation_summary = handoff.get("implementation_summary") or []
+    if implementation_summary:
+        for item in implementation_summary[:10]:
+            paths = ", ".join(item.get("files") or [])
+            suffix = f"; affected={paths}" if paths else ""
+            _append_session_context_quote(
+                lines,
+                _historical_single_line(item.get("statement"), 1_000),
+                label=(
+                    "historical data; "
+                    f"{item.get('truth_state') or 'reported'}{suffix}"
+                ),
+            )
+            if item.get("reason"):
+                _append_session_context_quote(
+                    lines,
+                    _historical_single_line(item["reason"], 800),
+                    label="historical data; change reason",
+                )
+        lines.append(
+            "- Why: use the acceptance criteria and active decisions above; "
+            "no additional rationale is inferred when the session did not state one."
+        )
+    else:
+        lines.append("- No implementation change was captured for this task.")
+    lines.append("")
+
+    lines.extend(["## Relevant discoveries", ""])
+    discoveries = handoff.get("discoveries") or []
+    if discoveries:
+        for item in discoveries[:8]:
+            _append_session_context_quote(
+                lines,
+                _historical_single_line(item["statement"], 1_000),
+                label=f"historical data; {item['truth_state']}",
+            )
+    else:
+        lines.append(
+            "- No separate symbol, dependency, relationship, or implementation "
+            "discovery was captured."
+        )
+    lines.append("")
+
+    lines.extend(["## Useful commands executed", ""])
+    commands = handoff.get("useful_commands") or []
+    if commands:
+        for item in commands[:10]:
+            details = [
+                f"purpose={item.get('purpose') or 'discovery'}",
+                f"status={item.get('status') or 'observed'}",
+            ]
+            if item.get("cwd"):
+                details.append(
+                    f"cwd=`{_historical_single_line(item['cwd'], 500)}`"
+                )
+            if item.get("exit_code") is not None:
+                details.append(f"exit={item['exit_code']}")
+            _append_session_context_quote(
+                lines,
+                (
+                    f"{item['id']} [{'; '.join(details)}]: "
+                    f"`{_historical_single_line(item.get('command'), 1_000)}`"
+                ),
+                label="historical data; observed command",
+            )
+            if item.get("result_summary"):
+                _append_session_context_quote(
+                    lines,
+                    _historical_single_line(item["result_summary"], 700),
+                    label="historical data; observed command result",
+                )
+    else:
+        lines.append(
+            "- No non-repetitive discovery or verification command with a "
+            "meaningful result was captured."
+        )
+    lines.append("")
+
+    lines.extend([
+        "## Latest blockers, risks, assumptions, constraints, and open questions",
+        "",
+    ])
+    if reconciliation["active_reported_blockers"]:
+        lines.extend(["### Reported blockers", ""])
+        for item in reconciliation["active_reported_blockers"][:5]:
+            _append_session_context_quote(
+                lines,
+                _historical_single_line(item["statement"], 1_000),
+                label="historical data; unverified blocker",
+            )
+    else:
+        lines.extend(["### Reported blockers", "", "- None captured."])
+    open_items = handoff.get("open_items") or []
+    lines.extend(["", "### Risks, assumptions, constraints, and questions", ""])
+    if open_items:
+        for item in open_items[:8]:
+            kind = str((item.get("payload") or {}).get("kind") or "open_item")
+            _append_session_context_quote(
+                lines,
+                _historical_single_line(item["statement"], 1_000),
+                label=f"historical data; {kind}; {item['truth_state']}",
+            )
+    else:
+        lines.append("- No additional open item was captured.")
+    if execution_guidance:
+        lines.extend(["", "### User constraints still in force", ""])
+        for item in execution_guidance:
+            lines.append(f"- {item['id']}: {item['text']}")
+    lines.append("")
+
+    lines.extend(["## What was fixed and how it was confirmed", ""])
+    fixed_items = [
+        item
+        for item in implementation_summary
+        if re.search(
+            r"\b(?:fixed|repaired|resolved|corrected)\b",
+            str(item.get("statement") or ""),
+            re.IGNORECASE,
+        )
+    ]
+    if fixed_items:
+        requirements = handoff.get("requirements") or []
+        verification = handoff.get("verification") or []
+        for item in fixed_items[:8]:
+            matched_requirement_ids = {
+                requirement["id"]
+                for requirement in requirements
+                if _statements_overlap(
+                    str(item.get("statement") or ""),
+                    str(requirement.get("text") or ""),
+                )
+            }
+            confirmation_ids = [
+                check["id"]
+                for check in verification
+                if check.get("passed") is True
+                and matched_requirement_ids
+                & set(check.get("requirement_ids") or [])
+            ]
+            confirmation = (
+                "confirmed by linked observed check(s) "
+                + ", ".join(confirmation_ids)
+                if confirmation_ids
+                else "reported fixed; no linked current confirmation was captured"
+            )
+            _append_session_context_quote(
+                lines,
+                _historical_single_line(item.get("statement"), 1_000),
+                label=(
+                    "historical data; "
+                    f"{item.get('truth_state') or 'reported'}; {confirmation}"
+                ),
+            )
+    elif completed_requirements:
+        for item in completed_requirements:
+            linked = ", ".join(item.get("verification_ids") or [])
+            confirmation = (
+                f"prior check(s) {linked}"
+                if linked
+                else "not yet confirmed by a linked current check"
+            )
+            _append_session_context_quote(
+                lines,
+                f"{item['id']}: {_historical_single_line(item['text'], 1_000)}",
+                label=(
+                    "historical data; user-authored requirement; "
+                    f"{confirmation}"
+                ),
+            )
+    else:
+        lines.append("- No distinct fix was captured or confirmed.")
     lines.append("")
 
     repository = handoff["repository"]
     lines.extend([
         "## Current evidence",
+        "",
+        "### Current repository state",
         "",
         (
             "- Mode: "
@@ -4725,6 +5490,13 @@ def render_session_handoff(
             "newer session events="
             f"{'yes' if boundary.get('has_newer_events') else 'no'}"
         ),
+        (
+            "- Uncommitted-change summary: "
+            f"{len(repository.get('changed_files') or [])} path(s); "
+            "dirty="
+            f"{repository.get('dirty') if repository.get('dirty') is not None else 'unknown'}; "
+            "the affected paths are listed below."
+        ),
     ])
     protected_count = len(
         handoff["files"].get("pre_existing_at_handoff") or []
@@ -4743,7 +5515,7 @@ def render_session_handoff(
             if path and path not in relevant_paths:
                 relevant_paths.append(path)
     if relevant_paths:
-        lines.extend(["", "### Relevant files", ""])
+        lines.extend(["", "### Affected areas and relevant files", ""])
         for path in relevant_paths[:8]:
             lines.append(f"- {_single_line(path, 500)}")
         if len(relevant_paths) > 8:
@@ -4752,33 +5524,49 @@ def render_session_handoff(
                 "in the structured handoff."
             )
 
-    lines.extend(["", "### Prior verification", ""])
+    else:
+        lines.extend([
+            "",
+            "### Affected areas and relevant files",
+            "",
+            "- No task-relevant path was captured.",
+        ])
+
+    lines.extend(["", "## Verification state", "", "### Prior verification", ""])
     if handoff["verification"]:
         for item in handoff["verification"][:8]:
             linked = ", ".join(item["requirement_ids"]) or "unmapped"
             details: list[str] = []
             if item.get("command"):
                 details.append(
-                    f"command=`{_single_line(item['command'], 1_000)}`"
+                    "command="
+                    f"`{_historical_single_line(item['command'], 1_000)}`"
                 )
             elif item.get("statement"):
                 details.append(
-                    f"evidence={_single_line(item['statement'], 1_000)}"
+                    "evidence="
+                    f"{_historical_single_line(item['statement'], 1_000)}"
                 )
             if item.get("cwd"):
                 details.append(
-                    f"cwd=`{_single_line(str(item['cwd']), 500)}`"
+                    f"cwd=`{_historical_single_line(item['cwd'], 500)}`"
                 )
             if item.get("exit_code") is not None:
                 details.append(f"exit={item['exit_code']}")
             if item.get("scope"):
-                details.append(f"scope={_single_line(item['scope'], 500)}")
-            lines.append(
-                f"- {item['id']} [{item['status']}; "
-                f"scope={item.get('scope_kind') or 'observed'}; "
-                f"link={item.get('link_kind') or 'unmapped'}; "
-                f"requirements={linked}]: "
-                + "; ".join(details)
+                details.append(
+                    f"scope={_historical_single_line(item['scope'], 500)}"
+                )
+            _append_session_context_quote(
+                lines,
+                "; ".join(details) or "No verification detail was captured.",
+                label=(
+                    f"{item['status']}; "
+                    f"scope={item.get('scope_kind') or 'observed'}; "
+                    f"link={item.get('link_kind') or 'unmapped'}; "
+                    f"requirements={linked}; historical data; "
+                    f"verification={item['id']}"
+                ),
             )
         if len(handoff["verification"]) > 8:
             lines.append(
@@ -4787,20 +5575,6 @@ def render_session_handoff(
             )
     else:
         lines.append("- None captured.")
-
-    if reconciliation["active_reported_blockers"]:
-        lines.extend(["", "### Reported blockers", ""])
-        for item in reconciliation["active_reported_blockers"][:3]:
-            lines.append(
-                f"- [unverified] {_single_line(item['statement'], 1_000)}"
-            )
-    if handoff["failed_attempts"]:
-        lines.extend(["", "### Failed attempts", ""])
-        for item in handoff["failed_attempts"][:3]:
-            lines.append(
-                f"- [{item['truth_state']}] "
-                f"{_single_line(item['statement'], 1_000)}"
-            )
 
     verification_notes: list[str] = []
     reported_done = [
@@ -4823,11 +5597,36 @@ def render_session_handoff(
             f"{', '.join(unmapped_verification)} is not mapped to a requirement; "
             "its focused or regression-safety scope is recorded separately."
         )
+    lines.extend(["", "### Remaining verification", ""])
     if verification_notes:
-        lines.extend(["", "## Verification notes", ""])
         lines.extend(f"- {note}" for note in verification_notes)
+    else:
+        lines.append("- No additional verification gap was derived.")
 
     return "\n".join(lines)
+
+
+def session_handoff_render_issues(content: str) -> list[dict[str, Any]]:
+    """Return fail-closed issues for an incomplete Session Context artifact."""
+
+    lines = set(content.splitlines())
+    missing_sections = [
+        heading
+        for heading in SESSION_CONTEXT_REQUIRED_HEADINGS
+        if heading not in lines
+    ]
+    if not missing_sections:
+        return []
+    return [{
+        "code": "session_context_required_sections_missing",
+        "status": "fail",
+        "missing_sections": missing_sections,
+        "message": (
+            "Session Context omits required task-memory sections: "
+            + ", ".join(missing_sections)
+            + "."
+        ),
+    }]
 
 
 def _append_session_context_quote(
@@ -5002,6 +5801,63 @@ def _trusted_image_descriptor_to_dict(
     }
 
 
+def _open_item_kind(statement: str) -> str:
+    normalized = statement.casefold()
+    if "open question" in normalized or "unclear" in normalized:
+        return "open_question"
+    if "risk" in normalized or "caveat" in normalized:
+        return "risk"
+    if "assum" in normalized:
+        return "assumption"
+    if "constraint" in normalized:
+        return "constraint"
+    return "unknown"
+
+
+def _is_useful_discovery_command(command: str) -> bool:
+    normalized = re.sub(r"\s+", " ", command).strip()
+    if not normalized or _LOW_VALUE_DISCOVERY_COMMAND.fullmatch(normalized):
+        return False
+    segments = _shell_command_segments(command)
+    return bool(
+        segments is not None
+        and all(_is_read_only_discovery_segment(segment) for segment in segments)
+    )
+
+
+def _meaningful_command_result(
+    event: SessionEvent,
+    payload: dict[str, Any],
+) -> str | None:
+    raw: Any = event.content
+    if not str(raw or "").strip():
+        raw = next(
+            (
+                payload.get(key)
+                for key in ("stdout", "output", "result", "summary")
+                if payload.get(key) not in (None, "")
+            ),
+            None,
+        )
+    if isinstance(raw, (dict, list, tuple)):
+        raw = _canonical_json(raw)
+    summary = re.sub(
+        r"\s+",
+        " ",
+        _redacted_historical_text(raw),
+    ).strip()
+    if not summary:
+        return None
+    if re.fullmatch(
+        r"(?:process\s+)?(?:completed|finished|exited)"
+        r"(?:\s+with)?(?:\s+(?:exit\s+)?code)?\s*0?\.?",
+        summary,
+        re.IGNORECASE,
+    ):
+        return None
+    return _single_line(summary, 500)
+
+
 def _build_sections(
     events: list[SessionEvent],
     snapshot: RepositorySnapshot | None,
@@ -5096,6 +5952,11 @@ def _build_sections(
                     statement=_statement(sentence),
                     truth_state="reported",
                     events=[event],
+                    payload=(
+                        {"reason": reason}
+                        if (reason := _statement_reason(sentence))
+                        else {}
+                    ),
                 ))
     sections["progress"] = _dedupe_drafts(progress)[-MAX_ITEMS_PER_CATEGORY:]
 
@@ -5124,14 +5985,110 @@ def _build_sections(
                     statement=_statement(sentence),
                     truth_state="reported",
                     events=[event],
+                    payload=(
+                        {"reason": reason}
+                        if (reason := _statement_reason(sentence))
+                        else {}
+                    ),
                 ))
     sections["decisions"] = _dedupe_drafts(decisions)[-MAX_ITEMS_PER_CATEGORY:]
+
+    reported_failures: list[DraftItem] = []
+    discoveries: list[DraftItem] = []
+    open_items: list[DraftItem] = []
+    for event in events:
+        if event.event_type not in {"user_request", "assistant_update"}:
+            continue
+        source_text = (
+            extract_user_authored_request(event.content)
+            if event.event_type == "user_request"
+            else event.content
+        )
+        if (
+            not source_text
+            or is_session_instruction_noise(source_text)
+            or (
+                event.event_type == "user_request"
+                and is_continuation_control(source_text)
+            )
+        ):
+            continue
+        for sentence in _sentences(source_text):
+            if (
+                _FAILED_OR_REJECTED_ATTEMPT_SIGNAL.search(sentence)
+                and not _is_tool_selection_statement(sentence)
+            ):
+                reason = _failed_attempt_reason(sentence)
+                reported_failures.append(DraftItem(
+                    category="failed_attempts",
+                    statement=_statement(sentence),
+                    truth_state=(
+                        "user_asserted"
+                        if event.event_type == "user_request"
+                        else "reported"
+                    ),
+                    events=[event],
+                    state="historical",
+                    payload={
+                        "attempt_kind": (
+                            "rejected"
+                            if re.search(
+                                r"\b(?:rejected|ruled\s+out|abandoned)\b",
+                                sentence,
+                                re.IGNORECASE,
+                            )
+                            else "failed"
+                        ),
+                        "reason": reason,
+                        "evidence_summary": (
+                            f"{event.event_type} at session sequence "
+                            f"{event.sequence_number}"
+                        ),
+                    },
+                ))
+            if (
+                event.event_type == "assistant_update"
+                and _DISCOVERY_SIGNAL.search(sentence)
+                and not _PROGRESS_SIGNAL.search(sentence)
+                and not _BLOCKER_SIGNAL.search(sentence)
+                and not _NEXT_SIGNAL.search(sentence)
+                and not _is_tool_selection_statement(sentence)
+            ):
+                paths = _extract_paths(sentence)
+                discoveries.append(DraftItem(
+                    category="discoveries",
+                    statement=_statement(sentence),
+                    truth_state="reported",
+                    events=[event],
+                    payload={"paths": paths},
+                ))
+            if (
+                _OPEN_ITEM_SIGNAL.search(sentence)
+                and not _BLOCKER_SIGNAL.search(sentence)
+            ):
+                open_items.append(DraftItem(
+                    category="open_items",
+                    statement=_statement(sentence),
+                    truth_state=(
+                        "user_asserted"
+                        if event.event_type == "user_request"
+                        else "reported"
+                    ),
+                    events=[event],
+                    payload={"kind": _open_item_kind(sentence)},
+                ))
+    sections["discoveries"] = _dedupe_drafts(discoveries)[
+        -MAX_ITEMS_PER_CATEGORY:
+    ]
+    sections["open_items"] = _dedupe_drafts(open_items)[
+        -MAX_ITEMS_PER_CATEGORY:
+    ]
 
     result_events = [
         event for event in events if event.event_type in {"command_result", "tool_result"}
     ]
     command_results = [event for event in result_events if event.event_type == "command_result"]
-    failures: list[DraftItem] = []
+    failures: list[DraftItem] = list(reported_failures)
     for event in result_events:
         payload = event_payload(event)
         exit_code = payload.get("exit_code")
@@ -5148,9 +6105,82 @@ def _build_sections(
                 truth_state="observed",
                 events=[event],
                 state="historical",
-                payload={"command": command, "cwd": payload.get("cwd"), "exit_code": exit_code},
+                payload={
+                    "command": command,
+                    "cwd": payload.get("cwd"),
+                    "exit_code": exit_code,
+                    "result_summary": _meaningful_command_result(event, payload),
+                },
             ))
     sections["failed_attempts"] = failures[-MAX_ITEMS_PER_CATEGORY:]
+
+    useful_commands: dict[tuple[str, str], DraftItem] = {}
+    for event in command_results:
+        payload = event_payload(event)
+        command = str(payload.get("command") or "").strip()
+        if not command:
+            continue
+        purpose = (
+            "verification"
+            if _is_useful_verification_command(command)
+            else "discovery"
+            if _is_useful_discovery_command(command)
+            else None
+        )
+        if purpose is None:
+            continue
+        exit_code = payload.get("exit_code")
+        passed = payload.get("passed")
+        has_outcome = (
+            isinstance(passed, bool)
+            or (isinstance(exit_code, int) and not isinstance(exit_code, bool))
+        )
+        if not has_outcome:
+            continue
+        succeeded = passed is True or (
+            passed is not False and exit_code == 0
+        )
+        if purpose == "discovery" and not succeeded:
+            # A no-match or failed inspection is useful only when the session
+            # explicitly explains the resulting discovery. It is not promoted
+            # merely because a read-only command returned non-zero.
+            continue
+        result_summary = _meaningful_command_result(event, payload)
+        if purpose == "discovery" and not result_summary:
+            continue
+        state = "passed" if succeeded else "failed"
+        normalized_command = re.sub(r"\s+", " ", command).strip()
+        cwd = str(payload.get("cwd") or "").strip()
+        useful_commands[(cwd, normalized_command)] = DraftItem(
+            category="useful_commands",
+            statement=(
+                f"`{_single_line(normalized_command, 500)}` {state}"
+                + (
+                    f": {_single_line(result_summary, 500)}"
+                    if result_summary
+                    else "."
+                )
+            ),
+            truth_state="observed",
+            events=[event],
+            state=state,
+            payload={
+                "command": command,
+                "cwd": payload.get("cwd"),
+                "exit_code": (
+                    exit_code
+                    if isinstance(exit_code, int)
+                    and not isinstance(exit_code, bool)
+                    else None
+                ),
+                "passed": succeeded,
+                "purpose": purpose,
+                "result_summary": result_summary,
+            },
+        )
+    sections["useful_commands"] = list(useful_commands.values())[
+        -MAX_ITEMS_PER_CATEGORY:
+    ]
 
     file_evidence: dict[str, list[SessionEvent]] = {}
     for event in events:
@@ -5245,7 +6275,14 @@ def _build_sections(
     for event in command_results:
         payload = event_payload(event)
         command = str(payload.get("command") or "").strip()
-        if not command or not _VERIFICATION_COMMAND.search(command):
+        safe_for_context = _is_useful_verification_command(command)
+        if (
+            not command
+            or not (
+                safe_for_context
+                or _UNTRUSTED_VERIFICATION_COMMAND_MARKER.search(command)
+            )
+        ):
             continue
         exit_code = payload.get("exit_code")
         label = "passed" if exit_code == 0 else "failed" if exit_code is not None else "completed"
@@ -5261,6 +6298,7 @@ def _build_sections(
                 "cwd": payload.get("cwd"),
                 "exit_code": exit_code,
                 "passed": exit_code == 0 if exit_code is not None else None,
+                "context_eligible": safe_for_context,
                 "scope": next(
                     (
                         payload.get(key)
@@ -5486,8 +6524,31 @@ def _statement(value: str | None, limit: int = MAX_STATEMENT_CHARS) -> str:
     return text if len(text) <= limit else f"{text[: limit - 1].rstrip()}…"
 
 
+def _statement_reason(value: str) -> str | None:
+    match = _REASON_CLAUSE.search(value)
+    if match is None:
+        return None
+    reason = _statement(match.group(1), 800).rstrip(".!?")
+    return reason or None
+
+
+def _failed_attempt_reason(value: str) -> str | None:
+    reason = _statement_reason(value)
+    if reason:
+        return reason
+    match = _FAILED_ATTEMPT_CONTRAST_REASON.search(value)
+    if match is None:
+        return None
+    reason = _statement(match.group(1), 800).rstrip(".!?")
+    return reason or None
+
+
 def _single_line(value: str, limit: int) -> str:
     return _statement(value, limit).replace("`", "'")
+
+
+def _historical_single_line(value: Any, limit: int) -> str:
+    return _single_line(_redacted_historical_text(value), limit)
 
 
 def _extract_paths(value: str) -> list[str]:
