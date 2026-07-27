@@ -60,11 +60,11 @@ def test_cli_ingest_directory_passes_sync_to_bulk_endpoint(monkeypatch, tmp_path
 
     monkeypatch.setattr(cli_main, "api_request", fake_api_request)
 
-    assert cli_main.main(["ingest", str(tmp_path), "--sync", "--base-url", "http://ce.test"]) == 0
+    assert cli_main.main(["ingest", str(tmp_path), "--sync", "--base-url", "http://daemonstate.test"]) == 0
 
     assert len(calls) == 1
     base_url, method, path, payload, timeout, api_key = calls[0]
-    assert base_url == "http://ce.test"
+    assert base_url == "http://daemonstate.test"
     assert method == "POST"
     assert path == "/api/sources/bulk?sync=true"
     assert timeout == 30
@@ -75,14 +75,14 @@ def test_cli_ingest_directory_passes_sync_to_bulk_endpoint(monkeypatch, tmp_path
     ]
 
 
-def test_cli_query_uses_context_engine_api_key_env(monkeypatch):
+def test_cli_query_uses_daemonstate_api_key_env(monkeypatch):
     calls = []
 
     def fake_api_request(base_url, method, path, payload=None, timeout=30, api_key=None):
         calls.append((base_url, method, path, payload, timeout, api_key))
         return {"answer": "source-backed answer", "confidence": 0.9, "sources": []}
 
-    monkeypatch.setenv("CONTEXT_ENGINE_API_KEY", "server-secret")
+    monkeypatch.setenv("DAEMONSTATE_API_KEY", "server-secret")
     monkeypatch.setattr(cli_main, "api_request", fake_api_request)
 
     assert cli_main.main(["query", "What changed?"]) == 0
@@ -216,7 +216,7 @@ def test_cli_eval_harness_reports_only_directional_evidence(tmp_path, capsys):
     rows = []
     for label, solved in (
         ("old_alone", False),
-        ("old_with_context_engine", True),
+        ("old_with_daemonstate", True),
         ("new_alone", True),
     ):
         rows.append({
@@ -237,7 +237,7 @@ def test_cli_eval_harness_reports_only_directional_evidence(tmp_path, capsys):
     output = capsys.readouterr().out
     assert "paired_tasks=1" in output
     assert "claim_status=insufficient_evidence" in output
-    assert "old_with_context_engine: solved=1/1" in output
+    assert "old_with_daemonstate: solved=1/1" in output
 
 
 def test_cli_harness_run_forwards_explicit_argv(monkeypatch, capsys):
@@ -646,11 +646,11 @@ def test_cli_db_upgrade_invokes_alembic(monkeypatch, capsys):
         "upgrade",
         "head",
         "--database-url",
-        "sqlite+aiosqlite:////tmp/context-engine-test.db",
+        "sqlite+aiosqlite:////tmp/daemonstate-test.db",
     ]) == 0
 
     assert calls == [
-        ("upgrade", "sqlite+aiosqlite:////tmp/context-engine-test.db", "head")
+        ("upgrade", "sqlite+aiosqlite:////tmp/daemonstate-test.db", "head")
     ]
     assert "database upgraded to head" in capsys.readouterr().out
 
@@ -686,10 +686,10 @@ def test_cli_credentials_rotate_invokes_database_rotation(monkeypatch, capsys):
         "credentials",
         "rotate",
         "--database-url",
-        "sqlite+aiosqlite:////tmp/context-engine-test.db",
+        "sqlite+aiosqlite:////tmp/daemonstate-test.db",
     ]) == 0
 
-    assert calls == ["sqlite+aiosqlite:////tmp/context-engine-test.db"]
+    assert calls == ["sqlite+aiosqlite:////tmp/daemonstate-test.db"]
     output = capsys.readouterr().out
     assert "credentials rotated:" in output
     assert "updated=1" in output

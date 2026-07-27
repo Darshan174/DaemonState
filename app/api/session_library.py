@@ -115,7 +115,7 @@ async def open_session_in_harness(
     if access_scope.principal_id != "local":
         raise HTTPException(
             status_code=403,
-            detail="Native harness launch is available only from the local Context Engine app.",
+            detail="Native harness launch is available only from the local DaemonState app.",
         )
 
     document = await session.scalar(select(SourceDocument).where(

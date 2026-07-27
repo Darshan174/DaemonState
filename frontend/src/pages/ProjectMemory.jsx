@@ -905,14 +905,14 @@ function MemoryReadinessPanel({
           </h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-canvas/70">
             {bootstrap
-              ? `Context Engine found ${readyCount.toLocaleString()} source-backed ${readyCount === 1 ? "claim" : "claims"}, but none has been accepted as current project truth.`
+              ? `DaemonState found ${readyCount.toLocaleString()} source-backed ${readyCount === 1 ? "claim" : "claims"}, but none has been accepted as current project truth.`
               : currentCount === 0 && conflictCount > 0
                 ? "Conflicting claims stay out of Current until you compare them and rule out the version that should not remain current."
                 : currentCount === 0 && refreshCount > 0
                   ? "Provider snapshots stay out of Current until a successful source refresh proves which exact remote revision was observed."
                   : currentCount === 0 && evidenceGapCount > 0
                     ? "Some extracted records lack an exact source span. They cannot be verified or reused until extraction captures traceable evidence."
-              : "Current memory is the source-backed set Context Engine may place in future agent briefs. The review queue contains suggestions, not facts."}
+              : "Current memory is the source-backed set DaemonState may place in future agent briefs. The review queue contains suggestions, not facts."}
           </p>
           <p className="mt-2 max-w-3xl text-xs leading-5 text-canvas/55">
             Exact evidence proves where a claim came from. Adding it to Current means you attest that it is correct, relevant, and still describes the project now.
@@ -1175,7 +1175,7 @@ function ReviewWorkspace({
         <div className="border-t border-line px-5 py-5 sm:px-6">
           <h3 className="text-sm font-semibold text-ink">Evidence gaps cannot be verified here</h3>
           <p className="mt-1 text-xs leading-5 text-ink-muted">
-            Without an exact source span, Context Engine cannot prove what text produced the claim and will never offer “Add to current memory.”
+            Without an exact source span, DaemonState cannot prove what text produced the claim and will never offer “Add to current memory.”
           </p>
           <div className="mt-4 overflow-hidden rounded-control border border-line">
             {evidenceGapRecords.map((item) => (
@@ -1272,9 +1272,9 @@ function MemoryTypeCard({
         animationDelay: `${Math.min(index, 12) * 20}ms`,
       }}
     >
-      <span aria-hidden="true" className="absolute inset-x-0 top-0 h-1" style={{ backgroundColor: selected ? "var(--ce-color-accent)" : meta.accent }} />
+      <span aria-hidden="true" className="absolute inset-x-0 top-0 h-1" style={{ backgroundColor: selected ? "var(--daemonstate-color-accent)" : meta.accent }} />
       <span className="flex items-start justify-between gap-4">
-        <span className={`flex h-10 w-10 items-center justify-center rounded-control border ${selected ? "border-canvas/20 bg-canvas/10" : "border-line bg-surface-raised"}`} style={{ color: selected ? "var(--ce-color-accent)" : meta.accent }}>
+        <span className={`flex h-10 w-10 items-center justify-center rounded-control border ${selected ? "border-canvas/20 bg-canvas/10" : "border-line bg-surface-raised"}`} style={{ color: selected ? "var(--daemonstate-color-accent)" : meta.accent }}>
           <Icon className="h-[18px] w-[18px]" strokeWidth={1.8} aria-hidden="true" />
         </span>
         <span className="text-right">
@@ -1490,7 +1490,7 @@ function MemoryDrawer({
             <div className="border-y border-[#d1d1c7] px-6 py-12 text-center dark:border-[#30302b]">
               <Icon className="mx-auto h-6 w-6 opacity-50" strokeWidth={1.7} style={{ color: meta.accent }} />
               <p className="mt-4 text-sm font-semibold">Nothing observed yet</p>
-              <p className="mx-auto mt-2 max-w-sm text-[11px] leading-5 text-[#68685f] dark:text-[#aaa9a0]">{type.id === "goal" ? "No current project goal is explicitly selected. Session tasks and checkpoint instructions are kept out of this tracker." : "When this information appears in a connected source, Context Engine can place it here with its evidence attached."}</p>
+              <p className="mx-auto mt-2 max-w-sm text-[11px] leading-5 text-[#68685f] dark:text-[#aaa9a0]">{type.id === "goal" ? "No current project goal is explicitly selected. Session tasks and checkpoint instructions are kept out of this tracker." : "When this information appears in a connected source, DaemonState can place it here with its evidence attached."}</p>
             </div>
           )}
           {hasMore ? (

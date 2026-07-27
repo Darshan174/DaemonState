@@ -765,7 +765,7 @@ _SESSION_MEMORY_SECTIONS: dict[
     for heading in headings
 }
 
-_AGENT_RESPONSE_BOUNDARY = "<!-- context-engine-agent-response-boundary -->"
+_AGENT_RESPONSE_BOUNDARY = "<!-- daemonstate-agent-response-boundary -->"
 
 
 def _extract_session_memory_facts(content: str, provenance: str) -> list[ExtractedFact]:

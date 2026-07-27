@@ -21,7 +21,7 @@ async def test_session_continuity_builds_one_truthful_ledger_per_session(
     await db_session.flush()
     db_session.add(CodeFile(
         workspace_id=workspace.id,
-        repo_root="/workspace/context-engine",
+        repo_root="/workspace/daemonstate",
         path="app.py",
         identity_key=uuid4().hex * 2,
         language="python",
@@ -37,7 +37,7 @@ async def test_session_continuity_builds_one_truthful_ledger_per_session(
         metadata_json=json.dumps({
             "tool": "codex",
             "session_id": "continuity-one",
-            "cwd": "/workspace/context-engine",
+            "cwd": "/workspace/daemonstate",
             "source_path": "/tmp/continuity-one.jsonl",
             "title": "Resume experience",
         }),
@@ -50,7 +50,7 @@ async def test_session_continuity_builds_one_truthful_ledger_per_session(
         metadata_json=json.dumps({
             "tool": "codex",
             "session_id": "continuity-two",
-            "cwd": "/workspace/context-engine",
+            "cwd": "/workspace/daemonstate",
             "source_path": "/tmp/continuity-two.jsonl",
             "title": "Another resume session",
         }),
@@ -242,7 +242,7 @@ async def test_session_continuation_returns_a_reviewable_source_backed_bundle(
         metadata_json=json.dumps({
             "tool": "codex",
             "session_id": "bundle-session",
-            "cwd": "/workspace/context-engine",
+            "cwd": "/workspace/daemonstate",
             "source_path": "/tmp/bundle-session.jsonl",
             "title": "Preserve context",
         }),
@@ -252,7 +252,7 @@ async def test_session_continuation_returns_a_reviewable_source_backed_bundle(
         source,
         CodeFile(
             workspace_id=workspace.id,
-            repo_root="/workspace/context-engine",
+            repo_root="/workspace/daemonstate",
             path="app.py",
             identity_key=uuid4().hex * 2,
             language="python",
@@ -377,7 +377,7 @@ def test_session_ledger_separates_and_windows_file_evidence() -> None:
                     "tool_name": "apply_patch",
                     "input": (
                         "*** Begin Patch\n"
-                        f"*** Update File: /workspace/context-engine/tests/test_{sequence}.py\n"
+                        f"*** Update File: /workspace/daemonstate/tests/test_{sequence}.py\n"
                         "@@\n"
                         "+updated = True\n"
                         "*** End Patch"
@@ -412,7 +412,7 @@ def test_session_ledger_separates_and_windows_file_evidence() -> None:
     assert len(ledger["files"]) == 18
     assert ledger["truncated"]["files"] == 7
     assert ledger["files"][-1]["text"] == (
-        "/workspace/context-engine/tests/test_26.py"
+        "/workspace/daemonstate/tests/test_26.py"
     )
     assert all(item["kind"] == "file" for item in ledger["files"])
 

@@ -54,7 +54,7 @@ still calling out final hardening gaps below.
 - CLI ingest now carries `--sync` through to both single-source and bulk-source
   HTTP paths, and the bulk source API processes synchronously when requested.
 - README and demo quick-start commands use the real GitHub remote with an
-  explicit `context-engine` checkout directory, and docs coverage guards
+  explicit `daemonstate` checkout directory, and docs coverage guards
   against placeholder clone URLs.
 - Package metadata now advertises the MIT license, repository/issues URLs,
   relevant keywords, and PyPI classifiers; the package metadata dry run passes,
@@ -82,7 +82,7 @@ still calling out final hardening gaps below.
   History, Memory, and Evidence are secondary inspection surfaces; Sources and
   Integrations are setup surfaces. The legacy `/app/prepare` route preserves
   query parameters while redirecting to Continue. Durable continuation is
-  available through HTTP, `ctxe continue`, and MCP `resume_task`.
+  available through HTTP, `daemonstate continue`, and MCP `resume_task`.
 - Implemented in this branch: source objects use workspace-scoped append-only
   revisions, and MCP `record_agent_run_finish` links an exact pack to terminal
   repository and verification observations without claiming causal lift.

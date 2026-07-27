@@ -3,14 +3,14 @@ requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "context-engine"
+name = "daemonstate"
 version = "0.2.0"
 description = "Structured context infrastructure for AI systems"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }
 authors = [
-  { name = "Context Engine contributors" },
+  { name = "DaemonState contributors" },
 ]
 keywords = [
   "ai-agents",
@@ -50,13 +50,13 @@ dependencies = [
 ]
 
 [project.scripts]
-ctxe = "app.cli.main:main"
+daemonstate = "app.cli.main:main"
 
 [project.urls]
-Homepage = "https://github.com/Darshan174/Context-Engine"
-Repository = "https://github.com/Darshan174/Context-Engine"
-Issues = "https://github.com/Darshan174/Context-Engine/issues"
-Documentation = "https://github.com/Darshan174/Context-Engine#readme"
+Homepage = "https://github.com/Darshan174/DaemonState"
+Repository = "https://github.com/Darshan174/DaemonState"
+Issues = "https://github.com/Darshan174/DaemonState/issues"
+Documentation = "https://github.com/Darshan174/DaemonState#readme"
 
 [project.optional-dependencies]
 dev = [

@@ -16,8 +16,8 @@ from app.services.ingest import IngestionService
 
 router = APIRouter()
 
-DEMO_WORKSPACE_NAME = "Context Engine Demo"
-DEMO_WORKSPACE_SLUG = "context-engine-demo"
+DEMO_WORKSPACE_NAME = "DaemonState Demo"
+DEMO_WORKSPACE_SLUG = "daemonstate-demo"
 
 
 class SeedDemoRequest(BaseModel):
@@ -31,7 +31,7 @@ DEMO_SOURCES: list[dict[str, Any]] = [
         "author": "maya",
         "metadata": {
             "item_type": "issue",
-            "repo_full_name": "your-org/context-engine",
+            "repo_full_name": "your-org/daemonstate",
             "number": 12,
             "title": "Project map needs source-backed relevance",
         },
@@ -57,7 +57,7 @@ DEMO_SOURCES: list[dict[str, Any]] = [
         "author": "ravi",
         "metadata": {
             "item_type": "pull_request",
-            "repo_full_name": "your-org/context-engine",
+            "repo_full_name": "your-org/daemonstate",
             "number": 11,
             "title": "Ship the source-backed project map",
         },
@@ -232,7 +232,7 @@ async def _ensure_demo_project_boundary(
         status="disconnected",
         config_json=json.dumps({
             "demo_seed": True,
-            "repositories": ["your-org/context-engine"],
+            "repositories": ["your-org/daemonstate"],
         }),
         credentials_json="{}",
     ))

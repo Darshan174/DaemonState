@@ -7,8 +7,8 @@ base.
 ## Start
 
 ```bash
-git clone https://github.com/Darshan174/Context-Engine.git context-engine
-cd context-engine
+git clone https://github.com/Darshan174/DaemonState.git daemonstate
+cd daemonstate
 cp .env.example .env
 bash scripts/doctor.sh --docker
 docker compose up --build
@@ -22,19 +22,19 @@ curl -X POST http://localhost:8000/api/seed-demo \
   -d '{}'
 ```
 
-Then open `http://localhost:8000/app` and select **Context Engine Demo** when
+Then open `http://localhost:8000/app` and select **DaemonState Demo** when
 the workspace chooser appears.
 
 The seed creates raw `SourceDocument` rows from launch-available source families:
 GitHub issue, GitHub pull request, Slack thread, Gmail thread, Google Drive
-document, and Codex session. It also records `your-org/context-engine` as the
+document, and Codex session. It also records `your-org/daemonstate` as the
 demo project boundary through a disconnected GitHub configuration, so the map
 opens immediately. It does not store credentials or mark any provider connected.
 
 When running in Docker, the local-path importer sees container paths. Compose
 mounts the current checkout read-only at `/workspace` by default. To inspect a
 different host project, start with
-`CONTEXT_ENGINE_PROJECT_PATH=/absolute/host/path docker compose up --build`,
+`DAEMONSTATE_PROJECT_PATH=/absolute/host/path docker compose up --build`,
 then enter `/workspace` when connecting the project.
 
 ## What To Inspect

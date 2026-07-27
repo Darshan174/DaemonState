@@ -91,7 +91,7 @@ export default function SessionContinuationDialog({
         aria-modal="true"
         aria-labelledby={`continue-session-${safeId(card.key)}`}
         aria-describedby={`continue-session-description-${safeId(card.key)}`}
-        className="ce-continuation-dialog max-h-[calc(100dvh-2rem)] w-full max-w-2xl overflow-y-auto rounded-[1.75rem] border border-[#d5d5cc] bg-[#fbfbf6] shadow-[0_36px_120px_rgba(0,0,0,0.38)] dark:border-[#393934] dark:bg-[#0b0b09]"
+        className="daemonstate-continuation-dialog max-h-[calc(100dvh-2rem)] w-full max-w-2xl overflow-y-auto rounded-[1.75rem] border border-[#d5d5cc] bg-[#fbfbf6] shadow-[0_36px_120px_rgba(0,0,0,0.38)] dark:border-[#393934] dark:bg-[#0b0b09]"
       >
         <div className="relative overflow-hidden border-b border-[#deded5] px-5 py-5 dark:border-[#292925] sm:px-7 sm:py-6">
           <div
@@ -174,7 +174,7 @@ export default function SessionContinuationDialog({
               <div>
                 <p className="text-sm font-black">What happens when you resume</p>
                 <p className="mt-1 text-xs leading-5 text-white/70">
-                  Context Engine prepares a source-backed summary from {totalMeasured} captured session {totalMeasured === 1 ? "update" : "updates"} for you to review and use.
+                  DaemonState prepares a source-backed summary from {totalMeasured} captured session {totalMeasured === 1 ? "update" : "updates"} for you to review and use.
                 </p>
               </div>
             </div>

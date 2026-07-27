@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Context Engine — production start script
+# DaemonState — production start script
 # Usage: bash scripts/start.sh
 set -euo pipefail
 
@@ -13,7 +13,7 @@ if [[ -z "${PYTHON_BIN}" && -x ".venv/bin/python" ]]; then
 fi
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
-echo "Starting Context Engine on port ${PORT}…"
+echo "Starting DaemonState on port ${PORT}…"
 exec "${PYTHON_BIN}" -m uvicorn app.main:app \
   --host "${BIND_ADDRESS}" \
   --port "${PORT}" \

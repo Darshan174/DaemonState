@@ -223,7 +223,7 @@ def build_session_ledger(events: list[SessionEvent]) -> dict[str, Any]:
             "reason_code": "post_compaction_context_not_observable",
             "reason": (
                 "The agent provider does not expose the active context produced by compaction, "
-                "so Context Engine cannot prove what was omitted."
+                "so DaemonState cannot prove what was omitted."
             ),
         }
         if compactions

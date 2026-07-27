@@ -5,10 +5,10 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
 
-EXPERIMENT_LABELS = ("old_alone", "old_with_context_engine", "new_alone")
+EXPERIMENT_LABELS = ("old_alone", "old_with_daemonstate", "new_alone")
 PAIRWISE_COMPARISONS = (
-    ("old_with_context_engine", "old_alone"),
-    ("old_with_context_engine", "new_alone"),
+    ("old_with_daemonstate", "old_alone"),
+    ("old_with_daemonstate", "new_alone"),
     ("old_alone", "new_alone"),
 )
 
@@ -121,7 +121,7 @@ class PairedExperimentReport:
                 "These are observed paired differences only. This report does not "
                 "establish causality or model parity. Evidence identifiers are "
                 "caller-supplied and checked for shape and uniqueness, but are not "
-                "resolved against Context Engine storage by this offline evaluator."
+                "resolved against DaemonState storage by this offline evaluator."
             ),
         }
 
