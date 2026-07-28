@@ -1,11 +1,11 @@
-# OSS Readiness Review
+# Release Readiness Review
 
-Last updated: 2026-07-22
-Reviewed: 2026-05-01 by Xiaomi MiMo V2.5 Pro; refreshed 2026-07-24 after the verified continuation-runtime pass.
+Last updated: 2026-07-28
+Reviewed: 2026-05-01 by Xiaomi MiMo V2.5 Pro; refreshed 2026-07-28 after the self-hosting and licensing pass.
 
 ## Score
 
-Current v2 branch OSS readiness: 8.0/10
+Current v2 branch source-release readiness: 8.0/10
 
 This score is for the current Context Compiler v2 working tree, not a public
 release tag. It reflects implemented backend/runtime persistence, compiler,
@@ -48,6 +48,12 @@ still calling out final hardening gaps below.
 - `scripts/doctor.sh` gives first-time users and contributors a read-only
   checkout/prerequisite diagnosis for Docker and bare-metal setup before they
   commit to setup, demo, or smoke commands.
+- `scripts/self-host.sh` creates permission-restricted local secrets, runs the
+  PostgreSQL migration gate, and waits for the loopback-only personal Compose
+  profile to become healthy.
+- The public license is SUL 1.0 from version 0.3.0 onward, with the
+  source-available terms, prior MIT boundary, and contribution implications
+  documented explicitly.
 - Bare-metal setup now creates `.venv`, validates Python versions with
   `sys.version_info`, uses `npm ci`, and the start/dev/smoke scripts reuse that
   interpreter automatically.
@@ -56,8 +62,8 @@ still calling out final hardening gaps below.
 - README and demo quick-start commands use the real GitHub remote with an
   explicit `daemonstate` checkout directory, and docs coverage guards
   against placeholder clone URLs.
-- Package metadata now advertises the MIT license, repository/issues URLs,
-  relevant keywords, and PyPI classifiers; the package metadata dry run passes,
+- Package metadata now advertises the SUL 1.0 source-available license,
+  repository/issues URLs, and relevant keywords; the package metadata dry run passes,
   and Docker copies `LICENSE` before `pip install .` prepares metadata.
 - CI runs backend tests, Ruff, frontend tests, frontend build, Docker image build,
   and smoke-compose config validation.
@@ -79,7 +85,7 @@ still calling out final hardening gaps below.
   stale leakage, conflict detection, token efficiency, and verification-command
   presence on fixtures.
 - Implemented in this branch: `/app` is the primary Continue view. Library,
-  History, Memory, and Evidence are secondary inspection surfaces; Sources and
+  Memory, and Evidence are secondary inspection surfaces; Sources and
   Integrations are setup surfaces. The legacy `/app/prepare` route preserves
   query parameters while redirecting to Continue. Durable continuation is
   available through HTTP, `daemonstate continue`, and MCP `resume_task`.
@@ -94,18 +100,18 @@ pytest -q
 cd frontend && npm run build
 ```
 
-Latest verified result from the 2026-07-25 continuation-workflow pass:
+Latest verified result from the 2026-07-28 licensing and self-hosting pass:
 
-- `pytest -q`: 863 passed, 2 skipped, 1 SQLite datetime deprecation warning.
+- `pytest tests/ -q`: 1,285 passed, 3 skipped, 1 SQLite datetime
+  deprecation warning.
 - `ruff check app tests`: passed.
-- `cd frontend && npm test -- --run`: 23 files, 199 tests passed.
+- `cd frontend && npm test -- --run`: 29 files, 307 tests passed.
 - `cd frontend && npm run build`: passed.
-
-Not verified in this pass:
-
-- Docker smoke.
-- PostgreSQL-specific concurrency and migration integration; SQLite regression
-  coverage and dialect-specific migration SQL are present.
+- `bash scripts/self-host-smoke.sh`: passed fresh PostgreSQL migration,
+  dashboard/API/worker health, full container recreation, and database/upload
+  volume persistence.
+- Production image preflight accepted eight digest-pinned rendered services
+  and rejected a tag-only application image.
 
 ## Remaining Launch Blockers
 
@@ -123,8 +129,8 @@ Not verified in this pass:
 - Keep `docs/mcp.md` synchronized: the runtime write tools and prepare bridge
   are implemented, while the longer contract section remains proposed hardening.
 - Keep connector documentation synchronized with the backend catalog. Current README status is authoritative for launch copy.
-- Run `bash scripts/smoke.sh --docker` from a fresh clone before a public
-  release tag.
+- Rerun `bash scripts/smoke.sh --docker` from the release commit before each
+  public release tag.
 
 ### P2
 

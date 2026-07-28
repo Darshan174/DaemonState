@@ -1,5 +1,8 @@
 ## Summary
 
+> Outside code and documentation contributions are paused until the project
+> has a contributor license agreement. See `CONTRIBUTING.md`.
+
 -
 
 ## Product Contract Checklist

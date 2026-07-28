@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import CheckpointVerification, WorkCheckpoint
 from app.services.checkpoints import CHECKPOINT_CATEGORIES, checkpoint_to_dict, get_checkpoint
 from app.services.local_harness import capture_repository_snapshot
+from app.telemetry import traced
 from app.time import utc_now
 
 
@@ -25,6 +26,35 @@ AUTOMATIC_REPLAY_DISABLED_REASON = (
     "automatic replay is disabled because imported session commands are "
     "untrusted evidence; run an explicitly reviewed command instead"
 )
+
+
+def _checkpoint_verification_trace_result(
+    verification: CheckpointVerification,
+) -> dict[str, Any]:
+    try:
+        payload = json.loads(verification.results_json)
+    except (TypeError, json.JSONDecodeError):
+        payload = {}
+    checks = payload.get("checks") if isinstance(payload, dict) else None
+    checks = checks if isinstance(checks, list) else []
+    statuses = [
+        str(item.get("status") or "")
+        for item in checks
+        if isinstance(item, dict)
+    ]
+    passed = sum(status == "passed" for status in statuses)
+    failed = sum(status == "failed" for status in statuses)
+    return {
+        "daemonstate.checkpoint.id": verification.checkpoint_id,
+        "daemonstate.checkpoint.fingerprint": (
+            verification.worktree_fingerprint
+        ),
+        "daemonstate.status": verification.status,
+        "daemonstate.verification.total": len(statuses),
+        "daemonstate.verification.passed": passed,
+        "daemonstate.verification.failed": failed,
+        "daemonstate.verification.unproven": len(statuses) - passed - failed,
+    }
 
 
 async def compare_checkpoint_repository(checkpoint: WorkCheckpoint) -> dict[str, Any]:
@@ -70,6 +100,20 @@ async def compare_checkpoint_repository(checkpoint: WorkCheckpoint) -> dict[str,
     }
 
 
+@traced(
+    "daemonstate.checkpoint.verify",
+    attributes=lambda _args, kwargs: {
+        "daemonstate.phase": "checkpoint_verify",
+        "daemonstate.checkpoint.id": kwargs.get("checkpoint_id"),
+        "daemonstate.verification.enabled": kwargs.get(
+            "execute_commands",
+            False,
+        ),
+    },
+    result_attributes=lambda result: _checkpoint_verification_trace_result(
+        result
+    ),
+)
 async def verify_checkpoint(
     session: AsyncSession,
     *,
@@ -81,7 +125,10 @@ async def verify_checkpoint(
     checkpoint = await get_checkpoint(session, checkpoint_id)
     if checkpoint is None:
         raise ValueError("Checkpoint not found")
-    data = checkpoint_to_dict(checkpoint)
+    data = checkpoint_to_dict(
+        checkpoint,
+        filter_presentation_noise=True,
+    )
     current_snapshot = None
     snapshot_error = None
     if checkpoint.repo_root:

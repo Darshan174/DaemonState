@@ -15,14 +15,20 @@ from app.models import SessionEvent, SourceDocument, Workspace, WorkCheckpoint
 from app.services.access import AccessScope, source_access_predicate
 from app.services.checkpoint_verifier import compare_checkpoint_repository, verify_checkpoint
 from app.services.checkpoints import (
+    build_session_handoff_artifact,
     capture_checkpoint,
+    checkpoint_to_dict,
     checkpoints_to_dicts,
     get_checkpoint,
     latest_checkpoint,
     list_checkpoints,
     render_resume_bundle,
+    resolve_session_handoff_attachment_descriptors,
+    resolve_session_handoff_request_verbatim,
+    resolve_session_handoff_supporting_context,
 )
 from app.services.harness_launcher import HarnessLaunchError, launch_harness_session
+from app.services.session_scope import normalize_session_key, session_provider_values
 
 
 router = APIRouter()
@@ -43,6 +49,10 @@ class CheckpointVerifyRequest(BaseModel):
 class CheckpointResumeRequest(BaseModel):
     workspace_id: UUID
     launch_session: bool = False
+
+
+class CheckpointHandoffRequest(BaseModel):
+    workspace_id: UUID
 
 
 @router.get("/checkpoints")
@@ -145,13 +155,22 @@ async def create_checkpoint(
     access_scope: AccessScope = Depends(get_access_scope),
 ) -> dict:
     await _require_workspace(session, body.workspace_id, access_scope)
+    session_key = normalize_session_key(body.provider, body.session_id)
+    if session_key is None:
+        raise HTTPException(
+            status_code=422,
+            detail="provider and session_id must be non-empty",
+        )
+    normalized_provider, normalized_session_id = session_key
     event = await session.scalar(
         select(SessionEvent)
         .join(SourceDocument, SessionEvent.source_document_id == SourceDocument.id)
         .where(
             SessionEvent.workspace_id == body.workspace_id,
-            SessionEvent.provider == body.provider.strip().lower(),
-            SessionEvent.session_id == body.session_id.strip(),
+            SessionEvent.provider.in_(
+                session_provider_values(normalized_provider)
+            ),
+            SessionEvent.session_id == normalized_session_id,
             source_access_predicate(access_scope, workspace_id=body.workspace_id),
         )
         .order_by(SessionEvent.sequence_number.desc())
@@ -162,8 +181,10 @@ async def create_checkpoint(
     session_source_ids = set(await session.scalars(
         select(SessionEvent.source_document_id).where(
             SessionEvent.workspace_id == body.workspace_id,
-            SessionEvent.provider == body.provider.strip().lower(),
-            SessionEvent.session_id == body.session_id.strip(),
+            SessionEvent.provider.in_(
+                session_provider_values(normalized_provider)
+            ),
+            SessionEvent.session_id == normalized_session_id,
         ).distinct()
     ))
     if not await _source_ids_allowed(
@@ -174,8 +195,8 @@ async def create_checkpoint(
         checkpoint = await capture_checkpoint(
             session,
             workspace_id=body.workspace_id,
-            provider=body.provider.strip().lower(),
-            session_id=body.session_id.strip(),
+            provider=event.provider,
+            session_id=event.session_id,
             boundary_event_id=body.boundary_event_id,
             trigger="manual",
         )
@@ -289,6 +310,74 @@ async def create_resume_bundle(
         "sha256": hashlib.sha256(bundle.encode("utf-8")).hexdigest(),
         "launch": launch,
     }
+
+
+@router.post("/checkpoints/{checkpoint_id}/handoff")
+async def create_session_handoff(
+    checkpoint_id: UUID,
+    body: CheckpointHandoffRequest,
+    session: AsyncSession = Depends(get_db_session),
+    access_scope: AccessScope = Depends(get_access_scope),
+) -> dict:
+    checkpoint = await _accessible_checkpoint(
+        session, checkpoint_id, body.workspace_id, access_scope
+    )
+    request_verbatim = await resolve_session_handoff_request_verbatim(
+        session,
+        checkpoint,
+        access_scope=access_scope,
+    )
+    if request_verbatim is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "The checkpoint does not contain a lossless session goal and its "
+                "original goal event is unavailable."
+            ),
+        )
+    supporting_context = await resolve_session_handoff_supporting_context(
+        session,
+        checkpoint,
+        request_verbatim=request_verbatim,
+        access_scope=access_scope,
+    )
+    attachment_descriptors = (
+        await resolve_session_handoff_attachment_descriptors(
+            session,
+            checkpoint,
+            request_verbatim=request_verbatim,
+            access_scope=access_scope,
+        )
+    )
+    current_projection = (
+        await checkpoints_to_dicts(
+            session,
+            [checkpoint],
+            access_scope=access_scope,
+        )
+    )[0]
+    current_boundary = current_projection.get("boundary") or {}
+    data = checkpoint_to_dict(
+        checkpoint,
+        recovered_goal=request_verbatim,
+        session_tip={
+            "sequence_number": current_boundary.get("session_tip_sequence"),
+            "occurred_at": current_boundary.get("session_tip_at"),
+        },
+    )
+    repository_comparison = await compare_checkpoint_repository(checkpoint)
+    try:
+        return build_session_handoff_artifact(
+            checkpoint,
+            request_verbatim=request_verbatim,
+            supporting_context=supporting_context,
+            trusted_attachment_descriptors=attachment_descriptors,
+            allow_local_artifacts=access_scope.principal_id == "local",
+            checkpoint_data=data,
+            repository_comparison=repository_comparison,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 async def _require_workspace(

@@ -62,8 +62,8 @@ digest-qualified reference:
 registry.example.com/daemonstate@sha256:<64-hex-character-digest>
 ```
 
-Pin the Caddy, pgvector, and Redis images by digest as well. Do not deploy
-mutable `latest` tags.
+Pin the Caddy, pgvector, Redis, and Prometheus images by digest as well. Do not
+deploy mutable tags.
 
 ### 2. Create host secrets
 
@@ -126,6 +126,7 @@ job rather than bypassing the check.
 Validate interpolation and render the effective configuration before pulling:
 
 ```bash
+scripts/validate-production-images.sh /etc/daemonstate/production.env
 docker compose \
   --env-file /etc/daemonstate/production.env \
   --file docker-compose.production.yml \
@@ -299,7 +300,8 @@ current image digests.
 1. Create and upload a fresh database dump and app-data snapshot.
 2. Change only the digest-qualified application image in the protected
    environment file.
-3. Pull the new images.
+3. Run `scripts/validate-production-images.sh
+   /etc/daemonstate/production.env`, then pull the new images.
 4. Enter maintenance and stop `proxy`, `app`, and `worker`. Current schema
    revisions may build indexes non-concurrently, so do not run them beside
    production writers.

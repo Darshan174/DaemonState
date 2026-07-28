@@ -1,20 +1,27 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timedelta
 from uuid import uuid4
 
 import pytest
 
+from app.api.context_digest import _digest_activity
+from app.config import settings
 from app.models import (
     AgentRun,
+    Claim,
+    ClaimRevision,
     Component,
     ContextPack,
     ContextPackItem,
+    EvidenceSpan,
     Model,
     RunObservation,
     SourceDocument,
     Workspace,
+    WorkspaceGoal,
 )
 from app.services.founder_oversight import (
     FounderOversightNotFoundError,
@@ -63,6 +70,39 @@ async def _source(session, *, workspace_id, external_id, content, supersedes=Non
     session.add(document)
     await session.flush()
     return document
+
+
+async def _evidence_claim(session, *, workspace_id, source):
+    evidence = EvidenceSpan(
+        id=uuid4(),
+        workspace_id=workspace_id,
+        source_document_id=source.id,
+        text=source.content,
+        text_sha256=hashlib.sha256(source.content.encode("utf-8")).hexdigest(),
+        review_status="verified",
+    )
+    claim = Claim(
+        id=uuid4(),
+        workspace_id=workspace_id,
+        identity_key=f"restricted:{uuid4().hex}",
+        claim_type="task",
+        status="active",
+        temporal="current",
+    )
+    session.add_all([evidence, claim])
+    await session.flush()
+    revision = ClaimRevision(
+        id=uuid4(),
+        claim_id=claim.id,
+        evidence_span_id=evidence.id,
+        value=source.content,
+        status_after="active",
+    )
+    session.add(revision)
+    await session.flush()
+    claim.current_revision_id = revision.id
+    await session.flush()
+    return evidence, claim, revision
 
 
 async def _fixture(session, *, include_second_command=False, include_verification=True):
@@ -559,6 +599,8 @@ async def test_workspace_scope_hides_cross_workspace_focus(db_session):
 
 async def test_timeline_api_and_digest_expose_latest_focused_oversight(client, db_session):
     workspace, focus, _, pack, _, run = await _fixture(db_session)
+    checkpoint_id = "provider-compaction-tip-17"
+    repo_path = "/workspace/daemonstate"
     manifest = json.loads(pack.manifest)
     manifest["affected_code"] = {
         "schema_version": "affected_code.v1",
@@ -577,7 +619,19 @@ async def test_timeline_api_and_digest_expose_latest_focused_oversight(client, d
             }
         ],
     }
+    manifest["continuation"] = {
+        "task_id": str(uuid4()),
+        "selected_objective": "Continue the source task",
+        "execution_objective": "Resume from the verified checkpoint",
+        "checkpoint_id": checkpoint_id,
+        "provider": "opencode",
+        "session_id": "source-session",
+        "verification_status": "verified",
+    }
     pack.manifest = json.dumps(manifest)
+    pack.repo_state_json = json.dumps({"repo_path": repo_path})
+    run.tool = "daemonstate:codex"
+    run.provider_session_id = "production-observed-session"
     await db_session.flush()
     await _observation(
         db_session,
@@ -642,6 +696,362 @@ async def test_timeline_api_and_digest_expose_latest_focused_oversight(client, d
     assert oversight["attention"] == {"blocked": 0, "unverified": 0, "stale": 0}
     activity = digest_response.json()["activity"]["primary"]
     assert activity["evidence_level"] == "observed_run"
+    assert activity["run_id"] == str(run.id)
+    assert activity["context_pack_id"] == str(pack.id)
+    assert activity["provider"] == "codex"
+    assert activity["session_id"] == "production-observed-session"
+    assert activity["cwd"] == repo_path
+    assert "checkpoint_id" not in activity
+    assert "checkpoint_role" not in activity
     assert activity["request"] == "Make runtime writes retry-safe"
     assert activity["outcome"]["summary"] == "Founder oversight is source backed"
     assert activity["verification"] == {"observed": 1, "passed": 1, "failed": 0}
+
+
+@pytest.mark.parametrize(
+    "restricted_lineage",
+    [
+        "objective",
+        "objective_evidence",
+        "item",
+        "item_component",
+        "item_evidence",
+        "item_claim",
+        "manifest_continuation",
+        "manifest_focus_evidence",
+        "manifest_workflow",
+        "observation",
+        "focus",
+    ],
+)
+async def test_digest_activity_excludes_runs_with_restricted_lineage(
+    db_session,
+    restricted_lineage,
+):
+    workspace, focus, focus_source, pack, item, run = await _fixture(db_session)
+    restricted_source = await _source(
+        db_session,
+        workspace_id=workspace.id,
+        external_id=f"restricted-{restricted_lineage}",
+        content=f"Restricted {restricted_lineage} evidence.",
+    )
+    observation = await _observation(
+        db_session,
+        workspace_id=workspace.id,
+        run=run,
+        event_key=f"restricted-{restricted_lineage}",
+        event_type="note",
+        payload={"content": "Observed update."},
+        minute=3,
+    )
+    restricted_evidence = None
+    restricted_claim = None
+    if restricted_lineage in {
+        "objective_evidence",
+        "item_evidence",
+        "item_claim",
+        "manifest_focus_evidence",
+    }:
+        restricted_evidence, restricted_claim, _ = await _evidence_claim(
+            db_session,
+            workspace_id=workspace.id,
+            source=restricted_source,
+        )
+    if restricted_lineage == "objective":
+        pack.objective_source_document_id = restricted_source.id
+    elif restricted_lineage == "objective_evidence":
+        pack.objective_evidence_span_id = restricted_evidence.id
+    elif restricted_lineage == "item":
+        item.source_document_id = restricted_source.id
+    elif restricted_lineage == "item_component":
+        pack.focus_component_id = None
+    elif restricted_lineage == "item_evidence":
+        item.evidence_span_id = restricted_evidence.id
+    elif restricted_lineage == "item_claim":
+        item.claim_id = restricted_claim.id
+    elif restricted_lineage == "manifest_continuation":
+        manifest = json.loads(pack.manifest)
+        manifest["continuation"] = {
+            "source_document_id": str(restricted_source.id),
+        }
+        pack.manifest = json.dumps(manifest)
+    elif restricted_lineage == "manifest_focus_evidence":
+        manifest = json.loads(pack.manifest)
+        manifest["focus"] = {
+            "evidence_span_id": str(restricted_evidence.id),
+        }
+        pack.manifest = json.dumps(manifest)
+    elif restricted_lineage == "manifest_workflow":
+        manifest = json.loads(pack.manifest)
+        manifest["continuation"] = {
+            "workflow": {
+                "selected_intent": {
+                    "source_document_id": str(restricted_source.id),
+                },
+            },
+        }
+        pack.manifest = json.dumps(manifest)
+    elif restricted_lineage == "focus":
+        focus.source_document_id = restricted_source.id
+        item.component_id = None
+    await db_session.flush()
+
+    all_source_ids = {
+        focus_source.id,
+        restricted_source.id,
+        observation.source_document_id,
+    }
+    visible = await _digest_activity(
+        db_session,
+        workspace_id=workspace.id,
+        cards=[],
+        current_documents=[],
+        accessible_source_ids=all_source_ids,
+        allowed_component_ids={focus.id},
+        workspace_repositories=set(),
+        workspace_paths=set(),
+        workspace_commits=set(),
+    )
+    assert visible["primary"]["id"] == f"run:{run.id}"
+
+    hidden_source_id = (
+        observation.source_document_id
+        if restricted_lineage == "observation"
+        else restricted_source.id
+    )
+    restricted = await _digest_activity(
+        db_session,
+        workspace_id=workspace.id,
+        cards=[],
+        current_documents=[],
+        accessible_source_ids=all_source_ids - {hidden_source_id},
+        allowed_component_ids=(
+            set()
+            if restricted_lineage in {"focus", "item_component"}
+            else {focus.id}
+        ),
+        workspace_repositories=set(),
+        workspace_paths=set(),
+        workspace_commits=set(),
+    )
+    assert restricted["state"] == "empty"
+    assert restricted["primary"] is None
+
+
+async def test_digest_rejects_manifest_provenance_without_normalized_item(
+    db_session,
+):
+    workspace, focus, focus_source, pack, _, run = await _fixture(db_session)
+    restricted_source = await _source(
+        db_session,
+        workspace_id=workspace.id,
+        external_id="manifest-only-restricted-source",
+        content="Restricted manifest-only context.",
+    )
+    manifest = json.loads(pack.manifest)
+    manifest["selected_context"].append({
+        "id": "legacy:manifest-only",
+        "source_document_id": str(restricted_source.id),
+    })
+    pack.manifest = json.dumps(manifest)
+    await db_session.flush()
+
+    result = await _digest_activity(
+        db_session,
+        workspace_id=workspace.id,
+        cards=[],
+        current_documents=[],
+        accessible_source_ids={focus_source.id, restricted_source.id},
+        allowed_component_ids={focus.id},
+        workspace_repositories=set(),
+        workspace_paths=set(),
+        workspace_commits=set(),
+    )
+
+    assert result["state"] == "empty"
+    assert result["primary"] is None
+    assert run.context_pack_id == pack.id
+
+
+async def test_digest_rejects_source_objective_with_no_resolvable_lineage(
+    db_session,
+):
+    workspace, focus, focus_source, pack, item, _ = await _fixture(db_session)
+    pack.objective_source_document_id = None
+    pack.objective_evidence_span_id = None
+    pack.focus_component_id = None
+    item.source_document_id = None
+    item.component_id = None
+    pack.manifest = json.dumps(_manifest())
+    await db_session.flush()
+
+    result = await _digest_activity(
+        db_session,
+        workspace_id=workspace.id,
+        cards=[],
+        current_documents=[],
+        accessible_source_ids={focus_source.id},
+        allowed_component_ids={focus.id},
+        workspace_repositories=set(),
+        workspace_paths=set(),
+        workspace_commits=set(),
+    )
+
+    assert result["state"] == "empty"
+    assert result["primary"] is None
+
+
+async def test_manifest_revision_must_match_its_normalized_item(
+    db_session,
+):
+    workspace, focus, focus_source, pack, item, _ = await _fixture(db_session)
+    evidence_a, claim_a, _ = await _evidence_claim(
+        db_session,
+        workspace_id=workspace.id,
+        source=focus_source,
+    )
+    evidence_b, claim_b, revision_b = await _evidence_claim(
+        db_session,
+        workspace_id=workspace.id,
+        source=focus_source,
+    )
+    item.claim_id = claim_a.id
+    item.evidence_span_id = evidence_a.id
+    db_session.add(ContextPackItem(
+        id=uuid4(),
+        context_pack_id=pack.id,
+        manifest_item_id="claim:other",
+        claim_id=claim_b.id,
+        evidence_span_id=evidence_b.id,
+        source_document_id=focus_source.id,
+    ))
+    manifest = json.loads(pack.manifest)
+    manifest["selected_context"][0].update({
+        "claim_id": str(claim_a.id),
+        "evidence_span_id": str(evidence_a.id),
+        "claim_revision_id": str(revision_b.id),
+    })
+    pack.manifest = json.dumps(manifest)
+    await db_session.flush()
+
+    result = await _digest_activity(
+        db_session,
+        workspace_id=workspace.id,
+        cards=[],
+        current_documents=[],
+        accessible_source_ids={focus_source.id},
+        allowed_component_ids={focus.id},
+        workspace_repositories=set(),
+        workspace_paths=set(),
+        workspace_commits=set(),
+    )
+
+    assert result["state"] == "empty"
+    assert result["primary"] is None
+
+
+@pytest.mark.parametrize(
+    "restricted_lineage",
+    [
+        "objective_source",
+        "objective_evidence",
+        "item_claim",
+        "manifest_continuation",
+    ],
+)
+async def test_digest_and_memory_hide_restricted_active_run_lineage(
+    client,
+    db_session,
+    monkeypatch,
+    restricted_lineage,
+):
+    workspace, _, _, pack, item, run = await _fixture(db_session)
+    restricted_source = await _source(
+        db_session,
+        workspace_id=workspace.id,
+        external_id="restricted-run-objective",
+        content="Restricted objective provenance.",
+    )
+    restricted_source.visibility_scope = "restricted"
+    restricted_source.permission_source = "test"
+    restricted_source.permission_snapshot_sha256 = "restricted-snapshot"
+    secret = "Implement the restricted acquisition plan."
+    pack.objective = secret
+    if restricted_lineage == "objective_source":
+        pack.objective_source_document_id = restricted_source.id
+    elif restricted_lineage in {"objective_evidence", "item_claim"}:
+        restricted_evidence, restricted_claim, _ = await _evidence_claim(
+            db_session,
+            workspace_id=workspace.id,
+            source=restricted_source,
+        )
+        if restricted_lineage == "objective_evidence":
+            pack.objective_evidence_span_id = restricted_evidence.id
+        else:
+            item.claim_id = restricted_claim.id
+    else:
+        manifest = json.loads(pack.manifest)
+        manifest["continuation"] = {
+            "workflow": {
+                "selected_intent": {
+                    "source_document_id": str(restricted_source.id),
+                },
+            },
+        }
+        pack.manifest = json.dumps(manifest)
+    run.objective = secret
+    run.status = "running"
+    run.ended_at = None
+    db_session.add(WorkspaceGoal(
+        workspace_id=workspace.id,
+        title="Continue the visible workspace goal.",
+        status="active",
+    ))
+    await db_session.flush()
+
+    monkeypatch.setattr(
+        settings,
+        "principal_api_keys",
+        json.dumps({
+            "visible-user-token": {
+                "principal_id": "visible-user",
+                "workspace_ids": [str(workspace.id)],
+            },
+        }),
+        raising=False,
+    )
+    headers = {"X-DaemonState-API-Key": "visible-user-token"}
+    digest_response = await client.get(
+        "/api/context/digest",
+        params={"workspace_id": str(workspace.id)},
+        headers=headers,
+    )
+    memory_response = await client.get(
+        "/api/context/memory",
+        params={"workspace_id": str(workspace.id)},
+        headers=headers,
+    )
+    continuation_response = await client.post(
+        "/api/continuations/prepare",
+        json={"workspace_id": str(workspace.id)},
+        headers=headers,
+    )
+
+    assert digest_response.status_code == 200
+    digest = digest_response.json()
+    assert digest["objective"]["status"] == "not_supplied"
+    assert digest["activity"]["primary"] is None
+    assert digest["current_goal"]["title"] == (
+        "Continue the visible workspace goal."
+    )
+    assert secret not in json.dumps(digest)
+    assert memory_response.status_code == 200
+    memory = memory_response.json()
+    assert memory["current_goal"]["title"] == (
+        "Continue the visible workspace goal."
+    )
+    assert secret not in json.dumps(memory)
+    assert continuation_response.status_code == 200, continuation_response.text
+    continuation = continuation_response.json()
+    assert continuation["objective"] == "Continue the visible workspace goal."
+    assert secret not in json.dumps(continuation)

@@ -4,13 +4,19 @@ import json
 import os
 import re
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.config import settings
 from app.services.session_checkpoints import build_compaction_checkpoint_descriptor
 from app.services.session_events import NormalizedSessionEvent
+from app.services.request_artifacts import (
+    normalize_request_without_image_transport,
+    structured_input_image_metadata,
+    structured_local_image_paths,
+)
 from app.services.session_summary import (
     derive_session_topic,
     derive_session_topics,
@@ -38,6 +44,26 @@ class SessionDiscoveryResult:
     connector_type: str
     sessions: list[ResolvedSession] = field(default_factory=list)
     error: str | None = None
+
+
+@dataclass
+class LatestSessionDiscoveryResult:
+    """Bounded local discovery result used by the Continue fast path."""
+
+    session: ResolvedSession | None = None
+    candidates: int = 0
+    examined: int = 0
+    excluded: int = 0
+    failed: int = 0
+    providers: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _LocalSessionCandidate:
+    connector_type: str
+    session_id: str
+    activity_at: float
+    source_path: Path
 
 
 def discover_local_ai_sessions(
@@ -75,6 +101,79 @@ def discover_local_ai_sessions(
     return results
 
 
+def discover_latest_local_ai_session(
+    connector_types: list[str] | tuple[str, ...] | None = None,
+    *,
+    accept: Callable[[ResolvedSession], bool] | None = None,
+) -> LatestSessionDiscoveryResult:
+    """Resolve only as many newest local sessions as needed to find one match.
+
+    Candidate enumeration reads filesystem/database indexes and timestamps but
+    does not parse every transcript. Callers should run this synchronous helper
+    in a worker thread.
+    """
+
+    requested = tuple(dict.fromkeys(
+        raw_type.strip().lower()
+        for raw_type in (connector_types or ("codex", "claude", "opencode"))
+        if raw_type and raw_type.strip()
+    ))
+    candidates: list[_LocalSessionCandidate] = []
+    provider_state: dict[str, dict[str, Any]] = {}
+    for connector_type in requested:
+        state = {
+            "connector_type": connector_type,
+            "available": True,
+            "candidates": 0,
+            "examined": 0,
+            "excluded": 0,
+            "failed": 0,
+            "error": None,
+        }
+        provider_state[connector_type] = state
+        try:
+            discovered = _latest_session_candidates(connector_type)
+        except SessionResolutionError as exc:
+            state["available"] = False
+            state["error"] = str(exc)
+            continue
+        state["candidates"] = len(discovered)
+        candidates.extend(discovered)
+
+    candidates.sort(
+        key=lambda item: (item.activity_at, item.connector_type, item.session_id),
+        reverse=True,
+    )
+    result = LatestSessionDiscoveryResult(
+        candidates=len(candidates),
+        providers=list(provider_state.values()),
+    )
+    seen: set[tuple[str, str]] = set()
+    for candidate in candidates:
+        key = (candidate.connector_type, candidate.session_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        state = provider_state[candidate.connector_type]
+        state["examined"] += 1
+        result.examined += 1
+        try:
+            resolved = _resolve_local_session_candidate(candidate)
+        except SessionResolutionError:
+            state["failed"] += 1
+            result.failed += 1
+            continue
+        if is_internal_session_content(resolved.content) or (
+            accept is not None and not accept(resolved)
+        ):
+            state["excluded"] += 1
+            result.excluded += 1
+            continue
+        result.session = resolved
+        return result
+    return result
+
+
 def resolve_local_ai_session(connector_type: str, session_id: str) -> ResolvedSession:
     connector_type = connector_type.strip().lower()
     if connector_type == "codex":
@@ -86,6 +185,131 @@ def resolve_local_ai_session(connector_type: str, session_id: str) -> ResolvedSe
     raise SessionResolutionError(f"Unsupported AI session connector: {connector_type}")
 
 
+def _latest_session_candidates(
+    connector_type: str,
+) -> list[_LocalSessionCandidate]:
+    if connector_type == "codex":
+        root = _home_path(settings.codex_home, "CODEX_HOME", ".codex")
+        sessions_dir = root / "sessions"
+        if not sessions_dir.exists():
+            raise SessionResolutionError(
+                f"Codex session directory not found: {sessions_dir}"
+            )
+        return [
+            _LocalSessionCandidate(
+                connector_type="codex",
+                session_id=session_id,
+                activity_at=_path_modified_epoch(path),
+                source_path=path,
+            )
+            for path in _recent_files(sessions_dir, "*.jsonl")
+            if (session_id := _codex_session_id(path))
+        ]
+    if connector_type == "claude":
+        root = _home_path(settings.claude_home, "CLAUDE_HOME", ".claude")
+        projects_dir = root / "projects"
+        if not projects_dir.exists():
+            raise SessionResolutionError(
+                f"Claude project history directory not found: {projects_dir}"
+            )
+        return [
+            _LocalSessionCandidate(
+                connector_type="claude",
+                session_id=session_id,
+                activity_at=_path_modified_epoch(path),
+                source_path=path,
+            )
+            for path in _recent_files(projects_dir, "*.jsonl")
+            if (session_id := _claude_session_id(path))
+        ]
+    if connector_type == "opencode":
+        root = _home_path(
+            settings.opencode_home,
+            "OPENCODE_HOME",
+            ".local/share/opencode",
+        )
+        db_path = root / "opencode.db"
+        if not db_path.exists():
+            raise SessionResolutionError(f"OpenCode database not found: {db_path}")
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = sqlite3.connect(str(db_path))
+            rows = conn.execute(
+                "select id, time_updated from session order by time_updated desc, id desc"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise SessionResolutionError(
+                f"Could not read OpenCode database: {exc}"
+            ) from exc
+        finally:
+            if conn is not None:
+                conn.close()
+        return [
+            _LocalSessionCandidate(
+                connector_type="opencode",
+                session_id=session_id,
+                activity_at=_activity_epoch(updated_at),
+                source_path=db_path,
+            )
+            for raw_session_id, updated_at in rows
+            if (session_id := str(raw_session_id or "").strip())
+        ]
+    raise SessionResolutionError(
+        f"Unsupported AI session connector: {connector_type}"
+    )
+
+
+def _resolve_local_session_candidate(
+    candidate: _LocalSessionCandidate,
+) -> ResolvedSession:
+    if candidate.connector_type == "codex":
+        root = _home_path(settings.codex_home, "CODEX_HOME", ".codex")
+        resolved = _read_codex_rollout(
+            candidate.source_path,
+            candidate.session_id,
+            root=root,
+            materialize_images=False,
+        )
+        if resolved is not None:
+            _drop_codex_discovery_metadata(resolved)
+            return resolved
+    elif candidate.connector_type == "claude":
+        resolved = _read_claude_jsonl(
+            candidate.source_path,
+            candidate.session_id,
+        )
+        if resolved is not None:
+            return resolved
+    elif candidate.connector_type == "opencode":
+        return _resolve_opencode_session(candidate.session_id)
+    raise SessionResolutionError(
+        f"{candidate.connector_type.title()} session "
+        f"{candidate.session_id} could not be resolved."
+    )
+
+
+def _activity_epoch(value: Any) -> float:
+    if value in (None, ""):
+        return 0.0
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        try:
+            return datetime.fromisoformat(
+                str(value).replace("Z", "+00:00")
+            ).timestamp()
+        except (TypeError, ValueError):
+            return 0.0
+    return number / 1000 if number > 10_000_000_000 else number
+
+
+def _path_modified_epoch(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def _resolve_codex_session(session_id: str) -> ResolvedSession:
     root = _home_path(settings.codex_home, "CODEX_HOME", ".codex")
     sessions_dir = root / "sessions"
@@ -93,7 +317,12 @@ def _resolve_codex_session(session_id: str) -> ResolvedSession:
         raise SessionResolutionError(f"Codex session directory not found: {sessions_dir}")
 
     for path in _recent_files(sessions_dir, "*.jsonl"):
-        resolved = _read_codex_rollout(path, session_id, root=root)
+        resolved = _read_codex_rollout(
+            path,
+            session_id,
+            root=root,
+            materialize_images=True,
+        )
         if resolved is not None:
             _drop_codex_discovery_metadata(resolved)
             return resolved
@@ -119,7 +348,12 @@ def _discover_codex_sessions() -> list[ResolvedSession]:
         if not session_id or session_id in seen:
             continue
         try:
-            resolved = _read_codex_rollout(path, session_id, root=root)
+            resolved = _read_codex_rollout(
+                path,
+                session_id,
+                root=root,
+                materialize_images=False,
+            )
         except SessionResolutionError:
             continue
         if resolved is not None:
@@ -136,6 +370,7 @@ def _read_codex_rollout(
     session_id: str,
     *,
     root: Path,
+    materialize_images: bool,
 ) -> ResolvedSession | None:
     messages: list[tuple[str, str]] = []
     compaction_checkpoints: list[dict[str, Any]] = []
@@ -143,6 +378,7 @@ def _read_codex_rollout(
     final_answers: list[str] = []
     events: list[NormalizedSessionEvent] = []
     tool_calls: dict[str, dict[str, Any]] = {}
+    last_user_event_index: int | None = None
     metadata: dict[str, Any] = {
         "tool": "codex",
         "source_path": str(path),
@@ -250,6 +486,18 @@ def _read_codex_rollout(
                             final_answers.append(text)
                         event_text = _message_event_content(role, text)
                         event_type = _message_event_type(role, event_text)
+                        input_images = (
+                            structured_input_image_metadata(
+                                payload.get("content"),
+                                data_dir=(
+                                    settings.data_dir
+                                    if materialize_images
+                                    else None
+                                ),
+                            )
+                            if role == "user"
+                            else []
+                        )
                         events.append(NormalizedSessionEvent(
                             provider_event_id=_provider_event_id(
                                 payload,
@@ -260,9 +508,52 @@ def _read_codex_rollout(
                             role=role,
                             occurred_at=timestamp,
                             content=event_text,
-                            payload={"message_id": payload.get("id")},
+                            payload={
+                                "message_id": payload.get("id"),
+                                **(
+                                    {"input_images": input_images}
+                                    if input_images
+                                    else {}
+                                ),
+                            },
                             source_cursor=line_cursor,
                         ))
+                        if role == "user":
+                            last_user_event_index = len(events) - 1
+                    continue
+                if (
+                    item_type == "event_msg"
+                    and payload.get("type") == "user_message"
+                    and last_user_event_index is not None
+                ):
+                    event = events[last_user_event_index]
+                    event_message = _extract_content_text(
+                        payload.get("message") or payload.get("content")
+                    )
+                    normalized_message = _message_event_content(
+                        "user",
+                        event_message,
+                    )
+                    local_images = structured_local_image_paths(
+                        payload.get("local_images")
+                    )
+                    if (
+                        local_images
+                        and event.sequence_number + 1 == line_number
+                        and normalize_request_without_image_transport(
+                            normalized_message
+                        )
+                        == normalize_request_without_image_transport(
+                            str(event.content or "")
+                        )
+                    ):
+                        events[last_user_event_index] = replace(
+                            event,
+                            payload={
+                                **event.payload,
+                                "local_images": local_images,
+                            },
+                        )
                     continue
                 if item_type == "response_item" and payload.get("type") in {
                     "custom_tool_call",
@@ -524,6 +815,8 @@ def _read_claude_jsonl(path: Path, session_id: str) -> ResolvedSession | None:
         "source_path": str(path),
         "source_modified_at": _path_modified_iso(path),
     }
+    if "subagents" in path.parts or path.stem.startswith("agent-"):
+        metadata["thread_source"] = "subagent"
     matched = path.stem == session_id
     source_cursor = 0
     try:
@@ -541,6 +834,8 @@ def _read_claude_jsonl(path: Path, session_id: str) -> ResolvedSession | None:
                     matched = True
                 if not matched:
                     continue
+                if item.get("isSidechain") is True:
+                    metadata["thread_source"] = "subagent"
                 if item.get("timestamp"):
                     metadata["updated_at"] = item["timestamp"]
                 item_type = str(item.get("type") or "").strip().lower()
@@ -737,8 +1032,18 @@ def _resolve_opencode_session(session_id: str) -> ResolvedSession:
     try:
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
+        session_columns = {
+            str(row["name"])
+            for row in conn.execute("pragma table_info(session)").fetchall()
+        }
+        parent_expression = (
+            "parent_id" if "parent_id" in session_columns else "null"
+        )
         session_row = conn.execute(
-            "select id, title, directory, model, time_created, time_updated from session where id = ?",
+            (
+                "select id, title, directory, model, time_created, time_updated, "
+                f"{parent_expression} as parent_id from session where id = ?"
+            ),
             (session_id,),
         ).fetchone()
         if session_row is None:
@@ -864,6 +1169,10 @@ def _resolve_opencode_session(session_id: str) -> ResolvedSession:
         "ended_at": _millis_to_iso(session_row["time_updated"]),
         "updated_at": _millis_to_iso(session_row["time_updated"]),
     }
+    parent_session_id = str(session_row["parent_id"] or "").strip()
+    if parent_session_id:
+        metadata["parent_session_id"] = parent_session_id
+        metadata["thread_source"] = "subagent"
     metadata["topics"] = derive_session_topics(
         content,
         explicit_title=metadata.get("title"),

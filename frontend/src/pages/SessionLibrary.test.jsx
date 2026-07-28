@@ -1,23 +1,34 @@
+import { useLayoutEffect } from "react";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useSearchParams } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 
 import SessionLibrary from "./SessionLibrary";
+import {
+  readExecuteSessionContexts,
+  writeExecuteSessionContexts,
+} from "./executeSessionSelection";
 
 
 const mocks = vi.hoisted(() => ({
+  extraSessions: [],
   getSource: vi.fn(),
+  libraryLoading: false,
   openHarness: vi.fn(),
   select: vi.fn(),
   sync: vi.fn(),
+  workspaceId: "workspace-1",
 }));
 
 vi.mock("./useProductWorkspace", () => ({
   useProductWorkspace: () => ({
-    activeWorkspaceId: "workspace-1",
-    activeWorkspace: { id: "workspace-1", name: "DaemonState" },
-    workspaces: [{ id: "workspace-1", name: "DaemonState" }],
-    selectedId: "workspace-1",
+    activeWorkspaceId: mocks.workspaceId,
+    activeWorkspace: { id: mocks.workspaceId, name: "DaemonState" },
+    workspaces: [
+      { id: "workspace-1", name: "DaemonState" },
+      { id: "workspace-2", name: "Second workspace" },
+    ],
+    selectedId: mocks.workspaceId,
     setSelectedId: vi.fn(),
     workspacesQuery: { isLoading: false },
   }),
@@ -29,9 +40,9 @@ vi.mock("../api/client", () => ({
 
 vi.mock("../api/hooks", () => ({
   useSessionLibrary: () => ({
-    isLoading: false,
+    isLoading: mocks.libraryLoading,
     isError: false,
-    data: {
+    data: mocks.libraryLoading ? undefined : {
       stats: { sessions: 2, topics: 2, harnesses: 1, live_sessions: 2, checkpoints: 1 },
       harnesses: [
         { connector_type: "codex", name: "Codex", adapter_state: "ready", message: "Detected", session_count: 2 },
@@ -45,6 +56,7 @@ vi.mock("../api/hooks", () => ({
       sessions: [
         { id: "codex:one", session_id: "session-one", source_document_id: "doc-1", connector_type: "codex", harness: "Codex", title: "Alpha launch", topics: ["Alpha billing", "Beta pricing"], latest_topic: "Beta pricing", preview: "Plan Alpha billing", live: true, revision_number: 2, updated_at: "2026-07-18T09:00:00Z", compaction_checkpoints: [{ id: "checkpoint-1", label: "Before context compact", provider: "codex", occurred_at: "2026-07-18T08:30:00Z", turn_count: 3, objective_preview: "Review Beta pricing before launch", restorable: true }] },
         { id: "codex:two", session_id: "session-two", source_document_id: "doc-2", connector_type: "codex", harness: "Codex", title: "Beta onboarding", topics: ["Beta onboarding"], latest_topic: "Beta onboarding", preview: "Review Beta onboarding", live: true, revision_number: 1, updated_at: "2026-07-18T08:00:00Z", forked_from: { session_id: "session-one", title: "Alpha launch", source_document_id: "doc-1" } },
+        ...mocks.extraSessions,
       ],
     },
   }),
@@ -64,6 +76,19 @@ vi.mock("../api/hooks", () => ({
 
 
 beforeEach(() => {
+  const storedValues = new Map();
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      clear: () => storedValues.clear(),
+      getItem: (key) => storedValues.get(key) ?? null,
+      removeItem: (key) => storedValues.delete(key),
+      setItem: (key, value) => storedValues.set(key, String(value)),
+    },
+  });
+  mocks.extraSessions = [];
+  mocks.libraryLoading = false;
+  mocks.workspaceId = "workspace-1";
   mocks.sync.mockReset();
   mocks.getSource.mockReset();
   mocks.openHarness.mockReset();
@@ -83,11 +108,30 @@ beforeEach(() => {
 
 
 function renderLibrary(initialEntry = "/app/library") {
-  return render(
+  return render(<LibraryTestApp initialEntry={initialEntry} />);
+}
+
+function LibraryTestApp({
+  initialEntry = "/app/library",
+  applyImmediately = false,
+}) {
+  useLayoutEffect(() => {
+    if (!applyImmediately) return;
+    const applyButton = Array.from(document.querySelectorAll("button")).find(
+      (button) => button.textContent.trim() === "Use 1 session",
+    );
+    if (!applyButton) {
+      throw new Error("The Execute session selection apply button was not rendered.");
+    }
+    applyButton.click();
+  }, [applyImmediately]);
+
+  return (
     <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
         <Route path="/app/library" element={<SessionLibrary />} />
         <Route path="/app" element={<ContinueDestination />} />
+        <Route path="/app/execute" element={<div>Execute destination</div>} />
         <Route path="/app/prepare" element={<PrepareDestination />} />
       </Routes>
     </MemoryRouter>,
@@ -108,16 +152,52 @@ function ContinueDestination() {
 
 function PrepareDestination() {
   const [params] = useSearchParams();
-  return <div>Prepare destination · {params.get("checkpoint")} · {params.get("objective")}</div>;
+  return (
+    <div>
+      Prepare destination · {params.get("checkpoint")} · {params.get("objective")}
+      {" · "}{params.get("source_provider")} · {params.get("source_session")}
+      {" · "}{params.get("objective_source")}
+    </div>
+  );
 }
 
 
-it("uses the shared page-title scale without the archive eyebrow", () => {
+it("uses the shared resume hero treatment without adding an archive eyebrow", () => {
   renderLibrary();
 
   const heading = screen.getByRole("heading", { name: "Session Library" });
   expect(heading).toHaveClass("text-3xl", "font-black", "tracking-[-0.035em]", "sm:text-4xl");
+  expect(heading.closest("header")).toHaveClass(
+    "daemonstate-resume-header",
+    "min-h-56",
+    "dark:bg-[#0c0c0a]",
+  );
+  expect(document.querySelectorAll(
+    "[data-harness-deck-backdrop] [data-backdrop-harness]",
+  )).toHaveLength(3);
+  expect(screen.getByRole("button", { name: "Sync now" })).toHaveClass(
+    "bg-[#d9ff68]/30",
+    "backdrop-blur-xl",
+    "dark:bg-[#d9ff68]/15",
+  );
   expect(screen.queryByText("Live session archive")).not.toBeInTheDocument();
+});
+
+
+it("shows only numeric progress while the session library opens", () => {
+  mocks.libraryLoading = true;
+
+  renderLibrary();
+
+  const status = screen.getByRole("status", {
+    name: "Opening your session history…",
+  });
+  expect(status).toHaveTextContent(/^8%$/);
+  expect(within(status).getByRole("progressbar", {
+    name: "Loading progress",
+  })).toHaveTextContent("8%");
+  expect(screen.queryByText("Preparing the session archive")).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("Session library harnesses")).not.toBeInTheDocument();
 });
 
 
@@ -137,17 +217,18 @@ it("opens a linked session topic directly in the library evidence drawer", async
 it("organizes sessions behind animated harness cards", async () => {
   renderLibrary();
 
-  await waitFor(() => {
-    expect(mocks.sync).toHaveBeenCalledWith({ workspaceId: "workspace-1" });
-  });
-
   const codex = screen.getByRole("button", { name: "Open Codex sessions" });
   const claude = screen.getByRole("button", { name: "Open Claude Code sessions" });
+  const opencode = screen.getByRole("button", { name: "Open OpenCode sessions" });
   expect(screen.queryByText("Alpha launch")).not.toBeInTheDocument();
+  expect(codex).toHaveAttribute("data-fan-position", "left");
+  expect(claude).toHaveAttribute("data-fan-position", "center");
+  expect(opencode).toHaveAttribute("data-fan-position", "right");
+  expect(codex.parentElement).toHaveClass("daemonstate-harness-fan", "daemonstate-archive-fan");
 
   fireEvent.mouseEnter(codex);
   expect(codex).toHaveAttribute("data-hovered", "true");
-  expect(claude.style.transform).toContain("24px");
+  expect(claude.style.getPropertyValue("--daemonstate-card-x")).toBe("24px");
 
   fireEvent.click(codex);
   expect(screen.getByRole("heading", { name: "Codex sessions" })).toBeInTheDocument();
@@ -160,17 +241,63 @@ it("organizes sessions behind animated harness cards", async () => {
   const chooseAlphaTopic = within(alphaCard).getByRole("button", { name: "Choose a topic from Alpha launch" });
   expect(chooseAlphaTopic).toHaveAttribute("aria-expanded", "false");
   expect(within(alphaCard).getByText("2")).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Continue Alpha billing from Alpha launch" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Prepare Alpha billing from Alpha launch" })).not.toBeInTheDocument();
 
   fireEvent.mouseEnter(alphaCard);
   expect(chooseAlphaTopic).toHaveAttribute("aria-expanded", "true");
-  expect(screen.getByRole("button", { name: "Continue Alpha billing from Alpha launch" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Prepare Alpha billing from Alpha launch" })).toBeInTheDocument();
 
   fireEvent.change(screen.getByRole("searchbox", { name: "Search Codex sessions" }), {
     target: { value: "Alpha" },
   });
   expect(screen.getByRole("heading", { name: "Alpha launch" })).toBeInTheDocument();
   expect(screen.queryByRole("heading", { name: "Beta onboarding" })).not.toBeInTheDocument();
+});
+
+it("syncs local history only when explicitly requested", () => {
+  renderLibrary();
+
+  expect(mocks.sync).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Sync now" }));
+  expect(mocks.sync).toHaveBeenCalledTimes(1);
+  expect(mocks.sync).toHaveBeenCalledWith({ workspaceId: "workspace-1" });
+});
+
+it.each([
+  { provider: "codex", harness: "Codex", sessionId: "codex:one", title: "Alpha launch" },
+  { provider: "claude", harness: "Claude Code", sessionId: "claude:artwork", title: "Claude architecture" },
+  { provider: "opencode", harness: "OpenCode", sessionId: "opencode:artwork", title: "OpenCode refactor" },
+])("uses large $harness artwork without a small corner logo on Library session cards", ({
+  provider,
+  harness,
+  sessionId,
+  title,
+}) => {
+  if (provider !== "codex") {
+    mocks.extraSessions = [{
+      id: sessionId,
+      session_id: `${provider}-session`,
+      source_document_id: `${provider}-document`,
+      connector_type: provider,
+      harness,
+      title,
+      topics: [`${harness} topic`],
+      latest_topic: `${harness} topic`,
+      preview: `${harness} session preview`,
+      live: true,
+      revision_number: 1,
+      updated_at: "2026-07-18T07:00:00Z",
+      compaction_checkpoints: [],
+    }];
+  }
+
+  renderLibrary();
+  fireEvent.click(screen.getByRole("button", { name: `Open ${harness} sessions` }));
+
+  const sessionCard = document.querySelector(`[data-session-card="${sessionId}"]`);
+  expect(sessionCard).not.toBeNull();
+  expect(sessionCard.querySelector(`[data-harness-artwork="${provider}"]`)).toBeInTheDocument();
+  expect(sessionCard.querySelector("[data-harness-logo]")).not.toBeInTheDocument();
 });
 
 it("keeps archive detection semantics separate from continuation readiness", () => {
@@ -188,32 +315,208 @@ it("keeps archive detection semantics separate from continuation readiness", () 
 });
 
 
-it("selects a session topic and routes it to canonical Continue", async () => {
+it("selects a historical session topic and routes it to Prepare", async () => {
   renderLibrary();
 
   fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
   const alphaCard = document.querySelector('[data-session-card="codex:one"]');
   fireEvent.mouseEnter(alphaCard);
-  fireEvent.click(screen.getByRole("button", { name: "Continue Alpha billing from Alpha launch" }));
+  fireEvent.click(screen.getByRole("button", { name: "Prepare Alpha billing from Alpha launch" }));
 
-  const destination = await screen.findByText(/Canonical Continue destination/);
+  await waitFor(() => {
+    expect(mocks.select).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      sourceDocumentId: "doc-1",
+      topic: "Alpha billing",
+    });
+  });
+  const destination = await screen.findByText(/Prepare destination/);
   expect(destination).toHaveTextContent("Alpha billing");
   expect(destination).toHaveTextContent("codex · session-one");
   expect(destination).toHaveTextContent("session");
-  expect(mocks.select).not.toHaveBeenCalled();
 });
 
 
-it("uses the latest topic when the user continues only the session", async () => {
+it("uses the latest topic when the user prepares only the session", async () => {
   renderLibrary();
 
   fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
-  fireEvent.click(screen.getByRole("button", { name: "Continue latest topic from Alpha launch" }));
+  fireEvent.click(screen.getByRole("button", { name: "Prepare latest topic from Alpha launch" }));
 
-  const destination = await screen.findByText(/Canonical Continue destination/);
+  await waitFor(() => {
+    expect(mocks.select).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      sourceDocumentId: "doc-1",
+    });
+  });
+  const destination = await screen.findByText(/Prepare destination/);
   expect(destination).toHaveTextContent("Beta pricing");
   expect(destination).toHaveTextContent("codex · session-one");
-  expect(mocks.select).not.toHaveBeenCalled();
+});
+
+
+it("shows session checkboxes only after a harness is opened and enforces the three-session maximum", async () => {
+  mocks.extraSessions = [
+    {
+      id: "codex:three",
+      session_id: "session-three",
+      source_document_id: "doc-3",
+      connector_type: "codex",
+      harness: "Codex",
+      title: "Gamma reliability",
+      topics: ["Gamma reliability"],
+      latest_topic: "Gamma reliability",
+      preview: "Review Gamma reliability",
+      live: true,
+      revision_number: 1,
+      updated_at: "2026-07-18T07:00:00Z",
+      compaction_checkpoints: [],
+    },
+    {
+      id: "codex:four",
+      session_id: "session-four",
+      source_document_id: "doc-4",
+      connector_type: "codex",
+      harness: "Codex",
+      title: "Delta observability",
+      topics: ["Delta observability"],
+      latest_topic: "Delta observability",
+      preview: "Review Delta observability",
+      live: true,
+      revision_number: 1,
+      updated_at: "2026-07-18T06:00:00Z",
+      compaction_checkpoints: [],
+    },
+  ];
+  renderLibrary("/app/library?mode=execute-context");
+
+  expect(screen.getByText(
+    "Choose up to three Session Contexts to show in Execute.",
+  )).toBeInTheDocument();
+  expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
+
+  const alpha = screen.getByRole("checkbox", {
+    name: "Select Alpha launch for Execute",
+  });
+  const beta = screen.getByRole("checkbox", {
+    name: "Select Beta onboarding for Execute",
+  });
+  const gamma = screen.getByRole("checkbox", {
+    name: "Select Gamma reliability for Execute",
+  });
+  const delta = screen.getByRole("checkbox", {
+    name: "Select Delta observability for Execute",
+  });
+  expect(alpha).toBeEnabled();
+  expect(beta).toBeEnabled();
+  expect(gamma).toBeEnabled();
+  expect(delta).toBeEnabled();
+
+  fireEvent.click(alpha);
+  fireEvent.click(beta);
+  fireEvent.click(gamma);
+  expect(alpha).toBeChecked();
+  expect(beta).toBeChecked();
+  expect(gamma).toBeChecked();
+  expect(delta).toBeDisabled();
+  expect(screen.getByText("3 of 3 selected")).toBeInTheDocument();
+  expect(within(gamma.closest("article")).getByText(
+    "Will appear in Execute",
+  )).toBeInTheDocument();
+
+  fireEvent.click(alpha);
+  expect(alpha).not.toBeChecked();
+  expect(delta).toBeEnabled();
+  fireEvent.click(delta);
+
+  fireEvent.click(screen.getByRole("button", { name: "Use 3 sessions" }));
+  expect(await screen.findByText("Execute destination")).toBeInTheDocument();
+  expect(readExecuteSessionContexts("workspace-1").map((item) => item.sessionId)).toEqual([
+    "session-two",
+    "session-three",
+    "session-four",
+  ]);
+});
+
+
+it("rehydrates a removed Execute card as an unselected Library session", () => {
+  writeExecuteSessionContexts("workspace-1", [{
+    source_document_id: "doc-2",
+    connector_type: "codex",
+    session_id: "session-two",
+    title: "Beta onboarding",
+  }]);
+  renderLibrary("/app/library?mode=execute-context");
+  fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
+
+  expect(screen.getByRole("checkbox", {
+    name: "Select Alpha launch for Execute",
+  })).not.toBeChecked();
+  expect(screen.getByRole("checkbox", {
+    name: "Select Beta onboarding for Execute",
+  })).toBeChecked();
+  expect(screen.getByText("1 of 3 selected")).toBeInTheDocument();
+});
+
+
+it("cannot apply the previous workspace's session draft during a workspace switch", async () => {
+  writeExecuteSessionContexts("workspace-1", [{
+    source_document_id: "doc-1",
+    connector_type: "codex",
+    session_id: "session-one",
+    title: "Alpha launch",
+  }]);
+  writeExecuteSessionContexts("workspace-2", [{
+    source_document_id: "doc-2",
+    connector_type: "codex",
+    session_id: "session-two",
+    title: "Beta onboarding",
+  }]);
+
+  const view = renderLibrary("/app/library?mode=execute-context");
+  fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
+  expect(screen.getByRole("checkbox", {
+    name: "Select Alpha launch for Execute",
+  })).toBeChecked();
+
+  mocks.workspaceId = "workspace-2";
+  mocks.libraryLoading = true;
+  view.rerender(
+    <LibraryTestApp
+      initialEntry="/app/library?mode=execute-context"
+      applyImmediately
+    />,
+  );
+
+  expect(await screen.findByText("Execute destination")).toBeInTheDocument();
+  expect(readExecuteSessionContexts("workspace-1").map((item) => item.sessionId)).toEqual([
+    "session-one",
+  ]);
+  expect(readExecuteSessionContexts("workspace-2").map((item) => item.sessionId)).toEqual([
+    "session-two",
+  ]);
+});
+
+
+it("lets the latest Continue session be selected like any other Execute session", () => {
+  renderLibrary(
+    "/app/library?mode=execute-context&current_provider=codex&current_session=session-one",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
+
+  const latest = screen.getByRole("checkbox", {
+    name: "Select Alpha launch for Execute",
+  });
+  expect(latest).toBeEnabled();
+
+  fireEvent.click(latest);
+
+  expect(latest).toBeChecked();
+  expect(screen.getByText("1 of 3 selected")).toBeInTheDocument();
+  expect(within(latest.closest("article")).getByText(
+    "Will appear in Execute",
+  )).toBeInTheDocument();
 });
 
 
@@ -241,14 +544,14 @@ it("opens the selected topic in a source evidence drawer and highlights matches"
   });
 
   expect(within(drawer).queryByRole("button", { name: "Open in Codex" })).not.toBeInTheDocument();
-  expect(within(drawer).getByRole("button", { name: "Continue this topic" })).toBeInTheDocument();
+  expect(within(drawer).getByRole("button", { name: "Prepare this topic" })).toBeInTheDocument();
 
   fireEvent.click(within(drawer).getByRole("button", { name: "Close evidence" }));
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 });
 
 
-it("prepares an automatic compaction checkpoint and routes it to canonical Continue", async () => {
+it("prepares an automatic compaction checkpoint and routes it to Prepare", async () => {
   mocks.openHarness.mockImplementation((path) => {
     if (path === "/session-library/checkpoints/restore") {
       return Promise.resolve({
@@ -271,7 +574,7 @@ it("prepares an automatic compaction checkpoint and routes it to canonical Conti
 
   const drawer = await screen.findByRole("dialog");
   expect(within(drawer).getByRole("heading", { name: "Compaction checkpoints" })).toBeInTheDocument();
-  fireEvent.click(within(drawer).getByRole("button", { name: "Continue from checkpoint" }));
+  fireEvent.click(within(drawer).getByRole("button", { name: "Prepare from checkpoint" }));
 
   await waitFor(() => {
     expect(mocks.openHarness).toHaveBeenCalledWith("/session-library/checkpoints/restore", {
@@ -280,7 +583,7 @@ it("prepares an automatic compaction checkpoint and routes it to canonical Conti
       checkpoint_id: "checkpoint-1",
     });
   });
-  const destination = await screen.findByText(/Canonical Continue destination/);
+  const destination = await screen.findByText(/Prepare destination/);
   expect(destination).toHaveTextContent("checkpoint-1");
   expect(destination).toHaveTextContent("Review Beta pricing before launch");
   expect(screen.queryByRole("button", { name: "Copy restored context" })).not.toBeInTheDocument();

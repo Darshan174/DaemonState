@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+from pathlib import Path
 from uuid import uuid4
 
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
+
+from app.database import build_alembic_config
+
+
+def test_packaged_alembic_config_uses_absolute_migration_path():
+    config = build_alembic_config("sqlite+aiosqlite:///:memory:")
+
+    script_location = Path(config.get_main_option("script_location"))
+    assert script_location.is_absolute()
+    assert (script_location / "env.py").is_file()
+    assert config.get_main_option("sqlalchemy.url") == "sqlite+aiosqlite:///:memory:"
 
 
 def test_alembic_upgrade_bootstraps_current_sqlite_schema(tmp_path):
@@ -39,6 +51,11 @@ def test_alembic_upgrade_bootstraps_current_sqlite_schema(tmp_path):
             "checkpoint_verifications",
             "memory_review_events",
             "source_sync_observations",
+            "continuation_executions",
+            "continuation_requirements",
+            "requirement_evidence",
+            "continuation_outcomes",
+            "continuation_stage_requests",
             "alembic_version",
         } <= tables
 
@@ -139,11 +156,292 @@ def test_alembic_upgrade_bootstraps_current_sqlite_schema(tmp_path):
             (("source_document_id",), "source_documents", ("id",)),
         } <= sync_observation_foreign_keys
 
-        assert version == "0014_continuation_idempotency"
+        assert version == "0017_stage_idempotency"
         agent_run_indexes = {
             item["name"] for item in inspector.get_indexes("agent_runs")
         }
         assert "uq_agent_runs_continuation_request_key" in agent_run_indexes
+        assert "uq_agent_runs_execution_attempt" in agent_run_indexes
+        agent_run_columns = {
+            column["name"] for column in inspector.get_columns("agent_runs")
+        }
+        assert {
+            "continuation_execution_id",
+            "parent_agent_run_id",
+            "attempt_index",
+            "provider_session_id",
+        } <= agent_run_columns
+        execution_columns = {
+            column["name"]
+            for column in inspector.get_columns("continuation_executions")
+        }
+        assert {
+            "request_verbatim",
+            "request_sha256",
+            "contract_json",
+            "contract_sha256",
+            "prompt_markdown",
+            "prompt_sha256",
+            "status",
+        } <= execution_columns
+        stage_request_columns = {
+            column["name"]
+            for column in inspector.get_columns("continuation_stage_requests")
+        }
+        assert {
+            "workspace_id",
+            "context_pack_id",
+            "continuation_execution_id",
+            "idempotency_key",
+            "request_sha256",
+            "target_provider",
+            "status",
+            "response_json",
+            "error_json",
+        } <= stage_request_columns
+        stage_request_indexes = {
+            item["name"]
+            for item in inspector.get_indexes("continuation_stage_requests")
+        }
+        assert {
+            "uq_continuation_stage_requests_workspace_key",
+            "uq_continuation_stage_requests_workspace_current",
+            "ix_continuation_stage_requests_workspace_created",
+        } <= stage_request_indexes
+    finally:
+        engine.dispose()
+
+
+def test_brand_cutover_after_continuation_schema_migrates_owned_identifiers(tmp_path):
+    db_path = tmp_path / "brand-cutover.db"
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{db_path}")
+    command.upgrade(config, "0015_continuation_execution")
+
+    previous_slug = "-".join(("context", "engine"))
+    previous_display = " ".join(("Context", "Engine"))
+    workspace_id = uuid4().hex
+    run_id = uuid4().hex
+    engine = create_engine(f"sqlite:///{db_path}")
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO workspaces (id, name, slug)
+                    VALUES (:id, :name, :slug)
+                """),
+                {
+                    "id": workspace_id,
+                    "name": f"{previous_display} Demo",
+                    "slug": f"{previous_slug}-demo",
+                },
+            )
+            conn.execute(
+                text("""
+                    INSERT INTO agent_runs (id, tool, status)
+                    VALUES (:id, :tool, 'completed')
+                """),
+                {
+                    "id": run_id,
+                    "tool": f"{previous_slug}:codex",
+                },
+            )
+
+        command.upgrade(config, "head")
+
+        with engine.connect() as conn:
+            workspace = conn.execute(
+                text("SELECT name, slug FROM workspaces WHERE id = :id"),
+                {"id": workspace_id},
+            ).one()
+            tool = conn.execute(
+                text("SELECT tool FROM agent_runs WHERE id = :id"),
+                {"id": run_id},
+            ).scalar_one()
+        assert workspace == ("DaemonState Demo", "daemonstate-demo")
+        assert tool == "daemonstate:codex"
+    finally:
+        engine.dispose()
+
+
+def test_alembic_upgrade_repairs_legacy_continuation_draft_schema(tmp_path):
+    db_path = tmp_path / "legacy-continuation.db"
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{db_path}")
+    command.upgrade(config, "0014_continuation_idempotency")
+
+    execution_id = uuid4().hex
+    requirement_id = uuid4().hex
+    evidence_id = uuid4().hex
+    outcome_id = uuid4().hex
+    engine = create_engine(f"sqlite:///{db_path}")
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE continuation_executions "
+                "RENAME COLUMN status TO quality_status"
+            ))
+            conn.execute(text(
+                "ALTER TABLE requirement_evidence "
+                "RENAME COLUMN evidence_json TO payload_json"
+            ))
+            conn.execute(text(
+                "ALTER TABLE requirement_evidence DROP COLUMN required"
+            ))
+            for column in (
+                "mandatory_total",
+                "mandatory_passed",
+                "mandatory_failed",
+                "mandatory_unproven",
+                "blocker_json",
+                "updated_at",
+            ):
+                conn.execute(text(
+                    "ALTER TABLE continuation_outcomes "
+                    f"DROP COLUMN {column}"
+                ))
+            conn.execute(
+                text("""
+                    INSERT INTO continuation_executions (
+                        id, workspace_id, context_pack_id, task_mode,
+                        request_verbatim, request_normalized, request_sha256,
+                        display_title, contract_json, contract_sha256,
+                        prompt_markdown, prompt_sha256, quality_status,
+                        idempotency_key
+                    )
+                    VALUES (
+                        :id, :workspace_id, :context_pack_id, 'change',
+                        'Fix it', 'Fix it', :request_sha256, 'Fix it', '{}',
+                        :contract_sha256, '# Fix it', :prompt_sha256,
+                        'blocked_external', :idempotency_key
+                    )
+                """),
+                {
+                    "id": execution_id,
+                    "workspace_id": uuid4().hex,
+                    "context_pack_id": uuid4().hex,
+                    "request_sha256": "a" * 64,
+                    "contract_sha256": "b" * 64,
+                    "prompt_sha256": "c" * 64,
+                    "idempotency_key": "d" * 64,
+                },
+            )
+            conn.execute(
+                text("""
+                    INSERT INTO continuation_requirements (
+                        id, continuation_execution_id, requirement_key,
+                        text, priority
+                    )
+                    VALUES (
+                        :id, :execution_id, 'req-1', 'Keep proof', 'must'
+                    )
+                """),
+                {"id": requirement_id, "execution_id": execution_id},
+            )
+            conn.execute(
+                text("""
+                    INSERT INTO requirement_evidence (
+                        id, continuation_execution_id,
+                        continuation_requirement_id, verifier_id,
+                        verifier_type, status, payload_json, evidence_sha256
+                    )
+                    VALUES (
+                        :id, :execution_id, :requirement_id, 'pytest',
+                        'command', 'passed', :payload_json, :sha256
+                    )
+                """),
+                {
+                    "id": evidence_id,
+                    "execution_id": execution_id,
+                    "requirement_id": requirement_id,
+                    "payload_json": '{"proof":true}',
+                    "sha256": "e" * 64,
+                },
+            )
+            conn.execute(
+                text("""
+                    INSERT INTO continuation_outcomes (
+                        id, continuation_execution_id, status, summary_json
+                    )
+                    VALUES (
+                        :id, :execution_id, 'blocked_external',
+                        :summary_json
+                    )
+                """),
+                {
+                    "id": outcome_id,
+                    "execution_id": execution_id,
+                    "summary_json": '{"legacy":true}',
+                },
+            )
+    finally:
+        engine.dispose()
+
+    command.upgrade(config, "head")
+
+    engine = create_engine(f"sqlite:///{db_path}")
+    try:
+        execution_columns = {
+            column["name"]
+            for column in inspect(engine).get_columns("continuation_executions")
+        }
+        evidence_columns = {
+            column["name"]
+            for column in inspect(engine).get_columns("requirement_evidence")
+        }
+        outcome_columns = {
+            column["name"]
+            for column in inspect(engine).get_columns("continuation_outcomes")
+        }
+        evidence_indexes = {
+            item["name"]
+            for item in inspect(engine).get_indexes("requirement_evidence")
+        }
+        with engine.connect() as conn:
+            status = conn.execute(
+                text(
+                    "SELECT status FROM continuation_executions WHERE id = :id"
+                ),
+                {"id": execution_id},
+            ).scalar_one()
+            evidence = conn.execute(
+                text("""
+                    SELECT required, evidence_json
+                    FROM requirement_evidence
+                    WHERE id = :id
+                """),
+                {"id": evidence_id},
+            ).one()
+            outcome = conn.execute(
+                text("""
+                    SELECT mandatory_total, mandatory_passed,
+                           mandatory_failed, mandatory_unproven,
+                           blocker_json, summary_json, updated_at
+                    FROM continuation_outcomes
+                    WHERE id = :id
+                """),
+                {"id": outcome_id},
+            ).one()
+        assert "status" in execution_columns
+        assert "quality_status" not in execution_columns
+        assert status == "blocked_external"
+        assert {"required", "evidence_json"} <= evidence_columns
+        assert "payload_json" not in evidence_columns
+        assert evidence == (1, '{"proof":true}')
+        assert {
+            "mandatory_total",
+            "mandatory_passed",
+            "mandatory_failed",
+            "mandatory_unproven",
+            "blocker_json",
+            "updated_at",
+        } <= outcome_columns
+        assert outcome[:6] == (0, 0, 0, 0, "{}", '{"legacy":true}')
+        assert outcome.updated_at is not None
+        assert (
+            "uq_requirement_evidence_attempt_verifier"
+            in evidence_indexes
+        )
     finally:
         engine.dispose()
 

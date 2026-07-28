@@ -238,6 +238,113 @@ async def test_objective_ranking_prefers_core_code_over_generic_test_tokens(tmp_
     assert relevant[0]["sha256"]
 
 
+async def test_repository_evidence_filters_deictic_verbs_but_keeps_exact_file_names(
+    tmp_path,
+):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "telemetry.py").write_text(
+        "def configure_telemetry():\n"
+        "    return True\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "app" / "remove.py").write_text(
+        "def execute_action():\n"
+        "    return True\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "app" / "unrelated.py").write_text(
+        "def remove_shown_panel():\n"
+        "    return True\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\n"
+        "name = 'fixture'\n"
+        "dependencies = [\n"
+        "  'fastapi>=0.100',\n"
+        "  'opentelemetry-api>=1.25',\n"
+        "]\n",
+        encoding="utf-8",
+    )
+
+    frame = await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
+    keywords = {"remove", "shown", "OpenTelemetry"}
+    relevant = frame.relevant_files_for_goal(keywords, [])
+    relevant_paths = {item["path"] for item in relevant}
+
+    assert "app/telemetry.py" in relevant_paths
+    assert "app/remove.py" in relevant_paths
+    assert "app/unrelated.py" not in relevant_paths
+    remove_file = next(item for item in relevant if item["path"] == "app/remove.py")
+    assert remove_file["match_basis"]["file_name"] == ["remove"]
+
+    evidence = frame.repository_evidence_for_goal(keywords, [])
+    assert evidence["schema_version"] == "repository_evidence.v1"
+    assert len(evidence["items"]) <= 24
+    assert {
+        (item["path"], item["symbol_name"])
+        for item in evidence["items"]
+        if item["kind"] == "symbol_declaration"
+    } == {("app/telemetry.py", "configure_telemetry")}
+    symbol = next(
+        item for item in evidence["items"]
+        if item["kind"] == "symbol_declaration"
+    )
+    assert set(symbol) == {
+        "id",
+        "kind",
+        "path",
+        "file_sha256",
+        "symbol_type",
+        "symbol_name",
+        "start_line",
+        "end_line",
+    }
+    dependencies = [
+        item
+        for item in evidence["items"]
+        if item["kind"] == "manifest_dependency"
+    ]
+    assert [item["dependency_name"] for item in dependencies] == [
+        "opentelemetry-api"
+    ]
+    assert set(dependencies[0]) == {
+        "id",
+        "kind",
+        "manifest_path",
+        "manifest_sha256",
+        "dependency_group",
+        "dependency_name",
+        "declaration",
+    }
+    assert all(
+        "docstring" not in item and "source" not in item and "signature" not in item
+        for item in evidence["items"]
+    )
+
+
+async def test_repository_evidence_applies_per_kind_bounds(tmp_path):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "telemetry.py").write_text(
+        "\n\n".join(
+            f"def telemetry_handler_{index}():\n    return {index}"
+            for index in range(14)
+        ),
+        encoding="utf-8",
+    )
+
+    frame = await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
+    evidence = frame.repository_evidence_for_goal({"telemetry"}, [])
+
+    assert len([
+        item
+        for item in evidence["items"]
+        if item["kind"] == "symbol_declaration"
+    ]) == 10
+    assert evidence["truncated"] is True
+
+
 def test_git_output_preserves_leading_porcelain_status_column(monkeypatch, tmp_path):
     from app.services import repo_indexer
 
@@ -491,6 +598,12 @@ async def test_incremental_index_preserves_unchanged_ids_and_builds_exact_edges(
     assert service_file["match_strength"] == "strong_match"
     assert service_file["match_basis"]["path"] == ["service"]
     assert service_file["why"] == "File name matches: service."
+    assert service_file["matched_symbols"] == [{
+        "name": "run_service",
+        "symbol_type": "function",
+        "start_line": 1,
+        "end_line": 2,
+    }]
     assert len({
         (item["start_line"], item["end_line"])
         for item in service_file["line_ranges"]
@@ -501,6 +614,28 @@ async def test_incremental_index_preserves_unchanged_ids_and_builds_exact_edges(
     } >= {
         ("tests/test_service.py", "app/service.py"),
         ("app/api.py", "app/service.py"),
+    }
+    repository_evidence = first.repository_evidence_for_goal({"service"}, [])
+    exact_test_link = next(
+        item
+        for item in repository_evidence["items"]
+        if item["kind"] == "test_link"
+        and item["target_path"] == "app/service.py"
+    )
+    assert exact_test_link["test_path"] == "tests/test_service.py"
+    assert exact_test_link["rule_id"] == "test_path_match.v1"
+    assert exact_test_link["test_sha256"]
+    assert exact_test_link["target_sha256"]
+    assert set(exact_test_link) == {
+        "id",
+        "kind",
+        "test_path",
+        "test_sha256",
+        "target_path",
+        "target_sha256",
+        "rule_id",
+        "rule_version",
+        "edge_key",
     }
     explicit_test = first.affected_code_for_goal(
         {"service"}, ["tests/test_service.py"]

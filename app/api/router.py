@@ -10,6 +10,7 @@ from app.api import (
     context,
     context_digest,
     demo,
+    desktop_overlay,
     graph,
     memory,
     models_api,
@@ -23,6 +24,7 @@ from app.api import (
 )
 
 api_router = APIRouter()
+api_router.include_router(desktop_overlay.router, prefix="", tags=["desktop"])
 api_router.include_router(checkpoints.router, prefix="", tags=["checkpoints"])
 api_router.include_router(continuations.router, prefix="", tags=["continuations"])
 api_router.include_router(sources.router, prefix="", tags=["sources"])

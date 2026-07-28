@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useState } from "react";
+import { Component, Suspense, lazy, useEffect, useState } from "react";
 import { Routes, Route, NavLink, Navigate, Link, useLocation } from "react-router-dom";
 import ThemeToggle from "./components/ThemeToggle";
 import DaemonStateIcon from "./components/DaemonStateIcon";
@@ -9,21 +9,20 @@ import {
   Activity,
   Database,
   LibraryBig,
-  BrainCircuit,
   Ellipsis,
-  History,
   PanelLeftClose,
   PanelLeftOpen,
   PlugZap,
   Waypoints,
+  Workflow,
   X,
 } from "lucide-react";
 
 const ContextMapPage = lazy(() => import("./pages/ContextMapPage"));
 const NowPage        = lazy(() => import("./pages/NowPage"));
 const PreparePage    = lazy(() => import("./pages/PreparePage"));
-const RunsPage       = lazy(() => import("./pages/RunsPage"));
 const SessionLibrary = lazy(() => import("./pages/SessionLibrary"));
+const ExecutePage    = lazy(() => import("./pages/MemoryNow"));
 const ProjectMemory  = lazy(() => import("./pages/ProjectMemory"));
 const QueryView    = lazy(() => import("./pages/QueryView"));
 const SourceManager = lazy(() => import("./pages/SourceManager"));
@@ -34,12 +33,11 @@ const WorkspacesPage = lazy(() => import("./pages/WorkspacesPage"));
 
 const CONTINUE_NAV_ITEMS = [
   { to: "/app", label: "Continue", icon: Activity, end: true },
+  { to: "/app/execute", label: "Execute", icon: Workflow },
 ];
 
 const INSPECT_NAV_ITEMS = [
   { to: "/app/library", label: "Library", icon: LibraryBig },
-  { to: "/app/runs", label: "History", icon: History },
-  { to: "/app/memory", label: "Memory", icon: BrainCircuit },
   { to: "/app/explain", label: "Evidence", icon: Waypoints },
 ];
 
@@ -55,11 +53,11 @@ const SETUP_NAV_ITEMS = [
 
 const NAV_GROUPS = [
   {
-    label: "Continue",
+    label: "Work",
     items: CONTINUE_NAV_ITEMS,
   },
   {
-    label: "Inspect & history",
+    label: "Inspect",
     items: INSPECT_NAV_ITEMS,
   },
   {
@@ -82,6 +80,76 @@ function PageLoader({ fullScreen = false }) {
   );
 }
 
+class ProductRouteErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidUpdate(previousProps) {
+    if (
+      this.state.error
+      && previousProps.resetKey !== this.props.resetKey
+    ) {
+      this.setState({ error: null });
+    }
+  }
+
+  componentDidCatch(error, info) {
+    // Keep the failure observable for diagnostics without allowing one route
+    // to blank the entire product shell.
+    console.error("Product route render failed", error, info);
+  }
+
+  reset = () => {
+    this.setState({ error: null });
+  };
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <section
+        role="alert"
+        aria-labelledby="route-recovery-heading"
+        className="mx-auto flex min-h-[24rem] w-full max-w-3xl flex-col justify-center rounded-[1.75rem] border border-amber-200 bg-[#fbfbf6] px-6 py-10 shadow-[0_24px_70px_rgba(23,23,19,0.1)] dark:border-amber-900/60 dark:bg-[#11110f] sm:px-10"
+      >
+        <span className="text-xs font-bold uppercase tracking-[0.16em] text-amber-700 dark:text-amber-300">
+          View recovery
+        </span>
+        <h1
+          id="route-recovery-heading"
+          className="mt-3 text-3xl font-semibold tracking-[-0.045em] text-[#171713] dark:text-white"
+        >
+          This view could not be opened
+        </h1>
+        <p className="mt-4 max-w-xl text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
+          Your workspace and saved context are still intact. Retry this view, or return to Continue and choose another task.
+        </p>
+        <div className="mt-7 flex flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={this.reset}
+            className="inline-flex min-h-11 items-center justify-center rounded-xl bg-[#171713] px-5 text-sm font-semibold text-white transition-colors hover:bg-[#30302a] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#95b52f] focus-visible:ring-offset-2 dark:bg-[#d9ff68] dark:text-[#171713] dark:hover:bg-[#e3ff91]"
+          >
+            Try this view again
+          </button>
+          <Link
+            to="/app"
+            onClick={this.reset}
+            className="inline-flex min-h-11 items-center justify-center rounded-xl border border-[#d7d7cf] px-5 text-sm font-semibold text-[#383832] transition-colors hover:border-[#aaa99f] hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#95b52f] focus-visible:ring-offset-2 dark:border-white/15 dark:text-white dark:hover:bg-white/[0.06]"
+          >
+            Return to Continue
+          </Link>
+        </div>
+      </section>
+    );
+  }
+}
+
 export default function App() {
   return (
     <Suspense fallback={<PageLoader fullScreen />}>
@@ -99,6 +167,8 @@ function AdminShell() {
   const { selectedId } = useWorkspaceSelection();
   const isProjectPage = location.pathname === "/app/explain" || location.pathname === "/app/explain/";
   const isLibraryPage = location.pathname === "/app/library" || location.pathname === "/app/library/";
+  const isExecutePage = location.pathname === "/app/execute" || location.pathname === "/app/execute/";
+  const usesLibraryCanvas = isLibraryPage || isExecutePage;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try { return localStorage.getItem("daemonstate_sidebar_collapsed") === "true"; }
     catch { return false; }
@@ -170,9 +240,13 @@ function AdminShell() {
           </div>
         </header>
 
-        <main className={`app-main ${isLibraryPage ? "" : "daemonstate-app-canvas"} relative min-h-0 flex-1 ${isProjectPage ? "overflow-hidden" : "overflow-y-auto px-4 py-6 sm:px-7 sm:py-8 xl:px-10 xl:py-10"}`}>
+        <main data-app-scroll-container className={`app-main ${usesLibraryCanvas ? "" : "daemonstate-app-canvas"} relative min-h-0 flex-1 ${
+          isProjectPage
+            ? "overflow-hidden"
+            : "overflow-y-auto px-4 py-6 sm:px-7 sm:py-8 xl:px-10 xl:py-10"
+        }`}>
         {!isProjectPage ? (
-          <div className={isLibraryPage
+          <div className={usesLibraryCanvas
             ? "pointer-events-none absolute inset-x-0 top-0 h-48 border-b border-[#e7e7df]/70 bg-[radial-gradient(circle_at_75%_0%,rgba(217,255,104,0.14),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.7),rgba(247,247,242,0))] dark:border-[#171717] dark:bg-[radial-gradient(circle_at_75%_0%,rgba(217,255,104,0.035),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.018),rgba(0,0,0,0))]"
             : "daemonstate-app-ambient pointer-events-none absolute inset-x-0 top-0 h-64"
           } />
@@ -181,26 +255,33 @@ function AdminShell() {
           className={`page-enter relative z-10 ${isProjectPage ? "h-full min-h-0" : ""}`}
           key={`${selectedId || "unselected-workspace"}:${location.pathname}`}
         >
-          <Suspense fallback={<PageLoader />}>
-            <Routes>
-              <Route index                                  element={<NowPage />} />
-              <Route path="prepare"                         element={<PreparePage />} />
-              <Route path="runs"                            element={<RunsPage />} />
-              <Route path="library"                         element={<SessionLibrary />} />
-              <Route path="memory"                          element={<ProjectMemory />} />
-              <Route path="explain"                         element={<ContextMapPage />} />
-              <Route path="dashboard"                       element={<Navigate to="/app" replace />} />
-              <Route path="graph"                           element={<Navigate to="/app/explain" replace />} />
-              <Route path="query"                           element={<QueryView />} />
-              <Route path="sources"                         element={<SourceManager />} />
-              <Route path="agents"                          element={<Navigate to="/app" replace />} />
-              <Route path="connectors"                      element={<Connectors />} />
-              <Route path="connectors/:connectorType/runs"  element={<Connectors />} />
-              <Route path="changes"                         element={<Changes />} />
-              <Route path="workspaces"                      element={<WorkspacesPage />} />
-              <Route path="*"                               element={<Navigate to="/app" replace />} />
-            </Routes>
-          </Suspense>
+          <ProductRouteErrorBoundary
+            resetKey={`${selectedId || "unselected-workspace"}:${location.pathname}:${location.search}`}
+          >
+            <Suspense fallback={<PageLoader />}>
+              <Routes>
+                <Route index                                  element={<NowPage />} />
+                <Route path="prepare"                         element={<PreparePage />} />
+                <Route path="runs"                            element={<Navigate to="/app/library" replace />} />
+                <Route path="library"                         element={<SessionLibrary />} />
+                <Route path="execute"                         element={<ExecutePage />} />
+                <Route path="execute/inspector"               element={<ProjectMemory />} />
+                <Route path="memory"                          element={<LegacyMemoryEntry />} />
+                <Route path="memory/inspector"                element={<LegacyMemoryInspectorEntry />} />
+                <Route path="explain"                         element={<ContextMapPage />} />
+                <Route path="dashboard"                       element={<Navigate to="/app" replace />} />
+                <Route path="graph"                           element={<Navigate to="/app/explain" replace />} />
+                <Route path="query"                           element={<QueryView />} />
+                <Route path="sources"                         element={<SourceManager />} />
+                <Route path="agents"                          element={<Navigate to="/app" replace />} />
+                <Route path="connectors"                      element={<Connectors />} />
+                <Route path="connectors/:connectorType/runs"  element={<Connectors />} />
+                <Route path="changes"                         element={<Changes />} />
+                <Route path="workspaces"                      element={<WorkspacesPage />} />
+                <Route path="*"                               element={<Navigate to="/app" replace />} />
+              </Routes>
+            </Suspense>
+          </ProductRouteErrorBoundary>
         </div>
         </main>
         <MobileNavigation pathname={location.pathname} />
@@ -221,6 +302,36 @@ function ShellNavGroup({ group, collapsed }) {
         {group.items.map((item) => <ShellNavLink key={item.to} collapsed={collapsed} {...item} />)}
       </div>
     </div>
+  );
+}
+
+function LegacyMemoryEntry() {
+  const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  const legacyInspectorKeys = [
+    "view",
+    "section",
+    "category",
+    "scope",
+    "source",
+    "verification",
+    "temporal",
+    "kind",
+    "q",
+  ];
+  const pathname = legacyInspectorKeys.some((key) => params.has(key))
+    ? "/app/execute/inspector"
+    : "/app/execute";
+  return <Navigate replace to={{ pathname, search: location.search }} />;
+}
+
+function LegacyMemoryInspectorEntry() {
+  const location = useLocation();
+  return (
+    <Navigate
+      replace
+      to={{ pathname: "/app/execute/inspector", search: location.search }}
+    />
   );
 }
 
@@ -282,7 +393,7 @@ function MobileNavigation({ pathname }) {
             <div className="flex items-center justify-between border-b border-line px-4 py-3">
               <div>
                 <p className="text-sm font-semibold text-ink">More</p>
-                <p className="mt-0.5 text-xs text-ink-muted">History, evidence, and setup</p>
+                <p className="mt-0.5 text-xs text-ink-muted">Evidence and setup</p>
               </div>
               <button
                 type="button"
@@ -316,7 +427,7 @@ function MobileNavigation({ pathname }) {
         </>
       ) : null}
 
-      <nav aria-label="Mobile navigation" className="daemonstate-mobile-navigation relative z-20 grid grid-cols-5 border-t border-line bg-surface">
+      <nav aria-label="Mobile navigation" className="daemonstate-mobile-navigation relative z-20 grid grid-flow-col auto-cols-fr border-t border-line bg-surface">
         {MOBILE_PRIMARY_ITEMS.map((item) => (
           <MobileNavLink key={item.to} {...item} />
         ))}

@@ -2,7 +2,7 @@ services:
   app:
     build: .
     ports:
-      - "${SMOKE_PORT:-18080}:8000"
+      - "127.0.0.1:${SMOKE_PORT:-18080}:8000"
     volumes:
       - daemonstate_smoke_data:/data
     environment:
@@ -12,7 +12,7 @@ services:
       EXTRACTION_MODEL: ${EXTRACTION_MODEL:-}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')"]
       interval: 10s
       timeout: 5s
       retries: 12

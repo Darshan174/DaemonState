@@ -7,7 +7,7 @@ client and it does not invent project intent.
 
 `/app` is the primary Continue surface. The old `/app/dashboard` URL redirects
 there, while `/app/graph` redirects to `/app/explain`. Sources and Integrations
-remain setup destinations; Library, History, Memory, and Evidence are grouped
+remain setup destinations; Library, Memory, and Evidence are grouped
 as inspection surfaces.
 
 ## Observed behavior

@@ -1275,6 +1275,177 @@ class TestEvidenceLedgerMigration:
                 pass
 
 
+async def test_continuation_execution_migration_repairs_draft_schema(tmp_path):
+    db_path = tmp_path / "legacy-continuation.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    execution_id = uuid4().hex
+    requirement_id = uuid4().hex
+    evidence_id = uuid4().hex
+    outcome_id = uuid4().hex
+
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            await conn.execute(text(
+                "ALTER TABLE continuation_executions "
+                "RENAME COLUMN status TO quality_status"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE requirement_evidence "
+                "RENAME COLUMN evidence_json TO payload_json"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE requirement_evidence DROP COLUMN required"
+            ))
+            for column in (
+                "mandatory_total",
+                "mandatory_passed",
+                "mandatory_failed",
+                "mandatory_unproven",
+                "blocker_json",
+                "updated_at",
+            ):
+                await conn.execute(text(
+                    "ALTER TABLE continuation_outcomes "
+                    f"DROP COLUMN {column}"
+                ))
+            await conn.execute(
+                text("""
+                    INSERT INTO continuation_executions (
+                        id, workspace_id, context_pack_id, schema_version,
+                        task_mode, request_verbatim, request_normalized,
+                        request_sha256, display_title, contract_json,
+                        contract_sha256, prompt_markdown, prompt_sha256,
+                        quality_status, idempotency_key
+                    )
+                    VALUES (
+                        :id, :workspace_id, :context_pack_id,
+                        'continuation_execution.v1', 'change', 'Fix it',
+                        'Fix it', :request_sha256, 'Fix it', '{}',
+                        :contract_sha256, '# Fix it', :prompt_sha256,
+                        'blocked_external', :idempotency_key
+                    )
+                """),
+                {
+                    "id": execution_id,
+                    "workspace_id": uuid4().hex,
+                    "context_pack_id": uuid4().hex,
+                    "request_sha256": "a" * 64,
+                    "contract_sha256": "b" * 64,
+                    "prompt_sha256": "c" * 64,
+                    "idempotency_key": "d" * 64,
+                },
+            )
+            await conn.execute(
+                text("""
+                    INSERT INTO continuation_requirements (
+                        id, continuation_execution_id, requirement_key,
+                        text, priority
+                    )
+                    VALUES (
+                        :id, :execution_id, 'req-1', 'Keep proof', 'must'
+                    )
+                """),
+                {"id": requirement_id, "execution_id": execution_id},
+            )
+            await conn.execute(
+                text("""
+                    INSERT INTO requirement_evidence (
+                        id, continuation_execution_id,
+                        continuation_requirement_id, verifier_id,
+                        verifier_type, status, payload_json, evidence_sha256
+                    )
+                    VALUES (
+                        :id, :execution_id, :requirement_id, 'pytest',
+                        'command', 'passed', :payload_json, :sha256
+                    )
+                """),
+                {
+                    "id": evidence_id,
+                    "execution_id": execution_id,
+                    "requirement_id": requirement_id,
+                    "payload_json": '{"proof":true}',
+                    "sha256": "e" * 64,
+                },
+            )
+            await conn.execute(
+                text("""
+                    INSERT INTO continuation_outcomes (
+                        id, continuation_execution_id, status, summary_json
+                    )
+                    VALUES (
+                        :id, :execution_id, 'blocked_external',
+                        :summary_json
+                    )
+                """),
+                {
+                    "id": outcome_id,
+                    "execution_id": execution_id,
+                    "summary_json": '{"legacy":true}',
+                },
+            )
+
+        async with engine.begin() as conn:
+            await run_migrations(conn)
+            await run_migrations(conn)
+
+        async with engine.connect() as conn:
+            execution_columns = await _table_columns(
+                conn, "continuation_executions"
+            )
+            evidence_columns = await _table_columns(
+                conn, "requirement_evidence"
+            )
+            outcome_columns = await _table_columns(
+                conn, "continuation_outcomes"
+            )
+            status = await conn.scalar(text(
+                "SELECT status FROM continuation_executions WHERE id = :id"
+            ), {"id": execution_id})
+            evidence = (
+                await conn.execute(text("""
+                    SELECT required, evidence_json
+                    FROM requirement_evidence
+                    WHERE id = :id
+                """), {"id": evidence_id})
+            ).one()
+            outcome = (
+                await conn.execute(text("""
+                    SELECT mandatory_total, mandatory_passed,
+                           mandatory_failed, mandatory_unproven,
+                           blocker_json, summary_json, updated_at
+                    FROM continuation_outcomes
+                    WHERE id = :id
+                """), {"id": outcome_id})
+            ).one()
+            evidence_indexes = await _index_names(
+                conn, "requirement_evidence"
+            )
+
+        assert "status" in execution_columns
+        assert "quality_status" not in execution_columns
+        assert status == "blocked_external"
+        assert {"required", "evidence_json"} <= set(evidence_columns)
+        assert "payload_json" not in evidence_columns
+        assert evidence == (1, '{"proof":true}')
+        assert {
+            "mandatory_total",
+            "mandatory_passed",
+            "mandatory_failed",
+            "mandatory_unproven",
+            "blocker_json",
+            "updated_at",
+        } <= set(outcome_columns)
+        assert outcome[:6] == (0, 0, 0, 0, "{}", '{"legacy":true}')
+        assert outcome.updated_at is not None
+        assert (
+            "uq_requirement_evidence_attempt_verifier"
+            in evidence_indexes
+        )
+    finally:
+        await engine.dispose()
+
+
 def _create_legacy_schema(connection):
     """Create the schema WITHOUT confidence and evidence on relationships."""
     connection.execute(

@@ -10,6 +10,10 @@ from sqlalchemy import exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Component, Relationship, SourceDocument
+from app.schemas.continuation_execution import (
+    MAX_DISPLAY_TITLE,
+    normalize_request_for_matching,
+)
 from app.services.access import AccessScope, source_access_predicate
 from app.services.workspace_scope import current_source_documents
 
@@ -74,7 +78,6 @@ WORKFLOW_SCHEMA_VERSION = "task_workflow.v1"
 MAX_BUCKET_ITEMS = 8
 MAX_AFFECTED_TASKS = 12
 MAX_GRAPH_TASKS = 64
-MAX_TASK_TEXT = 500
 
 
 @dataclass(frozen=True)
@@ -138,10 +141,14 @@ class TaskWorkflowService:
         selected_objective: str,
         selected_component_id: UUID | str | None = None,
     ) -> WorkflowResolution:
-        normalized_objective = _clean_text(selected_objective, MAX_TASK_TEXT)
+        normalized_objective = normalize_request_for_matching(
+            str(selected_objective or "")
+        )
+        if not normalized_objective:
+            raise ValueError("selected_objective must contain visible characters")
         fallback = _TaskNode(
             component_id=None,
-            title=normalized_objective,
+            title=_clean_text(normalized_objective, MAX_DISPLAY_TITLE),
             objective=normalized_objective,
             status="active",
             lifecycle="active",
@@ -825,7 +832,9 @@ def _component_title(component: Component) -> str:
 
 
 def _component_objective(component: Component) -> str:
-    return _clean_text(component.value or component.name, MAX_TASK_TEXT)
+    return normalize_request_for_matching(
+        str(component.value or component.name or "")
+    )
 
 
 def _lifecycle(status: str) -> str:
