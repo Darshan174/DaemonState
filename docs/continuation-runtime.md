@@ -16,10 +16,9 @@ invariants, engineering conventions and canonical commands, supported and
 unsupported capabilities, long-term constraints and risks, and current product
 direction and quality requirements. Every session inherits this foundation as
 its logical parent. The two copy artifacts remain separate: Session Context
-contains the task-local child state, while Project Context staging renders the
-workspace-wide parent together with the active task child. “Workspace
-Context” is the delivery-surface label for the same Project Context, not a
-third context product.
+contains the task-local child state, while Project / Workspace Context contains
+the workspace-wide parent. “Workspace Context” is the delivery-surface label
+for the same Project Context, not a third context product.
 
 **Session Context is the child.** It captures the latest individual session's
 task-level working memory: the current goal and acceptance criteria, completed
@@ -31,8 +30,8 @@ and current repository state.
 
 | Artifact | Scope and purpose | Behavior |
 |---|---|---|
-| **Session Context** | The task-specific child captured from one session's latest immutable tip. It records that session's current working state and its relationship to the Project Context parent; it does not duplicate the parent facts. Repository freshness is checked at handoff time and the current snapshot is used when available. | Use it to refresh a long session or start a new session in the same harness. Failed attempts, rejected approaches, temporary blockers, and other task-local details remain here. The user reviews or copies it, then writes the immediate lead. |
-| **Project / Workspace Context** | The durable parent foundation shared by every session in the workspace. It is compiled from all current workspace evidence without using the current prompt, objective, file overlap, selected session, or task ranking. Durable project facts and syntax-level repository observations remain separate. | Mechanically verified, human-confirmed, and corroborated durable facts may enter the current parent. Provisional claims stay outside it; superseded or conflicting facts remain historical. The staging rendering, `continuation_staging_context.v1`, combines the parent with the active task child, loads it into a fresh supported harness thread, and waits. |
+| **Session Context** | The task-specific child captured from one session's latest immutable tip. It records that session's current working state and its relationship to the Project Context parent. Repository freshness is checked at handoff time and the current snapshot is used when available. | Continue always selects the newest available session, renders the canonical `session_handoff.v1` artifact, copies it, requests a visible composer in the selected desktop app, and waits for the user to submit. Historical Library sessions and recovery points route through Prepare or Execute and never override Continue. |
+| **Project / Workspace Context** | The durable parent foundation shared by every session in the workspace. It is compiled from all current workspace evidence without using the current prompt, objective, file overlap, selected session, or task ranking. Durable project facts and syntax-level repository observations remain separate. | Mechanically verified, human-confirmed, and corroborated durable facts may enter the current parent. Provisional claims stay outside it; superseded or conflicting facts remain historical. Its separate rendering remains `continuation_staging_context.v1`. |
 | **Execution Prompt** | The provider-neutral worker command rendered as `continuation_execution_prompt.v1` from the typed `continuation_execution.v1` contract. | Used only by an automatic run path that starts the worker, observes it, and applies requirement-linked verification. |
 | **Audit ContextPack** | `context_pack.v2`, with complete selection, exclusion, provenance, citation, risk, and reconciliation records. | Durable audit and advanced inspection only. Its Markdown is never the continuation worker instruction. |
 
@@ -48,9 +47,9 @@ runtime does not turn a copied Session Context into a new foundation revision,
 and it never rewrites the source session or its immutable checkpoint.
 
 The model-facing Session and Project renderings remain bounded. Session Context
-contains the latest task state and an explicit parent-child boundary without
-duplicating the parent facts. Project Context staging contains the
-objective-independent durable parent plus the active task child.
+contains the latest task state and an explicit parent-child boundary, plus only
+the task-relevant evidence-backed workspace facts it inherits. Project /
+Workspace Context remains the separately rendered objective-independent parent.
 Event numbers, capture timestamps, selection scores, full dirty-file
 inventories, and other audit metadata remain in the structured contract or
 Audit ContextPack. A generic “continue the current request” record cannot
@@ -65,17 +64,19 @@ observations help the receiving model orient itself, but they do not claim code
 behavior or architectural intent.
 
 The browser actions are literal: **Preview** displays rendered context, **Copy**
-writes user-controlled context to the clipboard, and **Stage** loads Project
-Context into a supported waiting harness thread. None of these actions performs
-an operating-system-level paste into another app's focused field, presses Enter,
-or submits a user turn.
+writes user-controlled context to the clipboard, and **Continue** copies the
+latest Session Context and opens a new, visible composer in the selected desktop
+app. When the native deep link is within its bounded size, the composer is also
+prefilled. Otherwise the app opens with the complete context still on the
+clipboard and an explicit paste instruction. Nothing presses Enter or submits a
+user turn.
 
 The optional [macOS floating context control](floating-context-control.md) is a
 separate native delivery surface. It can copy and synthesize Command-V into the
 editor that retained focus, but it never presses Enter and does not weaken the
 same context identity, quality, or hash checks.
 
-Both copy paths fail closed. Session Context requires
+Direct copy paths fail closed. Session Context requires
 `quality_report.copy_ready=true`; Project Context requires
 `project_context.copy_ready=true`. Superseded session boundaries, unresolved
 referenced conversations, incomplete repository snapshots, missing required
@@ -83,12 +84,16 @@ artifacts, contradictory authority, and malformed handoff sections remain
 previewable with explicit issues but cannot be copied. Automatic execution has
 the stricter `automatic_execution_ready`/`launchable` gates.
 
-Project Context also fails closed when its core purpose, workflow,
+Project Context direct copy and automatic execution also fail closed when its core purpose, workflow,
 architecture, or repository sections are empty; a statement lacks hash-bound
 provenance; current facts conflict; generic inventory dominates; or its
 foundation fingerprint is stale relative to the repository. Headings alone do
-not satisfy this gate. An empty foundation is explicitly **not ready** and is
-never copyable.
+not satisfy this gate. Visible desktop Continue may carry an incomplete-core
+Workspace Context only as inherited background inside an explicitly warned,
+user-reviewed Session Context draft; it still cannot submit or begin execution.
+Every integrity, freshness, provenance, and conflict failure remains blocking.
+An entirely empty parent is explicitly **not ready** and is never inherited or
+staged.
 
 Clipboard delivery is integrity-checked in the browser: the rendered content
 must match its server-provided SHA-256, and Session Context must also match the
@@ -145,44 +150,85 @@ endpoint is local-only. `POST /api/continuations/run` remains a compatibility
 alias.
 
 The browser Continue path is intentionally different. It calls the local-only
-`POST /api/continuations/stage` endpoint, which compiles the same evidence and
-contract for an explicit immediate lead, or for the lossless user lead resolved
-from an exact source session/checkpoint, but starts no provider turn. Requests
-with neither a substantive lead nor an exact source boundary fail closed before
-compilation. For Codex, DaemonState uses app-server
-`thread/start`, supplies a short waiting control through
-`developerInstructions`, injects a model-visible
-`continuation_staging_context.v1` item containing **Context**, **Direction**,
-and **Execution loop**, and verifies the thread is idle with an empty user
-preview. It never calls `turn/start`. The injected Direction already contains
-the lead used for task-relevant retrieval; the user's next message authorizes,
-clarifies, or narrows that same task. A materially different task requires a
-fresh Project Context compile.
+`POST /api/continuations/stage` endpoint for the lossless user lead resolved
+from the newest source session, but starts no provider turn. URL objective,
+source-session, and recovery-point parameters cannot replace that selection.
+Historical or manually chosen work is routed through Prepare or Execute.
 
-The staged thread is persisted and opened through
-`codex://threads/<thread-id>`. The Continue screen reports
-`awaiting_user`, says that nothing has been submitted, and instructs the user
-to confirm or narrow the compiled lead and press Enter. Reloading restores that
-durable waiting handoff. Once local session ingestion observes the first user
-message in the exact thread, the stored lifecycle advances to `handed_off`. A successful
-macOS `open` call records that navigation was requested; it is not mislabeled
-as proof that the destination rendered.
+Browser Continue never invokes `codex app-server`, `codex exec`, `claude
+--print`, `opencode run`, or a provider authentication/model probe. It copies
+the complete canonical `session_handoff.v1` rendering for that latest session,
+then uses only the selected app's registered macOS URL scheme:
 
-Provider readiness now reports `context_staging_supported` separately from CLI
-and authentication readiness. Codex is enabled only when an exact desktop
-thread can be created and opened without starting a turn. Claude Code and
-OpenCode remain visible but disabled for browser Continue until they can offer
-the same waiting-thread guarantee. No-turn staging requires Project Context
-copy/safety readiness and verifies the rendered content hash; it does not
-require automatic verifier readiness. Automatic runs remain blocked until the
-stricter execution gate passes. Provider readiness is checked again immediately
-before staging.
+- Codex: `codex://threads/new`
+- Claude Desktop: `claude://code/new`
+- OpenCode Desktop: `opencode://new-session`
 
-Codex model and reasoning-effort controls are populated only from a successfully
-observed installed Codex model catalog. A failed catalog probe exposes no
-invented choices; the CLI default remains usable without an override. Selected
-model and reasoning effort are persisted as thread configuration so they apply
-when the user submits the first turn.
+The native link requests a new composer with the project directory and bounded
+prompt. It does not create a provider session ID that DaemonState can truthfully
+persist before submission. The API therefore returns a handoff ID, context
+hash, `execution_started=false`, `context_loaded=false`, and
+`navigation_verified=false`. It reports whether prefill was requested and
+whether the complete context was copied; it never claims that the destination
+rendered. The user checks the requested desktop composer, pastes the copied
+context if necessary, reviews it, and submits it explicitly.
+
+Submitting the unchanged Continue draft activates the carried current goal from
+its exact next action; a newer user-authored instruction overrides that goal.
+
+Stage requires an idempotency key. Before requesting the app open, it commits a
+durable reservation keyed by workspace and that key. Repeated, concurrent, or
+reloaded same-key requests replay the stored success or failure and never
+dispatch a second desktop open request. This ledger is handoff state only: it
+does not create an `AgentRun` or invent a provider session ID.
+The browser keeps an unresolved request key in session storage across reloads
+and provider switches. It clears that key only after a known terminal result,
+or after showing the user an explicit unknown-outcome warning.
+
+Because dispatch is not proof that the composer rendered, a successful request
+does not permanently lock Continue. The selected card exposes an explicit
+**Request again** action; that deliberate new action gets a new idempotency key,
+while double-clicks and same-key retries remain deduplicated. A newer failed or
+pending request also prevents an older successful request from being restored
+as the current handoff. A pending reservation expires after 60 seconds so a
+crash cannot lock Continue forever. The first retry after expiry reports the
+earlier open outcome as uncertain and sends nothing; after the user checks the
+desktop app, a second explicit **Request again** may create a new request.
+
+Provider readiness for the browser has
+`readiness_scope=desktop_application_and_account_access`. Installation and a
+registered native URL handler are reported separately from usable account
+access. They never produce a Ready badge by themselves. The probe does not
+start or inspect a provider CLI, scrape credentials, or treat local credential
+files as subscription proof. When a desktop app has no supported
+privacy-preserving account-status bridge, the card fails closed as
+`desktop_account_access_unverified`.
+
+Because none of the supported desktop apps currently exposes such a bridge,
+DaemonState offers a request-scoped human confirmation instead of permanently
+blocking a legitimately usable app. The user must open the exact selected
+desktop app and explicitly attest that its account and selected model are
+usable. This attestation is not persisted, cannot be used with automatic
+provider selection, and cannot bypass a missing app or URL handler. The handoff
+records `account_access_state=user_confirmed`,
+`account_access_basis=request_attestation`, and
+`account_access_verified=false`; it never relabels the attestation as a
+provider-verified subscription.
+
+OpenCode has no single universal subscription: a usable installation may rely
+on OpenCode Go, Zen credits, another connected provider, or a local model.
+DaemonState therefore requires evidence of at least one usable provider/model
+instead of equating installation with subscription.
+
+Each local readiness probe is bounded to three seconds, and the browser aborts
+the readiness request after ten seconds rather than leaving cards in an
+indefinite Checking state. Codex model and reasoning-effort controls are
+populated only from its fresh, non-secret desktop model cache; that cache is
+selector metadata, not account, plan, entitlement, or quota proof. The chosen
+values are preserved only as delivery metadata and visible card state. They are
+never prepended or otherwise injected into the model-visible Session Context.
+Because the native desktop deep link cannot apply them, the response and card
+require the user to confirm them in Codex Desktop before submitting.
 
 Continuation turns have a four-hour default execution window so substantive
 desktop-visible work is not killed at the former one-hour boundary. Operators
@@ -363,29 +409,38 @@ no re-explanation, less discovery, and no stale-context mistake.
 ## Browser Surface
 
 The Continue page calls the canonical local-only staging endpoint and exposes
-one card for each target provider. Each card distinguishes ordinary provider
-readiness from safe context-staging support. Continue carries the exact
-selected Library session identity through preparation so an equally
-worded newer session cannot replace it.
-Library also binds a multi-request session card to its source-backed original
-user request; the shortened card title is display-only and cannot silently
-select a different request from the same session.
-Selecting a ready card resolves the task, refreshes evidence,
+one card for each target provider. Each card reports the selected desktop app's
+installation and visible-handoff readiness. Continue carries the exact newest
+session identity through preparation; URL state, a Library selection, or a
+saved recovery point cannot replace it. Library routes historical session and
+topic choices to Prepare, while Execute owns explicit multi-session context.
+Provider readiness starts immediately. In parallel, Continue uses
+`POST /api/session-library/latest` to enumerate local history metadata,
+resolve newest-first, and ingest only the newest eligible root session. The
+filesystem work runs off the API event loop, the response omits the historical
+library, and checkpoint/component backfills remain outside the page-load path.
+Continue becomes runnable from that exact session identity without waiting for
+the broader digest or evidence views. If latest-session discovery fails—or
+returns no eligible session—Continue stays disabled instead of falling back to
+an older indexed session.
+Selecting a ready card resolves the latest session task, refreshes evidence,
 compiles the audit pack and execution contract, applies task-specific quality
-and provider capability gates, loads Context + Direction + Execution loop into
-a fresh Codex thread, opens that exact thread, and waits. It does not submit a
-task, claim agent activity, run verifiers, or report changed files before the
-user types the new lead. There is no clipboard fallback or manual
-checkpoint-review step in this primary workflow. Library, Memory, and
-Evidence remain optional inspection surfaces.
+gates, copies the canonical Session Context, and requests the selected Codex,
+Claude, or OpenCode desktop app's native new-composer route. A bounded native prefill is
+requested; the clipboard remains the complete, non-truncated fallback. Scheme
+registration and Launch Services dispatch do not prove route rendering. It
+does not submit a task, claim agent activity, run verifiers, or report changed
+files before the user submits the draft. Library, Memory, and Evidence remain
+optional inspection surfaces.
 
 ## Surface Differences
 
 - HTTP prepare is non-executing: repository path is optional, local session sync
   defaults off, and `execute_commands=true` is rejected. HTTP run is local-only,
   refreshes sessions, selects a fresh installed target, and executes checks.
-- Browser Continue uses local-only HTTP stage: it refreshes and compiles, creates
-  a waiting Codex thread, injects context, and starts no turn.
+- Browser Continue uses local-only HTTP stage: it compiles without scanning
+  provider session stores, copies the complete context, requests the selected
+  desktop app and new-composer route, and starts no provider process or turn.
 - CLI requires a workspace, defaults the repository to `.`, syncs by default,
   launches a selected provider only with `--into`, and verifies automatically.
 - MCP requires workspace and repository, syncs by default, and returns the audit

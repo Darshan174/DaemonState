@@ -81,6 +81,7 @@ async def ingest_ai_session(
     metadata_extra: dict[str, Any] | None = None,
     normalized_events: list[NormalizedSessionEvent] | None = None,
     commit: bool = True,
+    capture_checkpoints: bool = True,
 ) -> dict[str, Any]:
     messages = _parse_session_content(content)
 
@@ -142,14 +143,15 @@ async def ingest_ai_session(
             session_id=session_id,
             events=normalized_events,
         )
-        from app.services.checkpoints import capture_checkpoint_schema_upgrades
+        if capture_checkpoints:
+            from app.services.checkpoints import capture_checkpoint_schema_upgrades
 
-        checkpoint_count = await capture_checkpoint_schema_upgrades(
-            session,
-            workspace_id=workspace_uuid,
-            provider=connector_type,
-            session_id=session_id,
-        )
+            checkpoint_count = await capture_checkpoint_schema_upgrades(
+                session,
+                workspace_id=workspace_uuid,
+                provider=connector_type,
+                session_id=session_id,
+            )
     if commit:
         await session.commit()
     else:

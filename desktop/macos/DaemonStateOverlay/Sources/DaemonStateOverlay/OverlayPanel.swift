@@ -21,13 +21,18 @@ final class OverlayPanelController: NSWindowController {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
-        panel.level = .statusBar
+        // Keep the control above normal and full-screen application windows.
+        // `.statusBar` can be left behind on the Desktop Space after a Space
+        // transition even when AppKit still reports the panel as visible.
+        panel.level = .screenSaver
         panel.hidesOnDeactivate = false
+        panel.canHide = false
+        panel.worksWhenModal = true
         panel.becomesKeyOnlyIfNeeded = true
         panel.collectionBehavior = [
             .canJoinAllSpaces,
             .fullScreenAuxiliary,
-            .stationary,
+            .ignoresCycle,
         ]
         panel.isReleasedWhenClosed = false
         panel.setAccessibilityTitle("DaemonState")
@@ -45,7 +50,17 @@ final class OverlayPanelController: NSWindowController {
     }
 
     func show() {
-        window?.orderFrontRegardless()
+        guard let panel = window else { return }
+        // Reassert these attributes when runtime control turns the overlay
+        // back on. macOS can otherwise retain the previous Space assignment
+        // for a long-lived non-activating panel.
+        panel.level = .screenSaver
+        panel.collectionBehavior = [
+            .canJoinAllSpaces,
+            .fullScreenAuxiliary,
+            .ignoresCycle,
+        ]
+        panel.orderFrontRegardless()
     }
 
     func hide() {

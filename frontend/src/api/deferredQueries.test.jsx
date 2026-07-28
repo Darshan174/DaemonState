@@ -9,6 +9,8 @@ import {
   useSessionLibrary,
 } from "./hooks";
 import {
+  useContextDigest,
+  useLatestLocalAISessionDiscovery,
   useLinkedAISessionRefresh,
   useProjectMemory,
 } from "../context-map/api";
@@ -81,6 +83,70 @@ describe("deferred Now queries", () => {
     expect(apiMock.get).toHaveBeenCalledWith(expect.stringContaining(
       "/context/memory?workspace_id=workspace-1",
     ));
+  });
+
+  it("keeps the digest idle until latest-session discovery has settled", async () => {
+    const { rerender } = renderHook(
+      ({ enabled }) => useContextDigest("workspace-1", {
+        poll: true,
+        enabled,
+      }),
+      { wrapper, initialProps: { enabled: false } },
+    );
+
+    expect(apiMock.get).not.toHaveBeenCalled();
+
+    rerender({ enabled: true });
+
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith(
+      "/context/digest?workspace_id=workspace-1",
+    ));
+  });
+
+  it("discovers unindexed local sessions and invalidates stale continuation data", async () => {
+    const latestSession = {
+      connector_type: "codex",
+      session_id: "newest-session",
+    };
+    apiMock.post.mockResolvedValue({
+      sync: { mode: "latest", discovered: 1, imported: 1 },
+      session: latestSession,
+    });
+    queryClient.setQueryData(
+      ["session-library", "workspace-1"],
+      { sessions: [{ connector_type: "codex", session_id: "older-session" }] },
+    );
+    queryClient.setQueryData(
+      ["context-digest", "workspace-1"],
+      { activity: { recent_sessions: [{ session_id: "older-session" }] } },
+    );
+
+    const { result } = renderHook(
+      () => useLatestLocalAISessionDiscovery("workspace-1"),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(apiMock.post).toHaveBeenCalledWith(
+      "/session-library/latest",
+      { workspace_id: "workspace-1" },
+    );
+    expect(apiMock.post).not.toHaveBeenCalledWith(
+      "/session-library/sync",
+      expect.anything(),
+    );
+    expect(apiMock.post).not.toHaveBeenCalledWith(
+      "/connectors/ai-session/refresh-linked",
+      expect.anything(),
+    );
+    expect(queryClient.getQueryData(
+      ["session-library", "workspace-1"],
+    )).toEqual({
+      sessions: [{ connector_type: "codex", session_id: "older-session" }],
+    });
+    expect(queryClient.getQueryState(
+      ["context-digest", "workspace-1"],
+    )?.isInvalidated).toBe(true);
   });
 
   it("delays linked refresh per workspace and uses the slower steady poll", async () => {

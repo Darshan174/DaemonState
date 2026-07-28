@@ -480,12 +480,35 @@ struct DaemonStateAPITests {
               "evidence_level": "session_reported",
               "selected_for_now": true,
               "provider": "codex",
+              "session_id": "historical-session",
+              "refreshable": true,
+              "request": "Finish the historical task.",
+              "project_match": {"status": "relevant"}
+            },
+            "latest": {
+              "kind": "agent_session",
+              "state": "snapshot",
+              "evidence_level": "session_reported",
+              "selected_for_now": false,
+              "provider": "codex",
               "session_id": "session-1",
               "refreshable": true,
               "request": "Build the floating context overlay.",
               "project_match": {"status": "relevant"}
             },
-            "recent_sessions": []
+            "recent_sessions": [
+              {
+                "kind": "agent_session",
+                "state": "snapshot",
+                "evidence_level": "session_reported",
+                "selected_for_now": false,
+                "provider": "codex",
+                "session_id": "session-1",
+                "refreshable": true,
+                "request": "Build the floating context overlay.",
+                "project_match": {"status": "relevant"}
+              }
+            ]
           },
           "current_goal": {
             "title": "Build the floating context overlay."
@@ -501,7 +524,7 @@ struct DaemonStateAPITests {
           "workspace_id": "workspace-1",
           "provider": "codex",
           "session_id": "session-1",
-          "schema_version": "work_checkpoint.v8",
+          "schema_version": "work_checkpoint.v10",
           "capture_status": "complete",
           "projection": {"valid": true},
           "currentness": {"state": "captured"},

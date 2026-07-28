@@ -130,7 +130,7 @@ function checkpointData() {
   });
   return {
     id: "checkpoint-1",
-    schema_version: "work_checkpoint.v6",
+    schema_version: "work_checkpoint.v10",
     workspace_id: "workspace-1",
     provider: "codex",
     session_id: "session-1",
@@ -406,6 +406,26 @@ function renderMemory() {
   );
 }
 
+function persistSelectedSessions(sessions) {
+  mocks.library.data = { sessions };
+  writeExecuteSessionContexts("workspace-1", sessions);
+}
+
+function selectDefaultSession(overrides = {}) {
+  const session = {
+    id: "codex:session-1",
+    source_document_id: "source-session-1",
+    connector_type: "codex",
+    session_id: "session-1",
+    title: "Harden checkpoint capture",
+    harness: "Codex",
+    latest_topic: "Harden checkpoint capture",
+    ...overrides,
+  };
+  persistSelectedSessions([session]);
+  return session;
+}
+
 beforeEach(() => {
   const storedValues = new Map();
   Object.defineProperty(globalThis, "localStorage", {
@@ -417,6 +437,13 @@ beforeEach(() => {
       setItem: (key, value) => storedValues.set(key, String(value)),
     },
   });
+  mocks.workspace.activeWorkspaceId = "workspace-1";
+  mocks.workspace.activeWorkspace = {
+    id: "workspace-1",
+    name: "DaemonState",
+    repo_path: "/workspace/daemonstate",
+  };
+  mocks.workspace.selectedId = "workspace-1";
   mocks.digest.data = digestData();
   mocks.digest.isLoading = false;
   mocks.digest.isError = false;
@@ -474,7 +501,7 @@ describe("ExecutePage", () => {
     })).toBeInTheDocument();
     expect(screen.queryByText("Ready to continue")).not.toBeInTheDocument();
     expect(screen.queryByText("No confirmed blocker.")).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /Continue with project context/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Continue with Session Context/ })).not.toBeInTheDocument();
   });
 
   it("uses an unscoped checkpoint lookup for production observed runs without a session id", () => {
@@ -493,7 +520,7 @@ describe("ExecutePage", () => {
     expect(options.sessionId).toBeFalsy();
   });
 
-  it("uses the observed target session tip for a production continuation run", () => {
+  it("uses the observed target session only for Workspace Context and creates no implicit session card or handoff", () => {
     mocks.digest.data.activity.primary = {
       ...mocks.digest.data.activity.primary,
       tool: "daemonstate:codex",
@@ -513,14 +540,14 @@ describe("ExecutePage", () => {
       sessionId: "target-session",
       enabled: true,
     });
-    const sessionCard = screen.getByRole("article", {
-      name: "Current Session Context",
-    });
-    expect(sessionCard.querySelector(
-      '[data-session-provider-background="codex"] [data-harness-artwork="codex"]',
-    )).toBeInTheDocument();
-    expect(sessionCard.querySelector("[data-harness-logo]")).toBeNull();
-    expect(screen.queryByText("Codex · target-session")).not.toBeInTheDocument();
+    expect(document.querySelectorAll("[data-session-context-card]")).toHaveLength(0);
+    expect(screen.getByRole("heading", {
+      name: "Choose Session Contexts",
+    })).toBeInTheDocument();
+    expect(screen.getByRole("link", {
+      name: "Choose sessions",
+    })).toHaveAttribute("href", "/app/library?mode=execute-context");
+    expect(mocks.handoff.mutateAsync).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -545,6 +572,16 @@ describe("ExecutePage", () => {
     };
     mocks.checkpoint.data = providerCheckpoint;
     mocks.capture.mutateAsync.mockResolvedValue(providerCheckpoint);
+    const selectedTitle = `${expectedArtwork} selected session`;
+    persistSelectedSessions([{
+      id: `${expectedArtwork}:${sessionId}`,
+      source_document_id: `source-${sessionId}`,
+      connector_type: provider,
+      session_id: sessionId,
+      title: selectedTitle,
+      harness: provider,
+      latest_topic: selectedTitle,
+    }]);
     mocks.handoff.mutateAsync.mockResolvedValue(sessionHandoff(
       `# Session Context\n\n${expectedArtwork.toUpperCase()}_CONTEXT`,
       {
@@ -556,7 +593,7 @@ describe("ExecutePage", () => {
     renderMemory();
 
     const sessionCard = screen.getByRole("article", {
-      name: "Current Session Context",
+      name: selectedTitle,
     });
     await waitFor(() => expect(sessionCard.querySelector(
       `[data-session-provider-background="${expectedArtwork}"] [data-harness-artwork="${expectedArtwork}"]`,
@@ -591,7 +628,7 @@ describe("ExecutePage", () => {
     )).not.toBeInTheDocument();
   });
 
-  it("opens on Execute with a centered session card above the workspace card", async () => {
+  it("opens on Execute with a selected-only empty state above the workspace card", async () => {
     renderMemory();
 
     const executeTitle = screen.getByRole("heading", { name: "Execute", level: 1 });
@@ -620,7 +657,7 @@ describe("ExecutePage", () => {
     );
     expect(sessionContextToggle.parentElement).toBe(executeTitle.parentElement?.parentElement);
     expect(within(executeHeader).getByText(
-      "Prepare verified workspace context, with the active session carried inside it.",
+      "Prepare verified workspace context and the Session Contexts you choose.",
     )).toBeInTheDocument();
     expect(screen.queryByRole("group", { name: "Context hierarchy" })).not.toBeInTheDocument();
     expect(screen.queryByText("Workspace foundation")).not.toBeInTheDocument();
@@ -637,29 +674,22 @@ describe("ExecutePage", () => {
     expect(screen.queryByRole("navigation", { name: "Memory views" })).not.toBeInTheDocument();
 
     const contexts = screen.getByRole("region", { name: "Execution contexts" });
-    const sessionCard = screen.getByRole("article", { name: "Current Session Context" });
     const workspaceContext = screen.getByRole("region", { name: "Workspace Context" });
-    expect(contexts).toContainElement(sessionCard);
     expect(contexts).toContainElement(workspaceContext);
-    expect(workspaceContext).not.toContainElement(sessionCard);
-    expect(sessionCard.parentElement).toHaveClass("grid", "xl:grid-cols-3");
-    expect(sessionCard).toHaveClass(
-      "xl:col-start-2",
-      "border-[#d8d8cf]",
-      "bg-[#fbfbf6]",
-      "dark:border-[#292925]",
-      "dark:bg-[#141411]",
-    );
-    expect(sessionCard.compareDocumentPosition(workspaceContext)
-      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(within(sessionCard).getByRole("heading", {
+    expect(document.querySelectorAll("[data-session-context-card]")).toHaveLength(0);
+    expect(screen.queryByRole("article", {
       name: "Current Session Context",
+    })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", {
+      name: "Choose Session Contexts",
       level: 2,
-    })).toHaveClass("font-black", "tracking-[-0.055em]");
-    expect(sessionCard.querySelector(
-      '[data-session-provider-background="codex"] [data-harness-artwork="codex"]',
+    })).toBeInTheDocument();
+    expect(screen.getByText(
+      /Continue owns the live current session.*Choose up to three sessions/,
     )).toBeInTheDocument();
-    expect(sessionCard.querySelector("[data-harness-logo]")).toBeNull();
+    expect(screen.getByRole("link", {
+      name: "Choose sessions",
+    })).toHaveAttribute("href", "/app/library?mode=execute-context");
     expect(within(workspaceContext).getByRole("heading", {
       name: "Workspace Context",
       level: 2,
@@ -670,22 +700,16 @@ describe("ExecutePage", () => {
       "dark:border-[#292925]",
       "dark:bg-[#141411]",
     );
-    const sessionPreview = screen.getByRole("region", {
-      name: "Current Session Context prompt preview",
-    });
     const projectPreview = screen.getByRole("region", {
       name: "Project Context prompt preview",
     });
     await waitFor(() => {
-      expect(within(sessionPreview).getByLabelText(
-        "Current Session Context prompt preview content",
-      )).toHaveTextContent("SESSION_CONTEXT_ONLY");
       expect(within(projectPreview).getByLabelText(
         "Project Context prompt preview content",
       )).toHaveTextContent("PROJECT_CONTEXT_ONLY");
     });
-    expect(sessionPreview.querySelectorAll("[data-pen-motif]")).toHaveLength(0);
     expect(projectPreview.querySelectorAll("[data-pen-motif]")).toHaveLength(0);
+    expect(mocks.handoff.mutateAsync).not.toHaveBeenCalled();
     expect(screen.queryByText(/Select Preview/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "What matters now" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Since your last session" })).not.toBeInTheDocument();
@@ -697,7 +721,7 @@ describe("ExecutePage", () => {
     expect(screen.queryByRole("link", { name: /Continue and reconcile context/ })).not.toBeInTheDocument();
   });
 
-  it("auto-prepares isolated selected sessions beside the current one and can persistently remove one", async () => {
+  it("auto-prepares three isolated selected sessions in columns 1/2/3 and reflows two and one-card layouts", async () => {
     const selectedSessions = [
       {
         id: "claude:selected-one",
@@ -717,6 +741,15 @@ describe("ExecutePage", () => {
         harness: "OpenCode",
         latest_topic: "Refactor",
       },
+      {
+        id: "codex:selected-three",
+        source_document_id: "document-selected-three",
+        connector_type: "codex",
+        session_id: "selected-three",
+        title: "Release validation",
+        harness: "Codex",
+        latest_topic: "Release",
+      },
     ];
     mocks.library.data = { sessions: selectedSessions };
     writeExecuteSessionContexts("workspace-1", [
@@ -725,6 +758,7 @@ describe("ExecutePage", () => {
         source_document_id: "document-selected-one-previous-revision",
       },
       selectedSessions[1],
+      selectedSessions[2],
     ]);
     const currentCheckpoint = checkpointData();
     const claudeCheckpoint = scopedCheckpoint(
@@ -739,10 +773,17 @@ describe("ExecutePage", () => {
       "selected-two",
       32,
     );
+    const releaseCheckpoint = scopedCheckpoint(
+      "checkpoint-release",
+      "codex",
+      "selected-three",
+      33,
+    );
     const checkpoints = new Map([
       ["codex:session-1", currentCheckpoint],
       ["claude:selected-one", claudeCheckpoint],
       ["opencode:selected-two", openCodeCheckpoint],
+      ["codex:selected-three", releaseCheckpoint],
     ]);
     mocks.latestHook.mockImplementation((_workspaceId, options = {}) => ({
       ...mocks.checkpoint,
@@ -751,16 +792,16 @@ describe("ExecutePage", () => {
     }));
     const handoffs = new Map([
       [
-        currentCheckpoint.id,
-        scopedSessionHandoff(currentCheckpoint, "MIDDLE_CODEX_ONLY"),
-      ],
-      [
         claudeCheckpoint.id,
         scopedSessionHandoff(claudeCheckpoint, "CLAUDE_SELECTED_ONLY"),
       ],
       [
         openCodeCheckpoint.id,
         scopedSessionHandoff(openCodeCheckpoint, "OPENCODE_SELECTED_ONLY"),
+      ],
+      [
+        releaseCheckpoint.id,
+        scopedSessionHandoff(releaseCheckpoint, "CODEX_RELEASE_ONLY"),
       ],
     ]);
     mocks.handoff.mutateAsync.mockImplementation(async ({ checkpointId }) => {
@@ -771,64 +812,68 @@ describe("ExecutePage", () => {
 
     renderMemory();
 
-    const current = screen.getByRole("article", {
-      name: "Current Session Context",
-    });
     const left = screen.getByRole("article", {
       name: "Architecture review",
     });
-    const right = screen.getByRole("article", {
+    const middle = screen.getByRole("article", {
       name: "Refactor follow-up",
     });
-    expect(current).toHaveAttribute("data-session-context-slot", "current");
-    expect(current).toHaveClass("xl:col-start-2", "xl:row-start-1");
-    expect(within(current).queryByRole("button", {
-      name: "Remove Current Session Context from Execute",
-    })).not.toBeInTheDocument();
+    const right = screen.getByRole("article", {
+      name: "Release validation",
+    });
     expect(left).toHaveAttribute("data-session-context-slot", "selected-1");
     expect(left).toHaveClass("xl:col-start-1", "xl:row-start-1");
-    expect(right).toHaveAttribute("data-session-context-slot", "selected-2");
+    expect(middle).toHaveAttribute("data-session-context-slot", "selected-2");
+    expect(middle).toHaveClass("xl:col-start-2", "xl:row-start-1");
+    expect(right).toHaveAttribute("data-session-context-slot", "selected-3");
     expect(right).toHaveClass("xl:col-start-3", "xl:row-start-1");
     expect(document.querySelectorAll("[data-session-context-card]")).toHaveLength(3);
 
     const toggle = screen.getByRole("button", {
-      name: "Edit selected session contexts, 2 of 2 selected",
+      name: "Edit selected session contexts, 3 of 3 selected",
     });
     expect(toggle).toHaveAttribute("aria-pressed", "true");
     expect(within(left).getByText("Selected Session Context")).toBeInTheDocument();
+    expect(within(middle).getByText("Selected Session Context")).toBeInTheDocument();
     expect(within(right).getByText("Selected Session Context")).toBeInTheDocument();
     expect(within(left).getByText(
       "Claude · Architecture review",
     )).toBeInTheDocument();
-    expect(within(right).getByText(
+    expect(within(middle).getByText(
       "OpenCode · Refactor follow-up",
+    )).toBeInTheDocument();
+    expect(within(right).getByText(
+      "Codex · Release validation",
     )).toBeInTheDocument();
 
     await waitFor(() => {
-      const currentPreview = within(current).getByLabelText(
-        "Current Session Context prompt preview content",
-      );
       const claudePreview = within(left).getByLabelText(
         "Architecture review Session Context prompt preview content",
       );
-      const openCodePreview = within(right).getByLabelText(
+      const openCodePreview = within(middle).getByLabelText(
         "Refactor follow-up Session Context prompt preview content",
       );
-      expect(currentPreview).toHaveTextContent("MIDDLE_CODEX_ONLY");
-      expect(currentPreview).not.toHaveTextContent("CLAUDE_SELECTED_ONLY");
+      const releasePreview = within(right).getByLabelText(
+        "Release validation Session Context prompt preview content",
+      );
       expect(claudePreview).toHaveTextContent("CLAUDE_SELECTED_ONLY");
-      expect(claudePreview).not.toHaveTextContent("MIDDLE_CODEX_ONLY");
+      expect(claudePreview).not.toHaveTextContent("OPENCODE_SELECTED_ONLY");
       expect(claudePreview).not.toHaveTextContent(
         "Relationship: Project / Workspace Context",
       );
       expect(openCodePreview).toHaveTextContent("OPENCODE_SELECTED_ONLY");
       expect(openCodePreview).not.toHaveTextContent("CLAUDE_SELECTED_ONLY");
+      expect(releasePreview).toHaveTextContent("CODEX_RELEASE_ONLY");
+      expect(releasePreview).not.toHaveTextContent("OPENCODE_SELECTED_ONLY");
     });
     expect(within(left).getByRole("button", {
       name: "Preview Architecture review Session Context",
     })).toHaveTextContent("Open full preview");
-    expect(within(right).getByRole("button", {
+    expect(within(middle).getByRole("button", {
       name: "Preview Refactor follow-up Session Context",
+    })).toHaveTextContent("Open full preview");
+    expect(within(right).getByRole("button", {
+      name: "Preview Release validation Session Context",
     })).toHaveTextContent("Open full preview");
     expect(mocks.capture.mutateAsync).not.toHaveBeenCalled();
     expect(mocks.handoff.mutateAsync).toHaveBeenCalledWith({
@@ -839,6 +884,10 @@ describe("ExecutePage", () => {
       workspaceId: "workspace-1",
       checkpointId: "checkpoint-opencode",
     });
+    expect(mocks.handoff.mutateAsync).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      checkpointId: "checkpoint-release",
+    });
 
     fireEvent.click(within(left).getByRole("button", {
       name: "Remove Architecture review from Execute",
@@ -847,19 +896,147 @@ describe("ExecutePage", () => {
     expect(screen.queryByRole("article", {
       name: "Architecture review",
     })).not.toBeInTheDocument();
-    expect(screen.getByRole("article", {
+    const firstOfTwo = screen.getByRole("article", {
       name: "Refactor follow-up",
-    })).toHaveAttribute("data-session-context-slot", "selected-1");
+    });
+    const secondOfTwo = screen.getByRole("article", {
+      name: "Release validation",
+    });
+    expect(firstOfTwo).toHaveAttribute("data-session-context-slot", "selected-1");
+    expect(firstOfTwo).toHaveClass("xl:col-start-1");
+    expect(secondOfTwo).toHaveAttribute("data-session-context-slot", "selected-2");
+    expect(secondOfTwo).toHaveClass("xl:col-start-3");
     expect(screen.getByRole("button", {
-      name: "Edit selected session contexts, 1 of 2 selected",
+      name: "Edit selected session contexts, 2 of 3 selected",
     })).toHaveAttribute("aria-pressed", "true");
     expect(document.querySelectorAll("[data-session-context-card]")).toHaveLength(2);
+
+    fireEvent.click(within(firstOfTwo).getByRole("button", {
+      name: "Remove Refactor follow-up from Execute",
+    }));
+
+    const onlyCard = screen.getByRole("article", {
+      name: "Release validation",
+    });
+    expect(onlyCard).toHaveAttribute("data-session-context-slot", "selected-1");
+    expect(onlyCard).toHaveClass("xl:col-start-2");
+    expect(document.querySelectorAll("[data-session-context-card]")).toHaveLength(1);
+    expect(screen.getByRole("button", {
+      name: "Edit selected session contexts, 1 of 3 selected",
+    })).toHaveAttribute("aria-pressed", "true");
     expect(readExecuteSessionContexts("workspace-1")).toEqual([
       expect.objectContaining({
-        sourceDocumentId: "document-selected-two",
-        sessionId: "selected-two",
+        sourceDocumentId: "document-selected-three",
+        sessionId: "selected-three",
       }),
     ]);
+  });
+
+  it("does not prepare a previous workspace's selected sessions after switching workspaces", async () => {
+    const selectedSession = {
+      id: "claude:selected-one",
+      source_document_id: "document-selected-one",
+      connector_type: "claude",
+      session_id: "selected-one",
+      title: "Architecture review",
+      harness: "Claude Code",
+      latest_topic: "Architecture",
+    };
+    mocks.library.data = { sessions: [selectedSession] };
+    writeExecuteSessionContexts("workspace-1", [selectedSession]);
+
+    const oldCurrent = checkpointData();
+    const oldSelected = scopedCheckpoint(
+      "checkpoint-claude-old-workspace",
+      "claude",
+      "selected-one",
+      31,
+    );
+    mocks.latestHook.mockImplementation((_workspaceId, options = {}) => ({
+      ...mocks.checkpoint,
+      data: options.provider === "claude" ? oldSelected : oldCurrent,
+      isLoading: false,
+      isFetching: false,
+    }));
+    mocks.handoff.mutateAsync.mockImplementation(async ({ checkpointId }) => {
+      if (checkpointId === oldCurrent.id) {
+        return scopedSessionHandoff(oldCurrent, "OLD_CURRENT_ONLY");
+      }
+      if (checkpointId === oldSelected.id) {
+        return scopedSessionHandoff(oldSelected, "OLD_SELECTED_ONLY");
+      }
+      throw new Error(`Unexpected checkpoint ${checkpointId}`);
+    });
+
+    const view = renderMemory();
+    const oldCard = screen.getByRole("article", {
+      name: "Architecture review",
+    });
+    await waitFor(() => {
+      expect(within(oldCard).getByLabelText(
+        "Architecture review Session Context prompt preview content",
+      )).toHaveTextContent("OLD_SELECTED_ONLY");
+    });
+
+    const newCurrent = {
+      ...scopedCheckpoint(
+        "checkpoint-new-workspace",
+        "codex",
+        "session-new-workspace",
+        41,
+      ),
+      workspace_id: "workspace-2",
+    };
+    mocks.workspace.activeWorkspaceId = "workspace-2";
+    mocks.workspace.activeWorkspace = {
+      id: "workspace-2",
+      name: "Other workspace",
+      repo_path: "/workspace/other",
+    };
+    mocks.workspace.selectedId = "workspace-2";
+    mocks.digest.data = {
+      ...digestData(),
+      activity: {
+        ...digestData().activity,
+        primary: {
+          ...digestData().activity.primary,
+          provider: "codex",
+          session_id: "session-new-workspace",
+        },
+      },
+    };
+    mocks.library.data = { sessions: [] };
+    mocks.latestHook.mockImplementation(() => ({
+      ...mocks.checkpoint,
+      data: newCurrent,
+      isLoading: false,
+      isFetching: false,
+    }));
+    mocks.handoff.mutateAsync.mockImplementation(async ({ checkpointId }) => {
+      throw new Error(`Unexpected checkpoint ${checkpointId}`);
+    });
+
+    view.rerender(
+      <MemoryRouter initialEntries={["/app/execute"]}>
+        <MemoryNow />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByRole("article", {
+      name: "Architecture review",
+    })).not.toBeInTheDocument();
+    expect(document.querySelectorAll("[data-session-context-card]")).toHaveLength(0);
+    expect(screen.getByRole("heading", {
+      name: "Choose Session Contexts",
+    })).toBeInTheDocument();
+    expect(mocks.handoff.mutateAsync).not.toHaveBeenCalledWith({
+      workspaceId: "workspace-2",
+      checkpointId: oldSelected.id,
+    });
+    expect(mocks.handoff.mutateAsync).not.toHaveBeenCalledWith({
+      workspaceId: "workspace-2",
+      checkpointId: newCurrent.id,
+    });
   });
 
   it("captures the exact selected Claude tip without reusing the middle Codex handoff", async () => {
@@ -937,6 +1114,82 @@ describe("ExecutePage", () => {
     })).toHaveTextContent("Open full preview");
   });
 
+  it("automatically recompiles a legacy selected-session checkpoint with the current schema", async () => {
+    const selectedSession = {
+      id: "claude:selected-one",
+      source_document_id: "document-selected-one",
+      connector_type: "claude",
+      session_id: "selected-one",
+      title: "Architecture review",
+      harness: "Claude Code",
+      latest_topic: "Architecture",
+    };
+    mocks.library.data = { sessions: [selectedSession] };
+    writeExecuteSessionContexts("workspace-1", [selectedSession]);
+
+    const currentCheckpoint = checkpointData();
+    const legacyCheckpoint = {
+      ...scopedCheckpoint(
+        "checkpoint-claude-v8",
+        "claude",
+        "selected-one",
+        31,
+      ),
+      schema_version: "work_checkpoint.v8",
+    };
+    const recompiledCheckpoint = scopedCheckpoint(
+      "checkpoint-claude-v10",
+      "claude",
+      "selected-one",
+      31,
+    );
+    mocks.latestHook.mockImplementation((_workspaceId, options = {}) => ({
+      ...mocks.checkpoint,
+      data: options.provider === "claude"
+        ? legacyCheckpoint
+        : currentCheckpoint,
+      isLoading: false,
+    }));
+    mocks.capture.mutateAsync.mockResolvedValue(recompiledCheckpoint);
+    mocks.handoff.mutateAsync.mockImplementation(async ({ checkpointId }) => {
+      if (checkpointId === currentCheckpoint.id) {
+        return scopedSessionHandoff(currentCheckpoint, "MIDDLE_CODEX_ONLY");
+      }
+      if (checkpointId === recompiledCheckpoint.id) {
+        return scopedSessionHandoff(
+          recompiledCheckpoint,
+          "RECOMPILED_CLAUDE_ONLY",
+        );
+      }
+      throw new Error(`Unexpected checkpoint ${checkpointId}`);
+    });
+
+    renderMemory();
+
+    const claudeCard = screen.getByRole("article", {
+      name: "Architecture review",
+    });
+    await waitFor(() => {
+      expect(within(claudeCard).getByLabelText(
+        "Architecture review Session Context prompt preview content",
+      )).toHaveTextContent("RECOMPILED_CLAUDE_ONLY");
+    });
+    expect(mocks.capture.mutateAsync).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      provider: "claude",
+      sessionId: "selected-one",
+      updateGenericLatest: false,
+    });
+    expect(mocks.handoff.mutateAsync).not.toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      checkpointId: legacyCheckpoint.id,
+    });
+    expect(mocks.handoff.mutateAsync).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      checkpointId: recompiledCheckpoint.id,
+    });
+  });
+
   it("copies a newly observed selected-session checkpoint instead of its auto-prepared cache", async () => {
     const selectedSession = {
       id: "claude:selected-one",
@@ -1010,6 +1263,11 @@ describe("ExecutePage", () => {
         <MemoryNow />
       </MemoryRouter>,
     );
+    await waitFor(() => {
+      expect(within(selectedCard).getByLabelText(
+        "Architecture review Session Context prompt preview content",
+      )).toHaveTextContent("CLAUDE_NEWER_ONLY");
+    });
     fireEvent.click(within(selectedCard).getByRole("button", {
       name: "Copy Architecture review Session Context",
     }));
@@ -1105,11 +1363,12 @@ describe("ExecutePage", () => {
   });
 
   it("removes explanatory chrome while preserving separate context artifacts", async () => {
+    selectDefaultSession();
     renderMemory();
 
     const workspaceContext = screen.getByRole("region", { name: "Workspace Context" });
     const sessionCard = screen.getByRole("article", {
-      name: "Current Session Context",
+      name: "Harden checkpoint capture",
     });
 
     expect(workspaceContext).not.toContainElement(sessionCard);
@@ -1122,7 +1381,7 @@ describe("ExecutePage", () => {
     expect(within(sessionCard).queryByText(/^Size$/)).not.toBeInTheDocument();
     expect(sessionCard.querySelector("dl")).toBeNull();
     expect(within(sessionCard).getByRole("region", {
-      name: "Current Session Context prompt preview",
+      name: "Harden checkpoint capture Session Context prompt preview",
     }).querySelector("[data-pen-motif]")).toBeNull();
     expect(within(workspaceContext).getByRole("region", {
       name: "Project Context prompt preview",
@@ -1133,10 +1392,10 @@ describe("ExecutePage", () => {
     )).not.toBeInTheDocument();
     expect(within(sessionCard).queryByText(/Current tip · Updated/)).not.toBeInTheDocument();
     await waitFor(() => expect(within(sessionCard).getByRole("button", {
-      name: "Preview Current Session Context",
+      name: "Preview Harden checkpoint capture Session Context",
     })).toHaveTextContent("Open full preview"));
     const sessionCopy = within(sessionCard).getByRole("button", {
-      name: "Copy Current Session Context",
+      name: "Copy Harden checkpoint capture Session Context",
     });
     expect(sessionCopy).toBeEnabled();
     expect(sessionCopy).toHaveClass("btn-primary");
@@ -1163,13 +1422,14 @@ describe("ExecutePage", () => {
   });
 
   it("freshly revalidates the prepared session prompt before copying it", async () => {
+    selectDefaultSession();
     renderMemory();
 
     const sessionCard = screen.getByRole("article", {
-      name: "Current Session Context",
+      name: "Harden checkpoint capture",
     });
     const preview = within(sessionCard).getByRole("button", {
-      name: "Preview Current Session Context",
+      name: "Preview Harden checkpoint capture Session Context",
     });
     fireEvent.click(preview);
 
@@ -1179,11 +1439,11 @@ describe("ExecutePage", () => {
     }));
     expect(mocks.capture.mutateAsync).not.toHaveBeenCalled();
     const dialog = await screen.findByRole("dialog", {
-      name: "Current Session Context Preview",
+      name: "Harden checkpoint capture Session Context Preview",
     });
     expect(within(dialog).getByText(/SESSION_CONTEXT_ONLY/)).toBeInTheDocument();
     expect(screen.getByRole("region", {
-      name: "Current Session Context prompt preview",
+      name: "Harden checkpoint capture Session Context prompt preview",
     })).toHaveTextContent("SESSION_CONTEXT_ONLY");
     expect(mocks.handoff.mutateAsync).toHaveBeenCalledTimes(1);
     mocks.handoff.mutateAsync.mockResolvedValue(sessionHandoff(
@@ -1191,7 +1451,7 @@ describe("ExecutePage", () => {
     ));
 
     fireEvent.click(within(dialog).getByRole("button", {
-      name: "Copy Current Session Context",
+      name: "Copy Harden checkpoint capture Session Context",
     }));
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
       "# Session Context\n\nFRESHLY_REVALIDATED",
@@ -1204,13 +1464,14 @@ describe("ExecutePage", () => {
   });
 
   it("retries a transient session-copy fetch failure before copying", async () => {
+    selectDefaultSession();
     renderMemory();
 
     const sessionCard = screen.getByRole("article", {
-      name: "Current Session Context",
+      name: "Harden checkpoint capture",
     });
     await waitFor(() => expect(within(sessionCard).getByRole("button", {
-      name: "Preview Current Session Context",
+      name: "Preview Harden checkpoint capture Session Context",
     })).toHaveTextContent("Open full preview"));
     expect(mocks.handoff.mutateAsync).toHaveBeenCalledTimes(1);
     mocks.handoff.mutateAsync
@@ -1220,7 +1481,7 @@ describe("ExecutePage", () => {
       ));
 
     fireEvent.click(within(sessionCard).getByRole("button", {
-      name: "Copy Current Session Context",
+      name: "Copy Harden checkpoint capture Session Context",
     }));
 
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
@@ -1231,19 +1492,20 @@ describe("ExecutePage", () => {
   });
 
   it("keeps a persistent session-copy network failure safe and actionable", async () => {
+    selectDefaultSession();
     renderMemory();
 
     const sessionCard = screen.getByRole("article", {
-      name: "Current Session Context",
+      name: "Harden checkpoint capture",
     });
     await waitFor(() => expect(within(sessionCard).getByRole("button", {
-      name: "Preview Current Session Context",
+      name: "Preview Harden checkpoint capture Session Context",
     })).toHaveTextContent("Open full preview"));
     expect(mocks.handoff.mutateAsync).toHaveBeenCalledTimes(1);
     mocks.handoff.mutateAsync.mockRejectedValue(new TypeError("Failed to fetch"));
 
     fireEvent.click(within(sessionCard).getByRole("button", {
-      name: "Copy Current Session Context",
+      name: "Copy Harden checkpoint capture Session Context",
     }));
 
     const retryCopy = await within(sessionCard).findByRole("button", {
@@ -1251,7 +1513,7 @@ describe("ExecutePage", () => {
     });
     expect(retryCopy).toHaveClass("btn-primary");
     expect(within(sessionCard).getByText(
-      /Could not reach DaemonState to verify the current session/,
+      /Could not reach DaemonState to verify the selected session/,
     )).toBeInTheDocument();
     expect(mocks.handoff.mutateAsync).toHaveBeenCalledTimes(4);
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
@@ -1275,30 +1537,31 @@ describe("ExecutePage", () => {
         },
       },
     ));
+    selectDefaultSession();
     renderMemory();
 
     const sessionCard = screen.getByRole("article", {
-      name: "Current Session Context",
+      name: "Harden checkpoint capture",
     });
     fireEvent.click(within(sessionCard).getByRole("button", {
-      name: "Preview Current Session Context",
+      name: "Preview Harden checkpoint capture Session Context",
     }));
 
     const dialog = await screen.findByRole("dialog", {
-      name: "Current Session Context Preview",
+      name: "Harden checkpoint capture Session Context Preview",
     });
     expect(within(dialog).getByRole("status")).toHaveTextContent(
       "Reported completion conflicts with remaining work.",
     );
     expect(within(dialog).getByRole("button", {
-      name: "Copy Current Session Context",
+      name: "Copy Harden checkpoint capture Session Context",
     })).toBeDisabled();
     expect(within(sessionCard).getByRole("button", {
-      name: "Copy Current Session Context",
+      name: "Copy Harden checkpoint capture Session Context",
     })).toBeDisabled();
     expect(within(sessionCard).getByText("Not copy-ready")).toBeInTheDocument();
     expect(within(sessionCard).getByText(
-      /Current Session Context is not copy-ready.*completion conflicts/,
+      /Harden checkpoint capture Session Context is not copy-ready.*completion conflicts/,
     )).toBeInTheDocument();
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
   });
@@ -1323,20 +1586,26 @@ describe("ExecutePage", () => {
         checkpoint_id: "checkpoint-current-tip",
       },
     ));
+    selectDefaultSession();
     renderMemory();
 
     const sessionCard = screen.getByRole("article", {
-      name: "Current Session Context",
+      name: "Harden checkpoint capture",
     });
-    fireEvent.click(within(sessionCard).getByRole("button", {
-      name: "Copy Current Session Context",
-    }));
-
     await waitFor(() => expect(mocks.capture.mutateAsync).toHaveBeenCalledWith({
       workspaceId: "workspace-1",
       provider: "codex",
       sessionId: "session-1",
+      updateGenericLatest: false,
     }));
+    await waitFor(() => expect(within(sessionCard).getByRole("button", {
+      name: "Preview Harden checkpoint capture Session Context",
+    })).toHaveTextContent("Open full preview"));
+
+    fireEvent.click(within(sessionCard).getByRole("button", {
+      name: "Copy Harden checkpoint capture Session Context",
+    }));
+
     expect(mocks.handoff.mutateAsync).toHaveBeenCalledWith({
       workspaceId: "workspace-1",
       checkpointId: "checkpoint-current-tip",
@@ -1361,19 +1630,21 @@ describe("ExecutePage", () => {
           checkpoint_id: "checkpoint-refreshed-tip",
         },
       ));
+    selectDefaultSession();
     renderMemory();
 
     const sessionCard = screen.getByRole("article", {
-      name: "Current Session Context",
+      name: "Harden checkpoint capture",
     });
     fireEvent.click(within(sessionCard).getByRole("button", {
-      name: "Preview Current Session Context",
+      name: "Preview Harden checkpoint capture Session Context",
     }));
 
     await waitFor(() => expect(mocks.capture.mutateAsync).toHaveBeenCalledWith({
       workspaceId: "workspace-1",
       provider: "codex",
       sessionId: "session-1",
+      updateGenericLatest: false,
     }));
     expect(mocks.handoff.mutateAsync.mock.calls).toEqual([
       [{
@@ -1386,7 +1657,7 @@ describe("ExecutePage", () => {
       }],
     ]);
     const dialog = await screen.findByRole("dialog", {
-      name: "Current Session Context Preview",
+      name: "Harden checkpoint capture Session Context Preview",
     });
     expect(within(dialog).getByText(/REFRESHED_LOSSLESS_GOAL/)).toBeInTheDocument();
   });
@@ -1395,23 +1666,24 @@ describe("ExecutePage", () => {
     mocks.handoff.mutateAsync.mockRejectedValue(new Error(
       "The checkpoint does not contain a lossless session goal and its original goal event is unavailable.",
     ));
+    selectDefaultSession();
     renderMemory();
 
     const sessionCard = screen.getByRole("article", {
-      name: "Current Session Context",
+      name: "Harden checkpoint capture",
     });
     fireEvent.click(within(sessionCard).getByRole("button", {
-      name: "Preview Current Session Context",
+      name: "Preview Harden checkpoint capture Session Context",
     }));
 
     const dialog = await screen.findByRole("dialog", {
-      name: "Current Session Context Preview",
+      name: "Harden checkpoint capture Session Context Preview",
     });
     expect(within(dialog).getByRole("alert")).toHaveTextContent(
       "no longer retains its original user request",
     );
     expect(within(dialog).queryByRole("button", {
-      name: "Refresh current session tip",
+      name: "Refresh selected session tip",
     })).not.toBeInTheDocument();
     expect(mocks.capture.mutateAsync).toHaveBeenCalledTimes(1);
     expect(mocks.handoff.mutateAsync).toHaveBeenCalledTimes(1);
@@ -1421,26 +1693,28 @@ describe("ExecutePage", () => {
     mocks.handoff.mutateAsync.mockRejectedValueOnce(new Error(
       "The checkpoint service is temporarily unavailable.",
     ));
+    selectDefaultSession();
     renderMemory();
 
     const sessionCard = screen.getByRole("article", {
-      name: "Current Session Context",
+      name: "Harden checkpoint capture",
     });
     fireEvent.click(within(sessionCard).getByRole("button", {
-      name: "Preview Current Session Context",
+      name: "Preview Harden checkpoint capture Session Context",
     }));
 
     const dialog = await screen.findByRole("dialog", {
-      name: "Current Session Context Preview",
+      name: "Harden checkpoint capture Session Context Preview",
     });
     fireEvent.click(within(dialog).getByRole("button", {
-      name: "Refresh current session tip",
+      name: "Refresh selected session tip",
     }));
 
     await waitFor(() => expect(mocks.capture.mutateAsync).toHaveBeenCalledWith({
       workspaceId: "workspace-1",
       provider: "codex",
       sessionId: "session-1",
+      updateGenericLatest: false,
     }));
     await waitFor(() => expect(within(dialog).getByText(
       /SESSION_CONTEXT_ONLY/,
@@ -1568,38 +1842,6 @@ describe("ExecutePage", () => {
     expect(screen.queryByRole("link", { name: "Inspector" })).not.toBeInTheDocument();
   });
 
-  it("does not mix a different session into the explicit project task", async () => {
-    mocks.digest.data.activity.primary = {
-      ...mocks.digest.data.activity.primary,
-      request: "Ship the billing settings page",
-      latest_update: "Changed an unrelated billing form.",
-      cwd: "/workspace/other-project",
-      branch: "codex/billing",
-      changed_files: ["billing/Form.jsx"],
-    };
-
-    renderMemory();
-
-    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith({
-      workspace_id: "workspace-1",
-      repo_path: "/workspace/daemonstate",
-      objective: "Harden checkpoint capture",
-    }));
-    const payload = mocks.prepare.mutateAsync.mock.calls[0][0];
-    expect(payload).not.toHaveProperty("checkpoint_id");
-    expect(payload).not.toHaveProperty("source_provider");
-    expect(payload).not.toHaveProperty("source_session_id");
-    expect(screen.getByRole("button", {
-      name: "Preview Current Session Context",
-    })).toBeDisabled();
-    expect(screen.getByRole("region", {
-      name: "Current Session Context prompt preview",
-    })).toHaveTextContent("Choose a session in Library");
-    expect(screen.queryByText("Changed an unrelated billing form")).not.toBeInTheDocument();
-    expect(screen.queryByText("billing/Form.jsx")).not.toBeInTheDocument();
-    expect(screen.queryByText("codex/billing")).not.toBeInTheDocument();
-  });
-
   it("excludes mismatched task memory and unrelated open loops from the brief", () => {
     mocks.digest.data.current_goal = {
       ...mocks.digest.data.current_goal,
@@ -1642,7 +1884,7 @@ describe("ExecutePage", () => {
     expect(screen.queryByText("Repair the billing schema")).not.toBeInTheDocument();
   });
 
-  it("excludes an unassigned session from project truth", () => {
+  it("keeps an unassigned latest session out of project truth without creating an implicit Session Context", () => {
     mocks.digest.data = {
       ...digestData(),
       current_goal: null,
@@ -1665,9 +1907,7 @@ describe("ExecutePage", () => {
     renderMemory();
 
     expect(screen.queryByText("Implemented normalized session events")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", {
-      name: "Preview Current Session Context",
-    })).toBeDisabled();
+    expect(document.querySelectorAll("[data-session-context-card]")).toHaveLength(0);
     expect(screen.getByRole("button", {
       name: "Preview Project Context",
     })).toBeDisabled();
@@ -1692,15 +1932,14 @@ describe("ExecutePage", () => {
     const payload = mocks.prepare.mutateAsync.mock.calls[0][0];
     expect(payload).not.toHaveProperty("checkpoint_id");
     expect(payload).not.toHaveProperty("source_session_id");
-    expect(screen.getByRole("button", {
-      name: "Preview Current Session Context",
-    })).toBeDisabled();
+    expect(document.querySelectorAll("[data-session-context-card]")).toHaveLength(0);
+    expect(mocks.handoff.mutateAsync).not.toHaveBeenCalled();
     expect(screen.queryByText(
       "Run a real Codex continuation and inspect the resumed context",
     )).not.toBeInTheDocument();
   });
 
-  it("auto-prepares an assigned imported session without a project checkpoint", async () => {
+  it("auto-prepares Workspace Context from an imported latest session without creating a Session Context card", async () => {
     mocks.digest.data = {
       ...digestData(),
       current_goal: null,
@@ -1746,9 +1985,8 @@ describe("ExecutePage", () => {
     expect(await screen.findByLabelText(
       "Project Context prompt preview content",
     )).toHaveTextContent("PROJECT_CONTEXT_ONLY");
-    expect(await screen.findByLabelText(
-      "Current Session Context prompt preview content",
-    )).toHaveTextContent("SESSION_CONTEXT_ONLY");
+    expect(document.querySelectorAll("[data-session-context-card]")).toHaveLength(0);
+    expect(mocks.handoff.mutateAsync).not.toHaveBeenCalled();
   });
 
   it("recovers Project Context from a scoped session without promoting its generated title", async () => {
@@ -1836,9 +2074,8 @@ describe("ExecutePage", () => {
     expect(screen.queryByText(
       "Generated session summary, not a user-authored task",
     )).not.toBeInTheDocument();
-    expect(screen.getByRole("button", {
-      name: "Preview Current Session Context",
-    })).toBeEnabled();
+    expect(document.querySelectorAll("[data-session-context-card]")).toHaveLength(0);
+    expect(mocks.handoff.mutateAsync).not.toHaveBeenCalled();
 
     await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith({
       workspace_id: "workspace-1",
@@ -2441,7 +2678,7 @@ describe("ExecutePage", () => {
     expect(within(dialog).getByText(/Compiler readiness: Blocked/)).toBeInTheDocument();
     expect(screen.queryByText("Continuation blocked")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Review compiled context" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /Continue with project context/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Continue with Session Context/ })).not.toBeInTheDocument();
   });
 
   it("shows changed repository freshness in the preview without the removed readiness hero", async () => {
@@ -2582,7 +2819,7 @@ describe("ExecutePage", () => {
     expect(screen.queryByText("No conflict affecting continuation")).not.toBeInTheDocument();
   });
 
-  it("keeps both automatic previews unavailable when no task can be detected", () => {
+  it("shows the selected-session empty state and keeps Workspace Context unavailable when no task can be detected", () => {
     mocks.digest.data = {
       ...digestData(),
       current_goal: null,
@@ -2597,15 +2834,13 @@ describe("ExecutePage", () => {
 
     renderMemory();
 
-    expect(screen.getByRole("region", {
-      name: "Current Session Context prompt preview",
-    })).toHaveTextContent("Choose a session in Library");
+    expect(document.querySelectorAll("[data-session-context-card]")).toHaveLength(0);
+    expect(screen.getByRole("heading", {
+      name: "Choose Session Contexts",
+    })).toBeInTheDocument();
     expect(screen.getByRole("region", {
       name: "Project Context prompt preview",
     })).toHaveTextContent("Choose an active task to compile the workspace foundation");
-    expect(screen.getByRole("button", {
-      name: "Preview Current Session Context",
-    })).toBeDisabled();
     expect(screen.getByRole("button", {
       name: "Preview Project Context",
     })).toBeDisabled();

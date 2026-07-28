@@ -37,7 +37,6 @@ import ProductLoadingState from "../components/ProductLoadingState";
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
 import { formatTimeAgo } from "../context-map/digest";
 import {
-  executeSessionIdentity,
   MAX_EXECUTE_SESSION_CONTEXTS,
   readExecuteSessionContexts,
   resolveExecuteSessionContexts,
@@ -56,21 +55,11 @@ export default function SessionLibrary() {
   const syncMutation = useSyncSessionLibrary();
   const selectMutation = useSelectSessionFromLibrary();
   const executeSelectionMode = searchParams.get("mode") === "execute-context";
-  const currentExecuteSessionIdentity = executeSessionIdentity({
-    provider: searchParams.get("current_provider"),
-    sessionId: searchParams.get("current_session"),
-  });
   const libraryHomePath = useMemo(() => {
-    if (!executeSelectionMode) return "/app/library";
-    const params = new URLSearchParams({ mode: "execute-context" });
-    if (searchParams.get("current_provider")) {
-      params.set("current_provider", searchParams.get("current_provider"));
-    }
-    if (searchParams.get("current_session")) {
-      params.set("current_session", searchParams.get("current_session"));
-    }
-    return `/app/library?${params}`;
-  }, [currentExecuteSessionIdentity, executeSelectionMode, searchParams]);
+    return executeSelectionMode
+      ? "/app/library?mode=execute-context"
+      : "/app/library";
+  }, [executeSelectionMode]);
   const sessionsRef = useRef(null);
   const [selectedHarness, setSelectedHarness] = useState(null);
   const [hoveredHarness, setHoveredHarness] = useState(null);
@@ -78,9 +67,36 @@ export default function SessionLibrary() {
   const [visibleSessionCount, setVisibleSessionCount] = useState(INITIAL_SESSION_COUNT);
   const [evidenceSelection, setEvidenceSelection] = useState(null);
   const [selectingSessionId, setSelectingSessionId] = useState(null);
-  const [executeSessionContexts, setExecuteSessionContexts] = useState(() => (
-    readExecuteSessionContexts(workspace.activeWorkspaceId)
-  ));
+  const executeSelectionWorkspaceId = workspace.activeWorkspaceId || "";
+  const storedActiveExecuteSessions = useMemo(
+    () => readExecuteSessionContexts(executeSelectionWorkspaceId),
+    [executeSelectionWorkspaceId],
+  );
+  const [executeSelectionState, setExecuteSelectionState] = useState(() => ({
+    workspaceId: executeSelectionWorkspaceId,
+    sessions: storedActiveExecuteSessions,
+  }));
+  const executeSessionContexts = (
+    executeSelectionState.workspaceId === executeSelectionWorkspaceId
+      ? executeSelectionState.sessions
+      : storedActiveExecuteSessions
+  );
+  const setExecuteSessionContexts = useCallback((update) => {
+    setExecuteSelectionState((current) => {
+      const currentSessions = (
+        current.workspaceId === executeSelectionWorkspaceId
+          ? current.sessions
+          : storedActiveExecuteSessions
+      );
+      const sessions = typeof update === "function"
+        ? update(currentSessions)
+        : update;
+      return {
+        workspaceId: executeSelectionWorkspaceId,
+        sessions,
+      };
+    });
+  }, [executeSelectionWorkspaceId, storedActiveExecuteSessions]);
   const closeEvidence = useCallback(() => {
     setEvidenceSelection(null);
     navigate(libraryHomePath, { replace: true });
@@ -146,10 +162,7 @@ export default function SessionLibrary() {
           (session) => session.sourceDocumentId !== sourceDocumentId,
         );
       }
-      if (
-        current.length >= MAX_EXECUTE_SESSION_CONTEXTS
-        || executeSessionIdentity(item) === currentExecuteSessionIdentity
-      ) return current;
+      if (current.length >= MAX_EXECUTE_SESSION_CONTEXTS) return current;
       return resolveExecuteSessionContexts(
         [...current, item],
         [...sessions, item],
@@ -160,37 +173,39 @@ export default function SessionLibrary() {
   const applyExecuteSessionContexts = () => {
     const selected = writeExecuteSessionContexts(
       workspace.activeWorkspaceId,
-      resolveExecuteSessionContexts(executeSessionContexts, sessions),
+      resolveExecuteSessionContexts(
+        executeSessionContexts,
+        library ? sessions : undefined,
+      ),
     );
     setExecuteSessionContexts(selected);
     navigate("/app/execute");
   };
 
   useEffect(() => {
-    const stored = readExecuteSessionContexts(workspace.activeWorkspaceId)
-      .filter((session) => (
-        executeSessionIdentity(session) !== currentExecuteSessionIdentity
-      ));
-    setExecuteSessionContexts((current) => (
-      JSON.stringify(current) === JSON.stringify(stored) ? current : stored
+    setExecuteSelectionState((current) => (
+      current.workspaceId === executeSelectionWorkspaceId
+        ? current
+        : {
+            workspaceId: executeSelectionWorkspaceId,
+            sessions: storedActiveExecuteSessions,
+          }
     ));
-  }, [currentExecuteSessionIdentity, workspace.activeWorkspaceId]);
+  }, [executeSelectionWorkspaceId, storedActiveExecuteSessions]);
 
   useEffect(() => {
     if (!executeSelectionMode || !library) return;
     setExecuteSessionContexts((current) => {
-      const resolved = resolveExecuteSessionContexts(current, sessions)
-        .filter((session) => (
-          executeSessionIdentity(session) !== currentExecuteSessionIdentity
-        ));
+      const resolved = resolveExecuteSessionContexts(current, sessions);
       return JSON.stringify(current) === JSON.stringify(resolved)
         ? current
         : resolved;
     });
   }, [
-    currentExecuteSessionIdentity,
     executeSelectionMode,
+    executeSelectionWorkspaceId,
     sessionLibraryResolutionKey,
+    setExecuteSessionContexts,
   ]);
 
   useEffect(() => {
@@ -231,7 +246,10 @@ export default function SessionLibrary() {
         sourceDocumentId: item.source_document_id,
         ...(topic ? { topic } : {}),
       });
-      navigate({ pathname: "/app", search: params.toString() ? `?${params}` : "" });
+      navigate({
+        pathname: "/app/prepare",
+        search: params.toString() ? `?${params}` : "",
+      });
     } catch {
       // Keep the user in Library so the inline error remains visible.
     } finally {
@@ -267,8 +285,8 @@ export default function SessionLibrary() {
             <h1 className="text-3xl font-black tracking-[-0.035em] sm:text-4xl">Session Library</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
               {executeSelectionMode
-                ? "Choose up to two sessions to place beside Current Session Context in Execute."
-                : "Choose a session or topic, then finish the handoff from the canonical Continue screen."}
+                ? "Choose up to three Session Contexts to show in Execute."
+                : "Choose a historical session or topic, then prepare it without overriding Continue’s latest-session source."}
             </p>
             {library ? (
               <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-[10px] font-black uppercase tracking-[0.13em] text-[#85857c]">
@@ -431,14 +449,8 @@ export default function SessionLibrary() {
                         contextSelectionMode={executeSelectionMode}
                         contextSelected={selectedExecuteSourceIds.has(item.source_document_id)}
                         contextSelectionDisabled={
-                          executeSessionIdentity(item) === currentExecuteSessionIdentity
-                          || (
-                            executeSessionContexts.length >= MAX_EXECUTE_SESSION_CONTEXTS
-                            && !selectedExecuteSourceIds.has(item.source_document_id)
-                          )
-                        }
-                        currentExecuteSession={
-                          executeSessionIdentity(item) === currentExecuteSessionIdentity
+                          executeSessionContexts.length >= MAX_EXECUTE_SESSION_CONTEXTS
+                          && !selectedExecuteSourceIds.has(item.source_document_id)
                         }
                         onToggleContext={() => toggleExecuteSessionContext(item)}
                         onSelectSession={() => selectForNow(item)}
@@ -498,7 +510,6 @@ function SessionCard({
   contextSelectionMode = false,
   contextSelected = false,
   contextSelectionDisabled = false,
-  currentExecuteSession = false,
   onToggleContext,
   onSelectSession,
   onSelectTopic,
@@ -548,11 +559,7 @@ function SessionCard({
                 checked={contextSelected}
                 disabled={contextSelectionDisabled}
                 onChange={onToggleContext}
-                aria-label={
-                  currentExecuteSession
-                    ? `${item.title} is already the current session`
-                    : `Select ${item.title} for Execute`
-                }
+                aria-label={`Select ${item.title} for Execute`}
                 className="sr-only"
               />
               <span
@@ -565,11 +572,7 @@ function SessionCard({
               >
                 {contextSelected ? <Check className="h-3 w-3" /> : null}
               </span>
-              {currentExecuteSession
-                ? "Current"
-                : contextSelected
-                  ? "Selected"
-                  : "Add to Execute"}
+              {contextSelected ? "Selected" : "Add to Execute"}
             </label>
           ) : <span aria-hidden="true" />}
           <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.12em] text-[#85857c]">
@@ -625,25 +628,23 @@ function SessionCard({
 
         {contextSelectionMode ? (
           <div className="mt-4 border-t border-[#e1e1d8] pt-3 text-[9px] font-black uppercase tracking-[0.11em] text-[#77776e] dark:border-[#30302b] dark:text-[#aaa9a0]">
-            {currentExecuteSession
-              ? "Already shown as Current Session Context"
-              : contextSelected
-                ? "Will appear beside the current session"
-                : contextSelectionDisabled
-                  ? "Two-session maximum reached"
-                  : "Use the checkbox to add this session"}
+            {contextSelected
+              ? "Will appear in Execute"
+              : contextSelectionDisabled
+                ? "Three-session maximum reached"
+                : "Use the checkbox to add this session"}
           </div>
         ) : (
           <>
             <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[#e1e1d8] pt-3 dark:border-[#30302b]">
               <button
                 type="button"
-                aria-label={`Continue latest topic from ${item.title}`}
+                aria-label={`Prepare latest topic from ${item.title}`}
                 onClick={onSelectSession}
                 disabled={selectionPending || Boolean(selectingTopic)}
                 className="inline-flex items-center gap-1.5 text-[9px] font-black uppercase tracking-[0.12em] text-[#58691c] transition hover:text-[#171713] disabled:cursor-wait disabled:opacity-60 dark:text-[#d9ff68] dark:hover:text-white"
               >
-                {selectingTopic === "__latest__" ? "Selecting…" : "Continue latest"}
+                {selectingTopic === "__latest__" ? "Selecting…" : "Prepare latest"}
                 <ArrowRight className="h-3 w-3" />
               </button>
               <div className="flex items-center gap-3">
@@ -695,7 +696,7 @@ function SessionCard({
                       type="button"
                       key={topic}
                       tabIndex={revealed ? 0 : -1}
-                      aria-label={`Continue ${topic} from ${item.title}`}
+                      aria-label={`Prepare ${topic} from ${item.title}`}
                       onClick={(event) => {
                         event.stopPropagation();
                         onSelectTopic(topic);
@@ -710,7 +711,7 @@ function SessionCard({
                   )) : <span className="text-[10px] font-semibold text-[#85857c]">No distinct topics extracted.</span>}
                 </div>
                 <p className="mt-3 inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-[0.12em]" style={{ color: meta.accent }}>
-                  Choose a topic for Continue <ArrowRight className="h-3 w-3" />
+                  Choose a topic to prepare <ArrowRight className="h-3 w-3" />
                 </p>
               </div>
             </div>
@@ -801,12 +802,12 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onUseTopic, sel
       });
       if (objective) params.set("objective", objective);
       if (session.cwd) params.set("repo_path", session.cwd);
-      navigate(`/app?${params.toString()}`);
+      navigate(`/app/prepare?${params.toString()}`);
     } catch (reason) {
       setCheckpointState({
         status: "error",
         checkpointId: checkpoint.id,
-        error: reason?.message || "This checkpoint could not be prepared for Continue.",
+        error: reason?.message || "This checkpoint could not be prepared.",
       });
     }
   };
@@ -871,10 +872,10 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onUseTopic, sel
                 <section aria-labelledby="checkpoint-heading" className="rounded-2xl border border-[#cfd9b0] bg-[#f3f8e7] p-4 dark:border-[#435026] dark:bg-[#18200d]">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <p className="text-[9px] font-black uppercase tracking-[0.16em] text-[#668020]">03 · Continue from saved state</p>
+                      <p className="text-[9px] font-black uppercase tracking-[0.16em] text-[#668020]">03 · Prepare from saved state</p>
                       <h3 id="checkpoint-heading" className="mt-1 text-base font-black">Compaction checkpoints</h3>
                       <p className="mt-1 max-w-lg text-[10px] font-semibold leading-5 text-[#66704d] dark:text-[#bdc7a5]">
-                        Captured automatically before this harness compressed its context. Continue reconciles the selected checkpoint without changing the original session.
+                        Captured automatically before this harness compressed its context. Prepare reconciles the selected checkpoint without changing the original session.
                       </p>
                     </div>
                     <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#d9ff68] px-2.5 py-1 text-[8px] font-black uppercase tracking-wide text-[#37420f]">
@@ -905,7 +906,7 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onUseTopic, sel
                               className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg bg-[#171713] px-3 text-[9px] font-black text-white disabled:cursor-wait disabled:opacity-60 dark:bg-[#d9ff68] dark:text-[#171713]"
                             >
                               {loadingCheckpoint ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowRight className="h-3.5 w-3.5" />}
-                              {loadingCheckpoint ? "Preparing Continue…" : "Continue from checkpoint"}
+                              {loadingCheckpoint ? "Preparing…" : "Prepare from checkpoint"}
                             </button>
                           </div>
                         </article>
@@ -966,7 +967,7 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onUseTopic, sel
             <p className="text-[8px] font-black uppercase tracking-[0.15em] text-[#85857c]">Source session</p>
             <p className="mt-1 truncate font-mono text-[9px] text-[#68685f] dark:text-[#aaa9a0]">{session.session_id}</p>
             <p className="mt-1 text-[9px] font-semibold text-[#85857c]">
-              Continue starts from the selected topic without reopening or modifying this source session.
+              Prepare starts from the selected topic without reopening or modifying this source session.
             </p>
           </div>
           <div className="grid w-full shrink-0 grid-cols-2 gap-2 sm:flex sm:w-auto">
@@ -977,7 +978,7 @@ function EvidenceDrawer({ selection, workspaceId, onSelectTopic, onUseTopic, sel
               className="col-span-2 inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-[#d9ff68] px-3 text-[10px] font-black text-[#263008] shadow-sm transition hover:-translate-y-0.5 disabled:cursor-wait disabled:opacity-70 sm:col-span-1"
             >
               {selecting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowRight className="h-3.5 w-3.5" />}
-              {selecting ? "Selecting topic…" : "Continue this topic"}
+              {selecting ? "Selecting topic…" : "Prepare this topic"}
             </button>
             <button type="button" onClick={copySessionId} className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-[#d8d8cf] px-3 text-[10px] font-black transition hover:bg-white dark:border-[#383832] dark:hover:bg-[#1d1d19]">
               {copied ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}

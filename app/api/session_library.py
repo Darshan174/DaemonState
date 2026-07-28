@@ -19,6 +19,7 @@ from app.services.session_library import (
     build_session_library,
     clear_session_selection,
     select_session_for_now,
+    sync_latest_local_session,
     sync_local_session_library,
 )
 from app.services.session_checkpoints import (
@@ -35,6 +36,10 @@ router = APIRouter()
 class SessionLibrarySyncRequest(BaseModel):
     workspace_id: UUID
     connector_types: list[str] = Field(default_factory=lambda: list(SESSION_CONNECTOR_TYPES))
+
+
+class SessionLibraryLatestRequest(BaseModel):
+    workspace_id: UUID
 
 
 class SessionLibraryOpenRequest(BaseModel):
@@ -102,6 +107,23 @@ async def sync_session_library(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"sync": sync_result, "library": library}
+
+
+@router.post("/session-library/latest")
+async def sync_latest_session(
+    body: SessionLibraryLatestRequest,
+    session: AsyncSession = Depends(get_db_session),
+    access_scope: AccessScope = Depends(get_access_scope),
+) -> dict:
+    if not access_scope.allows_workspace(body.workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    try:
+        return await sync_latest_local_session(
+            session,
+            body.workspace_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/session-library/open")

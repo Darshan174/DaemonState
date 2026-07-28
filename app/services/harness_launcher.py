@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import platform
+import plistlib
 import re
 import subprocess
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode
 
+from app.services.harness_adapters import (
+    ProviderModelOption,
+    codex_cached_model_catalog,
+)
 from app.telemetry import traced
 
 
@@ -17,6 +23,14 @@ HARNESS_LABELS = {
     "opencode": "OpenCode",
 }
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$")
+# Claude Desktop currently bounds prompt-bearing deep links more tightly than
+# the other supported apps. Keep one conservative cross-provider limit and
+# fall back to the clipboard instead of silently truncating context.
+DESKTOP_DEEP_LINK_PROMPT_MAX_CHARS = 12_000
+# Keep clipboard and Launch Services dispatch inside one short total deadline,
+# well below the API timeout, so a timed-out worker cannot continue into a
+# later app-open attempt.
+DESKTOP_HANDOFF_TOTAL_TIMEOUT_SECONDS = 3.0
 
 
 @dataclass(frozen=True)
@@ -24,6 +38,14 @@ class DesktopAppSpec:
     bundle_ids: tuple[str, ...]
     app_names: tuple[str, ...]
     install_product: str
+    url_scheme: str
+
+
+@dataclass(frozen=True)
+class MacOSDesktopApp:
+    bundle_path: Path
+    bundle_id: str
+    url_schemes: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -39,21 +61,42 @@ class HarnessVisibility:
     action: str
 
 
+@dataclass(frozen=True)
+class HarnessComposerReadiness:
+    """Whether a visible composer is installed and its account is usable."""
+
+    provider: str
+    ready: bool
+    desktop_available: bool
+    url_scheme_registered: bool
+    required_url_scheme: str
+    code: str
+    message: str
+    action: str
+    models: tuple[ProviderModelOption, ...] = field(default_factory=tuple)
+    account_access_state: str = "not_checked"
+    account_access_verified: bool = False
+    model_catalog_source: str | None = None
+
+
 MACOS_DESKTOP_APPS = {
     "codex": DesktopAppSpec(
         bundle_ids=("com.openai.codex",),
         app_names=("ChatGPT", "Codex"),
         install_product="the Codex desktop app",
+        url_scheme="codex",
     ),
     "claude": DesktopAppSpec(
         bundle_ids=("com.anthropic.claudefordesktop", "com.anthropic.Claude"),
         app_names=("Claude", "Claude Desktop", "Claude for Desktop"),
         install_product="Claude Desktop",
+        url_scheme="claude",
     ),
     "opencode": DesktopAppSpec(
         bundle_ids=("ai.opencode.desktop",),
         app_names=("OpenCode",),
         install_product="OpenCode Desktop",
+        url_scheme="opencode",
     ),
 }
 
@@ -130,6 +173,171 @@ def probe_harness_visibility(connector_type: str) -> HarnessVisibility:
     )
 
 
+def probe_harness_composer_readiness(
+    connector_type: str,
+) -> HarnessComposerReadiness:
+    """Fail closed unless desktop transport and account access are both proven.
+
+    The installation probe never invokes a provider CLI. Codex's non-secret
+    model cache may populate UI controls, but no supported desktop app exposes
+    a privacy-preserving subscription/account handshake today. Installation
+    and a URL handler therefore cannot be promoted to usable readiness.
+    """
+
+    dispatch = _probe_harness_composer_dispatch(connector_type)
+    if not dispatch.ready:
+        return dispatch
+
+    provider = dispatch.provider
+    label = HARNESS_LABELS[provider]
+    if provider == "codex":
+        models = codex_cached_model_catalog()
+        catalog_detail = (
+            f" A recent desktop catalog lists {len(models)} model"
+            f"{'' if len(models) == 1 else 's'}, but that cache"
+            if models
+            else " No fresh desktop model catalog is available, and the app"
+        )
+        return replace(
+            dispatch,
+            ready=False,
+            code="desktop_account_access_unverified",
+            message=(
+                f"{label} Desktop is installed and its URL handler is available."
+                f"{catalog_detail} does not prove the current signed-in plan, "
+                "entitlement, or remaining quota."
+            ),
+            action=(
+                "Open Codex Desktop and verify the signed-in account and "
+                "selected model. DaemonState will not claim account access "
+                "without a supported desktop status bridge."
+            ),
+            models=models,
+            account_access_state="unverified",
+            account_access_verified=False,
+            model_catalog_source=(
+                "codex_desktop_cache" if models else None
+            ),
+        )
+    if provider == "opencode":
+        return replace(
+            dispatch,
+            ready=False,
+            code="desktop_account_access_unverified",
+            message=(
+                "OpenCode Desktop is installed, but installation does not "
+                "prove a usable account. OpenCode has no single universal "
+                "subscription; access requires at least one connected provider "
+                "or local model that can actually run."
+            ),
+            action=(
+                "Open OpenCode, connect a provider or local model, and verify "
+                "access there. DaemonState will not mark it usable without a "
+                "supported desktop account-status bridge."
+            ),
+            account_access_state="unverified",
+            account_access_verified=False,
+        )
+    return replace(
+        dispatch,
+        ready=False,
+        code="desktop_account_access_unverified",
+        message=(
+            f"{label} Desktop is installed, but DaemonState cannot verify the "
+            "signed-in account, plan, entitlement, or remaining quota through "
+            "a supported desktop interface."
+        ),
+        action=(
+            f"Open {label} Desktop and verify account access there. "
+            "DaemonState will not mark it usable without a supported desktop "
+            "account-status bridge."
+        ),
+        account_access_state="unverified",
+        account_access_verified=False,
+    )
+
+
+def _probe_harness_composer_dispatch(
+    connector_type: str,
+) -> HarnessComposerReadiness:
+    """Report only installation and URL-dispatch capability."""
+
+    connector_type = connector_type.strip().lower()
+    if connector_type == "claude_code":
+        connector_type = "claude"
+    if connector_type not in MACOS_DESKTOP_APPS:
+        raise HarnessLaunchError(f"Unsupported AI harness: {connector_type}")
+
+    label = HARNESS_LABELS[connector_type]
+    spec = MACOS_DESKTOP_APPS[connector_type]
+    if platform.system() != "Darwin":
+        return HarnessComposerReadiness(
+            provider=connector_type,
+            ready=False,
+            desktop_available=False,
+            url_scheme_registered=False,
+            required_url_scheme=spec.url_scheme,
+            code="desktop_app_unsupported",
+            message=(
+                f"{label} visible desktop composer handoff is not supported "
+                "on this system."
+            ),
+            action=f"Run DaemonState on macOS with {spec.install_product}.",
+        )
+
+    installations = _macos_desktop_app_installations(spec)
+    if not installations:
+        return HarnessComposerReadiness(
+            provider=connector_type,
+            ready=False,
+            desktop_available=False,
+            url_scheme_registered=False,
+            required_url_scheme=spec.url_scheme,
+            code="desktop_app_missing",
+            message=(
+                f"{label} cannot receive this continuation because its "
+                "desktop app is not installed."
+            ),
+            action=f"Install {spec.install_product}, then check again.",
+        )
+
+    required_scheme = spec.url_scheme.lower()
+    if not any(
+        required_scheme in installation.url_schemes
+        for installation in installations
+    ):
+        return HarnessComposerReadiness(
+            provider=connector_type,
+            ready=False,
+            desktop_available=True,
+            url_scheme_registered=False,
+            required_url_scheme=required_scheme,
+            code="desktop_url_scheme_missing",
+            message=(
+                f"{label} desktop app is installed, but it does not register "
+                f"the required {required_scheme}:// URL scheme."
+            ),
+            action=(
+                f"Update or reinstall {spec.install_product}, then check again."
+            ),
+        )
+
+    return HarnessComposerReadiness(
+        provider=connector_type,
+        ready=True,
+        desktop_available=True,
+        url_scheme_registered=True,
+        required_url_scheme=required_scheme,
+        code="desktop_dispatch_available",
+        message=(
+            f"{label} desktop app and its {required_scheme}:// handler are "
+            "installed. This proves only dispatch capability; account access, "
+            "model access, and route rendering are not verified."
+        ),
+        action=f"Verify account access in {label}.",
+    )
+
+
 @traced(
     "daemonstate.harness.launch",
     attributes=lambda args, kwargs: {
@@ -144,7 +352,7 @@ def probe_harness_visibility(connector_type: str) -> HarnessVisibility:
     result_attributes=lambda result: {
         "daemonstate.provider": result.get("connector_type"),
         "daemonstate.session.id": result.get("session_id"),
-        "daemonstate.harness.launched": result.get("launched"),
+        "daemonstate.harness.launched": False,
         "daemonstate.harness.navigation_requested": result.get(
             "navigation_requested"
         ),
@@ -152,7 +360,9 @@ def probe_harness_visibility(connector_type: str) -> HarnessVisibility:
             "navigation_verified"
         ),
         "daemonstate.status": (
-            "launched" if result.get("launched") is True else "not_launched"
+            "open_requested"
+            if result.get("open_requested") is True
+            else "not_requested"
         ),
     },
 )
@@ -179,16 +389,28 @@ def launch_harness_session(
             code="desktop_app_unsupported",
         )
 
+    deadline = time.monotonic() + DESKTOP_HANDOFF_TOTAL_TIMEOUT_SECONDS
     target, navigation = _macos_launch_target(connector_type, session_id, cwd)
-    _open_registered_macos_app(
+    app = _resolve_macos_desktop_app(
         connector_type,
         MACOS_DESKTOP_APPS[connector_type],
+        require_url_scheme=target is not None,
+    )
+    _request_registered_macos_app_open(
+        connector_type,
+        app,
         target,
+        deadline=deadline,
     )
 
     return {
-        "launched": True,
-        "navigation_requested": True,
+        # A zero exit status from /usr/bin/open confirms only that Launch
+        # Services accepted the request. It does not prove the app opened or
+        # navigated, so all verified/opened fields stay false.
+        "launched": False,
+        "open_requested": True,
+        "open_verified": False,
+        "navigation_requested": target is not None,
         "navigation_verified": False,
         "connector_type": connector_type,
         "harness": HARNESS_LABELS[connector_type],
@@ -200,67 +422,296 @@ def launch_harness_session(
     }
 
 
+@traced(
+    "daemonstate.harness.launch",
+    attributes=lambda args, kwargs: {
+        "daemonstate.phase": "desktop_composer_handoff",
+        "daemonstate.provider": (
+            args[0] if args else kwargs.get("connector_type")
+        ),
+    },
+    result_attributes=lambda result: {
+        "daemonstate.provider": result.get("connector_type"),
+        "daemonstate.harness.launched": False,
+        "daemonstate.harness.navigation_requested": result.get(
+            "navigation_requested"
+        ),
+        "daemonstate.harness.navigation_verified": result.get(
+            "navigation_verified"
+        ),
+        "daemonstate.status": (
+            "open_requested"
+            if result.get("open_requested") is True
+            else "not_requested"
+        ),
+    },
+)
+def launch_harness_composer(
+    connector_type: str,
+    *,
+    cwd: str,
+    prompt: str,
+) -> dict[str, Any]:
+    """Request a visible desktop composer without invoking a provider CLI.
+
+    The full prompt is copied before the open request is sent. When it fits
+    the provider-neutral deep-link budget it is also sent to the app's native
+    new-session route. No deep link used here submits the prompt.
+    """
+
+    connector_type = connector_type.strip().lower()
+    if connector_type == "claude_code":
+        connector_type = "claude"
+    if connector_type not in MACOS_DESKTOP_APPS:
+        raise HarnessLaunchError(f"Unsupported AI harness: {connector_type}")
+    if platform.system() != "Darwin":
+        raise HarnessLaunchError(
+            (
+                f"{HARNESS_LABELS[connector_type]} desktop launching is not "
+                f"available on {platform.system()} yet."
+            ),
+            code="desktop_app_unsupported",
+        )
+
+    deadline = time.monotonic() + DESKTOP_HANDOFF_TOTAL_TIMEOUT_SECONDS
+    working_directory = _existing_directory(cwd)
+    if working_directory is None:
+        raise HarnessLaunchError(
+            "A readable local project directory is required for the desktop handoff.",
+            code="desktop_project_unavailable",
+        )
+
+    spec = MACOS_DESKTOP_APPS[connector_type]
+    app = _resolve_macos_desktop_app(
+        connector_type,
+        spec,
+        require_url_scheme=True,
+    )
+
+    context = str(prompt)
+    if not context.strip():
+        raise HarnessLaunchError(
+            "The desktop handoff prompt is empty.",
+            code="desktop_prompt_empty",
+        )
+    _copy_macos_clipboard(context, deadline=deadline)
+
+    prefill_requested = len(context) <= DESKTOP_DEEP_LINK_PROMPT_MAX_CHARS
+    target = _macos_composer_target(
+        connector_type,
+        working_directory,
+        context if prefill_requested else None,
+    )
+    _request_registered_macos_app_open(
+        connector_type,
+        app,
+        target,
+        deadline=deadline,
+    )
+
+    return {
+        "launched": False,
+        "open_requested": True,
+        "open_verified": False,
+        "navigation_requested": True,
+        "navigation_verified": False,
+        "connector_type": connector_type,
+        "harness": HARNESS_LABELS[connector_type],
+        "mode": "desktop_composer",
+        "navigation": "new_session",
+        "exact_session_supported": False,
+        "topic_anchor_supported": False,
+        "prefill_requested": prefill_requested,
+        "context_copied": True,
+        "context_loaded": False,
+        "execution_started": False,
+        "context_delivery": (
+            "desktop_composer_prefill_and_clipboard"
+            if prefill_requested
+            else "clipboard"
+        ),
+    }
+
+
 def _macos_desktop_app_installed(spec: DesktopAppSpec) -> bool:
-    roots = (
+    return bool(_macos_desktop_app_installations(spec))
+
+
+def _macos_application_roots() -> tuple[Path, ...]:
+    return (
         Path("/Applications"),
         Path("/System/Applications"),
         Path.home() / "Applications",
     )
-    return any(
-        (root / f"{app_name}.app").is_dir()
-        for root in roots
-        for app_name in spec.app_names
+
+
+def _macos_desktop_app_installations(
+    spec: DesktopAppSpec,
+) -> tuple[MacOSDesktopApp, ...]:
+    installations: list[MacOSDesktopApp] = []
+    seen: set[Path] = set()
+    for root in _macos_application_roots():
+        for app_name in spec.app_names:
+            bundle = root / f"{app_name}.app"
+            if bundle in seen or not bundle.is_dir():
+                continue
+            seen.add(bundle)
+            metadata = _macos_bundle_metadata(bundle)
+            if metadata is None or metadata.bundle_id not in spec.bundle_ids:
+                continue
+            installations.append(metadata)
+    return tuple(installations)
+
+
+def _macos_bundle_identifier(bundle: Path) -> str | None:
+    metadata = _macos_bundle_metadata(bundle)
+    return None if metadata is None else metadata.bundle_id
+
+
+def _macos_bundle_metadata(bundle: Path) -> MacOSDesktopApp | None:
+    try:
+        with (bundle / "Contents" / "Info.plist").open("rb") as plist_file:
+            info = plistlib.load(plist_file)
+    except (OSError, plistlib.InvalidFileException):
+        return None
+    if not isinstance(info, dict):
+        return None
+    raw_identifier = info.get("CFBundleIdentifier")
+    if not isinstance(raw_identifier, str) or not raw_identifier.strip():
+        return None
+
+    schemes: set[str] = set()
+    raw_url_types = info.get("CFBundleURLTypes")
+    if isinstance(raw_url_types, list):
+        for url_type in raw_url_types:
+            if not isinstance(url_type, dict):
+                continue
+            raw_schemes = url_type.get("CFBundleURLSchemes")
+            if not isinstance(raw_schemes, list):
+                continue
+            schemes.update(
+                value.strip().lower()
+                for value in raw_schemes
+                if isinstance(value, str) and value.strip()
+            )
+    return MacOSDesktopApp(
+        bundle_path=bundle,
+        bundle_id=raw_identifier.strip(),
+        url_schemes=frozenset(schemes),
     )
 
 
-def _open_registered_macos_app(
+def _resolve_macos_desktop_app(
     connector_type: str,
     spec: DesktopAppSpec,
-    target: str | None,
-) -> None:
-    attempts = [
-        ["/usr/bin/open", "-b", bundle_id]
-        for bundle_id in spec.bundle_ids
-    ]
-    attempts.extend(
-        ["/usr/bin/open", "-a", app_name]
-        for app_name in spec.app_names
-    )
-
-    missing_results = 0
-    last_error = ""
-    for base_command in attempts:
-        command = [*base_command, *([target] if target else [])]
-        try:
-            completed = subprocess.run(
-                command,
-                check=False,
-                timeout=10,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise HarnessLaunchError(
-                f"Could not open the {HARNESS_LABELS[connector_type]} desktop app."
-            ) from exc
-        if completed.returncode == 0:
-            return
-
-        last_error = (completed.stderr or completed.stdout or "").strip()
-        if _is_missing_application_error(last_error):
-            missing_results += 1
-
-    if missing_results == len(attempts):
+    *,
+    require_url_scheme: bool,
+) -> MacOSDesktopApp:
+    installations = _macos_desktop_app_installations(spec)
+    if not installations:
         raise HarnessLaunchError(
             f"{HARNESS_LABELS[connector_type]} desktop app is missing. "
             f"Install {spec.install_product} to open sessions here.",
             code="desktop_app_missing",
         )
+    if not require_url_scheme:
+        return installations[0]
+
+    required_scheme = spec.url_scheme.lower()
+    for app in installations:
+        if required_scheme in app.url_schemes:
+            return app
     raise HarnessLaunchError(
-        f"Could not open the {HARNESS_LABELS[connector_type]} desktop app."
-        + (f" macOS reported: {last_error}" if last_error else "")
+        (
+            f"{HARNESS_LABELS[connector_type]} desktop app does not register "
+            f"the required {required_scheme}:// URL scheme."
+        ),
+        code="desktop_url_scheme_missing",
+    )
+
+
+def _remaining_handoff_timeout(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise HarnessLaunchError(
+            "The desktop handoff timed out before the open request was sent.",
+            code="desktop_handoff_timeout",
+        )
+    return remaining
+
+
+def _copy_macos_clipboard(value: str, *, deadline: float) -> None:
+    try:
+        completed = subprocess.run(
+            ["/usr/bin/pbcopy"],
+            check=False,
+            timeout=_remaining_handoff_timeout(deadline),
+            input=value,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HarnessLaunchError(
+            "The desktop handoff timed out while copying its context.",
+            code="desktop_handoff_timeout",
+        ) from exc
+    except OSError as exc:
+        raise HarnessLaunchError(
+            "Could not copy the continuation context to the macOS clipboard.",
+            code="desktop_clipboard_failed",
+        ) from exc
+    if completed.returncode != 0:
+        raise HarnessLaunchError(
+            "Could not copy the continuation context to the macOS clipboard.",
+            code="desktop_clipboard_failed",
+        )
+
+
+def _request_registered_macos_app_open(
+    connector_type: str,
+    app: MacOSDesktopApp,
+    target: str | None,
+    *,
+    deadline: float,
+) -> None:
+    command = ["/usr/bin/open", "-b", app.bundle_id]
+    if target is not None:
+        command.append(target)
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            timeout=_remaining_handoff_timeout(deadline),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HarnessLaunchError(
+            (
+                f"The {HARNESS_LABELS[connector_type]} desktop open request "
+                "timed out."
+            ),
+            code="desktop_handoff_timeout",
+        ) from exc
+    except OSError as exc:
+        raise HarnessLaunchError(
+            f"Could not request the {HARNESS_LABELS[connector_type]} desktop app."
+        ) from exc
+    if completed.returncode == 0:
+        return
+
+    error = (completed.stderr or completed.stdout or "").strip()
+    if _is_missing_application_error(error):
+        raise HarnessLaunchError(
+            f"{HARNESS_LABELS[connector_type]} desktop app is no longer available.",
+            code="desktop_app_missing",
+        )
+    raise HarnessLaunchError(
+        f"Could not request the {HARNESS_LABELS[connector_type]} desktop app."
+        + (f" macOS reported: {error}" if error else "")
     )
 
 
@@ -285,6 +736,28 @@ def _macos_launch_target(
             query = urlencode({"directory": str(working_directory)})
             return f"opencode://open-project?{query}", "project"
     return None, "app"
+
+
+def _macos_composer_target(
+    connector_type: str,
+    working_directory: Path,
+    prompt: str | None,
+) -> str:
+    path = str(working_directory)
+    if connector_type == "codex":
+        values = {"path": path}
+        if prompt is not None:
+            values["prompt"] = prompt
+        return f"codex://threads/new?{urlencode(values)}"
+    if connector_type == "claude":
+        values = {"folder": path}
+        if prompt is not None:
+            values["q"] = prompt
+        return f"claude://code/new?{urlencode(values)}"
+    values = {"directory": path}
+    if prompt is not None:
+        values["prompt"] = prompt
+    return f"opencode://new-session?{urlencode(values)}"
 
 
 def _existing_directory(value: str | None) -> Path | None:

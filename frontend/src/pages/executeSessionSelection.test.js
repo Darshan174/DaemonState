@@ -35,18 +35,20 @@ beforeEach(() => {
 
 
 describe("Execute session-context selection", () => {
-  it("deduplicates sessions and clamps the selection to two", () => {
+  it("deduplicates sessions and clamps the selection to three", () => {
     const selected = normalizeExecuteSessionContexts([
       session("one"),
       session("one"),
       session("two"),
       session("three"),
+      session("four"),
     ]);
 
     expect(selected).toHaveLength(MAX_EXECUTE_SESSION_CONTEXTS);
     expect(selected.map((item) => item.sourceDocumentId)).toEqual([
       "document-one",
       "document-two",
+      "document-three",
     ]);
   });
 
@@ -54,9 +56,10 @@ describe("Execute session-context selection", () => {
     writeExecuteSessionContexts("workspace-one", [
       session("one"),
       session("two"),
+      session("three"),
     ]);
 
-    expect(readExecuteSessionContexts("workspace-one")).toHaveLength(2);
+    expect(readExecuteSessionContexts("workspace-one")).toHaveLength(3);
     expect(readExecuteSessionContexts("workspace-two")).toEqual([]);
 
     localStorage.setItem(

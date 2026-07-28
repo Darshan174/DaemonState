@@ -60,7 +60,7 @@ we need results from real projects, not demos.
 | Choose the current goal | Keeps the user in control. Open issues stay backlog until selected. |
 | Capture Session Context | Continue automatically captures the selected session tip as the latest task child; supported compaction boundaries also preserve exact pre-compaction state. Both retain source-backed goals, progress, decisions, failures, files, blockers, checks, and next actions. |
 | Verify the checkpoint | Continue automatically checks structure, event evidence, repository fingerprint, relevant files, and recorded command evidence without replaying imported commands. |
-| Resume the work | Selecting ready Codex compiles Context + Direction + Execution loop into a fresh waiting thread. Nothing is submitted until the user types the new lead and presses Enter. |
+| Resume the work | Continue defaults to the newest available session, copies its Session Context, and requests a reviewable composer in the selected desktop harness. Nothing is submitted until the user reviews and sends it. |
 | Explain what matters | Uses the graph to show the relationships behind the current project state and compiled context. |
 
 Extracted facts retain their source and provenance; explicit user choices are
@@ -71,7 +71,7 @@ with a confident guess.
 
 | Surface | Actual job |
 |---|---|
-| Continue | Resolves the current repository-scoped task, verifies its latest compatible checkpoint, loads the handoff into a fresh Codex thread, opens it, and waits for the user's lead. |
+| Continue | Resolves the current repository-scoped task, verifies its latest compatible checkpoint, copies the complete handoff, and requests a reviewable composer in the selected Codex, Claude, or OpenCode desktop app without submitting it. |
 | Library | Scans local Codex, Claude Code, and OpenCode history, lets the user inspect checkpoints and select an exact session/topic, and routes that identity to Continue. |
 | Memory | Shows the durable Project / Workspace Context parent and the latest task-specific Session Context child, with evidence and review state. |
 | Explain and agent brief | Uses the project graph to explain evidence and relationships; eligible task records can compile and copy a source-backed brief. |
@@ -124,12 +124,12 @@ Demo data never marks a connector as authenticated or connected.
 
 ## Honest limits
 
-- The browser UI calls a local-only run service. It shows separate
-  readiness-checked Codex, Claude Code, and OpenCode targets, refreshes evidence,
-  starts a fresh explicitly selected provider CLI, observes the repository, and
-  runs available checks; it is unavailable to remote principals. Explicit
-  choices never silently fall back. `daemonstate continue --into ...` launches an
-  explicitly selected provider CLI through the same typed execution contract.
+- The browser UI calls the local-only `/api/continuations/stage` service. It
+  checks the selected Codex, Claude, or OpenCode desktop app and registered URL
+  scheme, copies the complete context, and requests a visible composer without
+  invoking a provider CLI or submitting a task. Explicit choices never silently
+  fall back. Separately, `daemonstate continue --into ...` launches an explicitly selected provider
+  CLI through the typed execution contract.
   MCP `resume_task` returns the audit pack and canonical execution contract to
   its calling agent without starting another process.
 - There is no system-wide agent monitor. Library scans while its page is open;
@@ -139,9 +139,9 @@ Demo data never marks a connector as authenticated or connected.
 - `daemonstate harness run` still runs only the explicit local command supplied by the
   user. `daemonstate continue --into ...` selects one of three audited built-in
   provider adapters and never adds permission-bypass flags.
-- On macOS, browser Continue uses native Codex to reopen an exact Codex task
-  after its first renderable event. Providers without an exact-session surface
-  are unavailable rather than invisible; other platforms are unsupported.
+- On macOS, browser Continue requests a new composer through the selected
+  desktop app's registered native URL scheme and copies the complete context.
+  Launch Services dispatch is reported as requested, not as a verified open or exact provider session; other platforms are unsupported.
 - Scrutiny uses deterministic evidence rules. It is not an autonomous code review.
 - Live retrieval is limited to the local repository and configured GitHub access.
 - Captured command output and repository inspection are deliberately bounded.
@@ -170,7 +170,7 @@ Main API routes:
 |---|---|
 | `POST /api/context/prepare` | Compile and persist a task brief. |
 | `POST /api/continuations/prepare` | Resolve current task state, verify its compatible checkpoint, and compile a continuation pack. |
-| `POST /api/continuations/stage` | From the local app, load Context + Direction + Execution loop into a persistent Codex thread without starting a turn. |
+| `POST /api/continuations/stage` | From the local app, copy the complete handoff and request a visible new composer in the selected Codex, Claude, or OpenCode desktop app without submitting a turn. |
 | `POST /api/continuations` | From the local app, prepare a continuation, start a fresh installed target agent, run available checks, and record the outcome. `/api/continuations/run` remains a compatibility alias. |
 | `POST /api/query` | Query project context with a source trace. |
 | `POST /api/repo/index` | Index repository files, symbols, and exact structural links. |

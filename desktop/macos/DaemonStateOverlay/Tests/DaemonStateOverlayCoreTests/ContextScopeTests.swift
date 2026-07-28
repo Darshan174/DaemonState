@@ -30,6 +30,17 @@ struct ContextScopeTests {
             ContextGesture.disposition(forClickCount: 3)
                 == .cancelSingleAndToggle
         )
-        #expect(ContextGesture.disposition(forClickCount: 4) == .ignore)
+        #expect(
+            ContextGesture.disposition(forClickCount: 4) == .scheduleSingle
+        )
+        #expect(
+            ContextGesture.disposition(forClickCount: 5)
+                == .rescheduleSingle
+        )
+        #expect(
+            ContextGesture.disposition(forClickCount: 6)
+                == .cancelSingleAndToggle
+        )
+        #expect(ContextGesture.disposition(forClickCount: 0) == .ignore)
     }
 }

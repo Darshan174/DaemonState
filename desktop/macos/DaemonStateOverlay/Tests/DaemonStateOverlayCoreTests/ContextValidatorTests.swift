@@ -6,6 +6,69 @@ import Testing
 @Suite
 struct ContextValidatorTests {
     @Test
+    func newestRelevantSessionWinsOverHistoricalSelection() throws {
+        let digest = try decode(
+            ContextDigestEnvelope.self,
+            """
+            {
+              "workspace_id": "workspace-1",
+              "activity": {
+                "schema_version": "now_activity.v1",
+                "primary": {
+                  "kind": "agent_session",
+                  "state": "snapshot",
+                  "evidence_level": "session_reported",
+                  "selected_for_now": true,
+                  "provider": "codex",
+                  "session_id": "historical-session",
+                  "refreshable": true,
+                  "request": "Finish the historical task.",
+                  "project_match": {"status": "relevant"}
+                },
+                "latest": {
+                  "kind": "agent_session",
+                  "state": "snapshot",
+                  "evidence_level": "session_reported",
+                  "selected_for_now": false,
+                  "provider": "codex",
+                  "session_id": "current-session",
+                  "refreshable": true,
+                  "request": "Fix the floating context control.",
+                  "project_match": {"status": "relevant"}
+                },
+                "recent_sessions": [
+                  {
+                    "kind": "agent_session",
+                    "state": "snapshot",
+                    "evidence_level": "session_reported",
+                    "selected_for_now": false,
+                    "provider": "codex",
+                    "session_id": "current-session",
+                    "refreshable": true,
+                    "request": "Fix the floating context control.",
+                    "project_match": {"status": "relevant"}
+                  }
+                ]
+              },
+              "current_goal": null
+            }
+            """
+        )
+
+        let active = try ContextValidator.activeSession(
+            from: digest,
+            workspaceID: "workspace-1"
+        )
+
+        #expect(
+            active == ActiveSessionIdentity(
+                provider: "codex",
+                sessionID: "current-session"
+            )
+        )
+    }
+
+    @Test
     func multiplePlausibleSessionsFailClosedWithoutExplicitSelection() throws {
         let digest = try decode(
             ContextDigestEnvelope.self,
@@ -264,22 +327,36 @@ struct ContextValidatorTests {
     }
 
     @Test
-    func supportedCheckpointSchemasPreserveCurrentTipValidation() throws {
+    func legacyCheckpointSchemasRequireCurrentCompilerRecapture() throws {
         for schemaVersion in [
             "work_checkpoint.v5",
             "work_checkpoint.v6",
             "work_checkpoint.v7",
             "work_checkpoint.v8",
+            "work_checkpoint.v9",
         ] {
             let candidate = try checkpoint(schemaVersion: schemaVersion)
-            #expect(ContextValidator.isCurrentSessionTip(candidate))
-            try ContextValidator.requireCurrentSessionTip(candidate)
+            #expect(!ContextValidator.isCurrentSessionTip(candidate))
+            do {
+                try ContextValidator.requireCurrentSessionTip(candidate)
+                Issue.record("Expected a legacy checkpoint schema to require recapture")
+            } catch let error as DaemonStateError {
+                #expect(
+                    error == .activeSessionUnavailable(
+                        "the service did not return a complete checkpoint at the current session tip"
+                    )
+                )
+            }
         }
+
+        let current = try checkpoint(schemaVersion: "work_checkpoint.v10")
+        #expect(ContextValidator.isCurrentSessionTip(current))
+        try ContextValidator.requireCurrentSessionTip(current)
     }
 
     @Test
     func unsupportedCheckpointSchemaStillFailsClosed() throws {
-        let candidate = try checkpoint(schemaVersion: "work_checkpoint.v9")
+        let candidate = try checkpoint(schemaVersion: "work_checkpoint.v11")
         #expect(!ContextValidator.isCurrentSessionTip(candidate))
 
         do {
@@ -290,9 +367,10 @@ struct ContextValidatorTests {
                 error == .unsupportedSchema(
                     expected: (
                         "work_checkpoint.v5, work_checkpoint.v6, "
-                        + "work_checkpoint.v7, or work_checkpoint.v8"
+                        + "work_checkpoint.v7, work_checkpoint.v8, "
+                        + "work_checkpoint.v9, or work_checkpoint.v10"
                     ),
-                    actual: "work_checkpoint.v9"
+                    actual: "work_checkpoint.v11"
                 )
             )
         }
@@ -303,7 +381,7 @@ struct ContextValidatorTests {
     }
 
     private func checkpoint(
-        schemaVersion: String = "work_checkpoint.v8",
+        schemaVersion: String = "work_checkpoint.v10",
         boundaryEventID: String? = "event-20"
     ) throws -> LatestCheckpointEnvelope {
         let eventIdentity = boundaryEventID.map {

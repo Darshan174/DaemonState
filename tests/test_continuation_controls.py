@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+
 from app.services.continuation_runtime import provider_readiness
 from app.services.harness_adapters import ProviderReadiness
-from app.services.harness_launcher import HarnessVisibility
+from app.services.harness_launcher import HarnessComposerReadiness
 
 
 async def test_run_continuation_forwards_codex_model_and_effort(
@@ -36,6 +39,44 @@ async def test_run_continuation_forwards_codex_model_and_effort(
             "target_provider": "codex",
             "provider_model": "gpt-5.6-sol",
             "provider_effort": "xhigh",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert captured["target_provider"] == "codex"
+    assert captured["provider_model"] == "gpt-5.6-sol"
+    assert captured["provider_effort"] == "xhigh"
+
+
+async def test_stage_continuation_forwards_requested_codex_model_and_effort(
+    client,
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_stage(_service, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            to_dict=lambda: {
+                "schema_version": "continuation.stage.v1",
+                "status": "awaiting_user",
+            },
+        )
+
+    monkeypatch.setattr(
+        "app.api.continuations.ContinuationStageService.stage",
+        fake_stage,
+    )
+
+    response = await client.post(
+        "/api/continuations/stage",
+        json={
+            "workspace_id": str(uuid4()),
+            "objective": "Open a reviewable Codex desktop draft.",
+            "target_provider": "codex",
+            "provider_model": "gpt-5.6-sol",
+            "provider_effort": "xhigh",
+            "idempotency_key": f"continue-{uuid4()}",
         },
     )
 
@@ -76,55 +117,55 @@ async def test_run_continuation_rejects_unknown_codex_effort(
     assert calls == []
 
 
-async def test_provider_readiness_fails_closed_when_execution_cannot_be_shown(
+async def test_provider_readiness_uses_desktop_apps_not_cli_or_exact_sessions(
     monkeypatch,
 ) -> None:
-    def cli_ready(provider: str, **_kwargs) -> ProviderReadiness:
-        return ProviderReadiness(
-            provider=provider,
-            ready=True,
-            status="ready",
-            code="provider_ready",
-            message=f"{provider} CLI is ready.",
-            action=f"Continue in {provider}.",
-        )
+    def fail_cli_probe(*_args, **_kwargs):
+        pytest.fail("desktop readiness must not invoke a provider CLI")
 
-    visibility = {
-        "codex": HarnessVisibility(
+    composer_readiness = {
+        "codex": HarnessComposerReadiness(
             provider="codex",
             ready=False,
             desktop_available=False,
-            exact_session_supported=True,
+            url_scheme_registered=False,
+            required_url_scheme="codex",
             code="desktop_app_missing",
             message="Codex desktop is missing.",
             action="Install Codex desktop.",
         ),
-        "claude": HarnessVisibility(
+        "claude": HarnessComposerReadiness(
             provider="claude",
             ready=False,
             desktop_available=True,
-            exact_session_supported=False,
-            code="visible_session_unsupported",
-            message="Claude cannot open the exact automation session.",
-            action="Choose a visible harness.",
+            url_scheme_registered=False,
+            required_url_scheme="claude",
+            code="desktop_url_scheme_missing",
+            message="Claude does not register its composer URL scheme.",
+            action="Update Claude desktop.",
         ),
-        "opencode": HarnessVisibility(
+        "opencode": HarnessComposerReadiness(
             provider="opencode",
             ready=False,
             desktop_available=True,
-            exact_session_supported=False,
-            code="visible_session_unsupported",
-            message="OpenCode cannot open the exact automation session.",
-            action="Choose a visible harness.",
+            url_scheme_registered=True,
+            required_url_scheme="opencode",
+            code="desktop_account_access_unverified",
+            message=(
+                "OpenCode is installed, but account access is unverified."
+            ),
+            action="Verify provider and model access in OpenCode.",
+            account_access_state="unverified",
+            account_access_verified=False,
         ),
     }
     monkeypatch.setattr(
         "app.services.continuation_runtime.probe_provider_readiness",
-        cli_ready,
+        fail_cli_probe,
     )
     monkeypatch.setattr(
-        "app.services.continuation_runtime.probe_harness_visibility",
-        lambda provider: visibility[provider],
+        "app.services.continuation_runtime.probe_harness_composer_readiness",
+        lambda provider: composer_readiness[provider],
         raising=False,
     )
 
@@ -136,45 +177,46 @@ async def test_provider_readiness_fails_closed_when_execution_cannot_be_shown(
     assert statuses["codex"].ready is False
     assert statuses["codex"].code == "desktop_app_missing"
     assert statuses["claude"].ready is False
-    assert statuses["claude"].code == "visible_session_unsupported"
+    assert statuses["claude"].desktop_available is True
+    assert statuses["claude"].code == "desktop_url_scheme_missing"
+    assert statuses["claude"].desktop_handoff_supported is False
     assert statuses["opencode"].ready is False
-    assert statuses["opencode"].code == "visible_session_unsupported"
+    assert statuses["opencode"].status == "access_unverified"
+    assert statuses["opencode"].code == "desktop_account_access_unverified"
+    assert statuses["opencode"].desktop_available is True
+    assert statuses["opencode"].desktop_handoff_supported is False
 
 
 async def test_provider_readiness_reuses_recent_local_probes(monkeypatch) -> None:
     cli_calls: list[str] = []
-    visibility_calls: list[str] = []
+    composer_calls: list[str] = []
 
-    def cli_ready(provider: str, **_kwargs) -> ProviderReadiness:
+    def fail_cli_probe(provider: str, **_kwargs) -> ProviderReadiness:
         cli_calls.append(provider)
-        return ProviderReadiness(
-            provider=provider,
-            ready=True,
-            status="ready",
-            code="provider_ready",
-            message=f"{provider} CLI is ready.",
-            action=f"Continue in {provider}.",
-        )
+        pytest.fail("desktop readiness must not invoke a provider CLI")
 
-    def visible(provider: str) -> HarnessVisibility:
-        visibility_calls.append(provider)
-        return HarnessVisibility(
+    def composer_unverified(provider: str) -> HarnessComposerReadiness:
+        composer_calls.append(provider)
+        return HarnessComposerReadiness(
             provider=provider,
-            ready=True,
+            ready=False,
             desktop_available=True,
-            exact_session_supported=True,
-            code="harness_ready",
-            message=f"{provider} is visible.",
-            action=f"Continue in {provider}.",
+            url_scheme_registered=True,
+            required_url_scheme=provider,
+            code="desktop_account_access_unverified",
+            message=f"{provider} account access is unverified.",
+            action=f"Verify access in {provider}.",
+            account_access_state="unverified",
+            account_access_verified=False,
         )
 
     monkeypatch.setattr(
         "app.services.continuation_runtime.probe_provider_readiness",
-        cli_ready,
+        fail_cli_probe,
     )
     monkeypatch.setattr(
-        "app.services.continuation_runtime.probe_harness_visibility",
-        visible,
+        "app.services.continuation_runtime.probe_harness_composer_readiness",
+        composer_unverified,
     )
 
     first = await provider_readiness()
@@ -183,9 +225,43 @@ async def test_provider_readiness_reuses_recent_local_probes(monkeypatch) -> Non
 
     assert second == first
     assert refreshed == first
-    assert sorted(cli_calls) == [
+    assert cli_calls == []
+    assert sorted(composer_calls) == [
         "claude", "claude", "codex", "codex", "opencode", "opencode",
     ]
-    assert sorted(visibility_calls) == [
-        "claude", "claude", "codex", "codex", "opencode", "opencode",
-    ]
+
+
+async def test_provider_readiness_times_out_stalled_desktop_probes(
+    monkeypatch,
+) -> None:
+    def stalled_probe(provider: str) -> HarnessComposerReadiness:
+        time.sleep(0.05)
+        return HarnessComposerReadiness(
+            provider=provider,
+            ready=True,
+            desktop_available=True,
+            url_scheme_registered=True,
+            required_url_scheme=provider,
+            code="late_result_must_not_be_used",
+            message="Late probe result.",
+            action="Ignore this result.",
+        )
+
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.COMPOSER_READINESS_TIMEOUT_SECONDS",
+        0.005,
+    )
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.probe_harness_composer_readiness",
+        stalled_probe,
+    )
+
+    statuses = await provider_readiness(force_refresh=True)
+
+    assert len(statuses) == 3
+    assert all(item.ready is False for item in statuses)
+    assert all(item.code == "desktop_readiness_timeout" for item in statuses)
+    assert all(
+        item.readiness_scope == "desktop_application_and_account_access"
+        for item in statuses
+    )

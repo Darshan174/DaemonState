@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,10 +14,33 @@ from app.services.harness_adapters import (
     HarnessExecutableNotFound,
     ProviderModelOption,
     build_harness_invocation,
+    codex_cached_model_catalog,
     codex_model_catalog,
     probe_provider_readiness,
     provider_environment,
 )
+
+
+def _cached_codex_payload(fetched_at: datetime) -> dict:
+    return {
+        "fetched_at": fetched_at.isoformat().replace("+00:00", "Z"),
+        "client_version": "0.146.0",
+        "models": [
+            {
+                "slug": "gpt-5.6-sol",
+                "display_name": "GPT-5.6 Sol",
+                "visibility": "list",
+                "priority": 1,
+                "default_reasoning_level": "low",
+                "supported_reasoning_levels": [
+                    {"effort": "low"},
+                    {"effort": "medium"},
+                    {"effort": "high"},
+                ],
+                "base_instructions": "not returned by the parser",
+            },
+        ],
+    }
 
 
 def _available(monkeypatch) -> None:
@@ -714,6 +739,42 @@ def test_codex_model_catalog_does_not_invent_models_after_probe_failure(
     )
 
     assert codex_model_catalog(executable="/tools/codex") == ()
+
+
+def test_cached_codex_model_catalog_reads_only_fresh_selector_metadata(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 27, 21, 30, tzinfo=timezone.utc)
+    cache = tmp_path / "models_cache.json"
+    cache.write_text(
+        json.dumps(_cached_codex_payload(now - timedelta(minutes=2))),
+        encoding="utf-8",
+    )
+
+    models = codex_cached_model_catalog(cache_path=cache, now=now)
+
+    assert models == (
+        ProviderModelOption(
+            id="gpt-5.6-sol",
+            label="GPT-5.6 Sol",
+            default=True,
+            reasoning_efforts=("low", "medium", "high"),
+            default_reasoning_effort="low",
+        ),
+    )
+
+
+def test_cached_codex_model_catalog_rejects_stale_metadata(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 27, 21, 30, tzinfo=timezone.utc)
+    cache = tmp_path / "models_cache.json"
+    cache.write_text(
+        json.dumps(_cached_codex_payload(now - timedelta(hours=1))),
+        encoding="utf-8",
+    )
+
+    assert codex_cached_model_catalog(cache_path=cache, now=now) == ()
 
 
 def test_codex_readiness_exposes_no_model_claims_when_catalog_is_unavailable(

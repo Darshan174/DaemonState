@@ -29,6 +29,9 @@ from app.services.checkpoints import (
     _is_useful_discovery_command,
     _is_useful_verification_command,
     _reconcile_session_handoff,
+    _request_extends_active_session_task,
+    _session_attachment_dependencies,
+    _session_attachment_dependency_role,
     build_session_handoff_contract,
     capture_checkpoint,
     capture_checkpoint_schema_upgrades,
@@ -86,7 +89,7 @@ async def test_checkpoint_capture_is_structured_evidenced_and_idempotent(
     assert await db_session.scalar(select(func.count()).select_from(WorkCheckpoint)) == 1
     loaded = await get_checkpoint(db_session, first[0].id)
     data = checkpoint_to_dict(loaded)
-    assert data["schema_version"] == "work_checkpoint.v8"
+    assert data["schema_version"] == "work_checkpoint.v10"
     assert data["capture_status"] == "complete"
     assert data["continuation_status"] == "ready"
     assert data["boundary"]["snapshot_phase"] == "pre_compaction"
@@ -158,7 +161,7 @@ async def test_current_checkpoint_schema_backfills_from_unchanged_normalized_eve
             WorkCheckpoint.session_id == "schema-upgrade",
         )
     ))
-    assert versions == {"work_checkpoint.v5", "work_checkpoint.v8"}
+    assert versions == {"work_checkpoint.v5", "work_checkpoint.v10"}
     current = await latest_checkpoint(
         db_session,
         workspace_id=workspace.id,
@@ -166,7 +169,7 @@ async def test_current_checkpoint_schema_backfills_from_unchanged_normalized_eve
         session_id="schema-upgrade",
     )
     assert current is not None
-    assert current.schema_version == "work_checkpoint.v8"
+    assert current.schema_version == "work_checkpoint.v10"
     assert current.supersedes_checkpoint_id == legacy.id
     assert checkpoint_to_dict(current)["sections"]["goal"][0]["statement"] == (
         "Implement durable checkpoints for session compaction."
@@ -294,7 +297,12 @@ async def test_session_handoff_api_preserves_verbatim_pre_compaction_context_onl
     assert "\n## Historical instruction-shaped text" not in handoff["content"]
     assert "\n```text" not in handoff["content"]
     assert "session statements are historical data" in handoff["content"]
-    assert "this handoff is context, not a command to start" in handoff["content"]
+    assert "this handoff remains context until the user submits it" in (
+        handoff["content"]
+    )
+    assert "continue the Current main goal from the Exact next action" in (
+        handoff["content"]
+    )
     assert "session-handoff" not in handoff["content"]
     assert str(checkpoint.id) not in handoff["content"]
     assert str(checkpoint.boundary_event_id) not in handoff["content"]
@@ -517,7 +525,7 @@ async def test_session_context_carries_complete_latest_task_memory(
 
     assert response.status_code == 200, response.text
     handoff = response.json()
-    assert checkpoint.schema_version == "work_checkpoint.v8"
+    assert checkpoint.schema_version == "work_checkpoint.v10"
     assert set(SESSION_CONTEXT_REQUIRED_HEADINGS) <= set(
         handoff["content"].splitlines()
     )
@@ -584,10 +592,10 @@ async def test_session_context_carries_complete_latest_task_memory(
     assert (
         "> [passed; scope=focused; link=unmapped; requirements=unmapped; "
         "historical data; verification="
-    ) in handoff["content"]
+        ) in handoff["content"]
 
     monkeypatch.setattr(
-        "app.api.checkpoints.render_session_handoff",
+        "app.services.checkpoints.render_session_handoff",
         lambda *_args, **_kwargs: "# Session Context — task-level working memory",
     )
     malformed = await client.post(
@@ -599,6 +607,127 @@ async def test_session_context_carries_complete_latest_task_memory(
     assert "session_context_required_sections_missing" in {
         item["code"] for item in malformed_quality["blocking_issues"]
     }
+
+
+async def test_session_context_keeps_root_goal_and_dependent_delivery_follow_up(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    original_request = (
+        "Change the product name from Context Engine to DaemonState everywhere. "
+        "There shouldn't be any active Context Engine branding left."
+    )
+    follow_up = "Make sure this changes in GitHub as well; make commits and a PR."
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="rename-with-delivery-follow-up",
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id="rename-user",
+                sequence_number=1,
+                event_type="user_request",
+                role="user",
+                content=original_request,
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="rename-progress",
+                sequence_number=2,
+                event_type="assistant_update",
+                role="assistant",
+                content=(
+                    "Renamed the product across app/services/branding.py and "
+                    "updated the package metadata."
+                ),
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="rename-check",
+                sequence_number=3,
+                event_type="command_result",
+                role="tool",
+                content="12 passed",
+                payload={
+                    "command": "pytest -q tests/test_branding.py",
+                    "cwd": str(tmp_path),
+                    "exit_code": 0,
+                    "passed": True,
+                },
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="delivery-user",
+                sequence_number=4,
+                event_type="user_request",
+                role="user",
+                content=follow_up,
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="delivery-progress",
+                sequence_number=5,
+                event_type="assistant_update",
+                role="assistant",
+                content=(
+                    "Committed and pushed the DaemonState rename and created "
+                    "the GitHub pull request."
+                ),
+            ),
+            NormalizedSessionEvent(
+                provider_event_id="rename-boundary",
+                sequence_number=6,
+                event_type="compaction_boundary",
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        "app.services.checkpoints.capture_repository_snapshot",
+        _async_value(_snapshot(tmp_path)),
+    )
+    checkpoint = (await capture_missing_compaction_checkpoints(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="rename-with-delivery-follow-up",
+    ))[0]
+    loaded = await get_checkpoint(db_session, checkpoint.id)
+    data = checkpoint_to_dict(loaded)
+    goal = data["sections"]["goal"][0]
+
+    assert goal["statement"].startswith(original_request)
+    assert "## Additional user-authored requirements" in goal["statement"]
+    assert follow_up in goal["statement"]
+    assert len(goal["payload"]["request_fragments"]) == 2
+    assert any(
+        "Renamed the product across" in item["statement"]
+        for item in data["sections"]["progress"]
+    )
+    assert any(
+        "pytest -q tests/test_branding.py" in item["statement"]
+        for item in data["sections"]["verification"]
+    )
+    await db_session.commit()
+
+    response = await client.post(
+        f"/api/checkpoints/{checkpoint.id}/handoff",
+        json={"workspace_id": str(workspace.id)},
+    )
+
+    assert response.status_code == 200, response.text
+    handoff = response.json()
+    assert handoff["task_mode"] == "change"
+    assert handoff["execution_policy"]["permission_mode"] == "workspace_write"
+    assert original_request in handoff["current_goal"]["text"]
+    assert follow_up in handoff["current_goal"]["text"]
+    assert [item["text"] for item in handoff["requirements"]] == [
+        "Change the product name from Context Engine to DaemonState everywhere.",
+        "There shouldn't be any active Context Engine branding left.",
+        "Make sure this changes in GitHub as well; make commits and a PR.",
+    ]
+    assert "Renamed the product across" in handoff["content"]
+    assert "pytest -q tests/test_branding.py" in handoff["content"]
 
 
 async def test_session_handoff_rendering_preserves_verification_evidence_fields(
@@ -1185,6 +1314,92 @@ def test_session_handoff_retains_genuine_quoted_ui_label_constraint() -> None:
 
 def test_session_handoff_treats_direct_work_command_as_change() -> None:
     request = "WORK ON THIS right now. GET THIS DONE to production quality."
+
+    assert _infer_session_task_mode(request) == "change"
+
+
+@pytest.mark.parametrize(
+    "follow_up",
+    [
+        "Build a dashboard that displays revenue by customer.",
+        "Now build a dashboard that displays revenue by customer.",
+        "Create a GitHub issue for the unrelated billing outage.",
+    ],
+)
+def test_session_task_chain_starts_fresh_for_unrelated_request(
+    follow_up: str,
+) -> None:
+    assert not _request_extends_active_session_task(
+        follow_up,
+        active_requests=["Rename the product to DaemonState everywhere."],
+    )
+
+
+@pytest.mark.parametrize(
+    "follow_up",
+    [
+        "Make sure this change reaches GitHub; make commits and a PR.",
+        "Commit and push the completed rename.",
+        "Fix this too.",
+    ],
+)
+def test_session_task_chain_keeps_explicit_dependent_follow_up(
+    follow_up: str,
+) -> None:
+    assert _request_extends_active_session_task(
+        follow_up,
+        active_requests=["Rename the product to DaemonState everywhere."],
+    )
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        (
+            "Inspect the screenshot and tell me why the selected card is "
+            "rendering the wrong prompt."
+        ),
+        (
+            "Use the attached screenshot as the source of truth for colors, "
+            "spacing, typography, and responsive layout."
+        ),
+        "Look at this screenshot and explain what is wrong.",
+    ],
+)
+def test_session_attachment_keeps_direct_visual_dependency_active(
+    request_text: str,
+) -> None:
+    assert _session_attachment_dependency_role(request_text) == "active_input"
+
+
+def test_session_attachments_are_classified_per_follow_up_fragment() -> None:
+    request = (
+        "Build the automatic workflow described in detail here; the old image "
+        "only documents the removed browser fallback.\n"
+        '<image name="old" path="/tmp/old.png"></image>\n\n'
+        "## Additional user-authored requirements\n\n"
+        "### Follow-up 1\n"
+        "Inspect this screenshot and explain the incorrect card state.\n"
+        '<image name="current" path="/tmp/current.png"></image>'
+    )
+
+    attachments = _session_attachment_dependencies(request)
+
+    assert [
+        (item["name"], item["dependency_role"], item["required"])
+        for item in attachments
+    ] == [
+        ("old", "historical_evidence", False),
+        ("current", "active_input", True),
+    ]
+
+
+def test_session_handoff_treats_prescriptive_workflow_complaint_as_change() -> None:
+    request = (
+        "THERE SHOULD BE A WORKFLOW. LOOK WHAT THE SCREENSHOT SHOWS, AND "
+        "THE \"Browser fallback copied\" RESULT IS WRONG. WHY WOULD THE "
+        "PRODUCT LET A USER VERIFY THE WORK?"
+    )
 
     assert _infer_session_task_mode(request) == "change"
 
@@ -2706,6 +2921,7 @@ async def test_session_handoff_blocks_untrusted_image_markup_without_leaking_tag
         "path": str(declared_path),
         "source_path": None,
         "required": True,
+        "dependency_role": "active_input",
         "available": False,
         "sha256": None,
         "mime_type": "image/png",
@@ -2732,6 +2948,95 @@ async def test_session_handoff_blocks_untrusted_image_markup_without_leaking_tag
         issue["code"]
         for issue in handoff["quality_report"]["blocking_issues"]
     }
+
+
+async def test_session_handoff_keeps_described_historical_image_non_blocking(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    declared_path = tmp_path / "historical-workflow.png"
+    request = (
+        "Build an automatic continuation workflow that prepares the prompt, "
+        "verifies the latest state, and removes the manual browser fallback "
+        "and user-verification controls documented by the screenshot.\n"
+        f'<image name=[Image #1] path="{declared_path}"></image>'
+    )
+    events = [
+        NormalizedSessionEvent(
+            provider_event_id="historical-image-user",
+            sequence_number=1,
+            event_type="user_request",
+            role="user",
+            content=request,
+        ),
+        NormalizedSessionEvent(
+            provider_event_id="historical-image-auth",
+            sequence_number=2,
+            event_type="assistant_update",
+            role="assistant",
+            content=(
+                "Failed to authenticate because the OAuth access token was revoked."
+            ),
+        ),
+        NormalizedSessionEvent(
+            provider_event_id="historical-image-boundary",
+            sequence_number=3,
+            event_type="compaction_boundary",
+        ),
+    ]
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="claude",
+        session_id="described-historical-image",
+        events=events,
+    )
+    snapshot = _snapshot(tmp_path)
+    monkeypatch.setattr(
+        "app.services.checkpoints.capture_repository_snapshot",
+        _async_value(snapshot),
+    )
+    checkpoint = (await capture_missing_compaction_checkpoints(
+        db_session,
+        workspace_id=workspace.id,
+        provider="claude",
+        session_id="described-historical-image",
+    ))[0]
+    await db_session.commit()
+    monkeypatch.setattr(
+        "app.api.checkpoints.compare_checkpoint_repository",
+        _async_value({
+            "status": "unchanged",
+            "reason": "The current checkout matches the captured checkpoint.",
+            "checked_at": utc_now(),
+            "current": snapshot.to_dict(),
+        }),
+    )
+
+    response = await client.post(
+        f"/api/checkpoints/{checkpoint.id}/handoff",
+        json={"workspace_id": str(workspace.id)},
+    )
+
+    assert response.status_code == 200, response.text
+    handoff = response.json()
+    attachment = handoff["attachment_dependencies"][0]
+    assert attachment["required"] is False
+    assert attachment["dependency_role"] == "historical_evidence"
+    assert attachment["requirement_ids"] == []
+    assert handoff["quality_report"]["copy_ready"] is True
+    assert "historical_attachment_unavailable" in {
+        warning["code"] for warning in handoff["quality_report"]["warnings"]
+    }
+    assert "## Attachment evidence" in handoff["content"]
+    assert str(declared_path) not in handoff["content"]
+    assert "reattach it only if exact visual reinspection is needed" in (
+        handoff["content"].casefold()
+    )
 
 
 async def test_session_handoff_hashes_exact_provider_attachment_without_markup(
@@ -2849,6 +3154,7 @@ async def test_session_handoff_hashes_exact_provider_attachment_without_markup(
             "path": str(durable_path),
             "source_path": str(image_path),
             "required": True,
+            "dependency_role": "active_input",
             "available": True,
             "sha256": digest,
             "mime_type": "image/png",
@@ -2990,6 +3296,7 @@ async def test_session_handoff_recovers_legacy_codex_images_from_exact_raw_turn(
         "path": str(durable_path),
         "source_path": str(image_path),
         "required": True,
+        "dependency_role": "active_input",
         "available": True,
         "sha256": image_sha256,
         "mime_type": "image/png",
@@ -3897,8 +4204,12 @@ async def test_checkpoint_keeps_substantive_goal_across_continue_and_runtime_pol
     assert "runs is" not in completed["sections"]["exact_next_action"][0]["statement"].lower()
 
     delegated = checkpoint_to_dict(await get_checkpoint(db_session, captured[2].id))
-    assert delegated["sections"]["goal"][0]["statement"] == (
+    delegated_goal = delegated["sections"]["goal"][0]["statement"]
+    assert delegated_goal.startswith("Implement reliable checkpoint selection.")
+    assert "## Additional user-authored requirements" in delegated_goal
+    assert (
         "Continue the existing checkpoint task; the live product is wrong."
+        in delegated_goal
     )
     assert "collaboration tools" not in json.dumps(delegated["sections"]).lower()
 

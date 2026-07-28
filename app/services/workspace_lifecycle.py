@@ -15,6 +15,9 @@ from app.models import (
     CodeSymbol,
     Component,
     Connector,
+    ContinuationExecution,
+    ContinuationOutcome,
+    ContinuationRequirement,
     ContextPack,
     ContextPackItem,
     Entity,
@@ -25,6 +28,7 @@ from app.models import (
     OpenLoop,
     Relationship,
     RepoEvent,
+    RequirementEvidence,
     RetrievalEvent,
     RunObservation,
     SourceDocument,
@@ -36,6 +40,7 @@ from app.models import (
     Workspace,
     WorkspaceGoal,
 )
+from app.models_continuation_stage import ContinuationStageRequest
 
 
 ACTIVE_RUN_STATUSES = frozenset({"queued", "running", "in_progress"})
@@ -134,14 +139,34 @@ async def delete_workspace_graph(session: AsyncSession, workspace_id: UUID) -> W
     source_ids = select(SourceDocument.id).where(SourceDocument.workspace_id == workspace_id)
     pack_ids = select(ContextPack.id).where(ContextPack.workspace_id == workspace_id)
     run_ids = select(AgentRun.id).where(AgentRun.workspace_id == workspace_id)
+    execution_ids = select(ContinuationExecution.id).where(
+        ContinuationExecution.workspace_id == workspace_id
+    )
     file_ids = select(CodeFile.id).where(CodeFile.workspace_id == workspace_id)
     symbol_ids = select(CodeSymbol.id).where(CodeSymbol.code_file_id.in_(file_ids))
 
     await session.execute(delete(WorkspaceGoal).where(WorkspaceGoal.workspace_id == workspace_id))
     await session.execute(delete(OpenLoop).where(OpenLoop.workspace_id == workspace_id))
     await session.execute(delete(VerifiedPlaybook).where(VerifiedPlaybook.workspace_id == workspace_id))
-    await session.execute(delete(RunObservation).where(RunObservation.agent_run_id.in_(run_ids)))
+    await session.execute(delete(ContinuationStageRequest).where(
+        ContinuationStageRequest.workspace_id == workspace_id
+    ))
+    await session.execute(delete(RequirementEvidence).where(
+        RequirementEvidence.continuation_execution_id.in_(execution_ids)
+    ))
+    await session.execute(delete(RunObservation).where(
+        RunObservation.agent_run_id.in_(run_ids)
+    ))
     await session.execute(delete(AgentRun).where(AgentRun.workspace_id == workspace_id))
+    await session.execute(delete(ContinuationOutcome).where(
+        ContinuationOutcome.continuation_execution_id.in_(execution_ids)
+    ))
+    await session.execute(delete(ContinuationRequirement).where(
+        ContinuationRequirement.continuation_execution_id.in_(execution_ids)
+    ))
+    await session.execute(delete(ContinuationExecution).where(
+        ContinuationExecution.workspace_id == workspace_id
+    ))
     await session.execute(delete(ContextPackItem).where(ContextPackItem.context_pack_id.in_(pack_ids)))
     await session.execute(delete(ContextPack).where(ContextPack.workspace_id == workspace_id))
 

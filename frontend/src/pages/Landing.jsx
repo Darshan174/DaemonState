@@ -38,7 +38,7 @@ const CONTINUATION_STEPS = [
   {
     number: "04",
     title: "Continue and observe",
-    body: "Stage a fresh Codex task in the app and wait for your confirmation, or use the CLI to launch, observe, and verify a selected provider.",
+    body: "Request a reviewable composer in the selected desktop app and wait for your confirmation. Nothing is submitted or run silently.",
   },
 ];
 
@@ -46,8 +46,8 @@ const PRODUCT_SURFACES = [
   {
     group: "Work",
     title: "Continue",
-    eyebrow: "Browser staging · Codex on macOS",
-    body: "Resolve the selected task, reconcile its latest compatible checkpoint, and load a fresh Codex task. Nothing is submitted; Codex waits for you to confirm or narrow the compiled lead and press Enter.",
+    eyebrow: "Desktop handoff · Codex, Claude, or OpenCode",
+    body: "Resolve the selected task, reconcile its latest compatible checkpoint, and request a reviewable composer in the selected desktop app. Nothing is submitted; you review the compiled lead and press Enter yourself.",
     to: "/app",
     action: "Open Continue",
     icon: Activity,
@@ -57,7 +57,7 @@ const PRODUCT_SURFACES = [
     group: "Work",
     title: "Execute",
     eyebrow: "Workspace + session contexts",
-    body: "Preview or copy Project Context, Current Session Context, and up to two selected Library sessions. Every boundary stays separate and quality-gated.",
+    body: "Preview or copy Project Context and up to three Session Contexts selected from Library. Every boundary stays separate and quality-gated.",
     to: "/app/execute",
     action: "Open Execute",
     icon: BrainCircuit,
@@ -377,7 +377,7 @@ function ContinuationPreview() {
       </div>
 
       <div className="daemonstate-preview-action">
-        <span>Stage fresh Codex task</span>
+        <span>Request desktop composer</span>
         <ArrowRight className="h-4 w-4" aria-hidden="true" />
       </div>
       <p className="daemonstate-preview-footnote">
@@ -391,7 +391,7 @@ function AvailabilityStrip() {
   return (
     <section className="daemonstate-availability" aria-label="Current product availability">
       <div className="daemonstate-landing-shell daemonstate-availability-grid">
-        <AvailabilityItem label="Browser staging" value="Codex on macOS" />
+        <AvailabilityItem label="Desktop handoff" value="Codex · Claude Code · OpenCode" />
         <AvailabilityItem label="CLI adapters" value="Codex · Claude Code · OpenCode" />
         <AvailabilityItem label="Local inputs" value="Repositories + agent sessions" />
         <AvailabilityItem label="Proof standard" value="No silent verification" />

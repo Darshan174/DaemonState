@@ -2,14 +2,17 @@ import CryptoKit
 import Foundation
 
 enum ContextValidator {
+    static let currentCheckpointSchema = "work_checkpoint.v10"
     static let checkpointSchemas = Set([
         "work_checkpoint.v5",
         "work_checkpoint.v6",
         "work_checkpoint.v7",
         "work_checkpoint.v8",
+        "work_checkpoint.v9",
+        "work_checkpoint.v10",
     ])
     static let checkpointSchemaExpectation =
-        "work_checkpoint.v5, work_checkpoint.v6, work_checkpoint.v7, or work_checkpoint.v8"
+        "work_checkpoint.v5, work_checkpoint.v6, work_checkpoint.v7, work_checkpoint.v8, work_checkpoint.v9, or work_checkpoint.v10"
     static let sessionSchema = "session_handoff.v1"
     static let continuationSchema = "continuation.v1"
     static let projectSchema = "continuation_staging_context.v1"
@@ -34,61 +37,72 @@ enum ContextValidator {
                 actual: digest.activity?.schemaVersion
             )
         }
-        guard let primary = digest.activity?.primary else {
+        let latest = digest.activity?.latest
+        let newestLinkedSession = digest.activity?.recentSessions?.first
+        let active = (
+            latest != nil
+                ? newestLinkedSession ?? latest
+                : digest.activity?.primary
+        )
+        guard let active else {
             throw DaemonStateError.activeSessionUnavailable(
-                "the selected project has no primary activity"
+                "the selected project has no active session"
             )
         }
-        guard normalizedKey(primary.kind) == "agent_session" else {
+        guard normalizedKey(active.kind) == "agent_session" else {
             throw DaemonStateError.activeSessionUnavailable(
-                "the primary project activity is not a linked AI session"
+                "the newest project activity is not a linked AI session"
             )
         }
-        if normalizedKey(primary.evidenceLevel) == "session_unassigned"
-            || normalizedKey(primary.state) == "unassigned" {
+        if normalizedKey(active.evidenceLevel) == "session_unassigned"
+            || normalizedKey(active.state) == "unassigned" {
             throw DaemonStateError.activeSessionUnavailable(
-                "the primary AI session is not assigned to this project"
+                "the active AI session is not assigned to this project"
             )
         }
 
         let relevance = normalizedKey(
-            primary.projectMatch?.status ?? primary.workspaceRelevance?.status
+            active.projectMatch?.status ?? active.workspaceRelevance?.status
         )
         guard relevance == "relevant" else {
             throw DaemonStateError.activeSessionUnavailable(
-                "the primary AI session has not been confirmed as project-relevant"
+                "the active AI session has not been confirmed as project-relevant"
             )
         }
-        guard primary.refreshable == true else {
+        guard active.refreshable == true else {
             throw DaemonStateError.activeSessionUnavailable(
-                "the primary AI session is not linked to a refreshable local transcript"
+                "the active AI session is not linked to a refreshable local transcript"
             )
         }
 
-        let provider = normalizeProvider(primary.provider ?? primary.tool)
+        let provider = normalizeProvider(active.provider ?? active.tool)
         guard !provider.isEmpty else {
             throw DaemonStateError.activeSessionUnavailable(
-                "the primary AI session has no provider identity"
+                "the active AI session has no provider identity"
             )
         }
-        guard let sessionID = visible(primary.sessionID) else {
+        guard let sessionID = visible(active.sessionID) else {
             throw DaemonStateError.activeSessionUnavailable(
-                "the primary AI session has no session identity"
+                "the active AI session has no session identity"
             )
         }
 
         if let currentGoal = visible(digest.currentGoal?.title) {
             guard let sessionGoal = visible(
-                primary.request ?? primary.title ?? primary.sessionTitle
+                active.request ?? active.title ?? active.sessionTitle
             ), taskTextCompatible(currentGoal, sessionGoal) else {
                 throw DaemonStateError.activeSessionUnavailable(
-                    "the primary AI session does not match the workspace's current goal"
+                    "the active AI session does not match the workspace's current goal"
                 )
             }
         }
 
-        if primary.selectedForNow != true {
-            let candidates = [primary] + (digest.activity?.recentSessions ?? [])
+        // A non-nil `latest` opts into the backend's newest-activity contract;
+        // `recent_sessions[0]` is its newest assigned session and is the same
+        // default used by Continue. Older servers expose only `primary`;
+        // retain their ambiguity check unless Library selected it.
+        if latest == nil, active.selectedForNow != true {
+            let candidates = [active] + (digest.activity?.recentSessions ?? [])
             var identities = Set<String>()
             for candidate in candidates where candidateIsPlausible(
                 candidate,
@@ -220,7 +234,7 @@ enum ContextValidator {
     }
 
     static func isCurrentSessionTip(_ checkpoint: LatestCheckpointEnvelope) -> Bool {
-        guard checkpoint.schemaVersion.map(checkpointSchemas.contains) == true,
+        guard checkpoint.schemaVersion == currentCheckpointSchema,
               normalizedKey(checkpoint.captureStatus) == "complete",
               checkpoint.projection?.valid == true,
               normalizedKey(checkpoint.currentness?.state) == "captured",

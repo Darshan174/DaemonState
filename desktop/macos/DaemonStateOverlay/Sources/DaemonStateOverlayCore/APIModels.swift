@@ -63,11 +63,13 @@ struct ContextDigestEnvelope: Decodable {
 struct DigestActivityEnvelope: Decodable {
     let schemaVersion: String?
     let primary: DigestPrimaryEnvelope?
+    let latest: DigestPrimaryEnvelope?
     let recentSessions: [DigestPrimaryEnvelope]?
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case primary
+        case latest
         case recentSessions = "recent_sessions"
     }
 }

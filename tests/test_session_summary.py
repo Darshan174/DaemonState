@@ -33,6 +33,55 @@ def test_codex_reference_envelope_keeps_only_the_user_authored_request() -> None
     assert normalize_substantive_user_request(value) == expected
 
 
+def test_generated_context_pack_extracts_inline_user_request_before_historical_tail() -> None:
+    value = (
+        "# Objective\n\n"
+        "# Files mentioned by the user: ## prior handoff: /tmp/context.txt "
+        "## My request for Codex: BUILD THE COMPLETE CONTINUATION WORKFLOW. "
+        "Remove Browser fallback copied and do not ask the user to verify it. "
+        '<image name=[Image #1] path="/tmp/screenshot.png"></image>\n\n'
+        "## Current Repo State\n\n"
+        "- Repo: `/workspace/wrong-history`\n"
+        "- Branch: `historical-branch`\n\n"
+        "## Stop Conditions\n\n"
+        "- Stop on an old failure.\n\n"
+        "## Evidence Citations\n\n"
+        '- [E1] `user_task`: "# Files mentioned by the user: '
+        '## My request for Codex: BUILD THE COMPLETE CONTINUATION WORKFLOW."\n'
+        '- [E2] `checkpoint`: "## My request for Codex: '
+        'quoted historical request."'
+    )
+
+    extracted = extract_user_authored_request(value)
+
+    assert extracted is not None
+    assert extracted.startswith("BUILD THE COMPLETE CONTINUATION WORKFLOW.")
+    assert "<image" in extracted
+    assert "Current Repo State" not in extracted
+    assert "historical-branch" not in extracted
+    assert "[E1]" not in extracted
+    assert "quoted historical request" not in extracted
+    normalized = normalize_substantive_user_request(value)
+    assert normalized is not None
+    assert "Browser fallback copied" in normalized
+    assert "<image" not in normalized
+
+
+def test_normal_request_can_still_contain_repo_state_heading() -> None:
+    value = (
+        "## My request for Codex:\n"
+        "Audit the release.\n\n"
+        "## Current Repo State\n\n"
+        "- Branch: `codex/release`"
+    )
+
+    assert extract_user_authored_request(value) == (
+        "Audit the release.\n\n"
+        "## Current Repo State\n\n"
+        "- Branch: `codex/release`"
+    )
+
+
 def test_truncated_user_request_is_never_promoted_to_authority() -> None:
     value = (
         "## Referenced ChatGPT conversation:\n"

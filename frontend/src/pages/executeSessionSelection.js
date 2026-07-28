@@ -3,7 +3,7 @@ import {
   writeWorkspacePreferences,
 } from "../context/workspacePreferences";
 
-export const MAX_EXECUTE_SESSION_CONTEXTS = 2;
+export const MAX_EXECUTE_SESSION_CONTEXTS = 3;
 
 const EXECUTE_PREFERENCES_SURFACE = "execute";
 const SESSION_CONTEXTS_KEY = "sessionContexts";
