@@ -2,6 +2,7 @@
   "name": "daemonstate-admin",
   "private": true,
   "version": "0.1.0",
+  "license": "SUL-1.0",
   "type": "module",
   "engines": {
     "node": "^20.19.0 || ^22.13.0 || >=24.0.0"

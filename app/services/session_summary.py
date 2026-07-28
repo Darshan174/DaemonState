@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
+
+
+SESSION_LIBRARY_SUMMARY_VERSION = 1
 
 
 _GENERIC_TITLE_RE = re.compile(
@@ -147,13 +151,28 @@ _TOOL_TRANSCRIPT_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 _CONTEXT_PACK_FILE_PAYLOAD_RE = re.compile(
-    r"^\s*<path>[\s\S]*?context-engine-harness-[^<]*[/\\]"
+    r"^\s*<path>[\s\S]*?[/\\][^/\\<]*harness-[^/\\<]*[/\\]"
     r"context-pack\.md</path>\s*<type>file</type>\s*<content>",
     re.IGNORECASE,
 )
 _HARNESS_CONTINUATION_MESSAGE_RE = re.compile(
-    r"^\s*[\"']?continue the task using the attached context engine context "
+    r"^\s*[\"']?continue the task using the attached "
+    r"(?:(?:[a-z0-9._-]+\s+){0,4})context "
     r"pack\.\s*verify the current repository state before editing\.?[\"']?\s*$",
+    re.IGNORECASE,
+)
+_CODEX_USER_REQUEST_MARKER_RE = re.compile(
+    r"(?<!\S)#{1,6}\s*My request for Codex:\s*",
+    re.IGNORECASE,
+)
+_CARRIED_CONTEXT_TAIL_HEADING_RE = re.compile(
+    r"(?m)^[ \t]*#{1,6}[ \t]+(?:"
+    r"Current Repo State|Continuation Identity|Relevant Repository Files|"
+    r"Restored Session Checkpoint|Non-Negotiable Decisions|Known Blockers|"
+    r"Prior Failures And Open Questions|Implementation Plan|Execution Policy|"
+    r"Verification Commands|Evidence Citations|Excluded Stale Or Conflicting Context|"
+    r"Stop Conditions"
+    r")[ \t]*$",
     re.IGNORECASE,
 )
 _CORRECTION_PATTERNS = (
@@ -196,10 +215,92 @@ def is_internal_session_content(content: str | None) -> bool:
     )
 
 
+def persisted_session_internal(
+    metadata: dict[str, object],
+    *,
+    content_sha256: str | None,
+) -> bool | None:
+    """Return a digest-bound persisted classification, or None for legacy rows."""
+
+    raw = metadata.get("session_library_summary")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        schema_version = int(raw.get("schema_version") or 0)
+    except (TypeError, ValueError):
+        return None
+    if (
+        schema_version != SESSION_LIBRARY_SUMMARY_VERSION
+        or not content_sha256
+        or raw.get("content_sha256") != content_sha256
+        or not isinstance(raw.get("internal"), bool)
+    ):
+        return None
+    return raw["internal"]
+
+
+def extract_user_authored_request(value: str | None) -> str | None:
+    """Remove Codex transport/background prefixes without rewriting the request body."""
+
+    text = str(value or "")
+    if text.rstrip().endswith("[output truncated]"):
+        # Historical event rows created before lossless user-request storage
+        # cannot prove what the user actually asked. Fail closed instead of
+        # promoting a partial request or referenced-chat payload to authority.
+        return None
+    markers = list(_CODEX_USER_REQUEST_MARKER_RE.finditer(text))
+    if not markers:
+        return text if text.strip() else None
+
+    marker = markers[-1]
+    historical_tail = _CARRIED_CONTEXT_TAIL_HEADING_RE.search(text)
+    if historical_tail is not None:
+        # Generated context packs can quote the complete user request again in
+        # their evidence section. Select the final marker in the outer
+        # Objective region, before the first generated handoff heading, instead
+        # of a quoted marker in that evidence tail.
+        objective_markers = [
+            candidate
+            for candidate in markers
+            if candidate.start() < historical_tail.start()
+        ]
+        if objective_markers:
+            objective_marker = objective_markers[-1]
+            objective_line_start = (
+                text.rfind("\n", 0, objective_marker.start()) + 1
+            )
+            if text[
+                objective_line_start:objective_marker.start()
+            ].strip():
+                marker = objective_marker
+    body = text[marker.end():]
+    if body.startswith("\r\n"):
+        body = body[2:]
+    elif body.startswith("\n"):
+        body = body[1:]
+    line_start = text.rfind("\n", 0, marker.start()) + 1
+    inline_transport_marker = bool(text[line_start:marker.start()].strip())
+    if inline_transport_marker:
+        # Generated context packs can embed an entire older handoff inside one
+        # provider user turn. In those envelopes the actual user lead appears
+        # after an inline "My request for Codex" marker, followed by structured
+        # historical sections such as "Current Repo State". Preserve the lead,
+        # but never promote the older handoff's inventory and policy into fresh
+        # user authority.
+        body_tail = _CARRIED_CONTEXT_TAIL_HEADING_RE.search(body)
+        if body_tail is not None:
+            body = body[:body_tail.start()]
+    return body if body.strip() else None
+
+
 def clean_session_message_text(value: str | None) -> str:
     """Remove attachment transport markup while preserving the user's request."""
 
-    text = re.sub(r"(?is)<image\b.*?</image>", " ", value or "")
+    text = re.sub(
+        r"(?is)<image\b.*?</image>",
+        " ",
+        extract_user_authored_request(value) or "",
+    )
     text = re.sub(
         r"\[([^\]]+)\]\((?:/Users|/var|/private)/[^)]+\)",
         r"\1",
@@ -414,6 +515,90 @@ def derive_latest_session_topic(
         tool=tool,
         session_id=session_id,
     )
+
+
+def build_session_library_summary(
+    content: str,
+    *,
+    explicit_title: str | None = None,
+    cwd: str | None = None,
+    tool: str | None = None,
+    session_id: str | None = None,
+    preview_limit: int = 180,
+) -> dict[str, object]:
+    """Materialize the compact fields needed to render a Session Library row."""
+
+    title = derive_session_topic(
+        content,
+        explicit_title=explicit_title,
+        tool=tool,
+        session_id=session_id,
+    ) or "Untitled session"
+    topics = derive_session_topics(
+        content,
+        explicit_title=title,
+        cwd=cwd,
+        tool=tool,
+        session_id=session_id,
+    )
+    latest_topic = derive_latest_session_topic(
+        content,
+        explicit_title=explicit_title,
+        tool=tool,
+        session_id=session_id,
+    )
+    if latest_topic:
+        latest_key = _topic_key(latest_topic)
+        matching_topic = next(
+            (item for item in topics if _topic_key(item) == latest_key),
+            None,
+        )
+        topics = [item for item in topics if _topic_key(item) != latest_key]
+        if matching_topic is None and len(topics) >= 6:
+            topics = topics[:5]
+        topics.append(matching_topic or latest_topic)
+
+    return {
+        "schema_version": SESSION_LIBRARY_SUMMARY_VERSION,
+        "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "internal": is_internal_session_content(content),
+        "title": title,
+        "topics": topics or ([] if title == "Untitled session" else [title]),
+        "latest_topic": latest_topic or (
+            None if title == "Untitled session" else title
+        ),
+        "preview": session_preview(content, limit=preview_limit),
+    }
+
+
+def session_preview(content: str, limit: int = 180) -> str:
+    blocks = re.findall(
+        r"(?ms)^\[(?:USER|HUMAN|YOU)\]\s*(.*?)(?=^\[[A-Z_ -]+\]\s*|\Z)",
+        content or "",
+    )
+    noise_markers = (
+        "request_user_input availability",
+        "<skills_instructions>",
+        "<permissions instructions>",
+        "# agents.md instructions",
+        "the following is the codex agent history",
+        "at the start of your turn",
+        "all agents in the team",
+        "child agents can also spawn",
+        "they may be addressed as to=/root",
+        "permanent repository rules for codex",
+    )
+    value = next(
+        (
+            item for item in blocks
+            if item.strip() and not any(marker in item.lower() for marker in noise_markers)
+        ),
+        "",
+    )
+    if not value:
+        value = next((topic for topic in derive_session_topics(content) if topic), "")
+    clean = re.sub(r"\s+", " ", value).strip()
+    return clean if len(clean) <= limit else f"{clean[: limit - 1].rstrip()}…"
 
 
 def _is_generic_title(title: str, *, tool: str | None, session_id: str | None) -> bool:

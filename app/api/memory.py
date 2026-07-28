@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from collections import defaultdict
 from datetime import datetime
@@ -10,7 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import load_only, selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.api.dependencies import get_access_scope
 from app.api.context_digest import _is_digest_noise_component
@@ -52,6 +54,22 @@ from app.time import utc_now
 
 
 router = APIRouter()
+
+_MEMORY_SOURCE_COLUMNS = (
+    SourceDocument.id,
+    SourceDocument.workspace_id,
+    SourceDocument.source_type,
+    SourceDocument.external_id,
+    SourceDocument.content_sha256,
+    SourceDocument.source_identity_sha256,
+    SourceDocument.revision_number,
+    SourceDocument.trust_zone,
+    SourceDocument.source_created_at,
+    SourceDocument.source_url,
+    SourceDocument.metadata_json,
+    SourceDocument.ingested_at,
+    SourceDocument.processed_at,
+)
 
 MemorySectionId = Literal[
     "goal",
@@ -291,6 +309,31 @@ class ProjectMemoryResponse(BaseModel):
     scope: dict[str, Any]
 
 
+async def _attach_remote_source_contents(
+    session: AsyncSession,
+    documents: list[SourceDocument],
+) -> None:
+    remote_documents = [
+        document for document in documents if is_remote_source(document)
+    ]
+    if not remote_documents:
+        return
+    rows = await session.execute(
+        select(SourceDocument.id, SourceDocument.content).where(
+            SourceDocument.id.in_({
+                document.id for document in remote_documents
+            })
+        )
+    )
+    contents = {source_id: content for source_id, content in rows}
+    for document in remote_documents:
+        set_committed_value(
+            document,
+            "content",
+            contents.get(document.id) or "",
+        )
+
+
 @router.get("/context/memory", response_model=ProjectMemoryResponse)
 async def get_project_memory(
     workspace_id: UUID,
@@ -314,6 +357,7 @@ async def get_project_memory(
 
     documents = list(await session.scalars(
         select(SourceDocument)
+        .options(load_only(*_MEMORY_SOURCE_COLUMNS))
         .where(source_access_predicate(access_scope, workspace_id=workspace_id))
         .order_by(SourceDocument.ingested_at.desc(), SourceDocument.id.desc())
     ))
@@ -321,6 +365,7 @@ async def get_project_memory(
         documents, str(workspace_id)
     )
     current_documents, _ = current_source_documents(documents)
+    await _attach_remote_source_contents(session, current_documents)
     provider_freshness_by_source = await load_provider_freshness(
         session,
         current_documents,
@@ -346,7 +391,9 @@ async def get_project_memory(
         components = list(await session.scalars(
             select(Component)
             .options(
-                selectinload(Component.source_document),
+                selectinload(Component.source_document).load_only(
+                    *_MEMORY_SOURCE_COLUMNS
+                ),
                 selectinload(Component.claim),
             )
             .where(
@@ -592,6 +639,7 @@ async def get_project_memory(
         session,
         workspace_id=workspace_id,
         allowed_component_ids=relationship_component_ids,
+        allowed_source_document_ids=accessible_document_ids,
     )
     if current_goal is not None and current_goal.get("component_id"):
         try:
@@ -865,6 +913,40 @@ async def _evidence_by_component(
             )
         if revision is not None:
             result[component.id] = revision.evidence_span
+    evidence_spans = {
+        evidence.id: evidence for evidence in result.values()
+    }
+    if evidence_spans:
+        source_rows = await session.execute(
+            select(SourceDocument.id, SourceDocument.content).where(
+                SourceDocument.id.in_({
+                    evidence.source_document_id
+                    for evidence in evidence_spans.values()
+                })
+            )
+        )
+        source_contents = {
+            source_id: content or "" for source_id, content in source_rows
+        }
+        for evidence in evidence_spans.values():
+            source_content = source_contents.get(evidence.source_document_id)
+            start = evidence.start_char
+            end = evidence.end_char
+            evidence._source_text_matches = bool(
+                source_content is not None
+                and start is not None
+                and end is not None
+                and 0 <= start < end <= len(source_content)
+                and source_content[start:end] == (evidence.text or "")
+            )
+            evidence._source_content_length = (
+                len(source_content) if source_content is not None else -1
+            )
+            evidence._source_content_sha256 = (
+                hashlib.sha256(source_content.encode("utf-8")).hexdigest()
+                if source_content is not None
+                else ""
+            )
     return result
 
 

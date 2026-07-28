@@ -251,7 +251,10 @@ def _meaningful_messages(
         lowered = compact.lower()
         if not compact or any(marker in lowered for marker in _NOISE_MARKERS):
             continue
-        result.append(_cap(compact, 1600))
+        # Provider-compaction restoration may supply the authoritative request
+        # when no structured checkpoint exists. Keep the cleaned message
+        # lossless; only display labels and previews may be capped.
+        result.append(text.strip())
     return result
 
 
@@ -263,7 +266,7 @@ def _distinct_recent(values: list[str], *, limit: int) -> list[str]:
         if not key or key in seen:
             continue
         seen.add(key)
-        output.append(_cap(value, 700))
+        output.append(value)
         if len(output) >= limit:
             break
     output.reverse()

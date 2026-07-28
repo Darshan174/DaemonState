@@ -196,6 +196,8 @@ def _validate_row(row: Mapping[str, Any], *, index: int) -> _ExperimentRow:
         raise ExperimentValidationError(f"row {index} must be an object")
     task_id = _required_text(row.get("task_id"), field=f"row {index} task_id")
     label = _required_text(row.get("label"), field=f"row {index} label")
+    if label.startswith("old_with_") and label not in EXPERIMENT_LABELS:
+        label = "old_with_daemonstate"
     if label not in EXPERIMENT_LABELS:
         raise ExperimentValidationError(
             f"row {index} label must be one of: {', '.join(EXPERIMENT_LABELS)}"

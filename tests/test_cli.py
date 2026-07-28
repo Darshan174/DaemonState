@@ -292,7 +292,7 @@ def test_cli_harness_run_requires_explicit_worker_command(capsys):
     assert "provide an explicit worker command" in capsys.readouterr().err
 
 
-def test_cli_continue_infers_objective_and_prints_compiled_pack(monkeypatch, capsys):
+def test_cli_continue_infers_objective_and_prints_execution_prompt(monkeypatch, capsys):
     workspace_id = "6ab92f38-0b46-4415-a43d-f293cc659581"
     calls = []
 
@@ -304,7 +304,10 @@ def test_cli_continue_infers_objective_and_prints_compiled_pack(monkeypatch, cap
             "readiness": "ready",
             "attention": [],
             "context_pack_id": "5e7adbe6-71cf-46e4-8c2d-cee0b422526b",
-            "markdown": "# Objective\n\nContinue the current task.\n",
+            "execution_prompt": (
+                "# Continuation execution\n\nContinue the current task.\n"
+            ),
+            "markdown": "# Audit artifact\n",
         }
 
     monkeypatch.setattr(cli_main, "_prepare_and_maybe_run_continuation", fake_continue)
@@ -324,7 +327,8 @@ def test_cli_continue_infers_objective_and_prints_compiled_pack(monkeypatch, cap
     assert calls[0].no_sync is True
     output = capsys.readouterr().out
     assert "continuation ready: task=task.v1:current readiness=ready" in output
-    assert "# Objective" in output
+    assert "# Continuation execution" in output
+    assert "# Audit artifact" not in output
 
 
 def test_cli_continue_reports_provider_delivery(monkeypatch, capsys):
@@ -333,6 +337,7 @@ def test_cli_continue_reports_provider_delivery(monkeypatch, capsys):
             "task": {"id": "task.v1:cross-agent"},
             "readiness": "ready",
             "attention": [],
+            "execution_prompt": "# Continuation execution",
             "markdown": "# Continue",
             "delivery": {
                 "provider": "claude",
@@ -372,6 +377,7 @@ def test_cli_continue_reports_completed_without_checks_as_unverified(
             "task": {"id": "task.v1:no-checks"},
             "readiness": "review_required",
             "attention": [],
+            "execution_prompt": "# Continuation execution",
             "delivery": {"provider": "codex", "mode": "fresh"},
             "run": {
                 "run_id": "b3a2c60b-4bf4-42e4-94f4-6c2cbce14f43",
@@ -390,7 +396,7 @@ def test_cli_continue_reports_completed_without_checks_as_unverified(
         "codex",
     ]) == 1
 
-    assert "outcome=completed_unverified" in capsys.readouterr().out
+    assert "outcome=requirements_unproven" in capsys.readouterr().out
 
 
 def test_cli_continue_reports_an_unstarted_blocked_delivery(monkeypatch, capsys):
@@ -399,6 +405,7 @@ def test_cli_continue_reports_an_unstarted_blocked_delivery(monkeypatch, capsys)
             "task": {"id": "task.v1:unsafe"},
             "readiness": {"status": "blocked", "score": 0},
             "attention": [{"message": "The repository is unavailable."}],
+            "execution_prompt": "# Continuation execution",
             "markdown": "# Continue",
             "run": {
                 "status": "not_started",
@@ -436,33 +443,27 @@ def test_continuation_observed_outcome_requires_an_executed_passing_check():
     assert cli_main._continuation_observed_outcome({
         "status": "completed",
         "verification_results": [],
-    }) == {"status": "completed_unverified", "verified": False}
+    }) == {"status": "requirements_unproven", "verified": False}
     assert cli_main._continuation_observed_outcome({
         "status": "completed",
         "verification_results": [
             {"result": {"exit_code": 0, "timed_out": False}},
         ],
-    }) == {"status": "verified", "verified": True}
+    }) == {"status": "requirements_unproven", "verified": False}
 
 
 @pytest.mark.asyncio
 async def test_cli_continue_runs_checks_automatically_for_review_required_evidence(
     monkeypatch,
 ):
-    from app import database, models
-    from app.services import continuation, harness_adapters, local_harness
+    from app import database
+    from app.services import continuation_runtime
 
     captured = {}
 
     class FakeSession:
         async def get(self, _model, _identity):
             return object()
-
-        def add(self, run):
-            run.id = "282799dc-5525-42b9-b55f-596005ed1421"
-
-        async def commit(self):
-            return None
 
     class FakeSessionContext:
         async def __aenter__(self):
@@ -471,74 +472,45 @@ async def test_cli_continue_runs_checks_automatically_for_review_required_eviden
         async def __aexit__(self, _exc_type, _exc, _traceback):
             return False
 
-    class FakePreparation:
+    class FakeRunResult:
         def to_dict(self):
             return {
                 "task": {"id": "task.v1:current"},
                 "objective": "Continue the real task",
                 "readiness": {"status": "review_required"},
-                "source_session": {"provider": "claude"},
                 "context_pack_id": "62b8e658-cce3-45ab-9636-04bd8cb0ba07",
-                "manifest": {
-                    "repo_state": {
-                        "branch": "main",
-                        "head_commit": "abc123",
-                    },
+                "continuation_execution_id": (
+                    "72b8e658-cce3-45ab-9636-04bd8cb0ba07"
+                ),
+                "delivery": {
+                    "provider": "codex",
+                    "mode": "fresh",
+                    "context_delivery": "stdin",
                 },
-                "repository": {
-                    "current": {
-                        "status_fingerprint": "fresh-repository-state",
-                    },
+                "run": {
+                    "run_id": "282799dc-5525-42b9-b55f-596005ed1421",
+                    "status": "completed",
+                },
+                "outcome": {
+                    "status": "verified_complete",
+                    "verified": True,
                 },
             }
 
-    class FakeContinuationService:
+    class FakeContinuationRunService:
         def __init__(self, _session):
-            pass
-
-        async def prepare(self, **_kwargs):
-            return FakePreparation()
-
-    class FakeAgentRun:
-        def __init__(self, **kwargs):
-            self.__dict__.update(kwargs)
-            self.id = "282799dc-5525-42b9-b55f-596005ed1421"
-
-    class FakeHarnessResult:
-        def to_dict(self):
-            return {
-                "run_id": "282799dc-5525-42b9-b55f-596005ed1421",
-                "status": "completed",
-                "verification_results": [
-                    {"result": {"exit_code": 0, "timed_out": False}},
-                ],
-            }
-
-    class FakeHarnessRunner:
-        def __init__(self, _session, **_kwargs):
             pass
 
         async def run(self, **kwargs):
             captured.update(kwargs)
-            return FakeHarnessResult()
+            return FakeRunResult()
 
     monkeypatch.setattr(database, "AsyncSessionLocal", lambda: FakeSessionContext())
-    monkeypatch.setattr(continuation, "ContinuationService", FakeContinuationService)
-    monkeypatch.setattr(models, "AgentRun", FakeAgentRun)
     monkeypatch.setattr(
-        harness_adapters,
-        "build_harness_invocation",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            provider="codex",
-            mode="fresh",
-            context_delivery="stdin",
-            session_id=None,
-            executable="codex",
-            repo_path=".",
-            argv=("codex", "exec", "-"),
-        ),
+        continuation_runtime,
+        "ContinuationRunService",
+        FakeContinuationRunService,
     )
-    monkeypatch.setattr(local_harness, "LocalHarnessRunner", FakeHarnessRunner)
 
     result = await cli_main._prepare_and_maybe_run_continuation(SimpleNamespace(
         workspace_id="4f4f4594-fb11-4c46-ac8f-1daae8d51094",
@@ -556,9 +528,13 @@ async def test_cli_continue_runs_checks_automatically_for_review_required_eviden
         verification_timeout=900.0,
     ))
 
-    assert captured["verify"] is True
-    assert captured["expected_status_fingerprint"] == "fresh-repository-state"
-    assert result["outcome"] == {"status": "verified", "verified": True}
+    assert captured["target_provider"] == "codex"
+    assert captured["sync_sessions"] is True
+    assert captured["output_limit_bytes"] == 32_768
+    assert result["outcome"] == {
+        "status": "verified_complete",
+        "verified": True,
+    }
 
 
 @pytest.mark.parametrize(

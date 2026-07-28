@@ -4,11 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "daemonstate"
-version = "0.2.0"
+version = "0.3.0"
 description = "Structured context infrastructure for AI systems"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { file = "LICENSE" }
+license = "SUL-1.0"
+license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.txt"]
 authors = [
   { name = "DaemonState contributors" },
 ]
@@ -25,7 +26,6 @@ classifiers = [
   "Environment :: Web Environment",
   "Framework :: FastAPI",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.12",
   "Topic :: Database",
@@ -45,6 +45,9 @@ dependencies = [
   "asyncpg>=0.29.0,<1.0.0",
   "alembic>=1.13.0,<2.0.0",
   "cryptography>=42.0.0,<46.0.0",
+  "opentelemetry-api>=1.30.0,<2.0.0",
+  "opentelemetry-exporter-otlp-proto-http>=1.30.0,<2.0.0",
+  "opentelemetry-sdk>=1.30.0,<2.0.0",
   "prometheus-client>=0.21.0,<1.0.0",
   "redis>=5.0.0,<8.0.0",
 ]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 import json
 import tomllib
@@ -10,9 +11,16 @@ ENV_EXAMPLE = Path(".env.example")
 GITIGNORE = Path(".gitignore")
 PYPROJECT = Path("pyproject.toml")
 DOCKERFILE = Path("Dockerfile")
+COMPOSE = Path("docker-compose.yml")
 FRONTEND_PACKAGE = Path("frontend/package.json")
 DOCTOR_SCRIPT = Path("scripts/doctor.sh")
+SELF_HOST_SCRIPT = Path("scripts/self-host.sh")
 SMOKE_SCRIPT = Path("scripts/smoke.sh")
+LICENSE = Path("LICENSE")
+NOTICE = Path("NOTICE")
+THIRD_PARTY_NOTICES = Path("THIRD_PARTY_NOTICES.txt")
+SELF_HOST_DOC = Path("docs/self-hosting.md")
+LICENSING_DOC = Path("docs/licensing.md")
 DEMO_DOC = Path("docs/demo.md")
 MCP_DOC = Path("docs/mcp.md")
 MCP_EXAMPLES_DIR = Path("examples/mcp")
@@ -27,9 +35,7 @@ def test_readme_documents_honest_setup_deployment_and_contributing_paths():
 
     assert "github.com/your-org/daemonstate.git" not in text
     assert "git clone https://github.com/Darshan174/DaemonState.git daemonstate" in text
-    assert "cp .env.example .env" in text
-    assert "bash scripts/doctor.sh --docker" in text
-    assert "docker compose up --build" in text
+    assert "bash scripts/self-host.sh" in text
     assert "bash scripts/doctor.sh --bare-metal" in text
     assert "bash scripts/setup.sh" in text
     assert "Node.js 20.19+ on the 20.x line" in text
@@ -37,7 +43,8 @@ def test_readme_documents_honest_setup_deployment_and_contributing_paths():
     assert "[CONTRIBUTING.md](CONTRIBUTING.md)" in text
     assert "It is not a production hardening guide" in text
     assert "There are no built-in Codex" not in text
-    assert "reopen an exact Codex task" in text
+    assert "requests a new composer" in text
+    assert "not as a verified open" in text
     assert "There is no system-wide agent monitor" in text
     assert "local harness is the path that independently inspects Git state" in " ".join(text.split())
     assert "Continue automatically captures the selected session tip" in text
@@ -46,6 +53,9 @@ def test_readme_documents_honest_setup_deployment_and_contributing_paths():
     assert "The API preserves revisions and enforces access scopes" in text
     assert "| Library |" in text
     assert "| Memory |" in text
+    assert "source-available" in text
+    assert "Sustainable Use License 1.0" in text
+    assert "[Self-hosting](docs/self-hosting.md)" in text
     assert "fly launch" not in text
 
     assert "DATABASE_URL=sqlite+aiosqlite:///data/context.db" in env_example
@@ -57,15 +67,21 @@ def test_readme_documents_honest_setup_deployment_and_contributing_paths():
     assert "!.env.example" in gitignore
 
 
-def test_pyproject_exposes_oss_metadata():
+def test_pyproject_exposes_source_available_metadata():
     data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
     project = data["project"]
 
-    assert project["license"] == {"file": "LICENSE"}
+    assert project["license"] == "SUL-1.0"
+    assert project["license-files"] == [
+        "LICENSE",
+        "NOTICE",
+        "THIRD_PARTY_NOTICES.txt",
+    ]
+    assert project["version"] == "0.3.0"
     assert "DaemonState contributors" in {author["name"] for author in project["authors"]}
     assert "self-hosted" in project["keywords"]
     assert "knowledge-graph" in project["keywords"]
-    assert "License :: OSI Approved :: MIT License" in project["classifiers"]
+    assert "License :: OSI Approved :: MIT License" not in project["classifiers"]
     assert "Framework :: FastAPI" in project["classifiers"]
     assert project["urls"]["Repository"] == "https://github.com/Darshan174/DaemonState"
     assert project["urls"]["Issues"] == "https://github.com/Darshan174/DaemonState/issues"
@@ -95,6 +111,42 @@ def test_dockerfile_copies_license_before_package_install():
     assert "LICENSE" in lines[copy_line_number]
 
 
+def test_license_and_self_hosting_contracts_are_explicit():
+    license_text = LICENSE.read_text(encoding="utf-8")
+    licensing = LICENSING_DOC.read_text(encoding="utf-8")
+    self_hosting = SELF_HOST_DOC.read_text(encoding="utf-8")
+    compose = COMPOSE.read_text(encoding="utf-8")
+    script = SELF_HOST_SCRIPT.read_text(encoding="utf-8")
+    package = json.loads(FRONTEND_PACKAGE.read_text(encoding="utf-8"))
+    normalized_license = " ".join(license_text.split())
+
+    assert hashlib.sha256(LICENSE.read_bytes()).hexdigest() == (
+        "73a310b6732d14a636e10a5d6dcf9ca7122ff7870ef06dfa07a872ddb152752a"
+    )
+    assert "internal business purposes" in normalized_license
+    assert "free of charge for non-commercial purposes" in normalized_license
+    assert "Versions through 0.2.0" in licensing
+    assert "45b7a6e653a1762bf91b99fae4c7adf3dafc55ce" in licensing
+    assert "source-available" in licensing
+    assert package["license"] == "SUL-1.0"
+    assert "Darshan174" in NOTICE.read_text(encoding="utf-8")
+    assert "SIL OPEN FONT LICENSE Version 1.1" in THIRD_PARTY_NOTICES.read_text(
+        encoding="utf-8"
+    )
+
+    assert '${BIND_ADDRESS:-127.0.0.1}:${PORT:-8000}:8000' in compose
+    assert 'command: ["daemonstate", "db", "deploy"]' in compose
+    assert "condition: service_completed_successfully" in compose
+    assert "GOOGLE_CLIENT_SECRET" in compose
+    assert "SLACK_CLIENT_SECRET" in compose
+    assert "/health/ready" in compose
+    assert "SYNC_WORKER_HEALTH_FILE" in compose
+    assert "docker compose up --build --detach --wait" in script
+    assert "chmod 0600 .env" in script
+    assert "SSH tunnel" in self_hosting
+    assert "SERVE_FRONTEND=false" in self_hosting
+
+
 def test_readme_is_short_plain_language_and_uses_the_product_logo():
     readme = README.read_text(encoding="utf-8")
     demo_doc = DEMO_DOC.read_text(encoding="utf-8")
@@ -103,7 +155,7 @@ def test_readme_is_short_plain_language_and_uses_the_product_logo():
     assert '<img src="frontend/public/favicon.svg"' in readme
     assert "Founders and non-technical users" in readme
     assert "Developers" in readme
-    assert "task-sized brief" in readme
+    assert "durable Project Context foundation" in readme
     assert "We have not proven that yet" in " ".join(readme.split())
     assert "DaemonState is not another coding agent" in readme
     assert "![" not in readme
@@ -150,14 +202,14 @@ def test_doctor_script_is_documented_and_read_only():
     script = DOCTOR_SCRIPT.read_text(encoding="utf-8")
     smoke = SMOKE_SCRIPT.read_text(encoding="utf-8")
 
-    assert "bash scripts/doctor.sh --docker" in readme
+    assert "bash scripts/self-host.sh" in readme
     assert "bash scripts/doctor.sh --bare-metal" in readme
-    assert "bash scripts/doctor.sh --docker" in demo_doc
+    assert "bash scripts/self-host.sh" in demo_doc
 
     assert "Usage:" in script
     assert "bash scripts/doctor.sh --docker" in script
     assert "bash scripts/doctor.sh --bare-metal" in script
-    assert "docker compose up --build" in script
+    assert "bash scripts/self-host.sh" in script
     assert "bash scripts/setup.sh" in script
     assert "bash scripts/smoke.sh --docker" in script
     assert "/api/seed-demo" in script

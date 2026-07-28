@@ -49,7 +49,7 @@ fi
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 info "Shell script syntax"
-for script in scripts/setup.sh scripts/start.sh scripts/dev.sh scripts/doctor.sh scripts/smoke.sh; do
+for script in scripts/setup.sh scripts/start.sh scripts/dev.sh scripts/doctor.sh scripts/self-host.sh scripts/self-host-smoke.sh scripts/smoke.sh scripts/backup-postgres.sh scripts/restore-postgres.sh scripts/validate-production-images.sh; do
   bash -n "$script"
 done
 
@@ -81,6 +81,9 @@ if [[ "$RUN_DOCKER_SMOKE" -ne 1 ]]; then
   ok "local smoke checks passed"
   exit 0
 fi
+
+info "Personal PostgreSQL self-host smoke"
+bash scripts/self-host-smoke.sh
 
 info "Docker build/start/health smoke"
 cleanup() {

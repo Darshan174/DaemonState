@@ -643,7 +643,7 @@ async def test_digest_defaults_to_latest_session_topic_until_user_selects_one(cl
             "session_id": "activity",
             "tool": "codex",
             "repository": "acme/project",
-            "cwd": "/workspace/context-engine",
+            "cwd": "/workspace/daemonstate",
             "branch": "codex/auth-redirect",
         }),
     )
@@ -672,7 +672,7 @@ async def test_digest_defaults_to_latest_session_topic_until_user_selects_one(cl
     assert activity["primary"]["latest_topic"] == "The redirect is still broken in the app"
     assert activity["primary"]["title"] == "The redirect is still broken in the app"
     assert activity["primary"]["evidence_level"] == "session_reported"
-    assert activity["primary"]["cwd"] == "/workspace/context-engine"
+    assert activity["primary"]["cwd"] == "/workspace/daemonstate"
     assert activity["primary"]["result_summary"] is None
     assert activity["primary"]["latest_update"] == (
         "I’m using the in-app browser to review the rendered page"
@@ -704,7 +704,7 @@ async def test_digest_defaults_to_latest_session_topic_until_user_selects_one(cl
     assert activity["primary"]["selected_for_now"] is True
     assert activity["primary"]["selected_topic"] == "Fix the authentication redirect loop"
     assert activity["primary"]["session_title"] == "Fix the authentication redirect loop"
-    assert activity["primary"]["cwd"] == "/workspace/context-engine"
+    assert activity["primary"]["cwd"] == "/workspace/daemonstate"
     assert activity["primary"]["request"] == "The redirect is still broken in the app"
     assert activity["primary"]["latest_update"] == (
         "I’m using the in-app browser to review the rendered page"
@@ -713,6 +713,69 @@ async def test_digest_defaults_to_latest_session_topic_until_user_selects_one(cl
     assert activity["primary"]["changed_files"] == []
     assert activity["primary"]["outcome"] is None
     assert activity["primary"]["source_card_id"] == f"component:{root.id}"
+
+
+async def test_digest_exposes_latest_session_independently_of_older_selection(
+    client,
+    db_session,
+):
+    workspace = await _workspace(db_session, "Latest independent of selection")
+    connector = Connector(
+        workspace_id=workspace.id,
+        connector_type="github",
+        status="connected",
+        config_json=json.dumps({"repositories": ["acme/project"]}),
+    )
+    now = utc_now()
+    older = SourceDocument(
+        workspace_id=workspace.id,
+        source_type="agent_session",
+        external_id="codex:session:older-selected",
+        content="[USER]\nMaintain the older selected task.",
+        metadata_json=json.dumps({
+            "session_id": "older-selected",
+            "tool": "codex",
+            "repository": "acme/project",
+            "updated_at": (now - timedelta(hours=2)).isoformat(),
+        }),
+        ingested_at=now - timedelta(hours=2),
+    )
+    newer = SourceDocument(
+        workspace_id=workspace.id,
+        source_type="agent_session",
+        external_id="codex:session:newest",
+        content="[USER]\nPrepare the genuinely newest session.",
+        metadata_json=json.dumps({
+            "session_id": "newest",
+            "tool": "codex",
+            "repository": "acme/project",
+            "updated_at": (now - timedelta(hours=1)).isoformat(),
+        }),
+        ingested_at=now - timedelta(hours=1),
+    )
+    db_session.add_all([connector, older, newer])
+    await db_session.flush()
+
+    selected = await client.put(
+        "/api/session-library/selection",
+        json={
+            "workspace_id": str(workspace.id),
+            "source_document_id": str(older.id),
+        },
+    )
+    assert selected.status_code == 200
+
+    response = await client.get(
+        "/api/context/digest",
+        params={"workspace_id": str(workspace.id)},
+    )
+
+    assert response.status_code == 200
+    activity = response.json()["activity"]
+    assert activity["primary"]["session_id"] == "older-selected"
+    assert activity["primary"]["selected_for_now"] is True
+    assert activity["latest"]["session_id"] == "newest"
+    assert activity["latest"]["selected_for_now"] is False
 
 
 async def test_digest_default_preview_uses_newest_session_even_when_unassigned(
