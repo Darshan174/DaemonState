@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import load_only, selectinload
 
 from app.database import get_db_session
 from app.api.dependencies import get_access_scope
@@ -58,11 +58,11 @@ from app.services.session_summary import (
     derive_session_attention_items,
     derive_session_topic,
     extract_delegated_user_request,
-    is_internal_session_content,
     is_session_instruction_noise,
     is_substantive_user_request,
     normalize_substantive_user_request,
 )
+from app.services.session_visibility import internal_session_document_ids
 from app.services.session_library import selected_session_selection
 from app.services.project_scope import (
     ProjectRelevance,
@@ -70,7 +70,12 @@ from app.services.project_scope import (
     workspace_references,
     workspace_relevance,
 )
-from app.services.workspace_goals import resolve_current_goal
+from app.services.workspace_goals import (
+    ContextPackAccess,
+    build_context_pack_access,
+    context_pack_sources_accessible,
+    resolve_current_goal,
+)
 from app.services.context_digest_cache import (
     context_digest_cache,
     context_digest_cache_key,
@@ -79,6 +84,21 @@ from app.taxonomy import relationship_display_label, source_type_display
 from app.time import utc_now
 
 router = APIRouter()
+
+_DIGEST_SOURCE_COLUMNS = (
+    SourceDocument.id,
+    SourceDocument.workspace_id,
+    SourceDocument.source_type,
+    SourceDocument.external_id,
+    SourceDocument.content_sha256,
+    SourceDocument.source_identity_sha256,
+    SourceDocument.revision_number,
+    SourceDocument.source_created_at,
+    SourceDocument.source_url,
+    SourceDocument.metadata_json,
+    SourceDocument.ingested_at,
+    SourceDocument.processed_at,
+)
 
 CardType = Literal[
     "source",
@@ -627,6 +647,7 @@ async def get_context_digest(
         response.headers["X-Context-Digest-Cache"] = "BYPASS"
     scoped_documents = list(await session.scalars(
         select(SourceDocument)
+        .options(load_only(*_DIGEST_SOURCE_COLUMNS))
         .where(source_access_predicate(access_scope, workspace_id=workspace_uuid))
         .order_by(SourceDocument.ingested_at.desc())
     ))
@@ -645,7 +666,12 @@ async def get_context_digest(
     current_source_ids = {doc.id for doc in current_documents}
     stmt = (
         select(Component)
-        .options(selectinload(Component.model), selectinload(Component.source_document))
+        .options(
+            selectinload(Component.model),
+            selectinload(Component.source_document).load_only(
+                *_DIGEST_SOURCE_COLUMNS
+            ),
+        )
         .where(Component.status.in_(["active", "needs_review", "proposed", "stale"]))
         .where(Component.source_document_id.in_(current_source_ids))
         .order_by(Component.created_at.desc())
@@ -653,7 +679,12 @@ async def get_context_digest(
     components = list(await session.scalars(stmt)) if current_source_ids else []
     history_stmt = (
         select(Component)
-        .options(selectinload(Component.model), selectinload(Component.source_document))
+        .options(
+            selectinload(Component.model),
+            selectinload(Component.source_document).load_only(
+                *_DIGEST_SOURCE_COLUMNS
+            ),
+        )
         .where(Component.status.in_(["resolved", "superseded", "rejected"]))
         .where(Component.source_document_id.in_(accessible_source_ids))
         .order_by(Component.created_at.desc())
@@ -878,11 +909,23 @@ async def get_context_digest(
             item for item in await PlaybookService(session).list(workspace_id=workspace_uuid)
             if _id_list_accessible(item.source_document_ids_json, accessible_source_ids)
         ]
+    context_pack_access = (
+        await build_context_pack_access(
+            session,
+            workspace_id=workspace_uuid,
+            allowed_source_document_ids=accessible_source_ids,
+            allowed_component_ids=comp_ids,
+        )
+        if workspace_uuid is not None
+        else ContextPackAccess()
+    )
     current_goal = (
         await resolve_current_goal(
             session,
             workspace_id=workspace_uuid,
             allowed_component_ids=comp_ids,
+            allowed_source_document_ids=accessible_source_ids,
+            context_pack_access=context_pack_access,
         )
         if workspace_uuid is not None
         else None
@@ -890,7 +933,13 @@ async def get_context_digest(
     digest = ContextDigest(
         workspace_id=workspace_id_str,
         generated_at=utc_now(),
-        objective=await _digest_objective(session, workspace_id_str),
+        objective=await _digest_objective(
+            session,
+            workspace_id_str,
+            accessible_source_ids=accessible_source_ids,
+            allowed_component_ids=comp_ids,
+            context_pack_access=context_pack_access,
+        ),
         scope={
             "included_source_count": len({card.source_snapshot.source_document_id for card in project_cards}),
             # Unscoped documents are outside the authorized candidate query,
@@ -925,6 +974,8 @@ async def get_context_digest(
             cards=all_session_roots,
             current_documents=current_documents,
             accessible_source_ids=accessible_source_ids,
+            allowed_component_ids=comp_ids,
+            context_pack_access=context_pack_access,
             workspace_repositories=workspace_repositories,
             workspace_paths=workspace_paths,
             workspace_commits=workspace_commits,
@@ -1012,6 +1063,37 @@ class _SessionActivityCandidate:
     sort_key: tuple[int, datetime, str]
 
 
+async def _attach_activity_source_contents(
+    session: AsyncSession,
+    candidates: list[_SessionActivityCandidate],
+    source_ids: set[UUID],
+) -> None:
+    if not source_ids:
+        return
+    rows = await session.execute(
+        select(SourceDocument.id, SourceDocument.content).where(
+            SourceDocument.id.in_(source_ids)
+        )
+    )
+    contents = {source_id: content for source_id, content in rows}
+    for candidate in candidates:
+        if candidate.source.id in source_ids:
+            candidate.source._digest_content = (
+                contents.get(candidate.source.id) or ""
+            )
+
+
+def _source_content_for_digest(source: SourceDocument | None) -> str:
+    if source is None:
+        return ""
+    full_content = source.__dict__.get("_digest_content")
+    if full_content is None:
+        full_content = source.__dict__.get("content")
+    if full_content is not None:
+        return str(full_content)
+    return ""
+
+
 async def _digest_activity(
     session: AsyncSession,
     *,
@@ -1019,6 +1101,8 @@ async def _digest_activity(
     cards: list[ContextCard],
     current_documents: list[SourceDocument],
     accessible_source_ids: set[UUID],
+    allowed_component_ids: set[UUID],
+    context_pack_access: ContextPackAccess | None = None,
     workspace_repositories: set[str],
     workspace_paths: set[str],
     workspace_commits: set[str],
@@ -1031,10 +1115,23 @@ async def _digest_activity(
     are still useful for the latest request and stated rationale, but remain
     explicitly marked as session-reported until repository/run evidence exists.
     """
+    pack_access = context_pack_access
+    if pack_access is None and workspace_id is not None:
+        pack_access = await build_context_pack_access(
+            session,
+            workspace_id=workspace_id,
+            allowed_source_document_ids=accessible_source_ids,
+            allowed_component_ids=allowed_component_ids,
+        )
+    pack_access = pack_access or ContextPackAccess()
+    internal_document_ids = await internal_session_document_ids(
+        session,
+        current_documents,
+    )
     current_documents = [
         document for document in current_documents
         if document.source_type != "agent_session"
-        or not is_internal_session_content(document.content)
+        or document.id not in internal_document_ids
     ]
     session_cards = [
         card for card in cards
@@ -1122,6 +1219,11 @@ async def _digest_activity(
         for candidate in session_candidates
         if candidate.source.id in required_source_ids
     ]
+    await _attach_activity_source_contents(
+        session,
+        selected_candidates_for_read,
+        required_source_ids,
+    )
     events_by_source, event_counts = await _session_activity_events(
         session,
         required_source_ids,
@@ -1145,26 +1247,40 @@ async def _digest_activity(
     ]
     run_items: list[dict] = []
     if workspace_id is not None:
-        runs = list(await session.scalars(
+        base_run_stmt = (
             select(AgentRun)
             .options(
-                selectinload(AgentRun.context_pack),
-                selectinload(AgentRun.observations).selectinload(
-                    RunObservation.source_document
-                )
+                selectinload(AgentRun.context_pack).selectinload(
+                    ContextPack.items
+                ),
+                selectinload(AgentRun.observations),
             )
             .where(AgentRun.workspace_id == workspace_id)
             .order_by(AgentRun.started_at.desc(), AgentRun.id.desc())
-            .limit(12)
-        ))
-        for run in runs:
-            observations = [
-                item for item in run.observations
-                if item.source_document_id is None
-                or item.source_document_id in accessible_source_ids
-            ]
-            run_items.append(_run_activity(run, observations))
-        run_items.sort(key=_activity_sort_key, reverse=True)
+        )
+        active_run_stmt = base_run_stmt.where(
+            AgentRun.status.in_(["queued", "running", "in_progress"]),
+            AgentRun.ended_at.is_(None),
+        )
+        selected_run = await _first_accessible_run(
+            session,
+            active_run_stmt,
+            accessible_source_ids=accessible_source_ids,
+            allowed_component_ids=allowed_component_ids,
+            context_pack_access=pack_access,
+        )
+        if selected_run is None:
+            selected_run = await _first_accessible_run(
+                session,
+                base_run_stmt,
+                accessible_source_ids=accessible_source_ids,
+                allowed_component_ids=allowed_component_ids,
+                context_pack_access=pack_access,
+            )
+        if selected_run is not None:
+            run_items.append(
+                _run_activity(selected_run, list(selected_run.observations))
+            )
 
     selected_sessions = [
         item for item in assigned_session_items if item["selected_for_now"]
@@ -1174,15 +1290,23 @@ async def _digest_activity(
     # activity. An unassigned session may appear here, but remains excluded from
     # project truth until the user selects it.
     candidates = [*run_items, *session_items]
+    latest = (
+        max(candidates, key=_activity_sort_key)
+        if candidates
+        else None
+    )
     primary = max(selected_sessions, key=_activity_sort_key) if selected_sessions else (
         max(active_runs, key=_activity_sort_key) if active_runs else (
-            max(candidates, key=_activity_sort_key) if candidates else None
+            latest
         )
     )
     return {
         "schema_version": "now_activity.v1",
         "state": primary["state"] if primary else "empty",
         "primary": primary,
+        # Keep recency distinct from explicit project/workspace selection for
+        # consumers that need the newest observed activity.
+        "latest": latest,
         "recent_sessions": assigned_session_items[:4],
         "observation_note": (
             "Repository changes and checks are observation-backed; transcript updates are agent-reported."
@@ -1190,6 +1314,54 @@ async def _digest_activity(
             "No agent run or relevant imported coding session has been observed for this project."
         ),
     }
+
+
+async def _first_accessible_run(
+    session: AsyncSession,
+    statement,
+    *,
+    accessible_source_ids: set[UUID],
+    allowed_component_ids: set[UUID],
+    context_pack_access: ContextPackAccess,
+) -> AgentRun | None:
+    offset = 0
+    while True:
+        run = (await session.scalars(
+            statement.offset(offset).limit(1)
+        )).first()
+        if run is None:
+            return None
+        if _run_sources_accessible(
+            run,
+            accessible_source_ids,
+            allowed_component_ids,
+            context_pack_access=context_pack_access,
+        ):
+            return run
+        offset += 1
+
+
+def _run_sources_accessible(
+    run: AgentRun,
+    accessible_source_ids: set[UUID],
+    allowed_component_ids: set[UUID],
+    *,
+    context_pack_access: ContextPackAccess,
+) -> bool:
+    if run.context_pack_id is not None and run.context_pack is None:
+        return False
+    if not context_pack_sources_accessible(
+        run.context_pack,
+        accessible_source_ids,
+        allowed_component_ids,
+        access=context_pack_access,
+    ):
+        return False
+    return all(
+        observation.source_document_id is None
+        or observation.source_document_id in accessible_source_ids
+        for observation in run.observations
+    )
 
 
 def _session_activity_candidate(
@@ -1305,7 +1477,16 @@ def _run_activity(run: AgentRun, observations: list[RunObservation]) -> dict:
     raw_status = str(run.status or "running").strip().lower()
     if run.ended_at is None and raw_status in {"running", "active", "started"}:
         state = "active"
-    elif raw_status in {"failed", "cancelled", "blocked"}:
+    elif raw_status in {
+        "aborted",
+        "blocked",
+        "cancelled",
+        "error",
+        "failed",
+        "rejected",
+        "timed_out",
+        "timeout",
+    }:
         state = raw_status
     else:
         state = "completed" if outcome is not None or run.ended_at is not None else "recent"
@@ -1317,8 +1498,16 @@ def _run_activity(run: AgentRun, observations: list[RunObservation]) -> dict:
         run.objective or (run.context_pack.objective if run.context_pack else None)
     )
     rationale = _observation_summary(decisions[-1]) if decisions else None
+    provider = _run_provider(run.tool)
+    session_id = _optional_text(run.provider_session_id)
+    context_pack_id = str(run.context_pack_id) if run.context_pack_id else None
+    repo_state = _json_dict(
+        run.context_pack.repo_state_json if run.context_pack else None
+    )
     return {
         "id": f"run:{run.id}",
+        "run_id": str(run.id),
+        "context_pack_id": context_pack_id,
         "kind": "agent_run",
         "state": state,
         "live": state == "active",
@@ -1328,7 +1517,10 @@ def _run_activity(run: AgentRun, observations: list[RunObservation]) -> dict:
         "latest_update": latest_update,
         "rationale": rationale,
         "tool": run.tool,
+        "provider": provider,
+        "session_id": session_id,
         "model": run.model,
+        "cwd": _optional_text(repo_state.get("repo_path")),
         "branch": run.branch,
         "started_at": run.started_at,
         "updated_at": updated_at,
@@ -1356,6 +1548,34 @@ def _run_activity(run: AgentRun, observations: list[RunObservation]) -> dict:
     }
 
 
+def _run_provider(value: object) -> str | None:
+    provider = _optional_text(value)
+    if provider is None:
+        return None
+    provider = provider.lower()
+    if ":" in provider:
+        provider = provider.rsplit(":", 1)[-1].strip()
+    if provider in {"claude_code", "claude-code"}:
+        provider = "claude"
+    elif provider in {"open_code", "open-code"}:
+        provider = "opencode"
+    return provider or None
+
+
+def _optional_text(value: object) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _json_dict(value: object) -> dict:
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _session_activity(
     card: ContextCard | None,
     source: SourceDocument | None,
@@ -1371,7 +1591,8 @@ def _session_activity(
         return None
 
     metadata = metadata_dict(source)
-    turns = _session_turns(source.content)
+    source_content = _source_content_for_digest(source)
+    turns = _session_turns(source_content)
     assistant_turns = [
         text for role, text in turns
         if role in {"assistant", "ai", "codex", "claude", "opencode", "gpt"}
@@ -1451,7 +1672,7 @@ def _session_activity(
         card.session.get("topic") if card and card.session else None,
         140,
     ) or derive_session_topic(
-        source.content,
+        source_content,
         explicit_title=metadata.get("title"),
         tool=str(metadata.get("tool") or metadata.get("agent_tool") or ""),
         session_id=str(metadata.get("session_id") or source.external_id),
@@ -1459,7 +1680,7 @@ def _session_activity(
     if topic and is_session_instruction_noise(topic):
         topic = None
     latest_topic = derive_latest_session_topic(
-        source.content,
+        source_content,
         explicit_title=metadata.get("title"),
         tool=str(metadata.get("tool") or metadata.get("agent_tool") or ""),
         session_id=str(metadata.get("session_id") or source.external_id),
@@ -1539,7 +1760,9 @@ def _session_activity(
                 "id": f"session-attention:{source.id}:{index}",
                 "source_document_id": str(source.id),
             }
-            for index, item in enumerate(derive_session_attention_items(source.content))
+            for index, item in enumerate(
+                derive_session_attention_items(source_content)
+            )
         ],
         "event_count": event_count,
     }
@@ -2074,11 +2297,31 @@ async def _evidence_by_component(
     for revision in revisions:
         latest_by_claim.setdefault(revision.claim_id, revision)
     span_ids = {revision.evidence_span_id for revision in latest_by_claim.values()}
-    spans = {
-        span.id: span for span in await session.scalars(
-            select(EvidenceSpan).where(EvidenceSpan.id.in_(span_ids))
-        )
-    } if span_ids else {}
+    if span_ids:
+        span_rows = list((await session.execute(
+            select(
+                EvidenceSpan,
+                func.substr(
+                    SourceDocument.content,
+                    EvidenceSpan.start_char + 1,
+                    EvidenceSpan.end_char - EvidenceSpan.start_char,
+                ),
+            )
+            .join(
+                SourceDocument,
+                SourceDocument.id == EvidenceSpan.source_document_id,
+            )
+            .where(EvidenceSpan.id.in_(span_ids))
+        )).all())
+        spans = {}
+        for span, source_text in span_rows:
+            span._source_text_matches = (
+                source_text is not None
+                and source_text == (span.text or "")
+            )
+            spans[span.id] = span
+    else:
+        spans = {}
     return {
         component.id: spans[latest_by_claim[component.claim_id].evidence_span_id]
         for component in components
@@ -2108,13 +2351,24 @@ async def _github_last_sync(
 def _evidence_read(source: SourceDocument, evidence: EvidenceSpan | None) -> CardEvidence:
     if evidence is None:
         return CardEvidence(verification_status="unavailable")
+    source_text_matches = evidence.__dict__.get("_source_text_matches")
+    if source_text_matches is None:
+        source_content = source.__dict__.get("content") or ""
+        source_text_matches = (
+            evidence.start_char is not None
+            and evidence.end_char is not None
+            and 0 <= evidence.start_char < evidence.end_char <= len(source_content)
+            and source_content[evidence.start_char:evidence.end_char]
+            == (evidence.text or "")
+        )
     exact = (
         evidence.source_document_id == source.id
         and
         evidence.start_char is not None
         and evidence.end_char is not None
-        and 0 <= evidence.start_char < evidence.end_char <= len(source.content or "")
-        and (source.content or "")[evidence.start_char:evidence.end_char] == (evidence.text or "")
+        and 0 <= evidence.start_char < evidence.end_char
+        and len(evidence.text or "") == evidence.end_char - evidence.start_char
+        and source_text_matches
         and sha256_text(evidence.text or "") == evidence.text_sha256
     )
     verified = exact and evidence.review_status == "verified"
@@ -2268,9 +2522,19 @@ def _source_snapshot(
 def _session_info(source: SourceDocument, metadata: dict) -> dict:
     session_id = str(metadata.get("session_id") or source.external_id)
     tool = metadata.get("tool") or metadata.get("agent_tool")
+    metadata_topic = metadata.get("latest_topic")
+    if not isinstance(metadata_topic, str) or not metadata_topic.strip():
+        topics = metadata.get("topics")
+        metadata_topic = next(
+            (
+                item for item in reversed(topics)
+                if isinstance(item, str) and item.strip()
+            ),
+            None,
+        ) if isinstance(topics, list) else None
     topic = derive_session_topic(
-        source.content,
-        explicit_title=metadata.get("title"),
+        _source_content_for_digest(source),
+        explicit_title=metadata.get("title") or metadata_topic,
         tool=str(tool or ""),
         session_id=session_id,
     )
@@ -2288,7 +2552,9 @@ def _session_info(source: SourceDocument, metadata: dict) -> dict:
         "repository": metadata.get("repository") or metadata.get("repo_full_name") or metadata.get("repo"),
         "branch": metadata.get("branch"),
         "commit": metadata.get("commit"),
-        "content_available": bool(source.content),
+        # SourceDocument.content is non-null in the persisted schema. Avoid
+        # materializing a potentially multi-megabyte transcript for this flag.
+        "content_available": True,
         "inspection_source_id": str(source.id),
     }
 
@@ -2339,11 +2605,27 @@ def _is_recent_activity(value: datetime | None, *, minutes: int = 10) -> bool:
 async def _digest_objective(
     session: AsyncSession,
     workspace_id: str | None,
+    *,
+    accessible_source_ids: set[UUID],
+    allowed_component_ids: set[UUID],
+    context_pack_access: ContextPackAccess | None = None,
 ) -> DigestObjective:
     if workspace_id:
         workspace_uuid = UUID(workspace_id)
-        run = await session.scalar(
+        pack_access = context_pack_access or await build_context_pack_access(
+            session,
+            workspace_id=workspace_uuid,
+            allowed_source_document_ids=accessible_source_ids,
+            allowed_component_ids=allowed_component_ids,
+        )
+        run_stmt = (
             select(AgentRun)
+            .options(
+                selectinload(AgentRun.context_pack).selectinload(
+                    ContextPack.items
+                ),
+                selectinload(AgentRun.observations),
+            )
             .where(
                 AgentRun.workspace_id == workspace_uuid,
                 AgentRun.objective.is_not(None),
@@ -2351,46 +2633,74 @@ async def _digest_objective(
                 AgentRun.ended_at.is_(None),
             )
             .order_by(AgentRun.started_at.desc(), AgentRun.id.desc())
-            .limit(1)
         )
-        if (
-            run
-            and run.objective
-            and is_substantive_user_request(run.objective)
-        ):
-            return DigestObjective(
-                status="supplied",
-                text=run.objective.strip(),
-                source_kind="active_agent_run",
-                source_id=str(run.id),
-                recorded_at=run.started_at,
-                excerpt=run.objective.strip(),
-            )
-        packs = list(await session.scalars(
+        offset = 0
+        while True:
+            runs = list(await session.scalars(
+                run_stmt.offset(offset).limit(20)
+            ))
+            if not runs:
+                break
+            offset += len(runs)
+            for run in runs:
+                if (
+                    _run_sources_accessible(
+                        run,
+                        accessible_source_ids,
+                        allowed_component_ids,
+                        context_pack_access=pack_access,
+                    )
+                    and run.objective
+                    and is_substantive_user_request(run.objective)
+                ):
+                    return DigestObjective(
+                        status="supplied",
+                        text=run.objective.strip(),
+                        source_kind="active_agent_run",
+                        source_id=str(run.id),
+                        recorded_at=run.started_at,
+                        excerpt=run.objective.strip(),
+                    )
+        pack_stmt = (
             select(ContextPack)
+            .options(selectinload(ContextPack.items))
             .where(ContextPack.workspace_id == workspace_uuid)
             .order_by(ContextPack.created_at.desc(), ContextPack.id.desc())
-            .limit(20)
-        ))
-        for pack in packs:
-            try:
-                manifest = json.loads(pack.manifest or "{}")
-            except (json.JSONDecodeError, TypeError):
-                manifest = {}
-            if manifest.get("objective_kind") == "project_snapshot":
-                continue
-            if (
-                pack.objective
-                and is_substantive_user_request(pack.objective)
-            ):
-                return DigestObjective(
-                    status="supplied",
-                    text=pack.objective.strip(),
-                    source_kind="context_pack",
-                    source_id=str(pack.id),
-                    recorded_at=pack.created_at,
-                    excerpt=pack.objective.strip(),
-                )
+        )
+        offset = 0
+        while True:
+            packs = list(await session.scalars(
+                pack_stmt.offset(offset).limit(20)
+            ))
+            if not packs:
+                break
+            offset += len(packs)
+            for pack in packs:
+                if not context_pack_sources_accessible(
+                    pack,
+                    accessible_source_ids,
+                    allowed_component_ids,
+                    access=pack_access,
+                ):
+                    continue
+                try:
+                    manifest = json.loads(pack.manifest or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    manifest = {}
+                if manifest.get("objective_kind") == "project_snapshot":
+                    continue
+                if (
+                    pack.objective
+                    and is_substantive_user_request(pack.objective)
+                ):
+                    return DigestObjective(
+                        status="supplied",
+                        text=pack.objective.strip(),
+                        source_kind="context_pack",
+                        source_id=str(pack.id),
+                        recorded_at=pack.created_at,
+                        excerpt=pack.objective.strip(),
+                    )
     return DigestObjective(status="not_supplied")
 
 

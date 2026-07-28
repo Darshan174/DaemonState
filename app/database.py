@@ -17,6 +17,23 @@ from sqlalchemy.ext.asyncio import (
 from app.config import settings
 
 
+def build_alembic_config(database_url: str | None = None) -> Config:
+    """Build an Alembic config that also works from an installed wheel.
+
+    A console-script entry point imports ``app`` from site-packages, where the
+    repository-level ``alembic.ini`` is not installed. The migration scripts
+    are package data, so always point Alembic at their absolute package path
+    and use the repository config only when it is available.
+    """
+    package_dir = Path(__file__).resolve().parent
+    config_path = package_dir.parent / "alembic.ini"
+    config = Config(str(config_path)) if config_path.is_file() else Config()
+    config.set_main_option("script_location", str(package_dir / "alembic"))
+    if database_url is not None:
+        config.set_main_option("sqlalchemy.url", database_url)
+    return config
+
+
 def database_wall_clock_expression(dialect_name: str):
     """Return a transaction-independent UTC database clock expression."""
     if dialect_name == "postgresql":
@@ -77,7 +94,16 @@ def create_database_engine(
     async_url = _make_async_url(url)
     parsed = make_url(async_url)
     options: dict = {"pool_pre_ping": True}
-    if parsed.get_backend_name() == "postgresql":
+    if parsed.get_backend_name() == "sqlite":
+        # Continuation compilation performs a short write after repository and
+        # checkpoint inspection. The local UI and sync worker may briefly hold
+        # read locks on the same SQLite database; honor the configured
+        # connection timeout instead of failing after sqlite3's shorter
+        # default busy wait.
+        options["connect_args"] = {
+            "timeout": max(1.0, settings.database_connect_timeout_seconds),
+        }
+    elif parsed.get_backend_name() == "postgresql":
         effective_statement_timeout = (
             settings.database_statement_timeout_ms
             if statement_timeout_ms is None
@@ -107,8 +133,7 @@ def create_database_engine(
 
 
 def expected_schema_revisions() -> frozenset[str]:
-    root = Path(__file__).resolve().parent.parent
-    config = Config(str(root / "alembic.ini"))
+    config = build_alembic_config()
     script = ScriptDirectory.from_config(config)
     return frozenset(script.get_heads())
 

@@ -1700,54 +1700,7 @@ export function useSessionLibrary(workspaceId, { enabled = true } = {}) {
     queryKey: ["session-library", workspaceId],
     queryFn: () => api.get(`/session-library?workspace_id=${encodeURIComponent(workspaceId)}`),
     enabled: Boolean(workspaceId) && enabled,
-    refetchInterval: 30_000,
-    refetchIntervalInBackground: false,
-  });
-}
-
-export function useSessionContinuity(
-  workspaceId,
-  { enabled = true, provider = null, sessionId = null } = {},
-) {
-  const normalizedProvider = normalizeCheckpointProvider(provider);
-  const normalizedSessionId = String(sessionId || "").trim();
-  const scoped = Boolean(normalizedProvider && normalizedSessionId);
-  const invalidScope = Boolean(normalizedProvider || normalizedSessionId) && !scoped;
-  const queryKey = invalidScope
-    ? [
-        "session-continuity",
-        workspaceId,
-        "invalid-scope",
-        normalizedProvider || null,
-        normalizedSessionId || null,
-      ]
-    : scoped
-      ? ["session-continuity", workspaceId, normalizedProvider, normalizedSessionId]
-      : ["session-continuity", workspaceId];
-  return useQuery({
-    queryKey,
-    enabled: Boolean(workspaceId) && enabled && !invalidScope,
-    refetchInterval: 30_000,
-    refetchIntervalInBackground: false,
-    queryFn: () => {
-      const params = new URLSearchParams({ workspace_id: workspaceId });
-      if (scoped) {
-        params.set("provider", normalizedProvider);
-        params.set("session_id", normalizedSessionId);
-      }
-      return api.get(`/session-continuity?${params}`);
-    },
-  });
-}
-
-export function useContinueSession() {
-  return useMutation({
-    mutationFn: ({ workspaceId, sourceDocumentId, launchSession = true }) =>
-      api.post("/session-continuity/continue", {
-        workspace_id: workspaceId,
-        source_document_id: sourceDocumentId,
-        launch_session: launchSession,
-      }),
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -1758,8 +1711,10 @@ export function usePrepareContinuation() {
 }
 
 export function useContinuationProviders(workspaceId, { enabled = true } = {}) {
-  return useQuery({
-    queryKey: ["continuation-providers", workspaceId],
+  const queryClient = useQueryClient();
+  const queryKey = ["continuation-providers", workspaceId];
+  const query = useQuery({
+    queryKey,
     enabled: Boolean(workspaceId) && enabled,
     refetchInterval: (query) => (
       query.state.data?.active_run ? 3_000 : 30_000
@@ -1767,13 +1722,81 @@ export function useContinuationProviders(workspaceId, { enabled = true } = {}) {
     refetchIntervalInBackground: false,
     queryFn: () => api.get(
       `/continuations/providers?workspace_id=${encodeURIComponent(workspaceId)}`,
+      {
+        timeoutMs: 10_000,
+        timeoutMessage: (
+          "Desktop readiness did not respond within 10 seconds. "
+          + "No provider CLI or task was started."
+        ),
+      },
     ),
+  });
+  const refreshMutation = useMutation({
+    mutationFn: () => api.get(
+      `/continuations/providers?workspace_id=${encodeURIComponent(workspaceId)}&refresh=true`,
+      {
+        timeoutMs: 10_000,
+        timeoutMessage: (
+          "Desktop readiness did not respond within 10 seconds. "
+          + "No provider CLI or task was started."
+        ),
+      },
+    ),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["continuation-providers", workspaceId], data);
+    },
+  });
+  return {
+    ...query,
+    isFetching: query.isFetching || refreshMutation.isPending,
+    isError: query.isError || refreshMutation.isError,
+    error: refreshMutation.error || query.error,
+    refreshReadiness: refreshMutation.mutate,
+  };
+}
+
+export function useDesktopOverlayStatus(workspaceId, { enabled = true } = {}) {
+  return useQuery({
+    queryKey: ["desktop-overlay", workspaceId],
+    enabled: Boolean(workspaceId) && enabled,
+    queryFn: () => api.get(
+      `/desktop/overlay?workspace_id=${encodeURIComponent(workspaceId)}`,
+    ),
+    refetchInterval: 3_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    retry: false,
   });
 }
 
-export function useRunContinuation() {
+export function useSetDesktopOverlayVisibility() {
+  const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload) => api.post("/continuations", payload),
+    mutationFn: ({ visible, workspaceId }) => api.put("/desktop/overlay", {
+      visible,
+      workspace_id: workspaceId,
+    }),
+    onSuccess: (status, variables) => {
+      queryClient.setQueriesData(
+        { queryKey: ["desktop-overlay"] },
+        status,
+      );
+      queryClient.setQueryData(
+        ["desktop-overlay", variables.workspaceId],
+        status,
+      );
+    },
+  });
+}
+
+export function useStageContinuation() {
+  return useMutation({
+    mutationFn: (payload) => api.post("/continuations/stage", payload, {
+      timeoutMs: 50_000,
+      timeoutMessage: (
+        "The desktop handoff did not finish in time. No provider task was started."
+      ),
+    }),
   });
 }
 
@@ -1891,7 +1914,9 @@ export function useCaptureCheckpoint() {
         ...(boundaryEventId ? { boundary_event_id: boundaryEventId } : {}),
       }),
     onSuccess: (checkpoint, variables) => {
-      qc.setQueryData(["checkpoints", variables.workspaceId, "latest"], checkpoint);
+      if (variables.updateGenericLatest !== false) {
+        qc.setQueryData(["checkpoints", variables.workspaceId, "latest"], checkpoint);
+      }
       qc.setQueryData(
         [
           "checkpoints",
@@ -1942,6 +1967,15 @@ export function useResumeCheckpoint() {
       api.post(`/checkpoints/${checkpointId}/resume`, {
         workspace_id: workspaceId,
         launch_session: launchSession,
+      }),
+  });
+}
+
+export function useCheckpointHandoff() {
+  return useMutation({
+    mutationFn: ({ workspaceId, checkpointId }) =>
+      api.post(`/checkpoints/${encodeURIComponent(checkpointId)}/handoff`, {
+        workspace_id: workspaceId,
       }),
   });
 }

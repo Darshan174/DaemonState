@@ -7,8 +7,10 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.source_revisions import ingest_source_document_revision
+from app.services.session_checkpoints import list_session_checkpoints
 from app.services.session_events import NormalizedSessionEvent, persist_session_events
+from app.services.session_summary import build_session_library_summary
+from app.services.source_revisions import ingest_source_document_revision
 from app.time import utc_now
 
 
@@ -79,6 +81,7 @@ async def ingest_ai_session(
     metadata_extra: dict[str, Any] | None = None,
     normalized_events: list[NormalizedSessionEvent] | None = None,
     commit: bool = True,
+    capture_checkpoints: bool = True,
 ) -> dict[str, Any]:
     messages = _parse_session_content(content)
 
@@ -106,6 +109,19 @@ async def ingest_ai_session(
         metadata["workspace_id"] = workspace_id
     if metadata_extra:
         metadata.update({k: v for k, v in metadata_extra.items() if v not in (None, "", [])})
+    library_summary = build_session_library_summary(
+        full_text,
+        explicit_title=metadata.get("title"),
+        cwd=metadata.get("cwd"),
+        tool=connector_type,
+        session_id=session_id,
+    )
+    library_summary["compaction_checkpoints"] = list_session_checkpoints(
+        full_text,
+        metadata,
+        session_title=str(library_summary["title"]),
+    )
+    metadata["session_library_summary"] = library_summary
     meta = json.dumps(metadata)
 
     result = await ingest_source_document_revision(
@@ -127,14 +143,15 @@ async def ingest_ai_session(
             session_id=session_id,
             events=normalized_events,
         )
-        from app.services.checkpoints import capture_checkpoint_schema_upgrades
+        if capture_checkpoints:
+            from app.services.checkpoints import capture_checkpoint_schema_upgrades
 
-        checkpoint_count = await capture_checkpoint_schema_upgrades(
-            session,
-            workspace_id=workspace_uuid,
-            provider=connector_type,
-            session_id=session_id,
-        )
+            checkpoint_count = await capture_checkpoint_schema_upgrades(
+                session,
+                workspace_id=workspace_uuid,
+                provider=connector_type,
+                session_id=session_id,
+            )
     if commit:
         await session.commit()
     else:

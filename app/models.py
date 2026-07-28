@@ -70,6 +70,9 @@ class Workspace(Base):
         back_populates="workspace"
     )
     context_packs: Mapped[list["ContextPack"]] = orm_relationship(back_populates="workspace")
+    continuation_executions: Mapped[list["ContinuationExecution"]] = orm_relationship(
+        back_populates="workspace"
+    )
     agent_runs: Mapped[list["AgentRun"]] = orm_relationship(back_populates="workspace")
     session_events: Mapped[list["SessionEvent"]] = orm_relationship(back_populates="workspace")
     work_checkpoints: Mapped[list["WorkCheckpoint"]] = orm_relationship(
@@ -981,6 +984,9 @@ class ContextPack(Base):
     workspace: Mapped["Workspace | None"] = orm_relationship(back_populates="context_packs")
     items: Mapped[list["ContextPackItem"]] = orm_relationship(back_populates="context_pack")
     agent_runs: Mapped[list["AgentRun"]] = orm_relationship(back_populates="context_pack")
+    continuation_executions: Mapped[list["ContinuationExecution"]] = orm_relationship(
+        back_populates="context_pack"
+    )
 
 
 class WorkspaceGoal(Base):
@@ -1124,6 +1130,133 @@ class ContextPackItem(Base):
     source_document: Mapped["SourceDocument | None"] = orm_relationship()
 
 
+class ContinuationExecution(Base):
+    """One provider-independent executable contract compiled from an audit pack."""
+
+    __tablename__ = "continuation_executions"
+    __table_args__ = (
+        Index(
+            "ix_continuation_executions_workspace_created",
+            "workspace_id",
+            "created_at",
+        ),
+        Index("ix_continuation_executions_context_pack", "context_pack_id"),
+        Index("ix_continuation_executions_checkpoint", "checkpoint_id"),
+        Index("ix_continuation_executions_request_sha256", "request_sha256"),
+        Index(
+            "uq_continuation_executions_idempotency_key",
+            "idempotency_key",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id"), nullable=False, index=True
+    )
+    context_pack_id: Mapped[UUID] = mapped_column(
+        ForeignKey("context_packs.id"), nullable=False, index=True
+    )
+    checkpoint_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("work_checkpoints.id"), nullable=True, index=True
+    )
+    schema_version: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="continuation_execution.v1",
+        server_default="continuation_execution.v1",
+    )
+    task_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    request_verbatim: Mapped[str] = mapped_column(Text, nullable=False)
+    request_normalized: Mapped[str] = mapped_column(Text, nullable=False)
+    request_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    display_title: Mapped[str] = mapped_column(String(180), nullable=False)
+    contract_json: Mapped[str] = mapped_column(Text, nullable=False)
+    contract_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_markdown: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="compiled",
+        server_default="compiled",
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    workspace: Mapped["Workspace"] = orm_relationship(
+        back_populates="continuation_executions"
+    )
+    context_pack: Mapped["ContextPack"] = orm_relationship(
+        back_populates="continuation_executions"
+    )
+    checkpoint: Mapped["WorkCheckpoint | None"] = orm_relationship(
+        back_populates="continuation_executions"
+    )
+    requirements: Mapped[list["ContinuationRequirement"]] = orm_relationship(
+        back_populates="continuation_execution",
+        cascade="all, delete-orphan",
+    )
+    requirement_evidence: Mapped[list["RequirementEvidence"]] = orm_relationship(
+        back_populates="continuation_execution",
+        cascade="all, delete-orphan",
+    )
+    agent_runs: Mapped[list["AgentRun"]] = orm_relationship(
+        back_populates="continuation_execution"
+    )
+    outcome: Mapped["ContinuationOutcome | None"] = orm_relationship(
+        back_populates="continuation_execution",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class ContinuationRequirement(Base):
+    """One atomic request requirement with source-span and verifier lineage."""
+
+    __tablename__ = "continuation_requirements"
+    __table_args__ = (
+        Index(
+            "uq_continuation_requirements_execution_key",
+            "continuation_execution_id",
+            "requirement_key",
+            unique=True,
+        ),
+        Index(
+            "ix_continuation_requirements_execution_priority",
+            "continuation_execution_id",
+            "priority",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    continuation_execution_id: Mapped[UUID] = mapped_column(
+        ForeignKey("continuation_executions.id"), nullable=False, index=True
+    )
+    requirement_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    priority: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_span_ids_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
+    verification_ids_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    continuation_execution: Mapped["ContinuationExecution"] = orm_relationship(
+        back_populates="requirements"
+    )
+    evidence: Mapped[list["RequirementEvidence"]] = orm_relationship(
+        back_populates="requirement",
+        cascade="all, delete-orphan",
+    )
+
+
 class AgentRun(Base):
     __tablename__ = "agent_runs"
     __table_args__ = (
@@ -1150,6 +1283,15 @@ class AgentRun(Base):
                 "workspace_id IS NOT NULL AND run_key LIKE 'continuation:%'"
             ),
         ),
+        Index(
+            "uq_agent_runs_execution_attempt",
+            "continuation_execution_id",
+            "attempt_index",
+            unique=True,
+            sqlite_where=text("continuation_execution_id IS NOT NULL"),
+            postgresql_where=text("continuation_execution_id IS NOT NULL"),
+        ),
+        Index("ix_agent_runs_parent_attempt", "parent_agent_run_id"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -1158,6 +1300,18 @@ class AgentRun(Base):
     )
     context_pack_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("context_packs.id"), nullable=True, index=True
+    )
+    continuation_execution_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("continuation_executions.id"), nullable=True, index=True
+    )
+    parent_agent_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_runs.id"), nullable=True, index=True
+    )
+    attempt_index: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    provider_session_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
     )
     run_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     tool: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -1172,6 +1326,18 @@ class AgentRun(Base):
 
     workspace: Mapped["Workspace | None"] = orm_relationship(back_populates="agent_runs")
     context_pack: Mapped["ContextPack | None"] = orm_relationship(back_populates="agent_runs")
+    continuation_execution: Mapped["ContinuationExecution | None"] = orm_relationship(
+        back_populates="agent_runs"
+    )
+    parent_attempt: Mapped["AgentRun | None"] = orm_relationship(
+        remote_side="AgentRun.id",
+        foreign_keys=[parent_agent_run_id],
+        back_populates="repair_attempts",
+    )
+    repair_attempts: Mapped[list["AgentRun"]] = orm_relationship(
+        foreign_keys=[parent_agent_run_id],
+        back_populates="parent_attempt",
+    )
     observations: Mapped[list["RunObservation"]] = orm_relationship(back_populates="agent_run")
 
 
@@ -1222,6 +1388,121 @@ class RunObservation(Base):
 
     agent_run: Mapped["AgentRun"] = orm_relationship(back_populates="observations")
     source_document: Mapped["SourceDocument | None"] = orm_relationship()
+
+
+class RequirementEvidence(Base):
+    """Observed proof or disproof attached to one compiled requirement."""
+
+    __tablename__ = "requirement_evidence"
+    __table_args__ = (
+        Index(
+            "ix_requirement_evidence_execution_created",
+            "continuation_execution_id",
+            "created_at",
+        ),
+        Index(
+            "ix_requirement_evidence_requirement_created",
+            "continuation_requirement_id",
+            "created_at",
+        ),
+        Index("ix_requirement_evidence_agent_run", "agent_run_id"),
+        Index("ix_requirement_evidence_run_observation", "run_observation_id"),
+        Index(
+            "uq_requirement_evidence_attempt_verifier",
+            "continuation_requirement_id",
+            "agent_run_id",
+            "verifier_id",
+            unique=True,
+            sqlite_where=text("agent_run_id IS NOT NULL"),
+            postgresql_where=text("agent_run_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    continuation_execution_id: Mapped[UUID] = mapped_column(
+        ForeignKey("continuation_executions.id"), nullable=False, index=True
+    )
+    continuation_requirement_id: Mapped[UUID] = mapped_column(
+        ForeignKey("continuation_requirements.id"), nullable=False, index=True
+    )
+    agent_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_runs.id"), nullable=True, index=True
+    )
+    run_observation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("run_observations.id"), nullable=True, index=True
+    )
+    verifier_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    verifier_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    evidence_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}", server_default=text("'{}'")
+    )
+    evidence_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    continuation_execution: Mapped["ContinuationExecution"] = orm_relationship(
+        back_populates="requirement_evidence"
+    )
+    requirement: Mapped["ContinuationRequirement"] = orm_relationship(
+        back_populates="evidence"
+    )
+    agent_run: Mapped["AgentRun | None"] = orm_relationship()
+    run_observation: Mapped["RunObservation | None"] = orm_relationship()
+
+
+class ContinuationOutcome(Base):
+    """Durable aggregate outcome for one continuation execution transaction."""
+
+    __tablename__ = "continuation_outcomes"
+    __table_args__ = (
+        Index(
+            "uq_continuation_outcomes_execution",
+            "continuation_execution_id",
+            unique=True,
+        ),
+        Index("ix_continuation_outcomes_status_created", "status", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    continuation_execution_id: Mapped[UUID] = mapped_column(
+        ForeignKey("continuation_executions.id"), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(String(50), nullable=False)
+    mandatory_total: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    mandatory_passed: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    mandatory_failed: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    mandatory_unproven: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    blocker_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}", server_default=text("'{}'")
+    )
+    summary_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}", server_default=text("'{}'")
+    )
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    continuation_execution: Mapped["ContinuationExecution"] = orm_relationship(
+        back_populates="outcome"
+    )
 
 
 class SessionEvent(Base):
@@ -1318,7 +1599,7 @@ class WorkCheckpoint(Base):
     )
     trigger: Mapped[str] = mapped_column(String(50), nullable=False)
     schema_version: Mapped[str] = mapped_column(
-        String(50), nullable=False, default="work_checkpoint.v5"
+        String(50), nullable=False, default="work_checkpoint.v10"
     )
     capture_status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="complete"
@@ -1347,6 +1628,9 @@ class WorkCheckpoint(Base):
     )
     verifications: Mapped[list["CheckpointVerification"]] = orm_relationship(
         back_populates="checkpoint", cascade="all, delete-orphan"
+    )
+    continuation_executions: Mapped[list["ContinuationExecution"]] = orm_relationship(
+        back_populates="checkpoint"
     )
     supersedes_checkpoint: Mapped["WorkCheckpoint | None"] = orm_relationship(
         remote_side="WorkCheckpoint.id", foreign_keys=[supersedes_checkpoint_id]

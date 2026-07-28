@@ -50,6 +50,7 @@ from app.services.credentials import (
     validate_connector_credentials,
 )
 from app.services.oauth_state import close_oauth_state_backend
+from app.telemetry import configure_telemetry, shutdown_telemetry
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 logger = logging.getLogger("daemonstate.api")
@@ -97,35 +98,39 @@ async def lifespan(app: FastAPI):
     global _startup_complete
     configure_logging()
     validate_runtime_configuration()
-    if settings.auto_migrate:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-            await run_migrations(conn)
-    else:
-        async with engine.connect() as conn:
-            if not await schema_is_current(conn):
-                raise RuntimeError(
-                    "Database schema is not at the expected Alembic revision; "
-                    "run `daemonstate db deploy` before starting API replicas."
-                )
-            if settings.environment.strip().lower() == "production":
-                await validate_connector_credentials(conn)
-    _startup_complete = True
-    logger.info(
-        "api_started",
-        extra={
-            "environment": settings.environment,
-            "release_sha": settings.release_sha,
-        },
-    )
+    configure_telemetry(settings)
     try:
+        if settings.auto_migrate:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+                await run_migrations(conn)
+        else:
+            async with engine.connect() as conn:
+                if not await schema_is_current(conn):
+                    raise RuntimeError(
+                        "Database schema is not at the expected Alembic revision; "
+                        "run `daemonstate db deploy` before starting API replicas."
+                    )
+                if settings.environment.strip().lower() == "production":
+                    await validate_connector_credentials(conn)
+        _startup_complete = True
+        logger.info(
+            "api_started",
+            extra={
+                "environment": settings.environment,
+                "release_sha": settings.release_sha,
+            },
+        )
         yield
     finally:
         _startup_complete = False
-        await close_rate_limit_backend()
-        await close_oauth_state_backend()
-        await engine.dispose()
-        logger.info("api_stopped")
+        try:
+            await close_rate_limit_backend()
+            await close_oauth_state_backend()
+            await engine.dispose()
+            logger.info("api_stopped")
+        finally:
+            shutdown_telemetry()
 
 
 app = FastAPI(

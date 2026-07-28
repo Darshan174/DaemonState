@@ -1,3 +1,88 @@
+x-daemonstate-environment: &daemonstate-environment
+  ENVIRONMENT: ${ENVIRONMENT:-development}
+  RELEASE_SHA: ${RELEASE_SHA:-self-hosted}
+  DATABASE_URL: postgresql://daemonstate:${POSTGRES_PASSWORD:-daemonstate}@db:5432/daemonstate
+  DATA_DIR: /data
+  DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-5}
+  DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-10}
+  DATABASE_POOL_TIMEOUT_SECONDS: ${DATABASE_POOL_TIMEOUT_SECONDS:-30}
+  DATABASE_POOL_RECYCLE_SECONDS: ${DATABASE_POOL_RECYCLE_SECONDS:-1800}
+  DATABASE_CONNECT_TIMEOUT_SECONDS: ${DATABASE_CONNECT_TIMEOUT_SECONDS:-10}
+  DATABASE_STATEMENT_TIMEOUT_MS: ${DATABASE_STATEMENT_TIMEOUT_MS:-30000}
+  MIGRATION_STATEMENT_TIMEOUT_MS: ${MIGRATION_STATEMENT_TIMEOUT_MS:-0}
+  MIGRATION_LOCK_TIMEOUT_MS: ${MIGRATION_LOCK_TIMEOUT_MS:-30000}
+  # Compose uses a one-shot migration gate before starting long-running
+  # processes. Bare-metal installs may still opt into AUTO_MIGRATE separately.
+  AUTO_MIGRATE: "false"
+  APP_WORKERS: ${APP_WORKERS:-1}
+  SERVE_FRONTEND: ${SERVE_FRONTEND:-true}
+  DEMO_ENDPOINTS_ENABLED: ${DEMO_ENDPOINTS_ENABLED:-true}
+  API_DOCS_ENABLED: ${API_DOCS_ENABLED:-true}
+  LITELLM_API_KEY: ${LITELLM_API_KEY:-}
+  EXTRACTION_MODEL: ${EXTRACTION_MODEL:-}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+  EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-}
+  ALLOW_HASHING_EMBEDDER: ${ALLOW_HASHING_EMBEDDER:-false}
+  PGVECTOR_INDEX_DIMENSION: ${PGVECTOR_INDEX_DIMENSION:-1024}
+  PGVECTOR_CANDIDATE_LIMIT: ${PGVECTOR_CANDIDATE_LIMIT:-200}
+  SERVER_API_KEY: ${SERVER_API_KEY:-}
+  PRINCIPAL_API_KEYS: ${PRINCIPAL_API_KEYS:-}
+  API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-0}
+  AUTH_FAILURE_RATE_LIMIT_PER_MINUTE: ${AUTH_FAILURE_RATE_LIMIT_PER_MINUTE:-20}
+  REDIS_URL: ${REDIS_URL:-}
+  RATE_LIMIT_FAIL_OPEN: ${RATE_LIMIT_FAIL_OPEN:-true}
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+  PREVIOUS_ENCRYPTION_KEYS: ${PREVIOUS_ENCRYPTION_KEYS:-}
+  ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
+  CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+  TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
+  ALLOWED_REPO_ROOTS: /workspace
+  MAX_REQUEST_BODY_BYTES: ${MAX_REQUEST_BODY_BYTES:-16777216}
+  METRICS_ENABLED: ${METRICS_ENABLED:-true}
+  METRICS_BEARER_TOKEN: ${METRICS_BEARER_TOKEN:-}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_FORMAT: ${LOG_FORMAT:-console}
+  OTEL_ENABLED: ${OTEL_ENABLED:-false}
+  OTEL_CONTENT_CAPTURE: ${OTEL_CONTENT_CAPTURE:-false}
+  OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-daemonstate-api}
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-http://localhost:4318/v1/traces}
+  OTEL_EXPORT_TIMEOUT_SECONDS: ${OTEL_EXPORT_TIMEOUT_SECONDS:-5}
+  OTEL_SAMPLE_RATIO: ${OTEL_SAMPLE_RATIO:-1.0}
+  OTEL_BATCH_MAX_QUEUE_SIZE: ${OTEL_BATCH_MAX_QUEUE_SIZE:-2048}
+  OTEL_BATCH_MAX_EXPORT_BATCH_SIZE: ${OTEL_BATCH_MAX_EXPORT_BATCH_SIZE:-512}
+  OTEL_BATCH_SCHEDULE_DELAY_MS: ${OTEL_BATCH_SCHEDULE_DELAY_MS:-5000}
+  SYNC_WORKER_LEASE_SECONDS: ${SYNC_WORKER_LEASE_SECONDS:-300}
+  SYNC_WORKER_RETRY_BASE_SECONDS: ${SYNC_WORKER_RETRY_BASE_SECONDS:-30}
+  SYNC_WORKER_RETRY_MAX_SECONDS: ${SYNC_WORKER_RETRY_MAX_SECONDS:-900}
+  SYNC_WORKER_POLL_INTERVAL_SECONDS: ${SYNC_WORKER_POLL_INTERVAL_SECONDS:-2}
+  SYNC_WORKER_JOB_TIMEOUT_SECONDS: ${SYNC_WORKER_JOB_TIMEOUT_SECONDS:-1800}
+  SYNC_WORKER_METRICS_PORT: ${SYNC_WORKER_METRICS_PORT:-0}
+  SYNC_WORKER_HEALTH_FILE: ${SYNC_WORKER_HEALTH_FILE:-/tmp/daemonstate-sync-worker.ready}
+  SYNC_WORKER_HEALTH_INTERVAL_SECONDS: ${SYNC_WORKER_HEALTH_INTERVAL_SECONDS:-15}
+  SOURCE_INGESTION_SWEEP_LIMIT: ${SOURCE_INGESTION_SWEEP_LIMIT:-10}
+  SOURCE_INGESTION_TIMEOUT_SECONDS: ${SOURCE_INGESTION_TIMEOUT_SECONDS:-300}
+  SOURCE_INGESTION_MAX_ATTEMPTS: ${SOURCE_INGESTION_MAX_ATTEMPTS:-5}
+  CONTEXT_DIGEST_CACHE_TTL_SECONDS: ${CONTEXT_DIGEST_CACHE_TTL_SECONDS:-30}
+  CONTEXT_DIGEST_CACHE_MAX_ENTRIES: ${CONTEXT_DIGEST_CACHE_MAX_ENTRIES:-32}
+  CONTINUATION_COMMAND_TIMEOUT_SECONDS: ${CONTINUATION_COMMAND_TIMEOUT_SECONDS:-14400}
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+  GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+  GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+  SLACK_CLIENT_ID: ${SLACK_CLIENT_ID:-}
+  SLACK_CLIENT_SECRET: ${SLACK_CLIENT_SECRET:-}
+  SLACK_REDIRECT_URI: ${SLACK_REDIRECT_URI:-}
+  SLACK_MANAGED_INSTALL_URL: ${SLACK_MANAGED_INSTALL_URL:-}
+  ZOOM_CLIENT_ID: ${ZOOM_CLIENT_ID:-}
+  ZOOM_CLIENT_SECRET: ${ZOOM_CLIENT_SECRET:-}
+  ZOOM_REDIRECT_URI: ${ZOOM_REDIRECT_URI:-}
+
+x-daemonstate-logging: &daemonstate-logging
+  driver: json-file
+  options:
+    max-size: ${LOG_MAX_SIZE:-10m}
+    max-file: ${LOG_MAX_FILES:-3}
+
 services:
   db:
     image: pgvector/pgvector:pg16
@@ -8,45 +93,44 @@ services:
     volumes:
       - pg_data:/var/lib/postgresql/data
     restart: unless-stopped
+    logging: *daemonstate-logging
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U daemonstate -d daemonstate"]
       interval: 10s
       timeout: 5s
       retries: 10
 
-  app:
+  migrate:
     build: .
-    ports:
-      - "${PORT:-8000}:8000"
+    command: ["daemonstate", "db", "deploy"]
+    init: true
+    healthcheck:
+      disable: true
     depends_on:
       db:
         condition: service_healthy
     volumes:
       - daemonstate_uploads:/data
+    environment: *daemonstate-environment
+    restart: "no"
+    logging: *daemonstate-logging
+
+  app:
+    build: .
+    init: true
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - daemonstate_uploads:/data
       - ${DAEMONSTATE_PROJECT_PATH:-.}:/workspace:ro
-    environment:
-      DATABASE_URL: postgresql://daemonstate:${POSTGRES_PASSWORD:-daemonstate}@db:5432/daemonstate
-      DATA_DIR: /data
-      LITELLM_API_KEY: ${LITELLM_API_KEY:-}
-      EXTRACTION_MODEL: ${EXTRACTION_MODEL:-}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
-      ENABLE_LOCAL_EMBEDDER: ${ENABLE_LOCAL_EMBEDDER:-false}
-      ALLOW_HASHING_EMBEDDER: ${ALLOW_HASHING_EMBEDDER:-false}
-      PGVECTOR_INDEX_DIMENSION: ${PGVECTOR_INDEX_DIMENSION:-1024}
-      PGVECTOR_CANDIDATE_LIMIT: ${PGVECTOR_CANDIDATE_LIMIT:-200}
-      SERVER_API_KEY: ${SERVER_API_KEY:-}
-      API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-0}
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
-      PREVIOUS_ENCRYPTION_KEYS: ${PREVIOUS_ENCRYPTION_KEYS:-}
-      SYNC_WORKER_LEASE_SECONDS: ${SYNC_WORKER_LEASE_SECONDS:-300}
-      SYNC_WORKER_RETRY_BASE_SECONDS: ${SYNC_WORKER_RETRY_BASE_SECONDS:-30}
-      SYNC_WORKER_RETRY_MAX_SECONDS: ${SYNC_WORKER_RETRY_MAX_SECONDS:-900}
-      SYNC_WORKER_POLL_INTERVAL_SECONDS: ${SYNC_WORKER_POLL_INTERVAL_SECONDS:-2}
-      CONTEXT_DIGEST_CACHE_TTL_SECONDS: ${CONTEXT_DIGEST_CACHE_TTL_SECONDS:-30}
-      CONTEXT_DIGEST_CACHE_MAX_ENTRIES: ${CONTEXT_DIGEST_CACHE_MAX_ENTRIES:-32}
+    environment: *daemonstate-environment
     restart: unless-stopped
+    logging: *daemonstate-logging
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -55,30 +139,31 @@ services:
   worker:
     build: .
     command: ["daemonstate", "worker", "sync", "--watch"]
+    init: true
     depends_on:
-      db:
+      app:
         condition: service_healthy
     volumes:
       - daemonstate_uploads:/data
-    environment:
-      DATABASE_URL: postgresql://daemonstate:${POSTGRES_PASSWORD:-daemonstate}@db:5432/daemonstate
-      DATA_DIR: /data
-      LITELLM_API_KEY: ${LITELLM_API_KEY:-}
-      EXTRACTION_MODEL: ${EXTRACTION_MODEL:-}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
-      ENABLE_LOCAL_EMBEDDER: ${ENABLE_LOCAL_EMBEDDER:-false}
-      ALLOW_HASHING_EMBEDDER: ${ALLOW_HASHING_EMBEDDER:-false}
-      PGVECTOR_INDEX_DIMENSION: ${PGVECTOR_INDEX_DIMENSION:-1024}
-      PGVECTOR_CANDIDATE_LIMIT: ${PGVECTOR_CANDIDATE_LIMIT:-200}
-      SERVER_API_KEY: ${SERVER_API_KEY:-}
-      API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-0}
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
-      PREVIOUS_ENCRYPTION_KEYS: ${PREVIOUS_ENCRYPTION_KEYS:-}
-      SYNC_WORKER_LEASE_SECONDS: ${SYNC_WORKER_LEASE_SECONDS:-300}
-      SYNC_WORKER_RETRY_BASE_SECONDS: ${SYNC_WORKER_RETRY_BASE_SECONDS:-30}
-      SYNC_WORKER_RETRY_MAX_SECONDS: ${SYNC_WORKER_RETRY_MAX_SECONDS:-900}
-      SYNC_WORKER_POLL_INTERVAL_SECONDS: ${SYNC_WORKER_POLL_INTERVAL_SECONDS:-2}
+      - ${DAEMONSTATE_PROJECT_PATH:-.}:/workspace:ro
+    environment: *daemonstate-environment
     restart: unless-stopped
+    logging: *daemonstate-logging
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import os,time;
+          from pathlib import Path;
+          path=Path(os.environ['SYNC_WORKER_HEALTH_FILE']);
+          interval=float(os.environ['SYNC_WORKER_HEALTH_INTERVAL_SECONDS']);
+          assert path.is_file() and time.time() - path.stat().st_mtime < max(60, interval * 4)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
 
 volumes:
   pg_data:

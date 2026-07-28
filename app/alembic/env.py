@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from app.config import settings
 from app.database import _ensure_sqlite_parent_dir, _make_async_url
 from app.models import Base
+from app.models_continuation_stage import ContinuationStageRequest  # noqa: F401
 
 config = context.config
 

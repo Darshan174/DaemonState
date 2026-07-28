@@ -9,6 +9,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.models import Base
+from app.models_continuation_stage import ContinuationStageRequest
 from app.services.identity import identity_key_for_component_name, normalize_identity_text
 from app.services.vector_search import pgvector_index_dimension
 from app.source_identity import canonical_source_identity_sha256
@@ -41,9 +42,29 @@ async def run_migrations(conn: AsyncConnection) -> None:
     await _migrate_truth_access_schema(conn)
     await _migrate_learning_loop_schema(conn)
     await _migrate_work_checkpoint_schema(conn)
+    await _migrate_continuation_execution_schema(conn)
+    await _migrate_continuation_stage_request_schema(conn)
     await _migrate_query_and_sync_indexes(conn)
     await _migrate_source_ingestion_jobs(conn)
     await _migrate_daemonstate_brand(conn)
+
+
+async def _migrate_continuation_stage_request_schema(
+    conn: AsyncConnection,
+) -> None:
+    """Install the desktop-stage idempotency ledger on legacy databases."""
+
+    required = {"workspaces", "context_packs", "continuation_executions"}
+    for table_name in required:
+        if not await _get_table_columns(conn, table_name):
+            return
+    def _create(sync_conn) -> None:
+        table = ContinuationStageRequest.__table__
+        table.create(sync_conn, checkfirst=True)
+        for index in table.indexes:
+            index.create(sync_conn, checkfirst=True)
+
+    await conn.run_sync(_create)
 
 
 async def _migrate_daemonstate_brand(conn: AsyncConnection) -> None:
@@ -119,13 +140,14 @@ async def _migrate_daemonstate_brand(conn: AsyncConnection) -> None:
         return
 
     previous_db_prefix = "".join(("c", "e"))
-    for suffix, arguments in (
+    function_renames = (
         ("try_vector", "text"),
         ("sync_component_embedding_vector", ""),
         ("try_jsonb", "text"),
         ("sync_source_document_search", ""),
         ("sync_component_search", ""),
-    ):
+    )
+    for suffix, arguments in function_renames:
         previous_name = f"{previous_db_prefix}_{suffix}"
         current_name = f"daemonstate_{suffix}"
         previous_signature = f"{previous_name}({arguments})"
@@ -246,6 +268,234 @@ async def _migrate_work_checkpoint_schema(conn: AsyncConnection) -> None:
             f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} "
             f"ON {table_name} ({joined})"
         ))
+
+
+async def _migrate_continuation_execution_schema(
+    conn: AsyncConnection,
+) -> None:
+    """Install the canonical continuation contract on existing databases."""
+
+    required = {
+        "agent_runs",
+        "context_packs",
+        "run_observations",
+        "work_checkpoints",
+        "workspaces",
+    }
+    available = {
+        name for name in required if await _get_table_columns(conn, name)
+    }
+    if available != required:
+        return
+
+    def _create_contract_tables(sync_conn) -> None:
+        for table_name in (
+            "continuation_executions",
+            "continuation_requirements",
+        ):
+            Base.metadata.tables[table_name].create(sync_conn, checkfirst=True)
+
+    await conn.run_sync(_create_contract_tables)
+    execution_columns = await _get_table_columns(
+        conn, "continuation_executions"
+    )
+    if "status" not in execution_columns:
+        if "quality_status" in execution_columns:
+            await conn.execute(text(
+                "ALTER TABLE continuation_executions "
+                "RENAME COLUMN quality_status TO status"
+            ))
+        else:
+            await conn.execute(text(
+                "ALTER TABLE continuation_executions "
+                "ADD COLUMN status VARCHAR(32) NOT NULL DEFAULT 'compiled'"
+            ))
+
+    agent_columns = await _get_table_columns(conn, "agent_runs")
+    uuid_type = "UUID" if conn.dialect.name == "postgresql" else "CHAR(32)"
+    additions = {
+        "continuation_execution_id": f"{uuid_type} REFERENCES continuation_executions(id)",
+        "parent_agent_run_id": f"{uuid_type} REFERENCES agent_runs(id)",
+        "attempt_index": "INTEGER NOT NULL DEFAULT 1",
+        "provider_session_id": "VARCHAR(255)",
+    }
+    for column, ddl in additions.items():
+        if column not in agent_columns:
+            await conn.execute(text(
+                f"ALTER TABLE agent_runs ADD COLUMN {column} {ddl}"
+            ))
+
+    def _create_evidence_tables(sync_conn) -> None:
+        for table_name in (
+            "requirement_evidence",
+            "continuation_outcomes",
+        ):
+            Base.metadata.tables[table_name].create(sync_conn, checkfirst=True)
+
+    await conn.run_sync(_create_evidence_tables)
+    evidence_columns = await _get_table_columns(conn, "requirement_evidence")
+    if "evidence_json" not in evidence_columns:
+        if "payload_json" in evidence_columns:
+            await conn.execute(text(
+                "ALTER TABLE requirement_evidence "
+                "RENAME COLUMN payload_json TO evidence_json"
+            ))
+        else:
+            await conn.execute(text(
+                "ALTER TABLE requirement_evidence "
+                "ADD COLUMN evidence_json TEXT NOT NULL DEFAULT '{}'"
+            ))
+    if "required" not in evidence_columns:
+        await conn.execute(text(
+            "ALTER TABLE requirement_evidence "
+            "ADD COLUMN required BOOLEAN NOT NULL DEFAULT TRUE"
+        ))
+
+    outcome_columns = await _get_table_columns(conn, "continuation_outcomes")
+    expected_outcome_columns = {
+        "mandatory_total",
+        "mandatory_passed",
+        "mandatory_failed",
+        "mandatory_unproven",
+        "blocker_json",
+        "updated_at",
+    }
+    if expected_outcome_columns - outcome_columns:
+        if conn.dialect.name == "sqlite":
+            await _rebuild_sqlite_continuation_outcomes(
+                conn,
+                legacy_columns=outcome_columns,
+            )
+        else:
+            outcome_additions = {
+                "mandatory_total": "INTEGER NOT NULL DEFAULT 0",
+                "mandatory_passed": "INTEGER NOT NULL DEFAULT 0",
+                "mandatory_failed": "INTEGER NOT NULL DEFAULT 0",
+                "mandatory_unproven": "INTEGER NOT NULL DEFAULT 0",
+                "blocker_json": "TEXT NOT NULL DEFAULT '{}'",
+                "updated_at": (
+                    "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP"
+                ),
+            }
+            for column in sorted(
+                expected_outcome_columns - outcome_columns
+            ):
+                await conn.execute(text(
+                    "ALTER TABLE continuation_outcomes "
+                    f"ADD COLUMN {column} {outcome_additions[column]}"
+                ))
+
+    def _create_contract_indexes(sync_conn) -> None:
+        for table_name in (
+            "continuation_executions",
+            "continuation_requirements",
+            "requirement_evidence",
+            "continuation_outcomes",
+        ):
+            for index in Base.metadata.tables[table_name].indexes:
+                index.create(sync_conn, checkfirst=True)
+
+    await conn.run_sync(_create_contract_indexes)
+    await conn.execute(text("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_runs_execution_attempt
+        ON agent_runs (continuation_execution_id, attempt_index)
+        WHERE continuation_execution_id IS NOT NULL
+    """))
+    await conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_agent_runs_parent_attempt
+        ON agent_runs (parent_agent_run_id)
+    """))
+
+
+async def _rebuild_sqlite_continuation_outcomes(
+    conn: AsyncConnection,
+    *,
+    legacy_columns: set[str],
+) -> None:
+    """Rebuild a populated draft table so dynamic defaults remain correct."""
+
+    required_identity = {"id", "continuation_execution_id", "status"}
+    if not required_identity <= legacy_columns:
+        missing = ", ".join(sorted(required_identity - legacy_columns))
+        raise RuntimeError(
+            "Cannot reconcile continuation_outcomes; missing columns: "
+            f"{missing}"
+        )
+
+    legacy_table = f"_continuation_outcomes_legacy_{uuid4().hex}"
+    preparer = conn.dialect.identifier_preparer
+    quoted_legacy = preparer.quote_identifier(legacy_table)
+    index_names = await conn.run_sync(
+        lambda sync_conn: [
+            str(item["name"])
+            for item in inspect(sync_conn).get_indexes(
+                "continuation_outcomes"
+            )
+            if item.get("name")
+        ]
+    )
+
+    await conn.execute(text(
+        "ALTER TABLE continuation_outcomes "
+        f"RENAME TO {quoted_legacy}"
+    ))
+    for index_name in index_names:
+        await conn.execute(text(
+            "DROP INDEX IF EXISTS "
+            f"{preparer.quote_identifier(index_name)}"
+        ))
+    await conn.run_sync(
+        lambda sync_conn: Base.metadata.tables[
+            "continuation_outcomes"
+        ].create(sync_conn, checkfirst=False)
+    )
+
+    def _source(column: str, fallback: str) -> str:
+        if column not in legacy_columns:
+            return fallback
+        return f'COALESCE("{column}", {fallback})'
+
+    updated_candidates = [
+        f'"{column}"'
+        for column in ("updated_at", "verified_at", "created_at")
+        if column in legacy_columns
+    ]
+    updated_candidates.append("CURRENT_TIMESTAMP")
+    updated_expression = f"COALESCE({', '.join(updated_candidates)})"
+    verified_expression = (
+        '"verified_at"' if "verified_at" in legacy_columns else "NULL"
+    )
+    await conn.execute(text(f"""
+        INSERT INTO continuation_outcomes (
+            id,
+            continuation_execution_id,
+            status,
+            mandatory_total,
+            mandatory_passed,
+            mandatory_failed,
+            mandatory_unproven,
+            blocker_json,
+            summary_json,
+            verified_at,
+            created_at,
+            updated_at
+        )
+        SELECT
+            "id",
+            "continuation_execution_id",
+            "status",
+            {_source("mandatory_total", "0")},
+            {_source("mandatory_passed", "0")},
+            {_source("mandatory_failed", "0")},
+            {_source("mandatory_unproven", "0")},
+            {_source("blocker_json", "'{}'")},
+            {_source("summary_json", "'{}'")},
+            {verified_expression},
+            {_source("created_at", "CURRENT_TIMESTAMP")},
+            {updated_expression}
+        FROM {quoted_legacy}
+    """))
+    await conn.execute(text(f"DROP TABLE {quoted_legacy}"))
 
 
 async def _migrate_workspace_lifecycle_schema(conn: AsyncConnection) -> None:
@@ -455,15 +705,21 @@ async def _migrate_truth_access_schema(conn: AsyncConnection) -> None:
     source_columns = await _get_table_columns(conn, "source_documents")
     if {"id", "ingested_at", "permission_snapshot_sha256"} <= source_columns:
         rows = (await conn.execute(text(
-            "SELECT id, permission_snapshot_sha256 FROM source_documents"
+            "SELECT id, permission_snapshot_sha256 FROM source_documents "
+            "WHERE visibility_scope IS NULL OR visibility_scope = '' "
+            "OR permission_source IS NULL OR permission_source = '' "
+            "OR permission_observed_at IS NULL "
+            "OR permission_snapshot_sha256 IS NULL "
+            "OR permission_snapshot_sha256 = ''"
         ))).all()
         for row in rows:
             snapshot = row[1] or _migration_canonical_hash([
                 "workspace", "workspace_default", str(row[0])
             ])
             await conn.execute(text(
-                "UPDATE source_documents SET visibility_scope='workspace', "
-                "permission_source=COALESCE(permission_source, 'workspace_default'), "
+                "UPDATE source_documents SET "
+                "visibility_scope=COALESCE(NULLIF(visibility_scope, ''), 'workspace'), "
+                "permission_source=COALESCE(NULLIF(permission_source, ''), 'workspace_default'), "
                 "permission_observed_at=COALESCE(permission_observed_at, ingested_at), "
                 "permission_snapshot_sha256=:snapshot WHERE id=:id"
             ), {"snapshot": snapshot, "id": row[0]})
@@ -521,11 +777,21 @@ async def _migrate_truth_access_schema(conn: AsyncConnection) -> None:
         ))
     if claim_columns:
         rows = (await conn.execute(text(
-            "SELECT id, workspace_id, identity_key, claim_type, scope_identity_sha256 FROM claims"
+            "SELECT id, workspace_id, identity_key, claim_type "
+            "FROM claims "
+            "WHERE scope_identity_sha256 IS NULL "
+            "OR scope_identity_sha256 = ''"
         ))).all()
-        seen: set[str] = set()
+        seen = {
+            str(value)
+            for value in await conn.scalars(text(
+                "SELECT scope_identity_sha256 FROM claims "
+                "WHERE scope_identity_sha256 IS NOT NULL "
+                "AND scope_identity_sha256 != ''"
+            ))
+        } if rows else set()
         for row in rows:
-            key = row[4] or _migration_canonical_hash([
+            key = _migration_canonical_hash([
                 _migration_uuid_text(row[1]) or "global", row[3], row[2]
             ])
             if key in seen:
@@ -558,7 +824,10 @@ async def _migrate_truth_access_schema(conn: AsyncConnection) -> None:
                 ))
         rows = (await conn.execute(text(
             "SELECT id, claim_id, evidence_span_id, operation, value, created_at, "
-            "revision_key FROM claim_revisions"
+            "revision_key FROM claim_revisions "
+            "WHERE revision_key IS NULL OR revision_key = '' "
+            "OR observed_at IS NULL "
+            "OR validity_basis IS NULL OR validity_basis = ''"
         ))).all()
         for row in rows:
             key = row[6] or _migration_canonical_hash([
@@ -632,7 +901,9 @@ async def _migrate_deterministic_project_compiler_schema(conn: AsyncConnection) 
     file_columns = await _get_table_columns(conn, "code_files")
     if {"id", "workspace_id", "repo_root", "path", "identity_key"} <= file_columns:
         rows = (await conn.execute(text(
-            "SELECT id, workspace_id, repo_root, path, identity_key FROM code_files"
+            "SELECT id, workspace_id, repo_root, path, identity_key "
+            "FROM code_files "
+            "WHERE identity_key IS NULL OR identity_key = ''"
         ))).all()
         natural_keys: set[tuple[object, object, str]] = set()
         for row in rows:
@@ -669,7 +940,8 @@ async def _migrate_deterministic_project_compiler_schema(conn: AsyncConnection) 
     if required_symbols <= symbol_columns:
         rows = (await conn.execute(text(
             "SELECT id, code_file_id, symbol_type, name, qualified_name, "
-            "start_line, end_line, identity_key FROM code_symbols"
+            "start_line, end_line, identity_key FROM code_symbols "
+            "WHERE identity_key IS NULL OR identity_key = ''"
         ))).all()
         for row in rows:
             identity_key = row[7] or _migration_canonical_hash([
@@ -688,7 +960,12 @@ async def _migrate_deterministic_project_compiler_schema(conn: AsyncConnection) 
     if {"id", "edge_key", "rule_id", "rule_version", "evidence_json", "evidence_sha256"} <= edge_columns:
         rows = (await conn.execute(text(
             "SELECT id, edge_key, rule_id, rule_version, evidence_json, evidence_sha256 "
-            "FROM code_edges"
+            "FROM code_edges "
+            "WHERE edge_key IS NULL OR edge_key = '' "
+            "OR rule_id IS NULL OR rule_id = '' "
+            "OR rule_version IS NULL OR rule_version = '' "
+            "OR evidence_json IS NULL OR evidence_json = '' OR evidence_json = '{}' "
+            "OR evidence_sha256 IS NULL OR evidence_sha256 = ''"
         ))).all()
         for row in rows:
             evidence_json = row[4]
@@ -1466,7 +1743,8 @@ async def _migrate_entities_schema(conn: AsyncConnection) -> None:
             text(f"""
         SELECT {workspace_expr} AS workspace_id, identity_key, model_id, name
         FROM components
-        WHERE identity_key IS NOT NULL
+        WHERE entity_id IS NULL
+          AND identity_key IS NOT NULL
           AND identity_key != ''
         ORDER BY identity_key, {order_expr}
     """)
@@ -1675,6 +1953,25 @@ async def _migrate_fact_identity_schema(conn: AsyncConnection) -> None:
                {confidence_expr} AS confidence, {status_expr} AS status,
                {provenance_expr} AS provenance, {excerpt_expr} AS excerpt
         FROM components
+        WHERE NOT EXISTS (
+                  SELECT 1 FROM facts
+                  WHERE facts.component_id = components.id
+              )
+           OR (
+                  trim(COALESCE(components.name, '')) != ''
+                  AND NOT EXISTS (
+                      SELECT 1 FROM mentions
+                      WHERE mentions.component_id = components.id
+                  )
+              )
+           OR (
+                  {entity_expr} IS NOT NULL
+                  AND trim(COALESCE(components.name, '')) != ''
+                  AND NOT EXISTS (
+                      SELECT 1 FROM entity_aliases
+                      WHERE entity_aliases.entity_id = {entity_expr}
+                  )
+              )
     """)
     )
     rows = result.fetchall()
@@ -1971,6 +2268,24 @@ async def _get_table_columns(conn: AsyncConnection, table_name: str) -> set[str]
         return {row[1] for row in rows}
     except Exception:
         return set()
+
+
+async def _index_exists(
+    conn: AsyncConnection,
+    table_name: str,
+    index_name: str,
+) -> bool:
+    """Inspect schema metadata without touching the indexed table's data pages."""
+
+    try:
+        return await conn.run_sync(
+            lambda sync_conn: any(
+                item.get("name") == index_name
+                for item in inspect(sync_conn).get_indexes(table_name)
+            )
+        )
+    except Exception:
+        return False
 
 
 def _datetime_column_type(conn: AsyncConnection) -> str:
@@ -2394,7 +2709,6 @@ async def _backfill_source_document_ledger_columns(conn: AsyncConnection) -> Non
            OR content_sha256 = ''
            OR trust_zone IS NULL
            OR trust_zone = ''
-           OR source_created_at IS NULL
     """)
     )
     for row in result.fetchall():
@@ -2416,6 +2730,35 @@ async def _backfill_source_document_ledger_columns(conn: AsyncConnection) -> Non
             params,
         )
 
+    # ``source_created_at`` is intentionally nullable when the upstream source
+    # did not provide a timestamp. Do not repeatedly read each document's large
+    # content body or issue a no-op UPDATE for those legitimate NULLs.
+    if "source_created_at" in columns:
+        result = await conn.execute(
+            text(f"""
+            SELECT id, {metadata_expr} AS metadata
+            FROM source_documents
+            WHERE source_created_at IS NULL
+        """)
+        )
+        for source_id, raw_metadata in result.fetchall():
+            source_created_at = _source_created_at_from_metadata(
+                _loads_json_dict(raw_metadata)
+            )
+            if source_created_at is None:
+                continue
+            await conn.execute(
+                text("""
+                UPDATE source_documents
+                SET source_created_at = :source_created_at
+                WHERE id = :id AND source_created_at IS NULL
+            """),
+                {
+                    "id": source_id,
+                    "source_created_at": source_created_at,
+                },
+            )
+
 
 async def _backfill_source_document_revisions(conn: AsyncConnection) -> None:
     """Deterministically chain legacy rows without deleting or rewriting content."""
@@ -2432,6 +2775,29 @@ async def _backfill_source_document_revisions(conn: AsyncConnection) -> None:
         "supersedes_source_document_id",
     }
     if not required <= columns:
+        return
+
+    completed_indexes = (
+        await _index_exists(
+            conn,
+            "source_documents",
+            "uq_source_documents_identity_revision",
+        )
+        and await _index_exists(
+            conn,
+            "source_documents",
+            "uq_source_documents_superseded_once",
+        )
+    )
+    missing_backfill = await conn.scalar(text("""
+        SELECT 1
+        FROM source_documents
+        WHERE content_sha256 IS NULL OR content_sha256 = ''
+           OR source_identity_sha256 IS NULL OR source_identity_sha256 = ''
+           OR revision_number IS NULL OR revision_number < 1
+        LIMIT 1
+    """))
+    if completed_indexes and missing_backfill is None:
         return
 
     ingested_expr = "ingested_at" if "ingested_at" in columns else "NULL"
@@ -2992,80 +3358,88 @@ async def _migrate_query_and_sync_indexes(conn: AsyncConnection) -> None:
 
     sync_columns = await _get_table_columns(conn, "sync_jobs")
     if {"idempotency_key", "status"} <= sync_columns:
-        await conn.execute(text("""
-            UPDATE sync_jobs AS candidate
-            SET status = 'failed'
-            WHERE candidate.idempotency_key IS NOT NULL
-              AND candidate.status IN ('pending', 'retrying', 'running')
-              AND EXISTS (
-                  SELECT 1 FROM sync_jobs AS winner
-                  WHERE winner.idempotency_key = candidate.idempotency_key
-                    AND winner.status IN ('pending', 'retrying', 'running')
-                    AND (
-                        winner.created_at < candidate.created_at
-                        OR (
-                            winner.created_at = candidate.created_at
-                            AND CAST(winner.id AS TEXT) < CAST(candidate.id AS TEXT)
+        if not await _index_exists(
+            conn, "sync_jobs", "uq_sync_jobs_active_idempotency_key"
+        ):
+            await conn.execute(text("""
+                UPDATE sync_jobs AS candidate
+                SET status = 'failed'
+                WHERE candidate.idempotency_key IS NOT NULL
+                  AND candidate.status IN ('pending', 'retrying', 'running')
+                  AND EXISTS (
+                      SELECT 1 FROM sync_jobs AS winner
+                      WHERE winner.idempotency_key = candidate.idempotency_key
+                        AND winner.status IN ('pending', 'retrying', 'running')
+                        AND (
+                            winner.created_at < candidate.created_at
+                            OR (
+                                winner.created_at = candidate.created_at
+                                AND CAST(winner.id AS TEXT) < CAST(candidate.id AS TEXT)
+                            )
                         )
-                    )
-              )
-        """))
-        await conn.execute(text(
-            "DROP INDEX IF EXISTS uq_sync_jobs_active_idempotency_key"
-        ))
-        await conn.execute(text("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_jobs_active_idempotency_key
-            ON sync_jobs (idempotency_key)
-            WHERE idempotency_key IS NOT NULL
-              AND status IN ('pending', 'retrying', 'running')
-        """))
+                  )
+            """))
+            await conn.execute(text("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_jobs_active_idempotency_key
+                ON sync_jobs (idempotency_key)
+                WHERE idempotency_key IS NOT NULL
+                  AND status IN ('pending', 'retrying', 'running')
+            """))
     pack_columns = await _get_table_columns(conn, "context_packs")
     if "idempotency_key" in pack_columns:
-        await conn.execute(text("""
-            UPDATE context_packs AS candidate
-            SET idempotency_key = NULL
-            WHERE candidate.idempotency_key IS NOT NULL
-              AND EXISTS (
-                  SELECT 1 FROM context_packs AS winner
-                  WHERE winner.idempotency_key = candidate.idempotency_key
-                    AND (
-                        winner.created_at < candidate.created_at
-                        OR (
-                            winner.created_at = candidate.created_at
-                            AND CAST(winner.id AS TEXT) < CAST(candidate.id AS TEXT)
+        if not await _index_exists(
+            conn, "context_packs", "uq_context_packs_idempotency_key"
+        ):
+            await conn.execute(text("""
+                UPDATE context_packs AS candidate
+                SET idempotency_key = NULL
+                WHERE candidate.idempotency_key IS NOT NULL
+                  AND EXISTS (
+                      SELECT 1 FROM context_packs AS winner
+                      WHERE winner.idempotency_key = candidate.idempotency_key
+                        AND (
+                            winner.created_at < candidate.created_at
+                            OR (
+                                winner.created_at = candidate.created_at
+                                AND CAST(winner.id AS TEXT) < CAST(candidate.id AS TEXT)
+                            )
                         )
-                    )
-              )
-        """))
-        await conn.execute(text("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_context_packs_idempotency_key
-            ON context_packs (idempotency_key)
-            WHERE idempotency_key IS NOT NULL
-        """))
+                  )
+            """))
+            await conn.execute(text("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_context_packs_idempotency_key
+                ON context_packs (idempotency_key)
+                WHERE idempotency_key IS NOT NULL
+            """))
     observation_columns = await _get_table_columns(conn, "run_observations")
     if {"agent_run_id", "event_type"} <= observation_columns:
-        await conn.execute(text("""
-            UPDATE run_observations AS candidate
-            SET event_type = 'outcome_duplicate_legacy'
-            WHERE candidate.event_type = 'outcome'
-              AND EXISTS (
-                  SELECT 1 FROM run_observations AS winner
-                  WHERE winner.agent_run_id = candidate.agent_run_id
-                    AND winner.event_type = 'outcome'
-                    AND (
-                        winner.created_at < candidate.created_at
-                        OR (
-                            winner.created_at = candidate.created_at
-                            AND CAST(winner.id AS TEXT) < CAST(candidate.id AS TEXT)
+        if not await _index_exists(
+            conn,
+            "run_observations",
+            "uq_run_observations_terminal_outcome",
+        ):
+            await conn.execute(text("""
+                UPDATE run_observations AS candidate
+                SET event_type = 'outcome_duplicate_legacy'
+                WHERE candidate.event_type = 'outcome'
+                  AND EXISTS (
+                      SELECT 1 FROM run_observations AS winner
+                      WHERE winner.agent_run_id = candidate.agent_run_id
+                        AND winner.event_type = 'outcome'
+                        AND (
+                            winner.created_at < candidate.created_at
+                            OR (
+                                winner.created_at = candidate.created_at
+                                AND CAST(winner.id AS TEXT) < CAST(candidate.id AS TEXT)
+                            )
                         )
-                    )
-              )
-        """))
-        await conn.execute(text("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_run_observations_terminal_outcome
-            ON run_observations (agent_run_id)
-            WHERE event_type = 'outcome'
-        """))
+                  )
+            """))
+            await conn.execute(text("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_run_observations_terminal_outcome
+                ON run_observations (agent_run_id)
+                WHERE event_type = 'outcome'
+            """))
     source_columns = await _get_table_columns(conn, "source_documents")
     if "supersedes_source_document_id" in source_columns:
         await conn.execute(text("""
@@ -3081,6 +3455,8 @@ async def _create_index_if_columns_exist(
     index_name: str,
     column_names: tuple[str, ...],
 ) -> None:
+    if await _index_exists(conn, table_name, index_name):
+        return
     columns = await _get_table_columns(conn, table_name)
     if not columns or any(column_name not in columns for column_name in column_names):
         return

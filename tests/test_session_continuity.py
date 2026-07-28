@@ -40,6 +40,8 @@ async def test_session_continuity_builds_one_truthful_ledger_per_session(
             "cwd": "/workspace/daemonstate",
             "source_path": "/tmp/continuity-one.jsonl",
             "title": "Resume experience",
+            "updated_at": "2026-07-20T09:00:00Z",
+            "source_modified_at": "2026-07-23T09:00:00Z",
         }),
     )
     second = SourceDocument(
@@ -53,9 +55,29 @@ async def test_session_continuity_builds_one_truthful_ledger_per_session(
             "cwd": "/workspace/daemonstate",
             "source_path": "/tmp/continuity-two.jsonl",
             "title": "Another resume session",
+            "updated_at": "2026-07-22T09:00:00Z",
+            "source_modified_at": "2026-07-21T09:00:00Z",
         }),
     )
-    db_session.add_all([first, second])
+    internal = SourceDocument(
+        workspace_id=workspace.id,
+        source_type="agent_session",
+        external_id="codex:session:internal-assessment",
+        content=(
+            "[USER]\n"
+            + ("Long assessment envelope. " * 1_000)
+            + "\nThe following is the Codex agent history whose request action "
+            "you are assessing.\n>>> TRANSCRIPT START"
+        ),
+        metadata_json=json.dumps({
+            "tool": "codex",
+            "session_id": "internal-assessment",
+            "cwd": "/workspace/daemonstate",
+            "source_path": "/tmp/internal-assessment.jsonl",
+            "title": "Internal assessment",
+        }),
+    )
+    db_session.add_all([first, second, internal])
     await db_session.flush()
 
     await persist_session_events(
@@ -85,7 +107,7 @@ async def test_session_continuity_builds_one_truthful_ledger_per_session(
                 event_type="assistant_update",
                 role="assistant",
                 content=(
-                    "Implemented the ledger in frontend/src/pages/RunsPage.jsx. "
+                    "Implemented the ledger in frontend/src/pages/SessionLibrary.jsx. "
                     "We will keep repository comparison read-only. "
                     "The digest uses hashlib.sha256. "
                     "The example name hashlib.sh is not a project path."
@@ -167,6 +189,22 @@ async def test_session_continuity_builds_one_truthful_ledger_per_session(
             ),
         ],
     )
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=internal,
+        provider="codex",
+        session_id="internal-assessment",
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id="internal-base",
+                sequence_number=1,
+                event_type="user_request",
+                role="user",
+                content="Assess the supplied transcript.",
+            ),
+        ],
+    )
     await db_session.commit()
 
     response = await client.get(
@@ -189,7 +227,7 @@ async def test_session_continuity_builds_one_truthful_ledger_per_session(
     assert any(item["kind"] == "decision" for item in ledger["added"])
     assert not any(item["kind"] == "file" for item in ledger["added"])
     assert not any(item["kind"] == "check" for item in ledger["added"])
-    assert "frontend/src/pages/RunsPage.jsx" in {
+    assert "frontend/src/pages/SessionLibrary.jsx" in {
         item["text"] for item in ledger["files"]
     }
     assert any(
@@ -222,6 +260,15 @@ async def test_session_continuity_builds_one_truthful_ledger_per_session(
     )
     assert uncompacted["missing"]["status"] == "not_applicable"
     assert uncompacted["missing"]["reason_code"] == "no_compaction_boundary"
+
+    limited_response = await client.get(
+        "/api/session-continuity",
+        params={"workspace_id": str(workspace.id), "limit": 1},
+    )
+    assert limited_response.status_code == 200
+    limited_sessions = limited_response.json()["sessions"]
+    assert len(limited_sessions) == 1
+    assert limited_sessions[0]["session_id"] == "continuity-one"
 
 
 async def test_session_continuation_returns_a_reviewable_source_backed_bundle(

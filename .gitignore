@@ -2,6 +2,7 @@
 # Environment & Secrets
 # ===========================
 .env
+.env.tmp.*
 .env.local
 .env.*.local
 .env.production
@@ -50,6 +51,12 @@ frontend/.cache/
 .npm
 .yarn/
 *.tsbuildinfo
+
+# ===========================
+# Swift / macOS companion
+# ===========================
+.build/
+.swiftpm/
 
 # ===========================
 # Alembic
@@ -114,7 +121,6 @@ AGENTS.ms
 !.agent-runs/
 .agent-runs/*
 !.agent-runs/agent-*-task.md
-SECURITY.md
 project.md
 instructions.md
 AGENTS.md

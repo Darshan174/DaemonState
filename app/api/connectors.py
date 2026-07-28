@@ -1191,6 +1191,7 @@ async def refresh_linked_ai_sessions(
             "changed": 0,
             "metadata_updated": 0,
             "unchanged": 0,
+            "refreshed_sessions": [],
             "errors": [],
             "skipped_reason": "sample_workspace",
             "refreshed_at": utc_now().isoformat(),
@@ -1239,6 +1240,7 @@ async def refresh_linked_ai_sessions(
     unchanged = 0
     checkpoints_created = 0
     errors: list[dict[str, str]] = []
+    refreshed_sessions: list[dict[str, str]] = []
     metadata_updated = 0
     for document, current_metadata, connector_type, session_id in linked:
         try:
@@ -1270,6 +1272,10 @@ async def refresh_linked_ai_sessions(
                 await session.commit()
                 refreshed += 1
                 unchanged += 1
+                refreshed_sessions.append({
+                    "connector_type": connector_type,
+                    "session_id": session_id,
+                })
                 continue
             result = await _ingest_ai_session_content(
                 session=session,
@@ -1288,6 +1294,10 @@ async def refresh_linked_ai_sessions(
             })
             continue
         refreshed += 1
+        refreshed_sessions.append({
+            "connector_type": connector_type,
+            "session_id": session_id,
+        })
         ingest = result.get("ingest") or {}
         changed += max(
             int(ingest.get("documents_persisted") or 0),
@@ -1307,6 +1317,7 @@ async def refresh_linked_ai_sessions(
         "metadata_updated": metadata_updated,
         "unchanged": unchanged,
         "checkpoints_created": checkpoints_created,
+        "refreshed_sessions": refreshed_sessions,
         "errors": errors,
         "refreshed_at": utc_now().isoformat(),
     }

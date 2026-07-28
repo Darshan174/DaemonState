@@ -39,7 +39,7 @@ async def _running_continuation(db_session) -> tuple[Workspace, AgentRun]:
         workspace_id=workspace.id,
         context_pack_id=pack.id,
         run_key=f"continuation:{uuid4().hex}",
-        tool="context-engine:codex",
+        tool="daemonstate:codex",
         model="codex",
         objective=pack.objective,
         started_at=utc_now(),
@@ -89,9 +89,7 @@ async def test_codex_bridge_waits_for_renderable_activity_before_requesting_navi
         repo_path=str(tmp_path),
     )
 
-    await bridge.observe_stdout_chunk(
-        b'{"type":"turn.started"}\n{"type":"thread.'
-    )
+    await bridge.observe_stdout_chunk(b'{"type":"thread.')
     assert bridge.state is None
     await bridge.observe_stdout_chunk(
         f'started","thread_id":"{thread_id}"}}\n'.encode()
@@ -107,8 +105,13 @@ async def test_codex_bridge_waits_for_renderable_activity_before_requesting_navi
     assert launches == []
 
     await bridge.observe_stdout_chunk(
-        b'{"type":"item.started","item":{"id":"item-1",'
-        b'"type":"agent_message"}}\n'
+        b'{"type":"turn.started"}\n'
+    )
+    assert launches == []
+
+    await bridge.observe_stdout_chunk(
+        b'{"type":"item.completed","item":{"id":"item-1",'
+        b'"type":"agent_message","text":"Starting the visible task."}}\n'
     )
 
     assert bridge.state == {
@@ -120,12 +123,24 @@ async def test_codex_bridge_waits_for_renderable_activity_before_requesting_navi
         "exact_session_supported": True,
         "navigation_requested": True,
         "navigation_verified": False,
+        "renderable_activity_observed": True,
     }
+    assert launches == [("codex", thread_id, str(tmp_path))]
+    await bridge.finish()
     assert launches == [("codex", thread_id, str(tmp_path))]
 
     observations = list(await db_session.scalars(
         select(RunObservation).where(RunObservation.agent_run_id == run.id)
     ))
+    provider_events = [
+        item for item in observations if item.event_type == "provider_event"
+    ]
+    assert len(provider_events) == 3
+    last_event = json.loads(provider_events[-1].payload_json)["provider_event"]
+    assert last_event["type"] == "item.completed"
+    assert last_event["item_type"] == "agent_message"
+    assert last_event["text"] == "Starting the visible task."
+    assert len(last_event["raw_sha256"]) == 64
     assert harness_session_payload(observations) == bridge.state
 
     active = await active_continuation_run(
@@ -159,6 +174,105 @@ async def test_codex_bridge_waits_for_renderable_activity_before_requesting_navi
     )
     assert latest is not None
     assert latest["harness_session"] == bridge.state
+
+
+@pytest.mark.asyncio
+async def test_codex_bridge_finish_before_renderable_activity_persists_without_navigation(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    workspace, run = await _running_continuation(db_session)
+    launches: list[tuple[str, str, str | None]] = []
+
+    def launch(provider: str, session_id: str, *, cwd: str | None = None):
+        launches.append((provider, session_id, cwd))
+        return {
+            "launched": True,
+            "navigation_requested": True,
+            "navigation_verified": False,
+            "mode": "desktop_app",
+            "navigation": "session",
+            "exact_session_supported": True,
+        }
+
+    monkeypatch.setattr(
+        "app.services.harness_sessions.launch_harness_session",
+        launch,
+    )
+    monkeypatch.setattr(
+        "app.api.continuations.launch_harness_session",
+        launch,
+    )
+    thread_id = "019f9a4d-f586-79d3-b305-4844518003be"
+    bridge = HarnessSessionBridge(
+        db_session,
+        run=run,
+        provider="codex",
+        repo_path=str(tmp_path),
+    )
+
+    # A child can fail immediately after announcing its thread, before it
+    # produces any item that the desktop app can render.
+    await bridge.observe_stdout_chunk(
+        (
+            f'{{"type":"thread.started","thread_id":"{thread_id}"}}'
+        ).encode()
+    )
+    await bridge.finish()
+
+    assert launches == []
+    assert bridge.state == {
+        "provider": "codex",
+        "session_id": thread_id,
+        "launched": False,
+        "navigation_requested": False,
+        "navigation_verified": False,
+        "mode": "desktop_app",
+        "navigation": "session",
+        "exact_session_supported": True,
+        "renderable_activity_observed": False,
+        "code": "navigation_deferred",
+        "message": (
+            "Captured the Codex thread before any renderable activity; "
+            "automatic navigation was not requested."
+        ),
+    }
+
+    observations = list(await db_session.scalars(
+        select(RunObservation).where(RunObservation.agent_run_id == run.id)
+    ))
+    session_observation = next(
+        item for item in observations if item.event_key == "harness:session"
+    )
+    assert len([
+        item for item in observations if item.event_type == "provider_event"
+    ]) == 1
+    assert session_observation.content == (
+        f"Captured codex harness session {thread_id}."
+    )
+    assert harness_session_payload(observations) == bridge.state
+
+    active = await active_continuation_run(
+        db_session,
+        workspace_id=workspace.id,
+    )
+    assert active is not None
+    active_payload = active_continuation_run_payload(active)
+    assert active_payload is not None
+    assert active_payload["harness_session"] == bridge.state
+
+    # The persisted exact-thread link remains manually openable; only the
+    # unsafe automatic launch is deferred.
+    response = await client.post(
+        f"/api/continuations/{run.id}/open",
+        json={"workspace_id": str(workspace.id)},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["session_id"] == thread_id
+    assert launches == [("codex", thread_id, str(tmp_path))]
 
 
 @pytest.mark.asyncio

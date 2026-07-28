@@ -7,7 +7,7 @@ real work without reconstructing the project from scratch.
 
 ## What the product is
 
-DaemonState is an open-source context and evidence layer for coding agents.
+DaemonState is a source-available, self-hosted context and evidence layer for coding agents.
 It collects project history from repositories, issues, pull requests, imported
 agent sessions, decisions, documents, and verification output, then prepares a
 focused, source-backed brief for one current task.
@@ -22,7 +22,7 @@ The product does two connected jobs:
    behind that handoff when a person needs to audit it.
 
 The continuation runtime and context compiler are the core product. Library,
-Memory, History, and the graph are supporting inspection surfaces; they are not
+Memory, Evidence, and the graph are supporting inspection surfaces; they are not
 the workflow a developer must maintain before continuing work.
 
 ## First audience

@@ -53,7 +53,7 @@ fi
 if [[ -f ".env" ]]; then
   ok ".env present"
 else
-  warn ".env missing; run: cp .env.example .env"
+  warn ".env missing; scripts/self-host.sh or scripts/setup.sh will create it"
 fi
 
 if [[ -f "docker-compose.yml" ]]; then
@@ -91,10 +91,19 @@ else
   fi
 
   if [[ "$DOCKER_READY" -eq 1 ]]; then
+    if docker compose up --help | grep -- '--wait-timeout' >/dev/null; then
+      ok "docker compose supports up --wait"
+    else
+      warn "docker compose is too old; upgrade to a v2 release with up --wait-timeout"
+      DOCKER_READY=0
+    fi
+  fi
+
+  if [[ "$DOCKER_READY" -eq 1 ]]; then
     if docker info >/dev/null 2>&1; then
       ok "docker daemon reachable"
     else
-      warn "docker CLI is installed, but the daemon is not reachable; start Docker before docker compose up --build"
+      warn "docker CLI is installed, but the daemon is not reachable; start Docker before scripts/self-host.sh"
       DOCKER_READY=0
     fi
   fi
@@ -183,7 +192,7 @@ fi
 PORT="${PORT:-8000}"
 
 section "Next commands"
-printf "  Docker start:       docker compose up --build\n"
+printf "  Docker start:       bash scripts/self-host.sh\n"
 printf "  Bare-metal setup:   bash scripts/setup.sh\n"
 printf "  Bare-metal start:   bash scripts/start.sh\n"
 printf "  Demo seed:          curl -X POST http://localhost:%s/api/seed-demo -H 'content-type: application/json' -d '{}'\n" "$PORT"

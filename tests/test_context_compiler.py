@@ -56,6 +56,76 @@ def test_parse_goal_extracts_files_and_constraints():
     assert truth_audit_frame.requires_tests is False
 
 
+def test_parse_goal_uses_exact_authoritative_lead_for_repository_retrieval():
+    frame = parse_goal(
+        "Remove the shown panel from frontend/src/pages/NowPage.jsx.",
+        request_verbatim=(
+            "Explain OpenTelemetry in app/telemetry.py for this project."
+        ),
+    )
+
+    assert "telemetry" in frame.keywords
+    assert "opentelemetry" in frame.keywords
+    assert "remove" not in frame.keywords
+    assert frame.file_hints == ["app/telemetry.py"]
+
+
+async def test_compiler_emits_fixed_repository_evidence_from_authoritative_lead(
+    tmp_path,
+):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "telemetry.py").write_text(
+        "def configure_telemetry():\n"
+        "    return True\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / "src" / "pages").mkdir(parents=True)
+    (tmp_path / "frontend" / "src" / "pages" / "NowPage.jsx").write_text(
+        "export default function NowPage() { return null; }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\n"
+        "name = 'fixture'\n"
+        "dependencies = ['opentelemetry-sdk>=1.25']\n",
+        encoding="utf-8",
+    )
+
+    result = await ContextCompiler(None).compile_context_pack(
+        "Remove the shown panel from frontend/src/pages/NowPage.jsx.",
+        request_verbatim=(
+            "Explain current OpenTelemetry instrumentation for this project."
+        ),
+        repo_path=str(tmp_path),
+        token_budget=3000,
+        persist=False,
+    )
+
+    relevant_paths = {
+        item["path"]
+        for item in result.manifest["repo_state"]["relevant_files"]
+    }
+    assert "app/telemetry.py" in relevant_paths
+    assert "frontend/src/pages/NowPage.jsx" not in relevant_paths
+    evidence = result.manifest["repository_evidence"]
+    assert evidence["schema_version"] == "repository_evidence.v1"
+    assert evidence["snapshot_fingerprint"]
+    assert [item["id"] for item in evidence["items"]] == [
+        f"RE{index}" for index in range(1, len(evidence["items"]) + 1)
+    ]
+    assert any(
+        item["kind"] == "symbol_declaration"
+        and item["path"] == "app/telemetry.py"
+        and item["symbol_name"] == "configure_telemetry"
+        for item in evidence["items"]
+    )
+    assert any(
+        item["kind"] == "manifest_dependency"
+        and item["dependency_name"] == "opentelemetry-sdk"
+        for item in evidence["items"]
+    )
+
+
 def test_verification_inference_keeps_test_runners_and_file_types_separate(tmp_path):
     repo = RepoFrame(
         repo_path=str(tmp_path),
@@ -191,7 +261,7 @@ def test_verification_inference_excludes_nested_fixture_projects(tmp_path):
                 is_manifest=True,
             ),
         ],
-        package_manifests={"pyproject.toml": {"project": "context-engine"}},
+        package_manifests={"pyproject.toml": {"project": "daemonstate"}},
         recent_commits=[],
         test_files=[
             (
@@ -410,6 +480,113 @@ async def test_compile_pack_persists_manifest_markdown_and_items(db_session, tmp
     assert pack.model_profile == "small_coder_model"
     assert json.loads(pack.repo_state_json) == result.manifest["repo_state"]
     assert pack.idempotency_key == result.manifest["lockfile"]["replay_key"]
+
+
+async def test_compiler_keeps_lessons_and_failed_attempts_out_of_project_context(
+    db_session,
+    tmp_path,
+) -> None:
+    (tmp_path / "app.py").write_text(
+        "def run_provider():\n    return True\n",
+        encoding="utf-8",
+    )
+    model = Model(id=uuid4(), name=f"Project memory {uuid4()}")
+    specifications = (
+        (
+            "lesson",
+            "Lesson: keep provider retries bounded",
+            "Keep provider retries bounded after a timeout.",
+        ),
+        (
+            "failed_attempt",
+            "Failed attempt: replace the provider adapter",
+            "Replacing the provider adapter failed because it lost session state.",
+        ),
+        (
+            "decision",
+            "Provider adapter decision",
+            "Keep the current provider adapter stable.",
+        ),
+    )
+    db_session.add(model)
+    components: list[Component] = []
+    for fact_type, name, value in specifications:
+        document = SourceDocument(
+            id=uuid4(),
+            source_type="local",
+            external_id=f"{fact_type}-{uuid4()}",
+            content=value,
+            content_sha256=hashlib.sha256(value.encode()).hexdigest(),
+            metadata_json="{}",
+        )
+        evidence = EvidenceSpan(
+            id=uuid4(),
+            source_document_id=document.id,
+            start_char=0,
+            end_char=len(value),
+            text=value,
+            text_sha256=hashlib.sha256(value.encode()).hexdigest(),
+            review_status="verified",
+            trust_zone="trusted_human",
+        )
+        claim = Claim(
+            id=uuid4(),
+            identity_key=f"{fact_type}:{uuid4()}",
+            claim_type=fact_type,
+            status="active",
+            temporal="current",
+        )
+        db_session.add_all([document, evidence, claim])
+        await db_session.flush()
+        revision = ClaimRevision(
+            id=uuid4(),
+            claim_id=claim.id,
+            evidence_span_id=evidence.id,
+            value=value,
+            status_after="active",
+        )
+        db_session.add(revision)
+        await db_session.flush()
+        claim.current_revision_id = revision.id
+        component = Component(
+            id=uuid4(),
+            model_id=model.id,
+            source_document_id=document.id,
+            claim_id=claim.id,
+            identity_key=claim.identity_key,
+            name=name,
+            value=value,
+            fact_type=fact_type,
+            temporal="current",
+            confidence=0.95,
+            authority_weight=0.95,
+            status="active",
+        )
+        db_session.add(component)
+        components.append(component)
+    await db_session.flush()
+
+    compiled = await ContextCompiler(db_session).compile_context_pack(
+        "Review bounded provider retries and adapter stability in app.py.",
+        repo_path=str(tmp_path),
+        token_budget=5000,
+        persist=False,
+    )
+
+    manifest_items = {
+        item["component_id"]: item
+        for item in compiled.manifest["selected_context"]
+        if item.get("component_id")
+    }
+    lesson, failed_attempt, decision = components
+    assert manifest_items[str(lesson.id)]["item_type"] == "learning"
+    assert manifest_items[str(lesson.id)]["lane"] == "prior_failures"
+    assert manifest_items[str(failed_attempt.id)]["item_type"] == "learning"
+    assert manifest_items[str(failed_attempt.id)]["lane"] == "prior_failures"
+    assert manifest_items[str(decision.id)]["item_type"] == "decision"
+
+    # Project Context no longer consumes this task-ranked manifest. Promotion
+    # is covered by the workspace-wide foundation compiler contract tests.
 
 
 async def test_prompt_injection_risk_is_excluded(db_session, tmp_path):
@@ -821,8 +998,8 @@ async def test_current_verified_claim_revision_populates_exact_evidence_audit(
     assert result.manifest["repo_state"]["state_fingerprint"]
     assert result.manifest["compiler"] == {
         "name": "ContextCompiler",
-        "version": "context_compiler.v5",
-        "ranking_version": "objective_file_rank.v3",
+        "version": "context_compiler.v6",
+        "ranking_version": "objective_file_rank.v4",
         "evidence_contract_version": "exact_evidence_span.v1",
         "token_estimation_method": "chars_div_4.v1",
     }

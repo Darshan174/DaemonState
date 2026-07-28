@@ -62,7 +62,15 @@ async def persist_session_events(
             unchanged += 1
             continue
         seen.add(event_id)
-        content = _bounded_text(redact_sensitive_text(raw.content), MAX_EVENT_CONTENT_CHARS)
+        redacted_content = redact_sensitive_text(raw.content)
+        # The user-authored request is the authority root for every derived
+        # checkpoint and continuation contract. Audit/event display may be
+        # bounded, but this source text must remain lossless.
+        content = (
+            redacted_content
+            if raw.event_type == "user_request" and raw.role in {None, "user"}
+            else _bounded_text(redacted_content, MAX_EVENT_CONTENT_CHARS)
+        )
         payload = _sanitize_payload(raw.payload)
         canonical = _canonical_json({
             "provider_event_id": event_id,
