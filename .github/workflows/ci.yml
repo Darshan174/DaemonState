@@ -28,17 +28,24 @@ jobs:
         run: npm test
       - name: Build frontend
         working-directory: frontend
-        run: npm run build
+        run: |
+          npm run build
+          cmp ../LICENSE dist/assets/legal/LICENSE
+          cmp ../NOTICE dist/assets/legal/NOTICE
+          cmp ../THIRD_PARTY_NOTICES.txt dist/assets/legal/THIRD_PARTY_NOTICES.txt
       - name: Build Docker image
         run: docker build -t daemonstate .
+      - name: Exercise personal self-hosting stack
+        run: bash scripts/self-host-smoke.sh
       - name: Validate smoke compose
         run: docker compose -f docker-compose.smoke.yml -p daemonstate-smoke config --quiet
       - name: Validate production compose
         env:
-          DAEMONSTATE_IMAGE: daemonstate:test
-          POSTGRES_IMAGE: pgvector/pgvector:pg16
-          REDIS_IMAGE: redis:7-alpine
-          CADDY_IMAGE: caddy:2-alpine
+          DAEMONSTATE_IMAGE: daemonstate:test@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          POSTGRES_IMAGE: pgvector/pgvector:pg16@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          REDIS_IMAGE: redis:7-alpine@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          CADDY_IMAGE: caddy:2-alpine@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          PROMETHEUS_IMAGE: prom/prometheus:latest@sha256:0000000000000000000000000000000000000000000000000000000000000000
           RELEASE_SHA: ${{ github.sha }}
           DAEMONSTATE_DOMAIN: daemonstate.example.test
           ACME_EMAIL: ops@example.test
@@ -51,6 +58,11 @@ jobs:
         run: |
           mkdir -p /tmp/daemonstate-workspace
           printf 'ci-placeholder-secret\n' >/tmp/daemonstate-secret
+          scripts/validate-production-images.sh /dev/null
+          if DAEMONSTATE_IMAGE=daemonstate:test scripts/validate-production-images.sh /dev/null; then
+            echo "tag-only production image unexpectedly passed preflight" >&2
+            exit 1
+          fi
           docker compose -f docker-compose.production.yml config --quiet
 
   postgres:

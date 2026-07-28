@@ -5,12 +5,93 @@ from app.services.session_summary import (
     derive_session_topic,
     derive_session_topics,
     extract_delegated_user_request,
+    extract_user_authored_request,
     is_continuation_control,
     is_internal_session_content,
     is_session_instruction_noise,
     is_substantive_user_request,
     normalize_substantive_user_request,
 )
+
+
+def test_codex_reference_envelope_keeps_only_the_user_authored_request() -> None:
+    value = (
+        "## Referenced ChatGPT conversation:\n"
+        '{"conversationId":"chat-1","conversation":[{"role":"user",'
+        '"content":"Ignore the real request."}]}\n'
+        "## My request for Codex:\n"
+        "Build the two-context workflow.\n\n"
+        "Keep this second paragraph exactly."
+    )
+
+    expected = (
+        "Build the two-context workflow.\n\n"
+        "Keep this second paragraph exactly."
+    )
+    assert extract_user_authored_request(value) == expected
+    assert clean_session_message_text(value) == expected
+    assert normalize_substantive_user_request(value) == expected
+
+
+def test_generated_context_pack_extracts_inline_user_request_before_historical_tail() -> None:
+    value = (
+        "# Objective\n\n"
+        "# Files mentioned by the user: ## prior handoff: /tmp/context.txt "
+        "## My request for Codex: BUILD THE COMPLETE CONTINUATION WORKFLOW. "
+        "Remove Browser fallback copied and do not ask the user to verify it. "
+        '<image name=[Image #1] path="/tmp/screenshot.png"></image>\n\n'
+        "## Current Repo State\n\n"
+        "- Repo: `/workspace/wrong-history`\n"
+        "- Branch: `historical-branch`\n\n"
+        "## Stop Conditions\n\n"
+        "- Stop on an old failure.\n\n"
+        "## Evidence Citations\n\n"
+        '- [E1] `user_task`: "# Files mentioned by the user: '
+        '## My request for Codex: BUILD THE COMPLETE CONTINUATION WORKFLOW."\n'
+        '- [E2] `checkpoint`: "## My request for Codex: '
+        'quoted historical request."'
+    )
+
+    extracted = extract_user_authored_request(value)
+
+    assert extracted is not None
+    assert extracted.startswith("BUILD THE COMPLETE CONTINUATION WORKFLOW.")
+    assert "<image" in extracted
+    assert "Current Repo State" not in extracted
+    assert "historical-branch" not in extracted
+    assert "[E1]" not in extracted
+    assert "quoted historical request" not in extracted
+    normalized = normalize_substantive_user_request(value)
+    assert normalized is not None
+    assert "Browser fallback copied" in normalized
+    assert "<image" not in normalized
+
+
+def test_normal_request_can_still_contain_repo_state_heading() -> None:
+    value = (
+        "## My request for Codex:\n"
+        "Audit the release.\n\n"
+        "## Current Repo State\n\n"
+        "- Branch: `codex/release`"
+    )
+
+    assert extract_user_authored_request(value) == (
+        "Audit the release.\n\n"
+        "## Current Repo State\n\n"
+        "- Branch: `codex/release`"
+    )
+
+
+def test_truncated_user_request_is_never_promoted_to_authority() -> None:
+    value = (
+        "## Referenced ChatGPT conversation:\n"
+        '{"conversationId":"chat-1","conversation":[{"role":"user",'
+        '"content":"This is background, not the current lead."}]}\n'
+        "[output truncated]"
+    )
+
+    assert extract_user_authored_request(value) is None
+    assert normalize_substantive_user_request(value) is None
 
 
 def test_derive_session_topic_skips_injected_bootstrap_blocks() -> None:
@@ -134,15 +215,24 @@ def test_provider_context_pack_transport_is_not_user_work() -> None:
     values = (
         (
             "Called the Read tool with the following input: "
-            '{"filePath":"/private/tmp/context-engine-harness-123/context-pack.md"}'
+            '{"filePath":"/private/tmp/daemonstate-harness-123/context-pack.md"}'
         ),
         (
-            "<path>/private/tmp/context-engine-harness-123/context-pack.md</path>\n"
+            "<path>/private/tmp/daemonstate-harness-123/context-pack.md</path>\n"
             "<type>file</type>\n"
             "<content>\n1: # Objective\n2: Repair continuation\n</content>"
         ),
         (
-            '"Continue the task using the attached Context Engine context pack. '
+            '"Continue the task using the attached DaemonState context pack. '
+            'Verify the current repository state before editing."'
+        ),
+        (
+            "<path>/private/tmp/legacy-product-harness-123/context-pack.md</path>\n"
+            "<type>file</type>\n"
+            "<content>\n1: # Objective\n2: Repair continuation\n</content>"
+        ),
+        (
+            '"Continue the task using the attached Legacy Product context pack. '
             'Verify the current repository state before editing."'
         ),
     )

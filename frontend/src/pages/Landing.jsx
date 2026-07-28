@@ -1,15 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect } from "react";
 import { Link } from "react-router-dom";
 import {
   Activity,
   ArrowRight,
   BrainCircuit,
   Check,
-  ChevronDown,
   Database,
   FileCode2,
-  GitBranch,
-  MessagesSquare,
+  History,
   PlugZap,
   ShieldCheck,
   Sparkles,
@@ -20,563 +18,440 @@ import {
 import DaemonStateIcon from "../components/DaemonStateIcon";
 
 const GITHUB_URL = "https://github.com/Darshan174/DaemonState";
-const PIXEL_COUNT = 48;
 
-const SOURCE_STREAMS = [
-  { label: "Agent sessions", detail: "intent + reasoning", icon: MessagesSquare },
-  { label: "Repository", detail: "files + diffs", icon: FileCode2 },
-  { label: "Git activity", detail: "issues + reviews", icon: GitBranch },
-  { label: "Test evidence", detail: "checks + outcomes", icon: TestTube2 },
-];
-
-const CONTINUITY_LOOP = [
+const CONTINUATION_STEPS = [
   {
     number: "01",
-    title: "Connect",
-    body: "Bring sessions, repository state, pull requests, documents, and configured sources into one evidence layer.",
+    title: "Resolve the exact task",
+    body: "Use the explicit request, selected workspace goal, or latest substantive session—without quietly turning the backlog into the plan.",
   },
   {
     number: "02",
-    title: "Observe",
-    body: "Track current activity without turning every historical artifact into an instruction.",
+    title: "Reconcile the checkpoint",
+    body: "Check the saved task boundary against repository state, relevant files, event evidence, and recorded verification before it is trusted.",
   },
   {
     number: "03",
-    title: "Prepare",
-    body: "Compile the current goal, relevant facts, files, blockers, exclusions, and verification commands.",
+    title: "Build the right hierarchy",
+    body: "Pair the durable Project Context parent with the task-specific Session Context child. Keep exclusions and missing evidence visible.",
   },
   {
     number: "04",
-    title: "Continue",
-    body: "Resume from a reviewable checkpoint, then preserve the outcome as evidence for the next run.",
+    title: "Continue and observe",
+    body: "Request a reviewable composer in the selected desktop app and wait for your confirmation. Nothing is submitted or run silently.",
   },
-];
-
-const HANDOFF_ROWS = [
-  ["Current goal", "Ship source revisions without breaking provenance", "selected"],
-  ["Decision", "Source documents stay append-only", "source rev 3"],
-  ["Relevant file", "app/services/context_compiler.py", "repo state"],
-  ["Blocker", "PostgreSQL migration still needs verification", "evidence E4"],
-  ["Exact next action", "Run the compiler contract tests, then review the migration", "checkpoint"],
 ];
 
 const PRODUCT_SURFACES = [
   {
-    id: "observe",
-    number: "01",
-    label: "Observe",
-    surfaces: "Now + Runs",
-    title: "See current work without mistaking history for the present.",
-    body: "Now shows live observed activity and the safest checkpoint to continue from. Runs preserves the execution trail behind that state.",
-    payoff: "Current activity stays current. Recovery boundaries remain immutable.",
-    tags: ["active work", "run evidence", "checkpoints"],
+    group: "Work",
+    title: "Continue",
+    eyebrow: "Desktop handoff · Codex, Claude, or OpenCode",
+    body: "Resolve the selected task, reconcile its latest compatible checkpoint, and request a reviewable composer in the selected desktop app. Nothing is submitted; you review the compiled lead and press Enter yourself.",
     to: "/app",
-    action: "Open Now",
+    action: "Open Continue",
     icon: Activity,
+    featured: true,
   },
   {
-    id: "recall",
-    number: "02",
-    label: "Recall",
-    surfaces: "Library + Memory",
-    title: "Choose the right session, then keep only the memory that lasts.",
-    body: "Library selects the workstream that matters now. Memory turns its durable decisions, requirements, blockers, and outcomes into reviewable project knowledge.",
-    payoff: "A deliberate archive, not a transcript dump.",
-    tags: ["session archive", "durable facts", "human review"],
-    to: "/app/memory",
-    action: "Inspect memory",
+    group: "Work",
+    title: "Execute",
+    eyebrow: "Workspace + session contexts",
+    body: "Preview or copy Project Context and up to three Session Contexts selected from Library. Every boundary stays separate and quality-gated.",
+    to: "/app/execute",
+    action: "Open Execute",
     icon: BrainCircuit,
   },
   {
-    id: "explain",
-    number: "03",
-    label: "Explain",
-    surfaces: "Graph + Evidence",
-    title: "Trace each conclusion back to the evidence that earned it.",
-    body: "Explain reveals how goals, decisions, files, risks, and sources relate—without making users reverse-engineer the compiled handoff.",
-    payoff: "The agent gets focus. The person keeps auditability.",
-    tags: ["relationships", "provenance", "conflicts"],
+    group: "Inspect",
+    title: "Library",
+    eyebrow: "Local agent archives",
+    body: "Search Codex, Claude Code, and OpenCode history by harness or topic. Select an exact session or recover a saved compaction checkpoint.",
+    to: "/app/library",
+    action: "Browse sessions",
+    icon: History,
+  },
+  {
+    group: "Inspect",
+    title: "Evidence",
+    eyebrow: "Provenance + conflicts",
+    body: "Trace goals, decisions, sources, conflicts, and file relationships so a person can see why a claim was selected.",
     to: "/app/explain",
-    action: "Explain the project",
+    action: "Trace the evidence",
     icon: Waypoints,
   },
   {
-    id: "connect",
-    number: "04",
-    label: "Connect",
-    surfaces: "Sources + Connectors",
-    title: "Grow the evidence layer without weakening source boundaries.",
-    body: "Sources preserves raw material and revisions. Connectors bring configured systems into the same evidence model without silently promoting them to truth.",
-    payoff: "Broad input coverage. Narrow, source-backed output.",
-    tags: ["source revisions", "ingestion", "boundaries"],
+    group: "Setup",
+    title: "Sources",
+    eyebrow: "Raw material + revisions",
+    body: "Inspect raw source previews, imports, extracted components, and source revisions behind graph claims and context packs.",
+    to: "/app/sources",
+    action: "Review sources",
+    icon: Database,
+  },
+  {
+    group: "Setup",
+    title: "Integrations",
+    eyebrow: "Connection state stays explicit",
+    body: "See what is configured and what still needs setup. GitHub, Slack, Gmail, and Drive paths never masquerade as connected by default.",
     to: "/app/connectors",
-    action: "Manage connectors",
+    action: "Manage integrations",
     icon: PlugZap,
   },
 ];
 
+const PROJECT_CONTEXT_ITEMS = [
+  "Project identity and architecture",
+  "Workflows and canonical commands",
+  "Durable decisions and conventions",
+  "Long-term constraints, risks, and direction",
+];
+
+const SESSION_CONTEXT_ITEMS = [
+  "Goal and acceptance criteria",
+  "Attempts, changes, and discoveries",
+  "Touched files and verification",
+  "Blockers and the exact next action",
+];
+
 export default function Landing() {
-  const landingRef = useRef(null);
-  useLandingMotion(landingRef);
+  useEffect(() => {
+    const themeColor = document.querySelector('meta[name="theme-color"]');
+    if (!themeColor) return undefined;
+    const previousColor = themeColor.getAttribute("content");
+    themeColor.setAttribute("content", "#f4f3ed");
+    return () => {
+      if (previousColor === null) {
+        themeColor.removeAttribute("content");
+      } else {
+        themeColor.setAttribute("content", previousColor);
+      }
+    };
+  }, []);
 
   return (
-    <div ref={landingRef} data-landing-theme="fixed" className="daemonstate-landing min-h-screen text-[#171713] selection:bg-[#171713] selection:text-white">
-      <Nav />
+    <div
+      data-landing-theme="fixed"
+      className="daemonstate-landing min-h-screen text-[#171713] selection:bg-[#171713] selection:text-white"
+    >
+      <LandingNav />
 
       <main>
-        <section className="daemonstate-landing-hero mx-auto grid w-full max-w-[1440px] gap-12 px-5 pb-16 pt-12 sm:px-8 sm:pb-24 sm:pt-20 lg:grid-cols-[1.03fr_0.97fr] lg:items-center lg:gap-10 lg:px-12 lg:pb-28 lg:pt-24">
-          <div className="daemonstate-hero-copy relative z-10">
-            <p className="daemonstate-kicker">
-              <span className="daemonstate-live-dot" aria-hidden="true" />
-              Continuity infrastructure for coding agents
-            </p>
-            <h1 className="mt-7 max-w-5xl text-[clamp(3.35rem,7vw,7.25rem)] font-semibold leading-[0.88] tracking-[-0.065em]">
-              Your next coding agent should not start from zero.
-            </h1>
-            <p className="mt-8 max-w-2xl text-lg leading-8 text-[#5f5f57] sm:text-xl sm:leading-9">
-              DaemonState turns sessions, code changes, decisions, and test evidence into one verified handoff for the next run.
-            </p>
+        <section className="daemonstate-landing-shell daemonstate-landing-hero">
+          <div className="daemonstate-hero-grid">
+            <div className="daemonstate-hero-copy min-w-0">
+              <p className="daemonstate-eyebrow">
+                <span className="daemonstate-live-dot" aria-hidden="true" />
+                Source-available continuity for coding agents
+              </p>
+              <h1 className="daemonstate-display-hero">
+                Continue the work. <span>Not the explanation.</span>
+              </h1>
+              <p className="daemonstate-hero-lede">
+                DaemonState keeps durable Project Context separate from task-specific Session Context,
+                reconciles both with the repository, and prepares the next agent to continue from
+                evidence—not memory.
+              </p>
 
-            <div className="mt-9 flex flex-col gap-3 sm:flex-row">
-              <Link to="/app" className="daemonstate-cta-primary">
-                Open your context <ArrowRight className="h-4 w-4" />
-              </Link>
-              <a href="#handoff" className="daemonstate-cta-secondary">
-                See a real handoff
-              </a>
+              <div className="daemonstate-hero-actions">
+                <Link to="/app" className="daemonstate-button daemonstate-button-primary">
+                  Open Continue <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                </Link>
+                <a href="#how-it-works" className="daemonstate-button daemonstate-button-secondary">
+                  See how it works
+                </a>
+              </div>
+
+              <ul className="daemonstate-trust-list" aria-label="Product qualities">
+                <li><Check className="h-4 w-4" aria-hidden="true" />Local-first and self-hosted</li>
+                <li><Check className="h-4 w-4" aria-hidden="true" />Source-backed context</li>
+                <li><Check className="h-4 w-4" aria-hidden="true" />Active alpha</li>
+              </ul>
             </div>
 
-            <div className="mt-8 flex flex-wrap gap-x-6 gap-y-3 text-sm text-[#6d6d64]">
-              <span className="inline-flex items-center gap-2"><Check className="h-4 w-4" />Source-backed</span>
-              <span className="inline-flex items-center gap-2"><Check className="h-4 w-4" />Agent-agnostic</span>
-              <span className="inline-flex items-center gap-2"><Check className="h-4 w-4" />Open source</span>
-            </div>
+            <ContinuationPreview />
           </div>
-
-          <ContinuityVisual />
         </section>
 
-        <SourceRail />
+        <AvailabilityStrip />
 
-        <ContinuityFlow />
-
-        <section id="workflow" className="mx-auto w-full max-w-[1440px] px-5 py-24 sm:px-8 lg:px-12 lg:py-36">
-          <SectionHeading
-            number="01"
-            label="The continuity loop"
-            title="A project should accumulate understanding—not lose it between runs."
-            body="DaemonState separates raw evidence, current observed work, and durable checkpoints so the next agent gets a focused continuation rather than an undifferentiated history dump."
+        <section id="how-it-works" className="daemonstate-landing-section daemonstate-landing-shell">
+          <SectionIntro
+            eyebrow="How continuation works"
+            title="A continuation, not a context dump."
+            body="DaemonState does the retrieval and reconciliation work before the next agent sees a prompt. Broad evidence stays broad; the handoff stays finite."
           />
-          <PixelReveal className="mt-16">
-            <div className="grid border-l border-t border-[#9fb64a] sm:grid-cols-2 lg:grid-cols-4">
-              {CONTINUITY_LOOP.map((step) => (
-                <article
-                  key={step.number}
-                  className="daemonstate-loop-card min-h-[290px] border-b border-r border-[#9fb64a] p-6 sm:p-8"
-                >
-                  <span className="font-mono text-sm text-[#5c691f]">{step.number}</span>
-                  <h3 className="mt-20 text-3xl font-semibold tracking-[-0.04em]">{step.title}</h3>
-                  <p className="mt-4 text-sm leading-6 text-[#465212]">{step.body}</p>
-                </article>
+
+          <div className="daemonstate-step-grid">
+            {CONTINUATION_STEPS.map((step) => (
+              <article key={step.number} className="daemonstate-step-card">
+                <span className="daemonstate-step-number">{step.number}</span>
+                <div>
+                  <h3>{step.title}</h3>
+                  <p>{step.body}</p>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section id="product" className="daemonstate-product-section">
+          <div className="daemonstate-landing-shell daemonstate-landing-section">
+            <SectionIntro
+              eyebrow="The product today"
+              title="Six focused surfaces. One continuity loop."
+              body="The landing page now mirrors the app: Continue and Execute for the work, Library and Evidence for inspection, Sources and Integrations for setup."
+              inverse
+            />
+
+            <div className="daemonstate-feature-grid">
+              {PRODUCT_SURFACES.map((surface) => (
+                <ProductCard key={surface.title} {...surface} />
               ))}
             </div>
-          </PixelReveal>
-        </section>
-
-        <ProductAtlas />
-
-        <section id="handoff" className="daemonstate-dark-stage overflow-hidden border-y border-[#9fb64a]">
-          <div className="mx-auto grid w-full max-w-[1440px] gap-14 px-5 py-24 sm:px-8 lg:grid-cols-[0.78fr_1.22fr] lg:gap-20 lg:px-12 lg:py-36">
-            <div data-daemonstate-reveal="rise" className="lg:sticky lg:top-28 lg:self-start">
-              <p className="daemonstate-kicker">03 · Compiled handoff</p>
-              <h2 className="mt-7 max-w-xl text-[clamp(2.8rem,5vw,5.5rem)] font-semibold leading-[0.94] tracking-[-0.055em]">
-                Everything needed to continue. Nothing that sends the agent sideways.
-              </h2>
-              <p className="mt-7 max-w-lg text-base leading-7 text-[#465212]">
-                The handoff is deliberately finite. Every included claim is inspectable, every exclusion is explicit, and missing evidence remains missing.
-              </p>
-            </div>
-            <PixelReveal><HandoffPreview /></PixelReveal>
           </div>
         </section>
 
-        <section className="mx-auto w-full max-w-[1440px] px-5 py-24 sm:px-8 lg:px-12 lg:py-36">
-          <SectionHeading
-            number="04"
-            label="Curation over accumulation"
-            title="More context is not better context. Relevant context is."
-            body="The product keeps the evidence layer broad and the agent handoff narrow. That distinction is what makes continuity useful instead of noisy."
+        <section id="context-model" className="daemonstate-landing-section daemonstate-landing-shell">
+          <SectionIntro
+            eyebrow="Context without contamination"
+            title="Two contexts. One clean boundary."
+            body="Project knowledge should survive a task. Task debris should not automatically become project truth."
           />
-          <PixelReveal className="mt-16">
-            <div className="grid gap-5 lg:grid-cols-2">
-              <CurationCard
-                tone="selected"
-                eyebrow="Selected for this run"
-                title="Current, relevant, and verifiable"
-                items={[
-                  "The explicit goal chosen for this workspace",
-                  "Decisions and constraints that still apply",
-                  "Files and checks needed for the exact next action",
-                ]}
-              />
-              <CurationCard
-                tone="excluded"
-                eyebrow="Kept out of the handoff"
-                title="Preserved, but not promoted"
-                items={[
-                  "Stale plans and superseded decisions",
-                  "Unrelated sessions and background history",
-                  "Claims without sufficient source evidence",
-                ]}
-              />
+
+          <div className="daemonstate-context-stage">
+            <ContextCard
+              label="Durable parent"
+              title="Project Context"
+              description="Objective-independent knowledge compiled across the workspace."
+              items={PROJECT_CONTEXT_ITEMS}
+              tone="project"
+            />
+
+            <div className="daemonstate-context-join" aria-hidden="true">
+              <span />
+              <ShieldCheck className="h-5 w-5" />
+              <span />
             </div>
-          </PixelReveal>
+
+            <ContextCard
+              label="Task-specific child"
+              title="Current Session Context"
+              description="The latest individual session boundary for the work in front of you."
+              items={SESSION_CONTEXT_ITEMS}
+              tone="session"
+            />
+          </div>
+
+          <p className="daemonstate-context-note">
+            Failed attempts and transient blockers stay in Session Context. Only durable project facts may enter Project Context, and only when mechanically verified, human-confirmed, or independently corroborated.
+          </p>
         </section>
 
-        <section className="border-y border-[#d7d7ce]">
-          <div className="mx-auto grid w-full max-w-[1440px] lg:grid-cols-2">
-            <div data-daemonstate-reveal="rise" className="border-b border-[#9fb64a] px-5 py-20 sm:px-8 lg:border-b-0 lg:border-r lg:px-12 lg:py-28">
-              <p className="daemonstate-kicker">05 · One truth, two views</p>
-              <h2 className="mt-7 max-w-2xl text-4xl font-semibold leading-[1] tracking-[-0.045em] sm:text-6xl">
-                Compiled for agents. Explainable to people.
+        <DeveloperSurface />
+
+        <section className="daemonstate-landing-shell daemonstate-landing-section">
+          <div className="daemonstate-proof-grid">
+            <div className="daemonstate-proof-copy">
+              <p className="daemonstate-eyebrow">Evidence before confidence</p>
+              <h2 className="daemonstate-display-section">
+                “Done” is not a verification result.
               </h2>
-            </div>
-            <div data-daemonstate-reveal="rise" className="flex flex-col justify-center px-5 py-20 sm:px-8 lg:px-12 lg:py-28">
-              <p className="max-w-xl text-lg leading-8 text-[#465212]">
-                Agents receive a compact continuation bundle. People can inspect the project graph, source revisions, conflicts, checkpoints, and evidence that produced it.
+              <p>
+                Automatic CLI and local runs report only what observed execution earned. Missing,
+                failed, skipped, malformed, or unsupported evidence remains unproven instead of
+                being polished into certainty.
               </p>
-              <Link to="/app/explain" className="mt-8 inline-flex w-fit items-center gap-2 border-b border-current pb-1 text-sm font-semibold">
-                Explain the project <ArrowRight className="h-4 w-4" />
+              <Link to="/app/explain" className="daemonstate-text-link">
+                Inspect the evidence model <ArrowRight className="h-4 w-4" aria-hidden="true" />
               </Link>
             </div>
+
+            <div className="daemonstate-outcome-panel" aria-label="Observed continuation outcomes">
+              <OutcomeRow icon={ShieldCheck} label="Verified complete" detail="Every MUST requirement has passing required evidence" tone="verified" />
+              <OutcomeRow icon={TestTube2} label="Requirements unproven" detail="Mandatory evidence is missing, failed, skipped, malformed, or unsupported" tone="unproven" />
+              <OutcomeRow icon={PlugZap} label="Blocked external" detail="Provider access, credentials, permissions, billing, or infrastructure stopped execution" tone="external" />
+              <OutcomeRow icon={Waypoints} label="Blocked ambiguity" detail="Explicit user intent is required before execution can proceed" tone="ambiguity" />
+              <OutcomeRow icon={FileCode2} label="Execution failed" detail="The worker or an ordinary execution step failed" tone="failed" />
+            </div>
           </div>
         </section>
 
-        <section data-daemonstate-reveal="rise" className="daemonstate-final-cta mx-auto my-5 w-[calc(100%-2.5rem)] max-w-[1390px] overflow-hidden rounded-[2rem] bg-[#171713] px-6 py-16 text-white sm:my-8 sm:w-[calc(100%-4rem)] sm:px-10 sm:py-20 lg:px-14">
-          <div className="relative z-10 flex flex-col items-start justify-between gap-10 lg:flex-row lg:items-end">
-            <div>
-              <p className="daemonstate-kicker text-[#c8e769]">Keep the project moving</p>
-              <h2 className="mt-6 max-w-4xl text-[clamp(2.65rem,6vw,6.5rem)] font-semibold leading-[0.9] tracking-[-0.06em]">
-                Make the next agent continue—not rediscover.
-              </h2>
+        <section className="daemonstate-final-cta">
+          <div className="daemonstate-landing-shell">
+            <p className="daemonstate-eyebrow daemonstate-eyebrow-on-dark">
+              Keep the project moving
+            </p>
+            <div className="daemonstate-final-cta-row">
+              <h2>Give the next agent the state your project has already earned.</h2>
+              <Link to="/app" className="daemonstate-button daemonstate-button-accent">
+                Open DaemonState <ArrowRight className="h-4 w-4" aria-hidden="true" />
+              </Link>
             </div>
-            <Link to="/app" className="inline-flex shrink-0 items-center justify-center gap-2 rounded-full bg-[#d9ff68] px-6 py-4 text-sm font-semibold text-[#171713] transition duration-300 hover:-translate-y-1 hover:shadow-[0_14px_28px_rgba(0,0,0,0.22)]">
-              Open DaemonState <ArrowRight className="h-4 w-4" />
-            </Link>
           </div>
         </section>
       </main>
 
-      <Footer />
+      <LandingFooter />
     </div>
   );
 }
 
-function Nav() {
+function LandingNav() {
   return (
-    <header className="daemonstate-landing-nav sticky top-0 z-50 border-b border-[#9fb64a]/80 backdrop-blur-xl">
-      <div className="mx-auto flex h-[4.5rem] w-full max-w-[1440px] items-center justify-between gap-3 px-5 sm:h-20 sm:px-8 lg:px-12">
-        <Link to="/" aria-label="DaemonState home" className="group inline-flex min-w-0 items-center gap-3 text-base font-bold tracking-[-0.025em] sm:text-lg">
-          <DaemonStateIcon size={32} className="shrink-0 transition-transform duration-300 group-hover:-rotate-3 group-hover:scale-105" />
-          <span className="truncate">DaemonState</span>
+    <header className="daemonstate-landing-nav">
+      <div className="daemonstate-landing-shell daemonstate-nav-inner">
+        <Link to="/" aria-label="DaemonState home" className="daemonstate-wordmark">
+          <DaemonStateIcon size={32} className="shrink-0" />
+          <span>DaemonState</span>
         </Link>
-        <nav aria-label="Main navigation" className="flex shrink-0 items-center gap-2 sm:gap-5">
-          <a href="#workflow" className="hidden text-sm text-[#67675f] transition hover:text-[#171713] md:block">How it works</a>
-          <a href="#product" className="hidden text-sm text-[#67675f] transition hover:text-[#171713] lg:block">Product</a>
-          <a href={GITHUB_URL} target="_blank" rel="noreferrer" className="hidden text-sm text-[#67675f] transition hover:text-[#171713] sm:block">GitHub</a>
-          <Link to="/app" className="rounded-full bg-[#171713] px-4 py-2.5 text-sm font-semibold text-white transition hover:-translate-y-0.5">Open app</Link>
+
+        <nav aria-label="Main navigation" className="daemonstate-nav-links">
+          <a href="#how-it-works">How it works</a>
+          <a href="#product">Product</a>
+          <a href={GITHUB_URL} target="_blank" rel="noreferrer">GitHub</a>
+          <Link to="/app" className="daemonstate-nav-cta">Open app</Link>
         </nav>
       </div>
-      <span className="daemonstate-scroll-progress" aria-hidden="true" />
     </header>
   );
 }
 
-function ContinuityVisual() {
+function ContinuationPreview() {
   return (
-    <div className="daemonstate-continuity-visual relative min-h-[540px] overflow-hidden rounded-[2rem] border border-[#d5d5cc] bg-[#ecece5] p-5 shadow-[0_28px_80px_rgba(23,23,19,0.12)] sm:min-h-[620px] sm:p-7">
-      <div className="daemonstate-visual-grid absolute inset-0" aria-hidden="true" />
-      <div className="relative flex items-center justify-between">
-        <span className="daemonstate-kicker">Observed evidence</span>
-        <span className="rounded-full border border-[#cfcfc5] bg-white/70 px-3 py-1.5 text-[11px] font-semibold text-[#66665e]">
-          Compiling <span className="daemonstate-ellipsis" aria-hidden="true">•••</span>
+    <aside className="daemonstate-continuation-preview" aria-label="Illustrative continuation preview">
+      <div className="daemonstate-preview-glow" aria-hidden="true" />
+      <header className="daemonstate-preview-header">
+        <span className="daemonstate-preview-title">
+          <Sparkles className="h-4 w-4" aria-hidden="true" />
+          Continuation ready
         </span>
+        <span className="daemonstate-preview-status">
+          <span aria-hidden="true" />Codex staging
+        </span>
+      </header>
+
+      <div className="daemonstate-preview-task">
+        <span>Example task</span>
+        <h2>Ship source revisions without breaking provenance</h2>
       </div>
 
-      <div className="relative mt-8 space-y-3">
-        {SOURCE_STREAMS.map(({ label, detail, icon: Icon }, index) => (
-          <div key={label} className="daemonstate-source-row" style={{ "--daemonstate-delay": String(index * 130) + "ms" }}>
-            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-white text-[#505048] shadow-sm">
-              <Icon className="h-4 w-4" />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-sm font-semibold">{label}</span>
-              <span className="mt-0.5 block text-xs text-[#7b7b72]">{detail}</span>
-            </span>
-            <span className="daemonstate-source-line" aria-hidden="true"><span /></span>
-          </div>
-        ))}
-      </div>
-
-      <div className="daemonstate-merge-stem mx-auto h-12 w-px" aria-hidden="true" />
-
-      <article className="daemonstate-checkpoint-card relative rounded-[1.5rem] border border-[#171713] bg-[#171713] p-5 text-white shadow-[0_22px_55px_rgba(23,23,19,0.24)] sm:p-6">
-        <div className="flex items-center justify-between gap-3">
-          <span className="inline-flex items-center gap-2 text-xs font-semibold text-[#d9ff68]">
-            <ShieldCheck className="h-4 w-4" />Verified checkpoint
-          </span>
-          <span className="font-mono text-[11px] text-[#8f8f86]">context_pack.v2</span>
-        </div>
-        <p className="mt-8 text-xs font-semibold text-[#9f9f96]">Exact next action</p>
-        <h2 className="mt-2 max-w-lg text-2xl font-semibold leading-tight tracking-[-0.035em] sm:text-3xl">
-          Verify the migration, then resume from the preserved decision boundary.
-        </h2>
-        <div className="mt-6 flex flex-wrap items-center gap-2 text-[11px] font-semibold text-[#bdbdb4]">
-          <span className="rounded-full bg-white/10 px-3 py-1.5">4 facts selected</span>
-          <span className="rounded-full bg-white/10 px-3 py-1.5">2 exclusions recorded</span>
-          <span className="rounded-full bg-[#d9ff68] px-3 py-1.5 text-[#171713]">within budget</span>
-        </div>
-      </article>
-    </div>
-  );
-}
-
-function SourceRail() {
-  const sources = ["Codex", "Claude Code", "OpenCode", "Repository", "GitHub", "Documents", "Test output"];
-  return (
-    <section aria-label="Supported evidence sources" className="daemonstate-source-rail overflow-hidden border-y border-[#9fb64a] py-4">
-      <div className="daemonstate-source-marquee flex min-w-max items-center">
-        {[...sources, ...sources].map((source, index) => (
-          <span key={source + "-" + index} className="flex items-center">
-            <span className="px-7 text-sm font-semibold text-[#5f5f57] sm:px-10">{source}</span>
-            <span className="h-1.5 w-1.5 rounded-full bg-[#aeca49]" aria-hidden="true" />
-          </span>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function ContinuityFlow() {
-  return (
-    <section id="flow" aria-labelledby="continuity-flow-title" className="daemonstate-flow-section overflow-hidden border-b border-[#9fb64a]">
-      <div data-daemonstate-reveal="rise" className="mx-auto grid w-full max-w-[1440px] gap-7 px-5 pt-24 sm:px-8 lg:grid-cols-[0.72fr_1.28fr] lg:gap-20 lg:px-12 lg:pt-32">
-        <p className="daemonstate-kicker">The continuity fabric</p>
-        <div>
-          <h2 id="continuity-flow-title" className="max-w-4xl text-[clamp(2.65rem,5.2vw,5.75rem)] font-semibold leading-[0.95] tracking-[-0.055em]">
-            Every source keeps its identity. The handoff keeps only what matters.
-          </h2>
-          <p className="mt-7 max-w-2xl text-base leading-7 text-[#465212] sm:text-lg sm:leading-8">
-            DaemonState routes sessions, repository state, decisions, and test outcomes through selection and provenance before anything reaches the next agent.
-          </p>
-        </div>
-      </div>
-
-      <div data-daemonstate-reveal="rise" className="daemonstate-flow-viewport">
-        <svg
-          className="daemonstate-flow-map"
-          viewBox="0 0 1440 720"
-          role="img"
-          aria-label="Evidence becomes a verified handoff"
-          preserveAspectRatio="xMidYMid meet"
-        >
-          <title id="continuity-flow-map-title">Evidence becomes a verified handoff</title>
-          <desc id="continuity-flow-map-description">
-            Agent sessions, repository and Git activity, decisions, blockers, and test evidence remain source-linked while DaemonState selects a verified context pack for the next agent run.
-          </desc>
-
-          <g className="daemonstate-flow-ghost-lines">
-            <rect x="-64" y="128" width="460" height="270" rx="30" />
-            <rect x="-82" y="148" width="460" height="270" rx="30" />
-            <rect x="192" y="-78" width="554" height="300" rx="30" />
-            <rect x="212" y="-58" width="554" height="300" rx="30" />
-            <rect x="502" y="272" width="442" height="226" rx="30" />
-            <rect x="522" y="292" width="442" height="226" rx="30" />
-            <rect x="1050" y="116" width="430" height="304" rx="30" />
-            <rect x="1070" y="136" width="430" height="304" rx="30" />
-            <rect x="936" y="390" width="522" height="368" rx="30" />
-            <rect x="956" y="410" width="522" height="368" rx="30" />
-          </g>
-
-          <g className="daemonstate-flow-primary-lines">
-            <path d="M-48 180H354Q394 180 394 220V365Q394 405 434 405H502" />
-            <path d="M222-38V28Q222 68 262 68H696Q736 68 736 108V174Q736 214 776 214H1010Q1050 214 1050 174V156Q1050 116 1090 116H1430" />
-            <path d="M944 384H1010Q1050 384 1050 424V510Q1050 550 1090 550H1248Q1288 550 1288 590V740" />
-            <path d="M380 344H462Q502 344 502 384" />
-            <path d="M944 334H1010Q1050 334 1050 294" />
-          </g>
-
-          <path className="daemonstate-flow-trace" d="M-48 180H354Q394 180 394 220V365Q394 405 434 405H502H904Q944 405 944 365H1010Q1050 365 1050 405V510Q1050 550 1090 550H1248Q1288 550 1288 590V740" />
-
-          <g className="daemonstate-flow-labels">
-            <text x="58" y="190">AGENT SESSIONS</text>
-            <text x="58" y="350">DECISIONS + BLOCKERS</text>
-            <text x="282" y="58">REPOSITORY + GIT</text>
-            <text x="552" y="324">SELECTION + PROVENANCE</text>
-            <text className="daemonstate-flow-label-strong" x="552" y="446">VERIFIED CONTEXT PACK</text>
-            <text x="1100" y="172">NEXT AGENT RUN</text>
-            <text x="1084" y="522">OUTCOME + TEST EVIDENCE</text>
-          </g>
-
-          <g className="daemonstate-flow-nodes">
-            <circle cx="502" cy="405" r="5" />
-            <circle cx="944" cy="405" r="5" />
-            <circle cx="1050" cy="550" r="5" />
-          </g>
-        </svg>
-
-        <div className="daemonstate-flow-caption">
-          <span>Source boundaries preserved</span>
-          <p>Many evidence streams. One verified continuation.</p>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function SectionHeading({ number, label, title, body }) {
-  return (
-    <div data-daemonstate-reveal="rise" className="grid gap-8 lg:grid-cols-[0.72fr_1.28fr] lg:gap-20">
-      <div><p className="daemonstate-kicker">{number} · {label}</p></div>
-      <div>
-        <h2 className="max-w-4xl text-[clamp(2.65rem,5.2vw,5.75rem)] font-semibold leading-[0.95] tracking-[-0.055em]">{title}</h2>
-        <p className="mt-7 max-w-2xl text-base leading-7 text-[#465212] sm:text-lg sm:leading-8">{body}</p>
-      </div>
-    </div>
-  );
-}
-
-function ProductAtlas() {
-  const [activeId, setActiveId] = useState("observe");
-
-  return (
-    <section id="product" className="daemonstate-product-atlas border-y border-[#9fb64a]">
-      <div className="mx-auto grid w-full max-w-[1440px] gap-14 px-5 py-24 sm:px-8 lg:grid-cols-[0.66fr_1.34fr] lg:gap-20 lg:px-12 lg:py-36">
-        <div data-daemonstate-reveal="rise" className="lg:sticky lg:top-28 lg:self-start">
-          <p className="daemonstate-kicker">02 · Product atlas</p>
-          <h2 className="mt-7 max-w-xl text-[clamp(2.8rem,5vw,5.5rem)] font-semibold leading-[0.94] tracking-[-0.055em]">
-            One engine. Four continuity surfaces.
-          </h2>
-          <p className="mt-7 max-w-lg text-base leading-7 text-[#465212]">
-            Open a layer to see where it lives, what it protects, and why it belongs in the product loop.
-          </p>
-        </div>
-
-        <PixelReveal className="daemonstate-atlas-list border-t border-[#879d35]">
-          {PRODUCT_SURFACES.map((surface) => {
-            const open = activeId === surface.id;
-            const Icon = surface.icon;
-            return (
-              <article key={surface.id} className="daemonstate-atlas-row border-b border-[#879d35]" data-open={open}>
-                <button
-                  type="button"
-                  aria-label={"Explore " + surface.label}
-                  aria-expanded={open}
-                  aria-controls={"surface-" + surface.id}
-                  onClick={() => setActiveId(open ? null : surface.id)}
-                  className="daemonstate-atlas-trigger grid w-full grid-cols-[2.25rem_1fr_auto] items-center gap-3 px-3 py-6 text-left sm:grid-cols-[3.25rem_8rem_1fr_auto] sm:gap-5 sm:px-5"
-                >
-                  <span className="daemonstate-atlas-number font-mono text-xs">{surface.number}</span>
-                  <span className="hidden text-sm font-semibold sm:block">{surface.label}</span>
-                  <span className="min-w-0">
-                    <span className="block text-xl font-semibold tracking-[-0.025em] sm:text-2xl">{surface.surfaces}</span>
-                    <span className="mt-1.5 block text-xs leading-5 opacity-65 sm:text-sm">{surface.title}</span>
-                  </span>
-                  <span className="daemonstate-atlas-toggle flex h-10 w-10 items-center justify-center rounded-full border border-current/20">
-                    <ChevronDown className="h-4 w-4" />
-                  </span>
-                </button>
-
-                <div id={"surface-" + surface.id} className="daemonstate-atlas-panel" aria-hidden={!open}>
-                  <div className="daemonstate-atlas-panel-inner">
-                    <div className="grid gap-7 px-3 pb-7 pl-[3.25rem] sm:grid-cols-[1fr_0.8fr] sm:px-5 sm:pb-9 sm:pl-[12.5rem]">
-                      <div>
-                        <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-current/15 bg-white/10">
-                          <Icon className="h-4 w-4" />
-                        </div>
-                        <p className="mt-5 max-w-xl text-sm leading-6 opacity-80">{surface.body}</p>
-                        <Link to={surface.to} className="daemonstate-atlas-link mt-6 inline-flex items-center gap-2 text-sm font-semibold">
-                          {surface.action} <ArrowRight className="h-4 w-4" />
-                        </Link>
-                      </div>
-                      <div className="daemonstate-atlas-payoff rounded-2xl border border-current/15 p-4">
-                        <p className="text-[11px] font-semibold opacity-60">Continuity payoff</p>
-                        <p className="mt-2 text-sm font-semibold leading-6">{surface.payoff}</p>
-                        <div className="mt-5 flex flex-wrap gap-2">
-                          {surface.tags.map((tag) => <span key={tag} className="daemonstate-atlas-chip">{tag}</span>)}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </article>
-            );
-          })}
-        </PixelReveal>
-      </div>
-    </section>
-  );
-}
-
-function HandoffPreview() {
-  return (
-    <article className="daemonstate-handoff-preview rounded-[1.75rem] border border-white/15 bg-[#f7f7f2] p-3 text-[#171713] shadow-[0_38px_100px_rgba(0,0,0,0.35)] sm:p-5">
-      <div className="rounded-[1.25rem] border border-[#d8d8cf] bg-white p-5 sm:p-7">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#deded6] pb-5">
-          <div>
-            <p className="text-xs font-semibold text-[#74746c]">Illustrative continuation bundle</p>
-            <h3 className="mt-1 text-lg font-semibold">Provenance-safe source revisions</h3>
-          </div>
-          <span className="inline-flex items-center gap-2 rounded-full bg-[#edf7d0] px-3 py-2 text-xs font-semibold text-[#4f5d21]">
-            <ShieldCheck className="h-4 w-4" />Ready to review
-          </span>
-        </div>
-
-        <div className="divide-y divide-[#e2e2da]">
-          {HANDOFF_ROWS.map(([type, value, source], index) => (
-            <div key={type} className="daemonstate-handoff-row grid gap-2 py-5 sm:grid-cols-[8rem_1fr_auto] sm:items-start sm:gap-5" style={{ "--daemonstate-delay": String(index * 70) + "ms" }}>
-              <span className="text-xs font-semibold text-[#77776e]">{type}</span>
-              <span className="text-sm font-semibold leading-6">{value}</span>
-              <span className="font-mono text-[11px] text-[#8a8a80]">{source}</span>
+      <div className="daemonstate-context-stack">
+        <article className="daemonstate-preview-context daemonstate-preview-project">
+          <div className="daemonstate-preview-context-heading">
+            <span className="daemonstate-preview-context-icon"><Database className="h-4 w-4" /></span>
+            <div>
+              <p>Project Context</p>
+              <span>Durable workspace parent</span>
             </div>
-          ))}
-        </div>
+            <strong>Foundation ready</strong>
+          </div>
+          <div className="daemonstate-preview-lines" aria-hidden="true">
+            <span /><span /><span />
+          </div>
+          <p className="daemonstate-preview-context-copy">
+            Architecture · workflows · decisions · commands
+          </p>
+        </article>
 
-        <div className="mt-3 grid gap-3 sm:grid-cols-3">
-          <HandoffMetric value="5" label="selected facts" />
-          <HandoffMetric value="2" label="explicit exclusions" />
-          <HandoffMetric value="100%" label="source-linked" />
-        </div>
+        <article className="daemonstate-preview-context daemonstate-preview-session">
+          <div className="daemonstate-preview-context-heading">
+            <span className="daemonstate-preview-context-icon"><Activity className="h-4 w-4" /></span>
+            <div>
+              <p>Current Session Context</p>
+              <span>Task-specific checkpoint</span>
+            </div>
+            <strong>Reconciled</strong>
+          </div>
+          <div className="daemonstate-preview-session-grid">
+            <span>Goal</span><b>Preserve revision lineage</b>
+            <span>Next</span><b>Run compiler contract tests</b>
+          </div>
+        </article>
       </div>
+
+      <div className="daemonstate-preview-verification">
+        <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+        <span>Repository fingerprint matched</span>
+        <small>source-backed</small>
+      </div>
+
+      <div className="daemonstate-preview-action">
+        <span>Request desktop composer</span>
+        <ArrowRight className="h-4 w-4" aria-hidden="true" />
+      </div>
+      <p className="daemonstate-preview-footnote">
+        No turn submitted · waiting for you to confirm or narrow the lead
+      </p>
+    </aside>
+  );
+}
+
+function AvailabilityStrip() {
+  return (
+    <section className="daemonstate-availability" aria-label="Current product availability">
+      <div className="daemonstate-landing-shell daemonstate-availability-grid">
+        <AvailabilityItem label="Desktop handoff" value="Codex · Claude Code · OpenCode" />
+        <AvailabilityItem label="CLI adapters" value="Codex · Claude Code · OpenCode" />
+        <AvailabilityItem label="Local inputs" value="Repositories + agent sessions" />
+        <AvailabilityItem label="Proof standard" value="No silent verification" />
+      </div>
+    </section>
+  );
+}
+
+function AvailabilityItem({ label, value }) {
+  return (
+    <div>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function SectionIntro({ eyebrow, title, body, inverse = false }) {
+  return (
+    <div className={`daemonstate-section-intro${inverse ? " daemonstate-section-intro-inverse" : ""}`}>
+      <p className="daemonstate-eyebrow">{eyebrow}</p>
+      <div>
+        <h2 className="daemonstate-display-section">{title}</h2>
+        <p className="daemonstate-section-lede">{body}</p>
+      </div>
+    </div>
+  );
+}
+
+function ProductCard({ group, title, eyebrow, body, to, action, icon: Icon, featured = false }) {
+  return (
+    <article className={`daemonstate-feature-card${featured ? " daemonstate-feature-card-featured" : ""}`}>
+      <div className="daemonstate-feature-card-topline">
+        <span>{group}</span>
+        <span className="daemonstate-feature-icon"><Icon className="h-5 w-5" aria-hidden="true" /></span>
+      </div>
+      <div>
+        <p className="daemonstate-feature-eyebrow">{eyebrow}</p>
+        <h3>{title}</h3>
+        <p>{body}</p>
+      </div>
+      <Link to={to} className="daemonstate-feature-link">
+        {action} <ArrowRight className="h-4 w-4" aria-hidden="true" />
+      </Link>
     </article>
   );
 }
 
-function HandoffMetric({ value, label }) {
+function ContextCard({ label, title, description, items, tone }) {
   return (
-    <div className="rounded-xl bg-[#efefe8] p-4">
-      <p className="text-2xl font-semibold tracking-[-0.04em]">{value}</p>
-      <p className="mt-1 text-xs text-[#6f6f67]">{label}</p>
-    </div>
-  );
-}
-
-function CurationCard({ tone, eyebrow, title, items }) {
-  const selected = tone === "selected";
-  const toneClasses = selected
-    ? "border-[#bfd764] bg-[#eef6d4]"
-    : "border-[#d7d7ce] bg-[#efefe9]";
-  return (
-    <article className={"daemonstate-curation-card min-h-[390px] overflow-hidden rounded-[1.75rem] border p-6 sm:p-9 " + toneClasses}>
-      <div className="flex items-center justify-between">
-        <p className="daemonstate-kicker">{eyebrow}</p>
-        {selected ? <Sparkles className="h-5 w-5 text-[#768d26]" /> : <Database className="h-5 w-5 text-[#8a8a80]" />}
-      </div>
-      <h3 className="mt-12 max-w-xl text-4xl font-semibold leading-[1] tracking-[-0.045em] sm:text-5xl">{title}</h3>
-      <ul className="mt-10 space-y-4">
+    <article className={`daemonstate-context-card daemonstate-context-card-${tone}`}>
+      <header>
+        <p>{label}</p>
+        <h3>{title}</h3>
+        <span>{description}</span>
+      </header>
+      <ul>
         {items.map((item) => (
-          <li key={item} className="flex gap-3 border-t border-black/10 pt-4 text-sm leading-6">
-            <Check className="mt-1 h-4 w-4 shrink-0" />
+          <li key={item}>
+            <Check className="h-4 w-4" aria-hidden="true" />
             <span>{item}</span>
           </li>
         ))}
@@ -585,61 +460,94 @@ function CurationCard({ tone, eyebrow, title, items }) {
   );
 }
 
-function Footer() {
+function DeveloperSurface() {
   return (
-    <footer className="daemonstate-landing-footer border-t border-[#9fb64a]">
-      <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-5 px-5 py-10 text-sm text-[#465212] sm:flex-row sm:items-center sm:justify-between sm:px-8 lg:px-12">
-        <span>DaemonState · Context that moves with the work</span>
-        <div className="flex flex-wrap gap-5">
-          <Link to="/app">App</Link>
-          <Link to="/app/sources">Sources</Link>
-          <a href={GITHUB_URL} target="_blank" rel="noreferrer">GitHub</a>
+    <section className="daemonstate-developer-section">
+      <div className="daemonstate-landing-shell daemonstate-developer-grid">
+        <div className="daemonstate-developer-copy">
+          <p className="daemonstate-eyebrow daemonstate-eyebrow-on-dark">Agent-native by design</p>
+          <h2 className="daemonstate-display-section">The same contract from UI to terminal.</h2>
+          <p>
+            Use Continue for a reviewable waiting handoff, the CLI for direct provider delivery,
+            or MCP to return a context pack to the calling agent.
+          </p>
+
+          <div className="daemonstate-command-card" aria-label="DaemonState CLI continuation example">
+            <div className="daemonstate-command-dots" aria-hidden="true"><span /><span /><span /></div>
+            <code>
+              <span>daemonstate continue \</span>
+              <span>  --workspace-id &lt;workspace-uuid&gt; \</span>
+              <span>  --repo . \</span>
+              <span>  --into codex</span>
+            </code>
+          </div>
+        </div>
+
+        <div className="daemonstate-developer-cards">
+          <DeveloperCard
+            icon={FileCode2}
+            title="CLI delivery"
+            body="Audited adapters for Codex, Claude Code, and OpenCode—without permission-bypass flags or silent fallback."
+          />
+          <DeveloperCard
+            icon={Waypoints}
+            title="MCP handoff"
+            body="Prepare, query, and return a continuation pack to the calling agent. MCP does not edit code or run shell commands."
+          />
+          <DeveloperCard
+            icon={Sparkles}
+            title="macOS floating control"
+            body="Verify and copy Session Context or Workspace Context, then paste into the editor that retained focus when Accessibility access is available—never submit it."
+          />
         </div>
       </div>
-    </footer>
+    </section>
   );
 }
 
-function PixelReveal({ children, className = "" }) {
+function DeveloperCard({ icon: Icon, title, body }) {
   return (
-    <div data-daemonstate-reveal="pixels" className={"daemonstate-pixel-reveal " + className}>
-      <div className="daemonstate-pixel-content">{children}</div>
-      <div className="daemonstate-pixel-curtain" aria-hidden="true">
-        {Array.from({ length: PIXEL_COUNT }, (_, index) => {
-          const row = Math.floor(index / 8);
-          const column = index % 8;
-          const delay = (column * 34) + (row * 52) + ((index * 7) % 5) * 18;
-          return <span key={index} className="daemonstate-pixel-block" style={{ "--daemonstate-pixel-delay": delay + "ms" }} />;
-        })}
+    <article>
+      <span><Icon className="h-5 w-5" aria-hidden="true" /></span>
+      <div>
+        <h3>{title}</h3>
+        <p>{body}</p>
       </div>
+    </article>
+  );
+}
+
+function OutcomeRow({ icon: Icon, label, detail, tone }) {
+  return (
+    <div className={`daemonstate-outcome-row daemonstate-outcome-${tone}`}>
+      <span className="daemonstate-outcome-icon"><Icon className="h-4 w-4" aria-hidden="true" /></span>
+      <div>
+        <strong>{label}</strong>
+        <p>{detail}</p>
+      </div>
+      <span className="daemonstate-outcome-dot" aria-hidden="true" />
     </div>
   );
 }
 
-function useLandingMotion(landingRef) {
-  useEffect(() => {
-    const root = landingRef.current;
-    if (!root) return undefined;
-
-    const targets = Array.from(root.querySelectorAll("[data-daemonstate-reveal]"));
-    const prefersReducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    const Observer = window.IntersectionObserver;
-
-    if (prefersReducedMotion || !Observer) {
-      targets.forEach((target) => target.setAttribute("data-visible", "true"));
-      return undefined;
-    }
-
-    root.classList.add("daemonstate-motion-ready");
-    const observer = new Observer((entries) => {
-      entries.forEach((entry) => {
-        if (!entry.isIntersecting) return;
-        entry.target.setAttribute("data-visible", "true");
-        observer.unobserve(entry.target);
-      });
-    }, { rootMargin: "0px 0px -8% 0px", threshold: 0.12 });
-
-    targets.forEach((target) => observer.observe(target));
-    return () => observer.disconnect();
-  }, [landingRef]);
+function LandingFooter() {
+  return (
+    <footer className="daemonstate-landing-footer">
+      <div className="daemonstate-landing-shell daemonstate-footer-inner">
+        <Link to="/" aria-label="DaemonState home" className="daemonstate-wordmark">
+          <DaemonStateIcon size={30} className="shrink-0" />
+          <span>DaemonState</span>
+        </Link>
+        <p>Verified project history in. Minimum task-ready context out.</p>
+        <nav aria-label="Footer navigation">
+          <Link to="/app">Continue</Link>
+          <Link to="/app/execute">Execute</Link>
+          <Link to="/app/library">Library</Link>
+          <a href="/assets/legal/LICENSE">License</a>
+          <a href="/assets/legal/THIRD_PARTY_NOTICES.txt">Notices</a>
+          <a href={GITHUB_URL} target="_blank" rel="noreferrer">GitHub</a>
+        </nav>
+      </div>
+    </footer>
+  );
 }

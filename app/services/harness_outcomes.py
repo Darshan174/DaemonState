@@ -10,7 +10,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import AgentRun, ContextPack, RunObservation
+from app.models import (
+    AgentRun,
+    ContextPack,
+    ContinuationExecution,
+    RunObservation,
+)
 from app.services.harness_sessions import harness_session_payload
 
 
@@ -146,6 +151,9 @@ class HarnessOutcomeService:
             select(AgentRun)
             .options(
                 selectinload(AgentRun.context_pack),
+                selectinload(AgentRun.continuation_execution).selectinload(
+                    ContinuationExecution.outcome
+                ),
                 selectinload(AgentRun.observations).selectinload(
                     RunObservation.source_document
                 ),
@@ -153,7 +161,9 @@ class HarnessOutcomeService:
             .where(
                 AgentRun.workspace_id == workspace_id,
                 AgentRun.run_key.like("continuation:%"),
-                AgentRun.status != "running",
+                AgentRun.status.notin_(
+                    ("running", "staging", "awaiting_user", "handed_off")
+                ),
             )
             .order_by(
                 AgentRun.ended_at.desc(),
@@ -216,10 +226,97 @@ class HarnessOutcomeService:
                     "failed": 0,
                 },
             }
+        canonical_outcome = (
+            run.continuation_execution.outcome
+            if run.continuation_execution is not None
+            else None
+        )
+        if canonical_outcome is not None:
+            canonical_summary = _json_object(canonical_outcome.summary_json)
+            canonical_blocker = _json_object(canonical_outcome.blocker_json)
+            canonical_status = (
+                _normalized_text(canonical_outcome.status)
+                or "requirements_unproven"
+            )
+            canonical_checks = canonical_summary.get("checks")
+            if not isinstance(canonical_checks, dict):
+                canonical_checks = {}
+            payload.update({
+                "status": canonical_status,
+                "completed": (
+                    str(run.status or "").strip().lower()
+                    in SUCCESS_STATUSES
+                ),
+                "verified_success": (
+                    canonical_status == "verified_complete"
+                    and canonical_outcome.verified_at is not None
+                ),
+                "failed_verification": (
+                    canonical_outcome.mandatory_failed > 0
+                ),
+                "unresolved_blocker": (
+                    bool(canonical_blocker)
+                    or canonical_status
+                    in {"blocked_external", "blocked_ambiguity"}
+                ),
+                "outcome_summary": (
+                    _normalized_text(canonical_summary.get("summary"))
+                    or _normalized_text(
+                        canonical_summary.get("completion_evidence")
+                    )
+                    or canonical_status.replace("_", " ")
+                ),
+                "verification": {
+                    "observed": int(
+                        canonical_checks.get(
+                            "total",
+                            canonical_outcome.mandatory_total,
+                        )
+                        or 0
+                    ),
+                    "passed": int(
+                        canonical_checks.get(
+                            "passed",
+                            canonical_outcome.mandatory_passed,
+                        )
+                        or 0
+                    ),
+                    "failed": int(
+                        canonical_checks.get(
+                            "failed",
+                            canonical_outcome.mandatory_failed,
+                        )
+                        or 0
+                    ),
+                },
+                "canonical_outcome": {
+                    "status": canonical_status,
+                    "mandatory_total": canonical_outcome.mandatory_total,
+                    "mandatory_passed": canonical_outcome.mandatory_passed,
+                    "mandatory_failed": canonical_outcome.mandatory_failed,
+                    "mandatory_unproven": (
+                        canonical_outcome.mandatory_unproven
+                    ),
+                    "blocker": canonical_blocker or None,
+                    "verified_at": (
+                        canonical_outcome.verified_at.isoformat()
+                        if canonical_outcome.verified_at
+                        else None
+                    ),
+                },
+            })
+            for key in ("agent_changed_files", "changed_files"):
+                values = canonical_summary.get(key)
+                if isinstance(values, list):
+                    payload[key] = [
+                        str(value)
+                        for value in values
+                        if str(value).strip()
+                    ]
         tool = str(payload.get("tool") or "").strip().lower()
         payload["provider"] = (
-            tool.split(":", 1)[1]
-            if tool.startswith("context-engine:")
+            tool.rsplit(":", 1)[-1]
+            if ":" in tool
             else tool or None
         )
         harness_session = harness_session_payload(run.observations)
@@ -243,6 +340,12 @@ class HarnessOutcomeService:
             payload["outcome_summary"] = (
                 f"{provider_label} did not finish before the continuation timeout."
             )
+        context_package = _context_package_summary(
+            run.context_pack,
+            delivered=command_observation is not None,
+        )
+        if context_package is not None:
+            payload["context_package"] = context_package
         return payload
 
     async def summarize(
@@ -458,6 +561,96 @@ def _required_verification(pack: ContextPack | None) -> dict[str, tuple[str | No
     return result
 
 
+def _context_package_summary(
+    pack: ContextPack | None,
+    *,
+    delivered: bool,
+) -> dict[str, Any] | None:
+    if pack is None:
+        return None
+    manifest = _json_object(pack.manifest)
+    selected = [
+        item for item in (manifest.get("selected_context") or [])
+        if isinstance(item, dict)
+    ]
+    excluded = [
+        item for item in (manifest.get("excluded_context") or [])
+        if isinstance(item, dict)
+    ]
+    selected_by_lane: dict[str, int] = {}
+    for item in selected:
+        lane = _normalized_text(item.get("lane")) or "supporting_context"
+        selected_by_lane[lane] = selected_by_lane.get(lane, 0) + 1
+    excluded_by_reason: dict[str, int] = {}
+    for item in excluded:
+        reason = _normalized_text(item.get("reason")) or "unspecified"
+        excluded_by_reason[reason] = excluded_by_reason.get(reason, 0) + 1
+    provenance = {"verified": 0, "unverified": 0, "unknown": 0}
+    for item in selected:
+        verified = item.get("provenance_verified")
+        if verified is True:
+            provenance["verified"] += 1
+        elif verified is False:
+            provenance["unverified"] += 1
+        else:
+            provenance["unknown"] += 1
+    accounting = _json_object(
+        manifest.get("token_accounting")
+        or manifest.get("rendering")
+    )
+    compiler = _json_object(manifest.get("compiler"))
+    continuation = _json_object(manifest.get("continuation"))
+    repo_state = _json_object(manifest.get("repo_state"))
+    verification = _json_object(manifest.get("verification"))
+    commands = [
+        item for item in (verification.get("commands") or [])
+        if isinstance(item, dict)
+    ]
+    relevant_files = [
+        item for item in (repo_state.get("relevant_files") or [])
+        if isinstance(item, dict)
+    ]
+    return {
+        "schema_version": "context_package_summary.v1",
+        "context_pack_id": str(pack.id),
+        "state": "delivered" if delivered else "prepared_not_delivered",
+        "compiler_version": _normalized_text(compiler.get("version")),
+        "created_at": pack.created_at.isoformat() if pack.created_at else None,
+        "selected_count": len(selected),
+        "excluded_count": len(excluded),
+        "selected_by_lane": selected_by_lane,
+        "excluded_by_reason": excluded_by_reason,
+        "provenance": provenance,
+        "token_estimate": {
+            "rendered": _integer_or_zero(
+                accounting.get("rendered_tokens")
+                or accounting.get("estimated_tokens")
+            ),
+            "budget": _integer_or_zero(
+                accounting.get("budget")
+                or accounting.get("budget_tokens")
+                or pack.token_budget
+            ),
+            "remaining": _integer_or_zero(accounting.get("remaining_tokens")),
+            "within_budget": accounting.get("within_budget") is True,
+            "method": _normalized_text(accounting.get("estimation_method")),
+        },
+        "relevant_files_count": len(relevant_files),
+        "verification_commands_count": len(commands),
+        "input_fingerprint": _normalized_text(manifest.get("input_fingerprint")),
+        "continuation_identity": {
+            "task_id": _normalized_text(continuation.get("task_id")),
+            "selected_objective": _normalized_text(
+                continuation.get("selected_objective")
+                or manifest.get("objective")
+            ),
+            "checkpoint_id": _normalized_text(continuation.get("checkpoint_id")),
+            "source_provider": _normalized_text(continuation.get("provider")),
+            "source_session_id": _normalized_text(continuation.get("session_id")),
+        },
+    }
+
+
 def _verification_evidence(
     observations: Iterable[RunObservation],
     *,
@@ -639,6 +832,13 @@ def _normalize_command(value: Any) -> str | None:
 def _normalized_text(value: Any) -> str | None:
     normalized = " ".join(str(value or "").split())
     return normalized or None
+
+
+def _integer_or_zero(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _rate(numerator: int, denominator: int) -> float | None:

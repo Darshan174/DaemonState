@@ -13,11 +13,15 @@
 
 ## What it is
 
-DaemonState is an open-source context and evidence layer for coding agents. It compiles verified project history
-into the task-sized brief an agent needs to continue real work on a long-running codebase.
+DaemonState is a source-available, self-hosted context and evidence layer for coding agents. It continuously compiles workspace evidence into a durable Project Context foundation and combines that parent with task-specific Session Context when an agent continues real work on a long-running codebase.
 
-DaemonState is not another coding agent or a generic knowledge graph. The verified continuation runtime is the core
-product. The compiler, checkpoints, Library, and graph support that handoff and explain what was selected and why.
+DaemonState is not another coding agent or a generic knowledge graph. The verified continuation runtime is the core product. The compiler, checkpoints, Library, and graph support that handoff and explain what was selected and why.
+
+## Context hierarchy
+
+Project / Workspace Context is the durable, objective-independent parent foundation: project identity, workflows, architecture, domain model, repository and technology map, persistent decisions and conventions, canonical commands, capabilities, long-term constraints and risks, and product direction. It is compiled workspace-wide and never selected by the current prompt, objective, file overlap, session lead, or task ranking.
+
+Session Context is the latest individual session's task-specific child: goal, acceptance criteria, state, next step, decisions, attempts, changes, discoveries, verification, open items, scope, and repository state. Failures and transient blockers stay session-only. A durable session outcome enters the parent only when it is human-confirmed or independently corroborated and consistent with current workspace evidence.
 
 ## The problem
 
@@ -54,9 +58,9 @@ we need results from real projects, not demos.
 | Connect a project | Creates a clean boundary around one real repository and its evidence. |
 | Capture the work | Imports or syncs code state, issues, decisions, AI sessions, changes, and checks from supported sources. |
 | Choose the current goal | Keeps the user in control. Open issues stay backlog until selected. |
-| Capture a checkpoint | Continue automatically captures the selected session tip; supported compaction boundaries also preserve exact pre-compaction state. Both retain source-backed goals, progress, decisions, failures, files, blockers, checks, and next actions. |
+| Capture Session Context | Continue automatically captures the selected session tip as the latest task child; supported compaction boundaries also preserve exact pre-compaction state. Both retain source-backed goals, progress, decisions, failures, files, blockers, checks, and next actions. |
 | Verify the checkpoint | Continue automatically checks structure, event evidence, repository fingerprint, relevant files, and recorded command evidence without replaying imported commands. |
-| Resume the work | Selecting a ready Codex, Claude Code, or OpenCode card resolves the task, compiles its evidence-linked pack, starts a fresh target agent, runs available checks, and reports the observed outcome. |
+| Resume the work | Continue defaults to the newest available session, copies its Session Context, and requests a reviewable composer in the selected desktop harness. Nothing is submitted until the user reviews and sends it. |
 | Explain what matters | Uses the graph to show the relationships behind the current project state and compiled context. |
 
 Extracted facts retain their source and provenance; explicit user choices are
@@ -67,18 +71,16 @@ with a confident guess.
 
 | Surface | Actual job |
 |---|---|
-| Continue | Resolves the current repository-scoped task, verifies its latest compatible checkpoint, starts a fresh installed target agent, runs available checks, and reports the outcome. |
-| History | Shows task/session history, checkpoints, event evidence, repository freshness, checks, and one route back to Continue. |
-| Library | Scans local Codex, Claude Code, and OpenCode history, lets the user select an exact session/topic, and routes that identity to Continue. |
-| Memory | Organizes active, needs-review, and historical project facts with their evidence. |
+| Continue | Resolves the current repository-scoped task, verifies its latest compatible checkpoint, copies the complete handoff, and requests a reviewable composer in the selected Codex, Claude, or OpenCode desktop app without submitting it. |
+| Library | Scans local Codex, Claude Code, and OpenCode history, lets the user inspect checkpoints and select an exact session/topic, and routes that identity to Continue. |
+| Memory | Shows the durable Project / Workspace Context parent and the latest task-specific Session Context child, with evidence and review state. |
 | Explain and agent brief | Uses the project graph to explain evidence and relationships; eligible task records can compile and copy a source-backed brief. |
 | Sources and connectors | Shows raw source previews, extracted components, connection state, and sync results. The API preserves revisions and enforces access scopes. |
 | Local harness | Wraps one user-supplied worker command and records bounded output, Git changes, checks, and outcome evidence. |
+| macOS floating control | Turn the logo on or off from Continue; click it to verify, copy, and paste the Session Context child without submitting, or triple-click for the workspace-wide Project / Workspace Context parent. See the [guide](docs/floating-context-control.md). |
 
-The React app uses the FastAPI API. The `daemonstate` CLI and MCP server expose the
-agent-native continuation runtime, context preparation, query, repository, and
-run-evidence workflows rather than every UI view. Local development
-uses SQLite; Docker can use PostgreSQL/pgvector.
+The React app uses the FastAPI API. The `daemonstate` CLI and MCP server expose the agent-native continuation runtime,
+context preparation, query, repository, and run-evidence workflows rather than every UI view. Local development uses SQLite; Docker can use PostgreSQL/pgvector.
 
 ## Continue without the dashboard
 
@@ -93,16 +95,11 @@ daemonstate continue \
   --into codex
 ```
 
-Use `--into claude` or `--into opencode` for another harness. Continue always
-starts a fresh target session; it never silently resumes the source task.
-Provider CLIs run non-interactively through direct argv execution. Context is
-delivered through bounded stdin or a permission-restricted temporary file, and
-the local harness records Git state and outcome evidence. `ready` and
-`review_required` evidence continue automatically; only blocked or unknown
-states fail closed. Historical failed commands remain continuation context and
-do not become launch blockers. Intermediate blocker language extracted from an
-agent update is advisory unless it is explicitly typed and independently
-observed as a hard continuation blocker.
+Use `--into claude` or `--into opencode` for another harness. Continue starts a fresh target session and never silently
+resumes the source task. Provider CLIs run non-interactively through direct argv execution. Context uses bounded stdin or
+a permission-restricted temporary file, and the local harness records Git state and outcomes. `ready` and `review_required`
+evidence continue automatically; blocked or unknown states fail closed. Historical failures stay in Session Context and do
+not block launch or become Project Context facts unless independently observed and durable beyond the task.
 
 Continue always runs its compiled verification contract. For arbitrary worker
 commands and explicitly authorized verification, see
@@ -127,13 +124,14 @@ Demo data never marks a connector as authenticated or connected.
 
 ## Honest limits
 
-- The browser UI calls a local-only run service. It shows separate
-  readiness-checked Codex, Claude Code, and OpenCode targets, refreshes evidence,
-  starts a fresh explicitly selected provider CLI, observes the repository, and
-  runs available checks; it is unavailable to remote principals. Explicit
-  choices never silently fall back. `daemonstate continue --into ...` launches an
-  explicitly selected provider CLI. MCP `resume_task` returns the pack to its
-  calling agent without starting another process.
+- The browser UI calls the local-only `/api/continuations/stage` service. It
+  checks the selected Codex, Claude, or OpenCode desktop app and registered URL
+  scheme, copies the complete context, and requests a visible composer without
+  invoking a provider CLI or submitting a task. Explicit choices never silently
+  fall back. Separately, `daemonstate continue --into ...` launches an explicitly selected provider
+  CLI through the typed execution contract.
+  MCP `resume_task` returns the audit pack and canonical execution contract to
+  its calling agent without starting another process.
 - There is no system-wide agent monitor. Library scans while its page is open;
   Continue refreshes linked local histories; other integrations must report events.
 - HTTP and MCP run records contain observations supplied by their caller. The
@@ -141,17 +139,16 @@ Demo data never marks a connector as authenticated or connected.
 - `daemonstate harness run` still runs only the explicit local command supplied by the
   user. `daemonstate continue --into ...` selects one of three audited built-in
   provider adapters and never adds permission-bypass flags.
-- On macOS, browser Continue uses Codex's persistent app-server to reopen an exact Codex task
-  after it is renderable. Providers without an exact-session
-  surface are unavailable rather than invisible; other platforms are unsupported.
+- On macOS, browser Continue requests a new composer through the selected
+  desktop app's registered native URL scheme and copies the complete context.
+  Launch Services dispatch is reported as requested, not as a verified open or exact provider session; other platforms are unsupported.
 - Scrutiny uses deterministic evidence rules. It is not an autonomous code review.
-- Live retrieval is limited to the local repository and configured manual-token
-  GitHub access.
+- Live retrieval is limited to the local repository and configured GitHub access.
 - Captured command output and repository inspection are deliberately bounded.
-- A provider exit without both an observed agent repository change and a
-  passing executable check is `completed_unverified`, not a verified handoff.
-  Product acceptance additionally requires a paired real-task
-  test showing that another agent continued correctly without re-explanation,
+- A provider exit or worker-authored success summary is never proof. Only requirement-linked evidence can produce
+  `verified_complete`; other outcomes
+  remain explicitly unproven, failed, or blocked. Product acceptance also requires a paired real-task test showing
+  that another agent continued correctly without re-explanation,
   with less discovery and no stale-context mistake.
 - Model-lift reports describe observed runs. They do not yet prove that an older
   model matches a newer one because of DaemonState.
@@ -173,6 +170,7 @@ Main API routes:
 |---|---|
 | `POST /api/context/prepare` | Compile and persist a task brief. |
 | `POST /api/continuations/prepare` | Resolve current task state, verify its compatible checkpoint, and compile a continuation pack. |
+| `POST /api/continuations/stage` | From the local app, copy the complete handoff and request a visible new composer in the selected Codex, Claude, or OpenCode desktop app without submitting a turn. |
 | `POST /api/continuations` | From the local app, prepare a continuation, start a fresh installed target agent, run available checks, and record the outcome. `/api/continuations/run` remains a compatibility alias. |
 | `POST /api/query` | Query project context with a source trace. |
 | `POST /api/repo/index` | Index repository files, symbols, and exact structural links. |
@@ -201,8 +199,8 @@ edit code, run shell commands, push commits, or write to external providers. See
 
 ## Setup
 
-Prerequisites: Git, Python 3.12+, npm, and Node.js 20.19+ on the 20.x line,
-22.13+ on the 22.x line, or 24+. Provider credentials are optional for local
+The Docker profile needs Git, Docker, and current Compose v2 with `up --wait`. The workstation profile also needs Python 3.12+, npm, and
+Node.js 20.19+ on the 20.x line, 22.13+ on the 22.x line, or 24+. Provider credentials are optional for local
 exploration and the seeded demo.
 
 ### Docker
@@ -210,20 +208,18 @@ exploration and the seeded demo.
 ```bash
 git clone https://github.com/Darshan174/DaemonState.git daemonstate
 cd daemonstate
-cp .env.example .env
-bash scripts/doctor.sh --docker
-docker compose up --build
+bash scripts/self-host.sh
 ```
 
-Open <http://localhost:8000>. This path runs the app, sync worker, PostgreSQL,
-and pgvector.
+Open <http://127.0.0.1:8000>. This loopback-only path runs the dashboard, migration gate, sync worker, PostgreSQL,
+and pgvector. Containers can inspect the configured read-only project, but cannot launch coding-agent tools installed
+only on the host. See [Self-hosting](docs/self-hosting.md) for remote access, persistence, backups, and upgrades.
 
 ### Bare metal
 
 ```bash
 git clone https://github.com/Darshan174/DaemonState.git daemonstate
 cd daemonstate
-cp .env.example .env
 bash scripts/doctor.sh --bare-metal
 bash scripts/setup.sh
 bash scripts/start.sh
@@ -236,7 +232,7 @@ credentials.
 
 ## Deployment
 
-`docker-compose.yml` is the supported local PostgreSQL/pgvector deployment path. It is not a production hardening guide.
+`docker-compose.yml` is the supported personal PostgreSQL/pgvector deployment path. It is not a production hardening guide.
 
 For a hardened single-host deployment, use `docker-compose.production.yml` and follow the
 [production runbook](docs/production-runbook.md). It fails closed on invalid settings, gates startup on migrations,
@@ -250,7 +246,7 @@ security checks against your own SLO/RPO/RTO before serving real traffic.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Run the local CI-equivalent checks with:
+Outside code and documentation submissions are paused pending a contributor agreement; see [CONTRIBUTING.md](CONTRIBUTING.md). Maintainers can run the local CI-equivalent checks with:
 
 ```bash
 bash scripts/smoke.sh
@@ -265,16 +261,20 @@ Maintainers should also run `bash scripts/smoke.sh --docker` before release tags
 - [Connectors](docs/connectors.md)
 - [Context Pack v2](docs/context-pack-v2.md)
 - [Context Compiler v2](docs/context-compiler-v2.md)
-- [Continuation Runtime](docs/continuation-runtime.md)
+- [Continuation Runtime](docs/continuation-runtime.md) and [OpenTelemetry tracing](docs/opentelemetry.md)
 - [Local Agent Harness](docs/agent-harness.md)
 - [MCP](docs/mcp.md)
 - [AI session imports](docs/ai-context.md)
 - [Demo walkthrough](docs/demo.md)
+- [Self-hosting](docs/self-hosting.md)
 - [Production runbook](docs/production-runbook.md)
-- [OSS readiness](docs/oss-readiness.md)
+- [Release readiness](docs/release-readiness.md)
+- [Licensing](docs/licensing.md)
 
-Some documents are implementation contracts rather than public guides. The code
-and tests are the authority for current behavior.
+Some documents are implementation contracts rather than public guides. The code and tests are the authority for current behavior.
 
 ## License
-MIT. See [LICENSE](LICENSE).
+
+DaemonState 0.3.0 and later use the source-available Sustainable Use License 1.0 (`SUL-1.0`): personal,
+noncommercial, and internal business self-hosting are allowed; paid product/service use is not. The final MIT source
+is commit `45b7a6e653a1762bf91b99fae4c7adf3dafc55ce`. See [LICENSE](LICENSE) and [Licensing](docs/licensing.md).

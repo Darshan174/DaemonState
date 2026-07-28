@@ -4,13 +4,21 @@ DaemonState is source-backed project memory for AI agents. Contributions
 should preserve the core contract: raw `SourceDocument` rows first, extracted
 facts second, relationships only with evidence, and honest connector states.
 
+The project is temporarily not accepting outside code or documentation
+contributions because it does not yet have a contributor license agreement.
+Bug reports and product feedback are welcome, but please do not attach patches
+or other copyrighted implementation material unless a maintainer confirms that
+a lawyer-reviewed contributor agreement is in place.
+
+The workflow below is for maintainers and contributors already covered by a
+separate written agreement.
+
 ## Local Setup
 
 Prerequisites: Python 3.12+, npm, and Node.js 20.19+ on the 20.x line,
 22.13+ on the 22.x line, or 24+.
 
 ```bash
-cp .env.example .env
 bash scripts/doctor.sh --bare-metal
 bash scripts/setup.sh
 bash scripts/dev.sh
@@ -24,9 +32,9 @@ uses `npm ci` for the frontend, and builds the production frontend bundle.
 `scripts/dev.sh` and `scripts/smoke.sh` automatically use `.venv/bin/python`
 when it exists.
 
-For the PostgreSQL/pgvector path, run `bash scripts/doctor.sh --docker` and
-`docker compose up --build`. Provider credentials are optional for the seeded
-demo and should stay in the untracked `.env` file.
+For the PostgreSQL/pgvector path, run `bash scripts/self-host.sh`. Provider
+credentials are optional for the seeded demo and should stay in the untracked,
+permission-restricted `.env` file.
 
 ## Before Opening A PR
 

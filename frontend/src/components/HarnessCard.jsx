@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowRight,
   ChevronRight,
@@ -13,6 +13,11 @@ import {
   harnessMeta,
 } from "./HarnessBrand";
 
+const HARNESS_FAN_POSITIONS = ["left", "center", "right"];
+const HARNESS_FAN_ROTATIONS = [-7, 0, 7];
+const HARNESS_FAN_Z_INDEX = [10, 20, 10];
+const CONTINUATION_ARTWORK_GOLD = "#D4AF37";
+
 
 function HarnessCardFrame({
   as: Root = "button",
@@ -20,6 +25,7 @@ function HarnessCardFrame({
   children,
   className = "",
   artworkClassName = "",
+  artworkColor = "",
   artworkContainerClassName = "",
   accentActive = false,
   monochrome = false,
@@ -43,8 +49,8 @@ function HarnessCardFrame({
       {...buttonProps}
       data-harness={type}
       data-monochrome={monochrome ? "true" : "false"}
-      className={`group relative overflow-hidden border text-left outline-none transition-[transform,border-color,box-shadow,background-color] duration-500 ease-out ${focusClass} ${surfaceClass} ${monochrome ? "grayscale saturate-0" : ""} ${className}`}
-      style={style}
+      className={`group relative overflow-hidden border text-left outline-none transition-[transform,border-color,box-shadow,background-color] duration-500 ease-out motion-reduce:transition-none ${focusClass} ${surfaceClass} ${className}`}
+      style={{ "--tw-ring-color": accent, ...style }}
       {...rootProps}
     >
       <span
@@ -56,17 +62,22 @@ function HarnessCardFrame({
       />
       <span
         aria-hidden="true"
-        className="absolute inset-x-0 top-0 h-1 origin-left scale-x-50 transition-transform duration-500 group-hover:scale-x-100 group-focus-visible:scale-x-100 group-focus-within:scale-x-100"
+        className="absolute inset-x-0 top-0 h-1 origin-left scale-x-50 transition-transform duration-500 motion-reduce:transition-none group-hover:scale-x-100 group-focus-visible:scale-x-100 group-focus-within:scale-x-100"
         style={{ backgroundColor: accent, transform: accentActive ? "scaleX(1)" : undefined }}
       />
       <span
         aria-hidden="true"
-        className={`absolute origin-center opacity-[0.16] transition-all duration-700 group-hover:-translate-x-2 group-hover:scale-110 group-hover:opacity-[0.24] group-focus-visible:-translate-x-2 group-focus-visible:scale-110 group-focus-visible:opacity-[0.24] group-focus-within:-translate-x-2 group-focus-within:scale-110 group-focus-within:opacity-[0.24] ${artworkContainerClassName}`}
+        className={`absolute origin-center transition-all duration-700 motion-reduce:transition-none motion-reduce:transform-none group-hover:-translate-x-2 group-hover:scale-110 group-focus-visible:-translate-x-2 group-focus-visible:scale-110 group-focus-within:-translate-x-2 group-focus-within:scale-110 ${
+          artworkColor
+            ? "opacity-[0.38] group-hover:opacity-[0.54] group-focus-visible:opacity-[0.54] group-focus-within:opacity-[0.54]"
+            : "opacity-[0.16] group-hover:opacity-[0.24] group-focus-visible:opacity-[0.24] group-focus-within:opacity-[0.24]"
+        } ${artworkContainerClassName}`}
       >
         <HarnessArtwork
           type={type}
           className={artworkClassName}
           monochrome={monochrome}
+          color={artworkColor}
         />
       </span>
       {children}
@@ -87,11 +98,13 @@ export function HarnessArchiveCard({
 }) {
   const ready = item.adapter_state === "ready";
   const meta = HARNESS_META[item.connector_type] || harnessMeta(item.connector_type);
-  const baseRotation = [-7, 0, 7][index] || 0;
+  const active = hovered || selected;
+  const baseRotation = HARNESS_FAN_ROTATIONS[index] || 0;
   const cardNumber = String(index + 1).padStart(2, "0");
   return (
     <HarnessCardFrame
       type={item.connector_type}
+      data-fan-position={HARNESS_FAN_POSITIONS[index] || "center"}
       aria-label={`Open ${item.name} sessions`}
       aria-pressed={selected}
       data-hovered={hovered ? "true" : "false"}
@@ -99,13 +112,16 @@ export function HarnessArchiveCard({
       onFocus={onHover}
       onClick={onSelect}
       accentActive={selected}
-      className={`aspect-[2/3] w-[190px] shrink-0 rounded-[26px] sm:w-[260px] sm:rounded-[32px] lg:w-[280px] ${index ? "-ml-[88px] sm:-ml-[58px]" : ""} ${selected ? "border-transparent" : "border-[#cecec3] dark:border-[#3a3a33]"}`}
+      className={`daemonstate-harness-fan-card aspect-[2/3] w-[190px] shrink-0 snap-center snap-always rounded-[26px] sm:w-[260px] sm:rounded-[32px] lg:w-[280px] ${selected ? "border-transparent" : "border-[#cecec3] dark:border-[#3a3a33]"}`}
       artworkContainerClassName="-right-[19%] top-[10%] h-[53%] w-[86%]"
       style={{
-        zIndex: hovered || selected ? 30 : 10 + index,
-        transform: `translate3d(${translateX}px, ${translateY}px, 0) rotate(${hovered || selected ? 0 : baseRotation}deg) scale(${hovered || selected ? 1.045 : 1})`,
-        borderColor: hovered || selected ? meta.accent : undefined,
-        boxShadow: hovered || selected
+        zIndex: active ? 40 : HARNESS_FAN_Z_INDEX[index] || 10,
+        "--daemonstate-card-x": `${translateX}px`,
+        "--daemonstate-card-y": `${translateY}px`,
+        "--daemonstate-card-rotation": `${active ? 0 : baseRotation}deg`,
+        "--daemonstate-card-scale": active ? 1.045 : 1,
+        borderColor: active ? meta.accent : undefined,
+        boxShadow: active
           ? `0 28px 70px ${meta.glow}, 0 16px 34px rgba(23,23,19,0.18)`
           : "0 16px 34px rgba(23,23,19,0.12)",
         transitionDelay: hovered ? "0ms" : `${index * 35}ms`,
@@ -157,17 +173,34 @@ export function HarnessContinuationCard({
   translateX = 0,
   translateY = 0,
   pending = false,
+  handoffRequested = false,
   workflowPending = false,
   taskReady = true,
+  taskRequirement = "",
   onHover,
   onContinue,
 }) {
   const type = provider.provider;
   const meta = HARNESS_META[type] || harnessMeta(type);
-  const ready = provider.ready === true;
   const status = String(provider.status || "").trim().toLowerCase();
-  const configured = ready && status === "configured";
+  const reportedReady = provider.ready === true;
+  const accessConfirmationSupported = (
+    !reportedReady
+    && (
+      status === "access_unverified"
+      || provider.code === "desktop_account_access_unverified"
+    )
+    && provider.capabilities?.account_access_confirmation_supported === true
+  );
+  const [accessConfirmed, setAccessConfirmed] = useState(false);
+  useEffect(() => {
+    if (!accessConfirmationSupported) setAccessConfirmed(false);
+  }, [accessConfirmationSupported, type]);
+  const ready = reportedReady || (
+    accessConfirmationSupported && accessConfirmed
+  );
   const checking = status === "checking";
+  const taskBlocked = ready && !taskReady;
   const disabled = !ready || !taskReady || workflowPending;
   const modelOptions = continuationModelOptions(provider);
   const defaultModel = (
@@ -176,6 +209,19 @@ export function HarnessContinuationCard({
     || null
   );
   const [selectedModelId, setSelectedModelId] = useState(defaultModel?.id || "");
+  const modelCapabilityKey = modelOptions
+    .map((model) => `${model.id}:${model.reasoning_efforts.join(",")}:${model.default_reasoning_effort}`)
+    .join("|");
+  useEffect(() => {
+    if (accessConfirmationSupported) setAccessConfirmed(false);
+  }, [accessConfirmationSupported, modelCapabilityKey]);
+  useEffect(() => {
+    setSelectedModelId((current) => (
+      modelOptions.some((model) => model.id === current)
+        ? current
+        : defaultModel?.id || ""
+    ));
+  }, [modelCapabilityKey, defaultModel?.id]);
   const selectedModel = (
     modelOptions.find((model) => model.id === selectedModelId)
     || defaultModel
@@ -191,28 +237,40 @@ export function HarnessContinuationCard({
     ? selectedEffort
     : fallbackEffort;
   const controlsVisible = type === "codex" && modelOptions.length > 0;
+  const interactiveControlsVisible = (
+    controlsVisible || accessConfirmationSupported
+  );
   const statusLabel = continuationProviderStatusLabel({
     pending,
     ready,
     status,
     code: provider.code,
+    accessConfirmed,
   });
-  const statusTone = pending || (ready && !configured)
-    ? "border-emerald-200/20 bg-emerald-200/10 text-emerald-100"
+  const statusTone = pending || ready
+    ? "border-emerald-800/25 bg-emerald-800/10 text-emerald-950 dark:border-emerald-200/20 dark:bg-emerald-200/10 dark:text-emerald-100"
     : checking
       ? "border-white/15 bg-white/[0.06] text-white/70"
       : "border-amber-200/20 bg-amber-200/10 text-amber-100";
-  const message = provider.message || (
-    ready
-      ? `Start a fresh ${meta.name} session with this task’s reconciled context.`
-      : `${meta.name} execution readiness could not be confirmed.`
-  );
-  const active = hovered || pending;
-  const baseRotation = [-7, 0, 7][index] || 0;
+  const message = accessConfirmed
+    ? (
+        `${meta.name} access is user-confirmed for this request. `
+        + "DaemonState will open the visible desktop app; nothing is submitted."
+      )
+    : provider.message || (
+        ready
+          ? `Request a visible ${meta.name} desktop composer. Nothing is submitted.`
+          : `${meta.name} Desktop readiness could not be confirmed.`
+      );
+  const taskRequirementMessage = String(taskRequirement || "").trim()
+    || "Choose a linked task before starting this provider.";
+  const active = hovered || pending || handoffRequested;
+  const baseRotation = HARNESS_FAN_ROTATIONS[index] || 0;
   const cardNumber = String(index + 1).padStart(2, "0");
   const accent = ready ? meta.accent : "#a0a098";
   const handleModelChange = (event) => {
     const nextModel = modelOptions.find((model) => model.id === event.target.value);
+    if (accessConfirmationSupported) setAccessConfirmed(false);
     setSelectedModelId(event.target.value);
     const nextEfforts = nextModel?.reasoning_efforts || [];
     setSelectedEffort(
@@ -222,28 +280,46 @@ export function HarnessContinuationCard({
     );
   };
   const handleContinue = () => {
-    onContinue(type, {
+    const request = {
       ...(selectedModel?.id ? { provider_model: selectedModel.id } : {}),
       ...(normalizedEffort ? { provider_effort: normalizedEffort } : {}),
-    });
+      ...(accessConfirmed
+        ? {
+            desktop_access_confirmation: {
+              provider: type,
+              confirmation: "user_confirmed_usable_in_desktop",
+            },
+          }
+        : {}),
+    };
+    onContinue(type, request);
+    if (accessConfirmed) setAccessConfirmed(false);
   };
 
   return (
     <HarnessCardFrame
       as="article"
       type={type}
+      data-fan-position={HARNESS_FAN_POSITIONS[index] || "center"}
       data-provider-ready={ready ? "true" : "false"}
+      data-task-ready={taskReady ? "true" : "false"}
       data-provider-pending={pending ? "true" : "false"}
+      data-desktop-open-requested={handoffRequested ? "true" : "false"}
       aria-busy={pending ? "true" : "false"}
       onMouseEnter={onHover}
       onFocusCapture={onHover}
       monochrome={!ready}
-      accentActive={pending}
-      className={`aspect-[2/3] w-[190px] shrink-0 rounded-[26px] text-[#171713] sm:w-[260px] sm:rounded-[32px] lg:w-[280px] ${index ? "-ml-[88px] sm:-ml-[58px]" : ""} ${ready ? "border-[#cecec3] dark:border-[#3a3a33]" : "border-[#77776f] bg-[#171715] text-white dark:border-[#77776f] dark:bg-[#171715]"} ${workflowPending ? "cursor-wait" : ""}`}
-      artworkContainerClassName="-right-[19%] top-[10%] h-[53%] w-[86%]"
+      accentActive={pending || handoffRequested}
+      artworkColor={ready ? CONTINUATION_ARTWORK_GOLD : ""}
+      className={`daemonstate-harness-fan-card daemonstate-provider-card h-[23rem] min-h-[23rem] w-[calc(100vw-4rem)] max-w-[280px] shrink-0 snap-center snap-always rounded-[26px] sm:h-[24rem] sm:min-h-[24rem] sm:w-[280px] sm:rounded-[32px] ${ready ? "border-[#cecec3] text-[#171713] dark:border-[#3a3a33] dark:text-white" : "border-[#77776f] text-white dark:border-[#77776f]"} ${workflowPending ? "cursor-wait" : ""}`}
+      artworkContainerClassName="-right-[16%] top-[7%] h-[46%] w-[78%]"
       style={{
-        zIndex: active ? 30 : 10 + index,
-        transform: `translate3d(${translateX}px, ${translateY}px, 0) rotate(${active ? 0 : baseRotation}deg) scale(${active ? 1.045 : 1})`,
+        zIndex: active ? 40 : HARNESS_FAN_Z_INDEX[index] || 10,
+        "--daemonstate-card-x": `${translateX}px`,
+        "--daemonstate-card-y": `${translateY}px`,
+        "--daemonstate-card-rotation": `${active ? 0 : baseRotation}deg`,
+        "--daemonstate-card-scale": active ? 1.035 : 1,
+        backgroundColor: ready ? undefined : "#171715",
         borderColor: active ? accent : undefined,
         boxShadow: active
           ? `0 28px 70px ${ready ? meta.glow : "rgba(255,255,255,0.08)"}, 0 16px 34px rgba(0,0,0,0.28)`
@@ -253,11 +329,13 @@ export function HarnessContinuationCard({
     >
       <button
         type="button"
-        aria-label={`Run task in ${meta.name}`}
+        aria-label={`Open desktop handoff in ${meta.name}`}
         aria-describedby={`continuation-provider-${type}-detail`}
         aria-busy={pending ? "true" : "false"}
         data-provider-ready={ready ? "true" : "false"}
+        data-task-ready={taskReady ? "true" : "false"}
         data-provider-pending={pending ? "true" : "false"}
+        data-desktop-open-requested={handoffRequested ? "true" : "false"}
         data-monochrome={!ready ? "true" : "false"}
         disabled={disabled}
         onClick={handleContinue}
@@ -269,45 +347,77 @@ export function HarnessContinuationCard({
             <span className="block font-mono text-lg font-black leading-none sm:text-2xl" style={{ color: accent }}>
               {cardNumber}
             </span>
-            <span className={`mt-1 block text-[7px] font-black uppercase tracking-[0.18em] sm:text-[8px] ${ready ? "text-[#85857c]" : "text-white/55"}`}>
+            <span className={`mt-1 block text-xs font-black uppercase tracking-[0.16em] ${ready ? "text-[#68685f] dark:text-[#b8b8af]" : "text-white/65"}`}>
               {meta.company}
             </span>
           </span>
-          <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[7px] font-black uppercase tracking-[0.14em] backdrop-blur-md sm:text-[8px] ${ready ? statusTone : "border-white/20 bg-white/[0.07] text-white/70"}`}>
+          <span className={`inline-flex min-h-7 items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-black uppercase tracking-[0.12em] backdrop-blur-md sm:text-xs ${ready ? statusTone : "border-white/20 bg-white/[0.07] text-white/75"}`}>
             {pending || checking
-              ? <Loader2 className="h-2.5 w-2.5 animate-spin" aria-hidden="true" />
+              ? <Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
               : ready
-                ? <Radio className="h-2.5 w-2.5" aria-hidden="true" />
-                : <ShieldAlert className="h-2.5 w-2.5" aria-hidden="true" />}
+                ? <Radio className="h-3 w-3" aria-hidden="true" />
+                : <ShieldAlert className="h-3 w-3" aria-hidden="true" />}
             {statusLabel}
           </span>
         </span>
 
-        <span className={`absolute inset-x-0 bottom-0 flex min-h-[55%] flex-col justify-end px-4 pb-4 pt-10 sm:px-5 sm:pb-5 ${ready ? "bg-gradient-to-t from-[#fbfbf6] via-[#fbfbf6]/95 to-[#fbfbf6]/35 dark:from-[#141411] dark:via-[#141411]/95 dark:to-[#141411]/30" : "bg-gradient-to-t from-[#171715] via-[#171715]/95 to-[#171715]/35"}`}>
+        <span className={`absolute inset-x-0 bottom-0 flex min-h-[72%] flex-col justify-end px-4 pb-4 pt-8 sm:px-5 ${ready ? "bg-gradient-to-t from-[#fbfbf6] via-[#fbfbf6]/95 to-[#fbfbf6]/35 dark:from-[#141411] dark:via-[#141411]/95 dark:to-[#141411]/30" : "bg-gradient-to-t from-[#171715] via-[#171715]/95 to-[#171715]/35"}`}>
           <span className="block text-lg font-black leading-tight tracking-[-0.035em] sm:text-2xl">
             {meta.name}
           </span>
           <span
             id={`continuation-provider-${type}-detail`}
-            className={`mt-2 hidden text-[10px] font-semibold leading-[1.55] sm:line-clamp-2 ${ready ? "text-[#68685f] dark:text-[#aaa9a0]" : "text-white/65"}`}
+            className={`mt-1.5 block text-xs font-semibold leading-5 ${ready ? "text-[#68685f] dark:text-[#aaa9a0]" : "text-white/75"}`}
           >
-            {message}
+            <span className="line-clamp-2">{message}</span>
+            {taskBlocked ? (
+              <span className="mt-1.5 line-clamp-2 rounded-lg border border-amber-700/20 bg-amber-600/10 px-2 py-1.5 text-amber-950 dark:border-amber-200/20 dark:bg-amber-200/10 dark:text-amber-100">
+                <strong>Task required:</strong> {taskRequirementMessage}
+              </span>
+            ) : null}
           </span>
           {!ready && provider.action ? (
-            <span className="mt-2 hidden text-[9px] font-semibold leading-4 text-white/50 sm:line-clamp-2">
+            <span className="mt-1.5 line-clamp-2 text-xs font-semibold leading-5 text-white/60">
               Next: {provider.action}
             </span>
           ) : null}
-          {controlsVisible ? <span aria-hidden="true" className="h-[4.65rem] sm:h-[5rem]" /> : null}
+          {interactiveControlsVisible ? (
+            <span
+              aria-hidden="true"
+              className={
+                controlsVisible && accessConfirmationSupported
+                  ? "h-[8.6rem]"
+                  : controlsVisible
+                    ? "h-[6.4rem]"
+                    : "h-[3.4rem]"
+              }
+            />
+          ) : null}
           <span
-            className={`mt-3 flex items-center justify-between border-t pt-3 text-[8px] font-black uppercase tracking-[0.14em] sm:mt-4 sm:text-[9px] ${ready ? "border-[#d8d8cf]/80 dark:border-[#3a3a34]" : "border-white/15 text-white/45"}`}
-            style={{ color: ready ? accent : undefined }}
+            className={`mt-3 flex min-h-11 items-center justify-between border-t pt-2.5 text-xs font-black uppercase tracking-[0.12em] ${
+              taskBlocked
+                ? "border-amber-800/20 text-amber-900 dark:border-amber-200/20 dark:text-amber-100"
+                : ready
+                  ? "border-[#d8d8cf]/80 dark:border-[#3a3a34]"
+                  : "border-white/15 text-white/55"
+            }`}
+            style={{ color: ready && taskReady ? accent : undefined }}
           >
-            {pending ? `Running in ${meta.name}…` : ready ? "Continue" : "Not runnable"}
             {pending
-              ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              : ready
-                ? <ArrowRight className="h-4 w-4 transition-transform duration-500 group-hover:translate-x-1" aria-hidden="true" />
+              ? `Requesting ${meta.name}…`
+              : !ready
+                ? "Not runnable"
+                : !taskReady
+                  ? "Task required"
+                  : handoffRequested
+                    ? "Request again"
+                  : workflowPending
+                    ? "Continuation busy"
+                    : "Open desktop"}
+            {pending
+              ? <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+              : ready && taskReady && !workflowPending
+                ? <ArrowRight className="h-4 w-4 transition-transform duration-500 motion-reduce:transition-none group-hover:translate-x-1" aria-hidden="true" />
                 : <ShieldAlert className="h-4 w-4" aria-hidden="true" />}
           </span>
         </span>
@@ -317,40 +427,62 @@ export function HarnessContinuationCard({
         </span>
       </button>
 
-      {controlsVisible ? (
-        <div className="absolute inset-x-4 bottom-[3.65rem] z-20 grid grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)] gap-1.5 sm:inset-x-5 sm:bottom-[4.2rem] sm:gap-2">
-          <label className="min-w-0">
-            <span className="mb-1 block text-[7px] font-black uppercase tracking-[0.13em] text-[#85857c] sm:text-[8px]">
-              Model
+      {interactiveControlsVisible ? (
+        <div className="absolute inset-x-4 bottom-[3.9rem] z-20 grid grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)] gap-x-2 gap-y-1 sm:inset-x-5">
+          {controlsVisible ? (
+            <>
+              <label className="min-w-0">
+                <span className={`mb-1 block text-xs font-black uppercase tracking-[0.12em] ${ready ? "text-[#68685f] dark:text-[#b8b8af]" : "text-white/65"}`}>
+                  Model
+                </span>
+                <select
+                  aria-label="Codex model"
+                  value={selectedModel?.id || ""}
+                  disabled={workflowPending || pending}
+                  onChange={handleModelChange}
+                  className="h-11 w-full min-w-0 rounded-xl border border-[#cacac0] bg-white/90 px-2 text-xs font-bold text-[#292922] outline-none transition-colors focus:border-[#10a37f] focus:ring-2 focus:ring-[#10a37f]/20 disabled:cursor-not-allowed disabled:opacity-55 dark:border-[#41413a] dark:bg-[#20201d]/95 dark:text-white"
+                >
+                  {modelOptions.map((model) => (
+                    <option key={model.id} value={model.id}>{model.label}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="min-w-0">
+                <span className={`mb-1 block text-xs font-black uppercase tracking-[0.12em] ${ready ? "text-[#68685f] dark:text-[#b8b8af]" : "text-white/65"}`}>
+                  Effort
+                </span>
+                <select
+                  aria-label="Codex reasoning effort"
+                  value={normalizedEffort}
+                  disabled={workflowPending || pending || !effortOptions.length}
+                  onChange={(event) => setSelectedEffort(event.target.value)}
+                  className="h-11 w-full min-w-0 rounded-xl border border-[#cacac0] bg-white/90 px-2 text-xs font-bold capitalize text-[#292922] outline-none transition-colors focus:border-[#10a37f] focus:ring-2 focus:ring-[#10a37f]/20 disabled:cursor-not-allowed disabled:opacity-55 dark:border-[#41413a] dark:bg-[#20201d]/95 dark:text-white"
+                >
+                  {effortOptions.map((effort) => (
+                    <option key={effort} value={effort}>{titleCase(effort)}</option>
+                  ))}
+                </select>
+              </label>
+            </>
+          ) : null}
+          {accessConfirmationSupported ? (
+            <label className="col-span-2 flex cursor-pointer items-start gap-2 rounded-lg border border-white/15 bg-black/20 px-2 py-1.5 text-[10px] font-bold leading-4 text-white/75">
+              <input
+                type="checkbox"
+                aria-label={desktopAccessConfirmationLabel(type, meta.name)}
+                checked={accessConfirmed}
+                disabled={workflowPending || pending}
+                onChange={(event) => setAccessConfirmed(event.target.checked)}
+                className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-[#10a37f]"
+              />
+              <span>{desktopAccessConfirmationLabel(type, meta.name)}</span>
+            </label>
+          ) : null}
+          {controlsVisible ? (
+            <span className={`col-span-2 text-[10px] font-bold leading-4 ${ready ? "text-[#77776e] dark:text-[#9d9d95]" : "text-white/55"}`}>
+              Requested settings — confirm them in Codex Desktop before sending.
             </span>
-            <select
-              aria-label="Codex model"
-              value={selectedModel?.id || ""}
-              disabled={workflowPending || pending || !ready}
-              onChange={handleModelChange}
-              className="h-8 w-full min-w-0 rounded-lg border border-[#d5d5cb] bg-white/80 px-1.5 text-[8px] font-black text-[#292922] outline-none transition focus:border-[#10a37f] focus:ring-2 focus:ring-[#10a37f]/20 disabled:cursor-not-allowed disabled:opacity-55 dark:border-[#41413a] dark:bg-[#20201d]/90 dark:text-white sm:h-9 sm:px-2 sm:text-[9px]"
-            >
-              {modelOptions.map((model) => (
-                <option key={model.id} value={model.id}>{model.label}</option>
-              ))}
-            </select>
-          </label>
-          <label className="min-w-0">
-            <span className="mb-1 block text-[7px] font-black uppercase tracking-[0.13em] text-[#85857c] sm:text-[8px]">
-              Effort
-            </span>
-            <select
-              aria-label="Codex reasoning effort"
-              value={normalizedEffort}
-              disabled={workflowPending || pending || !ready || !effortOptions.length}
-              onChange={(event) => setSelectedEffort(event.target.value)}
-              className="h-8 w-full min-w-0 rounded-lg border border-[#d5d5cb] bg-white/80 px-1.5 text-[8px] font-black capitalize text-[#292922] outline-none transition focus:border-[#10a37f] focus:ring-2 focus:ring-[#10a37f]/20 disabled:cursor-not-allowed disabled:opacity-55 dark:border-[#41413a] dark:bg-[#20201d]/90 dark:text-white sm:h-9 sm:px-2 sm:text-[9px]"
-            >
-              {effortOptions.map((effort) => (
-                <option key={effort} value={effort}>{titleCase(effort)}</option>
-              ))}
-            </select>
-          </label>
+          ) : null}
         </div>
       ) : null}
     </HarnessCardFrame>
@@ -358,14 +490,29 @@ export function HarnessContinuationCard({
 }
 
 
-function continuationProviderStatusLabel({ pending, ready, status, code }) {
-  if (pending) return "Running";
+function continuationProviderStatusLabel({
+  pending,
+  ready,
+  status,
+  code,
+  accessConfirmed,
+}) {
+  if (pending) return "Requesting";
+  if (accessConfirmed) return "User confirmed";
   if (status === "checking") return "Checking";
+  if (status === "staging_unsupported") return "No handoff";
   if (status === "authentication_required") return "Sign in";
   if (status === "access_required") return "Access needed";
+  if (
+    status === "access_unverified"
+    || code === "desktop_account_access_unverified"
+  ) {
+    return "Access unverified";
+  }
   if (status === "configuration_required") return "Setup needed";
-  if (ready && status === "configured") return "Configured";
+  if (ready && code === "desktop_account_access_verified") return "Account ready";
   if (ready) return "Ready";
+  if (code === "desktop_app_missing") return "Desktop missing";
   if (
     status === "provider_cli_not_found"
     || code === "provider_cli_not_found"
@@ -376,27 +523,9 @@ function continuationProviderStatusLabel({ pending, ready, status, code }) {
 }
 
 
-const FALLBACK_CODEX_MODELS = [
-  {
-    id: "gpt-5.6-sol",
-    label: "GPT-5.6 Sol",
-    default: true,
-    reasoning_efforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
-    default_reasoning_effort: "medium",
-  },
-  {
-    id: "gpt-5.6-terra",
-    label: "GPT-5.6 Terra",
-    default: false,
-    reasoning_efforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
-    default_reasoning_effort: "medium",
-  },
-];
-
-
 function continuationModelOptions(provider) {
   const supplied = Array.isArray(provider.models) ? provider.models : [];
-  const models = supplied
+  return supplied
     .map((model) => {
       const id = String(model?.id || "").trim();
       if (!id) return null;
@@ -419,8 +548,22 @@ function continuationModelOptions(provider) {
       };
     })
     .filter(Boolean);
-  if (models.length || provider.provider !== "codex") return models;
-  return FALLBACK_CODEX_MODELS;
+}
+
+
+function desktopAccessConfirmationLabel(provider, name) {
+  if (provider === "opencode") {
+    return "I opened OpenCode and confirmed a usable provider or local model.";
+  }
+  if (provider === "codex") {
+    return (
+      "I opened Codex Desktop and confirmed the selected model is usable."
+    );
+  }
+  if (provider === "claude") {
+    return "I opened Claude Desktop and confirmed usable account access.";
+  }
+  return `I opened ${name} Desktop and confirmed usable account access.`;
 }
 
 

@@ -20,15 +20,24 @@ describe("ProductLoadingState", () => {
     expect(screen.getByText("22%")).toBeInTheDocument();
   });
 
-  it("uses task-specific phases without claiming backend byte progress", () => {
+  it("keeps task-specific context accessible while showing only the percentage", () => {
     render(
       <ProductLoadingState
         label="Opening session history…"
+        detail="Reading local session stores."
         stages={["Scanning session stores", "Grouping workstreams", "Preparing the archive"]}
       />,
     );
 
-    expect(screen.getByText("Scanning session stores")).toBeInTheDocument();
-    expect(screen.getByRole("status", { name: "Opening session history…" })).toBeInTheDocument();
+    const status = screen.getByRole("status", { name: "Opening session history…" });
+    expect(status).toHaveTextContent(/^8%$/);
+    expect(status).toHaveClass("items-center", "justify-center", "bg-black");
+    expect(screen.getByRole("progressbar", { name: "Loading progress" })).toHaveAttribute(
+      "aria-valuetext",
+      "8% — Scanning session stores",
+    );
+    expect(screen.queryByText("Opening session history…")).not.toBeInTheDocument();
+    expect(screen.queryByText("Reading local session stores.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Scanning session stores")).not.toBeInTheDocument();
   });
 });
