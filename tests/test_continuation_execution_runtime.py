@@ -53,8 +53,15 @@ from app.schemas.continuation_execution import (
     sha256_text,
 )
 from app.services.continuation_quality_gate import evaluate_continuation_quality
-from app.services.continuation_runtime import _contract_outcome, _repairable
+from app.services.checkpoints import SESSION_HANDOFF_SCHEMA_VERSION
+from app.services.continuation_runtime import (
+    ContinuationRunError,
+    _contract_outcome,
+    _repairable,
+    _staging_context_for_preparation,
+)
 from app.services.execution_prompt_renderer import (
+    STAGING_CONTEXT_SCHEMA_VERSION,
     canonical_contract_json,
     execution_prompt_sha256,
     render_continuation_execution_prompt,
@@ -311,6 +318,88 @@ async def test_staging_context_is_a_compact_truth_capsule(
     assert "DAEMONSTATE_EXECUTION_CONTRACT_PATH" in executable
     assert "attachments/01-A1.png" in executable
     assert executable != staged
+
+
+@pytest.mark.asyncio
+async def test_visible_desktop_stage_allows_only_incomplete_core_advisory(
+    tmp_path,
+) -> None:
+    contract = await _contract(_repository(tmp_path))
+    rendered = render_continuation_staging_context(contract)
+    base_context = {
+        "schema_version": STAGING_CONTEXT_SCHEMA_VERSION,
+        "scope": "project",
+        "copy_ready": False,
+        "content": rendered,
+        "sha256": hashlib.sha256(rendered.encode("utf-8")).hexdigest(),
+    }
+    session_content = (
+        "# Session Context — task-level working memory\n\n"
+        f"## Current main goal\n\n{contract.task.request_verbatim}\n"
+    )
+    session_context = {
+        "schema_version": SESSION_HANDOFF_SCHEMA_VERSION,
+        "scope": "session",
+        "provider": "codex",
+        "session_id": "latest-session",
+        "content": session_content,
+        "sha256": hashlib.sha256(session_content.encode("utf-8")).hexdigest(),
+        "current_goal": {"request_sha256": contract.task.request_sha256},
+        "quality_report": {
+            "copy_ready": True,
+            "blocking_issues": [],
+        },
+    }
+    preparation = SimpleNamespace(
+        project_context={
+            **base_context,
+            "quality_issues": [{
+                "code": "project_context_core_sections_empty",
+                "message": "Project Context core sections are incomplete.",
+                "blocks_copy": True,
+            }],
+        },
+        source_session={
+            "provider": "codex",
+            "session_id": "latest-session",
+        },
+    )
+
+    staged_session = _staging_context_for_preparation(
+        preparation,
+        contract=contract,
+        expected_lead=contract.task.request_verbatim,
+        session_context=session_context,
+    )
+    assert staged_session == session_content
+    assert staged_session.startswith(
+        "# Session Context — task-level working memory\n"
+    )
+
+    for code in (
+        "project_context_foundation_stale",
+        "project_context_fact_provenance_missing",
+        "project_context_unresolved_fact_conflict",
+    ):
+        blocked = SimpleNamespace(
+            project_context={
+                **base_context,
+                "quality_issues": [{
+                    "code": code,
+                    "message": f"Blocking issue: {code}.",
+                    "blocks_copy": True,
+                }],
+            },
+            source_session=preparation.source_session,
+        )
+        with pytest.raises(ContinuationRunError) as exc_info:
+            _staging_context_for_preparation(
+                blocked,
+                contract=contract,
+                expected_lead=contract.task.request_verbatim,
+                session_context=session_context,
+            )
+        assert exc_info.value.code == "project_context_staging_blocked"
 
 
 @pytest.mark.asyncio

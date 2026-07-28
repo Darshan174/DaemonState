@@ -44,6 +44,7 @@ from app.schemas.continuation_execution import (
 
 
 router = APIRouter()
+DESKTOP_HANDOFF_REQUEST_TIMEOUT_SECONDS = 45.0
 
 
 class _ContinuationRequest(BaseModel):
@@ -145,6 +146,15 @@ class ContinuationRunRequest(_ContinuationRequest):
         if not normalized:
             raise ValueError("value must contain visible characters")
         return normalized
+
+
+class DesktopAccessConfirmation(BaseModel):
+    provider: Literal["codex", "claude", "opencode"]
+    confirmation: Literal["user_confirmed_usable_in_desktop"]
+
+
+class ContinuationStageRequest(ContinuationRunRequest):
+    desktop_access_confirmation: DesktopAccessConfirmation | None = None
 
 
 class ContinuationHarnessOpenRequest(BaseModel):
@@ -372,34 +382,75 @@ async def prepare_continuation(
 
 @router.post("/continuations/stage")
 async def stage_continuation(
-    payload: ContinuationRunRequest,
+    payload: ContinuationStageRequest,
     request: Request,
     session: AsyncSession = Depends(get_db_session),
     access_scope: AccessScope = Depends(get_access_scope),
 ) -> dict[str, Any]:
-    """Load context into a persistent harness thread without starting a turn."""
+    """Request a visible desktop composer without submitting a turn."""
 
     _require_loopback_client(request)
     try:
-        result = await ContinuationStageService(session).stage(
-            workspace_id=payload.workspace_id,
-            access_scope=access_scope,
-            repo_path=payload.repo_path,
-            objective=payload.objective,
-            objective_is_user_edited=payload.objective_is_user_edited,
-            checkpoint_id=payload.checkpoint_id,
-            checkpoint_source_id=payload.checkpoint_source_id,
-            source_provider=payload.source_provider,
-            source_session_id=payload.source_session_id,
-            target_model=payload.target_model,
-            target_provider=payload.target_provider,
-            provider_model=payload.provider_model,
-            provider_effort=payload.provider_effort,
-            token_budget=payload.token_budget,
-            idempotency_key=payload.idempotency_key,
-            task_mode=payload.task_mode,
-            artifacts=payload.artifacts,
+        result = await asyncio.wait_for(
+            ContinuationStageService(session).stage(
+                workspace_id=payload.workspace_id,
+                access_scope=access_scope,
+                repo_path=payload.repo_path,
+                objective=payload.objective,
+                objective_is_user_edited=payload.objective_is_user_edited,
+                checkpoint_id=payload.checkpoint_id,
+                checkpoint_source_id=payload.checkpoint_source_id,
+                source_provider=payload.source_provider,
+                source_session_id=payload.source_session_id,
+                target_model=payload.target_model,
+                target_provider=payload.target_provider,
+                provider_model=payload.provider_model,
+                provider_effort=payload.provider_effort,
+                desktop_access_confirmation=(
+                    payload.desktop_access_confirmation.model_dump()
+                    if payload.desktop_access_confirmation is not None
+                    else None
+                ),
+                token_budget=payload.token_budget,
+                idempotency_key=payload.idempotency_key,
+                task_mode=payload.task_mode,
+                artifacts=payload.artifacts,
+                sync_sessions=False,
+                request_timeout_seconds=20.0,
+            ),
+            timeout=DESKTOP_HANDOFF_REQUEST_TIMEOUT_SECONDS,
         )
+    except TimeoutError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "code": "desktop_handoff_timeout",
+                "message": (
+                    "The desktop handoff did not finish within 45 seconds. "
+                    "No provider CLI or task was started. A desktop open "
+                    "request may be uncertain, so check the selected app "
+                    "before trying again."
+                ),
+                "blocker": {
+                    "code": "desktop_handoff_timeout",
+                    "title": "Desktop handoff timed out",
+                    "provider": payload.target_provider,
+                    "message": (
+                        "Preparing or opening the selected desktop app took "
+                        "too long. No provider task was started, but an app "
+                        "open request may be uncertain."
+                    ),
+                    "action": (
+                        "Check the selected desktop app first. If no draft "
+                        "appeared, retry Continue."
+                    ),
+                    "affected_tasks": (
+                        [payload.objective] if payload.objective else []
+                    ),
+                },
+            },
+        ) from exc
     except (ContinuationRunError, ContinuationError) as exc:
         await session.rollback()
         detail: dict[str, Any] = {"code": exc.code, "message": str(exc)}

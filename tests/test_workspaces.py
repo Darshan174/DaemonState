@@ -2,7 +2,8 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
-from app.models import AgentRun, Workspace
+from app.models import AgentRun, ContextPack, ContinuationExecution, Workspace
+from app.models_continuation_stage import ContinuationStageRequest
 
 
 async def test_workspace_list_is_read_only_and_create_derives_unique_slugs(client, db_session):
@@ -75,6 +76,73 @@ async def test_permanent_delete_requires_archive_confirmation_and_removes_graph(
     remaining = await client.get("/api/workspaces", params={"include_archived": True})
     assert all(item["id"] != workspace_id for item in remaining.json())
     assert any(item["id"] == kept.json()["id"] for item in remaining.json())
+
+
+async def test_permanent_delete_removes_desktop_handoff_ledger(
+    client,
+    db_session,
+) -> None:
+    created = await client.post(
+        "/api/workspaces",
+        json={"name": "Staged Desktop Handoff"},
+    )
+    workspace_id = UUID(created.json()["id"])
+    context_pack = ContextPack(
+        id=uuid4(),
+        workspace_id=workspace_id,
+        objective="Delete the complete staged handoff graph.",
+        markdown="# Staged handoff\n",
+        manifest="{}",
+        repo_state_json="{}",
+        idempotency_key=f"delete-pack-{uuid4()}",
+    )
+    execution = ContinuationExecution(
+        id=uuid4(),
+        workspace_id=workspace_id,
+        context_pack_id=context_pack.id,
+        task_mode="execute",
+        request_verbatim="Delete the complete staged handoff graph.",
+        request_normalized="Delete the complete staged handoff graph.",
+        request_sha256="1" * 64,
+        display_title="Delete staged handoff",
+        contract_json="{}",
+        contract_sha256="2" * 64,
+        prompt_markdown="# Desktop handoff\n",
+        prompt_sha256="3" * 64,
+        idempotency_key=uuid4().hex,
+    )
+    stage_request = ContinuationStageRequest(
+        workspace_id=workspace_id,
+        context_pack_id=context_pack.id,
+        continuation_execution_id=execution.id,
+        idempotency_key="delete-desktop-stage-request",
+        request_sha256="4" * 64,
+        target_provider="codex",
+        status="succeeded",
+        response_json='{"status":"awaiting_user"}',
+    )
+    db_session.add_all([context_pack, execution, stage_request])
+    await db_session.commit()
+    context_pack_id = context_pack.id
+    execution_id = execution.id
+    stage_request_id = stage_request.id
+
+    archived = await client.patch(
+        f"/api/workspaces/{workspace_id}",
+        json={"status": "archived"},
+    )
+    assert archived.status_code == 200, archived.text
+    deleted = await client.delete(
+        f"/api/workspaces/{workspace_id}",
+        params={"confirm_name": "Staged Desktop Handoff"},
+    )
+
+    assert deleted.status_code == 204, deleted.text
+    db_session.expire_all()
+    assert await db_session.get(Workspace, workspace_id) is None
+    assert await db_session.get(ContextPack, context_pack_id) is None
+    assert await db_session.get(ContinuationExecution, execution_id) is None
+    assert await db_session.get(ContinuationStageRequest, stage_request_id) is None
 
 
 async def test_delete_refuses_workspace_with_active_run(client, db_session):

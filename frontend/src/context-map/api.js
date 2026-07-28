@@ -9,11 +9,14 @@ function digestPath(workspaceId) {
   return `/context/digest${query ? `?${query}` : ""}`;
 }
 
-export function useContextDigest(workspaceId, { poll = false } = {}) {
+export function useContextDigest(
+  workspaceId,
+  { poll = false, enabled = true } = {},
+) {
   return useQuery({
     queryKey: ["context-digest", workspaceId],
     queryFn: () => api.get(digestPath(workspaceId)),
-    enabled: Boolean(workspaceId),
+    enabled: Boolean(workspaceId) && enabled,
     refetchInterval: poll ? 15_000 : false,
     refetchIntervalInBackground: false,
     retry: 1,
@@ -103,6 +106,42 @@ export function useReviewMemoryRecord(workspaceId) {
       queryClient.invalidateQueries({ queryKey: ["project-memory", workspaceId] });
       queryClient.invalidateQueries({ queryKey: ["checkpoints", workspaceId] });
     },
+  });
+}
+
+export function useLatestLocalAISessionDiscovery(
+  workspaceId,
+  { enabled = true } = {},
+) {
+  const queryClient = useQueryClient();
+  return useQuery({
+    queryKey: ["latest-local-ai-session-discovery", workspaceId],
+    queryFn: async () => {
+      const result = await api.post("/session-library/latest", {
+        workspace_id: workspaceId,
+      });
+      if (
+        result?.sync?.mode !== "latest"
+        || !Object.prototype.hasOwnProperty.call(result || {}, "session")
+      ) {
+        throw new Error(
+          "The latest-session refresh returned an invalid response. Continue remains disabled.",
+        );
+      }
+      void queryClient.invalidateQueries({
+        queryKey: ["context-digest", workspaceId],
+        refetchType: "none",
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["checkpoints", workspaceId],
+        refetchType: "none",
+      });
+      return result;
+    },
+    enabled: Boolean(workspaceId) && enabled,
+    staleTime: 0,
+    refetchOnMount: "always",
+    retry: false,
   });
 }
 

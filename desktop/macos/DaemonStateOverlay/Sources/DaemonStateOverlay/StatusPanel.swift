@@ -2,6 +2,10 @@ import AppKit
 
 @MainActor
 final class StatusPanelController: NSWindowController {
+    private static let windowLevel = NSWindow.Level(
+        rawValue: NSWindow.Level.screenSaver.rawValue + 1
+    )
+
     enum Tone {
         case neutral
         case success
@@ -22,10 +26,18 @@ final class StatusPanelController: NSWindowController {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
-        panel.level = .statusBar
+        // The feedback must stay above the floating control itself. Otherwise
+        // scope changes and insert failures disappear behind full-screen apps.
+        panel.level = Self.windowLevel
         panel.hidesOnDeactivate = false
+        panel.canHide = false
+        panel.worksWhenModal = true
         panel.ignoresMouseEvents = true
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.collectionBehavior = [
+            .canJoinAllSpaces,
+            .fullScreenAuxiliary,
+            .ignoresCycle,
+        ]
         panel.isReleasedWhenClosed = false
 
         effectView.frame = panel.contentView?.bounds ?? .zero
@@ -82,7 +94,16 @@ final class StatusPanelController: NSWindowController {
 
         resize(toFit: message)
         position(relativeTo: anchor)
-        window?.orderFrontRegardless()
+        guard let panel = window else { return }
+        // Reassert the cross-Space behavior for the same reason as the main
+        // overlay: a long-lived panel can otherwise retain a stale Space.
+        panel.level = Self.windowLevel
+        panel.collectionBehavior = [
+            .canJoinAllSpaces,
+            .fullScreenAuxiliary,
+            .ignoresCycle,
+        ]
+        panel.orderFrontRegardless()
 
         guard let dismissAfter else { return }
         let workItem = DispatchWorkItem { [weak self] in

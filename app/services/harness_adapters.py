@@ -7,6 +7,7 @@ import shutil
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -53,6 +54,8 @@ PROVIDER_READINESS_TIMEOUT_SECONDS = 5.0
 PROVIDER_READINESS_OUTPUT_LIMIT = 8_192
 CODEX_MODEL_CATALOG_TIMEOUT_SECONDS = 5.0
 CODEX_MODEL_CATALOG_OUTPUT_LIMIT = 2_000_000
+CODEX_DESKTOP_MODEL_CACHE_MAX_AGE_SECONDS = 15 * 60
+CODEX_DESKTOP_MODEL_CACHE_MAX_BYTES = 2_000_000
 CODEX_REASONING_EFFORTS = frozenset({
     "low",
     "medium",
@@ -206,13 +209,18 @@ class ProviderReadiness:
     desktop_available: bool | None = None
     exact_session_supported: bool | None = None
     context_staging_supported: bool = False
+    desktop_handoff_supported: bool = False
+    readiness_scope: str = "provider_cli_and_authentication"
+    account_access_state: str | None = None
+    account_access_verified: bool | None = None
+    model_catalog_source: str | None = None
     capabilities: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
             "provider": self.provider,
             "ready": self.ready,
-            "readiness_scope": "provider_cli_and_authentication",
+            "readiness_scope": self.readiness_scope,
             "task_contract_checked": False,
             "status": self.status,
             "code": self.code,
@@ -222,6 +230,10 @@ class ProviderReadiness:
             "desktop_available": self.desktop_available,
             "exact_session_supported": self.exact_session_supported,
             "context_staging_supported": self.context_staging_supported,
+            "desktop_handoff_supported": self.desktop_handoff_supported,
+            "account_access_state": self.account_access_state,
+            "account_access_verified": self.account_access_verified,
+            "model_catalog_source": self.model_catalog_source,
         }
         if self.capabilities is not None:
             payload["capabilities"] = self.capabilities
@@ -446,7 +458,72 @@ def codex_model_catalog(
             :CODEX_MODEL_CATALOG_OUTPUT_LIMIT
         ]
     )
-    return _codex_models_from_payload(payload)
+    return codex_models_from_payload(payload)
+
+
+def codex_cached_model_catalog(
+    *,
+    cache_path: Path | None = None,
+    now: datetime | None = None,
+    max_age_seconds: float = CODEX_DESKTOP_MODEL_CACHE_MAX_AGE_SECONDS,
+) -> tuple[ProviderModelOption, ...]:
+    """Read a fresh, non-secret model catalog already cached by Codex.
+
+    This never starts Codex or reads authentication material. A catalog is
+    useful for rendering requested model/effort controls, but its presence is
+    not proof of a current subscription, entitlement, quota, or successful
+    desktop sign-in.
+    """
+
+    resolved_path = cache_path or _codex_model_cache_path()
+    try:
+        stat = resolved_path.stat()
+        if (
+            not resolved_path.is_file()
+            or stat.st_size <= 0
+            or stat.st_size > CODEX_DESKTOP_MODEL_CACHE_MAX_BYTES
+        ):
+            return ()
+        payload = json.loads(
+            resolved_path.read_text(encoding="utf-8", errors="strict")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return ()
+    if not isinstance(payload, dict):
+        return ()
+    fetched_at = _utc_datetime(payload.get("fetched_at"))
+    checked_at = now or datetime.now(timezone.utc)
+    if checked_at.tzinfo is None:
+        checked_at = checked_at.replace(tzinfo=timezone.utc)
+    else:
+        checked_at = checked_at.astimezone(timezone.utc)
+    if fetched_at is None:
+        return ()
+    age_seconds = (checked_at - fetched_at).total_seconds()
+    if age_seconds < -60 or age_seconds > max(0.0, max_age_seconds):
+        return ()
+    if not str(payload.get("client_version") or "").strip():
+        return ()
+    return codex_models_from_payload(payload)
+
+
+def _codex_model_cache_path() -> Path:
+    configured_home = str(os.environ.get("CODEX_HOME") or "").strip()
+    root = Path(configured_home).expanduser() if configured_home else Path.home() / ".codex"
+    return root / "models_cache.json"
+
+
+def _utc_datetime(value: object) -> datetime | None:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return None
+    try:
+        parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def is_daemonstate_secret_key(key: str) -> bool:
@@ -1039,7 +1116,7 @@ def _validate_codex_model_selection(
         )
 
 
-def _codex_models_from_payload(
+def codex_models_from_payload(
     payload: dict[str, Any] | None,
 ) -> tuple[ProviderModelOption, ...]:
     raw_models = payload.get("models") if payload is not None else None

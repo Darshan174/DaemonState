@@ -1722,11 +1722,25 @@ export function useContinuationProviders(workspaceId, { enabled = true } = {}) {
     refetchIntervalInBackground: false,
     queryFn: () => api.get(
       `/continuations/providers?workspace_id=${encodeURIComponent(workspaceId)}`,
+      {
+        timeoutMs: 10_000,
+        timeoutMessage: (
+          "Desktop readiness did not respond within 10 seconds. "
+          + "No provider CLI or task was started."
+        ),
+      },
     ),
   });
   const refreshMutation = useMutation({
     mutationFn: () => api.get(
       `/continuations/providers?workspace_id=${encodeURIComponent(workspaceId)}&refresh=true`,
+      {
+        timeoutMs: 10_000,
+        timeoutMessage: (
+          "Desktop readiness did not respond within 10 seconds. "
+          + "No provider CLI or task was started."
+        ),
+      },
     ),
     onSuccess: (data) => {
       queryClient.setQueryData(["continuation-providers", workspaceId], data);
@@ -1775,15 +1789,14 @@ export function useSetDesktopOverlayVisibility() {
   });
 }
 
-export function useRunContinuation() {
-  return useMutation({
-    mutationFn: (payload) => api.post("/continuations", payload),
-  });
-}
-
 export function useStageContinuation() {
   return useMutation({
-    mutationFn: (payload) => api.post("/continuations/stage", payload),
+    mutationFn: (payload) => api.post("/continuations/stage", payload, {
+      timeoutMs: 50_000,
+      timeoutMessage: (
+        "The desktop handoff did not finish in time. No provider task was started."
+      ),
+    }),
   });
 }
 

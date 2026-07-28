@@ -1,3 +1,4 @@
+import { useLayoutEffect } from "react";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useSearchParams } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -16,14 +17,18 @@ const mocks = vi.hoisted(() => ({
   openHarness: vi.fn(),
   select: vi.fn(),
   sync: vi.fn(),
+  workspaceId: "workspace-1",
 }));
 
 vi.mock("./useProductWorkspace", () => ({
   useProductWorkspace: () => ({
-    activeWorkspaceId: "workspace-1",
-    activeWorkspace: { id: "workspace-1", name: "DaemonState" },
-    workspaces: [{ id: "workspace-1", name: "DaemonState" }],
-    selectedId: "workspace-1",
+    activeWorkspaceId: mocks.workspaceId,
+    activeWorkspace: { id: mocks.workspaceId, name: "DaemonState" },
+    workspaces: [
+      { id: "workspace-1", name: "DaemonState" },
+      { id: "workspace-2", name: "Second workspace" },
+    ],
+    selectedId: mocks.workspaceId,
     setSelectedId: vi.fn(),
     workspacesQuery: { isLoading: false },
   }),
@@ -83,6 +88,7 @@ beforeEach(() => {
   });
   mocks.extraSessions = [];
   mocks.libraryLoading = false;
+  mocks.workspaceId = "workspace-1";
   mocks.sync.mockReset();
   mocks.getSource.mockReset();
   mocks.openHarness.mockReset();
@@ -102,7 +108,25 @@ beforeEach(() => {
 
 
 function renderLibrary(initialEntry = "/app/library") {
-  return render(
+  return render(<LibraryTestApp initialEntry={initialEntry} />);
+}
+
+function LibraryTestApp({
+  initialEntry = "/app/library",
+  applyImmediately = false,
+}) {
+  useLayoutEffect(() => {
+    if (!applyImmediately) return;
+    const applyButton = Array.from(document.querySelectorAll("button")).find(
+      (button) => button.textContent.trim() === "Use 1 session",
+    );
+    if (!applyButton) {
+      throw new Error("The Execute session selection apply button was not rendered.");
+    }
+    applyButton.click();
+  }, [applyImmediately]);
+
+  return (
     <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
         <Route path="/app/library" element={<SessionLibrary />} />
@@ -128,7 +152,13 @@ function ContinueDestination() {
 
 function PrepareDestination() {
   const [params] = useSearchParams();
-  return <div>Prepare destination · {params.get("checkpoint")} · {params.get("objective")}</div>;
+  return (
+    <div>
+      Prepare destination · {params.get("checkpoint")} · {params.get("objective")}
+      {" · "}{params.get("source_provider")} · {params.get("source_session")}
+      {" · "}{params.get("objective_source")}
+    </div>
+  );
 }
 
 
@@ -211,11 +241,11 @@ it("organizes sessions behind animated harness cards", async () => {
   const chooseAlphaTopic = within(alphaCard).getByRole("button", { name: "Choose a topic from Alpha launch" });
   expect(chooseAlphaTopic).toHaveAttribute("aria-expanded", "false");
   expect(within(alphaCard).getByText("2")).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Continue Alpha billing from Alpha launch" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Prepare Alpha billing from Alpha launch" })).not.toBeInTheDocument();
 
   fireEvent.mouseEnter(alphaCard);
   expect(chooseAlphaTopic).toHaveAttribute("aria-expanded", "true");
-  expect(screen.getByRole("button", { name: "Continue Alpha billing from Alpha launch" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Prepare Alpha billing from Alpha launch" })).toBeInTheDocument();
 
   fireEvent.change(screen.getByRole("searchbox", { name: "Search Codex sessions" }), {
     target: { value: "Alpha" },
@@ -285,13 +315,13 @@ it("keeps archive detection semantics separate from continuation readiness", () 
 });
 
 
-it("selects a session topic and routes it to canonical Continue", async () => {
+it("selects a historical session topic and routes it to Prepare", async () => {
   renderLibrary();
 
   fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
   const alphaCard = document.querySelector('[data-session-card="codex:one"]');
   fireEvent.mouseEnter(alphaCard);
-  fireEvent.click(screen.getByRole("button", { name: "Continue Alpha billing from Alpha launch" }));
+  fireEvent.click(screen.getByRole("button", { name: "Prepare Alpha billing from Alpha launch" }));
 
   await waitFor(() => {
     expect(mocks.select).toHaveBeenCalledWith({
@@ -300,18 +330,18 @@ it("selects a session topic and routes it to canonical Continue", async () => {
       topic: "Alpha billing",
     });
   });
-  const destination = await screen.findByText(/Canonical Continue destination/);
+  const destination = await screen.findByText(/Prepare destination/);
   expect(destination).toHaveTextContent("Alpha billing");
   expect(destination).toHaveTextContent("codex · session-one");
   expect(destination).toHaveTextContent("session");
 });
 
 
-it("uses the latest topic when the user continues only the session", async () => {
+it("uses the latest topic when the user prepares only the session", async () => {
   renderLibrary();
 
   fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
-  fireEvent.click(screen.getByRole("button", { name: "Continue latest topic from Alpha launch" }));
+  fireEvent.click(screen.getByRole("button", { name: "Prepare latest topic from Alpha launch" }));
 
   await waitFor(() => {
     expect(mocks.select).toHaveBeenCalledWith({
@@ -319,30 +349,50 @@ it("uses the latest topic when the user continues only the session", async () =>
       sourceDocumentId: "doc-1",
     });
   });
-  const destination = await screen.findByText(/Canonical Continue destination/);
+  const destination = await screen.findByText(/Prepare destination/);
   expect(destination).toHaveTextContent("Beta pricing");
   expect(destination).toHaveTextContent("codex · session-one");
 });
 
 
-it("shows session checkboxes only after a harness is opened and enforces the two-session maximum", async () => {
-  mocks.extraSessions = [{
-    id: "codex:three",
-    session_id: "session-three",
-    source_document_id: "doc-3",
-    connector_type: "codex",
-    harness: "Codex",
-    title: "Gamma reliability",
-    topics: ["Gamma reliability"],
-    latest_topic: "Gamma reliability",
-    preview: "Review Gamma reliability",
-    live: true,
-    revision_number: 1,
-    updated_at: "2026-07-18T07:00:00Z",
-    compaction_checkpoints: [],
-  }];
+it("shows session checkboxes only after a harness is opened and enforces the three-session maximum", async () => {
+  mocks.extraSessions = [
+    {
+      id: "codex:three",
+      session_id: "session-three",
+      source_document_id: "doc-3",
+      connector_type: "codex",
+      harness: "Codex",
+      title: "Gamma reliability",
+      topics: ["Gamma reliability"],
+      latest_topic: "Gamma reliability",
+      preview: "Review Gamma reliability",
+      live: true,
+      revision_number: 1,
+      updated_at: "2026-07-18T07:00:00Z",
+      compaction_checkpoints: [],
+    },
+    {
+      id: "codex:four",
+      session_id: "session-four",
+      source_document_id: "doc-4",
+      connector_type: "codex",
+      harness: "Codex",
+      title: "Delta observability",
+      topics: ["Delta observability"],
+      latest_topic: "Delta observability",
+      preview: "Review Delta observability",
+      live: true,
+      revision_number: 1,
+      updated_at: "2026-07-18T06:00:00Z",
+      compaction_checkpoints: [],
+    },
+  ];
   renderLibrary("/app/library?mode=execute-context");
 
+  expect(screen.getByText(
+    "Choose up to three Session Contexts to show in Execute.",
+  )).toBeInTheDocument();
   expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
   fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
 
@@ -355,27 +405,37 @@ it("shows session checkboxes only after a harness is opened and enforces the two
   const gamma = screen.getByRole("checkbox", {
     name: "Select Gamma reliability for Execute",
   });
+  const delta = screen.getByRole("checkbox", {
+    name: "Select Delta observability for Execute",
+  });
   expect(alpha).toBeEnabled();
   expect(beta).toBeEnabled();
   expect(gamma).toBeEnabled();
+  expect(delta).toBeEnabled();
 
   fireEvent.click(alpha);
   fireEvent.click(beta);
+  fireEvent.click(gamma);
   expect(alpha).toBeChecked();
   expect(beta).toBeChecked();
-  expect(gamma).toBeDisabled();
-  expect(screen.getByText("2 of 2 selected")).toBeInTheDocument();
+  expect(gamma).toBeChecked();
+  expect(delta).toBeDisabled();
+  expect(screen.getByText("3 of 3 selected")).toBeInTheDocument();
+  expect(within(gamma.closest("article")).getByText(
+    "Will appear in Execute",
+  )).toBeInTheDocument();
 
   fireEvent.click(alpha);
   expect(alpha).not.toBeChecked();
-  expect(gamma).toBeEnabled();
-  fireEvent.click(gamma);
+  expect(delta).toBeEnabled();
+  fireEvent.click(delta);
 
-  fireEvent.click(screen.getByRole("button", { name: "Use 2 sessions" }));
+  fireEvent.click(screen.getByRole("button", { name: "Use 3 sessions" }));
   expect(await screen.findByText("Execute destination")).toBeInTheDocument();
   expect(readExecuteSessionContexts("workspace-1").map((item) => item.sessionId)).toEqual([
     "session-two",
     "session-three",
+    "session-four",
   ]);
 });
 
@@ -396,22 +456,66 @@ it("rehydrates a removed Execute card as an unselected Library session", () => {
   expect(screen.getByRole("checkbox", {
     name: "Select Beta onboarding for Execute",
   })).toBeChecked();
-  expect(screen.getByText("1 of 2 selected")).toBeInTheDocument();
+  expect(screen.getByText("1 of 3 selected")).toBeInTheDocument();
 });
 
 
-it("marks the current Execute session as unavailable for duplicate selection", () => {
+it("cannot apply the previous workspace's session draft during a workspace switch", async () => {
+  writeExecuteSessionContexts("workspace-1", [{
+    source_document_id: "doc-1",
+    connector_type: "codex",
+    session_id: "session-one",
+    title: "Alpha launch",
+  }]);
+  writeExecuteSessionContexts("workspace-2", [{
+    source_document_id: "doc-2",
+    connector_type: "codex",
+    session_id: "session-two",
+    title: "Beta onboarding",
+  }]);
+
+  const view = renderLibrary("/app/library?mode=execute-context");
+  fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
+  expect(screen.getByRole("checkbox", {
+    name: "Select Alpha launch for Execute",
+  })).toBeChecked();
+
+  mocks.workspaceId = "workspace-2";
+  mocks.libraryLoading = true;
+  view.rerender(
+    <LibraryTestApp
+      initialEntry="/app/library?mode=execute-context"
+      applyImmediately
+    />,
+  );
+
+  expect(await screen.findByText("Execute destination")).toBeInTheDocument();
+  expect(readExecuteSessionContexts("workspace-1").map((item) => item.sessionId)).toEqual([
+    "session-one",
+  ]);
+  expect(readExecuteSessionContexts("workspace-2").map((item) => item.sessionId)).toEqual([
+    "session-two",
+  ]);
+});
+
+
+it("lets the latest Continue session be selected like any other Execute session", () => {
   renderLibrary(
     "/app/library?mode=execute-context&current_provider=codex&current_session=session-one",
   );
   fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
 
-  const current = screen.getByRole("checkbox", {
-    name: "Alpha launch is already the current session",
+  const latest = screen.getByRole("checkbox", {
+    name: "Select Alpha launch for Execute",
   });
-  expect(current).toBeDisabled();
-  expect(within(current.closest("article")).getByText(
-    "Already shown as Current Session Context",
+  expect(latest).toBeEnabled();
+
+  fireEvent.click(latest);
+
+  expect(latest).toBeChecked();
+  expect(screen.getByText("1 of 3 selected")).toBeInTheDocument();
+  expect(within(latest.closest("article")).getByText(
+    "Will appear in Execute",
   )).toBeInTheDocument();
 });
 
@@ -440,14 +544,14 @@ it("opens the selected topic in a source evidence drawer and highlights matches"
   });
 
   expect(within(drawer).queryByRole("button", { name: "Open in Codex" })).not.toBeInTheDocument();
-  expect(within(drawer).getByRole("button", { name: "Continue this topic" })).toBeInTheDocument();
+  expect(within(drawer).getByRole("button", { name: "Prepare this topic" })).toBeInTheDocument();
 
   fireEvent.click(within(drawer).getByRole("button", { name: "Close evidence" }));
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 });
 
 
-it("prepares an automatic compaction checkpoint and routes it to canonical Continue", async () => {
+it("prepares an automatic compaction checkpoint and routes it to Prepare", async () => {
   mocks.openHarness.mockImplementation((path) => {
     if (path === "/session-library/checkpoints/restore") {
       return Promise.resolve({
@@ -470,7 +574,7 @@ it("prepares an automatic compaction checkpoint and routes it to canonical Conti
 
   const drawer = await screen.findByRole("dialog");
   expect(within(drawer).getByRole("heading", { name: "Compaction checkpoints" })).toBeInTheDocument();
-  fireEvent.click(within(drawer).getByRole("button", { name: "Continue from checkpoint" }));
+  fireEvent.click(within(drawer).getByRole("button", { name: "Prepare from checkpoint" }));
 
   await waitFor(() => {
     expect(mocks.openHarness).toHaveBeenCalledWith("/session-library/checkpoints/restore", {
@@ -479,7 +583,7 @@ it("prepares an automatic compaction checkpoint and routes it to canonical Conti
       checkpoint_id: "checkpoint-1",
     });
   });
-  const destination = await screen.findByText(/Canonical Continue destination/);
+  const destination = await screen.findByText(/Prepare destination/);
   expect(destination).toHaveTextContent("checkpoint-1");
   expect(destination).toHaveTextContent("Review Beta pricing before launch");
   expect(screen.queryByRole("button", { name: "Copy restored context" })).not.toBeInTheDocument();

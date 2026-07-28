@@ -9,6 +9,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.models import Base
+from app.models_continuation_stage import ContinuationStageRequest
 from app.services.identity import identity_key_for_component_name, normalize_identity_text
 from app.services.vector_search import pgvector_index_dimension
 from app.source_identity import canonical_source_identity_sha256
@@ -42,9 +43,28 @@ async def run_migrations(conn: AsyncConnection) -> None:
     await _migrate_learning_loop_schema(conn)
     await _migrate_work_checkpoint_schema(conn)
     await _migrate_continuation_execution_schema(conn)
+    await _migrate_continuation_stage_request_schema(conn)
     await _migrate_query_and_sync_indexes(conn)
     await _migrate_source_ingestion_jobs(conn)
     await _migrate_daemonstate_brand(conn)
+
+
+async def _migrate_continuation_stage_request_schema(
+    conn: AsyncConnection,
+) -> None:
+    """Install the desktop-stage idempotency ledger on legacy databases."""
+
+    required = {"workspaces", "context_packs", "continuation_executions"}
+    for table_name in required:
+        if not await _get_table_columns(conn, table_name):
+            return
+    def _create(sync_conn) -> None:
+        table = ContinuationStageRequest.__table__
+        table.create(sync_conn, checkfirst=True)
+        for index in table.indexes:
+            index.create(sync_conn, checkfirst=True)
+
+    await conn.run_sync(_create)
 
 
 async def _migrate_daemonstate_brand(conn: AsyncConnection) -> None:

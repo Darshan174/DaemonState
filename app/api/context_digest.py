@@ -1290,15 +1290,23 @@ async def _digest_activity(
     # activity. An unassigned session may appear here, but remains excluded from
     # project truth until the user selects it.
     candidates = [*run_items, *session_items]
+    latest = (
+        max(candidates, key=_activity_sort_key)
+        if candidates
+        else None
+    )
     primary = max(selected_sessions, key=_activity_sort_key) if selected_sessions else (
         max(active_runs, key=_activity_sort_key) if active_runs else (
-            max(candidates, key=_activity_sort_key) if candidates else None
+            latest
         )
     )
     return {
         "schema_version": "now_activity.v1",
         "state": primary["state"] if primary else "empty",
         "primary": primary,
+        # Keep recency distinct from explicit project/workspace selection for
+        # consumers that need the newest observed activity.
+        "latest": latest,
         "recent_sessions": assigned_session_items[:4],
         "observation_note": (
             "Repository changes and checks are observation-backed; transcript updates are agent-reported."

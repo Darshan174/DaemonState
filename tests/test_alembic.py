@@ -55,6 +55,7 @@ def test_alembic_upgrade_bootstraps_current_sqlite_schema(tmp_path):
             "continuation_requirements",
             "requirement_evidence",
             "continuation_outcomes",
+            "continuation_stage_requests",
             "alembic_version",
         } <= tables
 
@@ -155,7 +156,7 @@ def test_alembic_upgrade_bootstraps_current_sqlite_schema(tmp_path):
             (("source_document_id",), "source_documents", ("id",)),
         } <= sync_observation_foreign_keys
 
-        assert version == "0016_daemonstate_brand"
+        assert version == "0017_stage_idempotency"
         agent_run_indexes = {
             item["name"] for item in inspector.get_indexes("agent_runs")
         }
@@ -183,6 +184,30 @@ def test_alembic_upgrade_bootstraps_current_sqlite_schema(tmp_path):
             "prompt_sha256",
             "status",
         } <= execution_columns
+        stage_request_columns = {
+            column["name"]
+            for column in inspector.get_columns("continuation_stage_requests")
+        }
+        assert {
+            "workspace_id",
+            "context_pack_id",
+            "continuation_execution_id",
+            "idempotency_key",
+            "request_sha256",
+            "target_provider",
+            "status",
+            "response_json",
+            "error_json",
+        } <= stage_request_columns
+        stage_request_indexes = {
+            item["name"]
+            for item in inspector.get_indexes("continuation_stage_requests")
+        }
+        assert {
+            "uq_continuation_stage_requests_workspace_key",
+            "uq_continuation_stage_requests_workspace_current",
+            "ix_continuation_stage_requests_workspace_created",
+        } <= stage_request_indexes
     finally:
         engine.dispose()
 

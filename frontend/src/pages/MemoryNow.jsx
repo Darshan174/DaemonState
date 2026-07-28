@@ -69,7 +69,10 @@ const SUPPORTED_CHECKPOINT_SCHEMAS = new Set([
   "work_checkpoint.v6",
   "work_checkpoint.v7",
   "work_checkpoint.v8",
+  "work_checkpoint.v9",
+  "work_checkpoint.v10",
 ]);
+const CURRENT_CHECKPOINT_SCHEMA = "work_checkpoint.v10";
 const SESSION_NETWORK_RETRY_DELAYS_MS = [120, 300];
 
 
@@ -86,48 +89,32 @@ export default function ExecutePage() {
     readExecuteSessionContexts(workspace.activeWorkspaceId)
   ));
   const storedExecuteWorkspaceRef = useRef(workspace.activeWorkspaceId);
+  const activeStoredExecuteSessions = (
+    storedExecuteWorkspaceRef.current === workspace.activeWorkspaceId
+      ? storedExecuteSessions
+      : []
+  );
+  // Execute no longer owns an automatic current-session card. The digest
+  // primary remains relevant only to Workspace Context compilation; every
+  // visible Session Context below is explicitly selected by the user.
   const candidateActivity = digestQuery.data?.activity?.primary || null;
-  const checkpointGoalAnchor = rawText(
-    digestQuery.data?.current_goal?.title
-    || memoryQuery.data?.current_goal?.title,
-  );
-  const candidateActivityGoal = rawText(
-    candidateActivity?.request
-    || candidateActivity?.title
-    || candidateActivity?.session_title,
-  );
-  const checkpointActivity = (
-    activityIsProjectAssigned(candidateActivity)
-    && (
-      !checkpointGoalAnchor
-      || taskTextCompatible(checkpointGoalAnchor, candidateActivityGoal)
-    )
-  ) ? candidateActivity : null;
+  const checkpointActivity = candidateActivity;
   const activityProvider = normalizeProvider(
     checkpointActivity?.provider || checkpointActivity?.tool,
   );
   const activitySessionId = visibleText(checkpointActivity?.session_id);
   const hasScopedSession = Boolean(activityProvider && activitySessionId);
-  const currentSessionIdentity = executeSessionIdentity({
-    provider: activityProvider,
-    sessionId: activitySessionId,
-  });
   const selectedExecuteSessions = useMemo(() => {
-    const resolved = resolveExecuteSessionContexts(
-      storedExecuteSessions,
+    return resolveExecuteSessionContexts(
+      activeStoredExecuteSessions,
       sessionLibraryQuery.data
         ? sessionLibraryQuery.data.sessions || []
         : undefined,
-    );
-    return resolved
-      .filter((session) => (
-        executeSessionIdentity(session) !== currentSessionIdentity
-      ))
-      .slice(0, MAX_EXECUTE_SESSION_CONTEXTS);
+    ).slice(0, MAX_EXECUTE_SESSION_CONTEXTS);
   }, [
-    currentSessionIdentity,
+    activeStoredExecuteSessions,
     sessionLibraryQuery.data,
-    storedExecuteSessions,
+    workspace.activeWorkspaceId,
   ]);
   const removeExecuteSession = useCallback((session) => {
     const sourceDocumentId = rawText(
@@ -162,8 +149,6 @@ export default function ExecutePage() {
     sessionId: hasScopedSession ? activitySessionId : null,
     enabled: checkpointLookupEnabled,
   });
-  const captureCheckpoint = useCaptureCheckpoint();
-  const checkpointHandoff = useCheckpointHandoff();
   const prepareContinuation = usePrepareContinuation();
   const [previewOpen, setPreviewOpen] = useState(false);
   const [preparedContext, setPreparedContext] = useState(null);
@@ -173,17 +158,7 @@ export default function ExecutePage() {
   const autoProjectPreviewKeyRef = useRef(null);
   const projectCompilePromiseRef = useRef(null);
   const closePreview = useCallback(() => setPreviewOpen(false), []);
-  const [sessionPreviewOpen, setSessionPreviewOpen] = useState(false);
-  const [sessionContext, setSessionContext] = useState(null);
-  const [sessionContextSourceKey, setSessionContextSourceKey] = useState(null);
-  const [sessionContextError, setSessionContextError] = useState(null);
-  const [sessionContextRetryable, setSessionContextRetryable] = useState(true);
-  const [sessionCopyState, setSessionCopyState] = useState("idle");
   const [projectCopyState, setProjectCopyState] = useState("idle");
-  const sessionPreviewReturnFocusRef = useRef(null);
-  const autoSessionPreviewKeyRef = useRef(null);
-  const sessionLoadPromiseRef = useRef(null);
-  const closeSessionPreview = useCallback(() => setSessionPreviewOpen(false), []);
 
   useEffect(() => {
     if (storedExecuteWorkspaceRef.current === workspace.activeWorkspaceId) {
@@ -208,21 +183,9 @@ export default function ExecutePage() {
   ]);
   const activeAnchorRef = useRef(projection.anchorKey);
   activeAnchorRef.current = projection.anchorKey;
-  const activeSessionSourceKey = JSON.stringify([
-    workspace.activeWorkspaceId || "",
-    activityProvider || "",
-    activitySessionId || "",
-  ]);
-  const activeSessionSourceKeyRef = useRef(activeSessionSourceKey);
-  activeSessionSourceKeyRef.current = activeSessionSourceKey;
   const currentPreparedContext = (
     preparedContextAnchorKey === projection.anchorKey
       ? preparedContext
-      : null
-  );
-  const currentSessionContext = (
-    sessionContextSourceKey === activeSessionSourceKey
-      ? sessionContext
       : null
   );
 
@@ -233,15 +196,6 @@ export default function ExecutePage() {
     setPreviewError(null);
     setProjectCopyState("idle");
   }, [workspace.activeWorkspaceId, projection.anchorKey]);
-
-  useEffect(() => {
-    setSessionPreviewOpen(false);
-    setSessionContext(null);
-    setSessionContextSourceKey(null);
-    setSessionContextError(null);
-    setSessionContextRetryable(true);
-    setSessionCopyState("idle");
-  }, [workspace.activeWorkspaceId, activeSessionSourceKey]);
 
   const firstLoad = (
     workspace.workspacesQuery.isLoading
@@ -262,15 +216,6 @@ export default function ExecutePage() {
       projection.previewAvailable
       && !currentPreparedContext
       && !previewError
-    )
-  );
-  const sessionPreviewPreparing = Boolean(
-    captureCheckpoint.isPending
-    || checkpointHandoff.isPending
-    || (
-      hasScopedSession
-      && !currentSessionContext
-      && !sessionContextError
     )
   );
   const projectPreviewRetryable = projectContextErrorIsRetryable(previewError);
@@ -358,183 +303,6 @@ export default function ExecutePage() {
     }
   };
 
-  const loadSessionContext = useCallback(async ({
-    forceCapture = false,
-    retryTransientNetworkFailure = false,
-  } = {}) => {
-    if (!workspace.activeWorkspaceId || !hasScopedSession) {
-      throw new Error("Current Session Context requires a linked active session.");
-    }
-    const requestSourceKey = activeSessionSourceKey;
-    if (
-      !forceCapture
-      && sessionLoadPromiseRef.current?.key === requestSourceKey
-    ) {
-      try {
-        return await sessionLoadPromiseRef.current.promise;
-      } catch (error) {
-        if (
-          !retryTransientNetworkFailure
-          || !isTransientNetworkFailure(error)
-        ) {
-          throw error;
-        }
-      }
-    }
-
-    const operation = (async () => {
-      const captureCurrentTip = () => retryTransientNetworkRequest(
-        () => captureCheckpoint.mutateAsync({
-          workspaceId: workspace.activeWorkspaceId,
-          provider: activityProvider,
-          sessionId: activitySessionId,
-        }),
-        retryTransientNetworkFailure,
-      );
-      let checkpoint = forceCapture ? await captureCurrentTip() : checkpointQuery.data;
-      if (
-        !forceCapture
-        && !sessionCheckpointIsCurrent(
-          checkpoint,
-          activityProvider,
-          activitySessionId,
-        )
-      ) {
-        checkpoint = await captureCurrentTip();
-      }
-      if (!checkpoint?.id) {
-        throw new Error("The current session checkpoint could not be captured.");
-      }
-
-      const requestHandoff = (checkpointId) => retryTransientNetworkRequest(
-        () => checkpointHandoff.mutateAsync({
-          workspaceId: workspace.activeWorkspaceId,
-          checkpointId,
-        }),
-        retryTransientNetworkFailure,
-      );
-      let handoffResponse;
-      try {
-        handoffResponse = await requestHandoff(checkpoint.id);
-      } catch (error) {
-        if (!forceCapture && sessionGoalIsUnavailable(error)) {
-          const refreshedCheckpoint = await captureCurrentTip();
-          if (
-            refreshedCheckpoint?.id
-            && rawText(refreshedCheckpoint.id) !== rawText(checkpoint.id)
-          ) {
-            checkpoint = refreshedCheckpoint;
-            handoffResponse = await requestHandoff(checkpoint.id);
-          } else {
-            throw unavailableSessionGoalError();
-          }
-        } else {
-          throw error;
-        }
-      }
-      if (activeSessionSourceKeyRef.current !== requestSourceKey) {
-        throw new Error("The active session changed while Session Context was preparing.");
-      }
-      const handoff = validateSessionContext(
-        handoffResponse,
-        {
-          provider: activityProvider,
-          sessionId: activitySessionId,
-          checkpointId: checkpoint.id,
-          boundarySequence: checkpoint.boundary?.sequence_number,
-        },
-      );
-      setSessionContext(handoff);
-      setSessionContextSourceKey(requestSourceKey);
-      return { handoff, checkpoint };
-    })();
-    sessionLoadPromiseRef.current = { key: requestSourceKey, promise: operation };
-    try {
-      return await operation;
-    } finally {
-      if (sessionLoadPromiseRef.current?.promise === operation) {
-        sessionLoadPromiseRef.current = null;
-      }
-    }
-  }, [
-    activeSessionSourceKey,
-    activityProvider,
-    activitySessionId,
-    captureCheckpoint,
-    checkpointHandoff,
-    checkpointQuery.data,
-    hasScopedSession,
-    workspace.activeWorkspaceId,
-  ]);
-
-  const recordSessionContextFailure = useCallback((error, fallback) => {
-    const failure = sessionContextFailure(error, fallback);
-    setSessionContextError(failure.message);
-    setSessionContextRetryable(failure.retryable);
-  }, []);
-
-  const previewSessionContext = async (trigger = null) => {
-    if (!hasScopedSession) return;
-    sessionPreviewReturnFocusRef.current = trigger || document.activeElement;
-    setSessionPreviewOpen(true);
-    if (
-      currentSessionContext
-      || captureCheckpoint.isPending
-      || checkpointHandoff.isPending
-    ) return;
-    setSessionContextError(null);
-    setSessionContextRetryable(true);
-    try {
-      await loadSessionContext();
-    } catch (error) {
-      recordSessionContextFailure(
-        error,
-        "Current Session Context could not be prepared.",
-      );
-    }
-  };
-
-  const retrySessionContext = async () => {
-    setSessionContext(null);
-    setSessionContextSourceKey(null);
-    setSessionContextError(null);
-    setSessionContextRetryable(true);
-    try {
-      await loadSessionContext({ forceCapture: true });
-    } catch (error) {
-      recordSessionContextFailure(
-        error,
-        "Current Session Context could not be prepared.",
-      );
-    }
-  };
-
-  const copySessionContext = async () => {
-    setSessionCopyState("copying");
-    setSessionContextError(null);
-    setSessionContextRetryable(true);
-    try {
-      const { handoff, checkpoint } = await loadSessionContext({
-        retryTransientNetworkFailure: true,
-      });
-      await writeClipboard(await copyReadySessionContextContent(handoff, {
-        provider: activityProvider,
-        sessionId: activitySessionId,
-        checkpointId: checkpoint.id,
-        boundarySequence: checkpoint.boundary?.sequence_number,
-      }));
-      setSessionContextError(null);
-      setSessionContextRetryable(true);
-      setSessionCopyState("copied");
-    } catch (error) {
-      setSessionCopyState("error");
-      recordSessionContextFailure(
-        error,
-        "Current Session Context could not be copied.",
-      );
-    }
-  };
-
   useEffect(() => {
     if (
       firstLoad
@@ -543,11 +311,6 @@ export default function ExecutePage() {
       || !projection.previewAvailable
       || currentPreparedContext
       || prepareContinuation.isPending
-      || (
-        hasScopedSession
-        && !currentSessionContext
-        && !sessionContextError
-      )
     ) return undefined;
 
     const previewKey = JSON.stringify([
@@ -572,54 +335,9 @@ export default function ExecutePage() {
     currentPreparedContext,
     dataUnavailable,
     firstLoad,
-    hasScopedSession,
     prepareContinuation.isPending,
     projection.anchorKey,
     projection.previewAvailable,
-    currentSessionContext,
-    sessionContextError,
-    workspace.activeWorkspaceId,
-  ]);
-
-  useEffect(() => {
-    if (
-      firstLoad
-      || dataUnavailable
-      || !workspace.activeWorkspaceId
-      || !hasScopedSession
-      || currentSessionContext
-      || captureCheckpoint.isPending
-      || checkpointHandoff.isPending
-    ) return undefined;
-
-    const previewKey = activeSessionSourceKey;
-    if (autoSessionPreviewKeyRef.current === previewKey) return undefined;
-    autoSessionPreviewKeyRef.current = previewKey;
-
-    let active = true;
-    setSessionContextError(null);
-    setSessionContextRetryable(true);
-    loadSessionContext().catch((error) => {
-      if (active && activeSessionSourceKeyRef.current === previewKey) {
-        recordSessionContextFailure(
-          error,
-          "Current Session Context could not be prepared.",
-        );
-      }
-    });
-    return () => {
-      active = false;
-    };
-  }, [
-    activeSessionSourceKey,
-    captureCheckpoint.isPending,
-    checkpointHandoff.isPending,
-    currentSessionContext,
-    dataUnavailable,
-    firstLoad,
-    hasScopedSession,
-    loadSessionContext,
-    recordSessionContextFailure,
     workspace.activeWorkspaceId,
   ]);
 
@@ -641,14 +359,12 @@ export default function ExecutePage() {
           status="Preparing"
           busy
           selectedSessions={selectedExecuteSessions}
-          currentSessionProvider={activityProvider}
-          currentSessionId={activitySessionId}
         >
           <div className="p-5 sm:p-7 lg:p-10">
             <ProductLoadingState
               label="Preparing the execution workspace…"
-              detail="Reading the durable workspace foundation, repository state, and active session boundary."
-              stages={["Loading workspace context", "Reconciling project state", "Containing the active session"]}
+              detail="Reading the durable workspace foundation, repository state, and selected Session Contexts."
+              stages={["Loading workspace context", "Reconciling project state", "Resolving selected sessions"]}
             />
           </div>
         </ExecuteWorkspaceFrame>
@@ -664,8 +380,6 @@ export default function ExecutePage() {
           status="Unavailable"
           attention
           selectedSessions={selectedExecuteSessions}
-          currentSessionProvider={activityProvider}
-          currentSessionId={activitySessionId}
         >
           <div role="alert" className="px-6 py-16 text-center">
             <AlertTriangle className="mx-auto h-7 w-7 text-attention" aria-hidden="true" />
@@ -692,8 +406,6 @@ export default function ExecutePage() {
         status={partialData ? "Partial context" : "Workspace ready"}
         attention={partialData}
         selectedSessions={selectedExecuteSessions}
-        currentSessionProvider={activityProvider}
-        currentSessionId={activitySessionId}
       >
         {partialData ? (
           <div role="status" className="mx-5 mt-5 rounded-control border border-attention/30 bg-attention/10 px-4 py-3 text-xs font-medium leading-5 text-ink sm:mx-7 lg:mx-10">
@@ -711,14 +423,6 @@ export default function ExecutePage() {
           projectDialogOpen={previewOpen}
           onPreviewProject={generatePreview}
           onCopyProject={copyProjectContext}
-          sessionAvailable={hasScopedSession}
-          sessionProvider={activityProvider}
-          sessionContext={currentSessionContext}
-          sessionPreparing={sessionPreviewPreparing}
-          sessionCopyState={sessionCopyState}
-          sessionError={sessionContextError}
-          onPreviewSession={previewSessionContext}
-          onCopySession={copySessionContext}
           workspaceId={workspace.activeWorkspaceId}
           selectedSessions={selectedExecuteSessions}
           onRemoveSelectedSession={removeExecuteSession}
@@ -740,20 +444,6 @@ export default function ExecutePage() {
         document.body,
       ) : null}
 
-      {sessionPreviewOpen ? createPortal(
-        <SessionContextPreviewDialog
-          result={currentSessionContext}
-          loading={sessionPreviewPreparing}
-          error={sessionContextError}
-          canRetry={sessionContextRetryable}
-          copyState={sessionCopyState}
-          onCopy={copySessionContext}
-          onRetry={retrySessionContext}
-          onClose={closeSessionPreview}
-          returnFocusRef={sessionPreviewReturnFocusRef}
-        />,
-        document.body,
-      ) : null}
     </div>
   );
 }
@@ -765,8 +455,6 @@ function ExecuteWorkspaceFrame({
   busy = false,
   attention = false,
   selectedSessions = [],
-  currentSessionProvider,
-  currentSessionId,
   children,
 }) {
   const navigate = useNavigate();
@@ -776,14 +464,7 @@ function ExecuteWorkspaceFrame({
     MAX_EXECUTE_SESSION_CONTEXTS,
   );
   const openSessionPicker = () => {
-    const params = new URLSearchParams({ mode: "execute-context" });
-    if (currentSessionProvider) {
-      params.set("current_provider", currentSessionProvider);
-    }
-    if (currentSessionId) {
-      params.set("current_session", currentSessionId);
-    }
-    navigate(`/app/library?${params}`);
+    navigate("/app/library?mode=execute-context");
   };
 
   return (
@@ -800,7 +481,7 @@ function ExecuteWorkspaceFrame({
               Execute
             </h1>
             <p className="mt-2 max-w-3xl text-sm font-medium leading-6 text-[#68685f] dark:text-[#aaa9a0]">
-              Prepare verified workspace context, with the active session carried inside it.
+              Prepare verified workspace context and the Session Contexts you choose.
             </p>
           </div>
 
@@ -877,14 +558,6 @@ function ContextProductsPanel({
   projectDialogOpen,
   onPreviewProject,
   onCopyProject,
-  sessionAvailable,
-  sessionProvider,
-  sessionContext,
-  sessionPreparing,
-  sessionCopyState,
-  sessionError,
-  onPreviewSession,
-  onCopySession,
   workspaceId,
   selectedSessions = [],
   onRemoveSelectedSession,
@@ -894,10 +567,6 @@ function ContextProductsPanel({
     !preparedContext
     || preparedContext?.project_context?.copy_ready === true
   );
-  const sessionCopyReady = (
-    !sessionContext
-    || sessionContext?.quality_report?.copy_ready === true
-  );
 
   return (
     <section aria-label="Execution contexts" className="space-y-8">
@@ -905,98 +574,34 @@ function ContextProductsPanel({
         data-session-context-slots
         className="grid grid-cols-1 items-start gap-5 xl:grid-cols-3"
       >
-        <article
-          aria-labelledby="current-session-context-heading"
-          data-session-context-card
-          data-session-context-slot="current"
-          className="relative isolate flex min-w-0 flex-col overflow-hidden rounded-2xl border border-[#d8d8cf] bg-[#fbfbf6] p-5 text-[#171713] shadow-[0_18px_40px_rgba(23,23,19,0.07)] dark:border-[#292925] dark:bg-[#141411] dark:text-white xl:col-start-2 xl:row-start-1"
-        >
-          {sessionAvailable && sessionProvider ? (
-            <span
-              aria-hidden="true"
-              data-session-provider-background={sessionProvider}
-              className="pointer-events-none absolute -right-[20%] top-[16%] z-10 h-[76%] w-[92%] opacity-[0.055] dark:opacity-[0.09]"
-            >
-              <HarnessArtwork
-                type={sessionProvider}
-                color="#a2a298"
-              />
-            </span>
-          ) : null}
-
-          <header className="relative z-20">
-            <h2 id="current-session-context-heading" className="text-2xl font-black leading-tight tracking-[-0.055em]">
-              Current Session Context
-            </h2>
-          </header>
-
-          <PromptPreview
-            label="Current Session Context prompt preview"
-            content={sessionContextCardPreviewContent(sessionContext?.content)}
-            loading={sessionPreparing || (sessionAvailable && !sessionContext && !sessionError)}
-            available={sessionAvailable}
-            error={sessionError}
-            unavailableMessage="Choose a session in Library to add its working state here."
-            compact
-            allowAncestorWatermark
-            identityLabel={sessionProvider
-              ? `${sessionProviderLabel(sessionProvider)} · Current session`
-              : ""}
-            copyReady={sessionContext?.quality_report?.copy_ready}
-            className="mt-5 min-h-[210px]"
-          />
-
-          {!sessionAvailable ? (
-            <Link to="/app/library" className="relative z-20 mt-3 inline-flex min-h-11 items-center gap-2 text-xs font-semibold text-evidence">
-              Choose a session in Library
-              <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
-            </Link>
-          ) : null}
-
-          <div className="relative z-20 mt-auto grid gap-3 pt-4 sm:grid-cols-2">
-            <button
-              type="button"
-              aria-label="Preview Current Session Context"
-              onClick={(event) => onPreviewSession(event.currentTarget)}
-              disabled={!sessionAvailable}
-              className="btn-secondary min-h-11 px-4 text-xs"
-            >
-              {sessionPreparing
-                ? <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                : <BookOpenCheck className="h-3.5 w-3.5" aria-hidden="true" />}
-              {sessionContext
-                ? "Open full preview"
-                : sessionError
-                  ? "Retry preview"
-                  : "Preparing…"}
-            </button>
-            <ContextCopyButton
-              contextName="Current Session Context"
-              copyState={sessionCopyState}
-              onClick={onCopySession}
-              disabled={!sessionAvailable || !sessionCopyReady}
-            />
-          </div>
-          {sessionError ? (
-            <p className="relative z-20 mt-3 text-xs leading-5 text-attention">
-              {sessionError}
-            </p>
-          ) : sessionContext && !sessionCopyReady ? (
-            <p className="relative z-20 mt-3 text-xs leading-5 text-attention">
-              {sessionContextQualityMessage(sessionContext)}
-            </p>
-          ) : null}
-        </article>
-
         {selectedSessions.map((session, index) => (
           <SelectedSessionContextCard
             key={executeSessionIdentity(session)}
             workspaceId={workspaceId}
             session={session}
             slot={index + 1}
+            total={selectedSessions.length}
             onRemove={onRemoveSelectedSession}
           />
         ))}
+        {!selectedSessions.length ? (
+          <div className="rounded-2xl border border-dashed border-[#c9c9bf] bg-[#fbfbf6]/55 px-6 py-10 text-center text-[#68685f] dark:border-[#34342f] dark:bg-[#141411]/55 dark:text-[#aaa9a0] xl:col-span-3">
+            <h2 className="text-xl font-black tracking-[-0.035em] text-[#171713] dark:text-white">
+              Choose Session Contexts
+            </h2>
+            <p className="mx-auto mt-2 max-w-lg text-xs leading-5">
+              Continue owns the live current session. Choose up to three sessions
+              from Library to compare or copy here.
+            </p>
+            <Link
+              to="/app/library?mode=execute-context"
+              className="btn-secondary mt-5 min-h-11 px-4 text-xs"
+            >
+              Choose sessions
+              <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+            </Link>
+          </div>
+        ) : null}
       </div>
 
       <section
@@ -1022,13 +627,15 @@ function ContextProductsPanel({
               {projectPreparing
                 ? <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
                 : <BookOpenCheck className="h-3.5 w-3.5" aria-hidden="true" />}
-              {projectContent
-                ? "Open full preview"
-                : projectError
-                  ? projectRetryable
-                    ? "Retry preview"
-                    : "Unavailable"
-                  : "Preparing…"}
+              {!projection.previewAvailable
+                ? "Unavailable"
+                : projectContent
+                  ? "Open full preview"
+                  : projectError
+                    ? projectRetryable
+                      ? "Retry preview"
+                      : "Unavailable"
+                    : "Preparing…"}
             </button>
             <ContextCopyButton
               contextName="Project Context"
@@ -1074,6 +681,7 @@ function SelectedSessionContextCard({
   workspaceId,
   session,
   slot,
+  total,
   onRemove,
 }) {
   const provider = normalizeProvider(session?.provider);
@@ -1097,10 +705,18 @@ function SelectedSessionContextCard({
   const previewReturnFocusRef = useRef(null);
   const loadPromiseRef = useRef(null);
   const identity = executeSessionIdentity(session);
-  const requestKey = JSON.stringify([workspaceId || "", identity]);
-  const activeRequestKeyRef = useRef(requestKey);
+  const identityKey = JSON.stringify([workspaceId || "", identity]);
+  const requestKey = JSON.stringify([
+    identityKey,
+    checkpointQuery.data?.id || "",
+    checkpointQuery.data?.schema_version || "",
+    checkpointQuery.data?.boundary?.sequence_number ?? null,
+    checkpointQuery.data?.boundary?.session_tip_sequence ?? null,
+    checkpointQuery.data?.boundary?.has_newer_events ?? null,
+  ]);
+  const activeIdentityKeyRef = useRef(identityKey);
   const autoPreviewKeyRef = useRef(null);
-  activeRequestKeyRef.current = requestKey;
+  activeIdentityKeyRef.current = identityKey;
   const closePreview = useCallback(() => setPreviewOpen(false), []);
 
   useEffect(() => {
@@ -1153,7 +769,11 @@ function SelectedSessionContextCard({
         }),
         retryTransientNetworkFailure,
       );
-      let checkpoint = forceCapture ? await captureSelectedTip() : checkpointQuery.data;
+      let checkpoint = (
+        forceCapture || checkpointQuery.isFetching
+          ? await captureSelectedTip()
+          : checkpointQuery.data
+      );
       if (
         !forceCapture
         && !sessionCheckpointIsCurrent(checkpoint, provider, sessionId)
@@ -1196,7 +816,7 @@ function SelectedSessionContextCard({
         checkpointId: checkpoint.id,
         boundarySequence: checkpoint.boundary?.sequence_number,
       });
-      if (activeRequestKeyRef.current !== requestKey) {
+      if (activeIdentityKeyRef.current !== identityKey) {
         throw new Error(
           "The selected session changed while its Session Context was preparing.",
         );
@@ -1219,6 +839,8 @@ function SelectedSessionContextCard({
     captureCheckpoint,
     checkpointHandoff,
     checkpointQuery.data,
+    checkpointQuery.isFetching,
+    identityKey,
     provider,
     requestKey,
     sessionId,
@@ -1231,6 +853,7 @@ function SelectedSessionContextCard({
       || !provider
       || !sessionId
       || (checkpointQuery.isLoading && !checkpointQuery.data)
+      || checkpointQuery.isFetching
       || context
       || error
       || captureCheckpoint.isPending
@@ -1242,7 +865,7 @@ function SelectedSessionContextCard({
     setError(null);
     setRetryable(true);
     loadContext().catch((reason) => {
-      if (activeRequestKeyRef.current === requestKey) {
+      if (activeIdentityKeyRef.current === identityKey) {
         recordFailure(
           reason,
           `${title} Session Context could not be prepared.`,
@@ -1253,9 +876,11 @@ function SelectedSessionContextCard({
     captureCheckpoint.isPending,
     checkpointHandoff.isPending,
     checkpointQuery.data,
+    checkpointQuery.isFetching,
     checkpointQuery.isLoading,
     context,
     error,
+    identityKey,
     loadContext,
     provider,
     recordFailure,
@@ -1343,9 +968,15 @@ function SelectedSessionContextCard({
     )
   );
   const copyReady = !context || context?.quality_report?.copy_ready === true;
-  const columnClass = slot === 1
-    ? "xl:col-start-1"
-    : "xl:col-start-3";
+  const columnClass = total === 1
+    ? "xl:col-start-2"
+    : total === 2
+      ? (slot === 1 ? "xl:col-start-1" : "xl:col-start-3")
+      : [
+          "xl:col-start-1",
+          "xl:col-start-2",
+          "xl:col-start-3",
+        ][slot - 1] || "xl:col-start-1";
 
   return (
     <>
@@ -1849,8 +1480,8 @@ function SessionContextPreviewDialog({
   onRetry,
   onClose,
   returnFocusRef,
-  contextName = "Current Session Context",
-  previewTitle = "Current Session Context Preview",
+  contextName = "Session Context",
+  previewTitle = "Session Context Preview",
   eyebrow = "Task child · same harness",
 }) {
   const closeRef = useRef(null);
@@ -1936,7 +1567,7 @@ function SessionContextPreviewDialog({
             {canRetry ? (
               <button type="button" onClick={onRetry} className="btn-secondary mt-5 min-h-11 text-xs">
                 <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
-                Refresh current session tip
+                Refresh selected session tip
               </button>
             ) : null}
           </div>
@@ -2967,31 +2598,31 @@ function validateSessionContext(result, expected = {}) {
     || result.quality_report === null
     || typeof result.quality_report.copy_ready !== "boolean"
   ) {
-    throw new Error("The checkpoint service returned an incomplete Current Session Context.");
+    throw new Error("The checkpoint service returned an incomplete Session Context.");
   }
   if (
     expected.provider
     && normalizeProvider(result.provider) !== normalizeProvider(expected.provider)
   ) {
-    throw new Error("The Current Session Context belongs to a different harness.");
+    throw new Error("The Session Context belongs to a different harness.");
   }
   if (
     expected.sessionId
     && rawText(result.session_id) !== rawText(expected.sessionId)
   ) {
-    throw new Error("The Current Session Context belongs to a different session.");
+    throw new Error("The Session Context belongs to a different session.");
   }
   if (
     expected.checkpointId
     && rawText(result.checkpoint_id) !== rawText(expected.checkpointId)
   ) {
-    throw new Error("The Current Session Context belongs to a different checkpoint.");
+    throw new Error("The Session Context belongs to a different checkpoint.");
   }
   if (
     Number.isInteger(expected.boundarySequence)
     && result.boundary?.sequence_number !== expected.boundarySequence
   ) {
-    throw new Error("The Current Session Context belongs to a different session boundary.");
+    throw new Error("The Session Context belongs to a different session boundary.");
   }
   return result;
 }
@@ -3022,7 +2653,7 @@ function sessionGoalIsUnavailable(error) {
 
 function unavailableSessionGoalError() {
   const error = new Error(
-    "This session no longer retains its original user request, so a trustworthy Current Session Context cannot be produced. Choose another session or checkpoint in Library.",
+    "This session no longer retains its original user request, so a trustworthy Session Context cannot be produced. Choose another session or checkpoint in Library.",
   );
   error.code = "session_goal_unavailable";
   error.retryable = false;
@@ -3039,7 +2670,7 @@ function sessionContextFailure(error, fallback) {
   }
   if (isTransientNetworkFailure(error)) {
     return {
-      message: "Could not reach DaemonState to verify the current session. Keep the local service running, then try copy again.",
+      message: "Could not reach DaemonState to verify the selected session. Keep the local service running, then try copy again.",
       retryable: true,
     };
   }
@@ -3087,7 +2718,7 @@ async function retryTransientNetworkRequest(request, retryEnabled) {
 function sessionCheckpointIsCurrent(checkpoint, provider, sessionId) {
   if (
     !checkpoint
-    || !SUPPORTED_CHECKPOINT_SCHEMAS.has(checkpoint.schema_version)
+    || checkpoint.schema_version !== CURRENT_CHECKPOINT_SCHEMA
     || !checkpoint.id
     || normalizeProvider(checkpoint.provider) !== normalizeProvider(provider)
     || rawText(checkpoint.session_id) !== rawText(sessionId)

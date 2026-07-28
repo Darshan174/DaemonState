@@ -162,8 +162,18 @@ _HARNESS_CONTINUATION_MESSAGE_RE = re.compile(
     re.IGNORECASE,
 )
 _CODEX_USER_REQUEST_MARKER_RE = re.compile(
-    r"^#{1,6}\s*My request for Codex:\s*$",
-    re.IGNORECASE | re.MULTILINE,
+    r"(?<!\S)#{1,6}\s*My request for Codex:\s*",
+    re.IGNORECASE,
+)
+_CARRIED_CONTEXT_TAIL_HEADING_RE = re.compile(
+    r"(?m)^[ \t]*#{1,6}[ \t]+(?:"
+    r"Current Repo State|Continuation Identity|Relevant Repository Files|"
+    r"Restored Session Checkpoint|Non-Negotiable Decisions|Known Blockers|"
+    r"Prior Failures And Open Questions|Implementation Plan|Execution Policy|"
+    r"Verification Commands|Evidence Citations|Excluded Stale Or Conflicting Context|"
+    r"Stop Conditions"
+    r")[ \t]*$",
+    re.IGNORECASE,
 )
 _CORRECTION_PATTERNS = (
     re.compile(r"\bstill\s+(?:displayed|showing|visible|there|broken|wrong|not\b)", re.IGNORECASE),
@@ -242,11 +252,44 @@ def extract_user_authored_request(value: str | None) -> str | None:
     if not markers:
         return text if text.strip() else None
 
-    body = text[markers[-1].end():]
+    marker = markers[-1]
+    historical_tail = _CARRIED_CONTEXT_TAIL_HEADING_RE.search(text)
+    if historical_tail is not None:
+        # Generated context packs can quote the complete user request again in
+        # their evidence section. Select the final marker in the outer
+        # Objective region, before the first generated handoff heading, instead
+        # of a quoted marker in that evidence tail.
+        objective_markers = [
+            candidate
+            for candidate in markers
+            if candidate.start() < historical_tail.start()
+        ]
+        if objective_markers:
+            objective_marker = objective_markers[-1]
+            objective_line_start = (
+                text.rfind("\n", 0, objective_marker.start()) + 1
+            )
+            if text[
+                objective_line_start:objective_marker.start()
+            ].strip():
+                marker = objective_marker
+    body = text[marker.end():]
     if body.startswith("\r\n"):
         body = body[2:]
     elif body.startswith("\n"):
         body = body[1:]
+    line_start = text.rfind("\n", 0, marker.start()) + 1
+    inline_transport_marker = bool(text[line_start:marker.start()].strip())
+    if inline_transport_marker:
+        # Generated context packs can embed an entire older handoff inside one
+        # provider user turn. In those envelopes the actual user lead appears
+        # after an inline "My request for Codex" marker, followed by structured
+        # historical sections such as "Current Repo State". Preserve the lead,
+        # but never promote the older handoff's inventory and policy into fresh
+        # user authority.
+        body_tail = _CARRIED_CONTEXT_TAIL_HEADING_RE.search(body)
+        if body_tail is not None:
+            body = body[:body_tail.start()]
     return body if body.strip() else None
 
 

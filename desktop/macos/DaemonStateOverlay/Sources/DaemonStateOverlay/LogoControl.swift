@@ -92,10 +92,13 @@ final class LogoControl: NSControl {
         // must never let the earlier deferred single-click action fire.
         pendingSingleClick?.cancel()
         pendingSingleClick = nil
-        if event.clickCount == 1 {
+        switch ContextGesture.disposition(forClickCount: event.clickCount) {
+        case .scheduleSingle:
             onGestureBegan?()
-        } else if event.clickCount >= 3 {
+        case .cancelSingleAndToggle:
             onGestureCancelled?()
+        case .rescheduleSingle, .ignore:
+            break
         }
 
         dragged = false

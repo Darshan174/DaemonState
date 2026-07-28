@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -25,10 +26,16 @@ from app.services.session_summary import (
     SESSION_LIBRARY_SUMMARY_VERSION,
     build_session_library_summary,
     is_internal_session_content,
+    normalize_substantive_user_request,
 )
 from app.services.workspace_scope import current_source_documents
 from app.sync.ai_session import ingest_ai_session
-from app.sync.session_resolvers import discover_local_ai_sessions
+from app.sync.session_resolvers import (
+    LatestSessionDiscoveryResult,
+    ResolvedSession,
+    discover_latest_local_ai_session,
+    discover_local_ai_sessions,
+)
 from app.time import utc_now
 
 
@@ -281,6 +288,199 @@ async def sync_local_session_library(
         **totals,
         "providers": provider_results,
     }
+
+
+async def sync_latest_local_session(
+    session: AsyncSession,
+    workspace_id: UUID,
+    *,
+    connector_types: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """Discover and ingest only the newest eligible local root session."""
+
+    workspace = await session.get(Workspace, workspace_id)
+    if workspace is None:
+        raise ValueError("Workspace not found")
+    if workspace.kind == "demo":
+        return {
+            "sync": {
+                "workspace_id": str(workspace_id),
+                "automatic": True,
+                "mode": "latest",
+                "skipped_reason": "sample_workspace",
+                "synced_at": utc_now().isoformat(),
+                "candidates": 0,
+                "examined": 0,
+                "excluded": 0,
+                "discovered": 0,
+                "imported": 0,
+                "updated": 0,
+                "unchanged": 0,
+                "failed": 0,
+                "providers": [],
+            },
+            "session": None,
+        }
+
+    requested = tuple(dict.fromkeys(
+        value.strip().lower()
+        for value in (connector_types or SESSION_CONNECTOR_TYPES)
+        if value and value.strip().lower() in SESSION_CONNECTOR_TYPES
+    ))
+    project_scope = await workspace_session_scope(session, workspace_id)
+    discovery = await asyncio.to_thread(
+        _discover_latest_scoped_root_session,
+        requested,
+        project_scope,
+    )
+    provider_results = [
+        {
+            **provider,
+            "name": HARNESS_LABELS.get(
+                str(provider["connector_type"]),
+                str(provider["connector_type"]).title(),
+            ),
+        }
+        for provider in discovery.providers
+    ]
+    totals = {
+        "candidates": discovery.candidates,
+        "examined": discovery.examined,
+        "excluded": discovery.excluded,
+        "discovered": int(discovery.session is not None),
+        "imported": 0,
+        "updated": 0,
+        "unchanged": 0,
+        "failed": discovery.failed,
+    }
+
+    synced_at = utc_now()
+    for provider in provider_results:
+        connector_type = str(provider["connector_type"])
+        connector = await _get_or_create_connector(
+            session,
+            workspace_id,
+            connector_type,
+        )
+        config = _loads_dict(connector.config_json)
+        config.update({
+            "automatic_discovery": True,
+            "latest_session_fast_path": True,
+            "adapter_state": (
+                "ready" if provider["available"] else "unavailable"
+            ),
+            "adapter_message": (
+                "Local session history detected."
+                if provider["available"]
+                else provider["error"]
+            ),
+            "last_discovery_at": synced_at.isoformat(),
+        })
+        connector.status = (
+            "connected" if provider["available"] else "disconnected"
+        )
+        connector.last_sync_at = synced_at
+        connector.config_json = json.dumps(config)
+
+    if discovery.session is None:
+        await session.commit()
+        return {
+            "sync": {
+                "workspace_id": str(workspace_id),
+                "automatic": True,
+                "mode": "latest",
+                "synced_at": synced_at.isoformat(),
+                **totals,
+                "providers": provider_results,
+            },
+            "session": None,
+        }
+
+    resolved = discovery.session
+    ingest_result = await ingest_ai_session(
+        resolved.connector_type,
+        session,
+        resolved.session_id,
+        resolved.content,
+        workspace_id=str(workspace_id),
+        metadata_extra=resolved.metadata,
+        normalized_events=resolved.events,
+        commit=False,
+        capture_checkpoints=False,
+    )
+    totals["imported"] = max(
+        int(ingest_result.get("documents_persisted") or 0)
+        - int(ingest_result.get("documents_updated") or 0),
+        0,
+    )
+    totals["updated"] = int(ingest_result.get("documents_updated") or 0)
+    totals["unchanged"] = int(
+        ingest_result.get("documents_skipped")
+        or ingest_result.get("unchanged")
+        or 0
+    )
+    document = await session.get(
+        SourceDocument,
+        UUID(str(ingest_result["document_id"])),
+    )
+    if document is None:
+        raise RuntimeError("Latest session ingestion did not return its source document")
+    await session.commit()
+    await session.refresh(document)
+    entry = _session_entry(document)
+    entry["root_task_title"] = _latest_resolved_user_request(resolved)
+    return {
+        "sync": {
+            "workspace_id": str(workspace_id),
+            "automatic": True,
+            "mode": "latest",
+            "synced_at": synced_at.isoformat(),
+            **totals,
+            "providers": provider_results,
+        },
+        "session": entry,
+    }
+
+
+def _discover_latest_scoped_root_session(
+    connector_types: tuple[str, ...],
+    project_scope: Any,
+) -> LatestSessionDiscoveryResult:
+    def accept(resolved: ResolvedSession) -> bool:
+        if str(
+            resolved.metadata.get("thread_source") or ""
+        ).strip().casefold() == "subagent":
+            return False
+        resolved.metadata = enrich_session_scope_metadata(
+            resolved.metadata,
+            resolved.events,
+        )
+        return project_scope.matches_metadata(
+            resolved.metadata,
+            provider=resolved.connector_type,
+            session_id=resolved.session_id,
+        )
+
+    return discover_latest_local_ai_session(
+        connector_types,
+        accept=accept,
+    )
+
+
+def _latest_resolved_user_request(resolved: ResolvedSession) -> str | None:
+    """Return the newest substantive request from the exact resolved session."""
+
+    for event in sorted(
+        resolved.events,
+        key=lambda item: item.sequence_number,
+        reverse=True,
+    ):
+        if event.event_type != "user_request" or event.role not in {None, "user"}:
+            continue
+        request = normalize_substantive_user_request(event.content)
+        if request:
+            return request
+    return None
 
 
 async def build_session_library(

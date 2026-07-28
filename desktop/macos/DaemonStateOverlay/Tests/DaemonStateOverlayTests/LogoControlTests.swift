@@ -40,6 +40,28 @@ struct LogoControlTests {
 
     @Test
     @MainActor
+    func statusFeedbackStaysAboveTheFloatingControlAcrossSpaces() {
+        let overlay = OverlayPanelController(savedOrigin: nil)
+        let status = StatusPanelController()
+        defer { status.hide() }
+
+        status.show(
+            "Workspace Context selected",
+            relativeTo: overlay.window,
+            dismissAfter: nil
+        )
+
+        let panel = status.window
+        #expect(
+            panel?.level.rawValue ?? 0
+                > (overlay.window?.level.rawValue ?? 0)
+        )
+        #expect(panel?.collectionBehavior.contains(.canJoinAllSpaces) == true)
+        #expect(panel?.collectionBehavior.contains(.fullScreenAuxiliary) == true)
+    }
+
+    @Test
+    @MainActor
     func heldSubsequentPressesCancelInsertionBeforeTheirRelease() async throws {
         let control = LogoControl(frame: NSRect(x: 0, y: 0, width: 56, height: 56))
         var insertions = 0
@@ -68,6 +90,16 @@ struct LogoControlTests {
 
         control.mouseUp(with: mouseEvent(type: .leftMouseUp, clickCount: 3))
         #expect(insertions == 0)
+        #expect(toggles == 1)
+
+        // AppKit continues the sequence with click count four when the user
+        // immediately clicks to insert the newly selected context.
+        control.mouseDown(with: mouseEvent(type: .leftMouseDown, clickCount: 4))
+        control.mouseUp(with: mouseEvent(type: .leftMouseUp, clickCount: 4))
+
+        try await waitPastClickDeadline()
+        #expect(targetCaptures == 2)
+        #expect(insertions == 1)
         #expect(toggles == 1)
     }
 

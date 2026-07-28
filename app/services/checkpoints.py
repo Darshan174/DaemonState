@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from uuid import UUID
 
-from sqlalchemy import and_, exists, func, or_, select
+from sqlalchemy import and_, case, exists, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -55,7 +55,7 @@ from app.services.session_summary import (
 from app.time import utc_now
 
 
-CHECKPOINT_SCHEMA_VERSION = "work_checkpoint.v8"
+CHECKPOINT_SCHEMA_VERSION = "work_checkpoint.v10"
 SESSION_HANDOFF_SCHEMA_VERSION = "session_handoff.v1"
 SESSION_CONTEXT_REQUIRED_HEADINGS = (
     "# Session Context — task-level working memory",
@@ -107,7 +107,9 @@ _PROGRESS_SIGNAL = re.compile(
 _BLOCKER_SIGNAL = re.compile(
     r"(?:\bblocker\s*:|\b(?:is|are|am|was|were|remain(?:s|ed)?)\s+blocked\b|"
     r"\bblocked\s+(?:by|on|because)\b|\bcannot continue\b|\bcan(?:not|'t) proceed\b|"
-    r"\bneed user input\b|\bwaiting for\b|\bpermission required\b)",
+    r"\bneed user input\b|\bwaiting for\b|\bpermission required\b|"
+    r"\bfailed to authenticate\b|\bauthentication_error\b|"
+    r"\b(?:access|oauth)\s+token\b.{0,80}\brevoked\b)",
     re.IGNORECASE,
 )
 _NEXT_SIGNAL = re.compile(
@@ -298,8 +300,8 @@ _REFERENCED_CONVERSATION_MARKER_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _CURRENT_CODEX_REQUEST_MARKER_RE = re.compile(
-    r"^#{1,6}\s*My request for Codex:\s*$",
-    re.IGNORECASE | re.MULTILINE,
+    r"(?<!\S)#{1,6}\s*My request for Codex:\s*",
+    re.IGNORECASE,
 )
 _CHATGPT_MARKDOWN_LINK_RE = re.compile(
     r"\[([^\]]+)\]\("
@@ -324,13 +326,109 @@ _SESSION_IMAGE_ATTRIBUTE_RE = re.compile(
 _SESSION_IMAGE_BRACKET_ATTRIBUTE_RE = re.compile(
     r"([A-Za-z_][A-Za-z0-9_.:-]*)\s*=\s*(\[[^\]\r\n]{1,300}\])"
 )
+_SESSION_TASK_RESET_RE = re.compile(
+    r"^\s*(?:new|separate|unrelated|different)\s+(?:task|request|topic)\b|"
+    r"^\s*(?:switch|move)\s+(?:on\s+)?to\b|"
+    r"\bunrelated\b|"
+    r"\b(?:forget|disregard|drop|cancel)\s+(?:the\s+)?"
+    r"(?:previous|earlier|last)\s+(?:task|request|instruction)\b",
+    re.IGNORECASE,
+)
+_SESSION_TASK_FOLLOWUP_RE = re.compile(
+    r"^\s*(?:also|and|but|plus|then|additionally|furthermore|"
+    r"make\s+sure|ensure|remember|keep|still|before\s+you\s+finish|"
+    r"while\s+you(?:'re|\s+are)\s+at\s+it)\b|"
+    r"^\s*(?:please\s+)?(?:this|that|it|the\s+same|"
+    r"(?:these|those)\s+changes?|the\s+(?:fix|result|work|task))\b|"
+    r"^\s*(?:please\s+)?(?:do|apply|use|fix|change|update|remove|"
+    r"rename|replace|redo|rework|finish|complete)\s+"
+    r"(?:this|that|it|the\s+(?:same|fix|work|change|result|task))\b",
+    re.IGNORECASE,
+)
+_SESSION_TASK_DELIVERY_FOLLOWUP_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:commit|push|deploy|release|ship|publish)\b|"
+    r"^\s*(?:please\s+)?(?:open|create|make)\s+(?:a\s+)?"
+    r"(?:pull\s+request|merge\s+request|pr)\b",
+    re.IGNORECASE,
+)
+_SESSION_TASK_TOKEN_STOPWORDS = frozenset({
+    "a",
+    "about",
+    "all",
+    "also",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "but",
+    "by",
+    "can",
+    "do",
+    "for",
+    "from",
+    "have",
+    "i",
+    "in",
+    "is",
+    "it",
+    "make",
+    "my",
+    "of",
+    "on",
+    "or",
+    "our",
+    "please",
+    "should",
+    "sure",
+    "that",
+    "the",
+    "their",
+    "there",
+    "this",
+    "to",
+    "we",
+    "with",
+    "you",
+    "your",
+})
+_SESSION_ATTACHMENT_EXACT_DEPENDENCY_RE = re.compile(
+    r"(?:"
+    r"\b(?:match|copy|recreate|replicate|mirror|follow|use)\b"
+    r".{0,100}\b(?:attached|image|screenshot|reference|mockup|design)\b"
+    r".{0,100}\b(?:exact(?:ly)?|pixel[- ]perfect|identical|same)\b|"
+    r"\b(?:exact(?:ly)?|pixel[- ]perfect|identical|same)\b"
+    r".{0,100}\b(?:attached|image|screenshot|reference|mockup|design)\b"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+_SESSION_ATTACHMENT_VISUAL_DEPENDENCY_RE = re.compile(
+    r"(?:"
+    r"\b(?:inspect|look\s+at|analy[sz]e|examine|review|check|compare|"
+    r"debug|diagnose|explain|tell\s+me)\b"
+    r".{0,140}\b(?:attached|image|screenshot|reference|mockup|design|visual)\b|"
+    r"\b(?:attached|image|screenshot|reference|mockup|design|visual)\b"
+    r".{0,140}\b(?:inspect|look|analy[sz]e|examine|review|check|compare|"
+    r"debug|diagnose|explain|tell)\b|"
+    r"\b(?:attached|image|screenshot|reference|mockup|design|visual)\b"
+    r".{0,160}\b(?:source\s+of\s+truth|colou?rs?|spacing|typography|"
+    r"responsive|layout)\b"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+_SESSION_COMPOSITE_REQUEST_HEADING_RE = re.compile(
+    r"(?m)^(?:## Additional user-authored requirements|"
+    r"### Follow-up \d+)[ \t]*$",
+)
 _REQUIREMENT_BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(.+?)\s*$")
 _REQUIREMENT_ACTION_RE = re.compile(
-    r"\b(?:add|allow|build|carry|change|check|confirm|copy|create|determine|"
+    r"\b(?:should(?:n't|n’t| not)?|must(?:n't|n’t| not)?|"
+    r"add|allow|build|carry|change|check|confirm|copy|create|determine|"
     r"disable|display|divide|document|enable|ensure|expose|finish|fix|hide|"
-    r"get|honor|implement|include|keep|make|move|must|need|paste|power|preserve|"
+    r"get|honor|implement|include|keep|make|move|need|paste|power|preserve|"
     r"prevent|reject|remove|rename|replace|restore|retain|route|separate|"
-    r"send|should|show|split|support|surface|use|verify|wire|work|remember|"
+    r"send|show|split|support|surface|use|verify|wire|work|remember|"
     r"prioritize|failed)\b",
     re.IGNORECASE,
 )
@@ -434,6 +532,7 @@ _STATUS_MATCH_STOPWORDS = frozenset({
 _CHANGE_TASK_RE = re.compile(
     r"\b(?:add|build|change|create|edit|fix|implement|modify|remove|repair|"
     r"replace|ship|update|write)\b|"
+    r"\bthere\s+(?:should(?:n't| not)?|must(?:n't| not)?)\s+be\b|"
     r"\bwork\s+on\s+this\b|"
     r"\bget\s+this\s+done\b",
     re.IGNORECASE,
@@ -754,6 +853,14 @@ async def latest_checkpoint(
         .order_by(
             SessionEvent.occurred_at.desc().nulls_last(),
             SessionEvent.sequence_number.desc(),
+            case(
+                (
+                    WorkCheckpoint.schema_version
+                    == CHECKPOINT_SCHEMA_VERSION,
+                    1,
+                ),
+                else_=0,
+            ).desc(),
             WorkCheckpoint.schema_version.desc(),
             WorkCheckpoint.created_at.desc(),
             WorkCheckpoint.id.desc(),
@@ -797,6 +904,14 @@ async def list_checkpoints(
         .order_by(
             SessionEvent.occurred_at.desc().nulls_last(),
             SessionEvent.sequence_number.desc(),
+            case(
+                (
+                    WorkCheckpoint.schema_version
+                    == CHECKPOINT_SCHEMA_VERSION,
+                    1,
+                ),
+                else_=0,
+            ).desc(),
             WorkCheckpoint.schema_version.desc(),
             WorkCheckpoint.created_at.desc(),
             WorkCheckpoint.id.desc(),
@@ -2875,6 +2990,44 @@ def _self_contained_goal(request_verbatim: str) -> str:
     ).strip()
 
 
+def _session_attachment_dependency_role(request_verbatim: str) -> str:
+    """Classify whether the next agent still needs the visual itself."""
+
+    goal_without_markup = _self_contained_goal(request_verbatim)
+    words = re.findall(r"[a-z0-9]+", goal_without_markup.casefold())
+    if _SESSION_ATTACHMENT_EXACT_DEPENDENCY_RE.search(goal_without_markup):
+        return "active_input"
+    if (
+        len(words) <= 30
+        and _SESSION_ATTACHMENT_VISUAL_DEPENDENCY_RE.search(goal_without_markup)
+    ):
+        return "active_input"
+    if len(words) <= 16 and _REQUIREMENT_ACTION_RE.search(goal_without_markup):
+        # Short deictic requests such as "fix this" do not contain enough
+        # durable text to replace the visual input.
+        return "active_input"
+    return "historical_evidence"
+
+
+def _session_attachment_request_fragment(
+    request_verbatim: str,
+    *,
+    attachment_offset: int,
+) -> str:
+    """Return the root/follow-up fragment that declared one attachment."""
+
+    value = str(request_verbatim or "")
+    start = 0
+    end = len(value)
+    for heading in _SESSION_COMPOSITE_REQUEST_HEADING_RE.finditer(value):
+        if heading.start() <= attachment_offset:
+            start = heading.end()
+            continue
+        end = heading.start()
+        break
+    return value[start:end].strip()
+
+
 def _session_attachment_dependencies(
     request_verbatim: str,
     *,
@@ -2883,6 +3036,18 @@ def _session_attachment_dependencies(
 ) -> list[dict[str, Any]]:
     """Describe exact-turn images without treating request markup as authority."""
 
+    fragment_roles = [
+        _session_attachment_dependency_role(fragment)
+        for fragment in _SESSION_COMPOSITE_REQUEST_HEADING_RE.split(
+            str(request_verbatim or "")
+        )
+        if fragment.strip()
+    ]
+    fallback_dependency_role = (
+        "active_input"
+        if "active_input" in fragment_roles
+        else "historical_evidence"
+    )
     descriptor_values = tuple(trusted_descriptors)
     descriptors_by_path = {
         descriptor.path: descriptor
@@ -2938,6 +3103,12 @@ def _session_attachment_dependencies(
             "path": path or None,
             "source": "user_request_attachment_markup",
             "declaration_sha256": _sha256(match.group(0)),
+            "dependency_role": _session_attachment_dependency_role(
+                _session_attachment_request_fragment(
+                    request_verbatim,
+                    attachment_offset=match.start(),
+                )
+            ),
         })
 
     declared_paths = {
@@ -2953,6 +3124,7 @@ def _session_attachment_dependencies(
             "path": descriptor.path,
             "source": "structured_provider_attachment",
             "declaration_sha256": None,
+            "dependency_role": fallback_dependency_role,
         })
         declared_paths.add(descriptor.path)
 
@@ -2978,6 +3150,10 @@ def _session_attachment_dependencies(
 
     dependencies: list[dict[str, Any]] = []
     for declaration in declarations:
+        dependency_role = str(
+            declaration.get("dependency_role")
+            or fallback_dependency_role
+        )
         path = str(declaration.get("path") or "")
         artifact = artifacts_by_path.get(path)
         trusted = path in descriptors_by_path
@@ -3004,7 +3180,8 @@ def _session_attachment_dependencies(
                 if resolved_path is not None and resolved_path != path
                 else None
             ),
-            "required": True,
+            "required": dependency_role == "active_input",
+            "dependency_role": dependency_role,
             "available": available,
             "sha256": artifact.sha256 if artifact else None,
             "mime_type": artifact.mime_type if artifact else None,
@@ -3033,7 +3210,12 @@ def _session_attachment_requirements(
     """Give every required artifact a distinct requirement/proof lineage."""
 
     result: list[dict[str, Any]] = []
-    for offset, attachment in enumerate(attachments, start=1):
+    required_attachments = [
+        attachment
+        for attachment in attachments
+        if attachment.get("required") is True
+    ]
+    for offset, attachment in enumerate(required_attachments, start=1):
         requirement_id = f"R{start_index + offset}"
         attachment["requirement_ids"] = [requirement_id]
         result.append({
@@ -3354,6 +3536,86 @@ def _derive_session_requirements(
     }]
 
 
+def _derive_session_requirements_from_fragments(
+    request_verbatim: str,
+    *,
+    request_fragments: Iterable[str] = (),
+    supporting_context: Iterable[dict[str, str]] = (),
+) -> list[dict[str, Any]]:
+    """Keep requirements from separate user turns separate in the handoff."""
+
+    fragments = [
+        str(fragment)
+        for fragment in request_fragments
+        if str(fragment).strip()
+    ]
+    if len(fragments) <= 1:
+        return _derive_session_requirements(
+            request_verbatim,
+            supporting_context=supporting_context,
+        )
+
+    normalized_supporting = list(supporting_context)
+    requirements: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for fragment in fragments:
+        for requirement in _derive_session_requirements(
+            fragment,
+            supporting_context=normalized_supporting,
+        ):
+            text = re.sub(r"\s+", " ", str(requirement.get("text") or "")).strip()
+            key = re.sub(r"\W+", " ", text.casefold()).strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            requirements.append({
+                **requirement,
+                "id": f"R{len(requirements) + 1}",
+                "text": text,
+            })
+    return requirements or _derive_session_requirements(
+        request_verbatim,
+        supporting_context=normalized_supporting,
+    )
+
+
+def _stored_session_request_fragments(
+    sections: dict[str, list[dict[str, Any]]],
+    *,
+    request_verbatim: str,
+) -> list[str]:
+    """Return source-bound fragments only when they match the active request."""
+
+    goals = sections.get("goal") or []
+    if not goals:
+        return []
+    payload = goals[-1].get("payload") or {}
+    stored_request = str(payload.get("request_verbatim") or "")
+    stored_request_sha256 = str(payload.get("request_sha256") or "")
+    if (
+        stored_request != request_verbatim
+        and stored_request_sha256 != _sha256(request_verbatim)
+    ):
+        return []
+
+    raw_fragments = payload.get("request_fragments")
+    if not isinstance(raw_fragments, list):
+        return []
+    fragments: list[str] = []
+    for raw_fragment in raw_fragments:
+        if not isinstance(raw_fragment, dict):
+            return []
+        fragment = str(raw_fragment.get("request_verbatim") or "")
+        fragment_sha256 = str(raw_fragment.get("request_sha256") or "")
+        if not fragment or (
+            fragment_sha256
+            and fragment_sha256 != _sha256(fragment)
+        ):
+            return []
+        fragments.append(fragment)
+    return fragments
+
+
 def derive_session_handoff_requirements(
     request_verbatim: str,
     *,
@@ -3613,15 +3875,19 @@ def build_session_handoff_contract(
         raise ValueError(
             "The session goal depends on referenced conversation context that "
             "could not be materialized into a self-contained handoff."
-        )
+    )
 
     data = checkpoint_data or checkpoint_to_dict(
         checkpoint,
         recovered_goal=request_verbatim,
     )
     sections = _handoff_presentation_sections(data["sections"])
-    derived_requirements = _derive_session_requirements(
+    derived_requirements = _derive_session_requirements_from_fragments(
         request_verbatim,
+        request_fragments=_stored_session_request_fragments(
+            sections,
+            request_verbatim=request_verbatim,
+        ),
         supporting_context=normalized_supporting,
     )
     requirements: list[dict[str, Any]] = []
@@ -4611,6 +4877,15 @@ def _session_handoff_quality(
             or not item.get("sha256")
         )
     ]
+    unavailable_historical_attachments = [
+        item
+        for item in attachment_dependencies
+        if item.get("required") is not True
+        and (
+            item.get("available") is not True
+            or not item.get("sha256")
+        )
+    ]
     checks = [
         {
             "code": "goal_self_contained",
@@ -4706,6 +4981,20 @@ def _session_handoff_quality(
     ]
     blocking = [item for item in checks if item["status"] == "fail"]
     warnings = [item for item in checks if item["status"] == "warning"]
+    if unavailable_historical_attachments:
+        warnings.append({
+            "code": "historical_attachment_unavailable",
+            "status": "warning",
+            "attachment_ids": [
+                str(item.get("id") or "")
+                for item in unavailable_historical_attachments
+            ],
+            "message": (
+                "One or more historical visual references were not durably "
+                "captured. The synthesized Session Context remains copyable; "
+                "reattach the visual only if exact reinspection is needed."
+            ),
+        })
     if reconciliation["conflicts"]:
         blocking.append({
             "code": "completion_continuation_conflict_reconciled",
@@ -5013,8 +5302,10 @@ def render_session_handoff(
             "outcomes are eligible for promotion into Project Context."
         ),
         (
-            "> Activation: this handoff is context, not a command to start. The "
-            "immediate user-authored lead controls the receiving task."
+            "> Activation: this handoff remains context until the user submits "
+            "it. If it is submitted from Continue without a newer instruction, "
+            "continue the Current main goal from the Exact next action. A newer "
+            "user-authored lead overrides it."
         ),
         "",
         "## Current main goal",
@@ -5028,8 +5319,16 @@ def render_session_handoff(
     lines.append("")
 
     if handoff["attachment_dependencies"]:
+        required_attachments = any(
+            attachment.get("required") is True
+            for attachment in handoff["attachment_dependencies"]
+        )
         lines.extend([
-            "## Required attachments",
+            (
+                "## Required attachments"
+                if required_attachments
+                else "## Attachment evidence"
+            ),
             "",
             (
                 "> Treat an attachment as evidence only when it is available at "
@@ -5040,6 +5339,20 @@ def render_session_handoff(
         ])
         for attachment in handoff["attachment_dependencies"]:
             linked = ", ".join(attachment["requirement_ids"]) or "unmapped"
+            role = (
+                "required active input"
+                if attachment.get("required") is True
+                else "historical evidence"
+            )
+            if not attachment["available"]:
+                lines.append(
+                    f"- {attachment['id']} [{role}; unavailable; "
+                    f"requirements={linked}]: "
+                    f"{_single_line(attachment['name'], 300)}. The original "
+                    "artifact was not durably captured; no local source path is "
+                    "trusted. Reattach it only if exact visual reinspection is needed."
+                )
+                continue
             provenance = (
                 "; original_source_path="
                 f"{_single_line(attachment['source_path'], 700)} "
@@ -5048,8 +5361,7 @@ def render_session_handoff(
                 else ""
             )
             lines.append(
-                f"- {attachment['id']} [required; "
-                f"{'available' if attachment['available'] else 'unavailable'}; "
+                f"- {attachment['id']} [{role}; available; "
                 f"requirements={linked}]: "
                 f"{_single_line(attachment['name'], 300)}; "
                 f"path={_single_line(attachment.get('path') or 'unavailable', 700)}; "
@@ -5629,6 +5941,69 @@ def session_handoff_render_issues(content: str) -> list[dict[str, Any]]:
     }]
 
 
+def build_session_handoff_artifact(
+    checkpoint: WorkCheckpoint,
+    *,
+    request_verbatim: str,
+    supporting_context: Iterable[dict[str, str]] = (),
+    trusted_attachment_descriptors: Iterable[
+        TrustedRequestImageDescriptor
+    ] = (),
+    allow_local_artifacts: bool = False,
+    checkpoint_data: dict[str, Any] | None = None,
+    repository_comparison: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the one canonical Session Context artifact used by every surface."""
+
+    data = checkpoint_data or checkpoint_to_dict(
+        checkpoint,
+        recovered_goal=request_verbatim,
+    )
+    contract = build_session_handoff_contract(
+        checkpoint,
+        request_verbatim=request_verbatim,
+        supporting_context=supporting_context,
+        trusted_attachment_descriptors=trusted_attachment_descriptors,
+        allow_local_artifacts=allow_local_artifacts,
+        checkpoint_data=data,
+        repository_comparison=repository_comparison,
+    )
+    content = render_session_handoff(
+        checkpoint,
+        request_verbatim=request_verbatim,
+        supporting_context=supporting_context,
+        contract=contract,
+        checkpoint_data=data,
+    )
+    render_issues = session_handoff_render_issues(content)
+    if render_issues:
+        quality = contract["quality_report"]
+        quality["status"] = "blocked"
+        quality["copy_ready"] = False
+        quality["automatic_execution_ready"] = False
+        quality["checks"] = [*quality["checks"], *render_issues]
+        quality["blocking_issues"] = [
+            *quality["blocking_issues"],
+            *render_issues,
+        ]
+    return {
+        "schema_version": SESSION_HANDOFF_SCHEMA_VERSION,
+        "scope": "session",
+        "provider": data["provider"],
+        "session_id": data["session_id"],
+        "checkpoint_id": data["id"],
+        "source_document_id": data["source_document_id"],
+        "boundary": data["boundary"],
+        "snapshot_phase": data["boundary"].get("snapshot_phase"),
+        "captured_at": data["boundary"].get("occurred_at"),
+        "currentness": data.get("currentness"),
+        **contract,
+        "content": content,
+        "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "estimated_tokens": max(1, (len(content) + 3) // 4),
+    }
+
+
 def _append_session_context_quote(
     lines: list[str],
     statement: str,
@@ -5684,71 +6059,96 @@ def _bind_checkpoint_goal_artifacts(
     if not goals or not goals[0].events:
         return
     goal = goals[0]
-    goal_event = goal.events[0]
     request_verbatim = str(
         goal.payload.get("request_verbatim") or ""
     ).strip()
     if not request_verbatim:
         return
 
-    descriptors = trusted_request_image_descriptors_from_payload(
-        event_payload(goal_event)
+    raw_fragments = goal.payload.get("request_fragments")
+    fragments = raw_fragments if isinstance(raw_fragments, list) else []
+    fragment_by_event = {
+        (
+            str(item.get("provider_event_id") or ""),
+            item.get("sequence_number"),
+        ): str(item.get("request_verbatim") or "").strip()
+        for item in fragments
+        if isinstance(item, dict)
+    }
+    metadata = _json_object(source_document.metadata_json)
+    source_path = str(metadata.get("source_path") or "").strip()
+    configured_root = (
+        Path(settings.codex_home).expanduser()
+        if settings.codex_home
+        else Path.home() / ".codex"
     )
-    needs_durable_resolution = (
-        not descriptors
-        or any(
-            not descriptor.resolved_path
-            for descriptor in descriptors
-            if descriptor.binding_valid
+    collected: list[TrustedRequestImageDescriptor] = []
+    for index, goal_event in enumerate(goal.events):
+        fragment_request = fragment_by_event.get(
+            (str(goal_event.provider_event_id or ""), goal_event.sequence_number),
+            request_verbatim if index == 0 else "",
         )
-    )
-    recovered: tuple[TrustedRequestImageDescriptor, ...] = ()
-    if provider == "codex" and needs_durable_resolution:
-        metadata = _json_object(source_document.metadata_json)
-        source_path = str(metadata.get("source_path") or "").strip()
-        if source_path:
-            configured_root = (
-                Path(settings.codex_home).expanduser()
-                if settings.codex_home
-                else Path.home() / ".codex"
+        if not fragment_request:
+            continue
+        descriptors = trusted_request_image_descriptors_from_payload(
+            event_payload(goal_event)
+        )
+        needs_durable_resolution = (
+            not descriptors
+            or any(
+                not descriptor.resolved_path
+                for descriptor in descriptors
+                if descriptor.binding_valid
             )
+        )
+        recovered: tuple[TrustedRequestImageDescriptor, ...] = ()
+        if provider == "codex" and needs_durable_resolution and source_path:
             recovered = recover_codex_request_image_descriptors(
                 source_path=source_path,
                 source_sequence_number=goal_event.sequence_number,
-                request_verbatim=request_verbatim,
+                request_verbatim=fragment_request,
                 codex_sessions_root=configured_root / "sessions",
                 artifact_data_dir=settings.data_dir,
             )
-    if recovered:
-        if not descriptors:
-            descriptors = recovered
-        elif _same_descriptor_binding(descriptors, recovered):
-            descriptors = recovered
-        else:
-            descriptors = tuple(
-                TrustedRequestImageDescriptor(
-                    path=descriptor.path,
-                    sha256=descriptor.sha256,
-                    mime_type=descriptor.mime_type,
-                    resolved_path=None,
-                    ordinal=descriptor.ordinal,
-                    size_bytes=descriptor.size_bytes,
-                    binding_valid=False,
-                    binding_error=(
-                        "The normalized provider metadata conflicts with the "
-                        "immutable raw turn."
-                    ),
+        if recovered:
+            if not descriptors:
+                descriptors = recovered
+            elif _same_descriptor_binding(descriptors, recovered):
+                descriptors = recovered
+            else:
+                descriptors = tuple(
+                    TrustedRequestImageDescriptor(
+                        path=descriptor.path,
+                        sha256=descriptor.sha256,
+                        mime_type=descriptor.mime_type,
+                        resolved_path=None,
+                        ordinal=descriptor.ordinal,
+                        size_bytes=descriptor.size_bytes,
+                        binding_valid=False,
+                        binding_error=(
+                            "The normalized provider metadata conflicts with "
+                            "the immutable raw turn."
+                        ),
+                    )
+                    for descriptor in descriptors
                 )
-                for descriptor in descriptors
+        collected.extend(
+            materialize_trusted_request_image_descriptor(
+                descriptor,
+                data_dir=settings.data_dir,
             )
-
-    descriptors = tuple(
-        materialize_trusted_request_image_descriptor(
-            descriptor,
-            data_dir=settings.data_dir,
+            for descriptor in descriptors
         )
-        for descriptor in descriptors
-    )
+
+    seen_descriptors: set[tuple[str, str | None]] = set()
+    unique_descriptors: list[TrustedRequestImageDescriptor] = []
+    for descriptor in collected:
+        key = (descriptor.path, descriptor.sha256)
+        if key in seen_descriptors:
+            continue
+        seen_descriptors.add(key)
+        unique_descriptors.append(descriptor)
+    descriptors = tuple(unique_descriptors)
     serialized = [
         _trusted_image_descriptor_to_dict(descriptor)
         for descriptor in descriptors
@@ -5858,6 +6258,90 @@ def _meaningful_command_result(
     return _single_line(summary, 500)
 
 
+def _session_task_tokens(value: str) -> set[str]:
+    tokens: set[str] = set()
+    for raw in re.findall(r"[a-z0-9]+", value.casefold()):
+        token = raw[:-1] if len(raw) > 4 and raw.endswith("s") else raw
+        if len(token) < 3 or token in _SESSION_TASK_TOKEN_STOPWORDS:
+            continue
+        tokens.add(token)
+    return tokens
+
+
+def _request_extends_active_session_task(
+    request: str,
+    *,
+    active_requests: Iterable[str],
+) -> bool:
+    if _SESSION_TASK_RESET_RE.search(request):
+        return False
+    if _SESSION_TASK_FOLLOWUP_RE.search(request):
+        return True
+
+    request_words = re.findall(r"[a-z0-9]+", request.casefold())
+    if (
+        len(request_words) <= 40
+        and _SESSION_TASK_DELIVERY_FOLLOWUP_RE.search(request)
+    ):
+        return True
+
+    active_text = "\n".join(active_requests)
+    shared = _session_task_tokens(request) & _session_task_tokens(active_text)
+    if len(shared) >= 2:
+        return True
+    return bool(
+        len(request_words) <= 30
+        and any(len(token) >= 6 for token in shared)
+    )
+
+
+def _active_session_request_chain(
+    events: Iterable[SessionEvent],
+) -> list[tuple[SessionEvent, str, str]]:
+    """Return the latest standalone request plus its dependent follow-ups."""
+
+    chain: list[tuple[SessionEvent, str, str]] = []
+    for event in events:
+        normalized = _checkpoint_user_request(event)
+        if normalized is None:
+            continue
+        request_verbatim = _validated_session_request(
+            _checkpoint_request_verbatim(event)
+        )
+        if request_verbatim is None:
+            request_verbatim = normalized
+        if chain and not _request_extends_active_session_task(
+            normalized,
+            active_requests=(item[1] for item in chain),
+        ):
+            chain = []
+        chain.append((event, normalized, request_verbatim))
+    return chain
+
+
+def _compose_session_goal_request(
+    chain: Iterable[tuple[SessionEvent, str, str]],
+) -> str:
+    values = list(chain)
+    if not values:
+        return ""
+    if len(values) == 1:
+        # A one-turn task can preserve the source request byte-for-byte. The
+        # rendered goal trims presentation whitespace separately, while hashes
+        # and downstream continuation contracts retain the exact payload.
+        return values[0][2]
+
+    primary = values[0][2].strip()
+    lines = [primary, "", "## Additional user-authored requirements"]
+    for index, (_, _, request_verbatim) in enumerate(values[1:], start=1):
+        lines.extend([
+            "",
+            f"### Follow-up {index}",
+            request_verbatim.strip(),
+        ])
+    return "\n".join(lines).strip()
+
+
 def _build_sections(
     events: list[SessionEvent],
     snapshot: RepositorySnapshot | None,
@@ -5865,60 +6349,66 @@ def _build_sections(
     sections: dict[str, list[DraftItem]] = {
         category: [] for category in CHECKPOINT_CATEGORIES
     }
-    substantive_users = [
-        (event, text)
-        for event in events
-        if (text := _checkpoint_user_request(event)) is not None
-    ]
-    goal_event, goal_statement = substantive_users[-1] if substantive_users else (None, None)
+    request_chain = _active_session_request_chain(events)
+    goal_events = [item[0] for item in request_chain]
+    goal_event = goal_events[0] if goal_events else None
+    goal_statement = _compose_session_goal_request(request_chain)
+    final_goal_event = goal_events[-1] if goal_events else None
     continuation_events = [
         event for event in events
         if event.event_type == "user_request"
         and is_continuation_control(event.content)
-        and (goal_event is None or event.sequence_number > goal_event.sequence_number)
+        and (
+            final_goal_event is None
+            or event.sequence_number > final_goal_event.sequence_number
+        )
     ]
-    # Every derived section belongs to the latest substantive request. Long
-    # sessions commonly contain several unrelated tasks; a checkpoint must not
-    # pull blockers, progress, or next actions from an older task segment.
+    # Every derived section belongs to the active task chain. Dependent user
+    # follow-ups amend the root task instead of replacing it; a genuinely
+    # standalone later request starts a new segment and still excludes older
+    # unrelated work.
     events = (
         [event for event in events if event.sequence_number >= goal_event.sequence_number]
         if goal_event is not None
         else []
     )
     if goal_event is not None:
-        request_verbatim = _checkpoint_request_verbatim(goal_event)
-        supporting_context = _materialized_referenced_context(
-            goal_event.content,
-            request_verbatim=request_verbatim,
-        )
-        stored_requirements = _derive_session_requirements(
+        request_verbatim = goal_statement
+        supporting_context: list[dict[str, str]] = []
+        seen_supporting_context: set[str] = set()
+        for request_event, _, fragment in request_chain:
+            for item in _materialized_referenced_context(
+                request_event.content,
+                request_verbatim=fragment,
+            ):
+                key = _canonical_json(item)
+                if key in seen_supporting_context:
+                    continue
+                seen_supporting_context.add(key)
+                supporting_context.append(item)
+        stored_requirements = _derive_session_requirements_from_fragments(
             request_verbatim or str(goal_statement or ""),
+            request_fragments=[
+                fragment for _, _, fragment in request_chain
+            ],
             supporting_context=supporting_context,
         )
-        goal_payload: dict[str, Any] = {}
+        goal_payload: dict[str, Any] = {
+            "request_fragments": [
+                {
+                    "provider_event_id": event.provider_event_id,
+                    "sequence_number": event.sequence_number,
+                    "request_verbatim": fragment,
+                    "request_sha256": _sha256(fragment),
+                }
+                for event, _, fragment in request_chain
+            ],
+        }
         if request_verbatim:
             goal_payload.update({
                 "request_verbatim": request_verbatim,
                 "request_sha256": _sha256(request_verbatim),
                 "task_mode": _infer_session_task_mode(request_verbatim),
-            })
-        trusted_images = trusted_request_image_descriptors_from_payload(
-            event_payload(goal_event)
-        )
-        if trusted_images:
-            image_descriptors = [
-                {
-                    "path": descriptor.path,
-                    "sha256": descriptor.sha256,
-                    "mime_type": descriptor.mime_type,
-                }
-                for descriptor in trusted_images
-            ]
-            goal_payload.update({
-                "trusted_image_descriptors": image_descriptors,
-                "trusted_image_descriptors_sha256": _sha256(
-                    _canonical_json(image_descriptors)
-                ),
             })
         if supporting_context:
             goal_payload.update({
@@ -5933,7 +6423,7 @@ def _build_sections(
             category="goal",
             statement=str(goal_statement or "").strip(),
             truth_state="reported",
-            events=[goal_event],
+            events=goal_events,
             payload=goal_payload,
         )]
 

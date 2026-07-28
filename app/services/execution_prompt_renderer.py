@@ -32,6 +32,7 @@ EXECUTION_PROMPT_SCHEMA_VERSION = "continuation_execution_prompt.v1"
 STAGING_CONTEXT_SCHEMA_VERSION = "continuation_staging_context.v1"
 RENDERED_REPOSITORY_EVIDENCE_LIMIT = 12
 
+
 def render_continuation_staging_context(
     contract: ContinuationExecutionContract,
 ) -> str:
@@ -177,17 +178,21 @@ def _append_completed_task_reference(
     contract: ContinuationExecutionContract,
     *,
     preexisting_changes: tuple[Any, ...],
+    include_session_heading: bool = True,
 ) -> None:
     repository = contract.repository
+    if include_session_heading:
+        lines.extend([
+            "",
+            "## Session Context — task-specific child",
+            "",
+            (
+                "This child is a terminal snapshot of the completed task. It is "
+                "retained only to explain the project state at compilation time "
+                "and defines no next action or proof obligation."
+            ),
+        ])
     lines.extend([
-        "",
-        "## Session Context — task-specific child",
-        "",
-        (
-            "This child is a terminal snapshot of the completed task. It is "
-            "retained only to explain the project state at compilation time "
-            "and defines no next action or proof obligation."
-        ),
         "",
         "## Completed-task reference",
         "",
@@ -481,7 +486,9 @@ def _append_project_foundation(
         lines.extend([
             (
                 "> Foundation readiness: **NOT READY** — core explanation is "
-                f"incomplete ({missing}). This artifact must not be copied or staged."
+                f"incomplete ({missing}). Automatic execution remains blocked. "
+                "This context may be opened only as a visible, user-reviewed "
+                "desktop draft; inspect the repository before submitting."
             ),
             "",
         ])
@@ -1615,6 +1622,7 @@ def _append_project_context(
     *,
     heading: str,
     include_ids: bool,
+    context_name: str = "Project Context",
 ) -> None:
     values = tuple(_iterable(project_context))
     if not values:
@@ -1624,8 +1632,8 @@ def _append_project_context(
             "",
             (
                 "No current evidence-backed durable workspace facts were "
-                "compiled. Project Context is not ready; do not infer missing "
-                "project decisions from this absence."
+                f"compiled. {context_name} is not ready; do not infer missing "
+                "workspace decisions from this absence."
             ),
         ])
         return

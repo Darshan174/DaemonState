@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link } from "react-router-dom";
 import {
   ArrowRight,
   Bot,
@@ -29,11 +29,10 @@ import {
   useLatestCheckpoint,
   useOpenContinuationHarness,
   useStageContinuation,
-  useSessionLibrary,
 } from "../api/hooks";
 import {
   useContextDigest,
-  useLinkedAISessionRefresh,
+  useLatestLocalAISessionDiscovery,
 } from "../context-map/api";
 import {
   cleanDisplayText,
@@ -45,28 +44,47 @@ import { copyReadySessionContextContent } from "./sessionContinuity";
 import { useProductWorkspace } from "./useProductWorkspace";
 
 export default function NowPage() {
-  const [searchParams] = useSearchParams();
   const workspace = useProductWorkspace();
-  const digestQuery = useContextDigest(workspace.activeWorkspaceId, { poll: true });
-  const digestActivity = digestQuery.data?.activity?.primary || null;
-  const requestedSourceReference = explicitSessionReference(
-    searchParams.get("source_provider"),
-    searchParams.get("source_session"),
+  const latestSessionDiscoveryQuery = useLatestLocalAISessionDiscovery(
+    workspace.activeWorkspaceId,
   );
+  const latestSessionDiscoverySucceeded = Boolean(
+    latestSessionDiscoveryQuery.isSuccess
+    && latestSessionDiscoveryQuery.isFetchedAfterMount
+    && !latestSessionDiscoveryQuery.isFetching
+  );
+  const latestSessionDiscoveryFailed = Boolean(
+    latestSessionDiscoveryQuery.isError
+    && !latestSessionDiscoveryQuery.isFetching,
+  );
+  const latestDiscoveredSession = latestSessionDiscoverySucceeded
+    ? latestSessionDiscoveryQuery.data?.session || null
+    : null;
+  const latestDiscoveredSessionReference = sessionDescriptorReference(
+    latestDiscoveredSession,
+  );
+  const digestQuery = useContextDigest(workspace.activeWorkspaceId, {
+    poll: false,
+    enabled: latestSessionDiscoverySucceeded,
+  });
+  const digestActivity = digestQuery.data?.activity?.primary || null;
+  // Continue is deliberately single-purpose: it always follows the newest
+  // available session. Historical session and checkpoint selection belongs to
+  // Prepare or Execute and cannot override this source through URL parameters.
   const continuationDigestActivity = selectContinuationSessionActivity(
     digestQuery.data?.activity?.recent_sessions,
     digestActivity,
-    requestedSourceReference,
+    latestDiscoveredSessionReference,
   );
-  const activeCheckpointSession = requestedSourceReference
-    || activitySessionReference(continuationDigestActivity);
-  const digestSettled = Boolean(digestQuery.data) || digestQuery.isError;
+  const activeCheckpointSession = latestDiscoveredSessionReference;
+  const digestSettled = latestSessionDiscoverySucceeded
+    && (Boolean(digestQuery.data) || digestQuery.isError);
   const hasActiveCheckpointSession = Boolean(activeCheckpointSession);
   const checkpointQuery = useLatestCheckpoint(
     workspace.activeWorkspaceId,
     {
       ...(activeCheckpointSession || {}),
-      enabled: digestSettled && hasActiveCheckpointSession,
+      enabled: latestSessionDiscoverySucceeded && hasActiveCheckpointSession,
     },
   );
   const scopedCheckpointSettled = hasActiveCheckpointSession
@@ -83,20 +101,23 @@ export default function NowPage() {
   const primaryCheckpointQuery = hasActiveCheckpointSession
     ? checkpointQuery
     : workspaceCheckpointQuery;
-  const checkpointSettled = digestSettled && queryHasSettled(primaryCheckpointQuery);
+  const checkpointSettled = latestSessionDiscoverySucceeded
+    && queryHasSettled(primaryCheckpointQuery);
   const activitySession = activitySessionDescriptor(continuationDigestActivity);
-  const libraryFallbackNeeded = !activitySession;
-  const libraryQuery = useSessionLibrary(
-    workspace.activeWorkspaceId,
-    { enabled: checkpointSettled && libraryFallbackNeeded },
-  );
-  const latestSession = activitySession || selectLibrarySession(
-    libraryQuery.data?.sessions,
-    requestedSourceReference,
-  );
-  const detailSessionReference = activeCheckpointSession
+  const latestSession = latestDiscoveredSession && activitySession
+    ? {
+        ...latestDiscoveredSession,
+        ...activitySession,
+        connector_type: latestDiscoveredSession.connector_type,
+        session_id: latestDiscoveredSession.session_id,
+        source_document_id: latestDiscoveredSession.source_document_id,
+        updated_at: latestDiscoveredSession.updated_at,
+        revision_number: latestDiscoveredSession.revision_number,
+      }
+    : latestDiscoveredSession;
+  const detailSessionReference = latestDiscoveredSessionReference
     || checkpointSessionReference(primaryCheckpointQuery.data)
-    || sessionDescriptorReference(latestSession);
+    || null;
   const checkpointHistoryQuery = useCheckpoints(
     workspace.activeWorkspaceId,
     12,
@@ -107,7 +128,7 @@ export default function NowPage() {
   );
   const continuationProvidersQuery = useContinuationProviders(
     workspace.activeWorkspaceId,
-    { enabled: checkpointSettled },
+    { enabled: Boolean(workspace.activeWorkspaceId) },
   );
   const stageContinuation = useStageContinuation();
   const checkpointHandoff = useCheckpointHandoff();
@@ -123,30 +144,35 @@ export default function NowPage() {
   });
   const continuationRequestKey = JSON.stringify([
     workspace.activeWorkspaceId || "",
-    searchParams.get("objective") || "",
-    searchParams.get("objective_source") || "",
-    searchParams.get("repo_path") || "",
-    searchParams.get("checkpoint") || "",
-    searchParams.get("checkpoint_source") || "",
-    searchParams.get("source_provider") || "",
-    searchParams.get("source_session") || "",
     digestQuery.data?.current_goal?.title || "",
-    continuationDigestActivity?.session_title
+    latestSession?.title
+      || continuationDigestActivity?.session_title
       || continuationDigestActivity?.title
       || "",
-    continuationDigestActivity?.provider
+    latestSession?.connector_type
+      || continuationDigestActivity?.provider
       || continuationDigestActivity?.tool
       || "",
-    continuationDigestActivity?.session_id || "",
+    latestSession?.session_id || continuationDigestActivity?.session_id || "",
+    latestSession?.updated_at || "",
+    latestSession?.revision_number || "",
     digestQuery.data?.scope?.project_paths?.[0]
-      || digestActivity?.cwd
       || latestSession?.cwd
+      || digestActivity?.cwd
       || primaryCheckpointQuery.data?.activity?.cwd
       || workspace.activeWorkspace?.repo_path
       || "",
     primaryCheckpointQuery.data?.sections?.goal?.[0]?.statement || "",
   ]);
   const continuationRequestKeyRef = useRef(continuationRequestKey);
+  const continuationStageInFlightRef = useRef(false);
+  const continuationPageMountedRef = useRef(true);
+  useEffect(() => {
+    continuationPageMountedRef.current = true;
+    return () => {
+      continuationPageMountedRef.current = false;
+    };
+  }, []);
   useEffect(() => {
     if (continuationRequestKeyRef.current === continuationRequestKey) return;
     continuationRequestKeyRef.current = continuationRequestKey;
@@ -156,11 +182,6 @@ export default function NowPage() {
     setContinuationError(null);
     setPendingProvider(null);
   }, [continuationRequestKey, continuationState, stageContinuation.isPending]);
-  useLinkedAISessionRefresh(
-    workspace.activeWorkspaceId,
-    { enabled: checkpointSettled, initialDelayMs: 30_000 },
-  );
-
   if (!workspace.workspacesQuery.isLoading && !workspace.activeWorkspaceId) {
     return (
       <WorkspaceTopicGate
@@ -181,7 +202,19 @@ export default function NowPage() {
   }
 
   const digest = digestQuery.data || {};
-  const digestPending = digestQuery.isLoading && !digestQuery.data;
+  const latestSessionDiscoveryPending = Boolean(
+    workspace.activeWorkspaceId
+    && (
+      latestSessionDiscoveryQuery.isLoading
+      || latestSessionDiscoveryQuery.isFetching
+      || (
+        !latestSessionDiscoverySucceeded
+        && !latestSessionDiscoveryFailed
+      )
+    ),
+  );
+  const digestPending = latestSessionDiscoveryPending
+    || (digestQuery.isLoading && !digestQuery.data);
   const digestUnavailable = digestQuery.isError && !digestQuery.data;
   const digestError = digestQuery.isError ? digestQuery.error : null;
   const cards = digest.cards || [];
@@ -189,9 +222,8 @@ export default function NowPage() {
   // Now is current observed activity. A checkpoint is a separate immutable
   // recovery boundary and must never replace newer session state.
   const observedActivity = continuationDigestActivity
-    || (!requestedSourceReference
-      ? digest.activity?.primary || fallbackActivity(digest)
-      : null);
+    || digest.activity?.primary
+    || fallbackActivity(digest);
   const checkpointIsCurrent = workspaceCheckpoint?.currentness?.state === "captured";
   const activity = observedActivity || (checkpointIsCurrent ? workspaceCheckpoint?.activity : null);
   const checkpoint = activeCheckpointSession
@@ -207,16 +239,6 @@ export default function NowPage() {
     && workspaceCheckpoint.id !== checkpoint?.id
     && !checkpointMatchesActivity(workspaceCheckpoint, activity)
   ) ? workspaceCheckpoint : null;
-  const requestedObjective = prepareTaskCandidate(
-    searchParams.get("objective"),
-    { authoritative: true },
-  );
-  const requestedObjectiveIsSourceBacked = (
-    searchParams.get("objective_source") === "session"
-  );
-  const requestedRepoPath = String(searchParams.get("repo_path") || "").trim();
-  const requestedCheckpointId = String(searchParams.get("checkpoint") || "").trim();
-  const currentGoal = prepareTaskCandidate(digest.current_goal?.title);
   const attentionCards = cards
     .filter((card) => card.attention_required)
     .filter((card) => card.workspace_relevance?.status !== "not_relevant")
@@ -257,87 +279,56 @@ export default function NowPage() {
   )
     ? latestSessionContextCandidate
     : null;
-  const selectedSessionObjective = rootSessionTaskCandidate(continuationDigestActivity)
-    || rootSessionTaskCandidate(latestSession);
-  const checkpointObjective = prepareTaskCandidate(
-    cleanRecoveryText(currentCheckpoint?.sections?.goal?.[0]?.statement),
-  );
-  const inferredSource = activitySessionReference(continuationDigestActivity)
-    || sessionDescriptorReference(latestSession);
-  // Continue must stage the exact session whose task is shown on this screen.
-  // The backend can refresh that session before resolving its task, but it must
-  // never replace it with a newer, unrelated provider session during staging.
-  const continuationSource = !requestedCheckpointId
-    ? (
-        requestedSourceReference
-        || (
-          (!requestedObjective || requestedObjectiveIsSourceBacked)
-            ? inferredSource
-            : null
-        )
-      )
-    : null;
-  const continuationObjective = requestedObjective
-    || selectedSessionObjective
-    || (!continuationSource && (
-      !requestedCheckpointId || currentCheckpoint?.id === requestedCheckpointId
-    )
-      ? checkpointObjective
-      : "");
+  const selectedSessionObjective = rootSessionTaskCandidate(latestSession)
+    || rootSessionTaskCandidate(continuationDigestActivity);
+  const inferredSource = sessionDescriptorReference(latestSession);
+  const continuationSource = inferredSource;
+  const continuationObjective = selectedSessionObjective;
   const continuationLead = continuationObjective;
   const continuationLeadCandidate = prepareTaskCandidate(
     continuationLead,
     { authoritative: true },
   );
   const continuationLeadAvailable = Boolean(continuationLeadCandidate);
-  const continuationRepoPath = requestedRepoPath
+  const continuationRepoPath = latestSession?.cwd
     || continuationDigestActivity?.cwd
-    || latestSession?.cwd
     || currentCheckpoint?.activity?.cwd
     || workspace.activeWorkspace?.repo_path
     || digest.scope?.project_paths?.[0]
     || null;
-  // Likewise, an automatically discovered checkpoint is context for the
-  // screen, not a request to resume that immutable boundary.
-  const continuationCheckpointId = requestedCheckpointId;
+  // The source identity is the authority. Display text and saved checkpoints
+  // cannot substitute an objective or recovery boundary into Continue.
   const continuationLeadSourceBound = Boolean(
-    continuationSource || continuationCheckpointId,
+    continuationSource,
   );
-  const continuationLeadResolvable = Boolean(
-    continuationLeadAvailable || continuationLeadSourceBound,
-  );
-  const continuationAnchorAvailable = Boolean(
-    continuationLeadAvailable
-    || requestedObjective
-    || continuationSource
-    || continuationCheckpointId
-    || inferredSource
-    || continuationObjective
-  );
+  const continuationLeadResolvable = continuationLeadSourceBound;
+  const continuationAnchorAvailable = continuationLeadSourceBound;
   const continuationDisplayObjective = continuationLead
     || (continuationSource
       ? "Task will be resolved from the selected session"
-      : continuationCheckpointId
-        ? "Task will be resolved from the saved recovery point"
-        : "");
+      : "");
   const stageTaskContinuation = async (targetProvider, providerConfig = {}) => {
     if (!workspace.activeWorkspaceId || !continuationAnchorAvailable) return;
+    if (continuationStageInFlightRef.current) return;
     if (!continuationLeadResolvable) {
       setContinuationState("blocked");
       setContinuationError({
         title: "Choose work to continue",
         message: (
-          "Choose a saved session or select work in Execute before loading "
-          + "Project Context into a harness."
+          "Sync a latest session, or use Prepare or Execute for explicitly "
+          + "selected historical work."
         ),
         affectedTasks: [],
         action: "Choose a session or task, then select a harness.",
       });
       return;
     }
-    const exactLead = !continuationLeadSourceBound
-      ? continuationLeadCandidate
-      : null;
+    continuationStageInFlightRef.current = true;
+    const requestReservation = continuationStageRequestReservation({
+      workspaceId: workspace.activeWorkspaceId,
+      requestFingerprint: continuationRequestKey,
+      forceNew: displayedContinuationState === "awaiting_user",
+    });
     setContinuationState("staging");
     setContinuationResult(null);
     setContinuationError(null);
@@ -345,7 +336,7 @@ export default function NowPage() {
     try {
       const result = await stageContinuation.mutateAsync({
         workspace_id: workspace.activeWorkspaceId,
-        idempotency_key: continuationIdempotencyKey(),
+        idempotency_key: requestReservation.idempotencyKey,
         target_provider: targetProvider,
         ...(providerConfig.provider_model
           ? { provider_model: providerConfig.provider_model }
@@ -353,12 +344,13 @@ export default function NowPage() {
         ...(providerConfig.provider_effort
           ? { provider_effort: providerConfig.provider_effort }
           : {}),
-        ...(exactLead ? { objective: exactLead } : {}),
-        ...(continuationRepoPath ? { repo_path: continuationRepoPath } : {}),
-        ...(continuationCheckpointId ? { checkpoint_id: continuationCheckpointId } : {}),
-        ...(requestedCheckpointId && searchParams.get("checkpoint_source")
-          ? { checkpoint_source_id: searchParams.get("checkpoint_source") }
+        ...(providerConfig.desktop_access_confirmation
+          ? {
+              desktop_access_confirmation:
+                providerConfig.desktop_access_confirmation,
+            }
           : {}),
+        ...(continuationRepoPath ? { repo_path: continuationRepoPath } : {}),
         ...(continuationSource
           ? {
               source_provider: continuationSource.provider,
@@ -366,6 +358,9 @@ export default function NowPage() {
             }
           : {}),
       });
+      if (continuationPageMountedRef.current) {
+        clearContinuationStageRequestReservation(requestReservation);
+      }
       setContinuationResult(result);
       const blocker = continuationBlocker(result) || (
         continuationStagingConfirmed(result)
@@ -373,61 +368,76 @@ export default function NowPage() {
           : {
               title: "Context staging was not confirmed",
               message: (
-                "The selected harness did not return a durable awaiting-user "
-                + "thread, so DaemonState will not claim that context was loaded."
+                "The desktop open request and clipboard copy were not both "
+                + "confirmed. No successful handoff is claimed."
               ),
               affectedTasks: continuationObjective ? [continuationObjective] : [],
-              action: "Retry after context staging is available.",
+              action: "Open the desktop app, then retry Continue.",
             }
       );
       setContinuationError(blocker);
       setContinuationState(blocker ? "blocked" : "awaiting_user");
     } catch (error) {
+      if (
+        continuationPageMountedRef.current
+        && !retainContinuationStageRequestReservation(error)
+      ) {
+        clearContinuationStageRequestReservation(requestReservation);
+      }
       setContinuationState("blocked");
       setContinuationError(continuationErrorFromRequest(error, targetProvider));
     } finally {
+      continuationStageInFlightRef.current = false;
       setPendingProvider(null);
     }
   };
-  const actionInputsPending = digestPending
-    || (!latestSession && libraryFallbackNeeded && (
-      !checkpointSettled
-      || libraryQuery.isLoading
-      || !queryHasSettled(libraryQuery)
-    ))
-    || (
-      !currentGoal
-      && Boolean(latestSession)
-      && (activeCheckpointSession ? checkpointQuery.isLoading : workspaceCheckpointQuery.isLoading)
-    );
-  const continueAction = actionInputsPending
+  const actionInputsPending = latestSessionDiscoveryPending;
+  const continueAction = latestSessionDiscoveryFailed
+    ? {
+        kind: "discovery_error",
+        description: (
+          "The newest local session could not be verified, so Continue is "
+          + "disabled instead of loading older context."
+        ),
+      }
+    : actionInputsPending
       ? {
           kind: "loading",
-          description: "Resolving the current task, repository, and safest continuation.",
+          description: latestSessionDiscoveryPending
+            ? "Finding the newest local session before enabling Continue."
+            : "Resolving the current task, repository, and safest continuation.",
         }
-      : continuationAnchorAvailable && continuationLeadResolvable
+      : latestSessionDiscoverySucceeded && !latestSession
         ? {
-            kind: "continue",
-            description: digestUnavailable
-              ? "Live activity is unavailable. Continue will compile the workspace-wide Project Context foundation before loading the resolved task into the selected harness."
-              : continuationLeadAvailable
-                ? "Compile workspace-wide Project Context, reconcile the repository, then load it with the resolved task handoff into the selected harness."
-                : "Resolve the lossless user lead from the selected source, then compile the objective-independent Project Context foundation and load both.",
+            kind: "unavailable",
+            description: (
+              "No current in-project root session was found. Continue will not "
+              + "fall back to older indexed work."
+            ),
           }
-        : continuationAnchorAvailable
+        : continuationAnchorAvailable && continuationLeadResolvable
           ? {
-              kind: "lead_required",
-              description: "Choose a saved session or task before selecting a harness.",
+              kind: "continue",
+              description: digestUnavailable
+                ? "Live activity is unavailable. Continue will load the newest saved Session Context into the chosen harness."
+                : continuationLeadAvailable
+                  ? ""
+                  : "Resolve the lossless user lead from the latest session, then prepare its Session Context.",
             }
-        : digestUnavailable
-          ? {
-              kind: "unavailable",
-              description: "Current activity could not be loaded and no saved task could be resolved. Choose work before continuing.",
-            }
-        : {
-            kind: "choose",
-            description: "Choose linked work before continuing.",
-          };
+          : continuationAnchorAvailable
+            ? {
+                kind: "lead_required",
+                description: "Sync the latest session, or use Prepare or Execute for historical work.",
+              }
+            : digestUnavailable
+              ? {
+                  kind: "unavailable",
+                  description: "Current activity could not be loaded and no saved task could be resolved. Choose work before continuing.",
+                }
+              : {
+                  kind: "choose",
+                  description: "Choose linked work before continuing.",
+                };
   const continuationProviders = resolvedContinuationProviders(continuationProvidersQuery);
   const continuationRunnable = continueAction.kind === "continue";
   const providerRetryVisible = continuationProviders.some((provider) => !provider.ready);
@@ -439,7 +449,7 @@ export default function NowPage() {
     {
       objective: continuationLead,
       source: continuationSource,
-      checkpointId: requestedCheckpointId,
+      checkpointId: null,
     },
   );
   const stagedHandoffVisible = Boolean(
@@ -449,7 +459,7 @@ export default function NowPage() {
     && stagedHandoffMatchesContinuation(stagedContinuationHandoff, {
       objective: continuationLead,
       source: continuationSource,
-      checkpointId: requestedCheckpointId,
+      checkpointId: null,
     })
   );
   const recoveredContinuationVisible = Boolean(
@@ -466,9 +476,7 @@ export default function NowPage() {
     : null;
   const continuationWorkflowPending = (
     continuationState === "staging"
-    || continuationState === "awaiting_user"
     || stageContinuation.isPending
-    || stagedHandoffVisible
     || activeContinuationRun?.status === "running"
   );
   const displayedContinuationState = (
@@ -554,10 +562,10 @@ export default function NowPage() {
                 Choose the next harness
               </p>
               <h1 className="mt-2 text-[clamp(2rem,4.2vw,3.25rem)] font-semibold leading-[0.96] tracking-[-0.055em] text-white">
-                Continue with project context
+                Continue with Session Context
               </h1>
               <p className="mt-3 hidden max-w-2xl text-sm leading-6 text-[#b8b8af] lg:block lg:text-[15px]">
-                Choose where to continue, then load the resolved Project Context into the harness you want.
+                The newest available session is selected by default. Choose a harness to open its Session Context.
               </p>
             </div>
 
@@ -573,32 +581,32 @@ export default function NowPage() {
 
             <nav
               className="mx-auto mt-6 grid w-full max-w-4xl auto-rows-fr gap-4 sm:grid-cols-2"
-              aria-label="Choose another continuation"
+              aria-label="Other task paths"
             >
               <Link
                 to="/app/library"
-                aria-label="Continue from an older session"
+                aria-label="Prepare an older session"
                 className="group flex h-full min-h-20 items-center gap-3 rounded-2xl border border-white/[0.12] bg-white/[0.045] px-4 py-3.5 text-left backdrop-blur-md transition hover:-translate-y-0.5 hover:border-[#d9ff68]/45 hover:bg-white/[0.075] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#d9ff68]/70 motion-reduce:hover:translate-y-0"
               >
                 <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-black/15 text-[#d9ff68]">
                   <History className="h-4 w-4" aria-hidden="true" />
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-semibold text-white">Continue from an older session</span>
-                  <span className="mt-1 block text-[11px] leading-4 text-white/50">Browse saved sessions in Library.</span>
+                  <span className="block text-sm font-semibold text-white">Prepare an older session</span>
+                  <span className="mt-1 block text-[11px] leading-4 text-white/50">Browse historical sessions without replacing Continue.</span>
                 </span>
                 <ArrowRight className="h-4 w-4 shrink-0 text-white/35 transition-transform group-hover:translate-x-0.5 group-hover:text-[#d9ff68]" aria-hidden="true" />
               </Link>
               <Link
                 to="/app/execute"
-                aria-label="Continue to a different session or harness"
+                aria-label="Choose explicit context in Execute"
                 className="group flex h-full min-h-20 items-center gap-3 rounded-2xl border border-white/[0.12] bg-white/[0.045] px-4 py-3.5 text-left backdrop-blur-md transition hover:-translate-y-0.5 hover:border-[#d9ff68]/45 hover:bg-white/[0.075] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#d9ff68]/70 motion-reduce:hover:translate-y-0"
               >
                 <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-black/15 text-[#d9ff68]">
                   <Layers3 className="h-4 w-4" aria-hidden="true" />
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-semibold text-white">Continue to a different session or harness</span>
+                  <span className="block text-sm font-semibold text-white">Choose explicit context in Execute</span>
                   <span className="mt-1 block text-[11px] leading-4 text-white/50">Assemble the workspace envelope in Execute.</span>
                 </span>
                 <ArrowRight className="h-4 w-4 shrink-0 text-white/35 transition-transform group-hover:translate-x-0.5 group-hover:text-[#d9ff68]" aria-hidden="true" />
@@ -634,7 +642,7 @@ export default function NowPage() {
                     translateX={translateX}
                     translateY={translateY}
                     pending={pending}
-                    contextLoaded={loadedContinuationProvider === provider.provider}
+                    handoffRequested={loadedContinuationProvider === provider.provider}
                     workflowPending={continuationWorkflowPending}
                     taskReady={continuationRunnable}
                     taskRequirement={continueAction.description}
@@ -645,44 +653,63 @@ export default function NowPage() {
               })}
             </div>
 
-            <div className="mt-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="rounded-full border border-[#d9ff68]/30 bg-[#d9ff68]/10 px-2.5 py-1 text-xs font-semibold text-[#d9ff68]">
-                  Automatic reconciliation
-                </span>
-                {requestedCheckpointId ? (
-                  <span className="rounded-full border border-white/15 bg-white/[0.04] px-2.5 py-1 text-xs font-semibold text-[#c5c5bc]">
-                    Recovery request · {requestedCheckpointId}
-                  </span>
-                ) : null}
-                {providerRetryVisible ? (
-                  <button
-                    type="button"
-                    onClick={() => (
-                      continuationProvidersQuery.refreshReadiness
-                      || continuationProvidersQuery.refetch
-                    )?.()}
-                    disabled={continuationProvidersQuery.isFetching}
-                    className="inline-flex min-h-11 items-center gap-1.5 rounded-full border border-white/15 bg-white/[0.04] px-3 text-xs font-semibold text-[#d0d0c8] transition-colors hover:border-white/30 hover:text-white disabled:cursor-wait disabled:opacity-60"
-                  >
-                    <RefreshCw
-                      className={`h-3.5 w-3.5 ${continuationProvidersQuery.isFetching ? "animate-spin motion-reduce:animate-none" : ""}`}
-                      aria-hidden="true"
-                    />
-                    {continuationProvidersQuery.isFetching
-                      ? "Checking readiness…"
-                      : "Retry provider readiness"}
-                  </button>
+            {(
+              providerRetryVisible
+              || continueAction.kind === "choose"
+              || continueAction.kind === "unavailable"
+              || continueAction.kind === "discovery_error"
+            ) ? (
+              <div className="mt-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+                <div className="flex flex-wrap items-center gap-2">
+                  {providerRetryVisible ? (
+                    <button
+                      type="button"
+                      onClick={() => (
+                        continuationProvidersQuery.refreshReadiness
+                        || continuationProvidersQuery.refetch
+                      )?.()}
+                      disabled={continuationProvidersQuery.isFetching}
+                      className="inline-flex min-h-11 items-center gap-1.5 rounded-full border border-white/15 bg-white/[0.04] px-3 text-xs font-semibold text-[#d0d0c8] transition-colors hover:border-white/30 hover:text-white disabled:cursor-wait disabled:opacity-60"
+                    >
+                      <RefreshCw
+                        className={`h-3.5 w-3.5 ${continuationProvidersQuery.isFetching ? "animate-spin motion-reduce:animate-none" : ""}`}
+                        aria-hidden="true"
+                      />
+                      {continuationProvidersQuery.isFetching
+                        ? "Checking desktop apps…"
+                        : "Retry desktop readiness"}
+                    </button>
+                  ) : null}
+                  {continueAction.kind === "discovery_error" ? (
+                    <button
+                      type="button"
+                      onClick={() => latestSessionDiscoveryQuery.refetch?.()}
+                      disabled={latestSessionDiscoveryQuery.isFetching}
+                      className="inline-flex min-h-11 items-center gap-1.5 rounded-full border border-white/15 bg-white/[0.04] px-3 text-xs font-semibold text-[#d0d0c8] transition-colors hover:border-white/30 hover:text-white disabled:cursor-wait disabled:opacity-60"
+                    >
+                      <RefreshCw
+                        className={`h-3.5 w-3.5 ${latestSessionDiscoveryQuery.isFetching ? "animate-spin motion-reduce:animate-none" : ""}`}
+                        aria-hidden="true"
+                      />
+                      {latestSessionDiscoveryQuery.isFetching
+                        ? "Refreshing latest session…"
+                        : "Retry latest-session refresh"}
+                    </button>
+                  ) : null}
+                </div>
+                {continueAction.kind === "choose" || continueAction.kind === "unavailable" ? (
+                  <Link to="/app/library" className="group inline-flex min-h-11 items-center gap-1.5 text-xs font-semibold text-[#d9ff68]">
+                    Choose work to continue
+                    <ArrowRight className="h-3.5 w-3.5 transition-transform motion-reduce:transition-none group-hover:translate-x-0.5" aria-hidden="true" />
+                  </Link>
                 ) : null}
               </div>
-              {continueAction.kind === "choose" || continueAction.kind === "unavailable" ? (
-                <Link to="/app/library" className="group inline-flex min-h-11 items-center gap-1.5 text-xs font-semibold text-[#d9ff68]">
-                  Choose work to continue
-                  <ArrowRight className="h-3.5 w-3.5 transition-transform motion-reduce:transition-none group-hover:translate-x-0.5" aria-hidden="true" />
-                </Link>
-              ) : null}
-            </div>
-            <p className="mt-3 text-xs leading-5 text-[#97978f]">{continueAction.description}</p>
+            ) : null}
+            {continueAction.description ? (
+              <p className="mt-3 text-xs leading-5 text-[#97978f]">
+                {continueAction.description}
+              </p>
+            ) : null}
             <div className="mt-3 max-w-3xl">
               <ContinuationWorkflowStatus
                 state={displayedContinuationState}
@@ -703,6 +730,26 @@ export default function NowPage() {
           error={digestUnavailable}
         />
       </header>
+
+      {latestSessionDiscoveryFailed ? (
+        <div className="flex flex-col justify-between gap-3 rounded-2xl border border-red-200 bg-red-50 px-4 py-3.5 text-red-800 sm:flex-row sm:items-center dark:border-red-900/60 dark:bg-red-950/25 dark:text-red-100">
+          <div>
+            <p className="text-xs font-semibold">Could not verify the newest local session</p>
+            <p className="mt-1 text-xs leading-5 opacity-75">
+              {latestSessionDiscoveryQuery.error?.message
+                || "Continue remains disabled so an older indexed session cannot be used by mistake."}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => latestSessionDiscoveryQuery.refetch?.()}
+            disabled={latestSessionDiscoveryQuery.isFetching}
+            className="min-h-11 shrink-0 rounded-xl border border-current px-4 text-xs font-semibold disabled:cursor-wait disabled:opacity-60"
+          >
+            Try again
+          </button>
+        </div>
+      ) : null}
 
       {digestError ? (
         <div className={`flex flex-col justify-between gap-3 rounded-2xl border px-4 py-3.5 sm:flex-row sm:items-center ${
@@ -929,6 +976,10 @@ function CarriedContextPanel({
       String(result?.delivery?.status || "").trim().toLocaleLowerCase(),
     )
   );
+  const desktopHandoff = (
+    String(result?.delivery?.mode || "").trim().toLocaleLowerCase()
+      === "desktop_composer_prefill"
+  );
   const delivered = summaryOnly || result?.delivery?.status === "delivered";
   const groups = compiled
     ? manifestContextGroups(manifest)
@@ -941,8 +992,9 @@ function CarriedContextPanel({
     compiled,
   });
   const briefGroupIds = new Set(packageBrief.map((item) => item.group?.id).filter(Boolean));
-  const counterGroups = groups.filter((group) => !briefGroupIds.has(group.id));
-  const populatedGroups = groups.filter((group) => group.items.length);
+  const counterGroups = groups.filter(
+    (group) => !briefGroupIds.has(group.id) && group.items.length,
+  );
   const excludedItems = compiled && Array.isArray(manifest.excluded_context)
     ? manifest.excluded_context
     : [];
@@ -984,7 +1036,9 @@ function CarriedContextPanel({
           <PanelLabel icon={Layers3}>
             {compiled
               ? staged
-                ? "Staged continuation"
+                ? desktopHandoff
+                  ? "Desktop handoff"
+                  : "Staged continuation"
                 : delivered
                   ? "Compiled handoff"
                   : "Prepared handoff"
@@ -993,7 +1047,9 @@ function CarriedContextPanel({
           <h2 id="carried-context-heading" className="mt-3 text-[clamp(1.65rem,3vw,2.35rem)] font-semibold leading-none tracking-[-0.045em] text-[#171713] dark:text-white">
             {compiled
               ? staged
-                ? "Context loaded"
+                ? desktopHandoff
+                  ? "Open requested"
+                  : "Context loaded"
                 : delivered
                   ? "What carried over"
                   : "Prepared context package"
@@ -1002,14 +1058,16 @@ function CarriedContextPanel({
           <p className="mt-3 max-w-2xl text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
             {compiled
               ? staged
-                ? `The exact context, direction, and execution loop loaded into ${deliveryProvider}. No turn has been submitted.`
+                ? desktopHandoff
+                  ? `An open request was sent to ${deliveryProvider}, and the complete prepared context was copied to the clipboard. App rendering cannot be verified here; review the composer before submitting.`
+                  : `The exact context, direction, and execution loop loaded into ${deliveryProvider}. No turn has been submitted.`
                 : delivered && summaryOnly
                 ? `The recorded package summary delivered to ${deliveryProvider}, with exact selection, exclusion, repository, and verification counts.`
                 : delivered
                   ? `The exact context package delivered to ${deliveryProvider}, including what was selected, excluded, and verified.`
                   : "The exact context package prepared for this run. Delivery did not complete, so this is not presented as carried over."
               : checkpoint
-                ? "A source-backed inventory of the saved task boundary. Nothing is presented as carried until repository reconciliation finishes. Continue uses the workspace-wide Project Context parent; Copy Session Context uses only this session’s latest captured immutable checkpoint."
+                ? "A source-backed inventory of the saved task boundary. Nothing is presented as carried until repository reconciliation finishes. Continue and Copy Session Context use this session’s latest captured immutable checkpoint by default."
                 : "The linked task is ready. Continue will inspect the repository, compile the final package, and load it before you start the first turn."}
           </p>
         </div>
@@ -1072,19 +1130,21 @@ function CarriedContextPanel({
                   <p className="text-xs font-black uppercase tracking-[0.14em] text-[#d9ff68]">
                     {compiled
                       ? staged
-                        ? "Loaded package"
+                        ? desktopHandoff
+                          ? "Desktop handoff package"
+                          : "Loaded package"
                         : delivered
                           ? "Delivered package"
                           : "Prepared package"
-                      : "Boundary inventory"}
+                      : "Continuation snapshot"}
                   </p>
                   <h3 className="mt-1.5 text-lg font-semibold tracking-[-0.025em]">
-                    {compiled ? "Compiled context package" : "Saved context awaiting selection"}
+                    {compiled ? "Compiled context package" : "Context prepared for review"}
                   </h3>
                   <p className="mt-2 text-xs leading-5 text-[#a9a9a1]">
                     {compiled
                       ? `${selectedItems.length + excludedItems.length} considered · ${selectedItems.length} selected · ${excludedItems.length} excluded`
-                      : `${previewCount} boundary entries · selected and excluded counts are recorded at launch`}
+                      : `${previewCount} context records captured`}
                   </p>
                 </div>
                 <button
@@ -1095,7 +1155,9 @@ function CarriedContextPanel({
                       ? summaryOnly
                         ? "A lane-by-lane summary recovered from the recorded package."
                         : staged
-                          ? "Every selected item loaded into the prepared harness thread."
+                          ? desktopHandoff
+                            ? "Every selected item prepared for the visible desktop draft and clipboard."
+                            : "Every selected item loaded into the prepared harness thread."
                           : "Every selected item in the delivered context package."
                       : "Every item captured at the saved task boundary.",
                     items: selectedItems,
@@ -1125,9 +1187,12 @@ function CarriedContextPanel({
                 ))}
               </div>
 
-              {populatedGroups.length ? (
-                <ContextCompositionPie groups={populatedGroups} compiled={compiled} />
-              ) : null}
+              <HandoffCoverage
+                groups={groups}
+                packageBrief={packageBrief}
+                manifest={manifest}
+                compiled={compiled}
+              />
 
               {counterGroups.length ? (
                 <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3" aria-label="Supporting context counters">
@@ -1174,8 +1239,6 @@ function CarriedContextPanel({
                 })}
                 </div>
               ) : null}
-
-              <ContextCountSemantics compiled={compiled} />
             </div>
           </div>
         </div>
@@ -1486,7 +1549,7 @@ function ContractUnknown({ children }) {
 
 function CarriedContextLoading() {
   return (
-    <section className="app-surface overflow-hidden" aria-busy="true" aria-label="Loading continuation context">
+    <section className="app-surface overflow-hidden" aria-busy="true" aria-label="Preparing desktop handoff">
       <header className="border-b border-[#deded5] px-5 py-6 dark:border-[#292925] sm:px-7 lg:px-8">
         <PanelLabel icon={Layers3}>Continuation preview</PanelLabel>
         <div className="mt-3 h-8 w-60 animate-pulse rounded-lg bg-[#e7e7df] motion-reduce:animate-none dark:bg-white/[0.07]" aria-hidden="true" />
@@ -1548,162 +1611,199 @@ function ContextBriefRow({ item, compiled, onOpen }) {
   );
 }
 
-function ContextCompositionPie({ groups, compiled }) {
-  const total = groups.reduce((sum, group) => sum + group.items.length, 0);
-  const recordLabel = compiled ? "selected" : "saved";
-  const slices = [];
-  let cursor = 0;
-
-  groups.forEach((group) => {
-    const count = group.items.length;
-    const start = cursor / total;
-    cursor += count;
-    const end = cursor / total;
-    const provenance = contextGroupProvenance(group.items);
-    const visual = contextCategoryVisual(group);
-    slices.push({
-      ...group,
-      count,
-      start,
-      end,
-      provenance,
-      visual,
-      color: group.meta?.color || visual.color,
-    });
-  });
-
-  const chartLabel = (
-    `Context composition pie chart: ${total} ${recordLabel} `
-    + `record${total === 1 ? "" : "s"} across ${groups.length} section${groups.length === 1 ? "" : "s"}`
+function HandoffCoverage({
+  groups,
+  packageBrief,
+  manifest,
+  compiled,
+}) {
+  const briefById = new Map(packageBrief.map((item) => [item.id, item]));
+  const goalCaptured = handoffBriefCaptured(
+    briefById.get("brief-goal"),
+    "No task goal was captured",
   );
+  const currentStateCaptured = handoffBriefCaptured(
+    briefById.get("brief-current"),
+    "No current-state update was captured",
+  );
+  const nextActionCaptured = handoffBriefCaptured(
+    briefById.get("brief-next"),
+    "No explicit next action captured",
+  );
+  const decisionCount = handoffGroupCount(
+    groups,
+    "decisions",
+    "decisions_and_invariants",
+  );
+  const blockerCount = handoffGroupCount(
+    groups,
+    "blockers",
+    "blockers_and_questions",
+  );
+  const relevantFileCount = compiled
+    ? firstArray(manifest?.repo_state?.relevant_files).length
+    : handoffGroupCount(groups, "relevant_files", "code_and_tests");
+  const previousAttemptCount = handoffGroupCount(
+    groups,
+    "failed_attempts",
+    "prior_failures",
+  );
+  const verificationCount = compiled
+    ? firstArray(manifest?.verification?.commands).length
+    : handoffGroupCount(groups, "verification");
+  const ready = goalCaptured && currentStateCaptured && nextActionCaptured;
+
+  const carriedForward = [
+    goalCaptured ? "Goal captured" : null,
+    currentStateCaptured ? "Current state captured" : null,
+    nextActionCaptured ? "Next action captured" : null,
+    decisionCount ? `${formatHandoffCount(decisionCount, "decision")} captured` : null,
+  ].filter(Boolean);
+  const missing = [
+    !goalCaptured ? "Goal not captured" : null,
+    !currentStateCaptured ? "Current state not captured" : null,
+    !nextActionCaptured ? "Next action not captured" : null,
+    !decisionCount ? "Decisions not captured" : null,
+    !blockerCount ? "Blockers not captured" : null,
+  ].filter(Boolean);
+  const essentialGaps = [
+    !goalCaptured ? { label: "Goal", plural: false } : null,
+    !currentStateCaptured ? { label: "Current state", plural: false } : null,
+    !nextActionCaptured ? { label: "Next action", plural: false } : null,
+  ].filter(Boolean);
+  const available = [
+    goalCaptured ? "Goal" : null,
+    currentStateCaptured ? "current state" : null,
+    nextActionCaptured ? "next action" : null,
+    decisionCount ? formatHandoffCount(decisionCount, "decision") : null,
+  ].filter(Boolean);
+  const statusDetail = ready
+    ? [
+        `${formatHandoffList(available)} are available.`,
+        blockerCount
+          ? `${formatHandoffCount(blockerCount, "blocker")} captured.`
+          : "No blockers were captured.",
+        "The receiving agent should verify the repository before making changes.",
+      ].join(" ")
+    : `${handoffMissingSentence(essentialGaps)} Add the missing context before continuing.`;
 
   return (
-    <figure className="relative mt-4 grid overflow-hidden rounded-[1.35rem] border border-white/[0.1] bg-white/[0.018] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.055)] backdrop-blur-xl sm:grid-cols-[9.5rem_minmax(0,1fr)] sm:items-center sm:gap-6 sm:p-5">
-      <div className="pointer-events-none absolute -left-16 top-1/2 h-36 w-36 -translate-y-1/2 rounded-full bg-[#d9ff68]/[0.055] blur-3xl" aria-hidden="true" />
-
-      <div className="relative mx-auto h-36 w-36 shrink-0 sm:mx-0">
-        <svg
-          viewBox="0 0 160 160"
-          className="relative h-full w-full overflow-visible [filter:drop-shadow(0_12px_22px_rgba(0,0,0,0.2))]"
-          role="img"
-          aria-label={chartLabel}
-          data-testid="context-composition-pie"
+    <section
+      className="relative mt-4 overflow-hidden rounded-[1.35rem] border border-white/[0.1] bg-white/[0.025] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.055)] backdrop-blur-xl sm:p-5"
+      aria-labelledby="handoff-coverage-heading"
+      data-testid="handoff-coverage"
+    >
+      <div className="pointer-events-none absolute -right-16 -top-16 h-40 w-40 rounded-full bg-[#d9ff68]/[0.055] blur-3xl" aria-hidden="true" />
+      <div className="relative flex items-start gap-3">
+        <span
+          className={`mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-full border ${
+            ready
+              ? "border-[#d9ff68]/25 bg-[#d9ff68]/10 text-[#d9ff68]"
+              : "border-amber-300/25 bg-amber-300/10 text-amber-200"
+          }`}
+          aria-hidden="true"
         >
-          <defs>
-            <radialGradient id="context-pie-sheen" cx="30%" cy="24%" r="76%">
-              <stop offset="0%" stopColor="white" stopOpacity="0.22" />
-              <stop offset="42%" stopColor="white" stopOpacity="0.04" />
-              <stop offset="100%" stopColor="white" stopOpacity="0" />
-            </radialGradient>
-          </defs>
-          <circle cx="80" cy="80" r="63" fill="rgba(255,255,255,0.035)" />
-          {slices.length === 1 ? (
-            <circle
-              cx="80"
-              cy="80"
-              r="62"
-              fill={slices[0].color}
-              fillOpacity="0.92"
-              stroke="rgba(255,255,255,0.24)"
-              strokeWidth="1.25"
-              data-context-pie-slice={slices[0].id}
-              data-context-color={slices[0].color}
-            >
-              <title>{`${slices[0].label}: ${slices[0].count} ${recordLabel} record. ${slices[0].provenance.label}.`}</title>
-            </circle>
-          ) : (
-            slices.map((slice) => (
-              <path
-                key={slice.id}
-                d={contextPieSlicePath(slice.start, slice.end)}
-                fill={slice.color}
-                fillOpacity="0.92"
-                stroke="rgba(255,255,255,0.24)"
-                strokeWidth="1.25"
-                strokeLinejoin="round"
-                className="origin-center transition-[opacity,filter] duration-300 hover:opacity-100 hover:[filter:brightness(1.12)] motion-reduce:transition-none"
-                data-context-pie-slice={slice.id}
-                data-context-color={slice.color}
-              >
-                <title>{`${slice.label}: ${slice.count} ${recordLabel} record${slice.count === 1 ? "" : "s"} (${Math.round((slice.count / total) * 100)}%). ${slice.provenance.label}.`}</title>
-              </path>
-            ))
-          )}
-          <circle cx="80" cy="80" r="62" fill="url(#context-pie-sheen)" pointerEvents="none" aria-hidden="true" />
-          <circle cx="80" cy="80" r="62" fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="1" aria-hidden="true" />
-        </svg>
+          {ready ? <CheckCircle2 className="h-4 w-4" /> : <ShieldAlert className="h-4 w-4" />}
+        </span>
+        <div className="min-w-0">
+          <h4 id="handoff-coverage-heading" className="text-[10px] font-black uppercase tracking-[0.16em] text-[#d9ff68]">
+            Handoff coverage
+          </h4>
+          <p className="mt-1 text-base font-semibold tracking-[-0.02em] text-white">
+            {ready ? "Ready to continue" : "Handoff needs context"}
+          </p>
+          <p className="mt-1 text-xs leading-5 text-white/60">
+            {statusDetail}
+          </p>
+        </div>
       </div>
 
-      <figcaption className="relative mt-3 min-w-0 flex-1 text-center sm:mt-0 sm:text-left">
-        <span className="block text-[10px] font-black uppercase tracking-[0.16em] text-[#d9ff68]">
-          Context composition
-        </span>
-        <span className="mt-1.5 flex items-baseline justify-center gap-2 sm:justify-start">
-          <strong className="text-3xl font-semibold leading-none tracking-[-0.055em] text-white">{total}</strong>
-          <span className="text-xs font-semibold text-white/65">
-            {recordLabel} record{total === 1 ? "" : "s"} · {groups.length} section{groups.length === 1 ? "" : "s"}
-          </span>
-        </span>
-        <span className="mt-1.5 block text-[10px] leading-4 text-white/45">
-          Slice size is the stored record count. Color identifies the checkpoint section.
-        </span>
-        <ul className="mt-3 flex flex-wrap justify-center gap-1.5 sm:justify-start" aria-label="Pie chart categories">
-          {slices.map((slice) => (
-            <li
-              key={slice.id}
-              className="inline-flex items-center gap-1.5 rounded-full border border-white/[0.1] bg-black/10 px-2.5 py-1 text-[10px] font-semibold text-white/70 backdrop-blur-md"
-              data-context-color={slice.color}
-            >
-              <span
-                className="h-1.5 w-1.5 shrink-0 rounded-full"
-                style={{ backgroundColor: slice.color }}
-                aria-hidden="true"
-              />
-              <span>{slice.shortLabel || slice.label}</span>
-              <span className="tabular-nums text-white">{slice.count}</span>
-            </li>
-          ))}
-        </ul>
-      </figcaption>
-    </figure>
+      <dl className="relative mt-4 grid gap-px overflow-hidden rounded-xl border border-white/10 bg-white/10 sm:grid-cols-3" aria-label="Handoff coverage details">
+        <HandoffCoverageColumn
+          label="Carried forward"
+          items={carriedForward}
+          tone="carried"
+        />
+        <HandoffCoverageColumn
+          label="Supporting context"
+          items={[
+            formatHandoffCount(relevantFileCount, "relevant file"),
+            formatHandoffCount(previousAttemptCount, "previous attempt"),
+            formatHandoffCount(verificationCount, "verification check"),
+          ]}
+          tone="supporting"
+        />
+        <HandoffCoverageColumn
+          label="Missing"
+          items={missing.length ? missing : ["Nothing missing"]}
+          tone="missing"
+        />
+      </dl>
+    </section>
   );
 }
 
-function contextPieSlicePath(startRatio, endRatio) {
-  const center = 80;
-  const radius = 62;
-  const sliceRatio = endRatio - startRatio;
-  const gapRatio = Math.min(0.0024, sliceRatio * 0.08);
-  const start = contextPiePoint(startRatio + (gapRatio / 2), center, radius);
-  const end = contextPiePoint(endRatio - (gapRatio / 2), center, radius);
-  const largeArc = sliceRatio - gapRatio > 0.5 ? 1 : 0;
-  return [
-    `M ${center} ${center}`,
-    `L ${start.x} ${start.y}`,
-    `A ${radius} ${radius} 0 ${largeArc} 1 ${end.x} ${end.y}`,
-    "Z",
-  ].join(" ");
-}
-
-function contextPiePoint(ratio, center, radius) {
-  const angle = (ratio * Math.PI * 2) - (Math.PI / 2);
-  return {
-    x: Number((center + (radius * Math.cos(angle))).toFixed(3)),
-    y: Number((center + (radius * Math.sin(angle))).toFixed(3)),
-  };
-}
-
-function ContextCountSemantics({ compiled }) {
+function HandoffCoverageColumn({ label, items, tone }) {
+  const toneClass = {
+    carried: "bg-[#d9ff68]",
+    supporting: "bg-[#b3a0d8]",
+    missing: "bg-[#e2a86d]",
+  }[tone];
   return (
-    <p
-      className="mt-4 border-t border-white/10 pt-3 text-[10px] font-semibold leading-5 text-white/55"
-      aria-label="Context count semantics"
+    <div
+      className="bg-[#1b1b17]/95 px-3.5 py-3.5"
+      role="group"
+      aria-label={label}
     >
-      Colors identify sections. Counts are {compiled
-        ? "records selected by the compiler, not all available context"
-        : "records stored in this bounded checkpoint, not totals across the whole session"}; evidence status appears on each card.
-    </p>
+      <dt className="text-[10px] font-black uppercase tracking-[0.13em] text-white/45">
+        {label}
+      </dt>
+      <dd className="mt-2.5 space-y-2">
+        {items.map((item, index) => (
+          <span key={`${label}-${index}`} className="flex min-h-5 items-center gap-2 text-xs font-semibold leading-5 text-white/85">
+            <span
+              className={`h-1.5 w-1.5 shrink-0 rounded-full ${toneClass}`}
+              aria-hidden="true"
+            />
+            {item}
+          </span>
+        ))}
+      </dd>
+    </div>
   );
+}
+
+function handoffBriefCaptured(item, missingPrefix) {
+  const text = String(item?.text || "").trim();
+  return Boolean(text && !text.toLowerCase().startsWith(missingPrefix.toLowerCase()));
+}
+
+function handoffGroupCount(groups, ...ids) {
+  return groups
+    .filter((group) => ids.includes(group.id))
+    .reduce((count, group) => count + group.items.length, 0);
+}
+
+function formatHandoffCount(count, singular) {
+  return `${count} ${singular}${count === 1 ? "" : "s"}`;
+}
+
+function formatHandoffList(items) {
+  if (items.length < 2) return items[0] || "";
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+}
+
+function handoffMissingSentence(items) {
+  const labels = items.map((item) => item.label.toLowerCase());
+  const joined = labels.length === 1
+    ? labels[0]
+    : labels.length === 2
+      ? `${labels[0]} and ${labels[1]}`
+      : `${labels.slice(0, -1).join(", ")}, and ${labels.at(-1)}`;
+  const subject = `${joined.charAt(0).toUpperCase()}${joined.slice(1)}`;
+  const verb = items.length === 1 && !items[0].plural ? "was" : "were";
+  return `${subject} ${verb} not captured.`;
 }
 
 function ContextDrawerItem({ item, mode, index, sourceContext }) {
@@ -2288,7 +2388,7 @@ function contextPackageBrief({
   const objectiveText = contextBriefText(objective);
   const savedGoalText = contextBriefItemText(goalGroup?.items?.[0]);
   const checkpointGoalText = contextBriefItemText(checkpoint?.sections?.goal?.[0]);
-  const goalText = [
+  const selectedGoalText = [
     { text: objectiveText, boost: compiled ? 0 : 4 },
     { text: savedGoalText, boost: compiled ? 8 : 0 },
     { text: checkpointGoalText, boost: 0 },
@@ -2297,7 +2397,10 @@ function contextPackageBrief({
       - contextGoalBriefScore(left.text) - left.boost
   ))[0]?.text
     || "No task goal was captured at this boundary.";
-  const goalUsesSelectedObjective = Boolean(objectiveText && goalText === objectiveText);
+  const goalText = generatedGoalBrief(selectedGoalText);
+  const goalUsesSelectedObjective = Boolean(
+    objectiveText && selectedGoalText === objectiveText,
+  );
   const briefGoalGroup = goalUsesSelectedObjective
     ? {
         ...(goalGroup || {
@@ -2469,6 +2572,23 @@ function contextGoalBriefScore(value) {
   }
   const trailingFragmentPenalty = /\b(?:a|an|and|for|from|of|or|the|to|with)$/i.test(text) ? 80 : 0;
   return Math.min(text.length, 240) - trailingFragmentPenalty;
+}
+
+function generatedGoalBrief(value) {
+  const text = String(value || "").trim();
+  const describesLicenceChange = /\blicen[cs]e\b/i.test(text);
+  const allowsSelfHosting = /\bself(?:[\s-]+)host(?:ed|ing)?\b/i.test(text);
+  const restrictsCommercialRedistribution = (
+    /\b(?:commercial|redistribut(?:e|ed|es|ing|ion)|resell|re-sell|paid product|hosted service)\b/i.test(text)
+  );
+  if (
+    describesLicenceChange
+    && allowsSelfHosting
+    && restrictsCommercialRedistribution
+  ) {
+    return "Update the project licence to allow self-hosting while preventing commercial redistribution.";
+  }
+  return text;
 }
 
 function checkpointSnapshotItems(snapshot) {
@@ -3690,7 +3810,7 @@ function continuationBlockerFromPersistedRun(latestRun) {
   };
 }
 
-const CONTINUATION_STARTING_PHASE = "Resolving the task and preparing its harness context";
+const CONTINUATION_STARTING_PHASE = "Requesting a visible desktop handoff";
 
 function resolvedContinuationProviders(query) {
   const supplied = Array.isArray(query.data?.providers) ? query.data.providers : [];
@@ -3701,36 +3821,70 @@ function resolvedContinuationProviders(query) {
     const meta = harnessMeta(provider);
     const suppliedProvider = byProvider.get(provider);
     if (suppliedProvider) {
+      const desktopReadiness = (
+        String(suppliedProvider.readiness_scope || "").trim().toLowerCase()
+        === "desktop_application_and_account_access"
+      );
+      if (!desktopReadiness) {
+        return {
+          provider,
+          name: suppliedProvider.name || meta.name,
+          status: "unavailable",
+          ready: false,
+          code: "desktop_readiness_required",
+          desktop_handoff_supported: false,
+          message: (
+            `${meta.name} Desktop and account-access readiness was not reported. `
+            + "Installation-only or provider CLI status cannot enable Continue."
+          ),
+          action: "Refresh desktop readiness before continuing.",
+        };
+      }
+      const reportedCode = String(suppliedProvider.code || "").trim().toLowerCase();
+      if (reportedCode.startsWith("provider_")) {
+        return {
+          provider,
+          name: suppliedProvider.name || meta.name,
+          status: "unavailable",
+          ready: false,
+          code: "desktop_readiness_required",
+          desktop_handoff_supported: false,
+          message: (
+            `${meta.name} reported provider-CLI state, which Continue ignores. `
+            + "Only desktop-app readiness can enable this action."
+          ),
+          action: "Refresh desktop readiness before continuing.",
+        };
+      }
       const reportedReady = suppliedProvider.ready === true;
       const reportedStatus = normalizedProviderReadinessStatus(
         suppliedProvider,
         reportedReady,
       );
-      const reportedCode = String(suppliedProvider.code || "").trim().toLowerCase();
       const providerReady = (
         reportedReady
         && (reportedStatus === "ready" || reportedStatus === "configured")
-        && reportedCode !== "provider_cli_not_found"
+        && reportedCode !== "desktop_app_missing"
       );
-      const stagingSupported = suppliedProvider.context_staging_supported === true;
-      const stagingUnavailable = providerReady && !stagingSupported;
-      const status = stagingUnavailable ? "staging_unsupported" : reportedStatus;
-      const code = stagingUnavailable
-        ? "provider_context_staging_unsupported"
+      const handoffSupported = suppliedProvider.desktop_handoff_supported === true;
+      const handoffUnavailable = providerReady && !handoffSupported;
+      const status = handoffUnavailable ? "staging_unsupported" : reportedStatus;
+      const code = handoffUnavailable
+        ? "provider_desktop_handoff_unsupported"
         : reportedCode;
-      const ready = providerReady && stagingSupported;
+      const ready = providerReady && handoffSupported;
       return {
         ...suppliedProvider,
         provider,
         name: suppliedProvider.name || meta.name,
         status,
         ready,
-        context_staging_supported: stagingSupported,
-        message: stagingUnavailable
-          ? `${meta.name} cannot load continuation context without submitting a turn.`
+        desktop_handoff_supported: handoffSupported,
+        message: handoffUnavailable
+          ? `${meta.name} cannot open a visible desktop handoff on this machine.`
           : preserveContinuationText(suppliedProvider.message),
-        action: stagingUnavailable
-          ? "Choose a harness that supports context staging."
+        action: handoffUnavailable
+          ? "Install or update the desktop app, then retry."
           : preserveContinuationText(suppliedProvider.action),
       };
     }
@@ -3741,7 +3895,7 @@ function resolvedContinuationProviders(query) {
         status: "checking",
         ready: false,
         code: "provider_readiness_loading",
-        message: "Checking local installation, authentication, and context staging.",
+        message: "Checking the local desktop app.",
         action: "",
       };
     }
@@ -3753,8 +3907,8 @@ function resolvedContinuationProviders(query) {
         ready: false,
         code: "provider_readiness_unavailable",
         message: preserveContinuationText(query.error?.message)
-          || "Context-staging readiness could not be loaded.",
-        action: "Retry provider readiness before continuing.",
+          || "Desktop-app readiness could not be loaded.",
+        action: "Retry desktop readiness before continuing.",
       };
     }
     return {
@@ -3763,8 +3917,8 @@ function resolvedContinuationProviders(query) {
       status: "unavailable",
       ready: false,
       code: "provider_readiness_missing",
-      message: `${meta.name} execution readiness was not reported.`,
-      action: "Refresh provider readiness before continuing.",
+      message: `${meta.name} Desktop readiness was not reported.`,
+      action: "Refresh desktop readiness before continuing.",
     };
   });
 }
@@ -3774,7 +3928,9 @@ function normalizedProviderReadinessStatus(provider, reportedReady) {
   if (status) return status;
 
   const code = String(provider.code || "").trim().toLowerCase();
-  if (code === "provider_cli_not_found") return "provider_cli_not_found";
+  if (code === "desktop_app_missing") return "unavailable";
+  if (code === "desktop_account_access_unverified") return "access_unverified";
+  if (code === "desktop_app_ready") return "ready";
   if (code === "provider_configured") return "configured";
   if (code === "provider_ready") return "ready";
   if (code.includes("authentication")) return "authentication_required";
@@ -3812,13 +3968,13 @@ function ContinuationWorkflowStatus({
         aria-busy="true"
         className="rounded-xl border border-[#d9ff68]/25 bg-[#d9ff68]/[0.08] px-3 py-3 text-xs text-[#e7ffad]"
       >
-        <p className="font-semibold">Loading continuation context into {provider}</p>
+        <p className="font-semibold">Requesting a desktop handoff in {provider}</p>
         <div className="mt-2 flex items-center gap-2 rounded-lg bg-black/15 px-2.5 py-2 text-xs leading-5 text-[#d8e6b5]">
           <RefreshCw className="h-3.5 w-3.5 shrink-0 animate-spin opacity-70 motion-reduce:animate-none" aria-hidden="true" />
           {CONTINUATION_STARTING_PHASE}
         </div>
         <p className="mt-2 text-xs leading-5 text-[#aab28f]">
-          Compiling context, direction, and the execution loop. No task has been submitted.
+          Compiling context and requesting the selected desktop app. No provider CLI or task is being started.
         </p>
       </div>
     );
@@ -3832,18 +3988,35 @@ function ContinuationWorkflowStatus({
         || harnessSession?.provider,
       "the selected harness",
     );
+    const sessionContextAdvisory = continuationSessionContextAdvisory(result);
+    const prefillRequested = (
+      result?.delivery?.visibility?.prefill_requested === true
+      || harnessSession?.prefill_requested === true
+    );
     return (
       <div
         role="status"
         className="rounded-xl border border-[#d9ff68]/25 bg-[#d9ff68]/[0.08] px-3 py-3 text-xs text-[#e7ffad]"
       >
-        <p className="font-semibold">Context loaded in {provider}</p>
+        <p className="font-semibold">Desktop open requested for {provider}</p>
         <p className="mt-1 text-xs leading-5 text-[#c8d6a7]">
-          Context, direction, and the execution loop are loaded together. Nothing has been submitted.
+          {prefillRequested
+            ? "The desktop app was asked to open a composer with the selected Session Context, and the full context was copied to the clipboard. App rendering cannot be verified here. Nothing was submitted."
+            : "The desktop app was asked to open and the selected Session Context was copied to the clipboard. Paste it into the visible composer; nothing was submitted."}
         </p>
         <div className="mt-2 rounded-lg bg-black/15 px-2.5 py-2 text-xs font-semibold leading-5 text-[#d8e6b5]">
-          Confirm or narrow the compiled lead in {provider}, then press Enter.
+          Look for {provider} on your desktop. If its composer is empty, paste the copied context, then submit it yourself.
         </div>
+        {sessionContextAdvisory ? (
+          <div className="mt-2 rounded-lg border border-amber-300/25 bg-amber-300/[0.08] px-2.5 py-2 text-amber-100">
+            <p className="font-semibold">Session Context needs repository review</p>
+            <p className="mt-1 text-xs leading-5 opacity-85">
+              Its inherited Workspace Context is incomplete. Review the repository
+              in the opened desktop app before submitting. Automatic execution
+              remains blocked.
+            </p>
+          </div>
+        ) : null}
         <HarnessSessionAction
           workspaceId={workspaceId}
           runId={recordedRunId}
@@ -4183,16 +4356,26 @@ function continuationStagingConfirmed(result) {
       String(delivery?.status || "").trim().toLocaleLowerCase(),
     )
     && Boolean(String(delivery?.context_delivery || "").trim())
-    && Boolean(String(session?.session_id || "").trim())
-    && Boolean(
-      String(
-        delivery?.run_id
-          || result?.run?.run_id
-          || result?.run?.id
-          || "",
-      ).trim(),
-    )
+    && delivery?.execution_started === false
+    && session?.open_requested === true
+    && session?.execution_started === false
+    && session?.context_copied === true
+    && Boolean(String(
+      delivery?.handoff_id
+        || session?.handoff_id
+        || result?.run?.handoff_id
+        || "",
+    ).trim())
   );
+}
+
+function continuationSessionContextAdvisory(result) {
+  const issues = result?.preparation?.project_context?.quality_issues;
+  if (!Array.isArray(issues)) return null;
+  return issues.find((issue) => (
+    String(issue?.code || "").trim().toLocaleLowerCase()
+    === "project_context_core_sections_empty"
+  )) || null;
 }
 
 function continuationBlocker(result) {
@@ -4513,6 +4696,85 @@ function continuationIdempotencyKey() {
   return `continue-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
+const CONTINUATION_STAGE_STORAGE_PREFIX = "daemonstate.continuation-stage.v1";
+
+function continuationStageRequestReservation({
+  workspaceId,
+  requestFingerprint,
+  forceNew = false,
+}) {
+  const storageKey = [
+    CONTINUATION_STAGE_STORAGE_PREFIX,
+    String(workspaceId || "").trim(),
+  ].join(":");
+  try {
+    const saved = JSON.parse(globalThis.sessionStorage?.getItem(storageKey) || "null");
+    if (
+      !forceNew
+      && saved
+      && /^continue-[A-Za-z0-9-]+$/.test(String(saved.idempotencyKey || ""))
+    ) {
+      return {
+        storageKey,
+        requestFingerprint,
+        idempotencyKey: saved.idempotencyKey,
+      };
+    }
+  } catch {
+    // Storage can be unavailable in hardened browser contexts. The backend
+    // still provides durable same-key protection for the current request.
+  }
+  const reservation = {
+    storageKey,
+    requestFingerprint,
+    idempotencyKey: continuationIdempotencyKey(),
+  };
+  try {
+    globalThis.sessionStorage?.setItem(storageKey, JSON.stringify(reservation));
+  } catch {
+    // Continue with the generated key when session storage is unavailable.
+  }
+  return reservation;
+}
+
+function clearContinuationStageRequestReservation(reservation) {
+  try {
+    const saved = JSON.parse(
+      globalThis.sessionStorage?.getItem(reservation.storageKey) || "null",
+    );
+    if (saved?.idempotencyKey === reservation.idempotencyKey) {
+      globalThis.sessionStorage?.removeItem(reservation.storageKey);
+    }
+  } catch {
+    // A failed cleanup cannot change the backend's idempotency result.
+  }
+}
+
+function retainContinuationStageRequestReservation(error) {
+  const code = String(
+    error?.detail?.code
+    || error?.detail?.detail?.code
+    || error?.code
+    || "",
+  ).trim().toLocaleLowerCase();
+  if (code === "desktop_handoff_outcome_unknown") return false;
+  if (code === "desktop_handoff_timeout") {
+    return error?.status === 504;
+  }
+  if (
+    error?.status === 504
+    || [
+      "request_timeout",
+      "desktop_handoff_in_progress",
+    ].includes(code)
+  ) {
+    return true;
+  }
+  // Network failures have no authoritative terminal response. Reuse the key
+  // after reload so the backend can replay or safely reject the original.
+  return !code;
+}
+
 function continuationProviderLabel(value, fallback = "Target") {
   const provider = String(value || "").trim().toLocaleLowerCase();
   return {
@@ -4541,43 +4803,23 @@ function activityTimestamp(card) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function explicitSessionReference(provider, sessionId) {
-  const normalizedProvider = normalizeProvider(provider);
-  const normalizedSessionId = String(sessionId || "").trim();
-  if (!normalizedProvider || !normalizedSessionId) return null;
-  return {
-    provider: normalizedProvider,
-    sessionId: normalizedSessionId,
-  };
-}
-
-function selectContinuationSessionActivity(recentSessions, primary, requestedSource) {
+function selectContinuationSessionActivity(
+  recentSessions,
+  primary,
+  expectedSession = null,
+) {
   const recent = Array.isArray(recentSessions) ? recentSessions : [];
   const candidates = [...recent, primary]
     .filter(Boolean)
-    .filter((activity) => activitySessionReference(activity));
-  if (requestedSource) {
-    return candidates.find((activity) => (
-      sameSessionReference(activitySessionReference(activity), requestedSource)
-    )) || null;
-  }
-  return [...recent]
     .filter((activity) => activitySessionReference(activity))
-    .sort((left, right) => sessionActivityTimestamp(right) - sessionActivityTimestamp(left))[0]
-    || (activitySessionReference(primary) ? primary : null);
-}
-
-function selectLibrarySession(sessions, requestedSource) {
-  const candidates = (Array.isArray(sessions) ? sessions : [])
-    .filter((session) => sessionDescriptorReference(session));
-  if (requestedSource) {
-    return candidates.find((session) => (
-      sameSessionReference(sessionDescriptorReference(session), requestedSource)
+    .sort((left, right) => sessionActivityTimestamp(right) - sessionActivityTimestamp(left));
+  if (expectedSession) {
+    return candidates.find((activity) => sameSessionReference(
+      activitySessionReference(activity),
+      expectedSession,
     )) || null;
   }
-  return [...candidates]
-    .sort((left, right) => sessionActivityTimestamp(right) - sessionActivityTimestamp(left))[0]
-    || null;
+  return candidates[0] || null;
 }
 
 function sameSessionReference(left, right) {

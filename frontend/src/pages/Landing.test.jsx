@@ -69,10 +69,12 @@ describe("Landing", () => {
       screen.getByText(/Failed attempts and transient blockers stay in Session Context/i),
     ).toBeInTheDocument();
 
-    expect(screen.getByText("Codex on macOS")).toBeInTheDocument();
-    expect(screen.getByText("Codex · Claude Code · OpenCode")).toBeInTheDocument();
+    expect(screen.getByText("Desktop handoff")).toBeInTheDocument();
     expect(
-      screen.getByText(/Codex waits for you to confirm or narrow the compiled lead/i),
+      screen.getAllByText("Codex · Claude Code · OpenCode").length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getByText(/you review the compiled lead and press Enter yourself/i),
     ).toBeInTheDocument();
     expect(
       screen.getByText(/GitHub, Slack, Gmail, and Drive paths never masquerade as connected/i),

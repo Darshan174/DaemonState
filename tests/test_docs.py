@@ -43,7 +43,8 @@ def test_readme_documents_honest_setup_deployment_and_contributing_paths():
     assert "[CONTRIBUTING.md](CONTRIBUTING.md)" in text
     assert "It is not a production hardening guide" in text
     assert "There are no built-in Codex" not in text
-    assert "reopen an exact Codex task" in text
+    assert "requests a new composer" in text
+    assert "not as a verified open" in text
     assert "There is no system-wide agent monitor" in text
     assert "local harness is the path that independently inspects Git state" in " ".join(text.split())
     assert "Continue automatically captures the selected session tip" in text

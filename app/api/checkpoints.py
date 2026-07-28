@@ -15,8 +15,7 @@ from app.models import SessionEvent, SourceDocument, Workspace, WorkCheckpoint
 from app.services.access import AccessScope, source_access_predicate
 from app.services.checkpoint_verifier import compare_checkpoint_repository, verify_checkpoint
 from app.services.checkpoints import (
-    SESSION_HANDOFF_SCHEMA_VERSION,
-    build_session_handoff_contract,
+    build_session_handoff_artifact,
     capture_checkpoint,
     checkpoint_to_dict,
     checkpoints_to_dicts,
@@ -24,11 +23,9 @@ from app.services.checkpoints import (
     latest_checkpoint,
     list_checkpoints,
     render_resume_bundle,
-    render_session_handoff,
     resolve_session_handoff_attachment_descriptors,
     resolve_session_handoff_request_verbatim,
     resolve_session_handoff_supporting_context,
-    session_handoff_render_issues,
 )
 from app.services.harness_launcher import HarnessLaunchError, launch_harness_session
 from app.services.session_scope import normalize_session_key, session_provider_values
@@ -370,7 +367,7 @@ async def create_session_handoff(
     )
     repository_comparison = await compare_checkpoint_repository(checkpoint)
     try:
-        contract = build_session_handoff_contract(
+        return build_session_handoff_artifact(
             checkpoint,
             request_verbatim=request_verbatim,
             supporting_context=supporting_context,
@@ -379,42 +376,8 @@ async def create_session_handoff(
             checkpoint_data=data,
             repository_comparison=repository_comparison,
         )
-        content = render_session_handoff(
-            checkpoint,
-            request_verbatim=request_verbatim,
-            supporting_context=supporting_context,
-            contract=contract,
-            checkpoint_data=data,
-        )
-        render_issues = session_handoff_render_issues(content)
-        if render_issues:
-            quality = contract["quality_report"]
-            quality["status"] = "blocked"
-            quality["copy_ready"] = False
-            quality["automatic_execution_ready"] = False
-            quality["checks"] = [*quality["checks"], *render_issues]
-            quality["blocking_issues"] = [
-                *quality["blocking_issues"],
-                *render_issues,
-            ]
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return {
-        "schema_version": SESSION_HANDOFF_SCHEMA_VERSION,
-        "scope": "session",
-        "provider": data["provider"],
-        "session_id": data["session_id"],
-        "checkpoint_id": data["id"],
-        "source_document_id": data["source_document_id"],
-        "boundary": data["boundary"],
-        "snapshot_phase": data["boundary"].get("snapshot_phase"),
-        "captured_at": data["boundary"].get("occurred_at"),
-        "currentness": data.get("currentness"),
-        **contract,
-        "content": content,
-        "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
-        "estimated_tokens": max(1, (len(content) + 3) // 4),
-    }
 
 
 async def _require_workspace(

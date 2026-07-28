@@ -3,7 +3,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import struct
+import threading
 import zlib
 from pathlib import Path
 from uuid import uuid4
@@ -17,8 +19,10 @@ from app.services.session_checkpoints import build_restored_context
 from app.services.source_revisions import ingest_source_document_revision
 from app.sync.ai_session import ingest_ai_session
 from app.sync.session_resolvers import (
+    LatestSessionDiscoveryResult,
     ResolvedSession,
     SessionDiscoveryResult,
+    discover_latest_local_ai_session,
     discover_local_ai_sessions,
     resolve_local_ai_session,
 )
@@ -272,6 +276,148 @@ async def test_sync_excludes_sessions_outside_the_selected_project(
     assert {
         item["session_id"] for item in payload["library"]["sessions"]
     } == {"matching", "observed"}
+
+
+async def test_latest_session_endpoint_indexes_only_newest_scoped_root_off_loop(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "fast-project"
+    repo.mkdir()
+    workspace = Workspace(
+        id=uuid4(),
+        name="Fast latest session project",
+        slug=f"fast-latest-session-{uuid4().hex}",
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+    db_session.add(CodeFile(
+        workspace_id=workspace.id,
+        repo_root=str(repo),
+        path="main.py",
+        identity_key=uuid4().hex * 2,
+        sha256="9" * 64,
+        size=10,
+    ))
+    await db_session.commit()
+
+    candidates = [
+        ResolvedSession(
+            connector_type="codex",
+            session_id="newer-subagent",
+            content="[USER]\nInspect the fast project as a delegated worker.",
+            metadata={
+                "tool": "codex",
+                "thread_source": "subagent",
+                "cwd": str(repo),
+                "source_path": str(tmp_path / "newer-subagent.jsonl"),
+            },
+        ),
+        ResolvedSession(
+            connector_type="claude",
+            session_id="outside-root",
+            content="[USER]\nWork on another project.",
+            metadata={
+                "tool": "claude",
+                "cwd": str(tmp_path / "outside"),
+                "source_path": str(tmp_path / "outside-root.jsonl"),
+            },
+        ),
+        ResolvedSession(
+            connector_type="codex",
+            session_id="latest-root",
+            content=(
+                "[USER]\nMake the Continue page load immediately.\n\n"
+                "[ASSISTANT]\nI am implementing the fast path."
+            ),
+            metadata={
+                "tool": "codex",
+                "thread_source": "user",
+                "cwd": str(repo),
+                "source_path": str(tmp_path / "latest-root.jsonl"),
+                "updated_at": "2026-07-28T00:01:00Z",
+            },
+            events=[
+                NormalizedSessionEvent(
+                    provider_event_id="latest-root-user-request",
+                    sequence_number=1,
+                    event_type="user_request",
+                    role="user",
+                    content="Make the Continue page load immediately.",
+                ),
+                NormalizedSessionEvent(
+                    provider_event_id="latest-root-assistant-update",
+                    sequence_number=2,
+                    event_type="assistant_update",
+                    role="assistant",
+                    content="I am implementing the fast path.",
+                ),
+            ],
+        ),
+    ]
+    request_thread = threading.get_ident()
+    discovery_threads: list[int] = []
+
+    def discover(connector_types, *, accept):
+        assert tuple(connector_types) == ("codex", "claude", "opencode")
+        discovery_threads.append(threading.get_ident())
+        for candidate in candidates:
+            if accept(candidate):
+                return LatestSessionDiscoveryResult(
+                    session=candidate,
+                    candidates=3,
+                    examined=3,
+                    excluded=2,
+                    providers=[{
+                        "connector_type": "codex",
+                        "available": True,
+                        "candidates": 2,
+                        "examined": 2,
+                        "excluded": 1,
+                        "failed": 0,
+                        "error": None,
+                    }],
+                )
+        raise AssertionError("Expected one eligible root session")
+
+    monkeypatch.setattr(
+        "app.services.session_library.discover_latest_local_ai_session",
+        discover,
+    )
+
+    response = await client.post(
+        "/api/session-library/latest",
+        json={"workspace_id": str(workspace.id)},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "library" not in payload
+    assert payload["sync"]["mode"] == "latest"
+    assert payload["sync"]["examined"] == 3
+    assert payload["sync"]["excluded"] == 2
+    assert payload["sync"]["discovered"] == 1
+    assert payload["sync"]["imported"] == 1
+    assert payload["session"]["session_id"] == "latest-root"
+    assert payload["session"]["connector_type"] == "codex"
+    assert payload["session"]["root_task_title"] == (
+        "Make the Continue page load immediately."
+    )
+    assert payload["session"]["updated_at"] == "2026-07-28T00:01:00+00:00"
+    assert discovery_threads
+    assert discovery_threads[0] != request_thread
+
+    documents = list(await db_session.scalars(
+        select(SourceDocument).where(
+            SourceDocument.workspace_id == workspace.id,
+            SourceDocument.source_type == "agent_session",
+        )
+    ))
+    assert [document.external_id for document in documents] == [
+        "codex:session:latest-root"
+    ]
 
 
 async def test_unindexed_project_workspace_fails_closed_during_session_sync(
@@ -548,6 +694,93 @@ def test_codex_discovery_reads_every_local_session_without_ids(tmp_path: Path, m
         item.metadata["compaction_checkpoints"][0]["repo_path"]
         for item in result.sessions
     } == {"/workspace/product-1", "/workspace/product-2"}
+
+
+def test_latest_discovery_stops_after_newest_eligible_root(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    codex_home = tmp_path / "codex-home"
+    sessions_dir = codex_home / "sessions" / "2026" / "07" / "28"
+    sessions_dir.mkdir(parents=True)
+
+    def write_session(
+        filename: str,
+        session_id: str,
+        request: str,
+        *,
+        thread_source: str = "user",
+        modified_at: int,
+        include_content: bool = True,
+    ) -> None:
+        rows = [{
+            "type": "session_meta",
+            "payload": {
+                "id": session_id,
+                "cwd": "/workspace/daemonstate",
+                "thread_source": thread_source,
+            },
+        }]
+        if include_content:
+            rows.append({
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": request}],
+                },
+            })
+        path = sessions_dir / filename
+        path.write_text(
+            "\n".join(json.dumps(row) for row in rows),
+            encoding="utf-8",
+        )
+        os.utime(path, (modified_at, modified_at))
+
+    write_session(
+        "rollout-internal.jsonl",
+        "internal",
+        (
+            "The following is the Codex agent history whose request action "
+            "you are assessing.\n>>> TRANSCRIPT START\n[1] user: Fix Continue"
+        ),
+        modified_at=400,
+    )
+    write_session(
+        "rollout-subagent.jsonl",
+        "subagent",
+        "Inspect Continue as a delegated worker.",
+        thread_source="subagent",
+        modified_at=300,
+    )
+    write_session(
+        "rollout-root.jsonl",
+        "root",
+        "Fix the Continue page.",
+        modified_at=200,
+    )
+    write_session(
+        "rollout-unread.jsonl",
+        "unread",
+        "This malformed older session must not be parsed.",
+        modified_at=100,
+        include_content=False,
+    )
+    monkeypatch.setattr(settings, "codex_home", str(codex_home))
+
+    result = discover_latest_local_ai_session(
+        ["codex"],
+        accept=lambda item: (
+            item.metadata.get("thread_source") != "subagent"
+        ),
+    )
+
+    assert result.session is not None
+    assert result.session.session_id == "root"
+    assert result.candidates == 4
+    assert result.examined == 3
+    assert result.excluded == 2
+    assert result.failed == 0
 
 
 def test_codex_discovery_persists_exact_user_attachment_provenance(
