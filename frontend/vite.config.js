@@ -3,6 +3,8 @@ import react from "@vitejs/plugin-react";
 import fs from "fs";
 import path from "path";
 
+import { cloudflare } from "@cloudflare/vite-plugin";
+
 function legalArtifacts() {
   const sourceDirectory = process.env.DAEMONSTATE_LEGAL_DIR
     ? path.resolve(process.env.DAEMONSTATE_LEGAL_DIR)
@@ -45,7 +47,7 @@ function legalArtifacts() {
 }
 
 export default defineConfig({
-  plugins: [react(), legalArtifacts()],
+  plugins: [react(), legalArtifacts(), cloudflare()],
   resolve: {
     alias: {
       "@assets": path.resolve(__dirname, "src/assets"),
