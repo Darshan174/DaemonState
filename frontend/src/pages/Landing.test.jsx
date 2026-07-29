@@ -16,82 +16,118 @@ function renderLanding() {
 }
 
 describe("Landing", () => {
-  it("mirrors the current product surfaces and removes retired navigation", () => {
+  it("leads with the persistent-context promise and working calls to action", () => {
     const { container } = renderLanding();
 
     expect(
-      screen.getByRole("heading", { name: "Continue the work. Not the explanation." }),
+      screen.getByRole("heading", {
+        name: "Your AI coding work shouldn’t reset every session.",
+      }),
     ).toBeInTheDocument();
     expect(
-      screen.getByText("Source-available continuity for coding agents"),
+      screen.getByText(/keeps your project context alive across Codex, Claude Code/i),
     ).toBeInTheDocument();
-    expect(screen.queryByText(/Open-source continuity/i)).not.toBeInTheDocument();
     expect(container.querySelector(".daemonstate-landing")).toHaveAttribute(
       "data-landing-theme",
       "fixed",
     );
 
-    const openContinueLinks = screen.getAllByRole("link", { name: "Open Continue" });
-    expect(openContinueLinks).toHaveLength(2);
-    openContinueLinks.forEach((link) => expect(link).toHaveAttribute("href", "/app"));
+    screen.getAllByRole("link", { name: /Join (the early-access )?waitlist/i })
+      .forEach((link) => expect(link).toHaveAttribute("href", "#early-access"));
     expect(screen.getByRole("link", { name: "See how it works" })).toHaveAttribute(
       "href",
       "#how-it-works",
     );
+    expect(screen.getByRole("link", { name: "Get early access" })).toHaveAttribute(
+      "href",
+      "/app",
+    );
+  });
 
-    const productDestinations = [
-      ["Open Execute", "/app/execute"],
-      ["Browse sessions", "/app/library"],
-      ["Trace the evidence", "/app/explain"],
-      ["Review sources", "/app/sources"],
-      ["Manage integrations", "/app/connectors"],
-    ];
-    productDestinations.forEach(([name, href]) => {
-      expect(screen.getByRole("link", { name })).toHaveAttribute("href", href);
-    });
+  it("explains the recovery loop across supported coding agents", () => {
+    renderLanding();
 
-    expect(screen.queryByText("Runs")).not.toBeInTheDocument();
-    expect(screen.queryByText("Run history")).not.toBeInTheDocument();
-    expect(container.querySelectorAll('a[href="/app/memory"]')).toHaveLength(0);
-    expect(screen.queryByRole("textbox", { name: /search/i })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Stop rebuilding context." }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("No re-explaining. No rediscovery. No starting over."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        name: "One project. Every agent. Continuous context.",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Import your sessions" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Recover what matters" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Continue anywhere" })).toBeInTheDocument();
+
+    expect(screen.getAllByText("Codex").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Claude Code").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("OpenCode").length).toBeGreaterThan(0);
     expect(screen.queryByText(/Trusted by/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/10,000/i)).not.toBeInTheDocument();
   });
 
-  it("keeps Project Context and Session Context separate and qualifies delivery support", () => {
+  it("positions project history as usable infrastructure without invented proof", () => {
     renderLanding();
 
-    expect(screen.getAllByText("Project Context").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Current Session Context").length).toBeGreaterThan(0);
-    expect(screen.getByText("Durable workspace parent")).toBeInTheDocument();
-    expect(screen.getByText("Task-specific checkpoint")).toBeInTheDocument();
     expect(
-      screen.getByText(/Failed attempts and transient blockers stay in Session Context/i),
+      screen.getByRole("heading", {
+        name: "Your coding history becomes infrastructure.",
+      }),
     ).toBeInTheDocument();
+    expect(screen.getByText("Not another chat archive.")).toBeInTheDocument();
 
-    expect(screen.getByText("Desktop handoff")).toBeInTheDocument();
+    [
+      "What you are building",
+      "What has already been completed",
+      "Which decisions were made",
+      "What failed and why",
+      "Which files matter",
+      "What needs to happen next",
+    ].forEach((item) => expect(screen.getByText(item)).toBeInTheDocument());
+
     expect(
-      screen.getAllByText("Codex · Claude Code · OpenCode").length,
-    ).toBeGreaterThan(0);
-    expect(
-      screen.getByText(/you review the compiled lead and press Enter yourself/i),
+      screen.getByRole("heading", { name: "Change the model. Not the momentum." }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(/GitHub, Slack, Gmail, and Drive paths never masquerade as connected/i),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Follow the build" })).toHaveAttribute(
+      "href",
+      "https://github.com/Darshan174/DaemonState",
+    );
   });
 
-  it("describes observed outcomes without inventing verification", () => {
-    renderLanding();
+  it("renders the motion-first stages without changing product navigation", () => {
+    const { container } = renderLanding();
+    const mainNavigation = screen.getByRole("navigation", {
+      name: "Main navigation",
+    });
 
-    expect(
-      screen.getByRole("heading", { name: "“Done” is not a verification result." }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Verified complete")).toBeInTheDocument();
-    expect(screen.getByText("Requirements unproven")).toBeInTheDocument();
-    expect(screen.getByText("Blocked external")).toBeInTheDocument();
-    expect(screen.getByText("Blocked ambiguity")).toBeInTheDocument();
-    expect(screen.getByText("Execution failed")).toBeInTheDocument();
-    expect(screen.getByText("No silent verification")).toBeInTheDocument();
+    expect(container.querySelector(".dsr-landing")).toBeInTheDocument();
+    expect(container.querySelectorAll(".dsr-deck-card")).toHaveLength(5);
+    expect(container.querySelector(".dsr-deck-track")).toBeInTheDocument();
+    expect(container.querySelector(".dsr-system-frame")).toBeInTheDocument();
+    expect(container.querySelectorAll(".dsr-stack-card")).toHaveLength(3);
+    expect(container.querySelectorAll(".dsr-agent-logo")).toHaveLength(13);
+    expect(container.querySelectorAll(".dsr-graph-connectors path")).toHaveLength(3);
+    expect(container.querySelectorAll(".dsr-tools-track > .is-any-agent")).toHaveLength(2);
+    expect(screen.getByText("Your agents, in sync.")).toBeInTheDocument();
+    expect(mainNavigation).not.toHaveTextContent("01");
+    expect(mainNavigation).not.toHaveTextContent("02");
+    expect(mainNavigation).not.toHaveTextContent("03");
+
+    expect(container.querySelector("#problem")).toBeInTheDocument();
+    expect(container.querySelector("#how-it-works")).toBeInTheDocument();
+    expect(container.querySelector("#project-memory")).toBeInTheDocument();
+    expect(container.querySelector("#early-access")).toBeInTheDocument();
+
+    expect(screen.getByRole("link", { name: "Open DaemonState" })).toHaveAttribute(
+      "href",
+      "/app",
+    );
+    expect(screen.getByRole("link", { name: "Open app" })).toHaveAttribute(
+      "href",
+      "/app",
+    );
   });
 });
