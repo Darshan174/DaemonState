@@ -12,7 +12,6 @@ import {
   History,
   Layers3,
   Menu,
-  MousePointer2,
   RefreshCw,
   ShieldCheck,
   Sparkles,
@@ -23,6 +22,8 @@ import {
 
 import DaemonStateIcon from "../components/DaemonStateIcon";
 import openaiIcon from "../assets/openai-icon.png";
+import { ApiError, api } from "../api/client";
+import { WAITLIST_ONLY } from "../config/deployment";
 import "./LandingReplica.css";
 
 const GITHUB_URL = "https://github.com/Darshan174/DaemonState";
@@ -129,7 +130,7 @@ function splitWords(text) {
   ));
 }
 
-export default function Landing() {
+export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
   const pageRef = useRef(null);
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -156,20 +157,19 @@ export default function Landing() {
 
     let cancelled = false;
     let context;
-    let draggableInstances = [];
+    let deckAdvanceCall;
+    let deckTween;
     const cleanups = [];
 
     async function setupMotion() {
       const {
         gsap,
         ScrollTrigger,
-        Draggable,
-        InertiaPlugin,
       } = await import("gsap/all");
 
       if (cancelled || !root.isConnected) return;
 
-      gsap.registerPlugin(ScrollTrigger, Draggable, InertiaPlugin);
+      gsap.registerPlugin(ScrollTrigger);
       root.dataset.motion = "ready";
 
       const reducedMotion = window.matchMedia(
@@ -227,7 +227,7 @@ export default function Landing() {
             "-=0.72",
           )
           .from(
-            ".dsr-hero-support, .dsr-drag-note",
+            ".dsr-hero-support",
             {
               y: 18,
               autoAlpha: 0,
@@ -239,10 +239,14 @@ export default function Landing() {
           );
 
         const deckTrack = root.querySelector(".dsr-deck-track");
+        const deckWindow = root.querySelector(".dsr-deck-window");
         const deckCards = gsap.utils.toArray(".dsr-deck-card", root);
         const deckCounter = root.querySelector(".dsr-deck-count");
         let deckStep = 0;
-        let deckMin = 0;
+        let deckActiveIndex = 0;
+        let deckDirection = 1;
+        let deckPaused = false;
+        const deckPauseReasons = new Set();
 
         const updateDeckCards = () => {
           const trackY = Number(gsap.getProperty(deckTrack, "y")) || 0;
@@ -271,54 +275,94 @@ export default function Landing() {
           });
         };
 
-        const sizeDeck = (activeIndex = 2) => {
+        const sizeDeck = (activeIndex = deckActiveIndex) => {
           if (!deckCards.length || !deckTrack) return;
           const firstCard = deckCards[0];
           const styles = window.getComputedStyle(deckTrack);
           deckStep = firstCard.offsetHeight
             + Number.parseFloat(styles.rowGap || styles.gap || "0");
-          deckMin = -deckStep * (deckCards.length - 1);
+          deckActiveIndex = Math.max(
+            0,
+            Math.min(deckCards.length - 1, activeIndex),
+          );
           gsap.set(deckTrack, {
-            y: -deckStep * Math.max(0, Math.min(deckCards.length - 1, activeIndex)),
+            y: -deckStep * deckActiveIndex,
           });
           updateDeckCards();
         };
 
-        sizeDeck();
+        const scheduleDeckAdvance = (delay = 2.35) => {
+          deckAdvanceCall?.kill();
+          if (deckPaused || !deckStep || deckCards.length < 2) return;
+          deckAdvanceCall = gsap.delayedCall(delay, () => {
+            if (deckActiveIndex >= deckCards.length - 1) deckDirection = -1;
+            else if (deckActiveIndex <= 0) deckDirection = 1;
 
-        draggableInstances = Draggable.create(deckTrack, {
-          type: "y",
-          bounds: { minY: deckMin, maxY: 0 },
-          edgeResistance: 0.86,
-          inertia: true,
-          cursor: "grab",
-          activeCursor: "grabbing",
-          allowNativeTouchScrolling: false,
-          snap: {
-            y: (value) => Math.max(
-              deckMin,
-              Math.min(0, Math.round(value / deckStep) * deckStep),
-            ),
-          },
-          onDrag: updateDeckCards,
-          onThrowUpdate: updateDeckCards,
-          onThrowComplete: updateDeckCards,
-        });
-
-        const handleDeckResize = () => {
-          const activeIndex = Math.max(
-            0,
-            Number.parseInt(deckCounter?.textContent || "03", 10) - 1,
-          );
-          sizeDeck(activeIndex);
-          draggableInstances.forEach((instance) => {
-            instance.applyBounds({ minY: deckMin, maxY: 0 });
-            instance.update();
+            const nextIndex = deckActiveIndex + deckDirection;
+            deckActiveIndex = nextIndex;
+            deckTween?.kill();
+            deckTween = gsap.to(deckTrack, {
+              y: -deckStep * deckActiveIndex,
+              duration: 1.15,
+              ease: "power3.inOut",
+              onUpdate: updateDeckCards,
+              onComplete: () => {
+                updateDeckCards();
+                scheduleDeckAdvance();
+              },
+            });
           });
         };
 
+        const pauseDeck = (reason) => {
+          deckPauseReasons.add(reason);
+          if (deckPaused) return;
+          deckPaused = true;
+          deckWindow?.setAttribute("data-autoplay", "paused");
+          deckAdvanceCall?.pause();
+        };
+
+        const resumeDeck = (reason) => {
+          deckPauseReasons.delete(reason);
+          if (deckPauseReasons.size) return;
+          deckPaused = false;
+          deckWindow?.setAttribute("data-autoplay", "playing");
+          if (!deckTween?.isActive()) scheduleDeckAdvance(1.1);
+        };
+
+        sizeDeck(0);
+        scheduleDeckAdvance(1.8);
+
+        const handleDeckResize = () => {
+          deckTween?.kill();
+          deckAdvanceCall?.kill();
+          sizeDeck(deckActiveIndex);
+          if (!deckPaused) scheduleDeckAdvance(1.1);
+        };
+
+        const handleDeckVisibility = () => {
+          if (document.hidden) pauseDeck("visibility");
+          else resumeDeck("visibility");
+        };
+        const handleDeckMouseEnter = () => pauseDeck("pointer");
+        const handleDeckMouseLeave = () => resumeDeck("pointer");
+        const handleDeckFocusIn = () => pauseDeck("focus");
+        const handleDeckFocusOut = () => resumeDeck("focus");
+
         window.addEventListener("resize", handleDeckResize, { passive: true });
-        cleanups.push(() => window.removeEventListener("resize", handleDeckResize));
+        deckWindow?.addEventListener("mouseenter", handleDeckMouseEnter);
+        deckWindow?.addEventListener("mouseleave", handleDeckMouseLeave);
+        deckWindow?.addEventListener("focusin", handleDeckFocusIn);
+        deckWindow?.addEventListener("focusout", handleDeckFocusOut);
+        document.addEventListener("visibilitychange", handleDeckVisibility);
+        cleanups.push(() => {
+          window.removeEventListener("resize", handleDeckResize);
+          deckWindow?.removeEventListener("mouseenter", handleDeckMouseEnter);
+          deckWindow?.removeEventListener("mouseleave", handleDeckMouseLeave);
+          deckWindow?.removeEventListener("focusin", handleDeckFocusIn);
+          deckWindow?.removeEventListener("focusout", handleDeckFocusOut);
+          document.removeEventListener("visibilitychange", handleDeckVisibility);
+        });
 
         const hero = root.querySelector(".dsr-hero");
         const handleHeroMove = (event) => {
@@ -531,7 +575,8 @@ export default function Landing() {
 
     return () => {
       cancelled = true;
-      draggableInstances.forEach((instance) => instance.kill());
+      deckAdvanceCall?.kill();
+      deckTween?.kill();
       cleanups.forEach((cleanup) => cleanup());
       context?.revert();
     };
@@ -562,6 +607,7 @@ export default function Landing() {
         menuOpen={menuOpen}
         setMenuOpen={setMenuOpen}
         closeMenu={closeMenu}
+        waitlistOnlyMode={waitlistOnlyMode}
       />
 
       <main>
@@ -588,15 +634,23 @@ export default function Landing() {
               Switch tools. Start fresh sessions. Continue exactly where you
               left off.
             </p>
-            <a href="#how-it-works" className="dsr-hero-text-link">
-              See how it works
-              <ArrowRight aria-hidden="true" />
-            </a>
-          </div>
-
-          <div className="dsr-drag-note" aria-hidden="true">
-            <MousePointer2 />
-            <span>Drag to explore project memory</span>
+            <div className="dsr-hero-links">
+              {waitlistOnlyMode ? (
+                <a href="#early-access" className="dsr-hero-primary-link">
+                  Join the waitlist
+                  <ArrowRight aria-hidden="true" />
+                </a>
+              ) : (
+                <Link to="/app" className="dsr-hero-primary-link">
+                  Open product
+                  <ArrowRight aria-hidden="true" />
+                </Link>
+              )}
+              <a href="#how-it-works" className="dsr-hero-text-link">
+                See how it works
+                <ArrowRight aria-hidden="true" />
+              </a>
+            </div>
           </div>
 
           <a href="#problem" className="dsr-scroll-cue" aria-label="Scroll to learn more">
@@ -714,10 +768,7 @@ export default function Landing() {
           </div>
 
           <div className="dsr-final-actions">
-            <Link to="/app" className="dsr-round-cta">
-              <span>Get early access</span>
-              <ArrowUpRight aria-hidden="true" />
-            </Link>
+            <WaitlistForm />
             <a
               href={GITHUB_URL}
               target="_blank"
@@ -731,12 +782,105 @@ export default function Landing() {
         </section>
       </main>
 
-      <LandingFooter />
+      <LandingFooter waitlistOnlyMode={waitlistOnlyMode} />
     </div>
   );
 }
 
-function LandingNav({ menuOpen, setMenuOpen, closeMenu }) {
+function WaitlistForm() {
+  const [email, setEmail] = useState("");
+  const [website, setWebsite] = useState("");
+  const [submission, setSubmission] = useState("idle");
+  const [message, setMessage] = useState(
+    "Private beta. No spam — just launch access and occasional progress notes.",
+  );
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setSubmission("submitting");
+    setMessage("Saving your place…");
+
+    try {
+      const result = await api.post("/waitlist", { email, website });
+      setSubmission("success");
+      setEmail("");
+      setMessage(result.message || "You're on the DaemonState waitlist.");
+    } catch (error) {
+      setSubmission("error");
+      setMessage(
+        error instanceof ApiError && error.status === 429
+          ? "Too many attempts. Please wait a minute and try again."
+          : "We couldn't save your email. Please check it and try again.",
+      );
+    }
+  };
+
+  const isSubmitting = submission === "submitting";
+  const isSuccess = submission === "success";
+
+  return (
+    <div className={`dsr-waitlist-card is-${submission}`}>
+      <div className="dsr-waitlist-heading">
+        <span>EARLY ACCESS / PRIVATE BETA</span>
+        <h3>Be first in line.</h3>
+        <p>
+          Join builders who want every AI coding session to start with the
+          context it needs.
+        </p>
+      </div>
+
+      <form onSubmit={handleSubmit} aria-label="Join the early-access waitlist">
+        <label htmlFor="waitlist-email">Email address</label>
+        <div className="dsr-waitlist-field">
+          <input
+            id="waitlist-email"
+            name="email"
+            type="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            placeholder="you@company.com"
+            autoComplete="email"
+            inputMode="email"
+            maxLength={320}
+            required
+            disabled={isSubmitting || isSuccess}
+            aria-describedby="waitlist-message"
+          />
+          <button type="submit" disabled={isSubmitting || isSuccess}>
+            <span>
+              {isSubmitting ? "Joining…" : isSuccess ? "You're in" : "Join waitlist"}
+            </span>
+            {isSuccess ? <Check aria-hidden="true" /> : <ArrowRight aria-hidden="true" />}
+          </button>
+        </div>
+
+        <div className="dsr-waitlist-honeypot" aria-hidden="true">
+          <label htmlFor="waitlist-website">Website</label>
+          <input
+            id="waitlist-website"
+            name="website"
+            type="text"
+            value={website}
+            onChange={(event) => setWebsite(event.target.value)}
+            autoComplete="off"
+            tabIndex={-1}
+          />
+        </div>
+      </form>
+
+      <p
+        id="waitlist-message"
+        className="dsr-waitlist-message"
+        role="status"
+        aria-live="polite"
+      >
+        {message}
+      </p>
+    </div>
+  );
+}
+
+function LandingNav({ menuOpen, setMenuOpen, closeMenu, waitlistOnlyMode }) {
   const links = [
     { href: "#problem", label: "Why" },
     { href: "#how-it-works", label: "Method" },
@@ -760,9 +904,12 @@ function LandingNav({ menuOpen, setMenuOpen, closeMenu }) {
         </nav>
 
         <div className="dsr-nav-actions">
-          <Link to="/app" className="dsr-nav-icon" aria-label="Open DaemonState">
-            <CircleDot aria-hidden="true" />
-          </Link>
+          {!waitlistOnlyMode && (
+            <Link to="/app" className="dsr-nav-product">
+              <span>Open product</span>
+              <ArrowUpRight aria-hidden="true" />
+            </Link>
+          )}
           <a
             href="#early-access"
             className="dsr-nav-join"
@@ -799,16 +946,21 @@ function LandingNav({ menuOpen, setMenuOpen, closeMenu }) {
           <X aria-hidden="true" />
         </button>
         <nav aria-label="Mobile navigation">
+          {!waitlistOnlyMode && (
+            <Link to="/app" onClick={closeMenu}>
+              <span>Open product</span>
+            </Link>
+          )}
           {links.map((link) => (
             <a key={link.href} href={link.href} onClick={closeMenu}>
               <span>{link.label}</span>
             </a>
           ))}
         </nav>
-        <Link to="/app" onClick={closeMenu}>
-          Open the app
+        <a href="#early-access" onClick={closeMenu}>
+          Join the waitlist
           <ArrowUpRight aria-hidden="true" />
-        </Link>
+        </a>
       </div>
     </>
   );
@@ -837,7 +989,12 @@ function SectionMarker({ label, number, dark = false }) {
 
 function HeroDeck() {
   return (
-    <div className="dsr-deck-window">
+    <div
+      aria-label="Project memory examples carousel."
+      className="dsr-deck-window"
+      data-autoplay="playing"
+      tabIndex={0}
+    >
       <div className="dsr-deck-track-shell">
         <div className="dsr-deck-track">
           {DECK_CARDS.map((card) => (
@@ -846,7 +1003,7 @@ function HeroDeck() {
         </div>
       </div>
       <span className="dsr-deck-index">
-        / <b className="dsr-deck-count">03</b>
+        / <b className="dsr-deck-count">01</b>
       </span>
     </div>
   );
@@ -1221,7 +1378,7 @@ function MemoryConsole() {
   );
 }
 
-function LandingFooter() {
+function LandingFooter({ waitlistOnlyMode }) {
   return (
     <footer className="dsr-footer">
       <div className="dsr-footer-brand">
@@ -1241,7 +1398,8 @@ function LandingFooter() {
         </div>
         <div>
           <span>Product</span>
-          <Link to="/app">Open app</Link>
+          {!waitlistOnlyMode && <Link to="/app">Open product</Link>}
+          <a href="#early-access">Join waitlist</a>
           <a href={GITHUB_URL} target="_blank" rel="noreferrer">GitHub</a>
         </div>
       </nav>

@@ -1,19 +1,23 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import Landing from "./Landing";
 import { ThemeProvider } from "../context/ThemeContext";
 
-function renderLanding() {
+function renderLanding({ waitlistOnlyMode = false } = {}) {
   return render(
     <ThemeProvider>
       <MemoryRouter>
-        <Landing />
+        <Landing waitlistOnlyMode={waitlistOnlyMode} />
       </MemoryRouter>
     </ThemeProvider>,
   );
 }
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("Landing", () => {
   it("leads with the persistent-context promise and working calls to action", () => {
@@ -38,10 +42,11 @@ describe("Landing", () => {
       "href",
       "#how-it-works",
     );
-    expect(screen.getByRole("link", { name: "Get early access" })).toHaveAttribute(
-      "href",
-      "/app",
+    expect(screen.getByRole("textbox", { name: "Email address" })).toHaveAttribute(
+      "type",
+      "email",
     );
+    expect(screen.getByRole("button", { name: "Join waitlist" })).toBeInTheDocument();
   });
 
   it("explains the recovery loop across supported coding agents", () => {
@@ -97,7 +102,7 @@ describe("Landing", () => {
     );
   });
 
-  it("renders the motion-first stages without changing product navigation", () => {
+  it("keeps obvious product entry points in local product mode", () => {
     const { container } = renderLanding();
     const mainNavigation = screen.getByRole("navigation", {
       name: "Main navigation",
@@ -106,6 +111,12 @@ describe("Landing", () => {
     expect(container.querySelector(".dsr-landing")).toBeInTheDocument();
     expect(container.querySelectorAll(".dsr-deck-card")).toHaveLength(5);
     expect(container.querySelector(".dsr-deck-track")).toBeInTheDocument();
+    expect(container.querySelector(".dsr-deck-window")).toHaveAttribute(
+      "data-autoplay",
+      "playing",
+    );
+    expect(screen.queryByText("Cards advance automatically")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Drag to explore/i)).not.toBeInTheDocument();
     expect(container.querySelector(".dsr-system-frame")).toBeInTheDocument();
     expect(container.querySelectorAll(".dsr-stack-card")).toHaveLength(3);
     expect(container.querySelectorAll(".dsr-agent-logo")).toHaveLength(13);
@@ -121,13 +132,53 @@ describe("Landing", () => {
     expect(container.querySelector("#project-memory")).toBeInTheDocument();
     expect(container.querySelector("#early-access")).toBeInTheDocument();
 
-    expect(screen.getByRole("link", { name: "Open DaemonState" })).toHaveAttribute(
-      "href",
-      "/app",
-    );
-    expect(screen.getByRole("link", { name: "Open app" })).toHaveAttribute(
-      "href",
-      "/app",
-    );
+    const productLinks = screen.getAllByRole("link", { name: "Open product" });
+    expect(productLinks.length).toBeGreaterThanOrEqual(2);
+    productLinks.forEach((link) => expect(link).toHaveAttribute("href", "/app"));
+    screen.getAllByRole("link", { name: /Join (the early-access )?waitlist/i })
+      .forEach((link) => expect(link).toHaveAttribute("href", "#early-access"));
+  });
+
+  it("removes every product entry point in public waitlist mode", () => {
+    const { container } = renderLanding({ waitlistOnlyMode: true });
+
+    expect(container.querySelector('a[href="/app"]')).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Open product" })).not.toBeInTheDocument();
+    screen.getAllByRole("link", { name: /Join (the early-access )?waitlist/i })
+      .forEach((link) => expect(link).toHaveAttribute("href", "#early-access"));
+  });
+
+  it("registers an email without leaving the landing page", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({
+        status: "registered",
+        message: "You're on the DaemonState waitlist.",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderLanding();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Email address" }), {
+      target: { value: "Builder@Example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Join waitlist" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/waitlist",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            email: "Builder@Example.com",
+            website: "",
+          }),
+        }),
+      );
+    });
+    expect(await screen.findByText("You're on the DaemonState waitlist."))
+      .toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "You're in" })).toBeDisabled();
   });
 });

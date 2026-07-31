@@ -185,6 +185,7 @@
 }
 
 .dsr-nav-icon,
+.dsr-nav-product,
 .dsr-nav-join,
 .dsr-menu-button {
   display: inline-flex;
@@ -204,6 +205,29 @@
 .dsr-nav-actions .dsr-nav-icon,
 .dsr-nav-actions .dsr-nav-join {
   color: var(--dsr-ink);
+}
+
+.dsr-nav-product {
+  gap: 14px;
+  padding: 0 20px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: var(--dsr-black);
+  color: var(--dsr-white);
+  font-family: var(--dsr-mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  transition: transform 0.25s ease, background 0.25s ease;
+}
+
+.dsr-nav-product:hover,
+.dsr-nav-product:focus-visible {
+  background: #252527;
+  transform: translateY(-2px);
+}
+
+.dsr-nav-product svg {
+  width: 15px;
 }
 
 .dsr-nav-icon svg {
@@ -378,11 +402,12 @@
   overflow: hidden;
   transform: translateX(-50%);
   transform-style: preserve-3d;
-  cursor: grab;
+  cursor: default;
 }
 
-.dsr-deck-window:active {
-  cursor: grabbing;
+.dsr-deck-window:focus-visible {
+  outline: 2px solid rgba(199, 255, 101, 0.72);
+  outline-offset: -6px;
 }
 
 .dsr-deck-track-shell {
@@ -399,7 +424,7 @@
   display: grid;
   width: 100%;
   gap: 18px;
-  touch-action: none;
+  touch-action: pan-y;
   will-change: transform;
 }
 
@@ -865,11 +890,43 @@
   font-size: 0.76rem;
 }
 
+.dsr-hero-links {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.dsr-hero-primary-link {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 15px;
+  border-radius: 999px;
+  background: var(--dsr-lime);
+  color: var(--dsr-ink);
+  font-family: var(--dsr-mono);
+  font-size: 0.61rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  transition: transform 0.25s ease, background 0.25s ease;
+}
+
+.dsr-hero-primary-link:hover,
+.dsr-hero-primary-link:focus-visible {
+  background: #d8ff91;
+  transform: translateY(-2px);
+}
+
+.dsr-hero-primary-link svg {
+  width: 12px;
+}
+
 .dsr-hero-text-link {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  margin-top: 14px;
   padding-bottom: 3px;
   border-bottom: 1px solid rgba(10, 10, 11, 0.5);
   font-family: var(--dsr-mono);
@@ -879,25 +936,6 @@
 
 .dsr-hero-text-link svg {
   width: 12px;
-}
-
-.dsr-drag-note {
-  position: absolute;
-  right: 25px;
-  bottom: 25px;
-  z-index: 6;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  color: #8a8a86;
-  font-family: var(--dsr-mono);
-  font-size: 0.68rem;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-}
-
-.dsr-drag-note svg {
-  width: 14px;
 }
 
 .dsr-scroll-cue {
@@ -2251,6 +2289,157 @@
   gap: 25px;
 }
 
+.dsr-waitlist-card {
+  width: min(760px, 72vw);
+  padding: clamp(24px, 3vw, 42px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 32px;
+  background:
+    radial-gradient(circle at 92% 4%, rgba(199, 255, 101, 0.17), transparent 28%),
+    var(--dsr-black);
+  color: var(--dsr-white);
+  box-shadow: 0 30px 80px rgba(10, 10, 11, 0.18);
+}
+
+.dsr-waitlist-heading > span {
+  display: block;
+  color: var(--dsr-lime);
+  font-family: var(--dsr-mono);
+  font-size: 0.61rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.dsr-waitlist-heading h3 {
+  margin: 18px 0 0;
+  font-size: clamp(2.2rem, 4vw, 4rem);
+  font-weight: 500;
+  letter-spacing: -0.07em;
+  line-height: 0.95;
+}
+
+.dsr-waitlist-heading p {
+  max-width: 470px;
+  margin: 17px 0 0;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 0.84rem;
+  letter-spacing: -0.02em;
+  line-height: 1.45;
+}
+
+.dsr-waitlist-card form {
+  position: relative;
+  margin-top: 28px;
+}
+
+.dsr-waitlist-card form > label {
+  display: block;
+  margin-bottom: 9px;
+  color: rgba(255, 255, 255, 0.7);
+  font-family: var(--dsr-mono);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.dsr-waitlist-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 9px;
+}
+
+.dsr-waitlist-field input {
+  min-width: 0;
+  height: 58px;
+  padding: 0 18px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 15px;
+  outline: 0;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--dsr-white);
+  font-size: 0.94rem;
+  letter-spacing: -0.025em;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.dsr-waitlist-field input::placeholder {
+  color: rgba(255, 255, 255, 0.36);
+}
+
+.dsr-waitlist-field input:focus-visible {
+  border-color: var(--dsr-lime);
+  background: rgba(255, 255, 255, 0.11);
+}
+
+.dsr-waitlist-field button {
+  display: inline-flex;
+  min-width: 174px;
+  height: 58px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 0 19px 0 22px;
+  border: 0;
+  border-radius: 15px;
+  background: var(--dsr-lime);
+  color: var(--dsr-ink);
+  cursor: pointer;
+  font-family: var(--dsr-mono);
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+
+.dsr-waitlist-field button:hover:not(:disabled),
+.dsr-waitlist-field button:focus-visible:not(:disabled) {
+  background: #d8ff91;
+  transform: translateY(-2px);
+}
+
+.dsr-waitlist-field button:disabled {
+  cursor: default;
+}
+
+.dsr-waitlist-field button svg {
+  width: 15px;
+}
+
+.dsr-waitlist-card.is-success .dsr-waitlist-field button {
+  background: var(--dsr-white);
+}
+
+.dsr-waitlist-card.is-error .dsr-waitlist-field input {
+  border-color: var(--dsr-coral);
+}
+
+.dsr-waitlist-message {
+  min-height: 18px;
+  margin: 12px 0 0;
+  color: rgba(255, 255, 255, 0.48);
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+
+.dsr-waitlist-card.is-success .dsr-waitlist-message {
+  color: var(--dsr-lime);
+}
+
+.dsr-waitlist-card.is-error .dsr-waitlist-message {
+  color: #ff9c88;
+}
+
+.dsr-waitlist-honeypot {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .dsr-round-cta {
   display: flex;
   width: clamp(190px, 16vw, 250px);
@@ -2458,6 +2647,10 @@
     display: none;
   }
 
+  .dsr-nav-product {
+    display: none;
+  }
+
   .dsr-nav-join {
     min-width: 112px;
     height: 50px;
@@ -2543,12 +2736,6 @@
 
   .dsr-hero-support p + p {
     display: none;
-  }
-
-  .dsr-drag-note {
-    right: 15px;
-    bottom: 134px;
-    font-size: 0.56rem;
   }
 
   .dsr-scroll-cue {
@@ -2899,7 +3086,18 @@
   }
 
   .dsr-final-actions {
-    align-items: center;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 22px;
+  }
+
+  .dsr-waitlist-card {
+    width: 100%;
+    border-radius: 24px;
+  }
+
+  .dsr-final-actions > .dsr-text-link {
+    align-self: flex-end;
   }
 
   .dsr-round-cta {
@@ -2934,16 +3132,24 @@
     font-size: 2.28rem;
   }
 
-  .dsr-drag-note {
-    bottom: 128px;
-  }
-
   .dsr-problem-statement {
     font-size: 2.42rem;
   }
 
   .dsr-final-actions {
     gap: 13px;
+  }
+
+  .dsr-waitlist-card {
+    padding: 22px 18px;
+  }
+
+  .dsr-waitlist-field {
+    grid-template-columns: 1fr;
+  }
+
+  .dsr-waitlist-field button {
+    width: 100%;
   }
 
   .dsr-round-cta {
