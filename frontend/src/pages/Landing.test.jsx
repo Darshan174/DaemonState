@@ -5,11 +5,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import Landing from "./Landing";
 import { ThemeProvider } from "../context/ThemeContext";
 
-function renderLanding() {
+function renderLanding({ waitlistOnlyMode = false } = {}) {
   return render(
     <ThemeProvider>
       <MemoryRouter>
-        <Landing />
+        <Landing waitlistOnlyMode={waitlistOnlyMode} />
       </MemoryRouter>
     </ThemeProvider>,
   );
@@ -102,7 +102,7 @@ describe("Landing", () => {
     );
   });
 
-  it("renders the motion-first stages without exposing the product app", () => {
+  it("keeps obvious product entry points in local product mode", () => {
     const { container } = renderLanding();
     const mainNavigation = screen.getByRole("navigation", {
       name: "Main navigation",
@@ -115,7 +115,7 @@ describe("Landing", () => {
       "data-autoplay",
       "playing",
     );
-    expect(screen.getByText("Cards advance automatically")).toBeInTheDocument();
+    expect(screen.queryByText("Cards advance automatically")).not.toBeInTheDocument();
     expect(screen.queryByText(/Drag to explore/i)).not.toBeInTheDocument();
     expect(container.querySelector(".dsr-system-frame")).toBeInTheDocument();
     expect(container.querySelectorAll(".dsr-stack-card")).toHaveLength(3);
@@ -132,7 +132,18 @@ describe("Landing", () => {
     expect(container.querySelector("#project-memory")).toBeInTheDocument();
     expect(container.querySelector("#early-access")).toBeInTheDocument();
 
+    const productLinks = screen.getAllByRole("link", { name: "Open product" });
+    expect(productLinks.length).toBeGreaterThanOrEqual(2);
+    productLinks.forEach((link) => expect(link).toHaveAttribute("href", "/app"));
+    screen.getAllByRole("link", { name: /Join (the early-access )?waitlist/i })
+      .forEach((link) => expect(link).toHaveAttribute("href", "#early-access"));
+  });
+
+  it("removes every product entry point in public waitlist mode", () => {
+    const { container } = renderLanding({ waitlistOnlyMode: true });
+
     expect(container.querySelector('a[href="/app"]')).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Open product" })).not.toBeInTheDocument();
     screen.getAllByRole("link", { name: /Join (the early-access )?waitlist/i })
       .forEach((link) => expect(link).toHaveAttribute("href", "#early-access"));
   });

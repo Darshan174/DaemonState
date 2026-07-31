@@ -185,6 +185,7 @@
 }
 
 .dsr-nav-icon,
+.dsr-nav-product,
 .dsr-nav-join,
 .dsr-menu-button {
   display: inline-flex;
@@ -204,6 +205,29 @@
 .dsr-nav-actions .dsr-nav-icon,
 .dsr-nav-actions .dsr-nav-join {
   color: var(--dsr-ink);
+}
+
+.dsr-nav-product {
+  gap: 14px;
+  padding: 0 20px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: var(--dsr-black);
+  color: var(--dsr-white);
+  font-family: var(--dsr-mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  transition: transform 0.25s ease, background 0.25s ease;
+}
+
+.dsr-nav-product:hover,
+.dsr-nav-product:focus-visible {
+  background: #252527;
+  transform: translateY(-2px);
+}
+
+.dsr-nav-product svg {
+  width: 15px;
 }
 
 .dsr-nav-icon svg {
@@ -912,32 +936,6 @@
 
 .dsr-hero-text-link svg {
   width: 12px;
-}
-
-.dsr-auto-note {
-  position: absolute;
-  right: 25px;
-  bottom: 25px;
-  z-index: 6;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  color: #8a8a86;
-  font-family: var(--dsr-mono);
-  font-size: 0.68rem;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-}
-
-.dsr-auto-note svg {
-  width: 14px;
-  animation: dsr-auto-note-spin 4s linear infinite;
-}
-
-@keyframes dsr-auto-note-spin {
-  to {
-    transform: rotate(-360deg);
-  }
 }
 
 .dsr-scroll-cue {
@@ -2649,6 +2647,10 @@
     display: none;
   }
 
+  .dsr-nav-product {
+    display: none;
+  }
+
   .dsr-nav-join {
     min-width: 112px;
     height: 50px;
@@ -2734,12 +2736,6 @@
 
   .dsr-hero-support p + p {
     display: none;
-  }
-
-  .dsr-auto-note {
-    right: 15px;
-    bottom: 134px;
-    font-size: 0.56rem;
   }
 
   .dsr-scroll-cue {
@@ -3134,10 +3130,6 @@
   .dsr-hero-heading {
     top: 27%;
     font-size: 2.28rem;
-  }
-
-  .dsr-auto-note {
-    bottom: 128px;
   }
 
   .dsr-problem-statement {

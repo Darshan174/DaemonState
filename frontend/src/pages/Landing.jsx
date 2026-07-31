@@ -23,6 +23,7 @@ import {
 import DaemonStateIcon from "../components/DaemonStateIcon";
 import openaiIcon from "../assets/openai-icon.png";
 import { ApiError, api } from "../api/client";
+import { WAITLIST_ONLY } from "../config/deployment";
 import "./LandingReplica.css";
 
 const GITHUB_URL = "https://github.com/Darshan174/DaemonState";
@@ -129,7 +130,7 @@ function splitWords(text) {
   ));
 }
 
-export default function Landing() {
+export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
   const pageRef = useRef(null);
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -226,7 +227,7 @@ export default function Landing() {
             "-=0.72",
           )
           .from(
-            ".dsr-hero-support, .dsr-auto-note",
+            ".dsr-hero-support",
             {
               y: 18,
               autoAlpha: 0,
@@ -606,6 +607,7 @@ export default function Landing() {
         menuOpen={menuOpen}
         setMenuOpen={setMenuOpen}
         closeMenu={closeMenu}
+        waitlistOnlyMode={waitlistOnlyMode}
       />
 
       <main>
@@ -633,20 +635,22 @@ export default function Landing() {
               left off.
             </p>
             <div className="dsr-hero-links">
-              <a href="#early-access" className="dsr-hero-primary-link">
-                Join the waitlist
-                <ArrowRight aria-hidden="true" />
-              </a>
+              {waitlistOnlyMode ? (
+                <a href="#early-access" className="dsr-hero-primary-link">
+                  Join the waitlist
+                  <ArrowRight aria-hidden="true" />
+                </a>
+              ) : (
+                <Link to="/app" className="dsr-hero-primary-link">
+                  Open product
+                  <ArrowRight aria-hidden="true" />
+                </Link>
+              )}
               <a href="#how-it-works" className="dsr-hero-text-link">
                 See how it works
                 <ArrowRight aria-hidden="true" />
               </a>
             </div>
-          </div>
-
-          <div className="dsr-auto-note" aria-hidden="true">
-            <RefreshCw />
-            <span>Cards advance automatically</span>
           </div>
 
           <a href="#problem" className="dsr-scroll-cue" aria-label="Scroll to learn more">
@@ -778,7 +782,7 @@ export default function Landing() {
         </section>
       </main>
 
-      <LandingFooter />
+      <LandingFooter waitlistOnlyMode={waitlistOnlyMode} />
     </div>
   );
 }
@@ -876,7 +880,7 @@ function WaitlistForm() {
   );
 }
 
-function LandingNav({ menuOpen, setMenuOpen, closeMenu }) {
+function LandingNav({ menuOpen, setMenuOpen, closeMenu, waitlistOnlyMode }) {
   const links = [
     { href: "#problem", label: "Why" },
     { href: "#how-it-works", label: "Method" },
@@ -900,6 +904,12 @@ function LandingNav({ menuOpen, setMenuOpen, closeMenu }) {
         </nav>
 
         <div className="dsr-nav-actions">
+          {!waitlistOnlyMode && (
+            <Link to="/app" className="dsr-nav-product">
+              <span>Open product</span>
+              <ArrowUpRight aria-hidden="true" />
+            </Link>
+          )}
           <a
             href="#early-access"
             className="dsr-nav-join"
@@ -936,6 +946,11 @@ function LandingNav({ menuOpen, setMenuOpen, closeMenu }) {
           <X aria-hidden="true" />
         </button>
         <nav aria-label="Mobile navigation">
+          {!waitlistOnlyMode && (
+            <Link to="/app" onClick={closeMenu}>
+              <span>Open product</span>
+            </Link>
+          )}
           {links.map((link) => (
             <a key={link.href} href={link.href} onClick={closeMenu}>
               <span>{link.label}</span>
@@ -975,7 +990,7 @@ function SectionMarker({ label, number, dark = false }) {
 function HeroDeck() {
   return (
     <div
-      aria-label="Project memory examples. Cards advance automatically and pause while focused."
+      aria-label="Project memory examples carousel."
       className="dsr-deck-window"
       data-autoplay="playing"
       tabIndex={0}
@@ -1363,7 +1378,7 @@ function MemoryConsole() {
   );
 }
 
-function LandingFooter() {
+function LandingFooter({ waitlistOnlyMode }) {
   return (
     <footer className="dsr-footer">
       <div className="dsr-footer-brand">
@@ -1383,6 +1398,7 @@ function LandingFooter() {
         </div>
         <div>
           <span>Product</span>
+          {!waitlistOnlyMode && <Link to="/app">Open product</Link>}
           <a href="#early-access">Join waitlist</a>
           <a href={GITHUB_URL} target="_blank" rel="noreferrer">GitHub</a>
         </div>

@@ -2,7 +2,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
-import App, { waitlistOnly } from "./App";
+import App from "./App";
+import { waitlistOnly } from "./config/deployment";
 import { ThemeProvider } from "./context/ThemeContext";
 import { WorkspaceProvider } from "./context/WorkspaceContext";
 
