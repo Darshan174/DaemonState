@@ -90,6 +90,10 @@ from app.services.session_summary import (
     is_substantive_user_request,
     normalize_substantive_user_request,
 )
+from app.services.session_context_policy import (
+    SessionContextCompactionsRequiredError,
+    require_session_context_compactions,
+)
 from app.services.task_workflow import (
     TaskWorkflowService,
     complete_verified_execution_task,
@@ -106,7 +110,6 @@ MAX_BLOCKER_TASK_LENGTH = 140
 PROVIDER_READINESS_CACHE_SECONDS = 30.0
 COMPOSER_READINESS_TIMEOUT_SECONDS = 3.0
 CONTINUATION_STAGE_PENDING_LEASE_SECONDS = 60.0
-DESKTOP_ACCESS_CONFIRMATION = "user_confirmed_usable_in_desktop"
 _DESKTOP_STAGE_ADVISORY_QUALITY_CODES = frozenset({
     "project_context_core_sections_empty",
 })
@@ -325,7 +328,6 @@ class ContinuationStageService:
         target_provider: str = "auto",
         provider_model: str | None = None,
         provider_effort: str | None = None,
-        desktop_access_confirmation: Mapping[str, str] | None = None,
         task_mode: TaskMode | str | None = None,
         artifacts: tuple[ContinuationArtifactInput, ...] = (),
         token_budget: int | None = None,
@@ -399,68 +401,6 @@ class ContinuationStageService:
             )
 
         normalized_target = _target_provider(target_provider)
-        confirmed_access_provider = _desktop_access_confirmation_provider(
-            desktop_access_confirmation
-        )
-        if confirmed_access_provider is not None:
-            if normalized_target == "auto":
-                raise ContinuationRunError(
-                    "desktop_access_confirmation_requires_exact_provider",
-                    (
-                        "Desktop access confirmation must name the exact "
-                        "selected provider. No desktop app was opened."
-                    ),
-                    status_code=422,
-                    blocker={
-                        "code": (
-                            "desktop_access_confirmation_requires_exact_provider"
-                        ),
-                        "title": "Choose the confirmed desktop app",
-                        "provider": confirmed_access_provider,
-                        "message": (
-                            "A request-scoped access confirmation cannot be "
-                            "used with automatic provider selection."
-                        ),
-                        "action": (
-                            f"Choose {PROVIDER_DISPLAY_NAMES[
-                                confirmed_access_provider
-                            ]} explicitly, then confirm access again."
-                        ),
-                        "affected_tasks": [_bounded_task(
-                            objective or "Current continuation task"
-                        )],
-                    },
-                )
-            if confirmed_access_provider != normalized_target:
-                raise ContinuationRunError(
-                    "desktop_access_confirmation_provider_mismatch",
-                    (
-                        "Desktop access was confirmed for a different "
-                        "provider. No desktop app was opened."
-                    ),
-                    status_code=422,
-                    blocker={
-                        "code": (
-                            "desktop_access_confirmation_provider_mismatch"
-                        ),
-                        "title": "Desktop confirmation does not match",
-                        "provider": normalized_target,
-                        "message": (
-                            f"The confirmation names "
-                            f"{PROVIDER_DISPLAY_NAMES[
-                                confirmed_access_provider
-                            ]}, but the request targets "
-                            f"{PROVIDER_DISPLAY_NAMES[normalized_target]}."
-                        ),
-                        "action": (
-                            "Confirm access in the same desktop app selected "
-                            "for this handoff."
-                        ),
-                        "affected_tasks": [_bounded_task(
-                            objective or "Current continuation task"
-                        )],
-                    },
-                )
         stage_request_sha256 = _continuation_stage_request_sha256(
             repo_path=repo_path,
             objective=objective,
@@ -473,7 +413,6 @@ class ContinuationStageService:
             target_provider=normalized_target,
             provider_model=provider_model,
             provider_effort=provider_effort,
-            desktop_access_confirmation=desktop_access_confirmation,
             task_mode=task_mode,
             artifacts=artifacts,
             token_budget=token_budget,
@@ -524,14 +463,7 @@ class ContinuationStageService:
                     composer_readiness,
                     strict=True,
                 )
-                if (
-                    readiness.ready
-                    or _desktop_access_confirmation_allows(
-                        provider,
-                        readiness,
-                        confirmed_access_provider=confirmed_access_provider,
-                    )
-                )
+                if readiness.ready
             ),
             None,
         )
@@ -557,14 +489,6 @@ class ContinuationStageService:
                 },
             )
         selected_provider, selected_composer_readiness = selected
-        access_user_confirmed = (
-            not selected_composer_readiness.ready
-            and _desktop_access_confirmation_allows(
-                selected_provider,
-                selected_composer_readiness,
-                confirmed_access_provider=confirmed_access_provider,
-            )
-        )
         if (
             str(provider_effort or "").strip()
             and selected_provider != "codex"
@@ -847,22 +771,14 @@ class ContinuationStageService:
         ).hexdigest()
         handoff_id = str(uuid4())
         source = _normalized_source_provider(preparation.source_session)
-        account_access_state = (
-            "user_confirmed"
-            if access_user_confirmed
-            else selected_composer_readiness.account_access_state
-        )
+        account_access_state = selected_composer_readiness.account_access_state
         account_access_verified = (
             selected_composer_readiness.account_access_verified is True
         )
         account_access_basis = (
-            "request_attestation"
-            if access_user_confirmed
-            else (
-                "provider_desktop_bridge"
-                if account_access_verified
-                else None
-            )
+            "provider_desktop_bridge"
+            if account_access_verified
+            else None
         )
         public_handoff: dict[str, Any] = {
             "handoff_id": handoff_id,
@@ -1702,6 +1618,28 @@ async def _canonical_session_context_for_preparation(
             status_code=409,
         )
 
+    try:
+        await require_session_context_compactions(
+            session,
+            workspace_id=workspace_id,
+            provider=checkpoint.provider,
+            session_id=checkpoint.session_id,
+            access_scope=access_scope,
+        )
+    except SessionContextCompactionsRequiredError as exc:
+        raise ContinuationRunError(
+            exc.code,
+            str(exc),
+            status_code=exc.status_code,
+            blocker={
+                "code": exc.code,
+                "title": "Session Context locked",
+                "message": str(exc),
+                "action": "Continue this session through two compactions, then retry.",
+                "affected_tasks": [_bounded_task(preparation.objective)],
+            },
+        ) from exc
+
     request_verbatim = await resolve_session_handoff_request_verbatim(
         session,
         checkpoint,
@@ -2206,7 +2144,6 @@ def _continuation_stage_request_sha256(
     target_provider: str,
     provider_model: str | None,
     provider_effort: str | None,
-    desktop_access_confirmation: Mapping[str, str] | None,
     task_mode: TaskMode | str | None,
     artifacts: tuple[ContinuationArtifactInput, ...],
     token_budget: int | None,
@@ -2241,11 +2178,6 @@ def _continuation_stage_request_sha256(
             "target_provider": target_provider,
             "provider_model": provider_model,
             "provider_effort": provider_effort,
-            "desktop_access_confirmation": (
-                dict(desktop_access_confirmation)
-                if desktop_access_confirmation is not None
-                else None
-            ),
             "task_mode": normalized_task_mode,
             "artifacts": artifact_payloads,
             "token_budget": token_budget,
@@ -2863,7 +2795,7 @@ async def provider_readiness(
     *,
     force_refresh: bool = False,
 ) -> list[ProviderReadiness]:
-    """Return desktop-app readiness without invoking any provider CLI."""
+    """Return desktop dispatch readiness plus bounded account evidence."""
 
     global _provider_readiness_cache
     cache_key = (
@@ -2925,10 +2857,17 @@ def _composer_provider_readiness(
 ) -> ProviderReadiness:
     provider = readiness.provider
     if readiness.ready:
+        status = (
+            "authentication_required"
+            if readiness.code == "desktop_account_sign_in_required"
+            else "rate_limited"
+            if readiness.code == "desktop_account_rate_limited"
+            else "ready"
+        )
         return ProviderReadiness(
             provider=provider,
             ready=True,
-            status="ready",
+            status=status,
             code=readiness.code,
             message=readiness.message,
             action=readiness.action,
@@ -2937,18 +2876,19 @@ def _composer_provider_readiness(
             exact_session_supported=False,
             context_staging_supported=False,
             desktop_handoff_supported=True,
-            readiness_scope="desktop_application_and_account_access",
+            readiness_scope="desktop_dispatch_with_account_evidence",
             account_access_state=readiness.account_access_state,
             account_access_verified=readiness.account_access_verified,
             model_catalog_source=readiness.model_catalog_source,
+            capabilities={
+                "desktop_dispatch_available": True,
+                "account_access_probe_supported": provider == "codex",
+            },
         )
-    access_unverified = (
-        readiness.code == "desktop_account_access_unverified"
-    )
     return ProviderReadiness(
         provider=provider,
         ready=False,
-        status="access_unverified" if access_unverified else "unavailable",
+        status="unavailable",
         code=readiness.code,
         message=readiness.message,
         action=readiness.action,
@@ -2957,7 +2897,7 @@ def _composer_provider_readiness(
         exact_session_supported=False,
         context_staging_supported=False,
         desktop_handoff_supported=False,
-        readiness_scope="desktop_application_and_account_access",
+        readiness_scope="desktop_dispatch_with_account_evidence",
         account_access_state=readiness.account_access_state,
         account_access_verified=readiness.account_access_verified,
         model_catalog_source=readiness.model_catalog_source,
@@ -2966,10 +2906,7 @@ def _composer_provider_readiness(
                 readiness.desktop_available
                 and readiness.url_scheme_registered
             ),
-            "account_access_confirmation_supported": access_unverified and (
-                readiness.desktop_available
-                and readiness.url_scheme_registered
-            ),
+            "account_access_probe_supported": provider == "codex",
         },
     )
 
@@ -3155,44 +3092,6 @@ def _target_provider(value: str | None) -> str:
             f"Unsupported target provider: {normalized or 'empty'}.",
         )
     return normalized
-
-
-def _desktop_access_confirmation_provider(
-    confirmation: Mapping[str, str] | None,
-) -> ProviderName | None:
-    if confirmation is None:
-        return None
-    provider = str(confirmation.get("provider") or "").strip().lower()
-    confirmation_value = str(
-        confirmation.get("confirmation") or ""
-    ).strip().lower()
-    if (
-        provider not in PROVIDER_PREFERENCE
-        or confirmation_value != DESKTOP_ACCESS_CONFIRMATION
-    ):
-        raise ContinuationRunError(
-            "desktop_access_confirmation_invalid",
-            (
-                "Desktop access confirmation is invalid. No desktop app was "
-                "opened."
-            ),
-            status_code=422,
-        )
-    return provider  # type: ignore[return-value]
-
-
-def _desktop_access_confirmation_allows(
-    provider: ProviderName,
-    readiness: HarnessComposerReadiness,
-    *,
-    confirmed_access_provider: ProviderName | None,
-) -> bool:
-    return (
-        confirmed_access_provider == provider
-        and readiness.code == "desktop_account_access_unverified"
-        and readiness.desktop_available is True
-        and readiness.url_scheme_registered is True
-    )
 
 
 def _provider_readiness_error(

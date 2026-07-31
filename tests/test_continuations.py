@@ -166,6 +166,72 @@ async def test_prepare_continuation_infers_task_and_captures_session_tip(
     )
 
 
+async def test_prepare_continuation_repairs_an_interrupted_checkpoint_shell(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal="Continue from a canonical checkpoint after interrupted capture.",
+        session_id="repair-interrupted-checkpoint",
+    )
+    boundary = await db_session.scalar(
+        select(SessionEvent).where(
+            SessionEvent.workspace_id == workspace.id,
+            SessionEvent.provider == "codex",
+            SessionEvent.session_id == "repair-interrupted-checkpoint",
+            SessionEvent.sequence_number == 2,
+        )
+    )
+    assert boundary is not None
+    shell = WorkCheckpoint(
+        workspace_id=workspace.id,
+        source_document_id=boundary.source_document_id,
+        provider="codex",
+        session_id="repair-interrupted-checkpoint",
+        boundary_event_id=boundary.id,
+        trigger="continuation",
+        schema_version="work_checkpoint.v10",
+        capture_status="complete",
+        continuation_status="ready",
+        payload_json="{}",
+        payload_sha256="",
+    )
+    db_session.add(shell)
+    await db_session.flush()
+    shell_id = shell.id
+
+    response = await client.post(
+        "/api/continuations/prepare",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "source_provider": "codex",
+            "source_session_id": "repair-interrupted-checkpoint",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["checkpoint"]["id"] == str(shell_id)
+    assert body["source_session"]["session_id"] == (
+        "repair-interrupted-checkpoint"
+    )
+    db_session.expire_all()
+    repaired = await db_session.get(WorkCheckpoint, shell_id)
+    assert repaired is not None
+    assert repaired.payload_sha256 == hashlib.sha256(
+        repaired.payload_json.encode("utf-8")
+    ).hexdigest()
+    assert list(await db_session.scalars(
+        select(CheckpointItem).where(
+            CheckpointItem.checkpoint_id == shell_id
+        )
+    ))
+
+
 async def test_completed_selected_task_blocks_execution_but_allows_project_context_copy(
     client,
     db_session,
@@ -3083,25 +3149,31 @@ async def test_provider_readiness_endpoint_returns_structured_local_status(
         "app.services.continuation_runtime.probe_harness_composer_readiness",
         lambda provider: HarnessComposerReadiness(
             provider=provider,
-            ready=False,
+            ready=provider != "claude",
             desktop_available=provider != "claude",
             url_scheme_registered=provider != "claude",
             required_url_scheme=provider,
             code=(
-                "desktop_account_access_unverified"
-                if provider != "claude"
+                "desktop_account_access_verified"
+                if provider == "codex"
+                else "desktop_dispatch_ready"
+                if provider == "opencode"
                 else "desktop_app_missing"
             ),
             message=(
-                f"{provider} desktop is installed, but account access is unverified."
+                f"{provider} desktop is ready for a draft handoff."
                 if provider != "claude"
                 else "Claude Desktop is missing."
             ),
             action=f"Install or open {provider} Desktop.",
             account_access_state=(
-                "unverified" if provider != "claude" else "not_checked"
+                "verified"
+                if provider == "codex"
+                else "unverified"
+                if provider == "opencode"
+                else "not_checked"
             ),
-            account_access_verified=False,
+            account_access_verified=provider == "codex",
         ),
     )
 
@@ -3120,23 +3192,26 @@ async def test_provider_readiness_endpoint_returns_structured_local_status(
     }
     assert set(providers) == {"codex", "claude", "opencode"}
     assert all(
-        item["readiness_scope"] == "desktop_application_and_account_access"
+        item["readiness_scope"] == "desktop_dispatch_with_account_evidence"
         and item["models"] == []
         and item["context_staging_supported"] is False
         for item in providers.values()
     )
-    assert providers["codex"]["ready"] is False
-    assert providers["codex"]["status"] == "access_unverified"
-    assert providers["codex"]["desktop_handoff_supported"] is False
-    assert providers["codex"]["code"] == "desktop_account_access_unverified"
+    assert providers["codex"]["ready"] is True
+    assert providers["codex"]["status"] == "ready"
+    assert providers["codex"]["desktop_handoff_supported"] is True
+    assert providers["codex"]["code"] == "desktop_account_access_verified"
     assert providers["codex"]["capabilities"]["desktop_dispatch_available"] is True
     assert providers["codex"]["capabilities"][
-        "account_access_confirmation_supported"
+        "account_access_probe_supported"
     ] is True
-    assert providers["opencode"]["ready"] is False
-    assert providers["opencode"]["status"] == "access_unverified"
-    assert providers["opencode"]["desktop_handoff_supported"] is False
-    assert providers["opencode"]["code"] == "desktop_account_access_unverified"
+    assert providers["opencode"]["ready"] is True
+    assert providers["opencode"]["status"] == "ready"
+    assert providers["opencode"]["desktop_handoff_supported"] is True
+    assert providers["opencode"]["code"] == "desktop_dispatch_ready"
+    assert providers["opencode"]["capabilities"][
+        "account_access_probe_supported"
+    ] is False
     assert providers["claude"]["ready"] is False
     assert providers["claude"]["desktop_handoff_supported"] is False
     assert providers["claude"]["code"] == "desktop_app_missing"
@@ -3237,10 +3312,6 @@ async def test_stage_requires_a_ready_desktop_composer_scheme(
             "repo_path": str(tmp_path),
             "idempotency_key": "composer-scheme-required",
             "target_provider": "codex",
-            "desktop_access_confirmation": {
-                "provider": "codex",
-                "confirmation": "user_confirmed_usable_in_desktop",
-            },
             "source_provider": "codex",
             "source_session_id": "composer-scheme-required",
         },
@@ -3254,7 +3325,7 @@ async def test_stage_requires_a_ready_desktop_composer_scheme(
     assert list(await db_session.scalars(select(AgentRun))) == []
 
 
-async def test_stage_blocks_installed_desktop_with_unverified_account_access(
+async def test_stage_rejects_session_context_before_two_compactions(
     client,
     db_session,
     monkeypatch,
@@ -3263,33 +3334,85 @@ async def test_stage_blocks_installed_desktop_with_unverified_account_access(
     workspace = await _seed_session(
         db_session,
         tmp_path,
-        goal="Do not open OpenCode until usable provider access is verified.",
+        goal="Do not stage this new session before the context is mature.",
+        session_id="stage-minimum-compactions",
+        provider="codex",
+    )
+    _initialize_git_repository(tmp_path)
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.launch_harness_composer",
+        lambda *_args, **_kwargs: pytest.fail(
+            "an under-compacted session must not reach Desktop"
+        ),
+    )
+
+    response = await client.post(
+        "/api/continuations/stage",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "idempotency_key": "stage-minimum-compactions",
+            "target_provider": "codex",
+            "source_provider": "codex",
+            "source_session_id": "stage-minimum-compactions",
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "session_context_compactions_required"
+    assert detail["message"] == "2 compactions required (0/2)."
+    assert detail["blocker"]["title"] == "Session Context locked"
+
+
+async def test_stage_opens_installed_desktop_with_unverified_account_access(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal="Open the OpenCode draft without asking for an attestation.",
         session_id="account-access-unverified",
         provider="codex",
+        compaction_count=2,
     )
     _initialize_git_repository(tmp_path)
     monkeypatch.setattr(
         "app.services.continuation_runtime.probe_harness_composer_readiness",
         lambda provider: HarnessComposerReadiness(
             provider=provider,
-            ready=False,
+            ready=True,
             desktop_available=True,
             url_scheme_registered=True,
             required_url_scheme=provider,
-            code="desktop_account_access_unverified",
+            code="desktop_dispatch_ready",
             message=(
-                f"{provider} is installed, but account access is unverified."
+                f"{provider} is ready to receive the draft."
             ),
-            action=f"Verify provider/model access in {provider} Desktop.",
+            action=f"Open {provider} Desktop.",
             account_access_state="unverified",
             account_access_verified=False,
         ),
     )
+    launch_calls: list[str] = []
+
+    def launch(provider: str, *, cwd: str, prompt: str) -> dict[str, object]:
+        launch_calls.append(provider)
+        assert cwd == str(tmp_path)
+        assert "without asking for an attestation" in prompt
+        return {
+            "open_requested": True,
+            "context_copied": True,
+            "prefill_requested": True,
+            "context_delivery": "desktop_composer_prefill_and_clipboard",
+        }
+
     monkeypatch.setattr(
         "app.services.continuation_runtime.launch_harness_composer",
-        lambda *_args, **_kwargs: pytest.fail(
-            "an unverified desktop account must not receive an open request"
-        ),
+        launch,
     )
 
     response = await client.post(
@@ -3304,15 +3427,17 @@ async def test_stage_blocks_installed_desktop_with_unverified_account_access(
         },
     )
 
-    assert response.status_code == 409, response.text
-    detail = response.json()["detail"]
-    assert detail["code"] == "desktop_account_access_unverified"
-    assert detail["blocker"]["code"] == "desktop_account_access_unverified"
-    assert list(await db_session.scalars(select(ContinuationStageRequest))) == []
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "awaiting_user"
+    assert body["delivery"]["account_access_state"] == "unverified"
+    assert body["delivery"]["account_access_verified"] is False
+    assert body["delivery"]["account_access_basis"] is None
+    assert launch_calls == ["opencode"]
     assert list(await db_session.scalars(select(AgentRun))) == []
 
 
-async def test_stage_accepts_request_scoped_desktop_access_confirmation(
+async def test_stage_records_automatic_codex_account_evidence(
     client,
     db_session,
     monkeypatch,
@@ -3321,9 +3446,10 @@ async def test_stage_accepts_request_scoped_desktop_access_confirmation(
     workspace = await _seed_session(
         db_session,
         tmp_path,
-        goal="Open only after I confirm usable access in OpenCode Desktop.",
-        session_id="account-access-user-confirmed",
+        goal="Open after Codex reports account and model access automatically.",
+        session_id="account-access-auto-verified",
         provider="codex",
+        compaction_count=2,
     )
     _initialize_git_repository(tmp_path)
     launch_calls: list[str] = []
@@ -3331,24 +3457,24 @@ async def test_stage_accepts_request_scoped_desktop_access_confirmation(
         "app.services.continuation_runtime.probe_harness_composer_readiness",
         lambda provider: HarnessComposerReadiness(
             provider=provider,
-            ready=False,
+            ready=True,
             desktop_available=True,
             url_scheme_registered=True,
             required_url_scheme=provider,
-            code="desktop_account_access_unverified",
+            code="desktop_account_access_verified",
             message=(
-                f"{provider} is installed, but account access is unverified."
+                f"{provider} reports signed-in account and model access."
             ),
-            action=f"Verify provider/model access in {provider} Desktop.",
-            account_access_state="unverified",
-            account_access_verified=False,
+            action=f"Open {provider} Desktop.",
+            account_access_state="verified",
+            account_access_verified=True,
         ),
     )
 
     def launch(provider: str, *, cwd: str, prompt: str) -> dict[str, object]:
         launch_calls.append(provider)
         assert cwd == str(tmp_path)
-        assert "Open only after I confirm" in prompt
+        assert "reports account and model access automatically" in prompt
         return {
             "open_requested": True,
             "context_copied": True,
@@ -3363,14 +3489,10 @@ async def test_stage_accepts_request_scoped_desktop_access_confirmation(
     request = {
         "workspace_id": str(workspace.id),
         "repo_path": str(tmp_path),
-        "idempotency_key": "account-access-user-confirmed",
-        "target_provider": "opencode",
-        "desktop_access_confirmation": {
-            "provider": "opencode",
-            "confirmation": "user_confirmed_usable_in_desktop",
-        },
+        "idempotency_key": "account-access-auto-verified",
+        "target_provider": "codex",
         "source_provider": "codex",
-        "source_session_id": "account-access-user-confirmed",
+        "source_session_id": "account-access-auto-verified",
     }
 
     response = await client.post("/api/continuations/stage", json=request)
@@ -3379,87 +3501,11 @@ async def test_stage_accepts_request_scoped_desktop_access_confirmation(
     body = response.json()
     assert body["status"] == "awaiting_user"
     assert body["execution_started"] is False
-    assert body["delivery"]["account_access_state"] == "user_confirmed"
-    assert body["delivery"]["account_access_verified"] is False
-    assert body["delivery"]["account_access_basis"] == "request_attestation"
-    assert launch_calls == ["opencode"]
+    assert body["delivery"]["account_access_state"] == "verified"
+    assert body["delivery"]["account_access_verified"] is True
+    assert body["delivery"]["account_access_basis"] == "provider_desktop_bridge"
+    assert launch_calls == ["codex"]
     assert list(await db_session.scalars(select(AgentRun))) == []
-
-    replay_without_confirmation = await client.post(
-        "/api/continuations/stage",
-        json={
-            key: value
-            for key, value in request.items()
-            if key != "desktop_access_confirmation"
-        },
-    )
-    assert replay_without_confirmation.status_code == 409
-    assert replay_without_confirmation.json()["detail"]["code"] == (
-        "continuation_idempotency_conflict"
-    )
-    assert launch_calls == ["opencode"]
-
-
-@pytest.mark.parametrize(
-    ("target_provider", "confirmation_provider", "expected_code"),
-    (
-        (
-            "opencode",
-            "codex",
-            "desktop_access_confirmation_provider_mismatch",
-        ),
-        (
-            "auto",
-            "opencode",
-            "desktop_access_confirmation_requires_exact_provider",
-        ),
-    ),
-)
-async def test_stage_rejects_ambiguous_desktop_access_confirmation(
-    client,
-    db_session,
-    monkeypatch,
-    tmp_path,
-    target_provider,
-    confirmation_provider,
-    expected_code,
-) -> None:
-    workspace = await _seed_session(
-        db_session,
-        tmp_path,
-        goal="Bind desktop access confirmation to one exact provider.",
-        session_id=f"access-confirmation-{target_provider}",
-        provider="codex",
-    )
-    _initialize_git_repository(tmp_path)
-    monkeypatch.setattr(
-        "app.services.continuation_runtime.launch_harness_composer",
-        lambda *_args, **_kwargs: pytest.fail(
-            "an ambiguous confirmation must not open a desktop app"
-        ),
-    )
-
-    response = await client.post(
-        "/api/continuations/stage",
-        json={
-            "workspace_id": str(workspace.id),
-            "repo_path": str(tmp_path),
-            "idempotency_key": f"ambiguous-access-{target_provider}",
-            "target_provider": target_provider,
-            "desktop_access_confirmation": {
-                "provider": confirmation_provider,
-                "confirmation": "user_confirmed_usable_in_desktop",
-            },
-            "source_provider": "codex",
-            "source_session_id": f"access-confirmation-{target_provider}",
-        },
-    )
-
-    assert response.status_code == 422, response.text
-    assert response.json()["detail"]["code"] == expected_code
-    assert list(await db_session.scalars(select(ContinuationStageRequest))) == []
-    assert list(await db_session.scalars(select(AgentRun))) == []
-
 
 @pytest.mark.parametrize("target_provider", ("claude", "opencode"))
 async def test_stage_rejects_codex_reasoning_effort_for_other_desktops(
@@ -3590,6 +3636,7 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
         goal=goal,
         session_id="waiting-handoff-source",
         provider="codex",
+        compaction_count=2,
     )
     _initialize_git_repository(tmp_path)
     launch_calls: list[dict[str, object]] = []
@@ -3841,7 +3888,7 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
         if item["provider"] == target_provider
     )
     assert selected_provider["readiness_scope"] == (
-        "desktop_application_and_account_access"
+        "desktop_dispatch_with_account_evidence"
     )
     assert selected_provider["desktop_handoff_supported"] is True
     assert selected_provider["context_staging_supported"] is False
@@ -3940,6 +3987,7 @@ async def test_stage_opens_visible_desktop_with_incomplete_foundation_warning(
         goal=goal,
         session_id="incomplete-foundation-desktop-review",
         provider="codex",
+        compaction_count=2,
     )
     foundation = list(await db_session.scalars(
         select(Component).where(
@@ -4042,6 +4090,7 @@ async def test_stage_failure_is_replayed_without_opening_another_draft(
         goal="Prepare one durable desktop continuation handoff.",
         session_id="failed-desktop-handoff",
         provider="codex",
+        compaction_count=2,
     )
     _initialize_git_repository(tmp_path)
     launch_calls = 0
@@ -4158,6 +4207,7 @@ async def test_stage_expires_a_crashed_pending_reservation_before_retry(
         goal="Recover safely if desktop dispatch loses its recorded result.",
         session_id="stale-desktop-reservation",
         provider="codex",
+        compaction_count=2,
     )
     workspace_id = workspace.id
     _initialize_git_repository(tmp_path)
@@ -4275,6 +4325,7 @@ async def test_cancelled_stage_keeps_its_reservation_until_launcher_stops(
         goal="Never race two desktop open requests after cancellation.",
         session_id="cancelled-desktop-reservation",
         provider="codex",
+        compaction_count=2,
     )
     workspace_id = workspace.id
     _initialize_git_repository(tmp_path)
@@ -4365,6 +4416,7 @@ async def test_stage_rejects_an_unconfirmed_open_or_clipboard_copy(
         goal="Prepare a confirmed desktop continuation handoff.",
         session_id="unconfirmed-desktop-handoff",
         provider="codex",
+        compaction_count=2,
     )
     _initialize_git_repository(tmp_path)
     launch_calls = 0
@@ -5484,6 +5536,7 @@ async def _seed_session(
     provider: str = "codex",
     occurred_at: str | None = None,
     workspace: Workspace | None = None,
+    compaction_count: int = 0,
 ) -> Workspace:
     (repo_path / "app").mkdir(exist_ok=True)
     (repo_path / "app" / "continuation.py").write_text(
@@ -5563,6 +5616,18 @@ async def _seed_session(
                 ),
                 payload={"cwd": str(repo_path)},
             ),
+            *[
+                NormalizedSessionEvent(
+                    provider_event_id=(
+                        f"{provider}:{session_id}:compaction:{index}"
+                    ),
+                    sequence_number=2 + index,
+                    event_type="compaction_boundary",
+                    occurred_at=occurred_at,
+                    payload={"window_id": f"window-{index + 1}"},
+                )
+                for index in range(1, max(0, compaction_count) + 1)
+            ],
         ],
     )
     await db_session.flush()

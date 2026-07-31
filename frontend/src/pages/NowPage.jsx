@@ -20,6 +20,7 @@ import {
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
 import ProductLoadingState from "../components/ProductLoadingState";
 import FloatingContextToggle from "../components/FloatingContextToggle";
+import PromptSnippetHistory from "../components/PromptSnippetHistory";
 import { HarnessContinuationCard } from "../components/HarnessCard";
 import { HARNESS_ORDER, harnessMeta } from "../components/HarnessBrand";
 import {
@@ -41,6 +42,7 @@ import {
   sessionIdentity,
 } from "../context-map/digest";
 import { copyReadySessionContextContent } from "./sessionContinuity";
+import { MINIMUM_SESSION_CONTEXT_COMPACTIONS } from "./sessionContextPolicy";
 import { useProductWorkspace } from "./useProductWorkspace";
 
 export default function NowPage() {
@@ -256,9 +258,8 @@ export default function NowPage() {
   const unassignedSessionCount = unassignedSessionCards.length;
   const sessionCheckpoints = (checkpointHistoryQuery.data?.checkpoints || [])
     .filter((item) => (
-      checkpoint
-      && item.provider === checkpoint.provider
-      && item.session_id === checkpoint.session_id
+      detailSessionReference
+      && checkpointMatchesSessionReference(item, detailSessionReference)
     ))
     .sort((left, right) => (
       Number(left.boundary?.sequence_number || 0)
@@ -266,6 +267,15 @@ export default function NowPage() {
     ));
   const sessionCompactions = sessionCheckpoints.filter(
     (item) => item.boundary?.snapshot_phase === "pre_compaction",
+  );
+  const sessionCompactionCount = Math.max(
+    uniqueCompactionDescriptorCount(
+      latestDiscoveredSession?.compaction_checkpoints,
+    ),
+    uniqueCapturedCompactionCount(sessionCompactions),
+  );
+  const sessionContextReady = (
+    sessionCompactionCount >= MINIMUM_SESSION_CONTEXT_COMPACTIONS
   );
   const latestSessionContextCandidate = [...sessionCheckpoints]
     .filter((item) => (
@@ -308,7 +318,11 @@ export default function NowPage() {
       ? "Task will be resolved from the selected session"
       : "");
   const stageTaskContinuation = async (targetProvider, providerConfig = {}) => {
-    if (!workspace.activeWorkspaceId || !continuationAnchorAvailable) return;
+    if (
+      !workspace.activeWorkspaceId
+      || !continuationAnchorAvailable
+      || !sessionContextReady
+    ) return;
     if (continuationStageInFlightRef.current) return;
     if (!continuationLeadResolvable) {
       setContinuationState("blocked");
@@ -343,12 +357,6 @@ export default function NowPage() {
           : {}),
         ...(providerConfig.provider_effort
           ? { provider_effort: providerConfig.provider_effort }
-          : {}),
-        ...(providerConfig.desktop_access_confirmation
-          ? {
-              desktop_access_confirmation:
-                providerConfig.desktop_access_confirmation,
-            }
           : {}),
         ...(continuationRepoPath ? { repo_path: continuationRepoPath } : {}),
         ...(continuationSource
@@ -403,9 +411,7 @@ export default function NowPage() {
     : actionInputsPending
       ? {
           kind: "loading",
-          description: latestSessionDiscoveryPending
-            ? "Finding the newest local session before enabling Continue."
-            : "Resolving the current task, repository, and safest continuation.",
+          description: "",
         }
       : latestSessionDiscoverySucceeded && !latestSession
         ? {
@@ -439,7 +445,7 @@ export default function NowPage() {
                   description: "Choose linked work before continuing.",
                 };
   const continuationProviders = resolvedContinuationProviders(continuationProvidersQuery);
-  const continuationRunnable = continueAction.kind === "continue";
+  const continuationTaskReady = continueAction.kind === "continue";
   const providerRetryVisible = continuationProviders.some((provider) => !provider.ready);
   const activeContinuationRun = continuationProvidersQuery.data?.active_run || null;
   const latestContinuationRun = continuationProvidersQuery.data?.latest_run || null;
@@ -644,8 +650,12 @@ export default function NowPage() {
                     pending={pending}
                     handoffRequested={loadedContinuationProvider === provider.provider}
                     workflowPending={continuationWorkflowPending}
-                    taskReady={continuationRunnable}
+                    taskReady={continuationTaskReady}
+                    taskPending={continueAction.kind === "loading"}
                     taskRequirement={continueAction.description}
+                    contextReady={sessionContextReady}
+                    compactionCount={sessionCompactionCount}
+                    minimumCompactions={MINIMUM_SESSION_CONTEXT_COMPACTIONS}
                     onHover={() => setHoveredContinuationProvider(provider.provider)}
                     onContinue={stageTaskContinuation}
                   />
@@ -718,6 +728,7 @@ export default function NowPage() {
                 activeRun={activeContinuationRun}
                 workspaceId={workspace.activeWorkspaceId}
                 targetProvider={pendingProvider}
+                restored={stagedHandoffVisible}
               />
             </div>
           </div>
@@ -795,6 +806,8 @@ export default function NowPage() {
         }
         error={checkpointQuery.error || workspaceCheckpointQuery.error}
       />
+
+      <PromptSnippetHistory workspaceId={workspace.activeWorkspaceId} />
     </div>
   );
 }
@@ -3821,10 +3834,13 @@ function resolvedContinuationProviders(query) {
     const meta = harnessMeta(provider);
     const suppliedProvider = byProvider.get(provider);
     if (suppliedProvider) {
-      const desktopReadiness = (
-        String(suppliedProvider.readiness_scope || "").trim().toLowerCase()
-        === "desktop_application_and_account_access"
-      );
+      const readinessScope = String(
+        suppliedProvider.readiness_scope || "",
+      ).trim().toLowerCase();
+      const desktopReadiness = new Set([
+        "desktop_dispatch_with_account_evidence",
+        "desktop_application_and_account_access",
+      ]).has(readinessScope);
       if (!desktopReadiness) {
         return {
           provider,
@@ -3834,7 +3850,7 @@ function resolvedContinuationProviders(query) {
           code: "desktop_readiness_required",
           desktop_handoff_supported: false,
           message: (
-            `${meta.name} Desktop and account-access readiness was not reported. `
+            `${meta.name} Desktop dispatch readiness was not reported. `
             + "Installation-only or provider CLI status cannot enable Continue."
           ),
           action: "Refresh desktop readiness before continuing.",
@@ -3863,8 +3879,10 @@ function resolvedContinuationProviders(query) {
       );
       const providerReady = (
         reportedReady
-        && (reportedStatus === "ready" || reportedStatus === "configured")
         && reportedCode !== "desktop_app_missing"
+        && reportedCode !== "desktop_url_scheme_missing"
+        && reportedCode !== "desktop_app_unsupported"
+        && reportedCode !== "desktop_readiness_timeout"
       );
       const handoffSupported = suppliedProvider.desktop_handoff_supported === true;
       const handoffUnavailable = providerReady && !handoffSupported;
@@ -3929,6 +3947,8 @@ function normalizedProviderReadinessStatus(provider, reportedReady) {
 
   const code = String(provider.code || "").trim().toLowerCase();
   if (code === "desktop_app_missing") return "unavailable";
+  if (code === "desktop_account_sign_in_required") return "authentication_required";
+  if (code === "desktop_account_rate_limited") return "rate_limited";
   if (code === "desktop_account_access_unverified") return "access_unverified";
   if (code === "desktop_app_ready") return "ready";
   if (code === "provider_configured") return "configured";
@@ -3948,6 +3968,7 @@ function ContinuationWorkflowStatus({
   activeRun = null,
   workspaceId = null,
   targetProvider = null,
+  restored = false,
 }) {
   if (state === "idle") return null;
 
@@ -3993,20 +4014,27 @@ function ContinuationWorkflowStatus({
       result?.delivery?.visibility?.prefill_requested === true
       || harnessSession?.prefill_requested === true
     );
+    const handoffAge = restored && result?.run?.started_at
+      ? formatTimeAgo(result.run.started_at)
+      : "";
+    const restoredTitle = handoffAge && handoffAge !== "Unknown"
+      ? `Previous ${provider} handoff · ${handoffAge}`
+      : `Previous ${provider} handoff`;
     return (
       <div
         role="status"
         className="rounded-xl border border-[#d9ff68]/25 bg-[#d9ff68]/[0.08] px-3 py-3 text-xs text-[#e7ffad]"
       >
-        <p className="font-semibold">Desktop open requested for {provider}</p>
-        <p className="mt-1 text-xs leading-5 text-[#c8d6a7]">
-          {prefillRequested
-            ? "The desktop app was asked to open a composer with the selected Session Context, and the full context was copied to the clipboard. App rendering cannot be verified here. Nothing was submitted."
-            : "The desktop app was asked to open and the selected Session Context was copied to the clipboard. Paste it into the visible composer; nothing was submitted."}
+        <p className="font-semibold">
+          {restored ? restoredTitle : `Continue in ${provider}`}
         </p>
-        <div className="mt-2 rounded-lg bg-black/15 px-2.5 py-2 text-xs font-semibold leading-5 text-[#d8e6b5]">
-          Look for {provider} on your desktop. If its composer is empty, paste the copied context, then submit it yourself.
-        </div>
+        <p className="mt-1 text-xs leading-5 text-[#c8d6a7]">
+          {restored
+            ? "Nothing is running now. Request again if needed."
+            : prefillRequested
+              ? `Context copied. Review the draft, then send it in ${provider}.`
+              : `Context copied. Paste it into ${provider}, then send it.`}
+        </p>
         {sessionContextAdvisory ? (
           <div className="mt-2 rounded-lg border border-amber-300/25 bg-amber-300/[0.08] px-2.5 py-2 text-amber-100">
             <p className="font-semibold">Session Context needs repository review</p>
@@ -4913,6 +4941,34 @@ function queryHasSettled(query) {
     || query?.isError
     || (!query?.isLoading && query?.data !== undefined),
   );
+}
+
+function uniqueCompactionDescriptorCount(items) {
+  if (!Array.isArray(items)) return 0;
+  return new Set(
+    items.map((item, index) => (
+      String(
+        item?.id
+        || item?.window_id
+        || item?.occurred_at
+        || `descriptor-${index}`,
+      )
+    )),
+  ).size;
+}
+
+function uniqueCapturedCompactionCount(items) {
+  if (!Array.isArray(items)) return 0;
+  return new Set(
+    items.map((item, index) => (
+      String(
+        item?.boundary?.event_id
+        || item?.boundary?.sequence_number
+        || item?.id
+        || `checkpoint-${index}`,
+      )
+    )),
+  ).size;
 }
 
 function checkpointMatchesActivity(checkpoint, activity) {

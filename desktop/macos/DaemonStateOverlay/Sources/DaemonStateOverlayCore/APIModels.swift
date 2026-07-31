@@ -119,6 +119,24 @@ struct ActiveSessionIdentity: Equatable, Sendable {
     let sessionID: String
 }
 
+struct SessionContextEligibilityEnvelope: Decodable {
+    let provider: String?
+    let sessionID: String?
+    let eligible: Bool?
+    let compactionCount: Int?
+    let minimumCompactions: Int?
+    let message: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case provider
+        case sessionID = "session_id"
+        case eligible
+        case compactionCount = "compaction_count"
+        case minimumCompactions = "minimum_compactions"
+        case message
+    }
+}
+
 struct LatestCheckpointEnvelope: Decodable {
     let id: String?
     let workspaceID: String?
@@ -320,5 +338,57 @@ struct ContinuationTaskIdentityEnvelope: Decodable {
 
     private enum CodingKeys: String, CodingKey {
         case workspaceID = "workspace_id"
+    }
+}
+
+struct PromptSnippetListEnvelope: Decodable {
+    let schemaVersion: String?
+    let workspaceID: String?
+    let prompts: [PromptSnippetEnvelope]?
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case workspaceID = "workspace_id"
+        case prompts
+    }
+}
+
+struct PromptSnippetEnvelope: Decodable {
+    let id: String?
+    let workspaceID: String?
+    let content: String?
+    let contentSHA256: String?
+    let useCount: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case workspaceID = "workspace_id"
+        case content
+        case contentSHA256 = "content_sha256"
+        case useCount = "use_count"
+    }
+}
+
+struct PromptSnippetCreateRequest: Encodable {
+    let content: String
+}
+
+struct PromptSnippetUsageRequest: Encodable {
+    let promptIDs: [String]
+
+    private enum CodingKeys: String, CodingKey {
+        case promptIDs = "prompt_ids"
+    }
+}
+
+struct PromptSnippetUsageEnvelope: Decodable {
+    let schemaVersion: String?
+    let workspaceID: String?
+    let updated: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case workspaceID = "workspace_id"
+        case updated
     }
 }

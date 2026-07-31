@@ -1789,6 +1789,64 @@ export function useSetDesktopOverlayVisibility() {
   });
 }
 
+export function usePromptSnippets(workspaceId, { enabled = true } = {}) {
+  return useQuery({
+    queryKey: ["prompt-snippets", workspaceId],
+    enabled: Boolean(workspaceId) && enabled,
+    queryFn: () => api.get(
+      `/workspaces/${encodeURIComponent(workspaceId)}/prompt-snippets`,
+    ),
+    refetchInterval: 3_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    retry: false,
+  });
+}
+
+export function useCreatePromptSnippet() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ workspaceId, content }) => api.post(
+      `/workspaces/${encodeURIComponent(workspaceId)}/prompt-snippets`,
+      { content },
+    ),
+    onSuccess: (prompt, variables) => {
+      queryClient.setQueryData(
+        ["prompt-snippets", variables.workspaceId],
+        (current) => ({
+          schema_version: current?.schema_version || "prompt_snippet_list.v1",
+          workspace_id: variables.workspaceId,
+          prompts: [
+            prompt,
+            ...(current?.prompts || []).filter((item) => item.id !== prompt.id),
+          ],
+        }),
+      );
+    },
+  });
+}
+
+export function useDeletePromptSnippet() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ workspaceId, promptId }) => api.delete(
+      `/workspaces/${encodeURIComponent(workspaceId)}`
+        + `/prompt-snippets/${encodeURIComponent(promptId)}`,
+    ),
+    onSuccess: (_result, variables) => {
+      queryClient.setQueryData(
+        ["prompt-snippets", variables.workspaceId],
+        (current) => current ? {
+          ...current,
+          prompts: (current.prompts || []).filter(
+            (item) => item.id !== variables.promptId,
+          ),
+        } : current,
+      );
+    },
+  });
+}
+
 export function useStageContinuation() {
   return useMutation({
     mutationFn: (payload) => api.post("/continuations/stage", payload, {

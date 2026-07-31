@@ -627,10 +627,12 @@ async def test_staging_context_separates_current_facts_and_repository_evidence(
     )
     assert "source sha256" in staged
     assert "evidence sha256" in staged
+    assert "source-runtime-boundary" not in staged
+    assert "evidence-runtime-boundary" not in staged
     assert "source sha256" in executable
-    assert "8. `app/path_8.py`" in staged
-    assert "9. `app/path_9.py`" not in staged
-    assert "2 additional read-plan items remain in the contract." in staged
+    assert "5. `app/path_5.py`" in staged
+    assert "6. `app/path_6.py`" not in staged
+    assert "5 additional read-plan items remain in the contract." in staged
 
 
 @pytest.mark.asyncio
@@ -1405,11 +1407,11 @@ async def test_runtime_bundle_paths_do_not_collide_after_id_sanitization(
         assert (bundle.root / bundled_paths[0]).read_bytes() == b"first-image"
         assert (bundle.root / bundled_paths[1]).read_bytes() == b"second-image"
         assert all(path in prompt for path in bundled_paths)
-        assert str(first_path) in prompt
+        assert str(first_path) not in prompt
         assert hashlib.sha256(b"first-image").hexdigest() in prompt
-        assert "MIME type: `image/png`" in prompt
-        assert "Requirement linkage: `R1`" in prompt
-        assert "R1 via V1" in prompt
+        assert "mime=`image/png`" in prompt
+        assert "requirements=R1" in prompt
+        assert "DAEMONSTATE_EXECUTION_CONTRACT_PATH" in prompt
         staged = render_continuation_staging_context(contract)
         assert bundled_paths[0] in staged
         assert bundled_paths[1] in staged
