@@ -63,6 +63,9 @@ _OAUTH_CALLBACK_PATHS = {
     "/api/connectors/google/callback",
     "/api/connectors/zoom/callback",
 }
+_PUBLIC_API_REQUESTS = {
+    ("POST", "/api/waitlist"),
+}
 
 _NAIVE_ISO_DATETIME = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?$"
@@ -174,9 +177,14 @@ async def request_controls(request: Request, call_next):
     if request.url.path.startswith("/api") and request.method != "OPTIONS":
         access_scope = request_access_scope(request)
         is_oauth_callback = request.url.path in _OAUTH_CALLBACK_PATHS
+        is_public_api_request = (
+            request.method.upper(),
+            request.url.path,
+        ) in _PUBLIC_API_REQUESTS
         if (
             api_auth_enabled()
             and not is_oauth_callback
+            and not is_public_api_request
             and not request_has_valid_api_key(request)
         ):
             try:

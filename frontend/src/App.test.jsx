@@ -3,6 +3,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 import App from "./App";
+import { waitlistOnly } from "./config/deployment";
 import { ThemeProvider } from "./context/ThemeContext";
 import { WorkspaceProvider } from "./context/WorkspaceContext";
 
@@ -75,6 +76,13 @@ beforeEach(() => {
       removeItem: (key) => values.delete(key),
     },
   });
+});
+
+it("hides product routes only when the waitlist deployment flag is enabled", () => {
+  expect(waitlistOnly({ VITE_WAITLIST_ONLY: "true" })).toBe(true);
+  expect(waitlistOnly({ VITE_WAITLIST_ONLY: "false" })).toBe(false);
+  expect(waitlistOnly({ MODE: "production" })).toBe(false);
+  expect(waitlistOnly({ MODE: "development" })).toBe(false);
 });
 
 it("contains a route render failure and lets the user recover without losing the shell", async () => {

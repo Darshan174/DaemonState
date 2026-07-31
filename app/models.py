@@ -37,6 +37,26 @@ class Base(DeclarativeBase):
     pass
 
 
+class WaitlistSignup(Base):
+    __tablename__ = "waitlist_signups"
+    __table_args__ = (
+        Index("uq_waitlist_signups_email", "email", unique=True),
+        Index("ix_waitlist_signups_created_at", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    source: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        default="landing",
+        server_default="landing",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+
 class Workspace(Base):
     __tablename__ = "workspaces"
 

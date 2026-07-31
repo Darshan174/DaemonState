@@ -4,6 +4,7 @@ import ThemeToggle from "./components/ThemeToggle";
 import DaemonStateIcon from "./components/DaemonStateIcon";
 import ProductLoadingState from "./components/ProductLoadingState";
 import WorkspaceSwitcher from "./components/WorkspaceSwitcher";
+import { WAITLIST_ONLY } from "./config/deployment";
 import { useWorkspaceSelection } from "./context/WorkspaceContext";
 import {
   Activity,
@@ -155,7 +156,10 @@ export default function App() {
     <Suspense fallback={<PageLoader fullScreen />}>
       <Routes>
         <Route path="/"      element={<Landing />} />
-        <Route path="/app/*" element={<AdminShell />} />
+        <Route
+          path="/app/*"
+          element={WAITLIST_ONLY ? <Navigate to="/" replace /> : <AdminShell />}
+        />
         <Route path="*"      element={<Navigate to="/" replace />} />
       </Routes>
     </Suspense>
