@@ -461,6 +461,12 @@ def codex_model_catalog(
     return codex_models_from_payload(payload)
 
 
+def codex_executable() -> str | None:
+    """Return the Codex executable that matches the desktop installation."""
+
+    return _provider_executable("codex")
+
+
 def codex_cached_model_catalog(
     *,
     cache_path: Path | None = None,
@@ -1191,6 +1197,79 @@ def codex_models_from_payload(
             _source_index,
             model_id,
             label,
+            efforts,
+            default_effort,
+        ) in enumerate(parsed)
+    )
+
+
+def codex_models_from_app_server_payload(
+    payload: Mapping[str, Any] | None,
+) -> tuple[ProviderModelOption, ...]:
+    """Parse the account-scoped model list returned by Codex app-server."""
+
+    raw_models = payload.get("data") if payload is not None else None
+    if not isinstance(raw_models, list):
+        return ()
+
+    parsed: list[tuple[str, str, bool, tuple[str, ...], str]] = []
+    seen: set[str] = set()
+    for raw_model in raw_models:
+        if not isinstance(raw_model, Mapping) or raw_model.get("hidden") is True:
+            continue
+        model_id = str(
+            raw_model.get("model") or raw_model.get("id") or ""
+        ).strip()
+        if not MODEL_ID_PATTERN.fullmatch(model_id) or model_id in seen:
+            continue
+
+        raw_efforts = raw_model.get("supportedReasoningEfforts")
+        efforts: list[str] = []
+        if isinstance(raw_efforts, list):
+            for raw_effort in raw_efforts:
+                value = (
+                    raw_effort.get("reasoningEffort")
+                    if isinstance(raw_effort, Mapping)
+                    else raw_effort
+                )
+                effort = str(value or "").strip().casefold()
+                if effort in CODEX_REASONING_EFFORTS and effort not in efforts:
+                    efforts.append(effort)
+
+        default_effort = str(
+            raw_model.get("defaultReasoningEffort") or ""
+        ).strip().casefold()
+        if default_effort not in efforts:
+            default_effort = (
+                "medium" if "medium" in efforts else efforts[0] if efforts else ""
+            )
+        raw_label = str(raw_model.get("displayName") or model_id).strip()
+        label = re.sub(r"[\x00-\x1f\x7f]", "", raw_label)[:128] or model_id
+        seen.add(model_id)
+        parsed.append((
+            model_id,
+            label,
+            raw_model.get("isDefault") is True,
+            tuple(efforts),
+            default_effort,
+        ))
+
+    default_index = next(
+        (index for index, item in enumerate(parsed) if item[2]),
+        0 if parsed else -1,
+    )
+    return tuple(
+        ProviderModelOption(
+            id=model_id,
+            label=label,
+            default=index == default_index,
+            reasoning_efforts=efforts,
+            default_reasoning_effort=default_effort,
+        )
+        for index, (
+            model_id,
+            label,
+            _reported_default,
             efforts,
             default_effort,
         ) in enumerate(parsed)

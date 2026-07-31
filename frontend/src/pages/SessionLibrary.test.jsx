@@ -54,8 +54,8 @@ vi.mock("../api/hooks", () => ({
         { id: "topic-2", name: "Beta onboarding", session_count: 1, harnesses: ["codex"], last_discussed_at: "2026-07-18T08:00:00Z" },
       ],
       sessions: [
-        { id: "codex:one", session_id: "session-one", source_document_id: "doc-1", connector_type: "codex", harness: "Codex", title: "Alpha launch", topics: ["Alpha billing", "Beta pricing"], latest_topic: "Beta pricing", preview: "Plan Alpha billing", live: true, revision_number: 2, updated_at: "2026-07-18T09:00:00Z", compaction_checkpoints: [{ id: "checkpoint-1", label: "Before context compact", provider: "codex", occurred_at: "2026-07-18T08:30:00Z", turn_count: 3, objective_preview: "Review Beta pricing before launch", restorable: true }] },
-        { id: "codex:two", session_id: "session-two", source_document_id: "doc-2", connector_type: "codex", harness: "Codex", title: "Beta onboarding", topics: ["Beta onboarding"], latest_topic: "Beta onboarding", preview: "Review Beta onboarding", live: true, revision_number: 1, updated_at: "2026-07-18T08:00:00Z", forked_from: { session_id: "session-one", title: "Alpha launch", source_document_id: "doc-1" } },
+        { id: "codex:one", session_id: "session-one", source_document_id: "doc-1", connector_type: "codex", harness: "Codex", title: "Alpha launch", topics: ["Alpha billing", "Beta pricing"], latest_topic: "Beta pricing", preview: "Plan Alpha billing", live: true, revision_number: 2, updated_at: "2026-07-18T09:00:00Z", compaction_count: 2, compaction_checkpoints: [{ id: "checkpoint-1", label: "Before context compact", provider: "codex", occurred_at: "2026-07-18T08:30:00Z", turn_count: 3, objective_preview: "Review Beta pricing before launch", restorable: true }] },
+        { id: "codex:two", session_id: "session-two", source_document_id: "doc-2", connector_type: "codex", harness: "Codex", title: "Beta onboarding", topics: ["Beta onboarding"], latest_topic: "Beta onboarding", preview: "Review Beta onboarding", live: true, revision_number: 1, updated_at: "2026-07-18T08:00:00Z", compaction_count: 2, forked_from: { session_id: "session-one", title: "Alpha launch", source_document_id: "doc-1" } },
         ...mocks.extraSessions,
       ],
     },
@@ -288,6 +288,7 @@ it.each([
       revision_number: 1,
       updated_at: "2026-07-18T07:00:00Z",
       compaction_checkpoints: [],
+      compaction_count: 2,
     }];
   }
 
@@ -371,6 +372,7 @@ it("shows session checkboxes only after a harness is opened and enforces the thr
       revision_number: 1,
       updated_at: "2026-07-18T07:00:00Z",
       compaction_checkpoints: [],
+      compaction_count: 2,
     },
     {
       id: "codex:four",
@@ -386,6 +388,7 @@ it("shows session checkboxes only after a harness is opened and enforces the thr
       revision_number: 1,
       updated_at: "2026-07-18T06:00:00Z",
       compaction_checkpoints: [],
+      compaction_count: 2,
     },
   ];
   renderLibrary("/app/library?mode=execute-context");
@@ -437,6 +440,37 @@ it("shows session checkboxes only after a harness is opened and enforces the thr
     "session-three",
     "session-four",
   ]);
+});
+
+
+it("does not let an under-compacted Library session enter Execute", () => {
+  mocks.extraSessions = [{
+    id: "codex:locked",
+    session_id: "session-locked",
+    source_document_id: "doc-locked",
+    connector_type: "codex",
+    harness: "Codex",
+    title: "Fresh session",
+    topics: ["Fresh task"],
+    latest_topic: "Fresh task",
+    preview: "No compaction yet",
+    live: true,
+    revision_number: 1,
+    updated_at: "2026-07-18T10:00:00Z",
+    compaction_checkpoints: [],
+  }];
+  renderLibrary("/app/library?mode=execute-context");
+  fireEvent.click(screen.getByRole("button", { name: "Open Codex sessions" }));
+
+  const checkbox = screen.getByRole("checkbox", {
+    name: "Select Fresh session for Execute",
+  });
+  const card = checkbox.closest("article");
+  expect(checkbox).toBeDisabled();
+  expect(within(card).getByText("0/2 compactions")).toBeVisible();
+  expect(within(card).getByText("2 compactions required")).toBeVisible();
+  fireEvent.click(checkbox);
+  expect(checkbox).not.toBeChecked();
 });
 
 

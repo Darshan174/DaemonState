@@ -32,6 +32,20 @@ final class LogoControl: NSControl {
         }
     }
 
+    var selectedPromptCount = 0 {
+        didSet {
+            let normalized = max(0, selectedPromptCount)
+            if normalized != selectedPromptCount {
+                selectedPromptCount = normalized
+                return
+            }
+            guard selectedPromptCount != oldValue else { return }
+            updateAccessibility()
+            needsDisplay = true
+            animateModeChange()
+        }
+    }
+
     private var pendingSingleClick: DispatchWorkItem?
     private var trackingAreaReference: NSTrackingArea?
     private var hovering = false
@@ -46,6 +60,7 @@ final class LogoControl: NSControl {
         wantsLayer = true
         layer?.masksToBounds = false
         toolTip = tooltipText
+        setAccessibilityElement(true)
         setAccessibilityRole(.button)
         updateAccessibility()
     }
@@ -183,10 +198,21 @@ final class LogoControl: NSControl {
         drawHalo(around: logoRect)
 
         let circle = NSBezierPath(ovalIn: logoRect)
-        NSColor.white.setFill()
+        if promptModeActive {
+            NSGraphicsContext.saveGraphicsState()
+            let shadow = NSShadow()
+            shadow.shadowColor = promptGreen.withAlphaComponent(0.78)
+            shadow.shadowBlurRadius = 10
+            shadow.shadowOffset = .zero
+            shadow.set()
+            NSColor.black.setFill()
+            circle.fill()
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        (promptModeActive ? NSColor.black : NSColor.white).setFill()
         circle.fill()
-        NSColor.black.setStroke()
-        circle.lineWidth = 1.35
+        (promptModeActive ? promptGreen : NSColor.black).setStroke()
+        circle.lineWidth = promptModeActive ? 1.75 : 1.35
         circle.stroke()
 
         drawMark(in: logoRect)
@@ -234,8 +260,10 @@ final class LogoControl: NSControl {
         case .failure:
             color = NSColor(calibratedRed: 0.94, green: 0.22, blue: 0.25, alpha: 0.9)
         case .idle:
-            if scope == .project {
-                color = NSColor(calibratedRed: 0.85, green: 1, blue: 0.41, alpha: 0.96)
+            if promptModeActive {
+                color = promptGreen
+            } else if scope == .project {
+                color = promptGreen
             } else if hovering {
                 color = NSColor(calibratedWhite: 0, alpha: 0.18)
             } else {
@@ -271,7 +299,7 @@ final class LogoControl: NSControl {
         mark.lineWidth = max(1.25, logoRect.width * (1.25 / 40))
         mark.lineCapStyle = .round
         mark.lineJoinStyle = .round
-        NSColor.black.setStroke()
+        (promptModeActive ? NSColor.white : NSColor.black).setStroke()
         mark.stroke()
 
         for (index, point) in points.dropLast().enumerated() {
@@ -287,7 +315,7 @@ final class LogoControl: NSControl {
             if index == 3 {
                 NSColor(calibratedRed: 0.94, green: 0.06, blue: 0.1, alpha: 1).setFill()
             } else {
-                NSColor.black.setFill()
+                (promptModeActive ? NSColor.white : NSColor.black).setFill()
             }
             node.fill()
         }
@@ -325,20 +353,52 @@ final class LogoControl: NSControl {
         }
     }
 
+    private func animateModeChange() {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            return
+        }
+        let animation = CAKeyframeAnimation(keyPath: "transform.scale")
+        animation.values = [1, 1.08, 1]
+        animation.duration = 0.24
+        animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer?.add(animation, forKey: "daemonstate-prompt-mode")
+    }
+
+    private var promptModeActive: Bool {
+        selectedPromptCount > 0
+    }
+
+    private var promptGreen: NSColor {
+        NSColor(calibratedRed: 0.70, green: 0.95, blue: 0.31, alpha: 0.98)
+    }
+
     private var scopeLabel: String {
         scope == .session ? "Session Context" : "Workspace Context"
     }
 
     private var tooltipText: String {
-        "\(scopeLabel) — click to insert; triple-click to switch scope; drag to move"
+        if promptModeActive {
+            let noun = selectedPromptCount == 1 ? "prompt" : "prompts"
+            return "\(selectedPromptCount) \(noun) selected — click to paste; use the dropdown to change selection"
+        }
+        return "\(scopeLabel) — click to insert; triple-click to switch scope; drag to move"
     }
 
     private func updateAccessibility() {
         toolTip = tooltipText
-        setAccessibilityLabel("Insert \(scopeLabel)")
-        setAccessibilityValue(scopeLabel)
-        setAccessibilityHelp(
-            "Click once to copy and paste verified context. Triple-click to switch between Session and Workspace Context. Right-click for the same controls."
-        )
+        if promptModeActive {
+            let noun = selectedPromptCount == 1 ? "prompt" : "prompts"
+            setAccessibilityLabel("Paste selected prompts")
+            setAccessibilityValue("\(selectedPromptCount) \(noun) selected")
+            setAccessibilityHelp(
+                "Click once to paste the selected reusable prompts. Open the prompt dropdown to add or remove prompts."
+            )
+        } else {
+            setAccessibilityLabel("Insert \(scopeLabel)")
+            setAccessibilityValue(scopeLabel)
+            setAccessibilityHelp(
+                "Click once to copy and paste verified context. Triple-click to switch between Session and Workspace Context. Right-click for the same controls."
+            )
+        }
     }
 }

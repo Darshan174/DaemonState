@@ -109,6 +109,58 @@ class Workspace(Base):
     unresolved_relationships: Mapped[list["UnresolvedRelationship"]] = orm_relationship(
         back_populates="workspace"
     )
+    prompt_snippets: Mapped[list["PromptSnippet"]] = orm_relationship(
+        back_populates="workspace"
+    )
+
+
+class PromptSnippet(Base):
+    __tablename__ = "prompt_snippets"
+    __table_args__ = (
+        Index(
+            "uq_prompt_snippets_workspace_sha256",
+            "workspace_id",
+            "content_sha256",
+            unique=True,
+        ),
+        Index(
+            "ix_prompt_snippets_workspace_last_used",
+            "workspace_id",
+            "last_used_at",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    use_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    workspace: Mapped["Workspace"] = orm_relationship(
+        back_populates="prompt_snippets"
+    )
 
 
 class Connector(Base):
@@ -2001,6 +2053,15 @@ def _canonical_hash(parts: object) -> str:
     return hashlib.sha256(
         json.dumps(parts, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     ).hexdigest()
+
+
+@event.listens_for(PromptSnippet, "before_insert")
+@event.listens_for(PromptSnippet, "before_update")
+def _populate_prompt_snippet_hash(mapper, connection, target: PromptSnippet) -> None:
+    target.content = str(target.content or "").strip()
+    if not target.content:
+        raise ValueError("PromptSnippet content must contain a visible character")
+    target.content_sha256 = _sha256_text(target.content)
 
 
 @event.listens_for(CodeFile, "before_insert")

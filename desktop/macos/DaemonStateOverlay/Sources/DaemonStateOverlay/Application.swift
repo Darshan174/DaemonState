@@ -80,6 +80,7 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
     private let preferences = UserDefaults.standard
     private let pasteService = FocusedTextPasteService()
     private let statusController = StatusPanelController()
+    private let promptDropdownController = PromptDropdownController()
     private var panelController: OverlayPanelController?
     private var runtimeController: OverlayRuntimeController?
     private var api: DaemonStateAPI?
@@ -90,6 +91,7 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
     private var busy = false
     private var pendingPasteTarget: FocusedTextPasteService.TargetCapture?
     private var visualResetWorkItem: DispatchWorkItem?
+    private var promptSelection = PromptSelection()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         configuration = LaunchConfiguration.current()
@@ -120,7 +122,7 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
             self?.pendingPasteTarget = nil
         }
         control.onSingleClick = { [weak self] in
-            self?.insertCurrentContext()
+            self?.insertFromCurrentMode()
         }
         control.onTripleClick = { [weak self] in
             self?.toggleScope()
@@ -132,6 +134,30 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
         control.onMove = { [weak self] origin in
             self?.saveOrigin(origin)
         }
+        let promptButton = panelController.promptMenuButton
+        promptButton.onPress = { [weak self, weak promptButton] in
+            guard let self, let promptButton else { return }
+            self.togglePromptDropdown(relativeTo: promptButton)
+        }
+        promptDropdownController.onRefresh = { [weak self] in
+            guard let self else { return [] }
+            return try await self.refreshPromptLibrary()
+        }
+        promptDropdownController.onSave = { [weak self] content in
+            guard let self else {
+                throw DaemonStateError.invalidPayload(
+                    "the floating prompt control is unavailable"
+                )
+            }
+            return try await self.savePrompt(content)
+        }
+        promptDropdownController.onToggle = { [weak self] prompt in
+            self?.togglePrompt(prompt)
+        }
+        promptDropdownController.selectedPromptIDs = { [weak self] in
+            self?.promptSelection.selectedIDs ?? []
+        }
+        applyPromptSelectionVisuals()
         panelController.show()
         runtimeController?.start { [weak self] visible, workspaceID in
             self?.applyRuntimeControl(
@@ -153,7 +179,16 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        promptDropdownController.close()
         runtimeController?.stop()
+    }
+
+    private func insertFromCurrentMode() {
+        if promptSelection.isActive {
+            insertSelectedPrompts()
+        } else {
+            insertCurrentContext()
+        }
     }
 
     private func insertCurrentContext() {
@@ -221,6 +256,149 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
                 )
             }
         }
+    }
+
+    private func insertSelectedPrompts() {
+        guard !busy,
+              let target = pendingPasteTarget,
+              let api,
+              let panel = panelController?.window,
+              let workspaceID = promptSelection.prompts.first?.workspaceID,
+              !promptSelection.combinedContent.isEmpty
+        else {
+            return
+        }
+
+        let selection = promptSelection
+        pendingPasteTarget = nil
+        busy = true
+        if case .accessibilityUnavailable = target {
+            pasteService.requestAccessibilityPermission()
+        }
+        setVisualState(.loading)
+        let noun = selection.count == 1 ? "prompt" : "prompts"
+        statusController.show(
+            "Pasting \(selection.count) selected \(noun)…",
+            relativeTo: panel,
+            dismissAfter: nil
+        )
+
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.busy = false }
+            do {
+                let outcome = try await self.pasteService.deliver(
+                    selection.combinedContent,
+                    to: target
+                )
+                try? await api.recordPromptUsage(
+                    workspaceID: workspaceID,
+                    promptIDs: selection.ids
+                )
+                self.setVisualState(.success, resetAfter: 1.1)
+                switch outcome {
+                case .pasted:
+                    self.statusController.show(
+                        selection.count == 1
+                            ? "Selected prompt pasted"
+                            : "\(selection.count) selected prompts pasted",
+                        tone: .success,
+                        relativeTo: panel,
+                        dismissAfter: 1.8
+                    )
+                case let .copiedOnly(message):
+                    self.statusController.show(
+                        message,
+                        relativeTo: panel,
+                        dismissAfter: 3.2
+                    )
+                }
+            } catch {
+                self.setVisualState(.failure, resetAfter: 1.35)
+                self.statusController.show(
+                    self.conciseError(error),
+                    tone: .failure,
+                    relativeTo: panel,
+                    dismissAfter: 4.5
+                )
+            }
+        }
+    }
+
+    private func togglePromptDropdown(relativeTo button: NSView) {
+        pendingPasteTarget = nil
+        guard !busy else {
+            if let panel = panelController?.window {
+                statusController.show(
+                    "Finish the current paste before changing prompts.",
+                    relativeTo: panel,
+                    dismissAfter: 2.2
+                )
+            }
+            return
+        }
+        promptDropdownController.toggle(relativeTo: button)
+    }
+
+    private func refreshPromptLibrary() async throws -> [PromptSnippet] {
+        guard let api else {
+            throw DaemonStateError.network("the local service is unavailable")
+        }
+        let workspace = try await api.resolveWorkspace(
+            preferredID: preferredWorkspaceID
+        )
+        selectWorkspace(workspace.id)
+        let prompts = try await api.promptSnippets(workspaceID: workspace.id)
+        promptSelection.replaceAvailable(with: prompts)
+        applyPromptSelectionVisuals()
+        return prompts
+    }
+
+    private func savePrompt(_ content: String) async throws -> PromptSnippet {
+        guard let api else {
+            throw DaemonStateError.network("the local service is unavailable")
+        }
+        let workspace = try await api.resolveWorkspace(
+            preferredID: preferredWorkspaceID
+        )
+        selectWorkspace(workspace.id)
+        return try await api.createPromptSnippet(
+            workspaceID: workspace.id,
+            content: content
+        )
+    }
+
+    private func togglePrompt(_ prompt: PromptSnippet) {
+        if preferredWorkspaceID != prompt.workspaceID {
+            selectWorkspace(prompt.workspaceID)
+        }
+        let selected = promptSelection.toggle(prompt)
+        applyPromptSelectionVisuals()
+        guard let panel = panelController?.window else { return }
+        if promptSelection.isActive {
+            let count = promptSelection.count
+            let noun = count == 1 ? "prompt" : "prompts"
+            statusController.show(
+                selected
+                    ? "\(count) \(noun) ready to paste"
+                    : "\(count) \(noun) still selected",
+                tone: .success,
+                relativeTo: panel,
+                dismissAfter: 1.7
+            )
+        } else {
+            statusController.show(
+                "Prompt mode off — context mode restored",
+                relativeTo: panel,
+                dismissAfter: 1.9
+            )
+        }
+    }
+
+    private func applyPromptSelectionVisuals() {
+        panelController?.logoControl.selectedPromptCount = promptSelection.count
+        panelController?.promptMenuButton.selectedPromptCount = promptSelection.count
+        promptDropdownController.selectionDidChange()
     }
 
     private func toggleScope() {
@@ -424,6 +602,13 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func selectWorkspace(_ workspaceID: String) {
+        if let current = preferredWorkspaceID,
+           current != workspaceID,
+           promptSelection.isActive
+        {
+            promptSelection.clear()
+            applyPromptSelectionVisuals()
+        }
         preferredWorkspaceID = workspaceID
         preferences.set(workspaceID, forKey: PreferenceKey.workspaceID)
         publishRuntimeState()
@@ -439,6 +624,7 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
         if visible {
             panelController?.show()
         } else {
+            promptDropdownController.close()
             panelController?.hide()
             statusController.hide()
             pendingPasteTarget = nil

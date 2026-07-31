@@ -14,6 +14,7 @@ from app.api import (
     graph,
     memory,
     models_api,
+    prompt_snippets,
     query,
     repo,
     session_continuity,
@@ -27,6 +28,7 @@ from app.api import (
 api_router = APIRouter()
 api_router.include_router(waitlist.router, prefix="", tags=["waitlist"])
 api_router.include_router(desktop_overlay.router, prefix="", tags=["desktop"])
+api_router.include_router(prompt_snippets.router, prefix="", tags=["prompts"])
 api_router.include_router(checkpoints.router, prefix="", tags=["checkpoints"])
 api_router.include_router(continuations.router, prefix="", tags=["continuations"])
 api_router.include_router(sources.router, prefix="", tags=["sources"])

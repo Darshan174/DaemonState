@@ -74,7 +74,7 @@ describe("HarnessContinuationCard", () => {
     expect(model).toHaveValue("gpt-5.6-sol");
     expect(effort).toHaveValue("medium");
     expect(screen.getByText("Ready")).toBeVisible();
-    expect(screen.getByText(/confirm them in Codex Desktop/i)).toBeVisible();
+    expect(screen.getByText(/review them in Codex Desktop/i)).toBeVisible();
     expect(screen.getByRole("article")).toHaveClass(
       "daemonstate-harness-fan-card",
       "h-[23rem]",
@@ -166,6 +166,79 @@ describe("HarnessContinuationCard", () => {
     expect(onContinue).not.toHaveBeenCalled();
   });
 
+  it("locks a ready provider until the session reaches two compactions", () => {
+    const onContinue = vi.fn();
+    render(
+      <HarnessContinuationCard
+        provider={{
+          provider: "codex",
+          ready: true,
+          status: "ready",
+          message: "Codex Desktop is ready.",
+          models: [{
+            id: "gpt-5.6-sol",
+            label: "GPT-5.6 Sol",
+            default: true,
+            reasoning_efforts: ["medium", "high"],
+            default_reasoning_effort: "medium",
+          }],
+        }}
+        taskReady
+        contextReady={false}
+        compactionCount={1}
+        minimumCompactions={2}
+        onContinue={onContinue}
+      />,
+    );
+
+    const article = screen.getByRole("article");
+    const button = screen.getByRole("button", {
+      name: "Open desktop handoff in Codex",
+    });
+    expect(article).toHaveAttribute("aria-disabled", "true");
+    expect(article).toHaveAttribute("data-context-ready", "false");
+    expect(article).toHaveAttribute("data-compaction-count", "1");
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("data-context-ready", "false");
+    expect(button).toHaveClass("disabled:pointer-events-none");
+    expect(screen.getByText("1/2 compactions")).toBeVisible();
+    expect(screen.getByText("Session Context locked")).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "Codex model" })).toBeDisabled();
+    expect(screen.getByRole("combobox", {
+      name: "Codex reasoning effort",
+    })).toBeDisabled();
+
+    fireEvent.click(button);
+    expect(onContinue).not.toHaveBeenCalled();
+  });
+
+  it("keeps hover motion active while a provider is locked", () => {
+    render(
+      <HarnessContinuationCard
+        provider={{
+          provider: "codex",
+          ready: true,
+          status: "ready",
+          message: "Codex Desktop is ready.",
+        }}
+        hovered
+        taskReady
+        contextReady={false}
+        compactionCount={1}
+        minimumCompactions={2}
+        translateY={-18}
+        onContinue={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("article")).toHaveStyle({
+      zIndex: "40",
+      "--daemonstate-card-y": "-18px",
+      "--daemonstate-card-rotation": "0deg",
+      "--daemonstate-card-scale": "1.035",
+    });
+  });
+
   it.each(["codex", "claude", "opencode"])(
     "renders an unavailable %s harness monochrome without gold artwork and prevents execution",
     (provider) => {
@@ -229,22 +302,22 @@ describe("HarnessContinuationCard", () => {
     expect(onContinue).toHaveBeenCalledWith("codex", {});
   });
 
-  it("shows cached Codex controls without treating installation as usable access", () => {
+  it("keeps Codex controls usable without a manual access checkbox", () => {
     const onContinue = vi.fn();
     render(
       <HarnessContinuationCard
         provider={{
           provider: "codex",
-          ready: false,
-          status: "access_unverified",
-          code: "desktop_account_access_unverified",
+          ready: true,
+          status: "ready",
+          code: "desktop_dispatch_ready",
           desktop_available: true,
           capabilities: {
             desktop_dispatch_available: true,
-            account_access_confirmation_supported: true,
+            account_access_probe_supported: true,
           },
-          message: "Codex Desktop is installed, but account access is unverified.",
-          action: "Verify account access in Codex Desktop.",
+          message: "Codex Desktop is ready to receive the draft.",
+          action: "Open Codex Desktop.",
           models: [
             {
               id: "gpt-5.6-sol",
@@ -267,7 +340,7 @@ describe("HarnessContinuationCard", () => {
       />,
     );
 
-    expect(screen.getByText("Access unverified")).toBeVisible();
+    expect(screen.getByText("Ready")).toBeVisible();
     expect(screen.getByRole("combobox", { name: "Codex model" })).toBeEnabled();
     expect(screen.getByRole("combobox", {
       name: "Codex reasoning effort",
@@ -275,49 +348,35 @@ describe("HarnessContinuationCard", () => {
     const handoff = screen.getByRole("button", {
       name: "Open desktop handoff in Codex",
     });
-    expect(handoff).toBeDisabled();
-    const confirmation = screen.getByRole("checkbox", {
-      name: /confirmed the selected model is usable/i,
-    });
-    expect(confirmation).not.toBeChecked();
-    fireEvent.click(confirmation);
-    expect(screen.getByText("User confirmed")).toBeVisible();
     expect(handoff).toBeEnabled();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     fireEvent.change(screen.getByRole("combobox", { name: "Codex model" }), {
       target: { value: "gpt-5.6-terra" },
     });
-    expect(confirmation).not.toBeChecked();
-    expect(handoff).toBeDisabled();
-    fireEvent.click(confirmation);
+    expect(handoff).toBeEnabled();
     fireEvent.click(handoff);
-    expect(confirmation).not.toBeChecked();
-    expect(handoff).toBeDisabled();
     expect(onContinue).toHaveBeenCalledWith("codex", {
       provider_model: "gpt-5.6-terra",
       provider_effort: "high",
-      desktop_access_confirmation: {
-        provider: "codex",
-        confirmation: "user_confirmed_usable_in_desktop",
-      },
     });
   });
 
-  it("requires truthful OpenCode provider or local-model confirmation", () => {
+  it("opens an OpenCode draft without a manual account attestation", () => {
     const onContinue = vi.fn();
     render(
       <HarnessContinuationCard
         provider={{
           provider: "opencode",
-          ready: false,
-          status: "access_unverified",
-          code: "desktop_account_access_unverified",
+          ready: true,
+          status: "ready",
+          code: "desktop_dispatch_ready",
           desktop_available: true,
           capabilities: {
             desktop_dispatch_available: true,
-            account_access_confirmation_supported: true,
+            account_access_probe_supported: false,
           },
-          message: "Installation does not prove usable access.",
-          action: "Verify access in OpenCode.",
+          message: "OpenCode Desktop is ready to receive the draft.",
+          action: "Open OpenCode.",
         }}
         taskReady
         onContinue={onContinue}
@@ -327,25 +386,43 @@ describe("HarnessContinuationCard", () => {
     const handoff = screen.getByRole("button", {
       name: "Open desktop handoff in OpenCode",
     });
-    const confirmation = screen.getByRole("checkbox", {
-      name: /confirmed a usable provider or local model/i,
-    });
-    expect(screen.queryByText(/subscription verified/i)).not.toBeInTheDocument();
-    expect(handoff).toBeDisabled();
-
-    fireEvent.click(confirmation);
     expect(handoff).toBeEnabled();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     fireEvent.click(handoff);
-    expect(confirmation).not.toBeChecked();
-    expect(handoff).toBeDisabled();
-
-    expect(onContinue).toHaveBeenCalledWith("opencode", {
-      desktop_access_confirmation: {
-        provider: "opencode",
-        confirmation: "user_confirmed_usable_in_desktop",
-      },
-    });
+    expect(onContinue).toHaveBeenCalledWith("opencode", {});
   });
+
+  it.each([
+    ["authentication_required", "desktop_account_sign_in_required", "Sign in"],
+    ["rate_limited", "desktop_account_rate_limited", "Limit reached"],
+  ])(
+    "keeps the Codex draft openable when account status is %s",
+    (status, code, label) => {
+      const onContinue = vi.fn();
+      render(
+        <HarnessContinuationCard
+          provider={{
+            provider: "codex",
+            ready: true,
+            status,
+            code,
+            message: "Codex will resolve account access in the desktop app.",
+          }}
+          taskReady
+          onContinue={onContinue}
+        />,
+      );
+
+      expect(screen.getByText(label)).toBeVisible();
+      const handoff = screen.getByRole("button", {
+        name: "Open desktop handoff in Codex",
+      });
+      expect(handoff).toBeEnabled();
+      expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+      fireEvent.click(handoff);
+      expect(onContinue).toHaveBeenCalledWith("codex", {});
+    },
+  );
 
   it("gives both card variants the same left-center-right fan positions", () => {
     const { unmount } = render(

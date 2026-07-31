@@ -26,6 +26,7 @@ from app.models import (
     Fact,
     Mention,
     OpenLoop,
+    PromptSnippet,
     Relationship,
     RepoEvent,
     RequirementEvidence,
@@ -146,6 +147,7 @@ async def delete_workspace_graph(session: AsyncSession, workspace_id: UUID) -> W
     symbol_ids = select(CodeSymbol.id).where(CodeSymbol.code_file_id.in_(file_ids))
 
     await session.execute(delete(WorkspaceGoal).where(WorkspaceGoal.workspace_id == workspace_id))
+    await session.execute(delete(PromptSnippet).where(PromptSnippet.workspace_id == workspace_id))
     await session.execute(delete(OpenLoop).where(OpenLoop.workspace_id == workspace_id))
     await session.execute(delete(VerifiedPlaybook).where(VerifiedPlaybook.workspace_id == workspace_id))
     await session.execute(delete(ContinuationStageRequest).where(

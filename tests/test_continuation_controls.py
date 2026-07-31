@@ -146,15 +146,15 @@ async def test_provider_readiness_uses_desktop_apps_not_cli_or_exact_sessions(
         ),
         "opencode": HarnessComposerReadiness(
             provider="opencode",
-            ready=False,
+            ready=True,
             desktop_available=True,
             url_scheme_registered=True,
             required_url_scheme="opencode",
-            code="desktop_account_access_unverified",
+            code="desktop_dispatch_ready",
             message=(
-                "OpenCode is installed, but account access is unverified."
+                "OpenCode is ready to receive a desktop draft."
             ),
-            action="Verify provider and model access in OpenCode.",
+            action="Open OpenCode.",
             account_access_state="unverified",
             account_access_verified=False,
         ),
@@ -180,11 +180,11 @@ async def test_provider_readiness_uses_desktop_apps_not_cli_or_exact_sessions(
     assert statuses["claude"].desktop_available is True
     assert statuses["claude"].code == "desktop_url_scheme_missing"
     assert statuses["claude"].desktop_handoff_supported is False
-    assert statuses["opencode"].ready is False
-    assert statuses["opencode"].status == "access_unverified"
-    assert statuses["opencode"].code == "desktop_account_access_unverified"
+    assert statuses["opencode"].ready is True
+    assert statuses["opencode"].status == "ready"
+    assert statuses["opencode"].code == "desktop_dispatch_ready"
     assert statuses["opencode"].desktop_available is True
-    assert statuses["opencode"].desktop_handoff_supported is False
+    assert statuses["opencode"].desktop_handoff_supported is True
 
 
 async def test_provider_readiness_reuses_recent_local_probes(monkeypatch) -> None:
@@ -195,17 +195,17 @@ async def test_provider_readiness_reuses_recent_local_probes(monkeypatch) -> Non
         cli_calls.append(provider)
         pytest.fail("desktop readiness must not invoke a provider CLI")
 
-    def composer_unverified(provider: str) -> HarnessComposerReadiness:
+    def composer_dispatch_ready(provider: str) -> HarnessComposerReadiness:
         composer_calls.append(provider)
         return HarnessComposerReadiness(
             provider=provider,
-            ready=False,
+            ready=True,
             desktop_available=True,
             url_scheme_registered=True,
             required_url_scheme=provider,
-            code="desktop_account_access_unverified",
-            message=f"{provider} account access is unverified.",
-            action=f"Verify access in {provider}.",
+            code="desktop_dispatch_ready",
+            message=f"{provider} is ready to receive a desktop draft.",
+            action=f"Open {provider}.",
             account_access_state="unverified",
             account_access_verified=False,
         )
@@ -216,7 +216,7 @@ async def test_provider_readiness_reuses_recent_local_probes(monkeypatch) -> Non
     )
     monkeypatch.setattr(
         "app.services.continuation_runtime.probe_harness_composer_readiness",
-        composer_unverified,
+        composer_dispatch_ready,
     )
 
     first = await provider_readiness()
@@ -262,6 +262,6 @@ async def test_provider_readiness_times_out_stalled_desktop_probes(
     assert all(item.ready is False for item in statuses)
     assert all(item.code == "desktop_readiness_timeout" for item in statuses)
     assert all(
-        item.readiness_scope == "desktop_application_and_account_access"
+        item.readiness_scope == "desktop_dispatch_with_account_evidence"
         for item in statuses
     )

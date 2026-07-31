@@ -2,6 +2,7 @@ import {
   readWorkspacePreferences,
   writeWorkspacePreferences,
 } from "../context/workspacePreferences";
+import { sessionContextCompactionCount } from "./sessionContextPolicy";
 
 export const MAX_EXECUTE_SESSION_CONTEXTS = 3;
 
@@ -53,6 +54,7 @@ export function normalizeExecuteSessionContext(session) {
       session?.updatedAt
       || session?.updated_at,
     ),
+    compactionCount: sessionContextCompactionCount(session),
   };
 }
 

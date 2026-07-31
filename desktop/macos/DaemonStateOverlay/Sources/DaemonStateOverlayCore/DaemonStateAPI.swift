@@ -1,6 +1,7 @@
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
+import CryptoKit
 import Foundation
 
 public final class DaemonStateAPI: @unchecked Sendable {
@@ -44,6 +45,102 @@ public final class DaemonStateAPI: @unchecked Sendable {
         )
     }
 
+    public func promptSnippets(workspaceID: String) async throws -> [PromptSnippet] {
+        let workspaceID = try normalizedWorkspaceID(workspaceID)
+        let envelope: PromptSnippetListEnvelope = try await send(
+            method: "GET",
+            path: ["workspaces", workspaceID, "prompt-snippets"]
+        )
+        guard envelope.schemaVersion == "prompt_snippet_list.v1" else {
+            throw DaemonStateError.invalidPayload(
+                "the prompt library has an unsupported schema"
+            )
+        }
+        guard envelope.workspaceID == workspaceID else {
+            throw DaemonStateError.identityMismatch(
+                field: "prompt library workspace",
+                expected: workspaceID,
+                actual: envelope.workspaceID
+            )
+        }
+        guard let values = envelope.prompts else {
+            throw DaemonStateError.invalidPayload("prompt library is missing prompts")
+        }
+        var seen = Set<String>()
+        return try values.map { value in
+            let prompt = try Self.verifiedPrompt(value, workspaceID: workspaceID)
+            guard seen.insert(prompt.id).inserted else {
+                throw DaemonStateError.invalidPayload(
+                    "prompt \(prompt.id) appears more than once"
+                )
+            }
+            return prompt
+        }
+    }
+
+    public func createPromptSnippet(
+        workspaceID: String,
+        content: String
+    ) async throws -> PromptSnippet {
+        let workspaceID = try normalizedWorkspaceID(workspaceID)
+        let content = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else {
+            throw DaemonStateError.invalidPayload("prompt content is empty")
+        }
+        guard content.count <= 20_000 else {
+            throw DaemonStateError.invalidPayload(
+                "prompt content exceeds 20,000 characters"
+            )
+        }
+        let envelope: PromptSnippetEnvelope = try await send(
+            method: "POST",
+            path: ["workspaces", workspaceID, "prompt-snippets"],
+            body: PromptSnippetCreateRequest(content: content)
+        )
+        return try Self.verifiedPrompt(envelope, workspaceID: workspaceID)
+    }
+
+    public func recordPromptUsage(
+        workspaceID: String,
+        promptIDs: [String]
+    ) async throws {
+        let workspaceID = try normalizedWorkspaceID(workspaceID)
+        let promptIDs = Array(
+            NSOrderedSet(array: promptIDs.map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            })
+        ).compactMap { $0 as? String }.filter { !$0.isEmpty }
+        guard !promptIDs.isEmpty else { return }
+
+        for start in stride(from: 0, to: promptIDs.count, by: 100) {
+            let end = min(start + 100, promptIDs.count)
+            let chunk = Array(promptIDs[start..<end])
+            let envelope: PromptSnippetUsageEnvelope = try await send(
+                method: "POST",
+                path: ["workspaces", workspaceID, "prompt-snippets", "usage"],
+                body: PromptSnippetUsageRequest(promptIDs: chunk)
+            )
+            guard envelope.schemaVersion == "prompt_snippet_usage.v1" else {
+                throw DaemonStateError.invalidPayload(
+                    "the prompt usage response has an unsupported schema"
+                )
+            }
+            guard envelope.workspaceID == workspaceID else {
+                throw DaemonStateError.identityMismatch(
+                    field: "prompt usage workspace",
+                    expected: workspaceID,
+                    actual: envelope.workspaceID
+                )
+            }
+            guard let updated = envelope.updated,
+                  (0...chunk.count).contains(updated) else {
+                throw DaemonStateError.invalidPayload(
+                    "the prompt usage response has an invalid update count"
+                )
+            }
+        }
+    }
+
     public func fetchContext(
         scope: ContextScope,
         workspaceID: String
@@ -77,6 +174,10 @@ public final class DaemonStateAPI: @unchecked Sendable {
         )
         try ContextValidator.confirmRefresh(
             refresh,
+            workspaceID: workspaceID,
+            activeSession: activeSession
+        )
+        try await requireSessionContextEligibility(
             workspaceID: workspaceID,
             activeSession: activeSession
         )
@@ -134,6 +235,42 @@ public final class DaemonStateAPI: @unchecked Sendable {
         )
     }
 
+    private func requireSessionContextEligibility(
+        workspaceID: String,
+        activeSession: ActiveSessionIdentity
+    ) async throws {
+        let eligibility: SessionContextEligibilityEnvelope = try await send(
+            method: "GET",
+            path: ["checkpoints", "session-context-eligibility"],
+            queryItems: [
+                URLQueryItem(name: "workspace_id", value: workspaceID),
+                URLQueryItem(name: "provider", value: activeSession.provider),
+                URLQueryItem(name: "session_id", value: activeSession.sessionID),
+            ]
+        )
+        guard eligibility.provider == activeSession.provider else {
+            throw DaemonStateError.identityMismatch(
+                field: "eligibility provider",
+                expected: activeSession.provider,
+                actual: eligibility.provider
+            )
+        }
+        guard eligibility.sessionID == activeSession.sessionID else {
+            throw DaemonStateError.identityMismatch(
+                field: "eligibility session",
+                expected: activeSession.sessionID,
+                actual: eligibility.sessionID
+            )
+        }
+        guard eligibility.eligible == true else {
+            let minimum = max(eligibility.minimumCompactions ?? 2, 1)
+            let count = min(max(eligibility.compactionCount ?? 0, 0), minimum)
+            throw DaemonStateError.activeSessionUnavailable(
+                eligibility.message ?? "\(minimum) compactions required (\(count)/\(minimum))."
+            )
+        }
+    }
+
     private func scopedLatestCheckpoint(
         workspaceID: String,
         activeSession: ActiveSessionIdentity
@@ -173,6 +310,64 @@ public final class DaemonStateAPI: @unchecked Sendable {
         return try ContextValidator.verifiedProjectContext(
             response,
             workspaceID: workspaceID
+        )
+    }
+
+    private func normalizedWorkspaceID(_ value: String) throws -> String {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            throw DaemonStateError.invalidPayload("workspace_id is empty")
+        }
+        return normalized
+    }
+
+    private static func verifiedPrompt(
+        _ envelope: PromptSnippetEnvelope,
+        workspaceID: String
+    ) throws -> PromptSnippet {
+        guard let id = envelope.id?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !id.isEmpty else {
+            throw DaemonStateError.invalidPayload("prompt.id is empty")
+        }
+        guard envelope.workspaceID == workspaceID else {
+            throw DaemonStateError.identityMismatch(
+                field: "prompt workspace",
+                expected: workspaceID,
+                actual: envelope.workspaceID
+            )
+        }
+        guard let content = envelope.content,
+              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              content.count <= 20_000 else {
+            throw DaemonStateError.invalidPayload(
+                "prompt \(id) has invalid content"
+            )
+        }
+        guard let contentSHA256 = envelope.contentSHA256?.lowercased(),
+              contentSHA256.count == 64 else {
+            throw DaemonStateError.invalidPayload(
+                "prompt \(id) has an invalid SHA-256 digest"
+            )
+        }
+        let actualSHA256 = SHA256.hash(data: Data(content.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        guard contentSHA256 == actualSHA256 else {
+            throw DaemonStateError.invalidPayload(
+                "prompt \(id) failed integrity verification"
+            )
+        }
+        guard let useCount = envelope.useCount, useCount >= 0 else {
+            throw DaemonStateError.invalidPayload(
+                "prompt \(id) has an invalid use count"
+            )
+        }
+        return PromptSnippet(
+            id: id,
+            workspaceID: workspaceID,
+            content: content,
+            contentSHA256: contentSHA256,
+            useCount: useCount
         )
     }
 

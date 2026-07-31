@@ -20,6 +20,7 @@ from app.services.execution_prompt_renderer import (
     canonical_contract_json,
     execution_prompt_sha256,
     project_context_rendered_lines,
+    staging_authoritative_lead,
 )
 from app.services.project_foundation_sections import (
     PROJECT_FOUNDATION_CORE_SECTIONS,
@@ -44,6 +45,8 @@ _EXECUTABLE_VERIFIER_TYPES = (
     SUPPORTED_AUTOMATIC_VERIFIERS
     | _REQUIRED_RUNTIME_EVIDENCE_VERIFIERS
 )
+PROJECT_CONTEXT_MAX_OVERHEAD_CHARS = 9_000
+EXECUTION_PROMPT_MAX_OVERHEAD_CHARS = 10_000
 _REFERENCED_CONTEXT_DEPENDENCY_RE = re.compile(
     r"(?:chatgpt-conversation://|https?://(?:www\.)?chatgpt\.com/|"
     r"\b(?:the\s+)?last\s+(?:prompt|message|response)\b|"
@@ -186,11 +189,14 @@ def evaluate_continuation_quality(
             severity="blocking",
             message="Persisted execution prompt hash does not match its content.",
         ))
-    if contract.task.request_verbatim not in prompt_markdown:
+    authoritative_lead = staging_authoritative_lead(
+        contract.task.request_verbatim
+    )
+    if authoritative_lead not in prompt_markdown:
         issues.append(ContinuationQualityIssue(
             code="authoritative_request_missing",
             severity="blocking",
-            message="Execution prompt does not contain the full authoritative request.",
+            message="Execution prompt does not contain the authoritative request.",
         ))
     for item in contract.supporting_context:
         first_line = item.text.splitlines()[0]
@@ -230,10 +236,18 @@ def evaluate_continuation_quality(
             issues=issues,
             issue_prefix="project_context_copy",
         )
+    mandatory_section = _markdown_section(
+        prompt_markdown,
+        headings=("## Mandatory requirements",),
+    )
     for requirement in contract.requirements:
         if requirement.priority is not RequirementPriority.MUST:
             continue
-        if f"{requirement.id}:" not in prompt_markdown:
+        if re.search(
+            rf"(?<![A-Za-z0-9]){re.escape(requirement.id)}"
+            r"(?![A-Za-z0-9])",
+            mandatory_section,
+        ) is None:
             issues.append(ContinuationQualityIssue(
                 code="mandatory_requirement_missing_from_prompt",
                 severity="blocking",
@@ -726,13 +740,38 @@ def _check_worker_handoff_shape(
             )
         ),
     )
-    expected_lead = contract.task.request_verbatim.rstrip("\r\n")
+    expected_lead = staging_authoritative_lead(
+        contract.task.request_verbatim
+    )
     if expected_lead not in lead_section:
         issues.append(ContinuationQualityIssue(
             code=f"{issue_prefix}_current_lead_missing",
             severity="blocking",
             message=f"{context_name} omits the authoritative current lead.",
         ))
+    if issue_prefix == "project_context_copy":
+        overhead_chars = max(0, len(markdown) - len(expected_lead))
+        if overhead_chars > PROJECT_CONTEXT_MAX_OVERHEAD_CHARS:
+            issues.append(ContinuationQualityIssue(
+                code="project_context_copy_overhead_budget_exceeded",
+                severity="blocking",
+                message=(
+                    "Project Context exceeds its model-facing overhead budget; "
+                    "leave detailed provenance and audit material in the "
+                    "structured contract."
+                ),
+            ))
+    else:
+        overhead_chars = max(0, len(markdown) - len(expected_lead))
+        if overhead_chars > EXECUTION_PROMPT_MAX_OVERHEAD_CHARS:
+            issues.append(ContinuationQualityIssue(
+                code="worker_handoff_overhead_budget_exceeded",
+                severity="blocking",
+                message=(
+                    "Execution prompt exceeds its model-facing overhead budget; "
+                    "leave detailed audit material in the hash-bound contract."
+                ),
+            ))
 
     repository_section = _markdown_section(
         markdown,
@@ -776,7 +815,16 @@ def _check_worker_handoff_shape(
             requirements = {item.id: item for item in contract.requirements}
             for requirement_id in contract.definition_of_done:
                 requirement = requirements.get(requirement_id)
-                if requirement is None or requirement.text in done_section:
+                id_bound = re.search(
+                    rf"(?<![A-Za-z0-9]){re.escape(requirement_id)}"
+                    r"(?![A-Za-z0-9])",
+                    done_section,
+                )
+                if (
+                    requirement is None
+                    or requirement.text in done_section
+                    or id_bound is not None
+                ):
                     continue
                 issues.append(ContinuationQualityIssue(
                     code=f"{issue_prefix}_definition_of_done_incomplete",

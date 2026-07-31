@@ -20,6 +20,14 @@ vi.mock("./pages/ContextMapPage", () => ({
   default: () => <h1>Explain project</h1>,
 }));
 
+vi.mock("./pages/SourceManager", () => ({
+  default: () => <h1>Sources page content</h1>,
+}));
+
+vi.mock("./pages/Connectors", () => ({
+  default: () => <h1>Integrations page content</h1>,
+}));
+
 vi.mock("./pages/NowPage", async () => {
   const { useState } = await vi.importActual("react");
   const { useLocation } = await vi.importActual("react-router-dom");
@@ -358,6 +366,36 @@ it("gives the Explain route a full-height frame", async () => {
 
   const heading = await screen.findByRole("heading", { name: "Explain project" });
   expect(heading.closest(".page-enter")).toHaveClass("h-full", "min-h-0");
+});
+
+it.each([
+  ["/app/explain", "Evidence", "Explain project"],
+  ["/app/sources", "Sources", "Sources page content"],
+  ["/app/connectors", "Integrations", "Integrations page content"],
+  ["/app/connectors/github/runs", "Integrations", "Integrations page content"],
+])("keeps the %s page mounted beneath an under-construction veil", async (route, sectionName, pageContent) => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider>
+        <WorkspaceProvider>
+          <MemoryRouter initialEntries={[route]}>
+            <App />
+          </MemoryRouter>
+        </WorkspaceProvider>
+      </ThemeProvider>
+    </QueryClientProvider>,
+  );
+
+  expect(await screen.findByText(pageContent)).toBeInTheDocument();
+  const veil = screen.getByRole("status", { name: `${sectionName} is under construction` });
+  expect(within(veil).getByRole("heading", { name: "Under construction" })).toBeInTheDocument();
+  expect(within(veil).getByText(sectionName)).toBeInTheDocument();
+
+  const page = screen.getByText(pageContent).closest(".page-enter");
+  expect(page).toHaveAttribute("inert");
+  expect(page).toHaveClass("pointer-events-none", "select-none");
+  expect(page.closest("main")).toHaveClass("overflow-hidden");
 });
 
 it("collapses the desktop sidebar with an accessible persisted control", async () => {

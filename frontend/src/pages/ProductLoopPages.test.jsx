@@ -67,7 +67,7 @@ const mocks = vi.hoisted(() => ({
           ready: true,
           context_staging_supported: false,
           desktop_handoff_supported: true,
-          readiness_scope: "desktop_application_and_account_access",
+          readiness_scope: "desktop_dispatch_with_account_evidence",
           account_access_state: "verified",
           account_access_verified: true,
           code: "desktop_account_access_verified",
@@ -97,7 +97,7 @@ const mocks = vi.hoisted(() => ({
           ready: true,
           context_staging_supported: false,
           desktop_handoff_supported: true,
-          readiness_scope: "desktop_application_and_account_access",
+          readiness_scope: "desktop_dispatch_with_account_evidence",
           account_access_state: "verified",
           account_access_verified: true,
           code: "desktop_account_access_verified",
@@ -111,7 +111,7 @@ const mocks = vi.hoisted(() => ({
           ready: true,
           context_staging_supported: false,
           desktop_handoff_supported: true,
-          readiness_scope: "desktop_application_and_account_access",
+          readiness_scope: "desktop_dispatch_with_account_evidence",
           account_access_state: "verified",
           account_access_verified: true,
           code: "desktop_account_access_verified",
@@ -165,6 +165,26 @@ const mocks = vi.hoisted(() => ({
     error: null,
   },
   overlayVisibility: { isPending: false, error: null, mutate: vi.fn() },
+  promptSnippets: {
+    data: { prompts: [] },
+    isLoading: false,
+    isFetching: false,
+    isError: false,
+    error: null,
+  },
+  createPrompt: {
+    isPending: false,
+    error: null,
+    mutateAsync: vi.fn(),
+    reset: vi.fn(),
+  },
+  deletePrompt: {
+    isPending: false,
+    error: null,
+    variables: null,
+    mutateAsync: vi.fn(),
+    reset: vi.fn(),
+  },
 }));
 
 vi.mock("./useProductWorkspace", () => ({
@@ -219,6 +239,9 @@ vi.mock("../api/hooks", () => ({
   useCheckpointHandoff: () => mocks.checkpointHandoff,
   useDesktopOverlayStatus: () => mocks.overlayStatus,
   useSetDesktopOverlayVisibility: () => mocks.overlayVisibility,
+  usePromptSnippets: () => mocks.promptSnippets,
+  useCreatePromptSnippet: () => mocks.createPrompt,
+  useDeletePromptSnippet: () => mocks.deletePrompt,
 }));
 
 beforeEach(() => {
@@ -283,6 +306,20 @@ beforeEach(() => {
   mocks.memory.isLoading = false;
   mocks.memory.isError = false;
   mocks.memory.error = null;
+  mocks.promptSnippets.data = { prompts: [] };
+  mocks.promptSnippets.isLoading = false;
+  mocks.promptSnippets.isFetching = false;
+  mocks.promptSnippets.isError = false;
+  mocks.promptSnippets.error = null;
+  mocks.createPrompt.isPending = false;
+  mocks.createPrompt.error = null;
+  mocks.createPrompt.mutateAsync.mockReset();
+  mocks.createPrompt.reset.mockReset();
+  mocks.deletePrompt.isPending = false;
+  mocks.deletePrompt.error = null;
+  mocks.deletePrompt.variables = null;
+  mocks.deletePrompt.mutateAsync.mockReset();
+  mocks.deletePrompt.reset.mockReset();
   mocks.providers.data = {
     active_run: null,
     latest_run: null,
@@ -294,7 +331,7 @@ beforeEach(() => {
         ready: true,
         context_staging_supported: false,
         desktop_handoff_supported: true,
-        readiness_scope: "desktop_application_and_account_access",
+        readiness_scope: "desktop_dispatch_with_account_evidence",
         account_access_state: "verified",
         account_access_verified: true,
         code: "desktop_account_access_verified",
@@ -324,7 +361,7 @@ beforeEach(() => {
         ready: true,
         context_staging_supported: false,
         desktop_handoff_supported: true,
-        readiness_scope: "desktop_application_and_account_access",
+        readiness_scope: "desktop_dispatch_with_account_evidence",
         account_access_state: "verified",
         account_access_verified: true,
         code: "desktop_account_access_verified",
@@ -338,7 +375,7 @@ beforeEach(() => {
         ready: true,
         context_staging_supported: false,
         desktop_handoff_supported: true,
-        readiness_scope: "desktop_application_and_account_access",
+        readiness_scope: "desktop_dispatch_with_account_evidence",
         account_access_state: "verified",
         account_access_verified: true,
         code: "desktop_account_access_verified",
@@ -607,6 +644,41 @@ describe("session context clipboard integrity", () => {
 });
 
 describe("checkpoint product loop", () => {
+  it("keeps continuation cards inactive until two provider compactions exist", () => {
+    mocks.latestDiscovery.data = latestDiscoveryResult({
+      compaction_checkpoints: [
+        { id: "provider-compaction-1", window_id: 1 },
+      ],
+    });
+    mocks.history.data = { checkpoints: [checkpointFixture()] };
+
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+
+    const providerButtons = [
+      screen.getByRole("button", { name: "Open desktop handoff in Codex" }),
+      screen.getByRole("button", { name: "Open desktop handoff in Claude Code" }),
+      screen.getByRole("button", { name: "Open desktop handoff in OpenCode" }),
+    ];
+    providerButtons.forEach((button) => {
+      expect(button).toBeDisabled();
+      expect(button).toHaveAttribute("data-context-ready", "false");
+      expect(button).toHaveAttribute("data-compaction-count", "1");
+    });
+    expect(screen.getAllByText("1/2 compactions")).toHaveLength(3);
+    expect(screen.getAllByText("Session Context locked")).toHaveLength(3);
+
+    const codexCard = providerButtons[0].closest("article");
+    fireEvent.mouseEnter(codexCard);
+    expect(codexCard).toHaveStyle({
+      zIndex: "40",
+      "--daemonstate-card-y": "-18px",
+      "--daemonstate-card-scale": "1.035",
+    });
+
+    fireEvent.click(providerButtons[0]);
+    expect(mocks.continuation.mutateAsync).not.toHaveBeenCalled();
+  });
+
   it("shows current work and a complete structured checkpoint on Now", () => {
     render(<MemoryRouter><NowPage /></MemoryRouter>);
 
@@ -768,9 +840,10 @@ describe("checkpoint product loop", () => {
     expect(screen.getByRole("button", {
       name: "Open desktop handoff in Codex",
     })).toBeDisabled();
-    expect(screen.getAllByText(
+    expect(screen.queryByText(
       "Finding the newest local session before enabling Continue.",
-    ).length).toBeGreaterThan(0);
+    )).not.toBeInTheDocument();
+    expect(screen.queryByText("Task required:")).not.toBeInTheDocument();
     expect(mocks.hookCalls.providers.at(-1)).toMatchObject({
       workspaceId: "workspace-1",
       enabled: true,
@@ -1413,12 +1486,12 @@ Remove screenshot IDs and temporary paths from the Now page.
     );
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
     const status = await screen.findByRole("status");
-    expect(status).toHaveTextContent("Desktop open requested for Claude Code");
-    expect(status).toHaveTextContent("asked to open a composer");
-    expect(status).toHaveTextContent("full context was copied to the clipboard");
-    expect(status).toHaveTextContent("App rendering cannot be verified here");
-    expect(status).toHaveTextContent("Nothing was submitted");
-    expect(status).toHaveTextContent("Look for Claude Code on your desktop");
+    expect(status).toHaveTextContent("Continue in Claude Code");
+    expect(status).toHaveTextContent(
+      "Context copied. Review the draft, then send it in Claude Code.",
+    );
+    expect(status).not.toHaveTextContent("App rendering cannot be verified here");
+    expect(status).not.toHaveTextContent("Look for Claude Code on your desktop");
     const requestAgain = screen.getByRole("button", {
       name: "Open desktop handoff in Claude Code",
     });
@@ -1496,14 +1569,14 @@ Remove screenshot IDs and temporary paths from the Now page.
     }));
 
     const status = await screen.findByRole("status");
-    expect(status).toHaveTextContent("Desktop open requested");
+    expect(status).toHaveTextContent("Continue in Claude Code");
     expect(status).toHaveTextContent("Session Context needs repository review");
     expect(status).toHaveTextContent("Its inherited Workspace Context is incomplete.");
     expect(status).toHaveTextContent(
       "Review the repository in the opened desktop app before submitting.",
     );
     expect(status).toHaveTextContent("Automatic execution remains blocked.");
-    expect(status).toHaveTextContent("Nothing was submitted");
+    expect(status).toHaveTextContent("Context copied.");
     expect(screen.queryByText("Project Context is not safe to stage")).not.toBeInTheDocument();
   });
 
@@ -1563,7 +1636,7 @@ Remove screenshot IDs and temporary paths from the Now page.
     fireEvent.click(screen.getByRole("button", { name: "Open desktop handoff in Codex" }));
 
     const status = await screen.findByRole("status");
-    expect(status).toHaveTextContent("Nothing was submitted");
+    expect(status).toHaveTextContent("Context copied.");
     expect(status).not.toHaveTextContent("Workflow advanced after verification");
   });
 
@@ -1764,27 +1837,27 @@ Remove screenshot IDs and temporary paths from the Now page.
     expect(mocks.continuation.mutateAsync).not.toHaveBeenCalled();
   });
 
-  it("requires exact user-confirmed OpenCode provider or local-model access", async () => {
+  it("opens OpenCode without a manual provider-access attestation", async () => {
     mocks.providers.data.providers = mocks.providers.data.providers.map((provider) => (
       provider.provider === "opencode"
         ? {
             ...provider,
-            status: "access_unverified",
-            ready: false,
-            code: "desktop_account_access_unverified",
+            status: "ready",
+            ready: true,
+            code: "desktop_dispatch_ready",
             desktop_available: true,
-            desktop_handoff_supported: false,
+            desktop_handoff_supported: true,
             account_access_state: "unverified",
             account_access_verified: false,
             capabilities: {
               desktop_dispatch_available: true,
-              account_access_confirmation_supported: true,
+              account_access_probe_supported: false,
             },
             message: (
-              "OpenCode Desktop is installed, but installation does not prove "
-              + "a usable provider or local model."
+              "OpenCode Desktop is ready to receive the draft. "
+              + "OpenCode will verify account and model access when the user sends."
             ),
-            action: "Verify provider and model access in OpenCode.",
+            action: "Open the prepared draft in OpenCode.",
           }
         : provider
     ));
@@ -1794,29 +1867,21 @@ Remove screenshot IDs and temporary paths from the Now page.
     const openCode = screen.getByRole("button", {
       name: "Open desktop handoff in OpenCode",
     });
-    expect(openCode).toBeDisabled();
-    expect(openCode).toHaveAttribute("data-provider-ready", "false");
-    expect(within(openCode).getByText("Access unverified")).toBeVisible();
-    expect(openCode).toHaveTextContent(
-      "OpenCode Desktop is installed, but installation does not prove a usable provider or local model.",
-    );
-    fireEvent.click(openCode);
-    expect(mocks.continuation.mutateAsync).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("checkbox", {
-      name: /confirmed a usable provider or local model/i,
-    }));
     expect(openCode).toBeEnabled();
-    expect(within(openCode).getByText("User confirmed")).toBeVisible();
+    expect(openCode).toHaveAttribute("data-provider-ready", "true");
+    expect(within(openCode).getByText("Ready")).toBeVisible();
+    expect(openCode).toHaveTextContent(
+      "OpenCode Desktop is ready to receive the draft.",
+    );
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     fireEvent.click(openCode);
     await waitFor(() => expect(mocks.continuation.mutateAsync).toHaveBeenCalled());
     expect(mocks.continuation.mutateAsync.mock.calls.at(-1)[0]).toMatchObject({
       target_provider: "opencode",
-      desktop_access_confirmation: {
-        provider: "opencode",
-        confirmation: "user_confirmed_usable_in_desktop",
-      },
     });
+    expect(mocks.continuation.mutateAsync.mock.calls.at(-1)[0]).not.toHaveProperty(
+      "desktop_access_confirmation",
+    );
   });
 
   it("fails closed when a ready provider cannot open a desktop handoff", () => {
@@ -2015,10 +2080,21 @@ Remove screenshot IDs and temporary paths from the Now page.
         handoff_id: "recovered-visible-handoff",
         provider: "codex",
         status: "awaiting_user",
+        started_at: new Date(
+          Date.now() - ((2 * 24 * 60 * 60 * 1000) + (60 * 1000)),
+        ).toISOString(),
         execution_started: false,
       },
     };
     render(<MemoryRouter><NowPage /></MemoryRouter>);
+    const restoredStatus = screen.getByRole("status");
+    expect(restoredStatus).toHaveTextContent(
+      "Previous Codex handoff · 2 days ago",
+    );
+    expect(restoredStatus).toHaveTextContent(
+      "Nothing is running now. Request again if needed.",
+    );
+    expect(restoredStatus).not.toHaveTextContent("Continue in Codex");
     const requestAgain = screen.getByRole("button", {
       name: "Open desktop handoff in Codex",
     });
@@ -2104,7 +2180,7 @@ Remove screenshot IDs and temporary paths from the Now page.
 
     render(<MemoryRouter><NowPage /></MemoryRouter>);
 
-    expect(screen.queryByText("Desktop open requested for Codex")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Previous Codex handoff/)).not.toBeInTheDocument();
     const codex = screen.getByRole("button", { name: "Open desktop handoff in Codex" });
     expect(codex).toBeEnabled();
     expect(codex).toHaveAttribute("data-desktop-open-requested", "false");
@@ -2331,7 +2407,7 @@ Remove screenshot IDs and temporary paths from the Now page.
     expect(blocker).toHaveTextContent(
       "desktop open request and clipboard copy were not both confirmed",
     );
-    expect(screen.queryByText("Desktop open requested for Codex")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Continue in Codex/)).not.toBeInTheDocument();
     expect(blocker).not.toHaveTextContent("Audited the configuration");
     expect(blocker).toHaveTextContent("No successful handoff is being claimed");
   });
@@ -2563,7 +2639,7 @@ Remove screenshot IDs and temporary paths from the Now page.
     const view = render(<MemoryRouter><NowPage /></MemoryRouter>);
 
     fireEvent.click(screen.getByRole("button", { name: "Open desktop handoff in Codex" }));
-    expect(await screen.findByRole("status")).toHaveTextContent("Desktop open requested for Claude Code");
+    expect(await screen.findByRole("status")).toHaveTextContent("Continue in Claude Code");
 
     mocks.digest.data.activity.recent_sessions[0] = {
       ...mocks.digest.data.activity.recent_sessions[0],
@@ -2579,7 +2655,7 @@ Remove screenshot IDs and temporary paths from the Now page.
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: "Open desktop handoff in Codex" }));
-    expect(await screen.findByRole("status")).toHaveTextContent("Desktop open requested for Claude Code");
+    expect(await screen.findByRole("status")).toHaveTextContent("Continue in Claude Code");
     await waitFor(() => expect(mocks.continuation.mutateAsync).toHaveBeenLastCalledWith(
       expect.objectContaining({ repo_path: "/workspace/daemonstate-next" }),
     ));
@@ -2913,6 +2989,10 @@ function latestDiscoveryResult(session = {}) {
       cwd: "/workspace/daemonstate",
       revision_number: 1,
       live: true,
+      compaction_checkpoints: [
+        { id: "provider-compaction-1", window_id: 1 },
+        { id: "provider-compaction-2", window_id: 2 },
+      ],
       ...session,
     };
     if (!Object.prototype.hasOwnProperty.call(session, "latest_topic")) {
