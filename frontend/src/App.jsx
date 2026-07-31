@@ -31,6 +31,12 @@ const Connectors   = lazy(() => import("./pages/Connectors"));
 const Changes      = lazy(() => import("./pages/Changes"));
 const WorkspacesPage = lazy(() => import("./pages/WorkspacesPage"));
 
+export function waitlistOnly(environment) {
+  return environment.VITE_WAITLIST_ONLY === "true";
+}
+
+const WAITLIST_ONLY = waitlistOnly(import.meta.env);
+
 const CONTINUE_NAV_ITEMS = [
   { to: "/app", label: "Continue", icon: Activity, end: true },
   { to: "/app/execute", label: "Execute", icon: Workflow },
@@ -155,7 +161,10 @@ export default function App() {
     <Suspense fallback={<PageLoader fullScreen />}>
       <Routes>
         <Route path="/"      element={<Landing />} />
-        <Route path="/app/*" element={<AdminShell />} />
+        <Route
+          path="/app/*"
+          element={WAITLIST_ONLY ? <Navigate to="/" replace /> : <AdminShell />}
+        />
         <Route path="*"      element={<Navigate to="/" replace />} />
       </Routes>
     </Suspense>

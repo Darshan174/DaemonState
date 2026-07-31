@@ -19,11 +19,13 @@ from app.api import (
     session_continuity,
     session_library,
     sources,
+    waitlist,
     workspace_goals,
     workspaces,
 )
 
 api_router = APIRouter()
+api_router.include_router(waitlist.router, prefix="", tags=["waitlist"])
 api_router.include_router(desktop_overlay.router, prefix="", tags=["desktop"])
 api_router.include_router(checkpoints.router, prefix="", tags=["checkpoints"])
 api_router.include_router(continuations.router, prefix="", tags=["continuations"])
