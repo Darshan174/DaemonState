@@ -65,7 +65,11 @@ PROJECT_FOUNDATION_CORE_SECTIONS = frozenset({
 
 PROJECT_FOUNDATION_REQUIRED_HEADINGS: tuple[str, ...] = (
     "## Project foundation",
-    *(f"### {title}" for _, title in PROJECT_FOUNDATION_SECTIONS),
+    *(
+        f"### {title}"
+        for section, title in PROJECT_FOUNDATION_SECTIONS
+        if section in PROJECT_FOUNDATION_CORE_SECTIONS
+    ),
     "## Session Context — task-specific child",
 )
 

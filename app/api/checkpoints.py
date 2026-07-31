@@ -28,6 +28,11 @@ from app.services.checkpoints import (
     resolve_session_handoff_supporting_context,
 )
 from app.services.harness_launcher import HarnessLaunchError, launch_harness_session
+from app.services.session_context_policy import (
+    SessionContextCompactionsRequiredError,
+    require_session_context_compactions,
+    session_context_eligibility,
+)
 from app.services.session_scope import normalize_session_key, session_provider_values
 
 
@@ -127,6 +132,28 @@ async def get_latest_checkpoint(
             access_scope=access_scope,
         )
     )[0]
+
+
+@router.get("/checkpoints/session-context-eligibility")
+async def get_session_context_eligibility(
+    workspace_id: UUID,
+    provider: str = Query(min_length=1, max_length=50),
+    session_id: str = Query(min_length=1, max_length=255),
+    session: AsyncSession = Depends(get_db_session),
+    access_scope: AccessScope = Depends(get_access_scope),
+) -> dict:
+    await _require_workspace(session, workspace_id, access_scope)
+    try:
+        eligibility = await session_context_eligibility(
+            session,
+            workspace_id=workspace_id,
+            provider=provider,
+            session_id=session_id,
+            access_scope=access_scope,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return eligibility.to_dict()
 
 
 @router.get("/checkpoints/{checkpoint_id}")
@@ -322,6 +349,19 @@ async def create_session_handoff(
     checkpoint = await _accessible_checkpoint(
         session, checkpoint_id, body.workspace_id, access_scope
     )
+    try:
+        await require_session_context_compactions(
+            session,
+            workspace_id=body.workspace_id,
+            provider=checkpoint.provider,
+            session_id=checkpoint.session_id,
+            access_scope=access_scope,
+        )
+    except SessionContextCompactionsRequiredError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.detail(),
+        ) from exc
     request_verbatim = await resolve_session_handoff_request_verbatim(
         session,
         checkpoint,

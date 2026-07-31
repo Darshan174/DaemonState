@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import platform
 import plistlib
 import re
+import selectors
 import subprocess
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -13,6 +16,10 @@ from urllib.parse import quote, urlencode
 from app.services.harness_adapters import (
     ProviderModelOption,
     codex_cached_model_catalog,
+    codex_executable,
+    codex_models_from_app_server_payload,
+    minimal_process_environment,
+    provider_environment,
 )
 from app.telemetry import traced
 
@@ -31,6 +38,9 @@ DESKTOP_DEEP_LINK_PROMPT_MAX_CHARS = 12_000
 # well below the API timeout, so a timed-out worker cannot continue into a
 # later app-open attempt.
 DESKTOP_HANDOFF_TOTAL_TIMEOUT_SECONDS = 3.0
+CODEX_DESKTOP_ACCOUNT_PROBE_TIMEOUT_SECONDS = 2.25
+CODEX_DESKTOP_ACCOUNT_PROBE_MAX_LINE_BYTES = 2_000_000
+CODEX_DESKTOP_ACCOUNT_PROBE_MAX_MESSAGES = 256
 
 
 @dataclass(frozen=True)
@@ -77,6 +87,16 @@ class HarnessComposerReadiness:
     account_access_state: str = "not_checked"
     account_access_verified: bool = False
     model_catalog_source: str | None = None
+
+
+@dataclass(frozen=True)
+class CodexDesktopAccountProbe:
+    """Account-scoped evidence returned by the local Codex app-server."""
+
+    signed_in: bool | None = None
+    models: tuple[ProviderModelOption, ...] = field(default_factory=tuple)
+    rate_limit_reached: bool | None = None
+    rate_limit_code: str | None = None
 
 
 MACOS_DESKTOP_APPS = {
@@ -176,12 +196,12 @@ def probe_harness_visibility(connector_type: str) -> HarnessVisibility:
 def probe_harness_composer_readiness(
     connector_type: str,
 ) -> HarnessComposerReadiness:
-    """Fail closed unless desktop transport and account access are both proven.
+    """Report whether Continue can open a visible, non-submitting desktop draft.
 
-    The installation probe never invokes a provider CLI. Codex's non-secret
-    model cache may populate UI controls, but no supported desktop app exposes
-    a privacy-preserving subscription/account handshake today. Installation
-    and a URL handler therefore cannot be promoted to usable readiness.
+    Desktop dispatch is the only hard gate. Codex account and model status is
+    probed automatically when its local app-server supports the required
+    read-only methods. Inconclusive account evidence never blocks opening the
+    app because Codex remains the authority when the user eventually submits.
     """
 
     dispatch = _probe_harness_composer_dispatch(connector_type)
@@ -191,70 +211,349 @@ def probe_harness_composer_readiness(
     provider = dispatch.provider
     label = HARNESS_LABELS[provider]
     if provider == "codex":
-        models = codex_cached_model_catalog()
-        catalog_detail = (
-            f" A recent desktop catalog lists {len(models)} model"
-            f"{'' if len(models) == 1 else 's'}, but that cache"
-            if models
-            else " No fresh desktop model catalog is available, and the app"
+        probe = probe_codex_desktop_account()
+        cached_models = codex_cached_model_catalog()
+        models = probe.models or cached_models
+        model_catalog_source = (
+            "codex_app_server"
+            if probe.models
+            else "codex_desktop_cache"
+            if cached_models
+            else None
         )
+        if probe.signed_in is False:
+            return replace(
+                dispatch,
+                code="desktop_account_sign_in_required",
+                message=(
+                    "Codex Desktop is ready to receive the draft, but its "
+                    "local account status reports that sign-in is required."
+                ),
+                action=(
+                    "Open Codex Desktop and sign in. The prepared draft will "
+                    "remain reviewable and nothing is submitted automatically."
+                ),
+                models=models,
+                account_access_state="signed_out",
+                account_access_verified=False,
+                model_catalog_source=model_catalog_source,
+            )
+        if probe.rate_limit_reached is True:
+            return replace(
+                dispatch,
+                code="desktop_account_rate_limited",
+                message=(
+                    "Codex Desktop is signed in, but its account currently "
+                    "reports that a usage limit has been reached."
+                ),
+                action=(
+                    "Open Codex Desktop to review the limit or reset time. "
+                    "Continue can still load the draft without submitting it."
+                ),
+                models=models,
+                account_access_state="rate_limited",
+                account_access_verified=False,
+                model_catalog_source=model_catalog_source,
+            )
+        if probe.signed_in is True and probe.models:
+            return replace(
+                dispatch,
+                code="desktop_account_access_verified",
+                message=(
+                    f"Codex Desktop is signed in and reports {len(probe.models)} "
+                    f"available model{'' if len(probe.models) == 1 else 's'}."
+                ),
+                action="Open the prepared draft in Codex Desktop.",
+                models=probe.models,
+                account_access_state="verified",
+                account_access_verified=True,
+                model_catalog_source="codex_app_server",
+            )
         return replace(
             dispatch,
-            ready=False,
-            code="desktop_account_access_unverified",
+            code="desktop_dispatch_ready",
             message=(
-                f"{label} Desktop is installed and its URL handler is available."
-                f"{catalog_detail} does not prove the current signed-in plan, "
-                "entitlement, or remaining quota."
+                f"{label} Desktop is ready to receive the draft. Its account "
+                "or live model status could not be confirmed automatically, "
+                "so Codex will verify access when the user sends."
             ),
             action=(
-                "Open Codex Desktop and verify the signed-in account and "
-                "selected model. DaemonState will not claim account access "
-                "without a supported desktop status bridge."
+                "Open the prepared draft in Codex Desktop. Sign in or choose "
+                "another model there if Codex requests it."
             ),
             models=models,
             account_access_state="unverified",
             account_access_verified=False,
-            model_catalog_source=(
-                "codex_desktop_cache" if models else None
-            ),
-        )
-    if provider == "opencode":
-        return replace(
-            dispatch,
-            ready=False,
-            code="desktop_account_access_unverified",
-            message=(
-                "OpenCode Desktop is installed, but installation does not "
-                "prove a usable account. OpenCode has no single universal "
-                "subscription; access requires at least one connected provider "
-                "or local model that can actually run."
-            ),
-            action=(
-                "Open OpenCode, connect a provider or local model, and verify "
-                "access there. DaemonState will not mark it usable without a "
-                "supported desktop account-status bridge."
-            ),
-            account_access_state="unverified",
-            account_access_verified=False,
+            model_catalog_source=model_catalog_source,
         )
     return replace(
         dispatch,
-        ready=False,
-        code="desktop_account_access_unverified",
+        code="desktop_dispatch_ready",
         message=(
-            f"{label} Desktop is installed, but DaemonState cannot verify the "
-            "signed-in account, plan, entitlement, or remaining quota through "
-            "a supported desktop interface."
+            f"{label} Desktop is ready to receive the draft. {label} will "
+            "verify account and model access when the user sends."
         ),
         action=(
-            f"Open {label} Desktop and verify account access there. "
-            "DaemonState will not mark it usable without a supported desktop "
-            "account-status bridge."
+            f"Open the prepared draft in {label} Desktop. Nothing is submitted "
+            "automatically."
         ),
         account_access_state="unverified",
         account_access_verified=False,
     )
+
+
+def probe_codex_desktop_account(
+    *,
+    timeout_seconds: float = CODEX_DESKTOP_ACCOUNT_PROBE_TIMEOUT_SECONDS,
+) -> CodexDesktopAccountProbe:
+    """Read account, model, and explicit limit status without starting a turn."""
+
+    executable = codex_executable()
+    if (
+        not executable
+        or "\x00" in executable
+        or timeout_seconds <= 0
+    ):
+        return CodexDesktopAccountProbe()
+
+    try:
+        process = subprocess.Popen(
+            (executable, "app-server", "--stdio"),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=_codex_desktop_probe_environment(),
+            bufsize=0,
+        )
+    except OSError:
+        return CodexDesktopAccountProbe()
+
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        _send_codex_probe_message(process, {
+            "method": "initialize",
+            "id": 1,
+            "params": {
+                "clientInfo": {
+                    "name": "daemonstate",
+                    "title": "DaemonState",
+                    "version": "1",
+                },
+                "capabilities": {"experimentalApi": True},
+            },
+        })
+        initialize = _codex_probe_response_for(
+            process,
+            request_id=1,
+            deadline=deadline,
+        )
+        if isinstance(initialize.get("error"), Mapping):
+            return CodexDesktopAccountProbe()
+        _send_codex_probe_message(
+            process,
+            {"method": "initialized", "params": {}},
+        )
+
+        _send_codex_probe_message(process, {
+            "method": "account/read",
+            "id": 2,
+            "params": {"refreshToken": False},
+        })
+        account_response = _codex_probe_response_for(
+            process,
+            request_id=2,
+            deadline=deadline,
+        )
+        signed_in = _codex_probe_signed_in(account_response)
+        if signed_in is not True:
+            return CodexDesktopAccountProbe(signed_in=signed_in)
+
+        _send_codex_probe_message(process, {
+            "method": "model/list",
+            "id": 3,
+            "params": {"includeHidden": False},
+        })
+        model_response = _codex_probe_response_for(
+            process,
+            request_id=3,
+            deadline=deadline,
+        )
+        models = codex_models_from_app_server_payload(
+            _codex_probe_result(model_response)
+        )
+
+        rate_limit_reached: bool | None = None
+        rate_limit_code: str | None = None
+        try:
+            _send_codex_probe_message(process, {
+                "method": "account/rateLimits/read",
+                "id": 4,
+            })
+            rate_limit_response = _codex_probe_response_for(
+                process,
+                request_id=4,
+                deadline=deadline,
+            )
+            rate_limit_reached, rate_limit_code = (
+                _codex_probe_rate_limit_state(rate_limit_response)
+            )
+        except _CodexDesktopProbeUnavailable:
+            # Account and account-scoped model evidence remains useful when an
+            # older app-server lacks the optional rate-limit method.
+            pass
+
+        return CodexDesktopAccountProbe(
+            signed_in=True,
+            models=models,
+            rate_limit_reached=rate_limit_reached,
+            rate_limit_code=rate_limit_code,
+        )
+    except _CodexDesktopProbeUnavailable:
+        return CodexDesktopAccountProbe()
+    finally:
+        _stop_codex_probe_process(process)
+
+
+class _CodexDesktopProbeUnavailable(RuntimeError):
+    pass
+
+
+def _codex_desktop_probe_environment() -> dict[str, str]:
+    """Use shared Codex state without letting API-key env override desktop auth."""
+
+    environment = minimal_process_environment()
+    codex_home = provider_environment("codex").get("CODEX_HOME")
+    if codex_home:
+        environment["CODEX_HOME"] = codex_home
+    return environment
+
+
+def _send_codex_probe_message(
+    process: subprocess.Popen[bytes],
+    payload: Mapping[str, Any],
+) -> None:
+    if process.stdin is None:
+        raise _CodexDesktopProbeUnavailable
+    encoded = (
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    try:
+        process.stdin.write(encoded)
+        process.stdin.flush()
+    except (BrokenPipeError, OSError) as exc:
+        raise _CodexDesktopProbeUnavailable from exc
+
+
+def _codex_probe_response_for(
+    process: subprocess.Popen[bytes],
+    *,
+    request_id: int,
+    deadline: float,
+) -> Mapping[str, Any]:
+    if process.stdout is None:
+        raise _CodexDesktopProbeUnavailable
+
+    with selectors.DefaultSelector() as selector:
+        selector.register(process.stdout, selectors.EVENT_READ)
+        for _ in range(CODEX_DESKTOP_ACCOUNT_PROBE_MAX_MESSAGES):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not selector.select(remaining):
+                raise _CodexDesktopProbeUnavailable
+            raw_line = process.stdout.readline(
+                CODEX_DESKTOP_ACCOUNT_PROBE_MAX_LINE_BYTES + 1
+            )
+            if (
+                not raw_line
+                or len(raw_line) > CODEX_DESKTOP_ACCOUNT_PROBE_MAX_LINE_BYTES
+            ):
+                raise _CodexDesktopProbeUnavailable
+            try:
+                message = json.loads(raw_line.decode("utf-8", errors="replace"))
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(message, Mapping):
+                continue
+            if message.get("id") == request_id:
+                return message
+            if message.get("id") is not None and str(
+                message.get("method") or ""
+            ).strip():
+                _send_codex_probe_message(process, {
+                    "id": message["id"],
+                    "error": {
+                        "code": -32000,
+                        "message": (
+                            "Interactive requests are unavailable during the "
+                            "DaemonState readiness probe."
+                        ),
+                    },
+                })
+    raise _CodexDesktopProbeUnavailable
+
+
+def _codex_probe_result(
+    response: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    if isinstance(response.get("error"), Mapping):
+        return None
+    result = response.get("result")
+    return result if isinstance(result, Mapping) else None
+
+
+def _codex_probe_signed_in(response: Mapping[str, Any]) -> bool | None:
+    result = _codex_probe_result(response)
+    if result is None or "account" not in result:
+        return None
+    account = result.get("account")
+    if account is None:
+        return False
+    return True if isinstance(account, Mapping) else None
+
+
+def _codex_probe_rate_limit_state(
+    response: Mapping[str, Any],
+) -> tuple[bool | None, str | None]:
+    result = _codex_probe_result(response)
+    if result is None:
+        return None, None
+    raw_snapshots: list[object] = [result.get("rateLimits")]
+    by_limit_id = result.get("rateLimitsByLimitId")
+    if isinstance(by_limit_id, Mapping):
+        raw_snapshots.extend(by_limit_id.values())
+    snapshots = [
+        snapshot for snapshot in raw_snapshots if isinstance(snapshot, Mapping)
+    ]
+    if not snapshots:
+        return None, None
+    for snapshot in snapshots:
+        code = str(snapshot.get("rateLimitReachedType") or "").strip()
+        if code:
+            return True, code
+    return False, None
+
+
+def _stop_codex_probe_process(process: subprocess.Popen[bytes]) -> None:
+    if process.stdin is not None:
+        try:
+            process.stdin.close()
+        except OSError:
+            pass
+    if process.poll() is None:
+        try:
+            process.terminate()
+        except OSError:
+            pass
+    try:
+        process.wait(timeout=0.25)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=0.25)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def _probe_harness_composer_dispatch(

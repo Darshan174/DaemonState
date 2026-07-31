@@ -420,6 +420,7 @@ function selectDefaultSession(overrides = {}) {
     title: "Harden checkpoint capture",
     harness: "Codex",
     latest_topic: "Harden checkpoint capture",
+    compaction_count: 2,
     ...overrides,
   };
   persistSelectedSessions([session]);
@@ -731,6 +732,7 @@ describe("ExecutePage", () => {
         title: "Architecture review",
         harness: "Claude Code",
         latest_topic: "Architecture",
+        compaction_count: 2,
       },
       {
         id: "opencode:selected-two",
@@ -740,6 +742,7 @@ describe("ExecutePage", () => {
         title: "Refactor follow-up",
         harness: "OpenCode",
         latest_topic: "Refactor",
+        compaction_count: 2,
       },
       {
         id: "codex:selected-three",
@@ -749,6 +752,7 @@ describe("ExecutePage", () => {
         title: "Release validation",
         harness: "Codex",
         latest_topic: "Release",
+        compaction_count: 2,
       },
     ];
     mocks.library.data = { sessions: selectedSessions };
@@ -932,6 +936,37 @@ describe("ExecutePage", () => {
     ]);
   });
 
+  it("keeps a Library-selected session locked until two compactions exist", async () => {
+    selectDefaultSession({
+      compaction_count: 0,
+      compaction_checkpoints: [],
+    });
+
+    renderMemory();
+
+    const card = screen.getByRole("article", {
+      name: "Harden checkpoint capture",
+    });
+    expect(within(card).getByText("0/2 compactions")).toBeVisible();
+    expect(within(card).getByText("2 compactions required.")).toBeVisible();
+    expect(within(card).getByRole("button", {
+      name: "Preview Harden checkpoint capture Session Context",
+    })).toBeDisabled();
+    expect(within(card).getByRole("button", {
+      name: "Copy Harden checkpoint capture Session Context",
+    })).toBeDisabled();
+
+    await waitFor(() => {
+      expect(mocks.latestHook).toHaveBeenCalledWith(
+        "workspace-1",
+        expect.objectContaining({ enabled: false }),
+      );
+    });
+    expect(mocks.capture.mutateAsync).not.toHaveBeenCalled();
+    expect(mocks.handoff.mutateAsync).not.toHaveBeenCalled();
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+  });
+
   it("does not prepare a previous workspace's selected sessions after switching workspaces", async () => {
     const selectedSession = {
       id: "claude:selected-one",
@@ -941,6 +976,7 @@ describe("ExecutePage", () => {
       title: "Architecture review",
       harness: "Claude Code",
       latest_topic: "Architecture",
+      compaction_count: 2,
     };
     mocks.library.data = { sessions: [selectedSession] };
     writeExecuteSessionContexts("workspace-1", [selectedSession]);
@@ -1048,6 +1084,7 @@ describe("ExecutePage", () => {
       title: "Architecture review",
       harness: "Claude Code",
       latest_topic: "Architecture",
+      compaction_count: 2,
     };
     mocks.library.data = { sessions: [selectedSession] };
     writeExecuteSessionContexts("workspace-1", [selectedSession]);
@@ -1123,6 +1160,7 @@ describe("ExecutePage", () => {
       title: "Architecture review",
       harness: "Claude Code",
       latest_topic: "Architecture",
+      compaction_count: 2,
     };
     mocks.library.data = { sessions: [selectedSession] };
     writeExecuteSessionContexts("workspace-1", [selectedSession]);
@@ -1199,6 +1237,7 @@ describe("ExecutePage", () => {
       title: "Architecture review",
       harness: "Claude Code",
       latest_topic: "Architecture",
+      compaction_count: 2,
     };
     mocks.library.data = { sessions: [selectedSession] };
     writeExecuteSessionContexts("workspace-1", [selectedSession]);
@@ -1295,6 +1334,7 @@ describe("ExecutePage", () => {
       title: "Architecture review",
       harness: "Claude Code",
       latest_topic: "Architecture",
+      compaction_count: 2,
     };
     mocks.library.data = { sessions: [selectedSession] };
     writeExecuteSessionContexts("workspace-1", [selectedSession]);

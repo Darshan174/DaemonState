@@ -12,8 +12,33 @@ struct LogoControlTests {
         let panelController = OverlayPanelController(savedOrigin: nil)
 
         #expect(control.acceptsFirstMouse(for: nil))
+        #expect(control.isAccessibilityElement())
         #expect(panelController.window?.canBecomeKey == false)
         #expect(panelController.window?.canBecomeMain == false)
+    }
+
+    @Test
+    @MainActor
+    func selectedPromptsArmTheLogoAndDropdownAccessibilityState() {
+        let control = LogoControl(frame: NSRect(x: 0, y: 0, width: 56, height: 56))
+        let menuButton = PromptMenuButton(
+            frame: NSRect(x: 0, y: 0, width: 24, height: 24)
+        )
+
+        control.selectedPromptCount = 2
+        menuButton.selectedPromptCount = 2
+
+        #expect(control.accessibilityLabel() == "Paste selected prompts")
+        #expect(control.accessibilityValue() as? String == "2 prompts selected")
+        #expect(control.toolTip?.contains("2 prompts selected") == true)
+        #expect(menuButton.accessibilityValue() as? String == "2 prompts selected")
+
+        control.selectedPromptCount = 0
+        menuButton.selectedPromptCount = 0
+
+        #expect(control.accessibilityLabel() == "Insert Session Context")
+        #expect(control.accessibilityValue() as? String == "Session Context")
+        #expect(menuButton.accessibilityValue() as? String == "No prompts selected")
     }
 
     @Test

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections import defaultdict
 from dataclasses import dataclass
@@ -78,7 +79,10 @@ _EVIDENCE_PRIORITY = {
     ProjectEvidenceLevel.HUMAN_CONFIRMED: 2,
     ProjectEvidenceLevel.CORROBORATED: 1,
 }
-_MAX_FACTS_PER_SECTION = 4
+_MAX_FACTS_PER_SECTION = 2
+_MAX_FOUNDATION_FACTS = 16
+_MAX_PROVENANCE_PER_FACT = 3
+_MAX_ATOMIC_FACT_CHARS = 600
 
 
 @dataclass(frozen=True)
@@ -135,12 +139,17 @@ async def compile_workspace_project_foundation(
         )
         if document_id is not None
     }
+    source_independence_identities = _source_independence_identities(
+        components
+    )
 
     admitted: list[_Candidate] = []
     corroboration_pool: list[_Candidate] = []
     provisional_count = 0
     superseded_conflicting_count = 0
     for component in components:
+        if not _could_be_durable(component):
+            continue
         source = component.source_document
         evidence = evidence_by_component.get(component.id)
         source_is_current = bool(
@@ -175,10 +184,11 @@ async def compile_workspace_project_foundation(
             source=source,
             evidence=evidence,
             assessment=assessment,
+            source_identity=source_independence_identities.get(
+                source.id if source is not None else None
+            ),
         )
         if candidate is None:
-            if _could_be_durable(component):
-                provisional_count += 1
             continue
         if candidate.evidence_level in {
             ProjectEvidenceLevel.MECHANICALLY_VERIFIED,
@@ -273,6 +283,7 @@ def _candidate(
     source: SourceDocument | None,
     evidence: object | None,
     assessment: object,
+    source_identity: str | None = None,
 ) -> _Candidate | None:
     if (
         source is None
@@ -283,10 +294,11 @@ def _candidate(
     ):
         return None
     title = _single_line(component.name, 240)
-    statement = str(component.value or "").strip()[:1_200]
+    statement = str(component.value or "").strip()
     if (
         not title
         or not statement
+        or len(statement) > _MAX_ATOMIC_FACT_CHARS
         or looks_like_generic_inventory(title, statement)
         or _CONVERSATION_DUMP_RE.search(f"{title}\n{statement}")
     ):
@@ -327,7 +339,7 @@ def _candidate(
         return None
 
     identity_key = _identity_key(component, title=title, statement=statement)
-    source_identity = (
+    resolved_source_identity = source_identity or (
         f"{source.source_type}:{source.external_id}"
         if source.external_id
         else str(source.id)
@@ -342,7 +354,7 @@ def _candidate(
         value_key=_normalized_fact(statement),
         evidence_level=evidence_level,
         provenance=(_provenance(source, evidence),),
-        source_identity=source_identity,
+        source_identity=resolved_source_identity,
         confidence=float(component.confidence or 0.0),
     )
 
@@ -461,7 +473,10 @@ def _select_balanced(
             continue
         counts[section] += 1
         result.append(value)
-        if len(result) >= MAX_PROJECT_CONTEXT_ITEMS:
+        if len(result) >= min(
+            MAX_PROJECT_CONTEXT_ITEMS,
+            _MAX_FOUNDATION_FACTS,
+        ):
             break
     return result
 
@@ -477,9 +492,76 @@ def _dedupe_provenance(
             continue
         seen.add(key)
         result.append(value)
-        if len(result) >= 8:
+        if len(result) >= _MAX_PROVENANCE_PER_FACT:
             break
     return tuple(result)
+
+
+def _source_independence_identities(
+    components: Iterable[Component],
+) -> dict[UUID, str]:
+    """Collapse revisions and delegated agent threads to one evidence lineage."""
+
+    sources = {
+        component.source_document.id: component.source_document
+        for component in components
+        if component.source_document is not None
+    }
+    parent_by_session: dict[str, str] = {}
+    session_by_source: dict[UUID, str] = {}
+    for source_id, source in sources.items():
+        if not is_agent_source_type(source.source_type):
+            continue
+        metadata = _source_metadata(source)
+        session_id = str(
+            metadata.get("session_id")
+            or str(source.external_id or "").rsplit(":", 1)[-1]
+        ).strip()
+        parent_id = str(metadata.get("parent_thread_id") or "").strip()
+        if not session_id:
+            continue
+        session_by_source[source_id] = session_id
+        if parent_id and parent_id != session_id:
+            parent_by_session[session_id] = parent_id
+
+    def lineage_root(session_id: str) -> str:
+        current = session_id
+        seen: set[str] = set()
+        while current not in seen:
+            seen.add(current)
+            parent = parent_by_session.get(current)
+            if not parent:
+                break
+            current = parent
+        return current
+
+    identities: dict[UUID, str] = {}
+    for source_id, source in sources.items():
+        session_id = session_by_source.get(source_id)
+        if session_id:
+            identities[source_id] = (
+                f"agent_lineage:{lineage_root(session_id)}"
+            )
+        elif source.external_id:
+            identities[source_id] = (
+                f"{source.source_type}:{source.external_id}"
+            )
+        else:
+            identities[source_id] = str(source_id)
+    return identities
+
+
+def _source_metadata(source: SourceDocument) -> dict[str, object]:
+    raw = getattr(source, "metadata_json", None)
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str):
+        return {}
+    try:
+        parsed = json.loads(raw or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _normalized_fact(value: str) -> str:

@@ -3,6 +3,7 @@ import { Routes, Route, NavLink, Navigate, Link, useLocation } from "react-route
 import ThemeToggle from "./components/ThemeToggle";
 import DaemonStateIcon from "./components/DaemonStateIcon";
 import ProductLoadingState from "./components/ProductLoadingState";
+import UnderConstructionOverlay from "./components/UnderConstructionOverlay";
 import WorkspaceSwitcher from "./components/WorkspaceSwitcher";
 import { WAITLIST_ONLY } from "./config/deployment";
 import { useWorkspaceSelection } from "./context/WorkspaceContext";
@@ -70,6 +71,18 @@ const MOBILE_MORE_ITEMS = [
   ...INSPECT_NAV_ITEMS.filter(({ to }) => to !== "/app/library"),
   ...SETUP_NAV_ITEMS,
 ];
+
+const UNDER_CONSTRUCTION_SECTIONS = [
+  { path: "/app/explain", name: "Evidence" },
+  { path: "/app/sources", name: "Sources" },
+  { path: "/app/connectors", name: "Integrations" },
+];
+
+function underConstructionSection(pathname) {
+  return UNDER_CONSTRUCTION_SECTIONS.find(
+    ({ path }) => pathname === path || pathname.startsWith(`${path}/`),
+  );
+}
 
 function PageLoader({ fullScreen = false }) {
   return (
@@ -173,6 +186,7 @@ function AdminShell() {
   const isLibraryPage = location.pathname === "/app/library" || location.pathname === "/app/library/";
   const isExecutePage = location.pathname === "/app/execute" || location.pathname === "/app/execute/";
   const usesLibraryCanvas = isLibraryPage || isExecutePage;
+  const constructionSection = underConstructionSection(location.pathname);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try { return localStorage.getItem("daemonstate_sidebar_collapsed") === "true"; }
     catch { return false; }
@@ -247,7 +261,7 @@ function AdminShell() {
         <main data-app-scroll-container className={`app-main ${usesLibraryCanvas ? "" : "daemonstate-app-canvas"} relative min-h-0 flex-1 ${
           isProjectPage
             ? "overflow-hidden"
-            : "overflow-y-auto px-4 py-6 sm:px-7 sm:py-8 xl:px-10 xl:py-10"
+            : `${constructionSection ? "overflow-hidden" : "overflow-y-auto"} px-4 py-6 sm:px-7 sm:py-8 xl:px-10 xl:py-10`
         }`}>
         {!isProjectPage ? (
           <div className={usesLibraryCanvas
@@ -256,8 +270,9 @@ function AdminShell() {
           } />
         ) : null}
         <div
-          className={`page-enter relative z-10 ${isProjectPage ? "h-full min-h-0" : ""}`}
+          className={`page-enter relative z-10 ${isProjectPage ? "h-full min-h-0" : ""} ${constructionSection ? "pointer-events-none select-none" : ""}`}
           key={`${selectedId || "unselected-workspace"}:${location.pathname}`}
+          inert={constructionSection ? "" : undefined}
         >
           <ProductRouteErrorBoundary
             resetKey={`${selectedId || "unselected-workspace"}:${location.pathname}:${location.search}`}
@@ -287,6 +302,9 @@ function AdminShell() {
             </Suspense>
           </ProductRouteErrorBoundary>
         </div>
+        {constructionSection ? (
+          <UnderConstructionOverlay sectionName={constructionSection.name} />
+        ) : null}
         </main>
         <MobileNavigation pathname={location.pathname} />
       </div>

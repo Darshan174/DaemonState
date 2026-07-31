@@ -15,6 +15,10 @@ function session(id, overrides = {}) {
     connector_type: "codex",
     session_id: `session-${id}`,
     title: `Session ${id}`,
+    compaction_checkpoints: [
+      { id: `compaction-${id}-1` },
+      { id: `compaction-${id}-2` },
+    ],
     ...overrides,
   };
 }
@@ -82,6 +86,15 @@ describe("Execute session-context selection", () => {
       sourceDocumentId: "document-one",
       title: "Current title",
       topic: "Current topic",
+      compactionCount: 2,
     })]);
+  });
+
+  it("carries a zero-compaction lock into Execute", () => {
+    const [selected] = normalizeExecuteSessionContexts([
+      session("new", { compaction_checkpoints: [] }),
+    ]);
+
+    expect(selected.compactionCount).toBe(0);
   });
 });

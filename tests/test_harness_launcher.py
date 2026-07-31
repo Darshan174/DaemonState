@@ -9,12 +9,14 @@ import pytest
 
 from app.services.harness_adapters import ProviderModelOption
 from app.services.harness_launcher import (
+    CodexDesktopAccountProbe,
     DESKTOP_DEEP_LINK_PROMPT_MAX_CHARS,
     DESKTOP_HANDOFF_TOTAL_TIMEOUT_SECONDS,
     HarnessLaunchError,
     MACOS_DESKTOP_APPS,
     launch_harness_composer,
     launch_harness_session,
+    probe_codex_desktop_account,
     probe_harness_composer_readiness,
     probe_harness_visibility,
 )
@@ -48,6 +50,75 @@ def _install_fake_desktop_app(
         lambda: (tmp_path,),
     )
     return bundle
+
+
+def _fake_codex_account_server(tmp_path: Path) -> Path:
+    executable = tmp_path / "fake-codex"
+    executable.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json\n"
+        "import sys\n"
+        "\n"
+        "def receive():\n"
+        "    return json.loads(sys.stdin.readline())\n"
+        "\n"
+        "def send(message):\n"
+        "    print(json.dumps(message, separators=(',', ':')), flush=True)\n"
+        "\n"
+        "initialize = receive()\n"
+        "send({'id': initialize['id'], 'result': {'userAgent': 'fake'}})\n"
+        "receive()\n"
+        "account = receive()\n"
+        "send({'id': account['id'], 'result': {\n"
+        "    'account': {'type': 'chatgpt', 'planType': 'plus', 'email': None},\n"
+        "    'requiresOpenaiAuth': True,\n"
+        "}})\n"
+        "models = receive()\n"
+        "send({'id': models['id'], 'result': {'data': [{\n"
+        "    'id': 'catalog-gpt-5.6-sol',\n"
+        "    'model': 'gpt-5.6-sol',\n"
+        "    'displayName': 'GPT-5.6 Sol',\n"
+        "    'description': 'Fast coding model',\n"
+        "    'hidden': False,\n"
+        "    'isDefault': True,\n"
+        "    'defaultReasoningEffort': 'medium',\n"
+        "    'supportedReasoningEfforts': [\n"
+        "        {'reasoningEffort': 'low', 'description': 'Low'},\n"
+        "        {'reasoningEffort': 'medium', 'description': 'Medium'},\n"
+        "    ],\n"
+        "}]}})\n"
+        "limits = receive()\n"
+        "send({'id': limits['id'], 'result': {\n"
+        "    'rateLimits': {'rateLimitReachedType': None},\n"
+        "}})\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    return executable
+
+
+def test_codex_account_probe_uses_read_only_app_server_status_methods(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    executable = _fake_codex_account_server(tmp_path)
+    monkeypatch.setattr(
+        "app.services.harness_launcher.codex_executable",
+        lambda: str(executable),
+    )
+
+    probe = probe_codex_desktop_account(timeout_seconds=1.5)
+
+    assert probe.signed_in is True
+    assert probe.rate_limit_reached is False
+    assert probe.rate_limit_code is None
+    assert [model.to_dict() for model in probe.models] == [{
+        "id": "gpt-5.6-sol",
+        "label": "GPT-5.6 Sol",
+        "default": True,
+        "reasoning_efforts": ["low", "medium"],
+        "default_reasoning_effort": "medium",
+    }]
 
 
 def test_requests_codex_session_in_the_desktop_app(
@@ -174,7 +245,7 @@ def test_visible_harness_readiness_fails_closed_without_exact_session_navigation
 
 
 @pytest.mark.parametrize("provider", ("codex", "claude", "opencode"))
-def test_installed_desktop_and_registered_scheme_do_not_prove_account_access(
+def test_installed_desktop_and_registered_scheme_enable_draft_handoff(
     provider: str,
     tmp_path: Path,
     monkeypatch,
@@ -188,21 +259,25 @@ def test_installed_desktop_and_registered_scheme_do_not_prove_account_access(
         "app.services.harness_launcher.codex_cached_model_catalog",
         lambda: (),
     )
+    monkeypatch.setattr(
+        "app.services.harness_launcher.probe_codex_desktop_account",
+        lambda: CodexDesktopAccountProbe(),
+    )
 
     readiness = probe_harness_composer_readiness(provider)
 
-    assert readiness.ready is False
+    assert readiness.ready is True
     assert readiness.desktop_available is True
     assert readiness.url_scheme_registered is True
     assert readiness.required_url_scheme == MACOS_DESKTOP_APPS[provider].url_scheme
-    assert readiness.code == "desktop_account_access_unverified"
+    assert readiness.code == "desktop_dispatch_ready"
     assert readiness.account_access_state == "unverified"
     assert readiness.account_access_verified is False
-    assert "installed" in readiness.message
-    assert "verify" in readiness.action.lower()
+    assert "ready to receive the draft" in readiness.message
+    assert "open" in readiness.action.lower()
 
 
-def test_codex_cached_models_restore_controls_without_proving_subscription(
+def test_codex_cached_models_restore_controls_when_live_probe_is_unavailable(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -222,14 +297,103 @@ def test_codex_cached_models_restore_controls_without_proving_subscription(
         "app.services.harness_launcher.codex_cached_model_catalog",
         lambda: (model,),
     )
+    monkeypatch.setattr(
+        "app.services.harness_launcher.probe_codex_desktop_account",
+        lambda: CodexDesktopAccountProbe(),
+    )
 
     readiness = probe_harness_composer_readiness("codex")
 
-    assert readiness.ready is False
+    assert readiness.ready is True
     assert readiness.models == (model,)
     assert readiness.model_catalog_source == "codex_desktop_cache"
     assert readiness.account_access_verified is False
-    assert "does not prove" in readiness.message
+    assert "could not be confirmed automatically" in readiness.message
+
+
+def test_codex_app_server_account_and_models_are_verified_automatically(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.harness_launcher.platform.system",
+        lambda: "Darwin",
+    )
+    _install_fake_desktop_app(tmp_path, monkeypatch, "codex")
+    model = ProviderModelOption(
+        id="gpt-5.6-sol",
+        label="GPT-5.6 Sol",
+        default=True,
+        reasoning_efforts=("low", "medium", "high"),
+        default_reasoning_effort="medium",
+    )
+    monkeypatch.setattr(
+        "app.services.harness_launcher.probe_codex_desktop_account",
+        lambda: CodexDesktopAccountProbe(
+            signed_in=True,
+            models=(model,),
+            rate_limit_reached=False,
+        ),
+    )
+
+    readiness = probe_harness_composer_readiness("codex")
+
+    assert readiness.ready is True
+    assert readiness.code == "desktop_account_access_verified"
+    assert readiness.models == (model,)
+    assert readiness.account_access_state == "verified"
+    assert readiness.account_access_verified is True
+    assert readiness.model_catalog_source == "codex_app_server"
+
+
+def test_codex_reported_limit_does_not_block_opening_the_draft(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.harness_launcher.platform.system",
+        lambda: "Darwin",
+    )
+    _install_fake_desktop_app(tmp_path, monkeypatch, "codex")
+    monkeypatch.setattr(
+        "app.services.harness_launcher.probe_codex_desktop_account",
+        lambda: CodexDesktopAccountProbe(
+            signed_in=True,
+            rate_limit_reached=True,
+            rate_limit_code="rate_limit_reached",
+        ),
+    )
+
+    readiness = probe_harness_composer_readiness("codex")
+
+    assert readiness.ready is True
+    assert readiness.code == "desktop_account_rate_limited"
+    assert readiness.account_access_state == "rate_limited"
+    assert readiness.account_access_verified is False
+    assert "still load the draft" in readiness.action
+
+
+def test_codex_signed_out_status_does_not_block_opening_the_draft(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.harness_launcher.platform.system",
+        lambda: "Darwin",
+    )
+    _install_fake_desktop_app(tmp_path, monkeypatch, "codex")
+    monkeypatch.setattr(
+        "app.services.harness_launcher.probe_codex_desktop_account",
+        lambda: CodexDesktopAccountProbe(signed_in=False),
+    )
+
+    readiness = probe_harness_composer_readiness("codex")
+
+    assert readiness.ready is True
+    assert readiness.code == "desktop_account_sign_in_required"
+    assert readiness.account_access_state == "signed_out"
+    assert readiness.account_access_verified is False
+    assert "sign in" in readiness.action.lower()
 
 
 def test_composer_readiness_distinguishes_missing_scheme_from_missing_app(

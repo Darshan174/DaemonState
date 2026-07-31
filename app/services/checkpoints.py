@@ -93,6 +93,15 @@ CHECKPOINT_CATEGORIES = (
 MAX_ITEMS_PER_CATEGORY = 12
 MAX_STATEMENT_CHARS = 1_200
 SESSION_HANDOFF_RENDERED_FILE_LIMIT = 30
+SESSION_HANDOFF_RENDERED_ITEM_LIMIT = 2
+SESSION_HANDOFF_RENDERED_COMMAND_LIMIT = 2
+SESSION_HANDOFF_RENDERED_VERIFICATION_LIMIT = 2
+SESSION_HANDOFF_RENDERED_STATEMENT_CHARS = 300
+SESSION_HANDOFF_RENDERED_COMMAND_CHARS = 240
+SESSION_HANDOFF_RENDERED_RESULT_CHARS = 160
+# Roughly 1,750 model tokens: enough for bounded evidence without letting
+# session history dominate the authoritative current goal.
+SESSION_HANDOFF_MAX_OVERHEAD_CHARS = 7_000
 
 _DECISION_SIGNAL = re.compile(
     r"\b(?:decid(?:e|ed)|we(?:'ll| will)|will use|keep|remove|replace|exclude|"
@@ -556,10 +565,14 @@ _NO_EDIT_TASK_RE = re.compile(
     re.IGNORECASE,
 )
 _NON_AUTHORITATIVE_REQUIREMENT_HEADING_RE = re.compile(
-    r"\b(?:background|context only|example|for reference|historical|history|"
-    r"non[- ]?goals?|out of scope|prior (?:conversation|prompt|response)|"
-    r"quoted|transcript)\b",
+    r"\b(?:already (?:done|completed|implemented)|background|context(?: only)?|"
+    r"current state|example|files?|for reference|historical|history|"
+    r"non[- ]?goals?|out of scope|own(?:ed|ership)?|prior "
+    r"(?:conversation|prompt|response)|progress|quoted|transcript)\b",
     re.IGNORECASE,
+)
+_PLAIN_REQUIREMENT_SECTION_HEADING_RE = re.compile(
+    r"^[A-Za-z][A-Za-z0-9 /&()_-]{0,80}:$"
 )
 _TOOL_SELECTION_DECISION_RE = re.compile(
     r"\b(?:i|we)\s*(?:(?:'ll|’ll|will|would|should|can)\s+|"
@@ -581,6 +594,60 @@ class DraftItem:
     payload: dict[str, Any] = field(default_factory=dict)
 
 
+def _checkpoint_is_materialized(checkpoint: WorkCheckpoint) -> bool:
+    """Return whether the immutable row and its normalized items are complete."""
+
+    payload_json = str(checkpoint.payload_json or "")
+    payload_sha256 = str(checkpoint.payload_sha256 or "")
+    if (
+        not payload_json
+        or not payload_sha256
+        or _sha256(payload_json) != payload_sha256
+    ):
+        return False
+    try:
+        payload = json.loads(payload_json)
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != CHECKPOINT_SCHEMA_VERSION
+        or str(payload.get("workspace_id") or "") != str(checkpoint.workspace_id)
+        or str(payload.get("provider") or "") != checkpoint.provider
+        or str(payload.get("session_id") or "") != checkpoint.session_id
+    ):
+        return False
+    boundary = payload.get("boundary")
+    sections = payload.get("sections")
+    if (
+        not isinstance(boundary, dict)
+        or str(boundary.get("session_event_id") or "")
+        != str(checkpoint.boundary_event_id)
+        or not isinstance(sections, dict)
+        or any(not isinstance(sections.get(category), list) for category in CHECKPOINT_CATEGORIES)
+    ):
+        return False
+
+    expected_items: list[tuple[str, str]] = []
+    for category in CHECKPOINT_CATEGORIES:
+        for item in sections[category]:
+            if not isinstance(item, dict):
+                return False
+            item_key = str(item.get("item_key") or "")
+            if not item_key:
+                return False
+            expected_items.append((category, item_key))
+    actual_items = [
+        (item.category, item.item_key)
+        for item in checkpoint.items
+    ]
+    return (
+        len(expected_items) == len(set(expected_items))
+        and len(actual_items) == len(set(actual_items))
+        and set(expected_items) == set(actual_items)
+    )
+
+
 async def capture_checkpoint(
     session: AsyncSession,
     *,
@@ -600,15 +667,22 @@ async def capture_checkpoint(
         boundary_event_id=boundary_event_id,
     )
     existing = await session.scalar(
-        select(WorkCheckpoint).where(
+        select(WorkCheckpoint)
+        .where(
             WorkCheckpoint.workspace_id == workspace_id,
             WorkCheckpoint.provider == provider,
             WorkCheckpoint.session_id == session_id,
             WorkCheckpoint.boundary_event_id == boundary.id,
             WorkCheckpoint.schema_version == CHECKPOINT_SCHEMA_VERSION,
         )
+        .options(
+            selectinload(WorkCheckpoint.items).selectinload(
+                CheckpointItem.evidence
+            )
+        )
+        .with_for_update()
     )
-    if existing is not None:
+    if existing is not None and _checkpoint_is_materialized(existing):
         return existing
 
     events = list(await session.scalars(
@@ -656,11 +730,16 @@ async def capture_checkpoint(
             WorkCheckpoint.workspace_id == workspace_id,
             WorkCheckpoint.provider == provider,
             WorkCheckpoint.session_id == session_id,
+            *(
+                (WorkCheckpoint.id != existing.id,)
+                if existing is not None
+                else ()
+            ),
         )
         .order_by(WorkCheckpoint.created_at.desc(), WorkCheckpoint.id.desc())
         .limit(1)
     )
-    checkpoint = WorkCheckpoint(
+    candidate = WorkCheckpoint(
         workspace_id=workspace_id,
         source_document_id=boundary.source_document_id,
         provider=provider,
@@ -678,74 +757,126 @@ async def capture_checkpoint(
         payload_sha256="",
         supersedes_checkpoint_id=previous.id if previous else None,
     )
+    payload = _checkpoint_payload(
+        candidate,
+        boundary=boundary,
+        sections=sections,
+        snapshot=snapshot,
+    )
+    candidate.payload_json = _canonical_json(payload)
+    candidate.payload_sha256 = _sha256(candidate.payload_json)
+    checkpoint = existing or candidate
     try:
+        # Keep the parent row, normalized items, evidence, and payload digest
+        # inside one savepoint. SQLite may make an outermost savepoint durable
+        # before the caller's later work completes, so releasing it must never
+        # expose the empty checkpoint shell that older versions could leave
+        # behind after a downstream rollback.
         async with session.begin_nested():
-            session.add(checkpoint)
+            if existing is not None:
+                checkpoint.items.clear()
+                await session.flush()
+                checkpoint.source_document_id = candidate.source_document_id
+                checkpoint.trigger = candidate.trigger
+                checkpoint.capture_status = candidate.capture_status
+                checkpoint.continuation_status = (
+                    candidate.continuation_status
+                )
+                checkpoint.repo_root = candidate.repo_root
+                checkpoint.branch = candidate.branch
+                checkpoint.head_commit = candidate.head_commit
+                checkpoint.worktree_fingerprint = (
+                    candidate.worktree_fingerprint
+                )
+                checkpoint.payload_json = candidate.payload_json
+                checkpoint.payload_sha256 = candidate.payload_sha256
+                checkpoint.supersedes_checkpoint_id = (
+                    candidate.supersedes_checkpoint_id
+                )
+            else:
+                session.add(checkpoint)
+            await session.flush()
+
+            persisted_items: list[tuple[CheckpointItem, DraftItem]] = []
+            for category in CHECKPOINT_CATEGORIES:
+                for ordinal, draft in enumerate(sections[category]):
+                    item = CheckpointItem(
+                        checkpoint_id=checkpoint.id,
+                        item_key=f"{category}:{ordinal + 1}",
+                        category=category,
+                        ordinal=ordinal,
+                        statement=draft.statement,
+                        state=draft.state,
+                        truth_state=draft.truth_state,
+                        payload_json=_canonical_json(draft.payload),
+                    )
+                    session.add(item)
+                    persisted_items.append((item, draft))
+            await session.flush()
+
+            for item, draft in persisted_items:
+                for evidence_event in _unique_events(draft.events):
+                    locator = {
+                        "provider_event_id": (
+                            evidence_event.provider_event_id
+                        ),
+                        "sequence_number": evidence_event.sequence_number,
+                        "event_type": evidence_event.event_type,
+                        "source_cursor": evidence_event.source_cursor,
+                    }
+                    digest_material = {
+                        "item_key": item.item_key,
+                        "event_sha256": evidence_event.content_sha256,
+                        "locator": locator,
+                    }
+                    session.add(CheckpointEvidence(
+                        checkpoint_item_id=item.id,
+                        evidence_type="session_event",
+                        session_event_id=evidence_event.id,
+                        source_document_id=(
+                            evidence_event.source_document_id
+                        ),
+                        supports=True,
+                        locator_json=_canonical_json(locator),
+                        evidence_sha256=_sha256(
+                            _canonical_json(digest_material)
+                        ),
+                        observed_at=evidence_event.occurred_at,
+                    ))
             await session.flush()
     except IntegrityError:
+        if existing is not None:
+            raise
         winner = await session.scalar(
-            select(WorkCheckpoint).where(
+            select(WorkCheckpoint)
+            .where(
                 WorkCheckpoint.workspace_id == workspace_id,
                 WorkCheckpoint.provider == provider,
                 WorkCheckpoint.session_id == session_id,
                 WorkCheckpoint.boundary_event_id == boundary.id,
                 WorkCheckpoint.schema_version == CHECKPOINT_SCHEMA_VERSION,
             )
+            .options(
+                selectinload(WorkCheckpoint.items).selectinload(
+                    CheckpointItem.evidence
+                )
+            )
+            .with_for_update()
         )
         if winner is None:
             raise
-        return winner
-
-    persisted_items: list[CheckpointItem] = []
-    for category in CHECKPOINT_CATEGORIES:
-        for ordinal, draft in enumerate(sections[category]):
-            item_key = f"{category}:{ordinal + 1}"
-            item = CheckpointItem(
-                checkpoint_id=checkpoint.id,
-                item_key=item_key,
-                category=category,
-                ordinal=ordinal,
-                statement=draft.statement,
-                state=draft.state,
-                truth_state=draft.truth_state,
-                payload_json=_canonical_json(draft.payload),
+        if not _checkpoint_is_materialized(winner):
+            return await capture_checkpoint(
+                session,
+                workspace_id=workspace_id,
+                provider=provider,
+                session_id=session_id,
+                boundary_event_id=boundary.id,
+                trigger=trigger,
             )
-            session.add(item)
-            await session.flush()
-            persisted_items.append(item)
-            for evidence_event in _unique_events(draft.events):
-                locator = {
-                    "provider_event_id": evidence_event.provider_event_id,
-                    "sequence_number": evidence_event.sequence_number,
-                    "event_type": evidence_event.event_type,
-                    "source_cursor": evidence_event.source_cursor,
-                }
-                digest_material = {
-                    "item_key": item_key,
-                    "event_sha256": evidence_event.content_sha256,
-                    "locator": locator,
-                }
-                session.add(CheckpointEvidence(
-                    checkpoint_item_id=item.id,
-                    evidence_type="session_event",
-                    session_event_id=evidence_event.id,
-                    source_document_id=evidence_event.source_document_id,
-                    supports=True,
-                    locator_json=_canonical_json(locator),
-                    evidence_sha256=_sha256(_canonical_json(digest_material)),
-                    observed_at=evidence_event.occurred_at,
-                ))
-
-    await session.flush()
-    payload = _checkpoint_payload(
-        checkpoint,
-        boundary=boundary,
-        sections=sections,
-        snapshot=snapshot,
-    )
-    checkpoint.payload_json = _canonical_json(payload)
-    checkpoint.payload_sha256 = _sha256(checkpoint.payload_json)
-    await session.flush()
+        return winner
+    if existing is not None:
+        session.expire(checkpoint, ("items",))
     return checkpoint
 
 
@@ -3466,6 +3597,7 @@ def _derive_session_requirements(
     request_verbatim: str,
     *,
     supporting_context: Iterable[dict[str, str]] = (),
+    allow_fallback: bool = True,
 ) -> list[dict[str, Any]]:
     candidates = _requirement_candidates(
         _self_contained_goal(request_verbatim),
@@ -3514,6 +3646,8 @@ def _derive_session_requirements(
         })
     if deduped:
         return deduped
+    if not allow_fallback:
+        return []
     fallback_text = re.sub(
         r"\s+",
         " ",
@@ -3562,6 +3696,7 @@ def _derive_session_requirements_from_fragments(
         for requirement in _derive_session_requirements(
             fragment,
             supporting_context=normalized_supporting,
+            allow_fallback=False,
         ):
             text = re.sub(r"\s+", " ", str(requirement.get("text") or "")).strip()
             key = re.sub(r"\W+", " ", text.casefold()).strip()
@@ -3629,6 +3764,36 @@ def derive_session_handoff_requirements(
     )
 
 
+def _unfold_requirement_lines(value: str) -> list[str]:
+    """Join indented Markdown continuation lines before extracting clauses."""
+
+    logical_lines: list[str] = []
+    for raw_line in value.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or not logical_lines:
+            logical_lines.append(raw_line)
+            continue
+        previous = logical_lines[-1]
+        previous_indent = len(previous) - len(previous.lstrip())
+        current_indent = len(raw_line) - len(raw_line.lstrip())
+        is_structural = bool(
+            _REQUIREMENT_BULLET_RE.match(raw_line)
+            or re.match(r"^#{1,6}\s+", stripped)
+            or re.match(r"^(`{3,}|~{3,})", stripped)
+            or stripped.startswith(">")
+            or _PLAIN_REQUIREMENT_SECTION_HEADING_RE.fullmatch(stripped)
+        )
+        if (
+            not is_structural
+            and _REQUIREMENT_BULLET_RE.match(previous)
+            and current_indent > previous_indent
+        ):
+            logical_lines[-1] = f"{previous.rstrip()} {stripped}"
+            continue
+        logical_lines.append(raw_line)
+    return logical_lines
+
+
 def _requirement_candidates(
     value: str,
     *,
@@ -3641,7 +3806,7 @@ def _requirement_candidates(
     fence_marker: str | None = None
     prose_lines: list[str] = []
     quoted_acceptance_list = False
-    for raw_line in value.splitlines():
+    for raw_line in _unfold_requirement_lines(value):
         stripped = raw_line.strip()
         fence_match = re.match(r"^(`{3,}|~{3,})", stripped)
         if fence_match:
@@ -3667,6 +3832,13 @@ def _requirement_candidates(
         heading_match = re.match(r"^#{1,6}\s+(.+?)\s*$", stripped)
         if heading_match:
             heading = heading_match.group(1).strip()
+            ignore_section = bool(
+                _NON_AUTHORITATIVE_REQUIREMENT_HEADING_RE.search(heading)
+            )
+            quoted_acceptance_list = False
+            continue
+        if _PLAIN_REQUIREMENT_SECTION_HEADING_RE.fullmatch(stripped):
+            heading = stripped[:-1].strip()
             ignore_section = bool(
                 _NON_AUTHORITATIVE_REQUIREMENT_HEADING_RE.search(heading)
             )
@@ -5155,13 +5327,33 @@ def _handoff_presentation_sections(
             and str(item.get("payload", {}).get("command") or "").strip()
         )
     ]
-    projected["decisions"] = _dedupe_presentation_items([
-        item
-        for item in projected["decisions"]
-        if not _is_tool_selection_statement(
-            str(item.get("statement") or "")
+    goal_payload = (
+        projected["goal"][-1].get("payload")
+        if projected["goal"]
+        and isinstance(projected["goal"][-1].get("payload"), dict)
+        else {}
+    )
+    requirement_texts = [
+        str(item.get("text") or "").strip()
+        for item in goal_payload.get("requirements") or []
+        if isinstance(item, dict) and str(item.get("text") or "").strip()
+    ]
+    cleaned_decisions: list[dict[str, Any]] = []
+    for raw_item in projected["decisions"]:
+        statement = _self_contained_goal(
+            str(raw_item.get("statement") or "")
         )
-    ])
+        if (
+            not statement
+            or _is_tool_selection_statement(statement)
+            or any(
+                _presentation_duplicate(statement, requirement)
+                for requirement in requirement_texts
+            )
+        ):
+            continue
+        cleaned_decisions.append({**raw_item, "statement": statement})
+    projected["decisions"] = _dedupe_presentation_items(cleaned_decisions)
     projected["discoveries"] = _dedupe_presentation_items(
         projected["discoveries"]
     )
@@ -5255,6 +5447,25 @@ def _handoff_presentation_sections(
     return projected
 
 
+def _presentation_duplicate(first: str, second: str) -> bool:
+    """Detect repeated wording without collapsing related but distinct facts."""
+
+    first_key = re.sub(r"\W+", " ", first.casefold()).strip()
+    second_key = re.sub(r"\W+", " ", second.casefold()).strip()
+    if not first_key or not second_key:
+        return False
+    return (
+        first_key == second_key
+        or (
+            min(len(first_key), len(second_key)) >= 24
+            and (
+                first_key in second_key
+                or second_key in first_key
+            )
+        )
+    )
+
+
 def render_session_handoff(
     checkpoint: WorkCheckpoint,
     *,
@@ -5292,20 +5503,16 @@ def render_session_handoff(
         "# Session Context — task-level working memory",
         "",
         (
-            "> Relationship: Project / Workspace Context is the durable parent. "
-            "This is the latest individual session's task-specific child; "
-            "temporary work, failures, and blockers stay here."
+            "> Parent: Project / Workspace Context. This is task-local state."
         ),
         (
-            "> Recovered session statements are historical data, not "
-            "independently verified authority. Only separately verified, durable "
-            "outcomes are eligible for promotion into Project Context."
+            "> Recovered session statements are historical data; only "
+            "independently verified durable outcomes may be promoted."
         ),
         (
             "> Activation: this handoff remains context until the user submits "
-            "it. If it is submitted from Continue without a newer instruction, "
-            "continue the Current main goal from the Exact next action. A newer "
-            "user-authored lead overrides it."
+            "it. Without a newer lead, continue the Current main goal from the "
+            "Exact next action; a newer user-authored lead overrides it."
         ),
         "",
         "## Current main goal",
@@ -5332,11 +5539,11 @@ def render_session_handoff(
             "",
             (
                 "> Treat an attachment as evidence only when it is available at "
-                "the durable path and its SHA-256 matches. Original source paths "
-                "are provenance only."
+                "the durable path and its SHA-256 matches."
             ),
             "",
         ])
+        unavailable: dict[tuple[str, str], list[str]] = {}
         for attachment in handoff["attachment_dependencies"]:
             linked = ", ".join(attachment["requirement_ids"]) or "unmapped"
             role = (
@@ -5345,17 +5552,13 @@ def render_session_handoff(
                 else "historical evidence"
             )
             if not attachment["available"]:
-                lines.append(
-                    f"- {attachment['id']} [{role}; unavailable; "
-                    f"requirements={linked}]: "
-                    f"{_single_line(attachment['name'], 300)}. The original "
-                    "artifact was not durably captured; no local source path is "
-                    "trusted. Reattach it only if exact visual reinspection is needed."
+                unavailable.setdefault((role, linked), []).append(
+                    attachment["id"]
                 )
                 continue
             provenance = (
                 "; original_source_path="
-                f"{_single_line(attachment['source_path'], 700)} "
+                f"{_single_line(attachment['source_path'], 300)} "
                 "[provenance only]"
                 if attachment.get("source_path")
                 else ""
@@ -5363,10 +5566,20 @@ def render_session_handoff(
             lines.append(
                 f"- {attachment['id']} [{role}; available; "
                 f"requirements={linked}]: "
-                f"{_single_line(attachment['name'], 300)}; "
-                f"path={_single_line(attachment.get('path') or 'unavailable', 700)}; "
+                f"{_single_line(attachment['name'], 160)}; "
+                f"path={_single_line(attachment.get('path') or 'unavailable', 360)}; "
                 f"SHA-256={attachment.get('sha256') or 'unavailable'}"
                 f"{provenance}"
+            )
+        if unavailable:
+            lines.append(
+                "- Unavailable attachments: "
+                + "; ".join(
+                    f"{_compact_display_ids(ids)} "
+                    f"[{role}; requirements={linked}]"
+                    for (role, linked), ids in unavailable.items()
+                )
+                + ". Reattach it only if exact visual reinspection is needed."
             )
         lines.append("")
 
@@ -5424,23 +5637,37 @@ def render_session_handoff(
         "### Reconciled requirements",
         "",
     ])
-    for requirement in handoff["requirements"]:
+    requirements = handoff["requirements"]
+    compact_requirement_view = len(requirements) > 8
+    rendered_item_limit = (
+        2 if compact_requirement_view else SESSION_HANDOFF_RENDERED_ITEM_LIMIT
+    )
+    lines.append(
+        "- Current-goal wording is authoritative; statuses are reconciled, and "
+        "reported completion remains unverified."
+    )
+    scope_hints: list[tuple[str, dict[str, Any]]] = []
+    for requirement in requirements:
         status_label = requirement["status"]
         if status_label == "reported_done":
             status_label = "reported done (unverified)"
-        proof = (
-            f"prior linked checks={','.join(requirement['verification_ids'])}"
-            if requirement["verification_ids"]
-            else "fresh proof required"
-        )
+        metadata = [status_label]
+        if requirement["authority"] != "user_authored":
+            metadata.append(f"authority={requirement['authority']}")
+        if requirement["verification_ids"]:
+            metadata.append(
+                "checks=" + ",".join(requirement["verification_ids"])
+            )
         lines.append(
-            f"- {requirement['id']} [{status_label}; "
-            f"requirement authority={requirement['authority']}; {proof}]: "
+            f"- {requirement['id']} [{'; '.join(metadata)}]: "
             f"{requirement['text']}"
         )
-        scope_hints = requirement.get("reported_scope_hints") or []
-        if scope_hints:
-            hint = scope_hints[-1]
+        for hint in requirement.get("reported_scope_hints") or []:
+            scope_hints.append((requirement["id"], hint))
+        if not compact_requirement_view and requirement.get(
+            "reported_scope_hints"
+        ):
+            hint = requirement["reported_scope_hints"][-1]
             _append_session_context_quote(
                 lines,
                 _historical_single_line(hint["text"], 1_000),
@@ -5449,21 +5676,49 @@ def render_session_handoff(
                     "Prior-agent scope interpretation (unverified)"
                 ),
             )
+    if compact_requirement_view and scope_hints:
+        lines.append(
+            f"- {len(scope_hints)} unverified prior-agent scope claim"
+            f"{'' if len(scope_hints) == 1 else 's'} remain in the structured "
+            "handoff; recent change reports below are the compact summary."
+        )
     lines.append("")
 
     definition = handoff.get("definition_of_done") or {}
     lines.extend(["### Definition of done", ""])
-    definition_items = [
-        *(definition.get("explicit") or []),
-        *(definition.get("operational") or []),
-    ]
-    if definition_items:
-        for item in definition_items:
+    explicit_definition = definition.get("explicit") or []
+    operational_definition = definition.get("operational") or []
+    if compact_requirement_view and explicit_definition:
+        explicit_ids = list(dict.fromkeys(
+            requirement_id
+            for item in explicit_definition
+            for requirement_id in item.get("requirement_ids") or []
+        ))
+        lines.append(
+            "- Explicit completion criteria: "
+            f"{_compact_display_ids(explicit_ids)}; wording retained above."
+        )
+    elif explicit_definition:
+        for item in explicit_definition:
             links = ", ".join(item.get("requirement_ids") or []) or "all/task"
             lines.append(
                 f"- [{links}] {_single_line(str(item.get('text') or ''), 1_000)}"
             )
-    else:
+    for item in operational_definition:
+        requirement_ids = item.get("requirement_ids") or []
+        links = _compact_display_ids(requirement_ids) or "all/task"
+        definition_text = _single_line(str(item.get("text") or ""), 1_000)
+        if definition_text.startswith("Every accepted requirement is observed"):
+            definition_text = (
+                "Complete every requirement or record a non-recoverable blocker "
+                "with linked proof."
+            )
+        elif definition_text.startswith("All pre-existing changes"):
+            definition_text = "Preserve all pre-existing changes."
+        lines.append(
+            f"- [{links}] {definition_text}"
+        )
+    if not explicit_definition and not operational_definition:
         lines.append("- Complete and verify every accepted requirement.")
     lines.append("")
 
@@ -5473,9 +5728,8 @@ def render_session_handoff(
         "",
         "### Reconciled status",
         "",
-        f"- State: {reconciliation['state']}",
         (
-            "- Requirement counts: "
+            f"- State: {reconciliation['state']}; requirement counts: "
             + ", ".join(
                 f"{state}={count}"
                 for state, count in reconciliation["counts"].items()
@@ -5497,25 +5751,24 @@ def render_session_handoff(
         for item in handoff["requirements"]
         if item["status"] not in {"done", "reported_done"}
     ]
-    lines.extend(["", "### Completed", ""])
-    if completed_requirements:
-        for item in completed_requirements:
-            label = (
-                "reported complete; unverified"
-                if item["status"] == "reported_done"
-                else "confirmed complete"
-            )
-            lines.append(f"- {item['id']} [{label}]: {item['text']}")
-    else:
-        lines.append("- No requirement is currently classified as complete.")
-    lines.extend(["", "### In progress or remaining", ""])
-    if remaining_requirements:
-        for item in remaining_requirements:
-            lines.append(
-                f"- {item['id']} [{item['status']}]: {item['text']}"
-            )
-    else:
-        lines.append("- No requirement is currently classified as remaining.")
+    confirmed_ids = [
+        item["id"] for item in completed_requirements
+        if item["status"] == "done"
+    ]
+    reported_ids = [
+        item["id"] for item in completed_requirements
+        if item["status"] == "reported_done"
+    ]
+    remaining_ids = [item["id"] for item in remaining_requirements]
+    lines.append(
+        "- Confirmed complete: "
+        + (_compact_display_ids(confirmed_ids) if confirmed_ids else "none")
+        + "; reported complete, not independently verified: "
+        + (_compact_display_ids(reported_ids) if reported_ids else "none")
+        + "; remaining or unresolved: "
+        + (_compact_display_ids(remaining_ids) if remaining_ids else "none")
+        + "."
+    )
     lines.extend(["", "## Exact next action", ""])
     _append_session_context_quote(
         lines,
@@ -5538,53 +5791,95 @@ def render_session_handoff(
         not in _INACTIVE_BLOCKER_STATES
     ]
     if active_decisions:
-        for item in active_decisions[:8]:
+        for item in active_decisions[-rendered_item_limit:]:
             _append_session_context_quote(
                 lines,
-                _historical_single_line(item["statement"], 1_000),
+                _historical_single_line(
+                    item["statement"],
+                    SESSION_HANDOFF_RENDERED_STATEMENT_CHARS,
+                ),
                 label=f"historical data; {item['truth_state']}; active",
             )
             reason = str((item.get("payload") or {}).get("reason") or "").strip()
             if reason:
                 _append_session_context_quote(
                     lines,
-                    _historical_single_line(reason, 800),
+                    _historical_single_line(
+                        reason,
+                        SESSION_HANDOFF_RENDERED_RESULT_CHARS,
+                    ),
                     label="historical data; decision reason",
                 )
-            else:
-                lines.append("- Reason: not separately captured.")
     else:
         lines.append("- No active session decision was captured.")
     lines.append("")
 
     lines.extend(["## Failed or rejected attempts", "", "### Failed attempts", ""])
-    if handoff.get("failed_attempts"):
-        for item in handoff["failed_attempts"][:8]:
-            _append_session_context_quote(
-                lines,
-                _historical_single_line(item["statement"], 1_000),
-                label=f"historical data; {item['truth_state']}",
-            )
+    failed_attempts = handoff.get("failed_attempts") or []
+    selected_failed_indices: set[int] = set()
+    for predicate in (
+        lambda item: bool((item.get("payload") or {}).get("command")),
+        lambda item: (
+            (item.get("payload") or {}).get("attempt_kind") == "rejected"
+        ),
+    ):
+        matched_index = next(
+            (
+                index
+                for index in range(len(failed_attempts) - 1, -1, -1)
+                if predicate(failed_attempts[index])
+            ),
+            None,
+        )
+        if matched_index is not None:
+            selected_failed_indices.add(matched_index)
+    if not selected_failed_indices and failed_attempts:
+        selected_failed_indices.add(len(failed_attempts) - 1)
+    selected_failed_attempts = [
+        failed_attempts[index]
+        for index in sorted(selected_failed_indices)
+    ][-2:]
+    if selected_failed_attempts:
+        for item in selected_failed_attempts:
             payload = item.get("payload") or {}
+            statement = _historical_single_line(
+                item["statement"],
+                SESSION_HANDOFF_RENDERED_STATEMENT_CHARS,
+            )
+            command = _historical_single_line(
+                payload.get("command"),
+                SESSION_HANDOFF_RENDERED_COMMAND_CHARS,
+            )
+            if not command or not _presentation_duplicate(statement, command):
+                _append_session_context_quote(
+                    lines,
+                    statement,
+                    label=f"historical data; {item['truth_state']}",
+                )
             reason = str(payload.get("reason") or "").strip()
             if reason:
                 _append_session_context_quote(
                     lines,
-                    _historical_single_line(reason, 800),
+                    _historical_single_line(
+                        reason,
+                        SESSION_HANDOFF_RENDERED_RESULT_CHARS,
+                    ),
                     label="historical data; failure reason",
                 )
             evidence_bits = []
-            if payload.get("command"):
+            if command:
                 evidence_bits.append(
-                    "command="
-                    f"`{_historical_single_line(payload['command'], 800)}`"
+                    f"command=`{command}`"
                 )
             if payload.get("exit_code") is not None:
                 evidence_bits.append(f"exit={payload['exit_code']}")
             if not evidence_bits and payload.get("evidence_summary"):
                 _append_session_context_quote(
                     lines,
-                    _historical_single_line(payload["evidence_summary"], 700),
+                    _historical_single_line(
+                        payload["evidence_summary"],
+                        SESSION_HANDOFF_RENDERED_RESULT_CHARS,
+                    ),
                     label="historical data; failed-attempt evidence source",
                 )
             if evidence_bits:
@@ -5594,11 +5889,23 @@ def render_session_handoff(
                     label="historical data; failed-attempt evidence metadata",
                 )
             if payload.get("result_summary"):
+                result_summary = _compact_command_result_text(
+                    payload["result_summary"]
+                )
+            else:
+                result_summary = None
+            if result_summary:
                 _append_session_context_quote(
                     lines,
-                    _historical_single_line(payload["result_summary"], 700),
+                    result_summary,
                     label="historical data; observed command result",
                 )
+        if len(failed_attempts) > len(selected_failed_attempts):
+            lines.append(
+                "- … "
+                f"{len(failed_attempts) - len(selected_failed_attempts)} "
+                "earlier failed attempts remain in the structured handoff."
+            )
     else:
         lines.append("- No failed or rejected attempt with meaningful evidence was captured.")
     lines.append("")
@@ -5606,12 +5913,15 @@ def render_session_handoff(
     lines.extend(["## Changes made", ""])
     implementation_summary = handoff.get("implementation_summary") or []
     if implementation_summary:
-        for item in implementation_summary[:10]:
+        for item in implementation_summary[-rendered_item_limit:]:
             paths = ", ".join(item.get("files") or [])
             suffix = f"; affected={paths}" if paths else ""
             _append_session_context_quote(
                 lines,
-                _historical_single_line(item.get("statement"), 1_000),
+                _historical_single_line(
+                    item.get("statement"),
+                    SESSION_HANDOFF_RENDERED_STATEMENT_CHARS,
+                ),
                 label=(
                     "historical data; "
                     f"{item.get('truth_state') or 'reported'}{suffix}"
@@ -5620,13 +5930,12 @@ def render_session_handoff(
             if item.get("reason"):
                 _append_session_context_quote(
                     lines,
-                    _historical_single_line(item["reason"], 800),
+                    _historical_single_line(
+                        item["reason"],
+                        SESSION_HANDOFF_RENDERED_RESULT_CHARS,
+                    ),
                     label="historical data; change reason",
                 )
-        lines.append(
-            "- Why: use the acceptance criteria and active decisions above; "
-            "no additional rationale is inferred when the session did not state one."
-        )
     else:
         lines.append("- No implementation change was captured for this task.")
     lines.append("")
@@ -5634,10 +5943,13 @@ def render_session_handoff(
     lines.extend(["## Relevant discoveries", ""])
     discoveries = handoff.get("discoveries") or []
     if discoveries:
-        for item in discoveries[:8]:
+        for item in discoveries[-rendered_item_limit:]:
             _append_session_context_quote(
                 lines,
-                _historical_single_line(item["statement"], 1_000),
+                _historical_single_line(
+                    item["statement"],
+                    SESSION_HANDOFF_RENDERED_STATEMENT_CHARS,
+                ),
                 label=f"historical data; {item['truth_state']}",
             )
     else:
@@ -5650,14 +5962,14 @@ def render_session_handoff(
     lines.extend(["## Useful commands executed", ""])
     commands = handoff.get("useful_commands") or []
     if commands:
-        for item in commands[:10]:
+        for item in commands[-SESSION_HANDOFF_RENDERED_COMMAND_LIMIT:]:
             details = [
                 f"purpose={item.get('purpose') or 'discovery'}",
                 f"status={item.get('status') or 'observed'}",
             ]
             if item.get("cwd"):
                 details.append(
-                    f"cwd=`{_historical_single_line(item['cwd'], 500)}`"
+                    f"cwd=`{_historical_single_line(item['cwd'], 240)}`"
                 )
             if item.get("exit_code") is not None:
                 details.append(f"exit={item['exit_code']}")
@@ -5665,16 +5977,31 @@ def render_session_handoff(
                 lines,
                 (
                     f"{item['id']} [{'; '.join(details)}]: "
-                    f"`{_historical_single_line(item.get('command'), 1_000)}`"
+                    f"`{_historical_single_line(
+                        item.get('command'),
+                        SESSION_HANDOFF_RENDERED_COMMAND_CHARS,
+                    )}`"
                 ),
                 label="historical data; observed command",
             )
-            if item.get("result_summary"):
+            if (
+                item.get("result_summary")
+                and item.get("passed") is not True
+            ):
                 _append_session_context_quote(
                     lines,
-                    _historical_single_line(item["result_summary"], 700),
+                    _historical_single_line(
+                        item["result_summary"],
+                        SESSION_HANDOFF_RENDERED_RESULT_CHARS,
+                    ),
                     label="historical data; observed command result",
                 )
+        if len(commands) > SESSION_HANDOFF_RENDERED_COMMAND_LIMIT:
+            lines.append(
+                "- … "
+                f"{len(commands) - SESSION_HANDOFF_RENDERED_COMMAND_LIMIT} "
+                "earlier commands remain in the structured handoff."
+            )
     else:
         lines.append(
             "- No non-repetitive discovery or verification command with a "
@@ -5688,10 +6015,15 @@ def render_session_handoff(
     ])
     if reconciliation["active_reported_blockers"]:
         lines.extend(["### Reported blockers", ""])
-        for item in reconciliation["active_reported_blockers"][:5]:
+        for item in reconciliation["active_reported_blockers"][
+            -rendered_item_limit:
+        ]:
             _append_session_context_quote(
                 lines,
-                _historical_single_line(item["statement"], 1_000),
+                _historical_single_line(
+                    item["statement"],
+                    SESSION_HANDOFF_RENDERED_STATEMENT_CHARS,
+                ),
                 label="historical data; unverified blocker",
             )
     else:
@@ -5699,11 +6031,14 @@ def render_session_handoff(
     open_items = handoff.get("open_items") or []
     lines.extend(["", "### Risks, assumptions, constraints, and questions", ""])
     if open_items:
-        for item in open_items[:8]:
+        for item in open_items[-rendered_item_limit:]:
             kind = str((item.get("payload") or {}).get("kind") or "open_item")
             _append_session_context_quote(
                 lines,
-                _historical_single_line(item["statement"], 1_000),
+                _historical_single_line(
+                    item["statement"],
+                    SESSION_HANDOFF_RENDERED_STATEMENT_CHARS,
+                ),
                 label=f"historical data; {kind}; {item['truth_state']}",
             )
     else:
@@ -5727,7 +6062,7 @@ def render_session_handoff(
     if fixed_items:
         requirements = handoff.get("requirements") or []
         verification = handoff.get("verification") or []
-        for item in fixed_items[:8]:
+        for item in fixed_items[-1:]:
             matched_requirement_ids = {
                 requirement["id"]
                 for requirement in requirements
@@ -5751,28 +6086,21 @@ def render_session_handoff(
             )
             _append_session_context_quote(
                 lines,
-                _historical_single_line(item.get("statement"), 1_000),
+                _historical_single_line(
+                    item.get("statement"),
+                    SESSION_HANDOFF_RENDERED_STATEMENT_CHARS,
+                ),
                 label=(
                     "historical data; "
                     f"{item.get('truth_state') or 'reported'}; {confirmation}"
                 ),
             )
     elif completed_requirements:
-        for item in completed_requirements:
-            linked = ", ".join(item.get("verification_ids") or [])
-            confirmation = (
-                f"prior check(s) {linked}"
-                if linked
-                else "not yet confirmed by a linked current check"
-            )
-            _append_session_context_quote(
-                lines,
-                f"{item['id']}: {_historical_single_line(item['text'], 1_000)}",
-                label=(
-                    "historical data; user-authored requirement; "
-                    f"{confirmation}"
-                ),
-            )
+        lines.append(
+            "- Completion is recorded for "
+            + ", ".join(item["id"] for item in completed_requirements)
+            + "; authoritative wording remains in Acceptance criteria."
+        )
     else:
         lines.append("- No distinct fix was captured or confirmed.")
     lines.append("")
@@ -5784,30 +6112,17 @@ def render_session_handoff(
         "### Current repository state",
         "",
         (
-            "- Mode: "
-            f"{handoff['task_mode']} "
-            f"({handoff['execution_policy']['permission_mode']})"
-        ),
-        (
             "- Repository: "
             f"{repository.get('root') or 'unavailable'}; "
             f"branch={repository.get('branch') or 'unavailable'}; "
             f"HEAD={repository.get('head_commit') or 'unavailable'}; "
             "relation="
-            f"{repository.get('freshness', {}).get('status') or 'unavailable'}"
-        ),
-        (
-            "- Boundary currentness: "
+            f"{repository.get('freshness', {}).get('status') or 'unavailable'}; "
+            f"mode={handoff['task_mode']}/"
+            f"{handoff['execution_policy']['permission_mode']}; boundary="
             f"{data.get('currentness', {}).get('state') or 'unknown'}; "
             "newer session events="
-            f"{'yes' if boundary.get('has_newer_events') else 'no'}"
-        ),
-        (
-            "- Uncommitted-change summary: "
-            f"{len(repository.get('changed_files') or [])} path(s); "
-            "dirty="
-            f"{repository.get('dirty') if repository.get('dirty') is not None else 'unknown'}; "
-            "the affected paths are listed below."
+            f"{'yes' if boundary.get('has_newer_events') else 'no'}."
         ),
     ])
     protected_count = len(
@@ -5815,9 +6130,10 @@ def render_session_handoff(
     )
     lines.append(
         f"- Protected baseline: {protected_count} pre-existing change"
-        f"{'' if protected_count == 1 else 's'}. Treat all pre-existing changes "
-        "as protected baseline state regardless of authorship; inspect live "
-        "`git status --short` before editing."
+        f"{'' if protected_count == 1 else 's'}. Preserve protected baseline "
+        "state regardless of authorship; dirty="
+        f"{repository.get('dirty') if repository.get('dirty') is not None else 'unknown'}; "
+        "inspect live `git status --short` before editing."
     )
 
     relevant_paths: list[str] = []
@@ -5828,11 +6144,11 @@ def render_session_handoff(
                 relevant_paths.append(path)
     if relevant_paths:
         lines.extend(["", "### Affected areas and relevant files", ""])
-        for path in relevant_paths[:8]:
+        for path in relevant_paths[:6]:
             lines.append(f"- {_single_line(path, 500)}")
-        if len(relevant_paths) > 8:
+        if len(relevant_paths) > 6:
             lines.append(
-                f"- … {len(relevant_paths) - 8} more task-relevant paths remain "
+                f"- … {len(relevant_paths) - 6} more task-relevant paths remain "
                 "in the structured handoff."
             )
 
@@ -5846,28 +6162,36 @@ def render_session_handoff(
 
     lines.extend(["", "## Verification state", "", "### Prior verification", ""])
     if handoff["verification"]:
-        for item in handoff["verification"][:8]:
+        for item in handoff["verification"][
+            -SESSION_HANDOFF_RENDERED_VERIFICATION_LIMIT:
+        ]:
             linked = ", ".join(item["requirement_ids"]) or "unmapped"
             details: list[str] = []
             if item.get("command"):
                 details.append(
                     "command="
-                    f"`{_historical_single_line(item['command'], 1_000)}`"
+                    f"`{_historical_single_line(
+                        item['command'],
+                        SESSION_HANDOFF_RENDERED_COMMAND_CHARS,
+                    )}`"
                 )
             elif item.get("statement"):
                 details.append(
                     "evidence="
-                    f"{_historical_single_line(item['statement'], 1_000)}"
+                    f"{_historical_single_line(
+                        item['statement'],
+                        SESSION_HANDOFF_RENDERED_STATEMENT_CHARS,
+                    )}"
                 )
             if item.get("cwd"):
                 details.append(
-                    f"cwd=`{_historical_single_line(item['cwd'], 500)}`"
+                    f"cwd=`{_historical_single_line(item['cwd'], 240)}`"
                 )
             if item.get("exit_code") is not None:
                 details.append(f"exit={item['exit_code']}")
             if item.get("scope"):
                 details.append(
-                    f"scope={_historical_single_line(item['scope'], 500)}"
+                    f"scope={_historical_single_line(item['scope'], 240)}"
                 )
             _append_session_context_quote(
                 lines,
@@ -5880,9 +6204,11 @@ def render_session_handoff(
                     f"verification={item['id']}"
                 ),
             )
-        if len(handoff["verification"]) > 8:
+        if len(handoff["verification"]) > SESSION_HANDOFF_RENDERED_VERIFICATION_LIMIT:
             lines.append(
-                f"- … {len(handoff['verification']) - 8} more verification "
+                "- … "
+                f"{len(handoff['verification']) - SESSION_HANDOFF_RENDERED_VERIFICATION_LIMIT} "
+                "more verification "
                 "records remain in the structured handoff."
             )
     else:
@@ -5896,7 +6222,7 @@ def render_session_handoff(
     ]
     if reported_done:
         verification_notes.append(
-            f"{', '.join(reported_done)} is reported complete but still needs "
+            f"{_compact_display_ids(reported_done)} is reported complete but still needs "
             "current repository verification."
         )
     unmapped_verification = [
@@ -5906,7 +6232,7 @@ def render_session_handoff(
     ]
     if unmapped_verification:
         verification_notes.append(
-            f"{', '.join(unmapped_verification)} is not mapped to a requirement; "
+            f"{_compact_display_ids(unmapped_verification)} is not mapped to a requirement; "
             "its focused or regression-safety scope is recorded separately."
         )
     lines.extend(["", "### Remaining verification", ""])
@@ -5918,7 +6244,11 @@ def render_session_handoff(
     return "\n".join(lines)
 
 
-def session_handoff_render_issues(content: str) -> list[dict[str, Any]]:
+def session_handoff_render_issues(
+    content: str,
+    *,
+    request_verbatim: str | None = None,
+) -> list[dict[str, Any]]:
     """Return fail-closed issues for an incomplete Session Context artifact."""
 
     lines = set(content.splitlines())
@@ -5927,18 +6257,33 @@ def session_handoff_render_issues(content: str) -> list[dict[str, Any]]:
         for heading in SESSION_CONTEXT_REQUIRED_HEADINGS
         if heading not in lines
     ]
-    if not missing_sections:
-        return []
-    return [{
-        "code": "session_context_required_sections_missing",
-        "status": "fail",
-        "missing_sections": missing_sections,
-        "message": (
-            "Session Context omits required task-memory sections: "
-            + ", ".join(missing_sections)
-            + "."
-        ),
-    }]
+    issues: list[dict[str, Any]] = []
+    if missing_sections:
+        issues.append({
+            "code": "session_context_required_sections_missing",
+            "status": "fail",
+            "missing_sections": missing_sections,
+            "message": (
+                "Session Context omits required task-memory sections: "
+                + ", ".join(missing_sections)
+                + "."
+            ),
+        })
+    if request_verbatim is not None:
+        carried_request_chars = len(_self_contained_goal(request_verbatim))
+        overhead_chars = max(0, len(content) - carried_request_chars)
+        if overhead_chars > SESSION_HANDOFF_MAX_OVERHEAD_CHARS:
+            issues.append({
+                "code": "session_context_overhead_budget_exceeded",
+                "status": "fail",
+                "overhead_chars": overhead_chars,
+                "max_overhead_chars": SESSION_HANDOFF_MAX_OVERHEAD_CHARS,
+                "message": (
+                    "Session Context exceeds its model-facing overhead budget; "
+                    "keep detailed evidence in the structured handoff."
+                ),
+            })
+    return issues
 
 
 def build_session_handoff_artifact(
@@ -5975,7 +6320,10 @@ def build_session_handoff_artifact(
         contract=contract,
         checkpoint_data=data,
     )
-    render_issues = session_handoff_render_issues(content)
+    render_issues = session_handoff_render_issues(
+        content,
+        request_verbatim=request_verbatim,
+    )
     if render_issues:
         quality = contract["quality_report"]
         quality["status"] = "blocked"
@@ -6229,22 +6577,48 @@ def _meaningful_command_result(
     event: SessionEvent,
     payload: dict[str, Any],
 ) -> str | None:
-    raw: Any = event.content
+    raw: Any = next(
+        (
+            payload.get(key)
+            for key in ("stdout", "output", "result", "summary")
+            if payload.get(key) not in (None, "")
+        ),
+        None,
+    )
     if not str(raw or "").strip():
-        raw = next(
-            (
-                payload.get(key)
-                for key in ("stdout", "output", "result", "summary")
-                if payload.get(key) not in (None, "")
-            ),
-            None,
-        )
+        raw = event.content
     if isinstance(raw, (dict, list, tuple)):
         raw = _canonical_json(raw)
+    return _compact_command_result_text(raw)
+
+
+def _compact_command_result_text(value: Any) -> str | None:
+    raw_text = _redacted_historical_text(value)
+    wrapped_output = re.search(
+        r"(?ms)(?:^|\n)Output:\s*\n(?P<output>.*)\Z",
+        raw_text,
+    )
+    if wrapped_output is not None:
+        raw_text = wrapped_output.group("output")
+    else:
+        inline_output = re.search(
+            r"(?is)\bOutput:\s*(?P<output>.*)\Z",
+            raw_text,
+        )
+        if (
+            inline_output is not None
+            and re.search(
+                r"\b(?:Chunk ID|Original token count|Process exited|"
+                r"Script (?:completed|failed)|Wall time)\b",
+                raw_text[:inline_output.start()],
+                re.IGNORECASE,
+            )
+        ):
+            raw_text = inline_output.group("output")
     summary = re.sub(
         r"\s+",
         " ",
-        _redacted_historical_text(raw),
+        raw_text,
     ).strip()
     if not summary:
         return None
@@ -6255,7 +6629,7 @@ def _meaningful_command_result(
         re.IGNORECASE,
     ):
         return None
-    return _single_line(summary, 500)
+    return _single_line(summary, SESSION_HANDOFF_RENDERED_RESULT_CHARS)
 
 
 def _session_task_tokens(value: str) -> set[str]:
@@ -6998,7 +7372,8 @@ def _verification_to_dict(value: CheckpointVerification) -> dict[str, Any]:
 
 
 def _sentences(value: str) -> list[str]:
-    cleaned = re.sub(r"```.*?```", " ", value, flags=re.DOTALL)
+    cleaned = _self_contained_goal(value)
+    cleaned = re.sub(r"```.*?```", " ", cleaned, flags=re.DOTALL)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     if not cleaned:
         return []
@@ -7039,6 +7414,28 @@ def _single_line(value: str, limit: int) -> str:
 
 def _historical_single_line(value: Any, limit: int) -> str:
     return _single_line(_redacted_historical_text(value), limit)
+
+
+def _compact_display_ids(values: list[str]) -> str:
+    if not values:
+        return ""
+    parsed: list[tuple[str, int]] = []
+    for value in values:
+        match = re.fullmatch(r"([A-Za-z]+)([1-9][0-9]*)", value)
+        if match is None:
+            return ", ".join(values)
+        parsed.append((match.group(1), int(match.group(2))))
+    if len({prefix for prefix, _number in parsed}) != 1:
+        return ", ".join(values)
+    numbers = [number for _prefix, number in parsed]
+    if numbers != list(range(numbers[0], numbers[-1] + 1)):
+        return ", ".join(values)
+    prefix = parsed[0][0]
+    return (
+        f"{prefix}{numbers[0]}"
+        if len(numbers) == 1
+        else f"{prefix}{numbers[0]}–{prefix}{numbers[-1]}"
+    )
 
 
 def _extract_paths(value: str) -> list[str]:

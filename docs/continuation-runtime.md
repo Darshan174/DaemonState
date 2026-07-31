@@ -155,10 +155,13 @@ from the newest source session, but starts no provider turn. URL objective,
 source-session, and recovery-point parameters cannot replace that selection.
 Historical or manually chosen work is routed through Prepare or Execute.
 
-Browser Continue never invokes `codex app-server`, `codex exec`, `claude
---print`, `opencode run`, or a provider authentication/model probe. It copies
-the complete canonical `session_handoff.v1` rendering for that latest session,
-then uses only the selected app's registered macOS URL scheme:
+Browser Continue never invokes `codex exec`, `claude --print`, `opencode run`,
+or any method that starts a provider turn. Its bounded readiness check may use
+Codex app-server's read-only `account/read`, `model/list`, and
+`account/rateLimits/read` methods; it never calls `thread/start` or
+`turn/start`. The handoff copies the complete canonical `session_handoff.v1`
+rendering for the latest session, then uses only the selected app's registered
+macOS URL scheme:
 
 - Codex: `codex://threads/new`
 - Claude Desktop: `claude://code/new`
@@ -196,39 +199,38 @@ earlier open outcome as uncertain and sends nothing; after the user checks the
 desktop app, a second explicit **Request again** may create a new request.
 
 Provider readiness for the browser has
-`readiness_scope=desktop_application_and_account_access`. Installation and a
-registered native URL handler are reported separately from usable account
-access. They never produce a Ready badge by themselves. The probe does not
-start or inspect a provider CLI, scrape credentials, or treat local credential
-files as subscription proof. When a desktop app has no supported
-privacy-preserving account-status bridge, the card fails closed as
-`desktop_account_access_unverified`.
+`readiness_scope=desktop_dispatch_with_account_evidence`. Installation plus a
+registered native URL handler is the hard gate because Continue only opens a
+reviewable draft; it does not submit a request. Missing applications and URL
+handlers remain blocking. Account evidence is reported separately and never
+requires a user attestation before the desktop app can open.
 
-Because none of the supported desktop apps currently exposes such a bridge,
-DaemonState offers a request-scoped human confirmation instead of permanently
-blocking a legitimately usable app. The user must open the exact selected
-desktop app and explicitly attest that its account and selected model are
-usable. This attestation is not persisted, cannot be used with automatic
-provider selection, and cannot bypass a missing app or URL handler. The handoff
-records `account_access_state=user_confirmed`,
-`account_access_basis=request_attestation`, and
-`account_access_verified=false`; it never relabels the attestation as a
-provider-verified subscription.
+For Codex, the product asks the local app-server for the signed-in account,
+account-scoped model list, and explicit rate-limit status. These methods return
+structured status without exposing tokens or requiring DaemonState to inspect
+credential files directly. A signed-in account with a live model list is
+recorded as
+`account_access_state=verified`,
+`account_access_basis=provider_desktop_bridge`, and
+`account_access_verified=true`. Signed-out, rate-limited, or inconclusive
+results are shown on the card but do not block loading the draft; Codex remains
+the final authority when the user sends.
 
-OpenCode has no single universal subscription: a usable installation may rely
-on OpenCode Go, Zen credits, another connected provider, or a local model.
-DaemonState therefore requires evidence of at least one usable provider/model
-instead of equating installation with subscription.
+Claude Desktop and OpenCode currently verify their own account or provider
+access when the user sends. OpenCode may use Go, Zen credits, another connected
+provider, or a local model, so installation alone is never relabelled as
+verified account access. Neither card asks the user to attest to access before
+opening.
 
 Each local readiness probe is bounded to three seconds, and the browser aborts
 the readiness request after ten seconds rather than leaving cards in an
-indefinite Checking state. Codex model and reasoning-effort controls are
-populated only from its fresh, non-secret desktop model cache; that cache is
-selector metadata, not account, plan, entitlement, or quota proof. The chosen
-values are preserved only as delivery metadata and visible card state. They are
-never prepended or otherwise injected into the model-visible Session Context.
-Because the native desktop deep link cannot apply them, the response and card
-require the user to confirm them in Codex Desktop before submitting.
+indefinite Checking state. If the live Codex model probe is unavailable, model
+and reasoning-effort controls may fall back to its fresh, non-secret desktop
+model cache. Cached selector metadata is not relabelled as account proof. The
+chosen values remain delivery metadata and visible card state; they are never
+prepended or injected into the model-visible Session Context. Because the
+native desktop deep link cannot apply them, the card asks the user to review
+the requested settings in Codex Desktop before submitting.
 
 Continuation turns have a four-hour default execution window so substantive
 desktop-visible work is not killed at the former one-hour boundary. Operators

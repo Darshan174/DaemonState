@@ -11,6 +11,7 @@ import {
   FolderGit2,
   GitFork,
   History,
+  LockKeyhole,
   Loader2,
   Radio,
   RefreshCw,
@@ -42,6 +43,11 @@ import {
   resolveExecuteSessionContexts,
   writeExecuteSessionContexts,
 } from "./executeSessionSelection";
+import {
+  sessionContextCompactionCount,
+  sessionContextCompactionProgress,
+  sessionContextIsEligible,
+} from "./sessionContextPolicy";
 import { useProductWorkspace } from "./useProductWorkspace";
 
 const INITIAL_SESSION_COUNT = 24;
@@ -162,6 +168,7 @@ export default function SessionLibrary() {
           (session) => session.sourceDocumentId !== sourceDocumentId,
         );
       }
+      if (!sessionContextIsEligible(item)) return current;
       if (current.length >= MAX_EXECUTE_SESSION_CONTEXTS) return current;
       return resolveExecuteSessionContexts(
         [...current, item],
@@ -520,6 +527,15 @@ function SessionCard({
   const topics = item.topics || [];
   const latestTopic = item.latest_topic || topics.at(-1) || item.title;
   const meta = HARNESS_META[item.connector_type] || HARNESS_META.codex;
+  const contextCompactionCount = sessionContextCompactionCount(item);
+  const contextCompactionBlocked = Boolean(
+    contextSelectionMode
+    && !contextSelected
+    && !sessionContextIsEligible(item),
+  );
+  const selectionDisabled = (
+    contextSelectionDisabled || contextCompactionBlocked
+  );
 
   return (
     <article
@@ -549,30 +565,40 @@ function SessionCard({
               className={`inline-flex min-h-8 items-center gap-2 rounded-lg border px-2.5 text-[9px] font-black uppercase tracking-[0.1em] transition ${
                 contextSelected
                   ? "border-[#9dbc47] bg-[#d9ff68] text-[#28310a]"
-                  : contextSelectionDisabled
-                    ? "cursor-not-allowed border-[#d8d8cf] bg-[#ecece4] text-[#999990] opacity-70 dark:border-[#34342f] dark:bg-[#252521]"
+                  : contextCompactionBlocked
+                    ? "cursor-not-allowed border-transparent bg-[#d9ff68] text-[#171713]"
+                    : contextSelectionDisabled
+                      ? "cursor-not-allowed border-[#d8d8cf] bg-[#ecece4] text-[#999990] opacity-70 dark:border-[#34342f] dark:bg-[#252521]"
                     : "cursor-pointer border-[#c9c9bf] bg-white/80 text-[#68685f] hover:border-[#9dbc47] dark:border-[#383832] dark:bg-black/20 dark:text-[#c7c7bd]"
               }`}
             >
               <input
                 type="checkbox"
                 checked={contextSelected}
-                disabled={contextSelectionDisabled}
+                disabled={selectionDisabled}
                 onChange={onToggleContext}
                 aria-label={`Select ${item.title} for Execute`}
                 className="sr-only"
               />
-              <span
-                aria-hidden="true"
-                className={`flex h-4 w-4 items-center justify-center rounded border ${
-                  contextSelected
-                    ? "border-[#526619] bg-[#526619] text-white"
-                    : "border-current bg-transparent"
-                }`}
-              >
-                {contextSelected ? <Check className="h-3 w-3" /> : null}
-              </span>
-              {contextSelected ? "Selected" : "Add to Execute"}
+              {contextCompactionBlocked ? (
+                <LockKeyhole className="h-3 w-3" aria-hidden="true" />
+              ) : (
+                <span
+                  aria-hidden="true"
+                  className={`flex h-4 w-4 items-center justify-center rounded border ${
+                    contextSelected
+                      ? "border-[#526619] bg-[#526619] text-white"
+                      : "border-current bg-transparent"
+                  }`}
+                >
+                  {contextSelected ? <Check className="h-3 w-3" /> : null}
+                </span>
+              )}
+              {contextSelected
+                ? "Selected"
+                : contextCompactionBlocked
+                  ? sessionContextCompactionProgress(contextCompactionCount)
+                  : "Add to Execute"}
             </label>
           ) : <span aria-hidden="true" />}
           <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.12em] text-[#85857c]">
@@ -630,6 +656,8 @@ function SessionCard({
           <div className="mt-4 border-t border-[#e1e1d8] pt-3 text-[9px] font-black uppercase tracking-[0.11em] text-[#77776e] dark:border-[#30302b] dark:text-[#aaa9a0]">
             {contextSelected
               ? "Will appear in Execute"
+              : contextCompactionBlocked
+                ? "2 compactions required"
               : contextSelectionDisabled
                 ? "Three-session maximum reached"
                 : "Use the checkbox to add this session"}

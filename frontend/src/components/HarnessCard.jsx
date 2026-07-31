@@ -3,6 +3,7 @@ import {
   ArrowRight,
   ChevronRight,
   Loader2,
+  LockKeyhole,
   Radio,
   ShieldAlert,
 } from "lucide-react";
@@ -176,7 +177,11 @@ export function HarnessContinuationCard({
   handoffRequested = false,
   workflowPending = false,
   taskReady = true,
+  taskPending = false,
   taskRequirement = "",
+  contextReady = true,
+  compactionCount = 0,
+  minimumCompactions = 2,
   onHover,
   onContinue,
 }) {
@@ -184,24 +189,12 @@ export function HarnessContinuationCard({
   const meta = HARNESS_META[type] || harnessMeta(type);
   const status = String(provider.status || "").trim().toLowerCase();
   const reportedReady = provider.ready === true;
-  const accessConfirmationSupported = (
-    !reportedReady
-    && (
-      status === "access_unverified"
-      || provider.code === "desktop_account_access_unverified"
-    )
-    && provider.capabilities?.account_access_confirmation_supported === true
-  );
-  const [accessConfirmed, setAccessConfirmed] = useState(false);
-  useEffect(() => {
-    if (!accessConfirmationSupported) setAccessConfirmed(false);
-  }, [accessConfirmationSupported, type]);
-  const ready = reportedReady || (
-    accessConfirmationSupported && accessConfirmed
-  );
+  const ready = reportedReady;
   const checking = status === "checking";
-  const taskBlocked = ready && !taskReady;
-  const disabled = !ready || !taskReady || workflowPending;
+  const taskBlocked = ready && !taskReady && !taskPending;
+  const contextBlocked = !contextReady;
+  const disabled = !ready || !taskReady || contextBlocked || workflowPending;
+  const controlsDisabled = disabled || pending;
   const modelOptions = continuationModelOptions(provider);
   const defaultModel = (
     modelOptions.find((model) => model.default)
@@ -212,9 +205,6 @@ export function HarnessContinuationCard({
   const modelCapabilityKey = modelOptions
     .map((model) => `${model.id}:${model.reasoning_efforts.join(",")}:${model.default_reasoning_effort}`)
     .join("|");
-  useEffect(() => {
-    if (accessConfirmationSupported) setAccessConfirmed(false);
-  }, [accessConfirmationSupported, modelCapabilityKey]);
   useEffect(() => {
     setSelectedModelId((current) => (
       modelOptions.some((model) => model.id === current)
@@ -237,40 +227,54 @@ export function HarnessContinuationCard({
     ? selectedEffort
     : fallbackEffort;
   const controlsVisible = type === "codex" && modelOptions.length > 0;
-  const interactiveControlsVisible = (
-    controlsVisible || accessConfirmationSupported
-  );
   const statusLabel = continuationProviderStatusLabel({
     pending,
     ready,
     status,
     code: provider.code,
-    accessConfirmed,
   });
-  const statusTone = pending || ready
+  const accountAttention = (
+    status === "authentication_required"
+    || status === "rate_limited"
+    || provider.code === "desktop_account_sign_in_required"
+    || provider.code === "desktop_account_rate_limited"
+  );
+  const statusTone = pending || (ready && !accountAttention)
     ? "border-emerald-800/25 bg-emerald-800/10 text-emerald-950 dark:border-emerald-200/20 dark:bg-emerald-200/10 dark:text-emerald-100"
+    : accountAttention
+      ? "border-amber-700/20 bg-amber-600/10 text-amber-950 dark:border-amber-200/20 dark:bg-amber-200/10 dark:text-amber-100"
     : checking
       ? "border-white/15 bg-white/[0.06] text-white/70"
       : "border-amber-200/20 bg-amber-200/10 text-amber-100";
-  const message = accessConfirmed
-    ? (
-        `${meta.name} access is user-confirmed for this request. `
-        + "DaemonState will open the visible desktop app; nothing is submitted."
-      )
-    : provider.message || (
-        ready
-          ? `Request a visible ${meta.name} desktop composer. Nothing is submitted.`
-          : `${meta.name} Desktop readiness could not be confirmed.`
-      );
+  const message = provider.message || (
+    ready
+      ? `Request a visible ${meta.name} desktop composer. Nothing is submitted.`
+      : `${meta.name} Desktop readiness could not be confirmed.`
+  );
   const taskRequirementMessage = String(taskRequirement || "").trim()
     || "Choose a linked task before starting this provider.";
+  const normalizedMinimumCompactions = Math.max(
+    1,
+    Number.isFinite(Number(minimumCompactions))
+      ? Math.floor(Number(minimumCompactions))
+      : 2,
+  );
+  const normalizedCompactionCount = Math.max(
+    0,
+    Number.isFinite(Number(compactionCount))
+      ? Math.floor(Number(compactionCount))
+      : 0,
+  );
+  const compactionRequirementLabel = (
+    `${Math.min(normalizedCompactionCount, normalizedMinimumCompactions)}`
+    + `/${normalizedMinimumCompactions} compactions`
+  );
   const active = hovered || pending || handoffRequested;
   const baseRotation = HARNESS_FAN_ROTATIONS[index] || 0;
   const cardNumber = String(index + 1).padStart(2, "0");
   const accent = ready ? meta.accent : "#a0a098";
   const handleModelChange = (event) => {
     const nextModel = modelOptions.find((model) => model.id === event.target.value);
-    if (accessConfirmationSupported) setAccessConfirmed(false);
     setSelectedModelId(event.target.value);
     const nextEfforts = nextModel?.reasoning_efforts || [];
     setSelectedEffort(
@@ -283,17 +287,8 @@ export function HarnessContinuationCard({
     const request = {
       ...(selectedModel?.id ? { provider_model: selectedModel.id } : {}),
       ...(normalizedEffort ? { provider_effort: normalizedEffort } : {}),
-      ...(accessConfirmed
-        ? {
-            desktop_access_confirmation: {
-              provider: type,
-              confirmation: "user_confirmed_usable_in_desktop",
-            },
-          }
-        : {}),
     };
     onContinue(type, request);
-    if (accessConfirmed) setAccessConfirmed(false);
   };
 
   return (
@@ -303,15 +298,18 @@ export function HarnessContinuationCard({
       data-fan-position={HARNESS_FAN_POSITIONS[index] || "center"}
       data-provider-ready={ready ? "true" : "false"}
       data-task-ready={taskReady ? "true" : "false"}
+      data-context-ready={contextReady ? "true" : "false"}
+      data-compaction-count={normalizedCompactionCount}
       data-provider-pending={pending ? "true" : "false"}
       data-desktop-open-requested={handoffRequested ? "true" : "false"}
+      aria-disabled={disabled ? "true" : undefined}
       aria-busy={pending ? "true" : "false"}
       onMouseEnter={onHover}
       onFocusCapture={onHover}
       monochrome={!ready}
       accentActive={pending || handoffRequested}
       artworkColor={ready ? CONTINUATION_ARTWORK_GOLD : ""}
-      className={`daemonstate-harness-fan-card daemonstate-provider-card h-[23rem] min-h-[23rem] w-[calc(100vw-4rem)] max-w-[280px] shrink-0 snap-center snap-always rounded-[26px] sm:h-[24rem] sm:min-h-[24rem] sm:w-[280px] sm:rounded-[32px] ${ready ? "border-[#cecec3] text-[#171713] dark:border-[#3a3a33] dark:text-white" : "border-[#77776f] text-white dark:border-[#77776f]"} ${workflowPending ? "cursor-wait" : ""}`}
+      className={`daemonstate-harness-fan-card daemonstate-provider-card h-[23rem] min-h-[23rem] w-[calc(100vw-4rem)] max-w-[280px] shrink-0 snap-center snap-always rounded-[26px] sm:h-[24rem] sm:min-h-[24rem] sm:w-[280px] sm:rounded-[32px] ${ready ? "border-[#cecec3] text-[#171713] dark:border-[#3a3a33] dark:text-white" : "border-[#77776f] text-white dark:border-[#77776f]"} ${workflowPending ? "cursor-wait" : disabled ? "cursor-not-allowed" : ""} ${contextBlocked && ready ? "opacity-[0.78] saturate-[0.72]" : ""}`}
       artworkContainerClassName="-right-[16%] top-[7%] h-[46%] w-[78%]"
       style={{
         zIndex: active ? 40 : HARNESS_FAN_Z_INDEX[index] || 10,
@@ -334,12 +332,14 @@ export function HarnessContinuationCard({
         aria-busy={pending ? "true" : "false"}
         data-provider-ready={ready ? "true" : "false"}
         data-task-ready={taskReady ? "true" : "false"}
+        data-context-ready={contextReady ? "true" : "false"}
+        data-compaction-count={normalizedCompactionCount}
         data-provider-pending={pending ? "true" : "false"}
         data-desktop-open-requested={handoffRequested ? "true" : "false"}
         data-monochrome={!ready ? "true" : "false"}
         disabled={disabled}
         onClick={handleContinue}
-        className={`absolute inset-0 z-10 block w-full text-left outline-none focus-visible:ring-2 focus-visible:ring-inset disabled:hover:translate-y-0 ${workflowPending ? "disabled:cursor-wait" : "disabled:cursor-not-allowed"}`}
+        className={`absolute inset-0 z-10 block w-full text-left outline-none focus-visible:ring-2 focus-visible:ring-inset disabled:pointer-events-none disabled:hover:translate-y-0 ${workflowPending ? "disabled:cursor-wait" : "disabled:cursor-not-allowed"}`}
         style={{ "--tw-ring-color": accent }}
       >
         <span className="absolute inset-x-0 top-0 flex items-start justify-between px-4 pt-4 sm:px-5 sm:pt-5">
@@ -351,13 +351,24 @@ export function HarnessContinuationCard({
               {meta.company}
             </span>
           </span>
-          <span className={`inline-flex min-h-7 items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-black uppercase tracking-[0.12em] backdrop-blur-md sm:text-xs ${ready ? statusTone : "border-white/20 bg-white/[0.07] text-white/75"}`}>
-            {pending || checking
-              ? <Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-              : ready
-                ? <Radio className="h-3 w-3" aria-hidden="true" />
-                : <ShieldAlert className="h-3 w-3" aria-hidden="true" />}
-            {statusLabel}
+          <span className="flex flex-col items-end gap-1.5">
+            {contextBlocked ? (
+              <span
+                title={`${normalizedCompactionCount} of ${normalizedMinimumCompactions} provider compactions detected`}
+                className="inline-flex min-h-7 items-center gap-1.5 rounded-full bg-[#d9ff68] px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.08em] text-[#171713] shadow-[0_5px_16px_rgba(217,255,104,0.22)]"
+              >
+                <LockKeyhole className="h-3 w-3" aria-hidden="true" />
+                {compactionRequirementLabel}
+              </span>
+            ) : null}
+            <span className={`inline-flex min-h-7 items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-black uppercase tracking-[0.12em] backdrop-blur-md sm:text-xs ${ready ? statusTone : "border-white/20 bg-white/[0.07] text-white/75"}`}>
+              {pending || checking
+                ? <Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                : ready && !accountAttention
+                  ? <Radio className="h-3 w-3" aria-hidden="true" />
+                  : <ShieldAlert className="h-3 w-3" aria-hidden="true" />}
+              {statusLabel}
+            </span>
           </span>
         </span>
 
@@ -369,7 +380,7 @@ export function HarnessContinuationCard({
             id={`continuation-provider-${type}-detail`}
             className={`mt-1.5 block text-xs font-semibold leading-5 ${ready ? "text-[#68685f] dark:text-[#aaa9a0]" : "text-white/75"}`}
           >
-            <span className="line-clamp-2">{message}</span>
+            <span className={contextBlocked ? "line-clamp-1" : "line-clamp-2"}>{message}</span>
             {taskBlocked ? (
               <span className="mt-1.5 line-clamp-2 rounded-lg border border-amber-700/20 bg-amber-600/10 px-2 py-1.5 text-amber-950 dark:border-amber-200/20 dark:bg-amber-200/10 dark:text-amber-100">
                 <strong>Task required:</strong> {taskRequirementMessage}
@@ -381,16 +392,10 @@ export function HarnessContinuationCard({
               Next: {provider.action}
             </span>
           ) : null}
-          {interactiveControlsVisible ? (
+          {controlsVisible ? (
             <span
               aria-hidden="true"
-              className={
-                controlsVisible && accessConfirmationSupported
-                  ? "h-[8.6rem]"
-                  : controlsVisible
-                    ? "h-[6.4rem]"
-                    : "h-[3.4rem]"
-              }
+              className="h-[6.4rem]"
             />
           ) : null}
           <span
@@ -408,7 +413,9 @@ export function HarnessContinuationCard({
               : !ready
                 ? "Not runnable"
                 : !taskReady
-                  ? "Task required"
+                  ? (taskPending ? "Loading session…" : "Task required")
+                  : contextBlocked
+                    ? "Session Context locked"
                   : handoffRequested
                     ? "Request again"
                   : workflowPending
@@ -416,9 +423,11 @@ export function HarnessContinuationCard({
                     : "Open desktop"}
             {pending
               ? <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-              : ready && taskReady && !workflowPending
+              : ready && taskReady && contextReady && !workflowPending
                 ? <ArrowRight className="h-4 w-4 transition-transform duration-500 motion-reduce:transition-none group-hover:translate-x-1" aria-hidden="true" />
-                : <ShieldAlert className="h-4 w-4" aria-hidden="true" />}
+                : contextBlocked
+                  ? <LockKeyhole className="h-4 w-4" aria-hidden="true" />
+                  : <ShieldAlert className="h-4 w-4" aria-hidden="true" />}
           </span>
         </span>
 
@@ -427,62 +436,43 @@ export function HarnessContinuationCard({
         </span>
       </button>
 
-      {interactiveControlsVisible ? (
+      {controlsVisible ? (
         <div className="absolute inset-x-4 bottom-[3.9rem] z-20 grid grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)] gap-x-2 gap-y-1 sm:inset-x-5">
-          {controlsVisible ? (
-            <>
-              <label className="min-w-0">
-                <span className={`mb-1 block text-xs font-black uppercase tracking-[0.12em] ${ready ? "text-[#68685f] dark:text-[#b8b8af]" : "text-white/65"}`}>
-                  Model
-                </span>
-                <select
-                  aria-label="Codex model"
-                  value={selectedModel?.id || ""}
-                  disabled={workflowPending || pending}
-                  onChange={handleModelChange}
-                  className="h-11 w-full min-w-0 rounded-xl border border-[#cacac0] bg-white/90 px-2 text-xs font-bold text-[#292922] outline-none transition-colors focus:border-[#10a37f] focus:ring-2 focus:ring-[#10a37f]/20 disabled:cursor-not-allowed disabled:opacity-55 dark:border-[#41413a] dark:bg-[#20201d]/95 dark:text-white"
-                >
-                  {modelOptions.map((model) => (
-                    <option key={model.id} value={model.id}>{model.label}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="min-w-0">
-                <span className={`mb-1 block text-xs font-black uppercase tracking-[0.12em] ${ready ? "text-[#68685f] dark:text-[#b8b8af]" : "text-white/65"}`}>
-                  Effort
-                </span>
-                <select
-                  aria-label="Codex reasoning effort"
-                  value={normalizedEffort}
-                  disabled={workflowPending || pending || !effortOptions.length}
-                  onChange={(event) => setSelectedEffort(event.target.value)}
-                  className="h-11 w-full min-w-0 rounded-xl border border-[#cacac0] bg-white/90 px-2 text-xs font-bold capitalize text-[#292922] outline-none transition-colors focus:border-[#10a37f] focus:ring-2 focus:ring-[#10a37f]/20 disabled:cursor-not-allowed disabled:opacity-55 dark:border-[#41413a] dark:bg-[#20201d]/95 dark:text-white"
-                >
-                  {effortOptions.map((effort) => (
-                    <option key={effort} value={effort}>{titleCase(effort)}</option>
-                  ))}
-                </select>
-              </label>
-            </>
-          ) : null}
-          {accessConfirmationSupported ? (
-            <label className="col-span-2 flex cursor-pointer items-start gap-2 rounded-lg border border-white/15 bg-black/20 px-2 py-1.5 text-[10px] font-bold leading-4 text-white/75">
-              <input
-                type="checkbox"
-                aria-label={desktopAccessConfirmationLabel(type, meta.name)}
-                checked={accessConfirmed}
-                disabled={workflowPending || pending}
-                onChange={(event) => setAccessConfirmed(event.target.checked)}
-                className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-[#10a37f]"
-              />
-              <span>{desktopAccessConfirmationLabel(type, meta.name)}</span>
-            </label>
-          ) : null}
-          {controlsVisible ? (
-            <span className={`col-span-2 text-[10px] font-bold leading-4 ${ready ? "text-[#77776e] dark:text-[#9d9d95]" : "text-white/55"}`}>
-              Requested settings — confirm them in Codex Desktop before sending.
+          <label className="min-w-0">
+            <span className={`mb-1 block text-xs font-black uppercase tracking-[0.12em] ${ready ? "text-[#68685f] dark:text-[#b8b8af]" : "text-white/65"}`}>
+              Model
             </span>
-          ) : null}
+            <select
+              aria-label="Codex model"
+              value={selectedModel?.id || ""}
+              disabled={controlsDisabled}
+              onChange={handleModelChange}
+              className="h-11 w-full min-w-0 rounded-xl border border-[#cacac0] bg-white/90 px-2 text-xs font-bold text-[#292922] outline-none transition-colors focus:border-[#10a37f] focus:ring-2 focus:ring-[#10a37f]/20 disabled:cursor-not-allowed disabled:opacity-55 dark:border-[#41413a] dark:bg-[#20201d]/95 dark:text-white"
+            >
+              {modelOptions.map((model) => (
+                <option key={model.id} value={model.id}>{model.label}</option>
+              ))}
+            </select>
+          </label>
+          <label className="min-w-0">
+            <span className={`mb-1 block text-xs font-black uppercase tracking-[0.12em] ${ready ? "text-[#68685f] dark:text-[#b8b8af]" : "text-white/65"}`}>
+              Effort
+            </span>
+            <select
+              aria-label="Codex reasoning effort"
+              value={normalizedEffort}
+              disabled={controlsDisabled || !effortOptions.length}
+              onChange={(event) => setSelectedEffort(event.target.value)}
+              className="h-11 w-full min-w-0 rounded-xl border border-[#cacac0] bg-white/90 px-2 text-xs font-bold capitalize text-[#292922] outline-none transition-colors focus:border-[#10a37f] focus:ring-2 focus:ring-[#10a37f]/20 disabled:cursor-not-allowed disabled:opacity-55 dark:border-[#41413a] dark:bg-[#20201d]/95 dark:text-white"
+            >
+              {effortOptions.map((effort) => (
+                <option key={effort} value={effort}>{titleCase(effort)}</option>
+              ))}
+            </select>
+          </label>
+          <span className={`col-span-2 text-[10px] font-bold leading-4 ${ready ? "text-[#77776e] dark:text-[#9d9d95]" : "text-white/55"}`}>
+            Requested settings — review them in Codex Desktop before sending.
+          </span>
         </div>
       ) : null}
     </HarnessCardFrame>
@@ -495,12 +485,13 @@ function continuationProviderStatusLabel({
   ready,
   status,
   code,
-  accessConfirmed,
 }) {
   if (pending) return "Requesting";
-  if (accessConfirmed) return "User confirmed";
   if (status === "checking") return "Checking";
   if (status === "staging_unsupported") return "No handoff";
+  if (code === "desktop_account_access_verified") return "Account ready";
+  if (code === "desktop_account_rate_limited") return "Limit reached";
+  if (code === "desktop_account_sign_in_required") return "Sign in";
   if (status === "authentication_required") return "Sign in";
   if (status === "access_required") return "Access needed";
   if (
@@ -510,7 +501,6 @@ function continuationProviderStatusLabel({
     return "Access unverified";
   }
   if (status === "configuration_required") return "Setup needed";
-  if (ready && code === "desktop_account_access_verified") return "Account ready";
   if (ready) return "Ready";
   if (code === "desktop_app_missing") return "Desktop missing";
   if (
@@ -548,22 +538,6 @@ function continuationModelOptions(provider) {
       };
     })
     .filter(Boolean);
-}
-
-
-function desktopAccessConfirmationLabel(provider, name) {
-  if (provider === "opencode") {
-    return "I opened OpenCode and confirmed a usable provider or local model.";
-  }
-  if (provider === "codex") {
-    return (
-      "I opened Codex Desktop and confirmed the selected model is usable."
-    );
-  }
-  if (provider === "claude") {
-    return "I opened Claude Desktop and confirmed usable account access.";
-  }
-  return `I opened ${name} Desktop and confirmed usable account access.`;
 }
 
 

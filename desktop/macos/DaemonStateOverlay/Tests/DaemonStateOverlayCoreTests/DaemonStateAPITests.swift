@@ -259,6 +259,11 @@ struct DaemonStateAPITests {
                     for: request,
                     json: self.digestJSON()
                 )
+            case "/api/checkpoints/session-context-eligibility":
+                return URLProtocolStub.response(
+                    for: request,
+                    json: self.eligibilityJSON()
+                )
             case "/api/checkpoints/latest":
                 let query = Dictionary(
                     uniqueKeysWithValues: URLComponents(
@@ -293,6 +298,7 @@ struct DaemonStateAPITests {
             paths == [
                 "/api/connectors/ai-session/refresh-linked",
                 "/api/context/digest",
+                "/api/checkpoints/session-context-eligibility",
                 "/api/checkpoints/latest",
                 "/api/checkpoints/checkpoint-1/handoff",
             ]
@@ -329,6 +335,11 @@ struct DaemonStateAPITests {
                     for: request,
                     json: self.digestJSON()
                 )
+            case "/api/checkpoints/session-context-eligibility":
+                return URLProtocolStub.response(
+                    for: request,
+                    json: self.eligibilityJSON()
+                )
             case "/api/checkpoints/latest":
                 return URLProtocolStub.response(
                     for: request,
@@ -363,6 +374,65 @@ struct DaemonStateAPITests {
         #expect(captureBody?["provider"] as? String == "codex")
         #expect(captureBody?["session_id"] as? String == "session-1")
         #expect(captureBody?["boundary_event_id"] == nil)
+    }
+
+    @Test
+    func sessionContextStopsBeforeCheckpointCaptureWhenCompactionsAreMissing() async {
+        defer { URLProtocolStub.reset() }
+        var paths: [String] = []
+        let api = makeAPI { request in
+            let path = request.url!.path
+            paths.append(path)
+            switch path {
+            case "/api/connectors/ai-session/refresh-linked":
+                return URLProtocolStub.response(
+                    for: request,
+                    json: """
+                    {
+                      "workspace_id": "workspace-1",
+                      "linked_sessions": 1,
+                      "refreshed": 1,
+                      "errors": []
+                    }
+                    """
+                )
+            case "/api/context/digest":
+                return URLProtocolStub.response(
+                    for: request,
+                    json: self.digestJSON()
+                )
+            case "/api/checkpoints/session-context-eligibility":
+                return URLProtocolStub.response(
+                    for: request,
+                    json: self.eligibilityJSON(compactionCount: 0)
+                )
+            default:
+                throw URLError(.badURL)
+            }
+        }
+
+        do {
+            _ = try await api.fetchContext(
+                scope: .session,
+                workspaceID: "workspace-1"
+            )
+            Issue.record("Expected the compaction gate to reject Session Context")
+        } catch let error as DaemonStateError {
+            #expect(
+                error == .activeSessionUnavailable(
+                    "2 compactions required (0/2)."
+                )
+            )
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+        #expect(
+            paths == [
+                "/api/connectors/ai-session/refresh-linked",
+                "/api/context/digest",
+                "/api/checkpoints/session-context-eligibility",
+            ]
+        )
     }
 
     @Test
@@ -424,6 +494,151 @@ struct DaemonStateAPITests {
         } catch {
             Issue.record("Unexpected error: \(error)")
         }
+    }
+
+    @Test
+    func promptLibraryValidatesWorkspaceContentAndIntegrity() async throws {
+        defer { URLProtocolStub.reset() }
+        let first = "Summarize the current diff."
+        let second = "List only concrete regressions."
+        let api = makeAPI { request in
+            #expect(request.httpMethod == "GET")
+            #expect(
+                request.url?.path
+                    == "/api/workspaces/workspace-1/prompt-snippets"
+            )
+            return URLProtocolStub.response(
+                for: request,
+                json: """
+                {
+                  "schema_version": "prompt_snippet_list.v1",
+                  "workspace_id": "workspace-1",
+                  "prompts": [
+                    {
+                      "id": "prompt-1",
+                      "workspace_id": "workspace-1",
+                      "content": "\(first)",
+                      "content_sha256": "\(self.sha256(first))",
+                      "use_count": 2
+                    },
+                    {
+                      "id": "prompt-2",
+                      "workspace_id": "workspace-1",
+                      "content": "\(second)",
+                      "content_sha256": "\(self.sha256(second))",
+                      "use_count": 0
+                    }
+                  ]
+                }
+                """
+            )
+        }
+
+        let prompts = try await api.promptSnippets(workspaceID: "workspace-1")
+
+        #expect(prompts.map(\.id) == ["prompt-1", "prompt-2"])
+        #expect(prompts.map(\.content) == [first, second])
+        #expect(prompts.first?.useCount == 2)
+    }
+
+    @Test
+    func promptLibraryRejectsTamperedContent() async {
+        defer { URLProtocolStub.reset() }
+        let api = makeAPI { request in
+            URLProtocolStub.response(
+                for: request,
+                json: """
+                {
+                  "schema_version": "prompt_snippet_list.v1",
+                  "workspace_id": "workspace-1",
+                  "prompts": [{
+                    "id": "prompt-1",
+                    "workspace_id": "workspace-1",
+                    "content": "tampered",
+                    "content_sha256": "\(String(repeating: "0", count: 64))",
+                    "use_count": 0
+                  }]
+                }
+                """
+            )
+        }
+
+        do {
+            _ = try await api.promptSnippets(workspaceID: "workspace-1")
+            Issue.record("Expected prompt integrity verification to fail")
+        } catch let error as DaemonStateError {
+            guard case .invalidPayload(let message) = error else {
+                Issue.record("Unexpected error: \(error)")
+                return
+            }
+            #expect(message.contains("integrity"))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test
+    func createPromptTrimsContentAndValidatesTheResponse() async throws {
+        defer { URLProtocolStub.reset() }
+        let content = "Write a concise release note."
+        let api = makeAPI { request in
+            #expect(request.httpMethod == "POST")
+            #expect(
+                request.url?.path
+                    == "/api/workspaces/workspace-1/prompt-snippets"
+            )
+            let body = try self.jsonBody(request)
+            #expect(body["content"] as? String == content)
+            return URLProtocolStub.response(
+                for: request,
+                statusCode: 201,
+                json: """
+                {
+                  "id": "prompt-1",
+                  "workspace_id": "workspace-1",
+                  "content": "\(content)",
+                  "content_sha256": "\(self.sha256(content))",
+                  "use_count": 0
+                }
+                """
+            )
+        }
+
+        let prompt = try await api.createPromptSnippet(
+            workspaceID: "workspace-1",
+            content: "  \(content)\n"
+        )
+
+        #expect(prompt.content == content)
+    }
+
+    @Test
+    func promptUsageDeduplicatesIDsAndUsesTheWorkspaceRoute() async throws {
+        defer { URLProtocolStub.reset() }
+        let api = makeAPI { request in
+            #expect(request.httpMethod == "POST")
+            #expect(
+                request.url?.path
+                    == "/api/workspaces/workspace-1/prompt-snippets/usage"
+            )
+            let body = try self.jsonBody(request)
+            #expect(body["prompt_ids"] as? [String] == ["prompt-1", "prompt-2"])
+            return URLProtocolStub.response(
+                for: request,
+                json: """
+                {
+                  "schema_version": "prompt_snippet_usage.v1",
+                  "workspace_id": "workspace-1",
+                  "updated": 2
+                }
+                """
+            )
+        }
+
+        try await api.recordPromptUsage(
+            workspaceID: "workspace-1",
+            promptIDs: ["prompt-1", "prompt-1", "prompt-2"]
+        )
     }
 
     private func makeAPI(
@@ -538,6 +753,20 @@ struct DaemonStateAPITests {
             "goal": [{"statement": "Build the floating context overlay."}],
             "exact_next_action": [{"statement": "Compile and test the overlay."}]
           }
+        }
+        """
+    }
+
+    private func eligibilityJSON(compactionCount: Int = 2) -> String {
+        """
+        {
+          "workspace_id": "workspace-1",
+          "provider": "codex",
+          "session_id": "session-1",
+          "eligible": \(compactionCount >= 2 ? "true" : "false"),
+          "compaction_count": \(compactionCount),
+          "minimum_compactions": 2,
+          "message": "2 compactions required (\(min(compactionCount, 2))/2)."
         }
         """
     }
