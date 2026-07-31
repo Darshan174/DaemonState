@@ -6,6 +6,7 @@ import json
 import struct
 import zlib
 from dataclasses import replace
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -22,16 +23,19 @@ from app.models import (
 )
 from app.services.checkpoints import (
     CHECKPOINT_CATEGORIES,
+    SESSION_HANDOFF_MAX_OVERHEAD_CHARS,
     SESSION_CONTEXT_REQUIRED_HEADINGS,
     _derive_session_requirements,
     _handoff_presentation_sections,
     _infer_session_task_mode,
     _is_useful_discovery_command,
     _is_useful_verification_command,
+    _meaningful_command_result,
     _reconcile_session_handoff,
     _request_extends_active_session_task,
     _session_attachment_dependencies,
     _session_attachment_dependency_role,
+    _sentences,
     build_session_handoff_contract,
     capture_checkpoint,
     capture_checkpoint_schema_upgrades,
@@ -109,6 +113,73 @@ async def test_checkpoint_capture_is_structured_evidenced_and_idempotent(
     )
     assert await db_session.scalar(select(func.count()).select_from(CheckpointItem)) > 0
     assert await db_session.scalar(select(func.count()).select_from(CheckpointEvidence)) > 0
+
+
+async def test_checkpoint_capture_repairs_an_interrupted_checkpoint_shell(
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="interrupted-checkpoint",
+        events=_events(),
+    )
+    boundary = await db_session.scalar(
+        select(SessionEvent).where(
+            SessionEvent.workspace_id == workspace.id,
+            SessionEvent.provider == "codex",
+            SessionEvent.session_id == "interrupted-checkpoint",
+            SessionEvent.event_type == "compaction_boundary",
+        )
+    )
+    assert boundary is not None
+    shell = WorkCheckpoint(
+        workspace_id=workspace.id,
+        source_document_id=boundary.source_document_id,
+        provider="codex",
+        session_id="interrupted-checkpoint",
+        boundary_event_id=boundary.id,
+        trigger="continuation",
+        schema_version="work_checkpoint.v10",
+        capture_status="complete",
+        continuation_status="ready",
+        payload_json="{}",
+        payload_sha256="",
+    )
+    db_session.add(shell)
+    await db_session.flush()
+    monkeypatch.setattr(
+        "app.services.checkpoints.capture_repository_snapshot",
+        _async_value(_snapshot(tmp_path)),
+    )
+
+    repaired = await capture_checkpoint(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="interrupted-checkpoint",
+        boundary_event_id=boundary.id,
+        trigger="continuation",
+    )
+
+    assert repaired.id == shell.id
+    loaded = await get_checkpoint(db_session, repaired.id)
+    assert loaded is not None
+    assert loaded.payload_sha256 == hashlib.sha256(
+        loaded.payload_json.encode("utf-8")
+    ).hexdigest()
+    payload = json.loads(loaded.payload_json)
+    assert payload["schema_version"] == "work_checkpoint.v10"
+    assert payload["boundary"]["session_event_id"] == str(boundary.id)
+    assert payload["sections"]["goal"]
+    assert payload["sections"]["exact_next_action"]
+    assert loaded.items
+    assert any(item.evidence for item in loaded.items)
 
 
 async def test_current_checkpoint_schema_backfills_from_unchanged_normalized_events(
@@ -213,6 +284,94 @@ async def test_manual_tip_checkpoint_is_not_labeled_pre_compaction(
     assert data["boundary"]["snapshot_phase_label"] == "Session-tip snapshot"
 
 
+async def test_session_context_requires_two_compactions_at_the_handoff_api(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    workspace, document = await _session_source(db_session, tmp_path)
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="minimum-compactions",
+        events=_events(),
+    )
+    checkpoint = (await capture_missing_compaction_checkpoints(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="minimum-compactions",
+    ))[0]
+    await db_session.commit()
+
+    eligibility = await client.get(
+        "/api/checkpoints/session-context-eligibility",
+        params={
+            "workspace_id": str(workspace.id),
+            "provider": "codex",
+            "session_id": "minimum-compactions",
+        },
+    )
+    assert eligibility.status_code == 200
+    assert eligibility.json() == {
+        "workspace_id": str(workspace.id),
+        "provider": "codex",
+        "session_id": "minimum-compactions",
+        "eligible": False,
+        "compaction_count": 1,
+        "minimum_compactions": 2,
+        "code": "session_context_compactions_required",
+        "message": "2 compactions required (1/2).",
+    }
+
+    blocked = await client.post(
+        f"/api/checkpoints/{checkpoint.id}/handoff",
+        json={"workspace_id": str(workspace.id)},
+    )
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"] == {
+        "code": "session_context_compactions_required",
+        "message": "2 compactions required (1/2).",
+        "compaction_count": 1,
+        "minimum_compactions": 2,
+    }
+
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="minimum-compactions",
+        events=[NormalizedSessionEvent(
+            provider_event_id="compact-2",
+            sequence_number=6,
+            event_type="compaction_boundary",
+            payload={"window_id": "window-3", "turn_count": 4},
+        )],
+    )
+    await db_session.commit()
+
+    eligible = await client.get(
+        "/api/checkpoints/session-context-eligibility",
+        params={
+            "workspace_id": str(workspace.id),
+            "provider": "codex",
+            "session_id": "minimum-compactions",
+        },
+    )
+    assert eligible.status_code == 200
+    assert eligible.json()["eligible"] is True
+    assert eligible.json()["compaction_count"] == 2
+
+    handoff = await client.post(
+        f"/api/checkpoints/{checkpoint.id}/handoff",
+        json={"workspace_id": str(workspace.id)},
+    )
+    assert handoff.status_code == 200, handoff.text
+
+
 async def test_session_handoff_api_preserves_verbatim_pre_compaction_context_only(
     client,
     db_session,
@@ -260,6 +419,7 @@ async def test_session_handoff_api_preserves_verbatim_pre_compaction_context_onl
     ))[0]
     await db_session.commit()
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -363,6 +523,7 @@ async def test_session_handoff_rendering_deduplicates_and_bounds_file_inventory(
         }),
     )
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -518,6 +679,7 @@ async def test_session_context_carries_complete_latest_task_memory(
         }),
     )
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -710,6 +872,7 @@ async def test_session_context_keeps_root_goal_and_dependent_delivery_follow_up(
     )
     await db_session.commit()
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -777,6 +940,7 @@ async def test_session_handoff_rendering_preserves_verification_evidence_fields(
         }),
     )
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -887,6 +1051,7 @@ async def test_session_handoff_reconciles_completion_continuation_conflict(
     ))[0]
     await db_session.commit()
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -1182,6 +1347,7 @@ async def test_session_handoff_does_not_adopt_negated_historical_reference(
     ))[0]
     await db_session.commit()
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -1242,6 +1408,7 @@ async def test_session_handoff_negated_progress_is_not_completion(
     ))[0]
     await db_session.commit()
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -1310,6 +1477,36 @@ def test_session_handoff_retains_genuine_quoted_ui_label_constraint() -> None:
     requirements = _derive_session_requirements(request)
 
     assert [item["text"] for item in requirements] == [request]
+
+
+def test_session_handoff_separates_context_from_structured_task_requirements() -> None:
+    request = (
+        "Mission: finish the operations workflow.\n\n"
+        "Own:\n"
+        "- docs/runbook.md\n"
+        "- scripts/smoke.sh\n\n"
+        "Context:\n"
+        "- smoke already exercises real imports\n"
+        "- the previous guide was improved\n\n"
+        "Task:\n"
+        "- tighten rollback guidance so operators can\n"
+        "  actually execute it\n"
+        "- improve runtime triage\n\n"
+        "Acceptance:\n"
+        "- operators can diagnose failures without guessing"
+    )
+
+    requirements = _derive_session_requirements(request)
+    texts = [item["text"] for item in requirements]
+
+    assert texts == [
+        "Mission: finish the operations workflow.",
+        "tighten rollback guidance so operators can actually execute it",
+        "improve runtime triage",
+        "operators can diagnose failures without guessing",
+    ]
+    assert "docs/runbook.md" not in texts
+    assert not any("already exercises" in text for text in texts)
 
 
 def test_session_handoff_treats_direct_work_command_as_change() -> None:
@@ -1640,6 +1837,7 @@ async def test_stored_goal_projection_stays_valid_after_completion_supersedes_fa
     )
     await db_session.commit()
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -2119,6 +2317,7 @@ async def test_session_handoff_narrows_context_dependency_and_recovers_prior_tur
     ))[0]
     await db_session.commit()
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -2153,6 +2352,7 @@ async def test_session_handoff_narrows_context_dependency_and_recovers_prior_tur
         session_id="context-menu-handoff",
     ))[0]
     await db_session.commit()
+    await _qualify_session_context(db_session, menu_checkpoint)
     menu_response = await client.post(
         f"/api/checkpoints/{menu_checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -2222,6 +2422,7 @@ async def test_session_handoff_materializes_adopted_referenced_context(
     stored_goal = json.loads(goal_item.payload_json)
     await db_session.commit()
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -2299,6 +2500,7 @@ async def test_session_handoff_rejects_unmaterialized_external_goal_dependency(
     ))[0]
     await db_session.commit()
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -2337,6 +2539,7 @@ async def test_session_handoff_quality_blocks_incomplete_repository_baseline(
     ))[0]
     await db_session.commit()
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -2396,6 +2599,7 @@ async def test_session_handoff_reconciles_live_repository_at_copy_time(
         }),
     )
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -2453,6 +2657,7 @@ async def test_session_handoff_api_recovers_verbatim_goal_for_historical_v5_row(
     goal_item.statement = f"{request_verbatim[:1_199].rstrip()}…"
     await db_session.commit()
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -2610,6 +2815,7 @@ async def test_session_handoff_recovers_truncated_goal_from_its_source_revision(
         == authoritative_request
     )
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -2688,6 +2894,7 @@ async def test_session_handoff_source_recovery_fails_closed_when_prefix_is_ambig
     goal_event.content = truncated
     await db_session.commit()
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -2732,6 +2939,7 @@ async def test_session_handoff_api_renders_latest_captured_session_tip(
     )
     await db_session.commit()
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -2831,6 +3039,7 @@ async def test_session_handoff_recovers_zero_goal_from_nearest_bounded_user_turn
         ).id,
         trigger="compaction",
     )
+    await _qualify_session_context(db_session, checkpoint)
     loaded = await get_checkpoint(db_session, checkpoint.id)
     assert loaded is not None
     checkpoint_id = checkpoint.id
@@ -2891,6 +3100,7 @@ async def test_session_handoff_blocks_untrusted_image_markup_without_leaking_tag
     ))[0]
     await db_session.commit()
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -3017,6 +3227,7 @@ async def test_session_handoff_keeps_described_historical_image_non_blocking(
         }),
     )
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -3112,6 +3323,7 @@ async def test_session_handoff_hashes_exact_provider_attachment_without_markup(
     for image_path, _ in images:
         image_path.unlink()
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -3276,6 +3488,7 @@ async def test_session_handoff_recovers_legacy_codex_images_from_exact_raw_turn(
     raw_source.unlink()
     image_path.unlink()
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -3346,6 +3559,7 @@ async def test_session_handoff_excludes_referenced_conversation_transport(
     )
     await db_session.commit()
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -3392,7 +3606,8 @@ async def test_checkpoint_decisions_use_only_user_authored_request_body(
         session_id="user-authored-decision-body",
         trigger="manual",
     )
-    data = checkpoint_to_dict(await get_checkpoint(db_session, checkpoint.id))
+    loaded = await get_checkpoint(db_session, checkpoint.id)
+    data = checkpoint_to_dict(loaded)
     decisions = "\n".join(
         item["statement"] for item in data["sections"]["decisions"]
     )
@@ -3401,6 +3616,25 @@ async def test_checkpoint_decisions_use_only_user_authored_request_body(
     assert "keep every item linked to event evidence" in decisions
     assert "INNER_REFERENCED_DECISION" not in decisions
     assert "Referenced ChatGPT conversation" not in decisions
+    resolved_request = data["sections"]["goal"][0]["payload"][
+        "request_verbatim"
+    ]
+    contract = build_session_handoff_contract(
+        loaded,
+        request_verbatim=resolved_request,
+        checkpoint_data=data,
+    )
+    content = render_session_handoff(
+        loaded,
+        request_verbatim=resolved_request,
+        contract=contract,
+        checkpoint_data=data,
+    )
+    decision_section = content.split(
+        "## Active decisions that still hold\n",
+        1,
+    )[1].split("## Failed or rejected attempts", 1)[0]
+    assert "OUTER_USER_DECISION" not in decision_section
 
 
 async def test_session_handoff_fails_closed_for_historically_truncated_goal(
@@ -3436,6 +3670,7 @@ async def test_session_handoff_fails_closed_for_historically_truncated_goal(
     )
     await db_session.commit()
 
+    await _qualify_session_context(db_session, checkpoint)
     response = await client.post(
         f"/api/checkpoints/{checkpoint.id}/handoff",
         json={"workspace_id": str(workspace.id)},
@@ -4467,6 +4702,38 @@ async def test_latest_checkpoint_session_filter_requires_a_complete_pair(
     )
 
 
+def test_session_prompt_projection_strips_attachment_transport_and_tool_envelopes() -> None:
+    sentences = _sentences(
+        'Keep the graph visible. <image name=[Image #1] path="/tmp/private.png">'
+        "</image>"
+    )
+    assert sentences == ["Keep the graph visible."]
+    summary = _meaningful_command_result(
+        SimpleNamespace(
+            content=(
+                "Chunk ID: abc123\n"
+                "Wall time: 0.1 seconds\n"
+                "Process exited with code 1\n"
+                "Output:\n"
+                "FAILED tests/test_context.py::test_handoff"
+            )
+        ),
+        {},
+    )
+    assert summary == "FAILED tests/test_context.py::test_handoff"
+
+
+def test_session_prompt_overhead_budget_fails_closed() -> None:
+    minimal = "\n".join(SESSION_CONTEXT_REQUIRED_HEADINGS)
+    issues = session_handoff_render_issues(
+        minimal + ("x" * (SESSION_HANDOFF_MAX_OVERHEAD_CHARS + 1)),
+        request_verbatim="x",
+    )
+    assert "session_context_overhead_budget_exceeded" in {
+        issue["code"] for issue in issues
+    }
+
+
 async def _session_source(db_session, tmp_path, *, content: str = "session"):
     tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "app").mkdir(exist_ok=True)
@@ -4496,6 +4763,46 @@ async def _session_source(db_session, tmp_path, *, content: str = "session"):
     db_session.add(document)
     await db_session.flush()
     return workspace, document
+
+
+async def _qualify_session_context(
+    db_session,
+    checkpoint: WorkCheckpoint,
+) -> None:
+    compaction_count = int(await db_session.scalar(
+        select(func.count(SessionEvent.id)).where(
+            SessionEvent.workspace_id == checkpoint.workspace_id,
+            SessionEvent.provider == checkpoint.provider,
+            SessionEvent.session_id == checkpoint.session_id,
+            SessionEvent.event_type == "compaction_boundary",
+        )
+    ) or 0)
+    if compaction_count >= 2:
+        return
+    boundary = await db_session.get(SessionEvent, checkpoint.boundary_event_id)
+    source = await db_session.get(SourceDocument, checkpoint.source_document_id)
+    assert boundary is not None
+    assert source is not None
+    missing = 2 - compaction_count
+    await persist_session_events(
+        db_session,
+        workspace_id=checkpoint.workspace_id,
+        source_document=source,
+        provider=checkpoint.provider,
+        session_id=checkpoint.session_id,
+        events=[
+            NormalizedSessionEvent(
+                provider_event_id=(
+                    f"session-context-policy-fixture:{checkpoint.id}:{index}"
+                ),
+                sequence_number=boundary.sequence_number - missing + index,
+                event_type="compaction_boundary",
+                payload={"test_policy_fixture": True},
+            )
+            for index in range(missing)
+        ],
+    )
+    await db_session.commit()
 
 
 def _events() -> list[NormalizedSessionEvent]:

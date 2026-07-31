@@ -148,13 +148,8 @@ class ContinuationRunRequest(_ContinuationRequest):
         return normalized
 
 
-class DesktopAccessConfirmation(BaseModel):
-    provider: Literal["codex", "claude", "opencode"]
-    confirmation: Literal["user_confirmed_usable_in_desktop"]
-
-
 class ContinuationStageRequest(ContinuationRunRequest):
-    desktop_access_confirmation: DesktopAccessConfirmation | None = None
+    pass
 
 
 class ContinuationHarnessOpenRequest(BaseModel):
@@ -406,11 +401,6 @@ async def stage_continuation(
                 target_provider=payload.target_provider,
                 provider_model=payload.provider_model,
                 provider_effort=payload.provider_effort,
-                desktop_access_confirmation=(
-                    payload.desktop_access_confirmation.model_dump()
-                    if payload.desktop_access_confirmation is not None
-                    else None
-                ),
                 token_budget=payload.token_budget,
                 idempotency_key=payload.idempotency_key,
                 task_mode=payload.task_mode,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 from uuid import UUID, uuid4
 
@@ -43,6 +44,8 @@ from app.services.continuation_execution import (
     structured_handoff_from_checkpoint,
 )
 from app.services.continuation_quality_gate import (
+    EXECUTION_PROMPT_MAX_OVERHEAD_CHARS,
+    PROJECT_CONTEXT_MAX_OVERHEAD_CHARS,
     evaluate_continuation_quality,
 )
 from app.services.execution_prompt_renderer import (
@@ -149,6 +152,7 @@ async def _persist_foundation_fact(
     identity_key: str | None = None,
     external_id: str | None = None,
     status: str = "active",
+    source_metadata: dict | None = None,
 ) -> Component:
     model = Model(id=uuid4(), name=f"Foundation {uuid4().hex}")
     source = SourceDocument(
@@ -159,7 +163,7 @@ async def _persist_foundation_fact(
         content=statement,
         content_sha256=hashlib.sha256(statement.encode()).hexdigest(),
         trust_zone=trust_zone,
-        metadata_json="{}",
+        metadata_json=json.dumps(source_metadata or {}),
     )
     evidence = EvidenceSpan(
         id=uuid4(),
@@ -584,6 +588,49 @@ async def test_exact_prompt_with_three_images_has_four_outcomes_not_six(
     assert not any(
         guidance_ids & set(verifier.requirement_ids)
         for verifier in compiled.contract.verification
+    )
+    assert "<image" not in compiled.prompt_markdown.casefold()
+    assert all(
+        artifact.sha256 in compiled.prompt_markdown
+        for artifact in compiled.contract.artifacts
+    )
+
+
+async def test_worker_prompt_indexes_large_requirement_sets_without_repeating_them(
+    db_session,
+    tmp_path,
+) -> None:
+    request = "\n".join(
+        [
+            "Implement the release workflow.",
+            *(
+                f"- Add independently verifiable release outcome {index}."
+                for index in range(1, 11)
+            ),
+        ]
+    )
+
+    compiled = await _compile(
+        db_session,
+        tmp_path,
+        request=request,
+    )
+    mandatory = [
+        requirement
+        for requirement in compiled.contract.requirements
+        if requirement.priority.value == "must"
+    ]
+    mandatory_section = compiled.prompt_markdown.split(
+        "## Mandatory requirements\n",
+        1,
+    )[1].split("\n## ", 1)[0]
+
+    assert len(mandatory) > 8
+    assert len(mandatory_section) < 1_000
+    assert all(requirement.id in mandatory_section for requirement in mandatory)
+    assert all(
+        compiled.prompt_markdown.count(requirement.text) == 1
+        for requirement in mandatory
     )
 
 
@@ -1176,6 +1223,14 @@ async def test_workspace_foundation_uses_evidence_levels_and_controlled_promotio
                 "external_id": "session-three",
             },
             {
+                "title": "Oversized non-atomic agent dump",
+                "statement": "non-atomic " * 100,
+                "source_type": "agent_session",
+                "trust_zone": "semi_trusted_tool",
+                "identity_key": "context:oversized-non-atomic-dump",
+                "external_id": "session-oversized",
+            },
+            {
                 "title": "Conflicted capability",
                 "statement": "The product supports direct deployment.",
                 "source_type": "agent_session",
@@ -1218,6 +1273,55 @@ async def test_workspace_foundation_uses_evidence_levels_and_controlled_promotio
         compiled.contract.project_foundation.superseded_conflicting_fact_count
         == 2
     )
+
+
+async def test_workspace_foundation_does_not_count_delegated_agents_as_independent(
+    db_session,
+    tmp_path,
+) -> None:
+    copied_statement = (
+        "The architecture should replace verified handoffs with raw transcripts."
+    )
+    compiled = await _compile(
+        db_session,
+        tmp_path,
+        request="Inspect delegated-agent evidence independence.",
+        foundation_facts=[
+            *_COMPLETE_FOUNDATION,
+            {
+                "title": "Copied delegated recommendation",
+                "statement": copied_statement,
+                "source_type": "agent_session",
+                "trust_zone": "semi_trusted_tool",
+                "identity_key": "architecture:copied-delegated-recommendation",
+                "external_id": "codex:session:child-one",
+                "source_metadata": {
+                    "session_id": "child-one",
+                    "parent_thread_id": "root-thread",
+                    "thread_source": "subagent",
+                },
+            },
+            {
+                "title": "Copied delegated recommendation",
+                "statement": copied_statement,
+                "source_type": "agent_session",
+                "trust_zone": "semi_trusted_tool",
+                "identity_key": "architecture:copied-delegated-recommendation",
+                "external_id": "codex:session:child-two",
+                "source_metadata": {
+                    "session_id": "child-two",
+                    "parent_thread_id": "child-one",
+                    "thread_source": "subagent",
+                },
+            },
+        ],
+    )
+
+    assert "Copied delegated recommendation" not in {
+        item.title for item in compiled.contract.project_context
+    }
+    assert compiled.contract.project_foundation is not None
+    assert compiled.contract.project_foundation.provisional_fact_count == 2
 
 
 async def test_project_foundation_change_invalidates_persisted_execution_reuse(
@@ -1671,9 +1775,15 @@ async def test_copy_quality_gate_requires_lead_repo_reconciliation_and_done(
             1,
         ),
         "project_context_copy_foundation_sections_missing": staging.replace(
-            "### Engineering conventions",
-            "### Engineering notes",
+            (
+                "### What the project is, who it serves, what problem it "
+                "solves, and why it exists"
+            ),
+            "### Project identity notes",
             1,
+        ),
+        "project_context_copy_overhead_budget_exceeded": (
+            staging + ("x" * (PROJECT_CONTEXT_MAX_OVERHEAD_CHARS + 1))
         ),
     }
     for expected_code, malformed in cases.items():
@@ -1701,6 +1811,10 @@ async def test_copy_quality_gate_requires_lead_repo_reconciliation_and_done(
                 "## Completion notes",
                 1,
             )
+        ),
+        "worker_handoff_overhead_budget_exceeded": (
+            compiled.prompt_markdown
+            + ("x" * (EXECUTION_PROMPT_MAX_OVERHEAD_CHARS + 1))
         ),
     }
     for expected_code, malformed in launch_cases.items():

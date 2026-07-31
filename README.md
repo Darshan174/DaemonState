@@ -212,7 +212,10 @@ documents when configured. It does not mean onboarding is finished.
 - Browser Continue is a local macOS handoff. It checks desktop-app readiness,
   copies the context, and asks the selected app to open a visible composer. The
   macOS launch request is reported as requested, not as a verified open or
-  exact provider session, and nothing is submitted automatically.
+  exact provider session, and nothing is submitted automatically. Codex
+  account, model, and explicit rate-limit status is checked automatically when
+  its local app-server supports those read-only methods; an inconclusive check
+  never requires a manual attestation before opening the draft.
 - There is no system-wide agent monitor. Library scans while it is open,
   Continue refreshes linked local histories, and other integrations must report
   their own events.

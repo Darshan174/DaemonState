@@ -8,6 +8,7 @@ import {
   Clipboard,
   FileCode2,
   FolderRoot,
+  LockKeyhole,
   RefreshCw,
   ShieldCheck,
   Trash2,
@@ -32,6 +33,11 @@ import {
   requireMatchingContentSha256,
   sessionContextQualityMessage,
 } from "./sessionContinuity";
+import {
+  MINIMUM_SESSION_CONTEXT_COMPACTIONS,
+  sessionContextCompactionCount,
+  sessionContextCompactionProgress,
+} from "./sessionContextPolicy";
 import {
   executeSessionIdentity,
   MAX_EXECUTE_SESSION_CONTEXTS,
@@ -687,12 +693,20 @@ function SelectedSessionContextCard({
   const provider = normalizeProvider(session?.provider);
   const sessionId = rawText(session?.sessionId);
   const title = visibleText(session?.title) || "Selected session";
+  const compactionCount = sessionContextCompactionCount(session);
+  const contextEligible = (
+    compactionCount >= MINIMUM_SESSION_CONTEXT_COMPACTIONS
+  );
+  const compactionProgress = sessionContextCompactionProgress(compactionCount);
+  const compactionRequirement = contextEligible
+    ? ""
+    : `${MINIMUM_SESSION_CONTEXT_COMPACTIONS} compactions required.`;
   const contextName = `${title} Session Context`;
   const headingId = `selected-session-context-${slot}`;
   const checkpointQuery = useLatestCheckpoint(workspaceId, {
     provider,
     sessionId,
-    enabled: Boolean(workspaceId && provider && sessionId),
+    enabled: Boolean(workspaceId && provider && sessionId && contextEligible),
   });
   const captureCheckpoint = useCaptureCheckpoint();
   const checkpointHandoff = useCheckpointHandoff();
@@ -708,6 +722,7 @@ function SelectedSessionContextCard({
   const identityKey = JSON.stringify([workspaceId || "", identity]);
   const requestKey = JSON.stringify([
     identityKey,
+    compactionCount,
     checkpointQuery.data?.id || "",
     checkpointQuery.data?.schema_version || "",
     checkpointQuery.data?.boundary?.sequence_number ?? null,
@@ -742,6 +757,9 @@ function SelectedSessionContextCard({
   } = {}) => {
     if (!workspaceId || !provider || !sessionId) {
       throw new Error("This selected session no longer has a valid Library identity.");
+    }
+    if (!contextEligible) {
+      throw sessionContextCompactionsRequiredError(compactionCount);
     }
     if (loadPromiseRef.current?.key === requestKey) {
       try {
@@ -841,6 +859,8 @@ function SelectedSessionContextCard({
     checkpointQuery.data,
     checkpointQuery.isFetching,
     identityKey,
+    compactionCount,
+    contextEligible,
     provider,
     requestKey,
     sessionId,
@@ -852,6 +872,7 @@ function SelectedSessionContextCard({
       !workspaceId
       || !provider
       || !sessionId
+      || !contextEligible
       || (checkpointQuery.isLoading && !checkpointQuery.data)
       || checkpointQuery.isFetching
       || context
@@ -879,6 +900,7 @@ function SelectedSessionContextCard({
     checkpointQuery.isFetching,
     checkpointQuery.isLoading,
     context,
+    contextEligible,
     error,
     identityKey,
     loadContext,
@@ -957,17 +979,22 @@ function SelectedSessionContextCard({
   };
 
   const preparing = Boolean(
-    captureCheckpoint.isPending
-    || checkpointHandoff.isPending
-    || (
-      workspaceId
-      && provider
-      && sessionId
-      && !context
-      && !error
+    contextEligible
+    && (
+      captureCheckpoint.isPending
+      || checkpointHandoff.isPending
+      || (
+        workspaceId
+        && provider
+        && sessionId
+        && !context
+        && !error
+      )
     )
   );
-  const copyReady = !context || context?.quality_report?.copy_ready === true;
+  const copyReady = contextEligible && (
+    !context || context?.quality_report?.copy_ready === true
+  );
   const columnClass = total === 1
     ? "xl:col-start-2"
     : total === 2
@@ -996,6 +1023,16 @@ function SelectedSessionContextCard({
           <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
 
+        {!contextEligible ? (
+          <span
+            title={`${compactionCount} of ${MINIMUM_SESSION_CONTEXT_COMPACTIONS} provider compactions detected`}
+            className="absolute right-12 top-3 z-30 inline-flex min-h-8 items-center gap-1.5 rounded-lg bg-[#d9ff68] px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.08em] text-[#171713] shadow-[0_5px_16px_rgba(217,255,104,0.22)]"
+          >
+            <LockKeyhole className="h-3 w-3" aria-hidden="true" />
+            {compactionProgress}
+          </span>
+        ) : null}
+
         <span
           aria-hidden="true"
           data-session-provider-background={provider}
@@ -1004,7 +1041,7 @@ function SelectedSessionContextCard({
           <HarnessArtwork type={provider} color="#a2a298" />
         </span>
 
-        <header className="relative z-20 pr-9">
+        <header className={`relative z-20 pr-9 ${contextEligible ? "" : "pt-10"}`}>
           <p className="text-[9px] font-black uppercase tracking-[0.14em] text-[#77776e] dark:text-[#aaa9a0]">
             Selected Session Context
           </p>
@@ -1023,7 +1060,8 @@ function SelectedSessionContextCard({
           loading={preparing}
           available={Boolean(context)}
           error={error}
-          unavailableMessage="Open the preview to prepare this selected session’s exact context."
+          unavailableMessage={compactionRequirement
+            || "Open the preview to prepare this selected session’s exact context."}
           compact
           allowAncestorWatermark
           identityLabel={`${sessionProviderLabel(provider)} · ${title}`}
@@ -1036,12 +1074,15 @@ function SelectedSessionContextCard({
             type="button"
             aria-label={`Preview ${contextName}`}
             onClick={(event) => previewContext(event.currentTarget)}
+            disabled={!contextEligible}
             className="btn-secondary min-h-11 px-4 text-xs"
           >
             {preparing
               ? <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
               : <BookOpenCheck className="h-3.5 w-3.5" aria-hidden="true" />}
-            {preparing
+            {!contextEligible
+              ? "Locked"
+              : preparing
               ? "Preparing…"
               : context
               ? "Open full preview"
@@ -1053,7 +1094,12 @@ function SelectedSessionContextCard({
             contextName={contextName}
             copyState={copyState}
             onClick={copyContext}
-            disabled={preparing || !copyReady || (!context && error && !retryable)}
+            disabled={
+              !contextEligible
+              || preparing
+              || !copyReady
+              || (!context && error && !retryable)
+            }
           />
         </div>
 
@@ -2662,6 +2708,12 @@ function unavailableSessionGoalError() {
 
 
 function sessionContextFailure(error, fallback) {
+  if (sessionContextCompactionsAreRequired(error)) {
+    return {
+      message: error?.message || `${MINIMUM_SESSION_CONTEXT_COMPACTIONS} compactions required.`,
+      retryable: false,
+    };
+  }
   if (sessionGoalIsUnavailable(error)) {
     return {
       message: unavailableSessionGoalError().message,
@@ -2678,6 +2730,28 @@ function sessionContextFailure(error, fallback) {
     message: error?.message || fallback,
     retryable: error?.retryable !== false,
   };
+}
+
+
+function sessionContextCompactionsAreRequired(error) {
+  return rawText(
+    error?.code
+    || error?.detail?.code
+    || error?.detail?.detail?.code,
+  ).toLowerCase() === "session_context_compactions_required";
+}
+
+
+function sessionContextCompactionsRequiredError(compactionCount) {
+  const error = new Error(
+    `${MINIMUM_SESSION_CONTEXT_COMPACTIONS} compactions required (${Math.min(
+      Math.max(Number(compactionCount) || 0, 0),
+      MINIMUM_SESSION_CONTEXT_COMPACTIONS,
+    )}/${MINIMUM_SESSION_CONTEXT_COMPACTIONS}).`,
+  );
+  error.code = "session_context_compactions_required";
+  error.retryable = false;
+  return error;
 }
 
 
