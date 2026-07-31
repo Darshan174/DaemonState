@@ -4,6 +4,7 @@ import ThemeToggle from "./components/ThemeToggle";
 import DaemonStateIcon from "./components/DaemonStateIcon";
 import ProductLoadingState from "./components/ProductLoadingState";
 import WorkspaceSwitcher from "./components/WorkspaceSwitcher";
+import { WAITLIST_ONLY } from "./config/deployment";
 import { useWorkspaceSelection } from "./context/WorkspaceContext";
 import {
   Activity,
@@ -30,12 +31,6 @@ const Landing      = lazy(() => import("./pages/Landing"));
 const Connectors   = lazy(() => import("./pages/Connectors"));
 const Changes      = lazy(() => import("./pages/Changes"));
 const WorkspacesPage = lazy(() => import("./pages/WorkspacesPage"));
-
-export function waitlistOnly(environment) {
-  return environment.VITE_WAITLIST_ONLY === "true";
-}
-
-const WAITLIST_ONLY = waitlistOnly(import.meta.env);
 
 const CONTINUE_NAV_ITEMS = [
   { to: "/app", label: "Continue", icon: Activity, end: true },
