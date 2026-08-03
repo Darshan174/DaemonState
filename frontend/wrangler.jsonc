@@ -2,12 +2,21 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "daemonstate",
   "compatibility_date": "2026-07-27",
+  "main": "./worker/index.js",
   "observability": {
     "enabled": true
   },
   "assets": {
     "not_found_handling": "single-page-application"
   },
+  "d1_databases": [
+    {
+      "binding": "WAITLIST_DB",
+      "database_name": "daemonstate-waitlist-production",
+      "database_id": "a4348782-03a3-4ba8-b69e-9576455a46ce",
+      "migrations_dir": "migrations"
+    }
+  ],
   "compatibility_flags": [
     "nodejs_compat"
   ]
