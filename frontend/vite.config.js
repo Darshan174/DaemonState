@@ -46,8 +46,12 @@ function legalArtifacts() {
   };
 }
 
-export default defineConfig({
-  plugins: [react(), legalArtifacts(), cloudflare()],
+export default defineConfig(({ mode }) => ({
+  plugins: [
+    react(),
+    legalArtifacts(),
+    ...(mode === "test" ? [] : [cloudflare()]),
+  ],
   resolve: {
     alias: {
       "@assets": path.resolve(__dirname, "src/assets"),
@@ -72,4 +76,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));
