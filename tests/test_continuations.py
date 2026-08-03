@@ -3619,12 +3619,14 @@ async def test_stage_auto_rejects_codex_effort_after_selecting_claude(
 
 
 @pytest.mark.parametrize("target_provider", ("codex", "claude", "opencode"))
+@pytest.mark.parametrize("brief_variant", ("legacy_v1", "compact_v2"))
 async def test_stage_continuation_opens_selected_desktop_without_execution(
     client,
     db_session,
     monkeypatch,
     tmp_path,
     target_provider,
+    brief_variant,
 ) -> None:
     goal = (
         "Make the carried Session Context clear and visually polished for the "
@@ -3637,6 +3639,10 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
         session_id="waiting-handoff-source",
         provider="codex",
         compaction_count=2,
+    )
+    monkeypatch.setattr(
+        "app.services.checkpoints.settings.session_handoff_brief_variant",
+        brief_variant,
     )
     _initialize_git_repository(tmp_path)
     launch_calls: list[dict[str, object]] = []
@@ -3699,13 +3705,14 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
         if target_provider == "codex"
         else {}
     )
+    stage_key = f"stage-context-and-wait-{brief_variant}"
 
     response = await client.post(
         "/api/continuations/stage",
         json={
             "workspace_id": str(workspace.id),
             "repo_path": str(tmp_path),
-            "idempotency_key": "stage-context-and-wait",
+            "idempotency_key": stage_key,
             "target_provider": target_provider,
             "source_provider": "codex",
             "source_session_id": "waiting-handoff-source",
@@ -3743,6 +3750,7 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
         "session_handoff.v1"
     )
     assert body["delivery"]["context_scope"] == "session"
+    assert body["delivery"]["context_render_variant"] == brief_variant
     assert body["delivery"]["source_session_id"] == "waiting-handoff-source"
     assert body["delivery"]["handoff_id"] == body["run"]["handoff_id"]
     assert "session_id" not in body["delivery"]["harness_session"]
@@ -3753,6 +3761,9 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     assert body["delivery"]["harness_session"]["open_verified"] is False
     assert body["delivery"]["harness_session"]["context_loaded"] is False
     assert body["delivery"]["harness_session"]["context_copied"] is True
+    assert body["delivery"]["harness_session"]["context_render_variant"] == (
+        brief_variant
+    )
     assert body["delivery"]["harness_session"]["source_session_id"] == (
         "waiting-handoff-source"
     )
@@ -3776,21 +3787,35 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     assert canonical_handoff.status_code == 200, canonical_handoff.text
     assert canonical_handoff.json()["schema_version"] == "session_handoff.v1"
     assert staged_context == canonical_handoff.json()["content"]
-    assert staged_context.startswith(
-        "# Session Context — task-level working memory\n"
+    expected_heading = (
+        "# Continuation Brief v2\n"
+        if brief_variant == "compact_v2"
+        else "# Session Context — task-level working memory\n"
     )
+    assert staged_context.startswith(expected_heading)
     assert "## Requested desktop settings" not in staged_context
     assert "gpt-5.6-sol" not in staged_context
     assert "Reasoning effort" not in staged_context
-    assert "## Current main goal" in staged_context
-    assert "## Current state" in staged_context
-    assert "## Exact next action" in staged_context
-    assert "## Active decisions that still hold" in staged_context
-    assert "## Failed or rejected attempts" in staged_context
-    assert "## Changes made" in staged_context
-    assert "## Relevant discoveries" in staged_context
-    assert "## Useful commands executed" in staged_context
-    assert "## Verification state" in staged_context
+    if brief_variant == "compact_v2":
+        assert {
+            "## Goal",
+            "## State now",
+            "## Start here",
+            "## Do not repeat",
+            "## Done when",
+        } <= set(staged_context.splitlines())
+        assert "## Current main goal" not in staged_context
+        assert "## Exact next action" not in staged_context
+    else:
+        assert "## Current main goal" in staged_context
+        assert "## Current state" in staged_context
+        assert "## Exact next action" in staged_context
+        assert "## Active decisions that still hold" in staged_context
+        assert "## Failed or rejected attempts" in staged_context
+        assert "## Changes made" in staged_context
+        assert "## Relevant discoveries" in staged_context
+        assert "## Useful commands executed" in staged_context
+        assert "## Verification state" in staged_context
     assert "## Direction" not in staged_context
     assert "## Restored session state" not in staged_context
     assert "## Inherited Workspace Context" not in staged_context
@@ -3800,9 +3825,15 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     assert "next user lead" not in staged_context
     assert "future instruction" not in staged_context
     assert "Inspect → implement → test → fix → verify" not in staged_context
-    assert staged_context.count("> Activation:") == 1
+    assert staged_context.count("> Activation:") == (
+        0 if brief_variant == "compact_v2" else 1
+    )
     assert "### First action" not in staged_context
-    assert "### Definition of done" in staged_context
+    assert (
+        "## Done when" in staged_context
+        if brief_variant == "compact_v2"
+        else "### Definition of done" in staged_context
+    )
     assert (
         "# Project / Workspace Context — project-level foundation"
         not in staged_context
@@ -3813,6 +3844,11 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     assert body["delivery"]["context_sha256"] == hashlib.sha256(
         staged_context.encode("utf-8")
     ).hexdigest()
+    assert body["delivery"]["context_char_count"] == len(staged_context)
+    assert body["delivery"]["context_estimated_tokens"] == max(
+        1,
+        (len(staged_context) + 3) // 4,
+    )
     assert subprocess.run(
         ["git", "-C", str(tmp_path), "status", "--porcelain=v1"],
         check=True,
@@ -3834,7 +3870,7 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
         json={
             "workspace_id": str(workspace_id),
             "repo_path": str(tmp_path),
-            "idempotency_key": "stage-context-and-wait",
+            "idempotency_key": stage_key,
             "target_provider": target_provider,
             "source_provider": "codex",
             "source_session_id": "waiting-handoff-source",
@@ -3863,7 +3899,7 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
         json={
             "workspace_id": str(workspace_id),
             "repo_path": str(tmp_path),
-            "idempotency_key": "stage-context-and-wait",
+            "idempotency_key": stage_key,
             "target_provider": conflicting_provider,
             "source_provider": "codex",
             "source_session_id": "waiting-handoff-source",
@@ -3961,7 +3997,7 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
         json={
             "workspace_id": str(workspace_id),
             "repo_path": str(tmp_path),
-            "idempotency_key": "stage-context-and-wait",
+            "idempotency_key": stage_key,
             "target_provider": target_provider,
             "source_provider": "codex",
             "source_session_id": "waiting-handoff-source",

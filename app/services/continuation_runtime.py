@@ -254,6 +254,15 @@ def _continuation_stage_trace_result(
         "daemonstate.source.provider": delivery.get("source_provider"),
         "daemonstate.session.id": run.get("provider_session_id"),
         "daemonstate.delivery.context_sha256": delivery.get("context_sha256"),
+        "daemonstate.delivery.context_render_variant": delivery.get(
+            "context_render_variant"
+        ),
+        "daemonstate.delivery.context_char_count": delivery.get(
+            "context_char_count"
+        ),
+        "daemonstate.delivery.context_estimated_tokens": delivery.get(
+            "context_estimated_tokens"
+        ),
         "daemonstate.staging.awaiting_user": True,
         "daemonstate.staging.execution_started": False,
         "daemonstate.status": "awaiting_user",
@@ -769,6 +778,11 @@ class ContinuationStageService:
         context_sha256 = hashlib.sha256(
             context_message.encode("utf-8")
         ).hexdigest()
+        context_render_variant = str(
+            session_context.get("render_variant") or "legacy_v1"
+        )
+        context_char_count = len(context_message)
+        context_estimated_tokens = max(1, (context_char_count + 3) // 4)
         handoff_id = str(uuid4())
         source = _normalized_source_provider(preparation.source_session)
         account_access_state = selected_composer_readiness.account_access_state
@@ -803,6 +817,9 @@ class ContinuationStageService:
             "context_sha256": context_sha256,
             "context_schema_version": SESSION_HANDOFF_SCHEMA_VERSION,
             "context_scope": "session",
+            "context_render_variant": context_render_variant,
+            "context_char_count": context_char_count,
+            "context_estimated_tokens": context_estimated_tokens,
             "source_session_id": (
                 preparation.source_session.get("session_id")
                 if isinstance(preparation.source_session, dict)
@@ -835,6 +852,9 @@ class ContinuationStageService:
             "context_schema_version": SESSION_HANDOFF_SCHEMA_VERSION,
             "context_scope": "session",
             "context_sha256": context_sha256,
+            "context_render_variant": context_render_variant,
+            "context_char_count": context_char_count,
+            "context_estimated_tokens": context_estimated_tokens,
             "execution_started": False,
             "activation_boundary_verified": False,
             "activation": "user_review_and_submit",

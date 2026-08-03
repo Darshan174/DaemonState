@@ -57,6 +57,37 @@ reopen a requirement with a newer scoped completion claim. Prior-agent
 interpretations that make a deictic request self-contained are retained only as
 explicitly unverified historical scope.
 
+### Compact Session Context experiment
+
+The visible Continue handoff has two render variants behind
+`SESSION_HANDOFF_BRIEF_VARIANT`:
+
+- `legacy_v1` is the default control and immediate rollback.
+- `compact_v2` is the candidate with exactly five sections: Goal, State now,
+  Start here, Do not repeat, and Done when.
+
+Both variants use the same `session_handoff.v1` structured contract, repository
+freshness checks, attachment hashes, copy gate, and protected-baseline policy.
+Only the model-facing projection changes; automatic execution prompts remain on
+their existing renderer so the experiment is not confounded across two paths.
+Every staged response records `context_render_variant`, `context_char_count`,
+and `context_estimated_tokens` alongside the context hash.
+
+The candidate is eligible to replace the control only with zero critical-state
+omissions or authority/preservation regressions, at least 80% correct first
+actions, at least a 15-point gain over the control, 30% fewer rediscovery steps,
+and fewer than 10% repeated failed approaches across at least 30 comparable
+submitted tasks. Desktop staging creates no `AgentRun` before the user submits,
+so delivery and prompt-size telemetry alone cannot prove product success; the
+submitted provider session must be linked to observed outcomes before those
+behavioral gates can be evaluated.
+
+The initial read-only paired replay and its limitations are recorded in
+`docs/experiments/session-handoff-brief-v2-2026-08-03.md`. Re-run the same
+comparison with `scripts/compare_session_handoff_variants.py`; it uses identical
+saved checkpoints and contracts for both renderers and does not stage or launch
+a provider session.
+
 Repository evidence uses fixed, non-prose item shapes for symbol declarations,
 exact test links, and parsed manifest dependencies. Every item is bound to the
 repository snapshot and live file SHA-256; stale items are omitted. These

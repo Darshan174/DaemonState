@@ -123,6 +123,10 @@ instructions to execute.
 
 ## Query And Agent Outputs
 
+All production model calls follow the versioned, trust-separated
+[prompt quality contract](prompt-quality.md), including strict local output
+validation and deterministic fallbacks.
+
 `POST /api/query` returns a stable `query.v1` response with retrieval knobs:
 `top_k`, `min_confidence`, and optional `hybrid`. The response includes
 `trace.facts_used`, relationship expansion evidence, and deterministic reranker

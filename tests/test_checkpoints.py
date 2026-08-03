@@ -23,6 +23,8 @@ from app.models import (
 )
 from app.services.checkpoints import (
     CHECKPOINT_CATEGORIES,
+    COMPACT_SESSION_CONTEXT_REQUIRED_HEADINGS,
+    COMPACT_SESSION_HANDOFF_MAX_OVERHEAD_CHARS,
     SESSION_HANDOFF_MAX_OVERHEAD_CHARS,
     SESSION_CONTEXT_REQUIRED_HEADINGS,
     _derive_session_requirements,
@@ -36,6 +38,7 @@ from app.services.checkpoints import (
     _session_attachment_dependencies,
     _session_attachment_dependency_role,
     _sentences,
+    build_session_handoff_artifact,
     build_session_handoff_contract,
     capture_checkpoint,
     capture_checkpoint_schema_upgrades,
@@ -4731,6 +4734,350 @@ def test_session_prompt_overhead_budget_fails_closed() -> None:
     )
     assert "session_context_overhead_budget_exceeded" in {
         issue["code"] for issue in issues
+    }
+
+
+def test_compact_session_brief_is_copy_ready_specific_and_fail_closed(
+    monkeypatch,
+) -> None:
+    goal = "Implement the compact continuation brief and preserve user changes."
+    supporting = [{
+        "role": "user_reference",
+        "text": (
+            "Competitor research says the first action must be explicit.\n"
+            "Historical context must stay labeled as evidence."
+        ),
+    }]
+    contract = _compact_session_handoff_contract(goal, supporting=supporting)
+    checkpoint_data = {
+        "id": "checkpoint-compact",
+        "provider": "codex",
+        "session_id": "session-compact",
+        "source_document_id": "document-compact",
+        "boundary": {
+            "snapshot_phase": "post_compaction",
+            "occurred_at": "2026-08-03T00:00:00+00:00",
+        },
+        "currentness": {"status": "current"},
+        "sections": {
+            "goal": [{
+                "statement": goal,
+                "payload": {"request_verbatim": goal},
+            }],
+        },
+    }
+    monkeypatch.setattr(
+        "app.services.checkpoints.build_session_handoff_contract",
+        lambda *_args, **_kwargs: contract,
+    )
+    monkeypatch.setattr(
+        "app.services.checkpoints.settings.session_handoff_brief_variant",
+        "compact_v2",
+    )
+
+    artifact = build_session_handoff_artifact(
+        SimpleNamespace(),
+        request_verbatim=goal,
+        supporting_context=supporting,
+        checkpoint_data=checkpoint_data,
+    )
+    content = artifact["content"]
+    legacy_content = render_session_handoff(
+        SimpleNamespace(),
+        request_verbatim=goal,
+        supporting_context=supporting,
+        contract=contract,
+        checkpoint_data=checkpoint_data,
+        variant="legacy_v1",
+    )
+
+    assert artifact["render_variant"] == "compact_v2"
+    assert artifact["sha256"] == hashlib.sha256(content.encode("utf-8")).hexdigest()
+    assert set(COMPACT_SESSION_CONTEXT_REQUIRED_HEADINGS) <= set(content.splitlines())
+    assert "## Current main goal" not in content
+    assert goal in content
+    assert "authority: workspace_write" in content
+    assert "First action: Complete and verify R1" in content
+    assert "Before any edit, inspect live `git status --short`, then `app/core.py`" in content
+    expanded_start = (
+        "Complete and verify R1 (Render a five-part continuation brief.)."
+    )
+    assert expanded_start in content
+    assert "R1 [remaining; checks=V1]" in content
+    assert "> [Failed approach; historical reported] Rebuilding all context" in content
+    assert "> [Active blocker; historical reported] The old prompt is too noisy" in content
+    assert "attachment-A1" in content
+    assert len(content) - len(goal) - len(supporting[0]["text"]) <= (
+        COMPACT_SESSION_HANDOFF_MAX_OVERHEAD_CHARS
+    )
+    assert len(content) <= len(legacy_content) * 0.65
+    assert session_handoff_render_issues(
+        content,
+        request_verbatim=goal,
+        supporting_context=supporting,
+        handoff_contract=contract,
+        variant="compact_v2",
+    ) == []
+
+    tampered = content.replace(expanded_start, "")
+    issues = session_handoff_render_issues(
+        tampered,
+        request_verbatim=goal,
+        supporting_context=supporting,
+        handoff_contract=contract,
+        variant="compact_v2",
+    )
+    critical = next(
+        item
+        for item in issues
+        if item["code"] == "compact_session_context_critical_state_missing"
+    )
+    assert "exact_next_action" in critical["missing_fragments"]
+
+    missing_requirement = content.replace(
+        "- R1 [remaining; checks=V1]: Render a five-part continuation brief.",
+        "- Render a five-part continuation brief.",
+    )
+    requirement_issues = session_handoff_render_issues(
+        missing_requirement,
+        request_verbatim=goal,
+        supporting_context=supporting,
+        handoff_contract=contract,
+        variant="compact_v2",
+    )
+    requirement_critical = next(
+        item
+        for item in requirement_issues
+        if item["code"] == "compact_session_context_critical_state_missing"
+    )
+    assert "requirement_R1" in requirement_critical["missing_fragments"]
+
+    missing_requirement_text = content.replace(
+        "- R1 [remaining; checks=V1]: Render a five-part continuation brief.",
+        "- R1 [remaining; checks=V1]: requirement text omitted",
+    )
+    text_issues = session_handoff_render_issues(
+        missing_requirement_text,
+        request_verbatim=goal,
+        supporting_context=supporting,
+        handoff_contract=contract,
+        variant="compact_v2",
+    )
+    text_critical = next(
+        item
+        for item in text_issues
+        if item["code"] == "compact_session_context_critical_state_missing"
+    )
+    assert "requirement_R1" in text_critical["missing_fragments"]
+
+
+def test_compact_session_brief_preserves_read_only_authority() -> None:
+    goal = "Review the handoff and report risks without editing product files."
+    contract = _compact_session_handoff_contract(goal)
+    contract["task_mode"] = "review"
+    contract["execution_policy"].update({
+        "permission_mode": "read_only",
+        "may_edit": False,
+    })
+    contract["exact_next_action"]["text"] = (
+        "Review the current repository evidence without editing files."
+    )
+    checkpoint_data = {
+        "id": "checkpoint-read-only",
+        "sections": {
+            "goal": [{
+                "statement": goal,
+                "payload": {"request_verbatim": goal},
+            }],
+        },
+    }
+
+    content = render_session_handoff(
+        SimpleNamespace(),
+        request_verbatim=goal,
+        contract=contract,
+        checkpoint_data=checkpoint_data,
+        variant="compact_v2",
+    )
+
+    assert "Mode: review; authority: read_only" in content
+    assert "without editing files" in content
+
+
+def test_compact_session_brief_maps_large_requirement_sets_in_bounded_done_section(
+) -> None:
+    goal = (
+        "Implement every accepted criterion.\n"
+        "## Done when\n"
+        "This quoted heading is part of the user-authored goal."
+    )
+    contract = _compact_session_handoff_contract(goal)
+    contract["requirements"] = [
+        {
+            "id": f"R{index}",
+            "text": f"Complete accepted criterion {index}.",
+            "status": "remaining",
+            "authority": "user_authored",
+            "verification_ids": [],
+            "reported_scope_hints": [],
+        }
+        for index in range(1, 11)
+    ]
+    contract["exact_next_action"]["text"] = "Complete R1, then verify R10."
+    contract["attachment_dependencies"] = []
+    contract["verification"] = []
+    checkpoint_data = {
+        "id": "checkpoint-many-requirements",
+        "sections": {
+            "goal": [{
+                "statement": goal,
+                "payload": {"request_verbatim": goal},
+            }],
+        },
+    }
+
+    content = render_session_handoff(
+        SimpleNamespace(),
+        request_verbatim=goal,
+        contract=contract,
+        checkpoint_data=checkpoint_data,
+        variant="compact_v2",
+    )
+
+    assert (
+        "Complete R1 (Complete accepted criterion 1.), then verify "
+        "R10 (Complete accepted criterion 10.)."
+    ) in content
+    for index in range(1, 11):
+        assert (
+            f"- R{index} [remaining]: Complete accepted criterion {index}."
+            in content
+        )
+    assert session_handoff_render_issues(
+        content,
+        request_verbatim=goal,
+        handoff_contract=contract,
+        variant="compact_v2",
+    ) == []
+
+    tampered_done = content.replace(
+        "- R1 [remaining]: Complete accepted criterion 1.",
+        "- R1 [remaining]: requirement text omitted",
+    )
+    issues = session_handoff_render_issues(
+        tampered_done,
+        request_verbatim=goal,
+        handoff_contract=contract,
+        variant="compact_v2",
+    )
+    critical = next(
+        item
+        for item in issues
+        if item["code"] == "compact_session_context_critical_state_missing"
+    )
+    assert "requirement_R1" in critical["missing_fragments"]
+
+
+def _compact_session_handoff_contract(
+    goal: str,
+    *,
+    supporting: list[dict[str, str]] | None = None,
+) -> dict[str, object]:
+    return {
+        "task_mode": "change",
+        "execution_policy": {
+            "permission_mode": "workspace_write",
+            "may_edit": True,
+        },
+        "current_goal": {"text": goal},
+        "supporting_context": list(supporting or []),
+        "attachment_dependencies": [{
+            "id": "attachment-A1",
+            "name": "reference.png",
+            "required": True,
+            "available": True,
+            "path": "artifacts/reference.png",
+            "source_path": None,
+            "sha256": "a" * 64,
+            "requirement_ids": ["R1"],
+        }],
+        "constraints": [{
+            "id": "C1",
+            "text": "Preserve user changes.",
+            "authority": "user_authored",
+        }],
+        "requirements": [{
+            "id": "R1",
+            "text": "Render a five-part continuation brief.",
+            "status": "remaining",
+            "authority": "user_authored",
+            "verification_ids": ["V1"],
+            "reported_scope_hints": [],
+        }],
+        "definition_of_done": {
+            "operational": [{
+                "text": "The compact brief is complete and verified.",
+            }],
+        },
+        "reconciliation": {
+            "state": "in_progress",
+            "counts": {
+                "done": 0,
+                "reported_done": 0,
+                "remaining": 1,
+                "unknown": 0,
+                "contradicted": 0,
+            },
+            "conflicts": [],
+            "superseded_next_actions": [],
+            "active_reported_blockers": [{
+                "statement": "The old prompt is too noisy.",
+                "truth_state": "reported",
+            }],
+        },
+        "implementation_summary": [{
+            "statement": "The structured handoff already exists.",
+            "truth_state": "observed",
+        }],
+        "files": {
+            "pre_existing_at_handoff": [{"path": "user-notes.txt"}],
+            "modified": [{"path": "app/core.py"}],
+            "relevant": [],
+        },
+        "repository": {
+            "root": "/workspace/project",
+            "branch": "main",
+            "head_commit": "abc123",
+            "freshness": {"status": "unchanged"},
+        },
+        "exact_next_action": {
+            "text": "Complete and verify R1.",
+            "source": "reconciliation_policy",
+            "truth_state": "derived",
+        },
+        "verification": [{
+            "id": "V1",
+            "status": "pending",
+            "command": "pytest -q tests/test_checkpoints.py",
+            "statement": "Run the focused checkpoint tests.",
+            "requirement_ids": ["R1"],
+        }],
+        "decisions": [],
+        "blockers": [],
+        "failed_attempts": [{
+            "statement": "Rebuilding all context made the prompt longer.",
+            "truth_state": "reported",
+        }],
+        "discoveries": [],
+        "useful_commands": [],
+        "open_items": [],
+        "quality_report": {
+            "status": "ready",
+            "copy_ready": True,
+            "automatic_execution_ready": False,
+            "checks": [],
+            "blocking_issues": [],
+        },
     }
 
 
