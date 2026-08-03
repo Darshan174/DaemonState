@@ -4,10 +4,13 @@ import { BrowserRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WorkspaceProvider } from "./context/WorkspaceContext";
 import { ThemeProvider } from "./context/ThemeContext";
+import { initializeWaitlistAnalytics } from "./waitlist/tracking";
 import App from "./App";
 import "@fontsource-variable/archivo/wght.css";
 import "@fontsource-variable/archivo/wght-italic.css";
 import "./index.css";
+
+void initializeWaitlistAnalytics(import.meta.env);
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 1000 * 60 * 5 } },

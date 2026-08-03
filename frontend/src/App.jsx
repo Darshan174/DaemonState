@@ -29,6 +29,7 @@ const ProjectMemory  = lazy(() => import("./pages/ProjectMemory"));
 const QueryView    = lazy(() => import("./pages/QueryView"));
 const SourceManager = lazy(() => import("./pages/SourceManager"));
 const Landing      = lazy(() => import("./pages/Landing"));
+const Privacy      = lazy(() => import("./pages/Privacy"));
 const Connectors   = lazy(() => import("./pages/Connectors"));
 const Changes      = lazy(() => import("./pages/Changes"));
 const WorkspacesPage = lazy(() => import("./pages/WorkspacesPage"));
@@ -169,6 +170,7 @@ export default function App() {
     <Suspense fallback={<PageLoader fullScreen />}>
       <Routes>
         <Route path="/"      element={<Landing />} />
+        <Route path="/privacy" element={<Privacy />} />
         <Route
           path="/app/*"
           element={WAITLIST_ONLY ? <Navigate to="/" replace /> : <AdminShell />}

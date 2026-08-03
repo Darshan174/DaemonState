@@ -2414,6 +2414,26 @@
   border-color: var(--dsr-coral);
 }
 
+.dsr-waitlist-consent {
+  max-width: 610px;
+  margin: 11px 0 0;
+  color: rgba(255, 255, 255, 0.46);
+  font-size: 0.64rem;
+  line-height: 1.5;
+}
+
+.dsr-waitlist-consent a {
+  color: rgba(255, 255, 255, 0.74);
+  text-decoration: underline;
+  text-decoration-color: rgba(199, 255, 101, 0.6);
+  text-underline-offset: 3px;
+}
+
+.dsr-waitlist-consent a:hover,
+.dsr-waitlist-consent a:focus-visible {
+  color: var(--dsr-lime);
+}
+
 .dsr-waitlist-message {
   min-height: 18px;
   margin: 12px 0 0;
