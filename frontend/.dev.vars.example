@@ -1,0 +1,4 @@
+# Local Cloudflare Pages Function variables. Copy to `.dev.vars` and keep the
+# real file uncommitted.
+LOOPS_API_KEY=
+LOOPS_WAITLIST_EVENT=waitlistJoined

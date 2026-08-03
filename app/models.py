@@ -42,18 +42,60 @@ class WaitlistSignup(Base):
     __table_args__ = (
         Index("uq_waitlist_signups_email", "email", unique=True),
         Index("ix_waitlist_signups_created_at", "created_at"),
+        Index("ix_waitlist_signups_status_created_at", "status", "created_at"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     email: Mapped[str] = mapped_column(String(320), nullable=False)
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    role: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    company: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    team_size: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    primary_tools: Mapped[str | None] = mapped_column(Text, nullable=True)
+    main_problem: Mapped[str | None] = mapped_column(Text, nullable=True)
     source: Mapped[str] = mapped_column(
         String(64),
         nullable=False,
         default="landing",
         server_default="landing",
     )
+    referrer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    utm_source: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    utm_medium: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    utm_campaign: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    utm_term: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    utm_content: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="new",
+        server_default="new",
+    )
+    priority_score: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    consent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    consent_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    invited_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_contacted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    email_sync_status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="pending",
+        server_default="pending",
+    )
+    email_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    email_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
 
