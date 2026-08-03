@@ -39,7 +39,7 @@ function HarnessCardFrame({
   const accentSoft = monochrome ? "rgba(154,154,146,0.11)" : meta.accentSoft;
   const glow = monochrome ? "rgba(255,255,255,0.08)" : meta.glow;
   const surfaceClass = surface === "dark"
-    ? "bg-white/[0.055] text-white"
+    ? "bg-[#171715] text-white"
     : "bg-[#fbfbf6] dark:bg-[#141411]";
   const buttonProps = Root === "button" ? { type: "button" } : {};
   const focusClass = Root === "button"
@@ -309,7 +309,7 @@ export function HarnessContinuationCard({
       monochrome={!ready}
       accentActive={pending || handoffRequested}
       artworkColor={ready ? CONTINUATION_ARTWORK_GOLD : ""}
-      className={`daemonstate-harness-fan-card daemonstate-provider-card h-[23rem] min-h-[23rem] w-[calc(100vw-4rem)] max-w-[280px] shrink-0 snap-center snap-always rounded-[26px] sm:h-[24rem] sm:min-h-[24rem] sm:w-[280px] sm:rounded-[32px] ${ready ? "border-[#cecec3] text-[#171713] dark:border-[#3a3a33] dark:text-white" : "border-[#77776f] text-white dark:border-[#77776f]"} ${workflowPending ? "cursor-wait" : disabled ? "cursor-not-allowed" : ""} ${contextBlocked && ready ? "opacity-[0.78] saturate-[0.72]" : ""}`}
+      className={`daemonstate-harness-fan-card daemonstate-provider-card h-[23rem] min-h-[23rem] w-[calc(100vw-4rem)] max-w-[280px] shrink-0 snap-center snap-always rounded-[26px] sm:h-[24rem] sm:min-h-[24rem] sm:w-[280px] sm:rounded-[32px] ${ready ? "border-[#cecec3] text-[#171713] dark:border-[#3a3a33] dark:text-white" : "border-[#77776f] text-white dark:border-[#77776f]"} ${workflowPending ? "cursor-wait" : disabled ? "cursor-not-allowed" : ""} ${contextBlocked && ready ? "saturate-[0.72]" : ""}`}
       artworkContainerClassName="-right-[16%] top-[7%] h-[46%] w-[78%]"
       style={{
         zIndex: active ? 40 : HARNESS_FAN_Z_INDEX[index] || 10,

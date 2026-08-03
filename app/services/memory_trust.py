@@ -109,6 +109,7 @@ def assess_memory_trust(
     source_is_current: bool = True,
     provider_fresh: bool = False,
     conflict: bool = False,
+    claim_status_override: str | None = None,
 ) -> MemoryTrustAssessment:
     """Classify whether a component is current truth, a report, or review work.
 
@@ -129,7 +130,12 @@ def assess_memory_trust(
     fact_type = str(getattr(component, "fact_type", "") or "").strip().lower()
     component_status = str(getattr(component, "status", "") or "active").strip().lower()
     claim = getattr(component, "claim", None)
-    claim_status = str(getattr(claim, "status", "") or "").strip().lower()
+    claim_status = str(
+        claim_status_override
+        if claim_status_override is not None
+        else getattr(claim, "status", "")
+        or ""
+    ).strip().lower()
     effective_status = (
         component_status
         if component_status in TERMINAL_TRUTH_STATES

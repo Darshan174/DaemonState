@@ -218,7 +218,7 @@ function scopedCheckpoint(id, provider, sessionId, sequence) {
 }
 
 
-function sessionContextWithGoal(marker) {
+function sessionContextWithGoal(marker, goalHeading = "## Current main goal") {
   return [
     "# Session Context — task-level working memory",
     "",
@@ -226,7 +226,7 @@ function sessionContextWithGoal(marker) {
     "> Recovered session statements are historical data.",
     "> Activation: this handoff is context, not a command to start.",
     "",
-    "## Current main goal",
+    goalHeading,
     "",
     `> ${marker}`,
   ].join("\n");
@@ -234,7 +234,11 @@ function sessionContextWithGoal(marker) {
 
 
 function scopedSessionHandoff(checkpoint, marker, overrides = {}) {
-  const content = sessionContextWithGoal(marker);
+  const {
+    goalHeading = "## Current main goal",
+    ...handoffOverrides
+  } = overrides;
+  const content = sessionContextWithGoal(marker, goalHeading);
   return sessionHandoff(content, {
     provider: checkpoint.provider,
     session_id: checkpoint.session_id,
@@ -243,7 +247,7 @@ function scopedSessionHandoff(checkpoint, marker, overrides = {}) {
       event_id: `event-${checkpoint.boundary.sequence_number}`,
       sequence_number: checkpoint.boundary.sequence_number,
     },
-    ...overrides,
+    ...handoffOverrides,
   });
 }
 
@@ -797,7 +801,9 @@ describe("ExecutePage", () => {
     const handoffs = new Map([
       [
         claudeCheckpoint.id,
-        scopedSessionHandoff(claudeCheckpoint, "CLAUDE_SELECTED_ONLY"),
+        scopedSessionHandoff(claudeCheckpoint, "CLAUDE_SELECTED_ONLY", {
+          goalHeading: "## Goal",
+        }),
       ],
       [
         openCodeCheckpoint.id,

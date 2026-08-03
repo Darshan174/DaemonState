@@ -16,7 +16,15 @@ from app.taxonomy import default_trust_zone_for_source
 
 PROMPT_INJECTION_PATTERNS: tuple[tuple[re.Pattern[str], float], ...] = (
     (re.compile(r"\bignore (?:all |the |previous |prior )?instructions?\b", re.I), 0.30),
+    (re.compile(r"(?:^|\n)\s*(?:system|developer)(?: message)?\s*:", re.I), 0.25),
     (re.compile(r"\bsystem prompt\b|\bdeveloper message\b", re.I), 0.25),
+    (
+        re.compile(
+            r"\breveal\b.{0,40}\b(?:credentials?|secrets?|api[_ -]?keys?|system prompt)\b",
+            re.I,
+        ),
+        0.35,
+    ),
     (re.compile(r"\bdo not tell the user\b|\bhide (?:this|that) from the user\b", re.I), 0.25),
     (re.compile(r"\bexfiltrate\b|\bsend credentials\b|\bapi[_ -]?key\b|\bsecret\b", re.I), 0.30),
     (re.compile(r"\btool_call\b|\bfunction_call\b|\bfunction call\b", re.I), 0.20),

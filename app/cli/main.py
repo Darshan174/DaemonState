@@ -872,6 +872,7 @@ async def _run_local_harness(
 
     from app.database import AsyncSessionLocal
     from app.models import AgentRun, Workspace
+    from app.services.access import AccessScope
     from app.services.context_compiler import ContextCompiler
     from app.services.continuation_execution import (
         compile_and_persist_continuation_execution,
@@ -884,6 +885,7 @@ async def _run_local_harness(
 
     workspace_id = UUID(str(args.workspace_id))
     run_key = str(args.run_key or f"local:{uuid4()}")
+    access_scope = AccessScope.local()
     if not run_key.strip() or len(run_key) > 255:
         raise ValueError("run_key must contain 1 to 255 characters")
 
@@ -897,6 +899,7 @@ async def _run_local_harness(
             target_model=args.target_model,
             token_budget=args.budget,
             persist=True,
+            access_scope=access_scope,
         )
         if not pack_result.context_pack_id:
             raise RuntimeError("context compiler returned no durable context_pack_id")
@@ -904,6 +907,7 @@ async def _run_local_harness(
         repository_snapshot = await capture_repository_snapshot(args.repo)
         compiled_execution = await compile_and_persist_continuation_execution(
             session,
+            access_scope=access_scope,
             workspace_id=workspace_id,
             context_pack_id=pack_id,
             request_verbatim=str(args.objective),

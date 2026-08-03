@@ -1202,6 +1202,7 @@ class ContinuationService:
         compiled_execution = (
             await compile_and_persist_continuation_execution(
                 self.session,
+                access_scope=access_scope,
                 workspace_id=workspace_id,
                 context_pack_id=pack.context_pack_id,
                 request_verbatim=authoritative_request.request_verbatim,

@@ -198,6 +198,8 @@ describe("HarnessContinuationCard", () => {
     expect(article).toHaveAttribute("aria-disabled", "true");
     expect(article).toHaveAttribute("data-context-ready", "false");
     expect(article).toHaveAttribute("data-compaction-count", "1");
+    expect(article).toHaveClass("bg-[#fbfbf6]", "dark:bg-[#141411]");
+    expect(article).not.toHaveClass("opacity-[0.78]");
     expect(button).toBeDisabled();
     expect(button).toHaveAttribute("data-context-ready", "false");
     expect(button).toHaveClass("disabled:pointer-events-none");
