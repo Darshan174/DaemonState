@@ -1,15 +1,16 @@
 # Public waitlist operations
 
-The public Cloudflare Pages deployment handles `POST /api/waitlist` through
-`functions/api/waitlist.js`. Its bound D1 database is the canonical store for
-signups submitted on `daemonstate.com`. The FastAPI endpoint uses the same
-request fields for local and self-hosted development, but it is not a replica
-of the hosted D1 list.
+The public Cloudflare Worker routes `POST /api/waitlist` through
+`worker/index.js` to `functions/api/waitlist.js`. Its bound D1 database is the
+canonical store for signups submitted on `daemonstate.com`. The FastAPI endpoint
+uses the same request fields for local and self-hosted development, but it is not
+a replica of the hosted D1 list.
 
 ## D1 setup and migrations
 
-Create separate preview and production D1 databases, then bind the appropriate
-database to each Pages environment using the variable name `WAITLIST_DB`.
+The production D1 database is committed in `wrangler.jsonc` under the binding
+name `WAITLIST_DB`. Create a separate database before adding any preview
+environment; preview deployments must not write to the production waitlist.
 
 Schema changes are versioned in `migrations/`. Apply migrations before deploying
 a Function that depends on them:
@@ -27,7 +28,7 @@ signup request.
 ## Loops
 
 Create a Loops event named `waitlistJoined` and use it to trigger the confirmation
-workflow. Add these Cloudflare Pages variables for Preview and Production:
+workflow. Add these Cloudflare Worker variables for Production:
 
 - `LOOPS_API_KEY`: encrypted secret containing the Loops API key.
 - `LOOPS_WAITLIST_EVENT`: optional plain variable; defaults to `waitlistJoined`.
@@ -39,7 +40,7 @@ durable D1 signup.
 
 ## PostHog
 
-Set `VITE_POSTHOG_KEY` and, when needed, `VITE_POSTHOG_HOST` in the Pages build
+Set `VITE_POSTHOG_KEY` and, when needed, `VITE_POSTHOG_HOST` in the Worker build
 environment. The browser records only these manually defined events:
 
 - `landing_viewed`
