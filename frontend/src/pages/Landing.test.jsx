@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import Landing from "./Landing";
 import { ThemeProvider } from "../context/ThemeContext";
+import { WAITLIST_CONSENT_VERSION } from "../waitlist/tracking";
 
 function renderLanding({ waitlistOnlyMode = false } = {}) {
   return render(
@@ -47,6 +48,10 @@ describe("Landing", () => {
       "email",
     );
     expect(screen.getByRole("button", { name: "Join waitlist" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Privacy notice" }))
+      .toHaveAttribute("href", "/privacy");
+    expect(screen.getByRole("link", { name: "Privacy notice" }))
+      .toHaveAttribute("target", "_blank");
   });
 
   it("explains the recovery loop across supported coding agents", () => {
@@ -173,6 +178,13 @@ describe("Landing", () => {
           body: JSON.stringify({
             email: "Builder@Example.com",
             website: "",
+            referrer: null,
+            utm_source: null,
+            utm_medium: null,
+            utm_campaign: null,
+            utm_term: null,
+            utm_content: null,
+            consent_version: WAITLIST_CONSENT_VERSION,
           }),
         }),
       );
