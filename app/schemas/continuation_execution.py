@@ -80,6 +80,109 @@ _STANDALONE_EXECUTION_PREFERENCE_RE = re.compile(
     r"(?:do not|don't|never)\s+stop\s+(?:until|before)\b)",
     re.IGNORECASE,
 )
+_TEST_ONLY_INTENT_RE = re.compile(
+    r"\b(?:tests?[- ]only|only\s+(?:run|execute)\s+(?:the\s+)?tests?"
+    r"(?=\b|/)|run\s+only\s+(?:the\s+)?tests?(?=\b|/)|"
+    r"run\s+(?:the\s+)?tests?\s+only\b)",
+    re.IGNORECASE,
+)
+_DIRECT_TEST_INTENT_RE = re.compile(
+    r"^(?:(?:please|just|now)\s+|"
+    r"(?:can|could|would|will)\s+you\s+(?:please\s+)?)?"
+    r"(?:(?:run|execute)\s+(?:the\s+)?"
+    r"(?:[\w-]+\s+){0,3}"
+    r"(?:tests?|test\s+suite|checks?|lint|typechecks?|build)\b|"
+    r"test\b|(?:check|validate|verify)\b.{0,80}"
+    r"\b(?:tests?|test\s+suite|checks?|lint|typechecks?|build)\b)",
+    re.IGNORECASE,
+)
+_DIRECT_REQUEST_BOUNDARY = (
+    r"(?:^|[.!?]\s+|\b(?:and|then|also)\s+|(?:&|\+)\s*)"
+)
+_DIRECT_REQUEST_PREFIX = (
+    r"(?:(?:please|now|immediately)\s+|"
+    r"(?:can|could|would|will)\s+you\s+(?:please\s+)?|"
+    r"i\s+(?:want|need)\s+you\s+to\s+|"
+    r"let(?:'|’)s\s+|you\s+(?:must|should)\s+)?"
+)
+_DIRECT_MUTATION_INTENT_RE = re.compile(
+    _DIRECT_REQUEST_BOUNDARY
+    + _DIRECT_REQUEST_PREFIX
+    + r"(?:add|address|allow|clean(?:\s+up)?|commit|configure|convert|copy|"
+    r"correct|delete|deploy|disable|display|edit|enable|ensure|expose|fix|"
+    r"harden|hide|implement|improve|install|integrate|merge|migrate|modify|"
+    r"move|optimize|paste|patch|persist|prevent|push|refactor|reject|remove|"
+    r"rename|reorganize|repair|replace|resolve|restore|retain|route|secure|"
+    r"set|ship|show(?!\s+(?:me|us)\b)|simplify|split|support|surface|"
+    r"tackle|turn\s+(?:on|off)|uninstall|update|upgrade|wire|"
+    r"document(?!\s+(?:how|what|whether|why)\b)|"
+    r"write(?!\s+(?:(?:an?|the)\s+)?"
+    r"(?:(?:action|deployment|detailed|engineering|implementation|migration|"
+    r"product|project|remediation|rollout|technical|test|testing|written)\s+){0,2}"
+    r"(?:analysis|assessment|plan|report|summary)\b))\b",
+    re.IGNORECASE,
+)
+_DIRECT_BUILD_INTENT_RE = re.compile(
+    _DIRECT_REQUEST_BOUNDARY
+    + _DIRECT_REQUEST_PREFIX
+    + r"(?:build|change|create|engineer|make)\b"
+    + r"(?!\s+(?:(?:an?|the)\s+)?"
+    + r"(?:(?:action|deployment|detailed|engineering|implementation|migration|"
+    + r"product|project|remediation|rollout|technical|test|testing|written)\s+){0,2}"
+    + r"(?:analysis|assessment|plan|report|summary)\b)",
+    re.IGNORECASE,
+)
+_DIRECT_COMPLETION_INTENT_RE = re.compile(
+    _DIRECT_REQUEST_BOUNDARY
+    + _DIRECT_REQUEST_PREFIX
+    + r"(?:(?:carry|complete|continue|deliver|finish|resume|retry)\b"
+    + r"(?!\s+(?:(?:an?|the)\s+)?(?:analysis|assessment|discussion|"
+    + r"explanation|plan|report|review|summary|tests?|checks?|lint|build)\b)|"
+    + r"work\s+on\s+(?:this|it)|get\s+(?:this|it)\s+done|ship\s+(?:this|it))",
+    re.IGNORECASE,
+)
+_DIRECT_BEHAVIOR_CONSTRAINT_RE = re.compile(
+    _DIRECT_REQUEST_BOUNDARY
+    + r"(?:do\s+not|don't|never)\s+"
+    + r"(?:expose|fallback|fall\s+back|hide|launch|leak|lose|pretend|skip)\b",
+    re.IGNORECASE,
+)
+_DIRECT_REFERENTIAL_CHANGE_INTENT_RE = re.compile(
+    r"(?:^|[.!?]\s+)(?:(?:yes|sure|okay|ok|alright|looks\s+good|"
+    r"sounds\s+good)[,\s]+)?(?:please\s+)?"
+    r"(?:(?:go\s+ahead|proceed)"
+    r"(?!\s+(?:with|and|to)\s+(?:(?:an?|the)\s+)?"
+    r"(?:analysis|assessment|discussion|explanation|plan|report|review|"
+    r"summary|answer|describe|discuss|explain))|"
+    r"do\s+(?:it|this|that|so)|apply\s+(?:it|this|that|the\s+fix|"
+    r"these\s+changes|those\s+changes))\b",
+    re.IGNORECASE,
+)
+_HYPOTHETICAL_CHANGE_INTENT_RE = re.compile(
+    r"\b(?:how\s+(?:can|could|do|might|should|would)\s+"
+    r"(?:i|we|you)\b.{0,100}\b(?:build|change|configure|create|delete|"
+    r"disable|document|enable|engineer|fix|harden|implement|improve|install|"
+    r"integrate|make|migrate|move|optimize|rename|repair|resolve|secure|set|"
+    r"simplify|split|turn|update|upgrade)\b|"
+    r"what\s+(?:would|will)\s+it\s+take\s+to\s+"
+    r"(?:build|change|configure|create|delete|disable|document|enable|"
+    r"engineer|fix|harden|implement|improve|install|integrate|make|migrate|"
+    r"move|optimize|rename|repair|resolve|secure|set|simplify|split|turn|"
+    r"update|upgrade)\b|"
+    r"(?:could|should|would)\s+(?:i|we)\s+"
+    r"(?:build|change|configure|create|delete|disable|document|enable|"
+    r"engineer|fix|harden|implement|improve|install|integrate|make|migrate|"
+    r"move|optimize|rename|repair|resolve|secure|set|simplify|split|turn|"
+    r"update|upgrade)\b)",
+    re.IGNORECASE,
+)
+_ADVISORY_CHANGE_FRAME_RE = re.compile(
+    r"\b(?:how\s+(?:can|could|do|might|should|would)\b|"
+    r"what\s+(?:could|should|would|will)\b|"
+    r"(?:assess|brainstorm|discuss|explore|investigate|review)\s+"
+    r"(?:how|if|what|whether|why)\b)",
+    re.IGNORECASE,
+)
 
 
 class TaskMode(StrEnum):
@@ -89,6 +192,7 @@ class TaskMode(StrEnum):
     REPORT = "report"
     PLAN = "plan"
     TEST_ONLY = "test_only"
+
 
     @property
     def allows_edits(self) -> bool:
@@ -994,26 +1098,51 @@ def build_authoritative_request(request_verbatim: str) -> AuthoritativeRequest:
     )
 
 
+def _has_direct_change_intent(value: str) -> bool:
+    """Recognize affirmative mutation clauses, excluding advisory framing."""
+
+    for clause in re.split(r"(?<=[.!?])\s+", value):
+        direct_matches = [
+            match
+            for pattern in (
+                _DIRECT_MUTATION_INTENT_RE,
+                _DIRECT_BUILD_INTENT_RE,
+                _DIRECT_COMPLETION_INTENT_RE,
+                _DIRECT_BEHAVIOR_CONSTRAINT_RE,
+                _DIRECT_REFERENTIAL_CHANGE_INTENT_RE,
+            )
+            if (match := pattern.search(clause)) is not None
+        ]
+        if not direct_matches:
+            continue
+        first_direct = min(direct_matches, key=lambda match: match.start())
+        advisory_frame = _ADVISORY_CHANGE_FRAME_RE.search(clause)
+        if advisory_frame is None or first_direct.start() < advisory_frame.start():
+            return True
+    return False
+
+
 def infer_task_mode(request: str) -> TaskMode:
     normalized = normalize_request_for_matching(
         _request_directive_text(request)
     ).casefold()
-    if re.search(r"\b(?:test[- ]only|only run|run only the tests?)\b", normalized):
+    if _TEST_ONLY_INTENT_RE.search(normalized):
         return TaskMode.TEST_ONLY
     explicit_read_only = request_explicitly_forbids_edits(request)
-    if (
-        not explicit_read_only
-        and re.search(
-            r"\b(?:work on (?:this|it)|get (?:this|it) done|"
-            r"finish (?:this|it)|ship (?:this|it))\b",
+    report = bool(
+        re.search(
+            r"\b(?:write|produce|generate|give|provide)\b.{0,30}"
+            r"\b(?:report|summary)\b",
             normalized,
         )
-    ):
-        return TaskMode.CHANGE
-    if re.search(r"\b(?:write|produce|generate|give|provide)\b.{0,30}\b(?:report|summary)\b", normalized):
-        return TaskMode.REPORT
-    if re.search(r"\b(?:make|create|write|produce|give|provide)\b.{0,30}\bplan\b", normalized):
-        return TaskMode.PLAN
+    )
+    plan = bool(
+        re.search(
+            r"\b(?:make|create|write|produce|give|provide)\b.{0,30}"
+            r"\bplan\b",
+            normalized,
+        )
+    )
     diagnosis = bool(
         re.search(
             r"\b(?:diagnose|debug|investigate|root cause|why is|why does)\b",
@@ -1021,21 +1150,22 @@ def infer_task_mode(request: str) -> TaskMode:
         )
     )
     review = bool(
-        re.search(r"\b(?:review|audit|inspect|assess|critique)\b", normalized)
+        re.search(
+            r"\b(?:review|audit|inspect|assess|check|critique|validate|verify)\b",
+            normalized,
+        )
     )
     explanation = bool(
         re.search(
-            r"\b(?:answer|describe|explain|summari[sz]e|walk me through)\b",
+            r"\b(?:answer|brainstorm|describe|discuss|explain|explore|"
+            r"summari[sz]e|walk me through)\b",
             normalized,
         )
     )
-    change = bool(
-        re.search(
-            r"\b(?:add|address|build|change|create|edit|engineer|fix|"
-            r"implement|make|remove|repair|replace|ship|tackle|update)\b",
-            normalized,
-        )
+    hypothetical_change = bool(
+        _HYPOTHETICAL_CHANGE_INTENT_RE.search(normalized)
     )
+    direct_change = _has_direct_change_intent(normalized)
     if explicit_read_only and diagnosis:
         return TaskMode.DIAGNOSE
     if explicit_read_only and review:
@@ -1047,13 +1177,23 @@ def infer_task_mode(request: str) -> TaskMode:
         # Diagnose is the safest executable interpretation when the user asks
         # about a change but expressly withholds write authority.
         return TaskMode.DIAGNOSE
-    if change:
+    if direct_change:
         return TaskMode.CHANGE
+    if _DIRECT_TEST_INTENT_RE.search(normalized):
+        return TaskMode.TEST_ONLY
+    if report:
+        return TaskMode.REPORT
     if diagnosis:
         return TaskMode.DIAGNOSE
     if review:
         return TaskMode.REVIEW
-    return TaskMode.CHANGE
+    if plan or hypothetical_change:
+        return TaskMode.PLAN
+    if explanation:
+        return TaskMode.REPORT
+    # An unmatched request carries no affirmative authority to mutate the
+    # checkout. Callers may ask for a more specific mode after clarifying it.
+    return TaskMode.REPORT
 
 
 def request_explicitly_forbids_edits(request: str) -> bool:

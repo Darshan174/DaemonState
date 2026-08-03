@@ -51,6 +51,7 @@ from app.schemas.continuation_execution import (
     resolve_task_mode,
     sha256_text,
 )
+from app.services.access import AccessScope
 from app.services.checkpoints import derive_session_handoff_requirements
 from app.services.execution_prompt_renderer import (
     canonical_contract_json,
@@ -128,6 +129,7 @@ class CompiledContinuationExecution:
 async def compile_and_persist_continuation_execution(
     session: AsyncSession,
     *,
+    access_scope: AccessScope,
     workspace_id: UUID,
     context_pack_id: UUID | str,
     request_verbatim: str,
@@ -214,6 +216,7 @@ async def compile_and_persist_continuation_execution(
         session,
         workspace_id=workspace_id,
         repository_fingerprint=repository_contract.status_fingerprint,
+        access_scope=access_scope,
     )
     repository_evidence = _repository_evidence_items(
         context_manifest,

@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import Component, SourceDocument
+from app.models import ClaimRevision, Component, EvidenceSpan, SourceDocument
 from app.schemas.continuation_execution import (
     MAX_PROJECT_CONTEXT_ITEMS,
     ProjectContextItem,
@@ -22,6 +22,7 @@ from app.schemas.continuation_execution import (
     ProjectFoundationSection,
     ProjectFoundationSnapshot,
 )
+from app.services.access import AccessScope, source_access_predicate
 from app.services.memory_trust import (
     assess_memory_trust,
     is_agent_source_type,
@@ -111,37 +112,63 @@ async def compile_workspace_project_foundation(
     *,
     workspace_id: UUID,
     repository_fingerprint: str | None,
+    access_scope: AccessScope,
 ) -> CompiledProjectFoundation:
     """Compile the durable parent from all current workspace evidence.
 
     This query intentionally has no objective, prompt, file-overlap, focus, or
-    selected-session input. Task retrieval remains a separate concern.
+    selected-session input. Task retrieval remains a separate concern. Source
+    authorization is applied before evidence, lifecycle, or corroboration can
+    influence either the output or its aggregate counts.
     """
 
     components = list(
         await session.scalars(
             select(Component)
+            .join(
+                SourceDocument,
+                Component.source_document_id == SourceDocument.id,
+            )
             .options(
                 selectinload(Component.source_document),
                 selectinload(Component.claim),
             )
-            .where(Component.workspace_id == workspace_id)
+            .where(
+                Component.workspace_id == workspace_id,
+                source_access_predicate(
+                    access_scope,
+                    workspace_id=workspace_id,
+                ),
+            )
             .order_by(Component.created_at.desc(), Component.id.desc())
         )
     )
     evidence_by_component = await load_component_evidence(session, components)
+    scoped_claim_statuses = await _load_scoped_claim_statuses(
+        session,
+        components=components,
+        workspace_id=workspace_id,
+        access_scope=access_scope,
+    )
     superseded_document_ids = {
         document_id
         for document_id in await session.scalars(
             select(SourceDocument.supersedes_source_document_id)
             .where(SourceDocument.workspace_id == workspace_id)
             .where(SourceDocument.supersedes_source_document_id.is_not(None))
+            .where(
+                source_access_predicate(
+                    access_scope,
+                    workspace_id=workspace_id,
+                )
+            )
         )
         if document_id is not None
     }
     source_independence_identities = _source_independence_identities(
         components
     )
+    visible_component_ids = {component.id for component in components}
 
     admitted: list[_Candidate] = []
     corroboration_pool: list[_Candidate] = []
@@ -155,14 +182,18 @@ async def compile_workspace_project_foundation(
         source_is_current = bool(
             source is not None and source.id not in superseded_document_ids
         )
+        scoped_claim_status = scoped_claim_statuses.get(component.claim_id)
         assessment = assess_memory_trust(
             component,
             evidence,
             source=source,
             source_is_current=source_is_current,
-            conflict=bool(
-                getattr(component.claim, "status", "") == "contested"
-            ),
+            conflict=scoped_claim_status == "contested",
+            claim_status_override=scoped_claim_status,
+        )
+        component_is_visibly_superseded = bool(
+            component.superseded_by_id is not None
+            and component.superseded_by_id in visible_component_ids
         )
         if (
             not source_is_current
@@ -174,7 +205,7 @@ async def compile_workspace_project_foundation(
                 "rejected",
                 "historical",
             }
-            or component.superseded_by_id is not None
+            or component_is_visibly_superseded
         ):
             superseded_conflicting_count += 1
             continue
@@ -275,6 +306,47 @@ async def compile_workspace_project_foundation(
         source_document_count=len(source_ids),
     )
     return CompiledProjectFoundation(snapshot=snapshot, items=tuple(items))
+
+
+async def _load_scoped_claim_statuses(
+    session: AsyncSession,
+    *,
+    components: Iterable[Component],
+    workspace_id: UUID,
+    access_scope: AccessScope,
+) -> dict[UUID, str]:
+    """Resolve claim lifecycle only from revisions visible to this principal."""
+
+    claim_ids = {
+        component.claim_id
+        for component in components
+        if component.claim_id is not None
+    }
+    if not claim_ids:
+        return {}
+    rows = await session.execute(
+        select(ClaimRevision.claim_id, ClaimRevision.status_after)
+        .join(
+            EvidenceSpan,
+            ClaimRevision.evidence_span_id == EvidenceSpan.id,
+        )
+        .join(
+            SourceDocument,
+            EvidenceSpan.source_document_id == SourceDocument.id,
+        )
+        .where(
+            ClaimRevision.claim_id.in_(claim_ids),
+            source_access_predicate(
+                access_scope,
+                workspace_id=workspace_id,
+            ),
+        )
+        .order_by(ClaimRevision.created_at.desc(), ClaimRevision.id.desc())
+    )
+    statuses: dict[UUID, str] = {}
+    for claim_id, status_after in rows:
+        statuses.setdefault(claim_id, str(status_after or "").strip().lower())
+    return statuses
 
 
 def _candidate(

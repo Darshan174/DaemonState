@@ -1140,8 +1140,10 @@ function sessionContextCardPreviewContent(content) {
   const fullContent = rawText(content);
   if (!fullContent) return "";
 
-  const goalHeading = "## Current main goal";
-  const goalOffset = fullContent.indexOf(goalHeading);
+  const goalMatch = /(^|\n)## (?:Goal|Current main goal)(?=\r?\n|$)/m.exec(fullContent);
+  const goalOffset = goalMatch
+    ? goalMatch.index + (goalMatch[1] ? goalMatch[1].length : 0)
+    : -1;
   if (goalOffset <= 0) return fullContent;
 
   return [

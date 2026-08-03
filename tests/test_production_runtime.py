@@ -66,6 +66,15 @@ def _hardened_production_settings(**overrides) -> Settings:
         "log_format": "json",
         "max_request_body_bytes": 1024,
         "database_statement_timeout_ms": 5_000,
+        "google_client_id": None,
+        "google_client_secret": None,
+        "google_redirect_uri": None,
+        "slack_client_id": None,
+        "slack_client_secret": None,
+        "slack_redirect_uri": None,
+        "zoom_client_id": None,
+        "zoom_client_secret": None,
+        "zoom_redirect_uri": None,
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)

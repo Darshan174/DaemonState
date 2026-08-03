@@ -12,6 +12,7 @@ GITIGNORE = Path(".gitignore")
 PYPROJECT = Path("pyproject.toml")
 DOCKERFILE = Path("Dockerfile")
 COMPOSE = Path("docker-compose.yml")
+PRODUCTION_COMPOSE = Path("docker-compose.production.yml")
 FRONTEND_PACKAGE = Path("frontend/package.json")
 DOCTOR_SCRIPT = Path("scripts/doctor.sh")
 SELF_HOST_SCRIPT = Path("scripts/self-host.sh")
@@ -109,6 +110,16 @@ def test_dockerfile_copies_license_before_package_install():
     assert copy_line_number < install_line_number
     assert "README.md" in lines[copy_line_number]
     assert "LICENSE" in lines[copy_line_number]
+
+
+def test_compose_passes_the_session_handoff_experiment_variant():
+    expected = (
+        "SESSION_HANDOFF_BRIEF_VARIANT: "
+        "${SESSION_HANDOFF_BRIEF_VARIANT:-legacy_v1}"
+    )
+
+    assert expected in COMPOSE.read_text(encoding="utf-8")
+    assert expected in PRODUCTION_COMPOSE.read_text(encoding="utf-8")
 
 
 def test_license_and_self_hosting_contracts_are_explicit():

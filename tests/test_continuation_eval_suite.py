@@ -50,6 +50,7 @@ from app.schemas.continuation_execution import (
     infer_task_mode,
     sha256_text,
 )
+from app.services.access import AccessScope
 from app.services.continuation_execution import (
     compile_and_persist_continuation_execution,
     structured_handoff_from_checkpoint,
@@ -436,6 +437,7 @@ async def _compile(
     }
     return await compile_and_persist_continuation_execution(
         db_session,
+        access_scope=AccessScope.local(),
         workspace_id=workspace.id,
         context_pack_id=pack.id,
         request_verbatim=request,

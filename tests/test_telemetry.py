@@ -128,11 +128,17 @@ def test_sensitive_or_unbounded_attribute_values_are_dropped():
         "daemonstate.session.id": "/Users/person/private/session",
         "daemonstate.context_pack.sha256": "not-a-digest",
         "tool.arguments": "--token secret",
+        "daemonstate.delivery.context_render_variant": "compact_v2",
+        "daemonstate.delivery.context_char_count": 2400,
+        "daemonstate.delivery.context_estimated_tokens": 600,
         "daemonstate.verification.total": 3,
     })
 
     assert attributes == {
         "daemonstate.telemetry.schema_version": TELEMETRY_SCHEMA_VERSION,
+        "daemonstate.delivery.context_render_variant": "compact_v2",
+        "daemonstate.delivery.context_char_count": 2400,
+        "daemonstate.delivery.context_estimated_tokens": 600,
         "daemonstate.verification.total": 3,
     }
 
