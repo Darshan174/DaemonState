@@ -35,6 +35,7 @@ from app.schemas.continuation_execution import (
     compile_request_requirements,
     infer_task_mode,
 )
+from app.services.access import AccessScope
 from app.services.context_compiler import _restored_checkpoint_candidate
 from app.services.continuation_execution import (
     _artifact_references,
@@ -120,6 +121,7 @@ async def _compile(
         manifest["attachments"] = manifest_artifacts
     return await compile_and_persist_continuation_execution(
         db_session,
+        access_scope=AccessScope.local(),
         workspace_id=workspace.id,
         context_pack_id=pack.id,
         request_verbatim=request,
@@ -1365,6 +1367,7 @@ async def test_project_foundation_change_invalidates_persisted_execution_reuse(
     }
     second = await compile_and_persist_continuation_execution(
         db_session,
+        access_scope=AccessScope.local(),
         workspace_id=workspace.id,
         context_pack_id=first.execution.context_pack_id,
         request_verbatim=request,
@@ -2032,6 +2035,7 @@ async def test_artifact_content_changes_create_a_new_execution_identity(
 
     first = await compile_and_persist_continuation_execution(
         db_session,
+        access_scope=AccessScope.local(),
         workspace_id=workspace.id,
         context_pack_id=pack.id,
         request_verbatim="Match the screenshot exactly.",
@@ -2044,6 +2048,7 @@ async def test_artifact_content_changes_create_a_new_execution_identity(
     artifact_path.write_bytes(b"second-image-content")
     second = await compile_and_persist_continuation_execution(
         db_session,
+        access_scope=AccessScope.local(),
         workspace_id=workspace.id,
         context_pack_id=pack.id,
         request_verbatim="Match the screenshot exactly.",

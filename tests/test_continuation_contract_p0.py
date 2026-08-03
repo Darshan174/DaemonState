@@ -55,6 +55,156 @@ def test_no_edit_boundary_overrides_bare_change_verbs() -> None:
     assert resolve_task_mode(request, TaskMode.CHANGE) is TaskMode.DIAGNOSE
 
 
+@pytest.mark.parametrize(
+    ("prompt_text", "expected_mode"),
+    (
+        (
+            "investigate the current prompt quality in our product.\n"
+            "[Discuss] how do we make our product's prompt quality very high "
+            "end, how do w eengineer it that way??\n"
+            "also our ambition for this prroduct is to make it a ai agents "
+            "docking layer (ai agent architecture) - how can this be done, "
+            "what values would it add, and is it necessary. Our product should "
+            "stand out as a billion dollar potential product that solve "
+            "problems for user and ai agents. think hard on this wrt to our "
+            "product",
+            TaskMode.DIAGNOSE,
+        ),
+        (
+            "Investigate how to fix the continuation prompt.",
+            TaskMode.DIAGNOSE,
+        ),
+        (
+            "Discuss whether to build an agent docking layer.",
+            TaskMode.REPORT,
+        ),
+        (
+            "How can we make the prompt compiler more reliable?",
+            TaskMode.PLAN,
+        ),
+        (
+            "How can we build the dock and make it portable?",
+            TaskMode.PLAN,
+        ),
+        (
+            "Discuss whether to build or implement an agent dock.",
+            TaskMode.REPORT,
+        ),
+        (
+            "Investigate how to fix and update the parser.",
+            TaskMode.DIAGNOSE,
+        ),
+        (
+            "Prompt quality and agent docking architecture.",
+            TaskMode.REPORT,
+        ),
+        (
+            "Show me how to configure the model adapter.",
+            TaskMode.REPORT,
+        ),
+        (
+            "How can we improve the prompt compiler and harden its parser?",
+            TaskMode.PLAN,
+        ),
+        (
+            "Document how this continuation contract works.",
+            TaskMode.REPORT,
+        ),
+        (
+            "Validate the Claude continuation adapter.",
+            TaskMode.REVIEW,
+        ),
+        (
+            "Go ahead with the review and explain the risks.",
+            TaskMode.REVIEW,
+        ),
+    ),
+)
+def test_advisory_or_ambiguous_intent_never_grants_write_authority(
+    prompt_text: str,
+    expected_mode: TaskMode,
+) -> None:
+    mode = infer_task_mode(prompt_text)
+    authority = ExecutionAuthority.for_mode(mode)
+
+    assert mode is expected_mode
+    assert authority.filesystem_mode is FilesystemMode.READ_ONLY
+    assert authority.allow_product_edits is False
+
+
+@pytest.mark.parametrize(
+    "prompt_text",
+    (
+        "Implement the agent docking layer and add focused tests.",
+        "Investigate the crash and fix the parser.",
+        "Review the prompt compiler, then update the code.",
+        "Can you build the docking adapter now?",
+        "Rename the legacy prompt renderer.",
+        "Move the classifier into the continuation schema.",
+        "Enable structured output and disable the legacy fallback.",
+        "Delete the deprecated prompt builder.",
+        "Migrate the prompt snippets to the typed contract.",
+        "Configure the target-model adapter.",
+        "Optimize the retrieval pass and simplify the renderer.",
+        "Document the MCP docking contract.",
+        "Improve prompt quality and harden the compiler.",
+        "Set the timeout to 10 seconds.",
+        "Turn off the legacy fallback.",
+        "Show the disabled state on unavailable provider cards.",
+        "Split the renderer and integrate the target adapter.",
+        "Upgrade the schema and persist its version.",
+        "Finish app/continuation.py and run the repository tests.",
+        "Continue the real task in a different local agent.",
+        "Carry the full task context into Claude Code.",
+        "Retry the task without hiding the provider outage.",
+        "Do not pretend a handoff happened without a target agent.",
+        "Do not launch after provider readiness changes.",
+        "Go ahead, do not break our product tho.",
+        "Yes, do it.",
+        "Looks good, go ahead.",
+        "Proceed with the fix.",
+        "Apply those changes.",
+    ),
+)
+def test_direct_implementation_intent_still_grants_change_authority(
+    prompt_text: str,
+) -> None:
+    mode = infer_task_mode(prompt_text)
+    authority = ExecutionAuthority.for_mode(mode)
+
+    assert mode is TaskMode.CHANGE
+    assert authority.filesystem_mode is FilesystemMode.WORKSPACE_WRITE
+    assert authority.allow_product_edits is True
+
+
+@pytest.mark.parametrize(
+    "prompt_text",
+    (
+        "Test-only: run the continuation regression suite.",
+        "Run only tests/test_continuation_eval_suite.py.",
+        "Only run tests/test_continuation_contract_p0.py.",
+        "Run the tests only.",
+        "Run the continuation tests.",
+        "Please execute lint and inspect the output.",
+        "Test the continuation API.",
+        "Verify compiler and frontend tests.",
+    ),
+)
+def test_test_only_intent_accepts_path_qualified_phrasings(
+    prompt_text: str,
+) -> None:
+    mode = infer_task_mode(prompt_text)
+    authority = ExecutionAuthority.for_mode(mode)
+
+    assert mode is TaskMode.TEST_ONLY
+    assert authority.filesystem_mode is FilesystemMode.READ_ONLY
+    assert authority.allow_product_edits is False
+
+
+def test_test_request_with_direct_fix_still_grants_change_authority() -> None:
+    assert infer_task_mode("Run the tests and fix any failures.") is TaskMode.CHANGE
+
+
 def test_quoted_historical_commands_never_grant_project_write_authority() -> None:
     request_text = (
         "Review this historical transcript and report findings only. "

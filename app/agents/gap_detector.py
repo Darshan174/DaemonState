@@ -1,13 +1,28 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
+from typing import Any
+from uuid import UUID
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import Component, Relationship
+from app.models import Component, Relationship, SourceDocument
+from app.services.access import AccessScope, source_access_predicate
+from app.services.prompt_artifacts import (
+    PromptArtifact,
+    PromptOutputValidationError,
+    invoke_prompt_artifact,
+    provider_response_mode,
+    provider_supports_json_schema,
+)
 from app.taxonomy import canonical_model_name, model_bucket
+from app.services.workspace_scope import (
+    filter_components_for_workspace,
+    normalize_workspace_id,
+    workspace_connector_types,
+)
 
 
 @dataclass
@@ -29,54 +44,145 @@ class GapReport:
     stats: dict
 
 
-GAP_PROMPT = """You are the CEO of a startup analyzing your knowledge graph. Below is a structured dump of all entities grouped by type.
+GAP_PROMPT_ID = "gap.detector"
+GAP_PROMPT_VERSION = "1.1.0"
+GAP_ENTITY_TYPE_LIMIT = 15
+GAP_ENTITIES_PER_TYPE_LIMIT = 8
+GAP_RELATIONSHIP_LIMIT = 50
 
-Your job: identify the most critical gaps, risks, and opportunities.
+GAP_SYSTEM_INSTRUCTION = """You are a startup CEO analyzing a bounded knowledge-graph snapshot.
 
-Look for:
-1. MISSING OWNERS — Features, Tasks, or Decisions with no Person linked
-2. UNIMPLEMENTED DECISIONS — Decisions that have no related Task or PR
-3. BLOCKED ITEMS — Tasks or Features blocked by unresolved Risks
-4. REPEATED FAILURES — Agent Sessions hitting the same problem multiple times
-5. CUSTOMER PAIN WITH NO ACTION — Customer/Risk items not linked to any Feature or Task
-6. READY TO SHIP — Features/Tasks with no blockers and all dependencies resolved
-7. ORPHANED WORK — PRs, Issues, or Tasks with no connection to a Decision or Feature
+Identify the most critical evidence-backed gaps, risks, and opportunities:
+1. missing_owner: a Feature, Task, or Decision with no Person linked
+2. unimplemented_decision: a Decision with no related Task or PR
+3. blocked: a Task or Feature blocked by an unresolved Risk
+4. repeated_failure: Agent Sessions repeatedly encountering the same problem
+5. unactioned_pain: a Customer or Risk item with no linked Feature or Task
+6. orphaned: a PR, Issue, or Task disconnected from a Decision or Feature
 
-Entities:
-{entities}
+Also identify Features or Tasks that appear ready to ship and items blocked by a Risk.
+Use only evidence in the supplied entity and relationship records. Use entity names exactly
+as supplied. Do not invent entities, links, owners, blockers, or completion state. A graph
+snapshot can be truncated; when its snapshot metadata shows omitted records, do not treat
+absence from the snapshot as definitive evidence. Keep the summary executive-level and
+make every recommendation a concrete next action."""
 
-Relationships:
-{relationships}
-
-Return a JSON object with this exact structure:
-{{
-  "summary": "2-3 sentence CEO-level summary of the biggest issues",
-  "gaps": [
-    {{
-      "category": "missing_owner|unimplemented_decision|blocked|repeated_failure|unactioned_pain|orphaned",
-      "severity": "critical|high|medium|low",
-      "title": "short title",
-      "detail": "specific explanation referencing actual entity names",
-      "entity_name": "the primary entity name this gap is about",
-      "recommendation": "one concrete action to fix this"
-    }}
-  ],
-  "ready_to_ship": ["entity name 1", "entity name 2"],
-  "blocked": ["entity name 1", "entity name 2"]
-}}
-
-Return only JSON. Be specific — use actual names from the data.
-"""
+GAP_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1500,
+        },
+        "gaps": {
+            "type": "array",
+            "maxItems": 20,
+            "uniqueItems": True,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "enum": [
+                            "missing_owner",
+                            "unimplemented_decision",
+                            "blocked",
+                            "repeated_failure",
+                            "unactioned_pain",
+                            "orphaned",
+                        ],
+                    },
+                    "severity": {
+                        "type": "string",
+                        "enum": ["critical", "high", "medium", "low"],
+                    },
+                    "title": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 240,
+                    },
+                    "detail": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2000,
+                    },
+                    "entity_name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 500,
+                    },
+                    "recommendation": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 1000,
+                    },
+                },
+                "required": [
+                    "category",
+                    "severity",
+                    "title",
+                    "detail",
+                    "entity_name",
+                    "recommendation",
+                ],
+                "additionalProperties": False,
+            },
+        },
+        "ready_to_ship": {
+            "type": "array",
+            "maxItems": 5,
+            "uniqueItems": True,
+            "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500,
+            },
+        },
+        "blocked": {
+            "type": "array",
+            "maxItems": 5,
+            "uniqueItems": True,
+            "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500,
+            },
+        },
+    },
+    "required": ["summary", "gaps", "ready_to_ship", "blocked"],
+    "additionalProperties": False,
+}
 
 
 class GapDetectorAgent:
-    def __init__(self, session: AsyncSession, api_key: str | None = None, model: str | None = None):
+    def __init__(
+        self,
+        session: AsyncSession,
+        api_key: str | None = None,
+        model: str | None = None,
+    ):
         self.session = session
         self.api_key = api_key
         self.model = model
+        self.last_prompt_artifact: PromptArtifact | None = None
+        self.last_prompt_audit_metadata: dict[str, Any] | None = None
 
-    async def run(self) -> GapReport:
-        components, relationships = await self._load_graph()
+    async def run(
+        self,
+        *,
+        workspace_id: str | UUID | None = None,
+        access_scope: AccessScope | None = None,
+    ) -> GapReport:
+        self.last_prompt_artifact = None
+        self.last_prompt_audit_metadata = None
+        if access_scope is None and workspace_id is None:
+            components, relationships = await self._load_graph()
+        else:
+            components, relationships = await self._load_graph(
+                workspace_id=workspace_id,
+                access_scope=access_scope,
+            )
         stats = self._compute_stats(components, relationships)
 
         rule_gaps = self._rule_based_gaps(components, relationships)
@@ -85,11 +191,11 @@ class GapDetectorAgent:
             ai_report = await self._ai_analysis(components, relationships)
             if ai_report:
                 return GapReport(
-                    summary=ai_report.get("summary", ""),
-                    gaps=[GapItem(**g) for g in ai_report.get("gaps", [])],
-                    ready_to_ship=ai_report.get("ready_to_ship", []),
-                    blocked=ai_report.get("blocked", []),
-                    stats=stats,
+                    summary=ai_report["summary"],
+                    gaps=[GapItem(**gap) for gap in ai_report["gaps"]],
+                    ready_to_ship=ai_report["ready_to_ship"],
+                    blocked=ai_report["blocked"],
+                    stats=self._with_prompt_audit(stats),
                 )
 
         return GapReport(
@@ -97,19 +203,69 @@ class GapDetectorAgent:
             gaps=rule_gaps,
             ready_to_ship=self._find_ready(components, relationships),
             blocked=self._find_blocked(components, relationships),
-            stats=stats,
+            stats=self._with_prompt_audit(stats),
         )
 
-    async def _load_graph(self):
-        comp_result = await self.session.execute(
-            select(Component).options(selectinload(Component.model))
+    def _with_prompt_audit(self, stats: dict[str, Any]) -> dict[str, Any]:
+        if self.last_prompt_audit_metadata is None:
+            return stats
+        return {
+            **stats,
+            "prompt_artifact": dict(self.last_prompt_audit_metadata),
+        }
+
+    async def _load_graph(
+        self,
+        *,
+        workspace_id: str | UUID | None = None,
+        access_scope: AccessScope | None = None,
+    ):
+        scope = access_scope or AccessScope.local()
+        workspace_uuid: UUID | None = None
+        if workspace_id is not None:
+            _, workspace_uuid = normalize_workspace_id(workspace_id)
+            if not scope.allows_workspace(workspace_uuid):
+                raise LookupError("Workspace not found")
+        elif not scope.unrestricted:
+            raise ValueError("workspace_id is required")
+
+        component_query = select(Component).options(
+            selectinload(Component.model),
+            selectinload(Component.source_document),
         )
+        if not scope.unrestricted:
+            component_query = component_query.join(
+                SourceDocument,
+                Component.source_document_id == SourceDocument.id,
+            ).where(source_access_predicate(
+                scope,
+                workspace_id=workspace_uuid,
+            ))
+        comp_result = await self.session.execute(component_query)
         components = comp_result.scalars().all()
+        if scope.unrestricted and workspace_uuid is not None:
+            workspace_id_str, connector_types = await workspace_connector_types(
+                self.session,
+                workspace_uuid,
+            )
+            components = filter_components_for_workspace(
+                components,
+                workspace_id_str,
+                connector_types,
+            )
+        component_ids = {component.id for component in components}
 
         rel_result = await self.session.execute(
-            select(Relationship).options(
-                selectinload(Relationship.source_component),
-                selectinload(Relationship.target_component),
+            select(Relationship).where(
+                Relationship.source_component_id.in_(component_ids),
+                Relationship.target_component_id.in_(component_ids),
+            ).options(
+                selectinload(Relationship.source_component).selectinload(
+                    Component.model
+                ),
+                selectinload(Relationship.target_component).selectinload(
+                    Component.model
+                ),
             )
         )
         relationships = rel_result.scalars().all()
@@ -246,37 +402,314 @@ class GapDetectorAgent:
         )
 
     async def _ai_analysis(self, components, relationships) -> dict | None:
-        by_type: dict[str, list[str]] = {}
-        for c in components:
-            t = canonical_model_name(c.model.name if c.model else "Unknown")
-            by_type.setdefault(t, []).append(f"- {c.name}: {c.value[:120]}")
-
-        entities_text = ""
-        for t, items in list(by_type.items())[:15]:
-            entities_text += f"\n## {t}\n" + "\n".join(items[:8])
-
-        rel_lines = []
-        for r in relationships[:50]:
-            src = r.source_component.name if r.source_component else "?"
-            tgt = r.target_component.name if r.target_component else "?"
-            rel_lines.append(f"- {src} --[{r.relationship_type}]--> {tgt}")
-        rel_text = "\n".join(rel_lines)
-
+        self.last_prompt_artifact = None
+        self.last_prompt_audit_metadata = None
         try:
-            from litellm import acompletion
-            prompt = GAP_PROMPT.format(entities=entities_text, relationships=rel_text)
-            response = await acompletion(
-                model=self.model,
-                api_key=self.api_key,
-                messages=[
-                    {"role": "system", "content": "You are a startup CTO analyzing a knowledge graph. Return only valid JSON."},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.2,
-                max_tokens=1500,
+            target_model = str(self.model or "").strip()
+            if not target_model:
+                return None
+            artifact = _gap_prompt_artifact(
+                components=components,
+                relationships=relationships,
+                target_model=target_model,
             )
-            raw = response.choices[0].message.content.strip()
-            raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-            return json.loads(raw)
+            self.last_prompt_artifact = artifact
+            self.last_prompt_audit_metadata = artifact.audit_metadata()
+            output = await invoke_prompt_artifact(
+                artifact,
+                response_mode=provider_response_mode(
+                    artifact.target_model,
+                    supports_json_schema=provider_supports_json_schema(
+                        artifact.target_model
+                    ),
+                ),
+                api_key=self.api_key,
+            )
+            return _validated_gap_output(
+                output,
+                graph=artifact.data_payload()["graph"],
+            )
         except Exception:
             return None
+
+
+def _gap_prompt_artifact(
+    *,
+    components: list[Component],
+    relationships: list[Relationship],
+    target_model: str,
+) -> PromptArtifact:
+    """Build the exact versioned artifact used by the gap-detector runtime."""
+
+    entities_by_type: dict[str, list[Component]] = {}
+    for component in components:
+        entity_type = canonical_model_name(
+            component.model.name if component.model else "Unknown"
+        )
+        entities_by_type.setdefault(entity_type, []).append(component)
+
+    entity_records: list[dict[str, str]] = []
+    for entity_type in sorted(
+        entities_by_type,
+        key=str.casefold,
+    )[:GAP_ENTITY_TYPE_LIMIT]:
+        type_components = sorted(
+            entities_by_type[entity_type],
+            key=lambda component: (
+                str(component.name or "").casefold(),
+                str(component.id),
+            ),
+        )
+        for component in type_components[:GAP_ENTITIES_PER_TYPE_LIMIT]:
+            entity_records.append({
+                "id": str(component.id),
+                "type": entity_type,
+                "name": str(component.name or ""),
+                "value": str(component.value or "")[:120],
+                "temporal": str(component.temporal or "unknown"),
+                "status": str(component.status or "active"),
+            })
+
+    relationship_records = sorted(
+        (_relationship_prompt_record(relationship) for relationship in relationships),
+        key=lambda relationship: (
+            relationship["source_name"].casefold(),
+            relationship["target_name"].casefold(),
+            relationship["relationship_type"].casefold(),
+            relationship["source_id"],
+            relationship["target_id"],
+        ),
+    )[:GAP_RELATIONSHIP_LIMIT]
+
+    graph = {
+        "snapshot": {
+            "total_entities": len(components),
+            "included_entities": len(entity_records),
+            "total_relationships": len(relationships),
+            "included_relationships": len(relationship_records),
+        },
+        "entities": entity_records,
+        "relationships": relationship_records,
+    }
+    return PromptArtifact(
+        prompt_id=GAP_PROMPT_ID,
+        prompt_version=GAP_PROMPT_VERSION,
+        input_contract_version="gap_snapshot.v2",
+        semantic_validator_version="gap_graph_rules.v2",
+        target_model=target_model,
+        system_instruction=GAP_SYSTEM_INSTRUCTION,
+        untrusted_data={"graph": graph},
+        output_schema=GAP_OUTPUT_SCHEMA,
+        temperature=0.1,
+        max_tokens=1500,
+    )
+
+
+def _relationship_prompt_record(relationship: Relationship) -> dict[str, str]:
+    source = relationship.source_component
+    target = relationship.target_component
+    return {
+        "source_id": str(relationship.source_component_id),
+        "source_name": str(source.name or "") if source else "",
+        "source_type": canonical_model_name(
+            source.model.name if source and source.model else "Unknown"
+        ),
+        "relationship_type": str(relationship.relationship_type or "related_to"),
+        "target_id": str(relationship.target_component_id),
+        "target_name": str(target.name or "") if target else "",
+        "target_type": canonical_model_name(
+            target.model.name if target and target.model else "Unknown"
+        ),
+    }
+
+
+def _validated_gap_output(
+    output: dict[str, Any],
+    *,
+    graph: dict[str, Any],
+) -> dict[str, Any]:
+    name_types: dict[str, set[str]] = {}
+    entities_by_name: dict[str, list[dict[str, Any]]] = {}
+    for entity in graph["entities"]:
+        name_types.setdefault(entity["name"], set()).add(entity["type"])
+        entities_by_name.setdefault(entity["name"], []).append(entity)
+    for relationship in graph["relationships"]:
+        for endpoint in ("source", "target"):
+            name = relationship[f"{endpoint}_name"]
+            if name:
+                name_types.setdefault(name, set()).add(
+                    relationship[f"{endpoint}_type"]
+                )
+
+    snapshot = graph["snapshot"]
+    snapshot_complete = (
+        snapshot["total_entities"] == snapshot["included_entities"]
+        and snapshot["total_relationships"]
+        == snapshot["included_relationships"]
+    )
+    absence_categories = {
+        "missing_owner",
+        "unimplemented_decision",
+        "unactioned_pain",
+        "orphaned",
+    }
+
+    for gap in output["gaps"]:
+        entity_name = gap["entity_name"]
+        category = gap["category"]
+        if entity_name not in name_types:
+            raise PromptOutputValidationError(
+                "gap entity_name must reference a supplied entity"
+            )
+        if category in absence_categories and not snapshot_complete:
+            raise PromptOutputValidationError(
+                "absence-based gaps require a complete graph snapshot"
+            )
+        if category == "missing_owner":
+            _require_gap_entity_type(
+                entity_name,
+                name_types,
+                {"feature", "task", "decision"},
+            )
+            if _has_neighbor_bucket(graph, entity_name, {"person"}):
+                raise PromptOutputValidationError(
+                    "missing_owner conflicts with a supplied Person relationship"
+                )
+        elif category == "unimplemented_decision":
+            _require_gap_entity_type(entity_name, name_types, {"decision"})
+            if _has_neighbor_bucket(graph, entity_name, {"task", "pr"}):
+                raise PromptOutputValidationError(
+                    "unimplemented_decision conflicts with supplied implementation work"
+                )
+        elif category == "blocked":
+            _require_gap_entity_type(entity_name, name_types, {"feature", "task"})
+            if not _has_active_risk_neighbor(
+                graph,
+                entity_name,
+                entities_by_name,
+            ):
+                raise PromptOutputValidationError(
+                    "blocked gaps require a supplied unresolved Risk relationship"
+                )
+        elif category == "repeated_failure":
+            _require_gap_entity_type(entity_name, name_types, {"agent session"})
+            session_count = sum(
+                1
+                for entity in graph["entities"]
+                if model_bucket(entity["type"]) == "agent session"
+            )
+            if session_count < 2:
+                raise PromptOutputValidationError(
+                    "repeated_failure requires at least two supplied Agent Sessions"
+                )
+        elif category == "unactioned_pain":
+            _require_gap_entity_type(entity_name, name_types, {"customer", "risk"})
+            if _has_neighbor_bucket(graph, entity_name, {"feature", "task"}):
+                raise PromptOutputValidationError(
+                    "unactioned_pain conflicts with supplied action relationships"
+                )
+        elif category == "orphaned":
+            _require_gap_entity_type(entity_name, name_types, {"pr", "issue", "task"})
+            if _has_neighbor_bucket(graph, entity_name, {"decision", "feature"}):
+                raise PromptOutputValidationError(
+                    "orphaned conflicts with a supplied product relationship"
+                )
+
+    ready_names = set(output["ready_to_ship"])
+    blocked_names = set(output["blocked"])
+    for name in ready_names:
+        if not snapshot_complete:
+            raise PromptOutputValidationError(
+                "ready_to_ship requires a complete graph snapshot"
+            )
+        if name not in name_types or not _has_model_bucket(
+            name_types[name],
+            {"feature", "task"},
+        ):
+            raise PromptOutputValidationError(
+                "ready_to_ship must reference a supplied Feature or Task"
+            )
+        if _has_active_risk_neighbor(graph, name, entities_by_name):
+            raise PromptOutputValidationError(
+                "ready_to_ship cannot have an unresolved Risk relationship"
+            )
+        if not any(
+            entity.get("temporal") in {"current", "future"}
+            and entity.get("status") not in {"closed", "rejected", "resolved"}
+            for entity in entities_by_name.get(name, [])
+        ):
+            raise PromptOutputValidationError(
+                "ready_to_ship must reference active current or future work"
+            )
+    for name in blocked_names:
+        if name not in name_types or not _has_model_bucket(
+            name_types[name],
+            {"feature", "task"},
+        ):
+            raise PromptOutputValidationError(
+                "blocked must reference a supplied Feature or Task"
+            )
+        if not _has_active_risk_neighbor(graph, name, entities_by_name):
+            raise PromptOutputValidationError(
+                "blocked items require a supplied unresolved Risk relationship"
+            )
+    if ready_names & blocked_names:
+        raise PromptOutputValidationError(
+            "an entity cannot be both ready_to_ship and blocked"
+        )
+    return output
+
+
+def _has_model_bucket(model_names: set[str], allowed: set[str]) -> bool:
+    return any(model_bucket(model_name) in allowed for model_name in model_names)
+
+
+def _require_gap_entity_type(
+    entity_name: str,
+    name_types: dict[str, set[str]],
+    allowed: set[str],
+) -> None:
+    if not _has_model_bucket(name_types[entity_name], allowed):
+        raise PromptOutputValidationError(
+            "gap category does not match the supplied entity type"
+        )
+
+
+def _has_neighbor_bucket(
+    graph: dict[str, Any],
+    entity_name: str,
+    buckets: set[str],
+) -> bool:
+    for relationship in graph["relationships"]:
+        if relationship["source_name"] == entity_name:
+            neighbor_type = relationship["target_type"]
+        elif relationship["target_name"] == entity_name:
+            neighbor_type = relationship["source_type"]
+        else:
+            continue
+        if model_bucket(neighbor_type) in buckets:
+            return True
+    return False
+
+
+def _has_active_risk_neighbor(
+    graph: dict[str, Any],
+    entity_name: str,
+    entities_by_name: dict[str, list[dict[str, Any]]],
+) -> bool:
+    risk_names: set[str] = set()
+    for relationship in graph["relationships"]:
+        if relationship["source_name"] == entity_name and model_bucket(
+            relationship["target_type"]
+        ) == "risk":
+            risk_names.add(relationship["target_name"])
+        elif relationship["target_name"] == entity_name and model_bucket(
+            relationship["source_type"]
+        ) == "risk":
+            risk_names.add(relationship["source_name"])
+    return any(
+        entity.get("status") not in {"closed", "rejected", "resolved"}
+        for risk_name in risk_names
+        for entity in entities_by_name.get(risk_name, [])
+        if model_bucket(entity["type"]) == "risk"
+    )

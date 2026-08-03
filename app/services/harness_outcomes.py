@@ -20,10 +20,25 @@ from app.services.harness_sessions import harness_session_payload
 
 
 SUCCESS_STATUSES = frozenset({"complete", "completed", "passed", "success", "succeeded"})
+LEGACY_RENDER_VARIANT = "legacy_v1"
+COMPACT_RENDER_VARIANT = "compact_v2"
+UNKNOWN_RENDER_VARIANT = "unknown"
+KNOWN_RENDER_VARIANTS = frozenset({
+    LEGACY_RENDER_VARIANT,
+    COMPACT_RENDER_VARIANT,
+})
+COMPACT_BRIEF_HEADER = "# Continuation Brief v2"
+LEGACY_BRIEF_HEADER = "# Session Context — task-level working memory"
+RENDER_VARIANT_OBSERVATION_KEYS = frozenset({
+    "harness:command",
+    "harness:context",
+    "harness:session",
+})
 
 
 @dataclass(frozen=True)
 class HarnessOutcomeGroup:
+    render_variant: str | None
     model: str
     model_profile: str
     observed_runs: int
@@ -37,7 +52,7 @@ class HarnessOutcomeGroup:
     evidence: dict[str, list[str]]
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "model": self.model,
             "model_profile": self.model_profile,
             "observed_runs": self.observed_runs,
@@ -56,26 +71,42 @@ class HarnessOutcomeGroup:
             },
             "evidence": self.evidence,
         }
+        if self.render_variant is not None:
+            payload["render_variant"] = self.render_variant
+        return payload
 
 
 @dataclass(frozen=True)
 class HarnessOutcomeReport:
     workspace_id: UUID
     groups: tuple[HarnessOutcomeGroup, ...]
+    variant_groups: tuple[HarnessOutcomeGroup, ...]
     runs: tuple["_RunOutcome", ...]
 
     def to_dict(self) -> dict[str, Any]:
+        attributed_runs = sum(
+            group.observed_runs for group in self.variant_groups
+        )
         return {
             "schema_version": "harness_outcomes.v1",
             "workspace_id": str(self.workspace_id),
-            "observed_runs": sum(group.observed_runs for group in self.groups),
+            "observed_runs": len(self.runs),
+            "variant_attributed_runs": attributed_runs,
+            "variant_unattributed_runs": len(self.runs) - attributed_runs,
             "groups": [group.to_dict() for group in self.groups],
+            "variant_groups": [
+                group.to_dict() for group in self.variant_groups
+            ],
             "runs": [run.to_dict() for run in self.runs],
             "measurement_note": (
                 "Only local-harness-observed completion and verification evidence can "
                 "produce verified success, and any recorded unresolved blocker prevents "
                 "it. Model names are recorded labels, not independently verified "
-                "provider identities."
+                "provider identities. A render variant is attributed only when a "
+                "persisted harness marker or linked compiled prompt/contract identifies "
+                "it. Unattributed runs remain in total and general groups as unknown but "
+                "are excluded from variant_groups. A staged desktop draft is not an "
+                "observed run until its submitted session is linked to run evidence."
             ),
         }
 
@@ -91,8 +122,16 @@ class _VerificationEvidence:
 
 
 @dataclass(frozen=True)
+class _RenderVariantAttribution:
+    variant: str
+    source: str
+
+
+@dataclass(frozen=True)
 class _RunOutcome:
     run_id: str
+    render_variant: str
+    render_variant_source: str
     model: str
     model_profile: str
     objective: str | None
@@ -114,6 +153,11 @@ class _RunOutcome:
     def to_dict(self) -> dict[str, Any]:
         return {
             "run_id": self.run_id,
+            "render_variant": self.render_variant,
+            "render_variant_source": self.render_variant_source,
+            "variant_comparison_eligible": (
+                self.render_variant in KNOWN_RENDER_VARIANTS
+            ),
             "model": self.model,
             "model_profile": self.model_profile,
             "objective": self.objective,
@@ -199,8 +243,17 @@ class HarnessOutcomeService:
                 payload["verified_success"] = False
         else:
             status = _normalized_text(run.status) or "unknown"
+            render_variant = _render_variant_attribution(
+                run,
+                observations=run.observations,
+            )
             payload = {
                 "run_id": str(run.id),
+                "render_variant": render_variant.variant,
+                "render_variant_source": render_variant.source,
+                "variant_comparison_eligible": (
+                    render_variant.variant in KNOWN_RENDER_VARIANTS
+                ),
                 "model": _normalized_text(run.model) or "unreported",
                 "model_profile": "unreported",
                 "objective": _normalized_text(run.objective),
@@ -358,6 +411,7 @@ class HarnessOutcomeService:
             select(AgentRun)
             .options(
                 selectinload(AgentRun.context_pack),
+                selectinload(AgentRun.continuation_execution),
                 selectinload(AgentRun.observations).selectinload(
                     RunObservation.source_document
                 ),
@@ -366,6 +420,7 @@ class HarnessOutcomeService:
             .order_by(AgentRun.started_at, AgentRun.id)
         ))
         grouped: dict[tuple[str, str], list[_RunOutcome]] = {}
+        variant_grouped: dict[tuple[str, str, str], list[_RunOutcome]] = {}
         observed_outcomes: list[_RunOutcome] = []
         for run in runs:
             observations = (
@@ -380,11 +435,39 @@ class HarnessOutcomeService:
             if outcome is None:
                 continue
             observed_outcomes.append(outcome)
-            grouped.setdefault((outcome.model, outcome.model_profile), []).append(outcome)
+            grouped.setdefault(
+                (outcome.model, outcome.model_profile),
+                [],
+            ).append(outcome)
+            if outcome.render_variant in KNOWN_RENDER_VARIANTS:
+                variant_grouped.setdefault(
+                    (
+                        outcome.render_variant,
+                        outcome.model,
+                        outcome.model_profile,
+                    ),
+                    [],
+                ).append(outcome)
 
         groups = tuple(
-            _aggregate_group(model=model, model_profile=profile, outcomes=outcomes)
+            _aggregate_group(
+                render_variant=None,
+                model=model,
+                model_profile=profile,
+                outcomes=outcomes,
+            )
             for (model, profile), outcomes in sorted(grouped.items())
+        )
+        variant_groups = tuple(
+            _aggregate_group(
+                render_variant=render_variant,
+                model=model,
+                model_profile=profile,
+                outcomes=outcomes,
+            )
+            for (render_variant, model, profile), outcomes in sorted(
+                variant_grouped.items()
+            )
         )
         recent = tuple(sorted(
             observed_outcomes,
@@ -397,6 +480,7 @@ class HarnessOutcomeService:
         return HarnessOutcomeReport(
             workspace_id=workspace_id,
             groups=groups,
+            variant_groups=variant_groups,
             runs=recent,
         )
 
@@ -477,8 +561,14 @@ def _evaluate_run(
         )
         changed_files = _observation_files(latest_patch)
     outcome_payload = _payload(latest_outcome) if latest_outcome is not None else {}
+    render_variant = _render_variant_attribution(
+        run,
+        observations=harness_observations,
+    )
     return _RunOutcome(
         run_id=str(run.id),
+        render_variant=render_variant.variant,
+        render_variant_source=render_variant.source,
         model=model,
         model_profile=model_profile,
         objective=_normalized_text(run.objective or (pack.objective if pack else None)),
@@ -505,6 +595,7 @@ def _evaluate_run(
 
 def _aggregate_group(
     *,
+    render_variant: str | None,
     model: str,
     model_profile: str,
     outcomes: list[_RunOutcome],
@@ -521,6 +612,7 @@ def _aggregate_group(
         round(sum(durations) / len(durations), 3) if durations else None
     )
     return HarnessOutcomeGroup(
+        render_variant=render_variant,
         model=model,
         model_profile=model_profile,
         observed_runs=len(outcomes),
@@ -539,6 +631,133 @@ def _aggregate_group(
             "unresolved_blocker_run_ids": blocked,
         },
     )
+
+
+def _render_variant_attribution(
+    run: AgentRun,
+    *,
+    observations: Iterable[RunObservation],
+) -> _RenderVariantAttribution:
+    """Attribute only from trusted persisted input-side evidence.
+
+    Provider output is intentionally excluded: a model repeating the compact
+    heading is not proof that the compact brief was the input it received.
+    """
+
+    local_observations = [
+        item
+        for item in sorted(observations, key=_observation_sort_key, reverse=True)
+        if item.event_key in RENDER_VARIANT_OBSERVATION_KEYS
+        and _is_local_harness_observation(item)
+    ]
+    for observation in local_observations:
+        attribution = _observation_render_variant(observation)
+        if attribution is not None:
+            return attribution
+
+    execution = run.continuation_execution
+    if execution is not None:
+        prompt_variant = _render_variant_from_header(execution.prompt_markdown)
+        if prompt_variant is not None:
+            return _RenderVariantAttribution(
+                variant=prompt_variant,
+                source="execution_prompt_header",
+            )
+        contract_variant = _known_render_variant(
+            _json_object(execution.contract_json).get("prompt_variant")
+        )
+        if contract_variant is not None:
+            return _RenderVariantAttribution(
+                variant=contract_variant,
+                source="execution_contract_marker",
+            )
+
+    pack_variant = _render_variant_from_header(
+        run.context_pack.markdown if run.context_pack is not None else None
+    )
+    if pack_variant is not None:
+        return _RenderVariantAttribution(
+            variant=pack_variant,
+            source="context_pack_header",
+        )
+    return _RenderVariantAttribution(
+        variant=UNKNOWN_RENDER_VARIANT,
+        source="unattributed",
+    )
+
+
+def _observation_render_variant(
+    observation: RunObservation,
+) -> _RenderVariantAttribution | None:
+    payload = _payload(observation)
+    metadata = _json_object(
+        observation.source_document.metadata_json
+        if observation.source_document is not None
+        else None
+    )
+    containers = (payload, metadata)
+
+    for container in containers:
+        marker = container.get("continuation_brief")
+        marker = marker if isinstance(marker, dict) else {}
+        session = container.get("harness_session")
+        session = session if isinstance(session, dict) else {}
+        for value in (
+            marker.get("header"),
+            marker.get("prompt_header"),
+            container.get("continuation_brief_header"),
+            session.get("continuation_brief_header"),
+        ):
+            variant = _render_variant_from_header(value)
+            if variant is not None:
+                return _RenderVariantAttribution(
+                    variant=variant,
+                    source="harness_observation_header",
+                )
+
+    for container in containers:
+        marker = container.get("continuation_brief")
+        marker = marker if isinstance(marker, dict) else {}
+        session = container.get("harness_session")
+        session = session if isinstance(session, dict) else {}
+        for value in (
+            marker.get("render_variant"),
+            marker.get("variant"),
+            container.get("context_render_variant"),
+            container.get("continuation_brief_variant"),
+            session.get("context_render_variant"),
+            session.get("continuation_brief_variant"),
+        ):
+            variant = _known_render_variant(value)
+            if variant is not None:
+                return _RenderVariantAttribution(
+                    variant=variant,
+                    source="harness_observation_marker",
+                )
+    return None
+
+
+def _render_variant_from_header(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    first_line = next(
+        (
+            line.lstrip("\ufeff").strip()
+            for line in value.splitlines()
+            if line.strip()
+        ),
+        "",
+    )
+    if first_line == COMPACT_BRIEF_HEADER:
+        return COMPACT_RENDER_VARIANT
+    if first_line == LEGACY_BRIEF_HEADER:
+        return LEGACY_RENDER_VARIANT
+    return None
+
+
+def _known_render_variant(value: Any) -> str | None:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in KNOWN_RENDER_VARIANTS else None
 
 
 def _required_verification(pack: ContextPack | None) -> dict[str, tuple[str | None, str | None]]:

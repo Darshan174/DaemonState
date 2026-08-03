@@ -1004,7 +1004,10 @@ function CarriedContextPanel({
     objective,
     compiled,
   });
-  const briefGroupIds = new Set(packageBrief.map((item) => item.group?.id).filter(Boolean));
+  const briefGroupIds = new Set(packageBrief.flatMap((item) => [
+    item.group?.id,
+    ...(item.group?.sourceIds || []),
+  ]).filter(Boolean));
   const counterGroups = groups.filter(
     (group) => !briefGroupIds.has(group.id) && group.items.length,
   );
@@ -1178,7 +1181,7 @@ function CarriedContextPanel({
                   }, event.currentTarget)}
                   className="inline-flex min-h-11 items-center gap-1.5 rounded-full border border-white/15 bg-white/[0.04] px-3 text-xs font-semibold text-[#d8d8cf] transition-colors hover:border-white/30 hover:bg-white/[0.08] hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#d9ff68]/60"
                 >
-                  Review context <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+                  View full evidence <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
                 </button>
               </div>
 
@@ -2398,6 +2401,9 @@ function contextPackageBrief({
   const goalGroup = findGroup("goal");
   const currentGroup = findGroup("current_state", "progress");
   const nextGroup = findGroup("next_action", "exact_next_action");
+  const blockerGroup = findGroup("blockers_and_questions", "blockers");
+  const failedAttemptGroup = findGroup("prior_failures", "failed_attempts");
+  const verificationGroup = findGroup("verification");
   const objectiveText = contextBriefText(objective);
   const savedGoalText = contextBriefItemText(goalGroup?.items?.[0]);
   const checkpointGoalText = contextBriefItemText(checkpoint?.sections?.goal?.[0]);
@@ -2445,6 +2451,21 @@ function contextPackageBrief({
     nextText = "No explicit next action captured.";
   }
   const hasExplicitNextAction = nextText !== "No explicit next action captured.";
+  const avoidGroups = [failedAttemptGroup, blockerGroup]
+    .filter((group) => group?.items?.length);
+  const avoidItems = avoidGroups.flatMap((group) => group.items);
+  const avoidGroup = {
+    id: "brief-do-not-repeat",
+    label: "Do not repeat",
+    shortLabel: "Avoid",
+    meta: CONTEXT_GROUP_META.prior_failures,
+    items: avoidItems,
+    sourceIds: avoidGroups.map((group) => group.id),
+  };
+  const avoidText = contextBriefItemText(avoidItems.at(-1))
+    || "No failed approach or active blocker was captured.";
+  const verificationText = contextBriefItemText(verificationGroup?.items?.at(-1))
+    || "No completion check was captured.";
   const humanFallback = {
     label: "User-authoritative",
     kind: "human",
@@ -2463,7 +2484,7 @@ function contextPackageBrief({
     },
     {
       id: "brief-current",
-      label: "Current state",
+      label: "State now",
       text: currentText,
       group: currentGroup,
       provenance: currentGroup?.items?.length
@@ -2474,11 +2495,29 @@ function contextPackageBrief({
     },
     {
       id: "brief-next",
-      label: "Next action",
+      label: "Start here",
       text: nextText,
       group: nextGroup,
       provenance: hasExplicitNextAction && nextGroup?.items?.length
         ? contextGroupProvenance(nextGroup.items)
+        : { label: "Not captured", kind: "summary" },
+    },
+    {
+      id: "brief-avoid",
+      label: "Do not repeat",
+      text: avoidText,
+      group: avoidGroup,
+      provenance: avoidGroup?.items?.length
+        ? contextGroupProvenance(avoidGroup.items)
+        : { label: "Not captured", kind: "summary" },
+    },
+    {
+      id: "brief-done",
+      label: "Done when",
+      text: verificationText,
+      group: verificationGroup,
+      provenance: verificationGroup?.items?.length
+        ? contextGroupProvenance(verificationGroup.items)
         : { label: "Not captured", kind: "summary" },
     },
   ].map((item) => ({

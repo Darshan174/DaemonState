@@ -87,6 +87,36 @@ async def _run(
     return run
 
 
+async def _execution(
+    session,
+    workspace,
+    pack,
+    *,
+    prompt_markdown: str,
+    contract: dict | None = None,
+):
+    execution = ContinuationExecution(
+        id=uuid4(),
+        workspace_id=workspace.id,
+        context_pack_id=pack.id,
+        schema_version="continuation_execution.v1",
+        task_mode="change",
+        request_verbatim="Continue the measured task.",
+        request_normalized="Continue the measured task.",
+        request_sha256="0" * 64,
+        display_title="Continue the measured task.",
+        contract_json=json.dumps(contract or {}, sort_keys=True),
+        contract_sha256="1" * 64,
+        prompt_markdown=prompt_markdown,
+        prompt_sha256="2" * 64,
+        status="compiled",
+        idempotency_key=uuid4().hex,
+    )
+    session.add(execution)
+    await session.flush()
+    return execution
+
+
 async def _observation(
     session,
     run,
@@ -96,16 +126,19 @@ async def _observation(
     payload: dict,
     minute: int,
     harness_observed: bool = True,
+    metadata: dict | None = None,
 ):
+    source_metadata = (
+        {"observed_by": "local_harness"} if harness_observed else {}
+    )
+    source_metadata.update(metadata or {})
     source = SourceDocument(
         id=uuid4(),
         workspace_id=run.workspace_id,
         source_type="agent_run_observation",
         external_id=f"test-observation:{uuid4()}",
         content=json.dumps(payload, sort_keys=True),
-        metadata_json=json.dumps(
-            {"observed_by": "local_harness"} if harness_observed else {}
-        ),
+        metadata_json=json.dumps(source_metadata, sort_keys=True),
     )
     item = RunObservation(
         id=uuid4(),
@@ -306,6 +339,9 @@ async def test_service_groups_only_structured_observed_outcomes(db_session):
     )).to_dict()
 
     assert result["observed_runs"] == 3
+    assert result["variant_attributed_runs"] == 0
+    assert result["variant_unattributed_runs"] == 3
+    assert result["variant_groups"] == []
     assert [group["model"] for group in result["groups"]] == ["new-model", "old-model"]
     new_group, old_group = result["groups"]
     assert new_group["model_profile"] == "frontier_coder_model"
@@ -334,6 +370,9 @@ async def test_service_groups_only_structured_observed_outcomes(db_session):
         item for item in result["runs"] if item["run_id"] == str(recovered.id)
     )
     assert recovered_result["verified_success"] is True
+    assert recovered_result["render_variant"] == "unknown"
+    assert recovered_result["render_variant_source"] == "unattributed"
+    assert recovered_result["variant_comparison_eligible"] is False
     assert recovered_result["outcome_summary"] == "Authentication redirect fixed and verified."
     assert recovered_result["changed_files"] == ["app/auth.py", "tests/test_auth.py"]
     assert recovered_result["verification"] == {
@@ -349,7 +388,231 @@ async def test_service_groups_only_structured_observed_outcomes(db_session):
         accessible_source_ids=set(),
     )).to_dict()
     assert restricted["observed_runs"] == 0
+    assert restricted["variant_groups"] == []
     assert restricted["runs"] == []
+
+
+async def test_service_groups_outcomes_by_persisted_render_variant(db_session):
+    workspace = Workspace(
+        id=uuid4(),
+        name="Render variant outcomes",
+        slug=f"render-variant-outcomes-{uuid4()}",
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+    pack = await _pack(
+        db_session,
+        workspace,
+        target_model="codex/frontier",
+        model_profile="frontier_coder_model",
+    )
+    compact_execution = await _execution(
+        db_session,
+        workspace,
+        pack,
+        prompt_markdown="# Continuation Brief v2\n\nContinue from Start here.",
+    )
+    legacy_execution = await _execution(
+        db_session,
+        workspace,
+        pack,
+        prompt_markdown=(
+            "# Session Context — task-level working memory\n\n"
+            "Continue from Exact next action."
+        ),
+    )
+    compact = await _run(
+        db_session,
+        workspace,
+        pack,
+        model="codex/frontier",
+        run_key="compact-render",
+        start_minute=1,
+    )
+    compact.continuation_execution_id = compact_execution.id
+    await _observation(
+        db_session,
+        compact,
+        event_type="verification",
+        event_key="compact-verification",
+        payload={"requirement_id": "V1", "command": COMMAND, "exit_code": 0},
+        minute=2,
+    )
+    await _observation(
+        db_session,
+        compact,
+        event_type="outcome",
+        event_key="compact-outcome",
+        payload={"status": "completed"},
+        minute=3,
+    )
+
+    legacy = await _run(
+        db_session,
+        workspace,
+        pack,
+        model="codex/frontier",
+        run_key="legacy-render",
+        start_minute=10,
+    )
+    legacy.continuation_execution_id = legacy_execution.id
+    await _observation(
+        db_session,
+        legacy,
+        event_type="verification",
+        event_key="legacy-verification",
+        payload={"requirement_id": "V1", "command": COMMAND, "exit_code": 0},
+        minute=11,
+    )
+    await _observation(
+        db_session,
+        legacy,
+        event_type="outcome",
+        event_key="legacy-outcome",
+        payload={"status": "completed"},
+        minute=12,
+    )
+
+    unattributed = await _run(
+        db_session,
+        workspace,
+        pack,
+        model="codex/frontier",
+        run_key="unattributed-render",
+        start_minute=20,
+    )
+    await _observation(
+        db_session,
+        unattributed,
+        event_type="outcome",
+        event_key="unattributed-outcome",
+        payload={"status": "completed"},
+        minute=21,
+    )
+    await db_session.commit()
+
+    result = (await HarnessOutcomeService(db_session).summarize(
+        workspace_id=workspace.id,
+    )).to_dict()
+
+    assert result["observed_runs"] == 3
+    assert result["variant_attributed_runs"] == 2
+    assert result["variant_unattributed_runs"] == 1
+    assert len(result["groups"]) == 1
+    assert result["groups"][0]["observed_runs"] == 3
+    assert "render_variant" not in result["groups"][0]
+    assert [
+        (group["render_variant"], group["observed_runs"])
+        for group in result["variant_groups"]
+    ] == [("compact_v2", 1), ("legacy_v1", 1)]
+    runs = {item["run_id"]: item for item in result["runs"]}
+    assert runs[str(compact.id)]["render_variant"] == "compact_v2"
+    assert (
+        runs[str(compact.id)]["render_variant_source"]
+        == "execution_prompt_header"
+    )
+    assert runs[str(legacy.id)]["render_variant"] == "legacy_v1"
+    assert (
+        runs[str(legacy.id)]["render_variant_source"]
+        == "execution_prompt_header"
+    )
+    assert runs[str(legacy.id)]["variant_comparison_eligible"] is True
+    assert runs[str(unattributed.id)]["render_variant"] == "unknown"
+    assert runs[str(unattributed.id)]["render_variant_source"] == "unattributed"
+    assert runs[str(unattributed.id)]["variant_comparison_eligible"] is False
+
+
+async def test_service_trusts_only_input_side_handoff_attribution(db_session):
+    workspace = Workspace(
+        id=uuid4(),
+        name="Observed handoff variant",
+        slug=f"observed-handoff-variant-{uuid4()}",
+    )
+    db_session.add(workspace)
+    await db_session.flush()
+    pack = await _pack(
+        db_session,
+        workspace,
+        target_model="codex/frontier",
+        model_profile="frontier_coder_model",
+    )
+    observed = await _run(
+        db_session,
+        workspace,
+        pack,
+        model="codex/frontier",
+        run_key="observed-compact-handoff",
+        start_minute=1,
+    )
+    await _observation(
+        db_session,
+        observed,
+        event_type="context",
+        event_key="harness:context",
+        payload={},
+        metadata={
+            "harness_session": {"context_render_variant": "compact_v2"},
+        },
+        minute=1,
+    )
+    await _observation(
+        db_session,
+        observed,
+        event_type="outcome",
+        event_key="observed-outcome",
+        payload={"status": "completed"},
+        minute=2,
+    )
+
+    echoed = await _run(
+        db_session,
+        workspace,
+        pack,
+        model="codex/frontier",
+        run_key="provider-echoed-header",
+        start_minute=10,
+    )
+    await _observation(
+        db_session,
+        echoed,
+        event_type="provider_event",
+        event_key="harness:provider-event:000001",
+        payload={
+            "content": "# Continuation Brief v2",
+            "continuation_brief": {"header": "# Continuation Brief v2"},
+        },
+        minute=11,
+    )
+    await _observation(
+        db_session,
+        echoed,
+        event_type="outcome",
+        event_key="echoed-outcome",
+        payload={"status": "completed"},
+        minute=12,
+    )
+    await db_session.commit()
+
+    result = (await HarnessOutcomeService(db_session).summarize(
+        workspace_id=workspace.id,
+    )).to_dict()
+    runs = {item["run_id"]: item for item in result["runs"]}
+
+    assert runs[str(observed.id)]["render_variant"] == "compact_v2"
+    assert (
+        runs[str(observed.id)]["render_variant_source"]
+        == "harness_observation_marker"
+    )
+    assert runs[str(observed.id)]["variant_comparison_eligible"] is True
+    assert runs[str(echoed.id)]["render_variant"] == "unknown"
+    assert runs[str(echoed.id)]["render_variant_source"] == "unattributed"
+    assert runs[str(echoed.id)]["variant_comparison_eligible"] is False
+    assert result["groups"][0]["observed_runs"] == 2
+    assert [group["render_variant"] for group in result["variant_groups"]] == [
+        "compact_v2"
+    ]
+    assert result["variant_attributed_runs"] == 1
+    assert result["variant_unattributed_runs"] == 1
 
 
 async def test_latest_continuation_does_not_recover_checks_only_as_success(
@@ -731,8 +994,12 @@ async def test_run_outcomes_api_returns_workspace_scoped_observed_runs(
     payload = response.json()
     assert payload["schema_version"] == "harness_outcomes.v1"
     assert payload["observed_runs"] == 1
+    assert payload["variant_attributed_runs"] == 0
+    assert payload["variant_unattributed_runs"] == 1
+    assert payload["variant_groups"] == []
     assert payload["runs"][0]["run_id"] == str(run.id)
     assert payload["runs"][0]["verified_success"] is True
+    assert payload["runs"][0]["render_variant"] == "unknown"
 
 
 def _evidence(*, completed: bool, passed: bool, blockers: int, evidence_id: str):

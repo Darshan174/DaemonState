@@ -737,11 +737,16 @@ describe("checkpoint product loop", () => {
     expect(within(handoffCoverage).queryByText("—")).not.toBeInTheDocument();
     expect(within(carriedContext).queryByTestId("context-composition-pie")).not.toBeInTheDocument();
     expect(within(carriedContext).queryByLabelText("Pie chart categories")).not.toBeInTheDocument();
+    expect(within(carriedContext).getByRole("button", { name: "View full evidence" })).toBeInTheDocument();
     expect(within(carriedContext).getByRole("button", { name: /Goal: 1 saved record/ })).toHaveAttribute("data-provenance", "human");
+    expect(within(carriedContext).getByRole("button", { name: /State now: 1 saved record/ })).toBeInTheDocument();
+    expect(within(carriedContext).getByRole("button", { name: /Start here: 1 saved record/ })).toBeInTheDocument();
+    expect(within(carriedContext).getByText("Do not repeat")).toBeInTheDocument();
+    expect(within(carriedContext).getByText("No failed approach or active blocker was captured.")).toBeInTheDocument();
     const fileCounter = within(carriedContext).getByRole("button", { name: /Relevant files: 1 saved record/ });
     expect(fileCounter).toHaveAttribute("data-provenance", "observed");
     expect(fileCounter).toHaveAttribute("data-context-color", "#75baa3");
-    const verificationCounter = within(carriedContext).getByRole("button", { name: /Verification: 1 saved record/ });
+    const verificationCounter = within(carriedContext).getByRole("button", { name: /Done when: 1 saved record/ });
     expect(verificationCounter).toHaveAttribute("data-context-color", "#b3a0d8");
     expect(within(carriedContext).queryByRole("button", { name: /Blockers: 0 saved records/ })).not.toBeInTheDocument();
     expect(within(carriedContext).queryByTestId("session-evidence-section")).not.toBeInTheDocument();
@@ -749,14 +754,14 @@ describe("checkpoint product loop", () => {
       name: "Compilation at load",
     })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Progress" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Verification: 1 saved record/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Done when: 1 saved record/ })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Exact next action" })).not.toBeInTheDocument();
     expect(screen.queryByText("Continuity")).not.toBeInTheDocument();
     expect(screen.getByText("Recovery points")).toBeInTheDocument();
     expect(screen.getByText(/Review only · the selected task does not change/)).toBeInTheDocument();
     expect(screen.queryByText("Latest work")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Next action: 1 saved record/ }));
-    const nextActionDrawer = screen.getByRole("dialog", { name: "Next action" });
+    fireEvent.click(screen.getByRole("button", { name: /Start here: 1 saved record/ }));
+    const nextActionDrawer = screen.getByRole("dialog", { name: "Start here" });
     expect(nextActionDrawer).toBeInTheDocument();
     expect(within(nextActionDrawer).getByText("Wire checkpoint verification into Runs")).toBeInTheDocument();
     expect(screen.getByText("Provider event · event-1")).toBeInTheDocument();
@@ -961,13 +966,13 @@ describe("checkpoint product loop", () => {
         item: "src/relevant-1.js",
       },
       {
-        button: /Prior attempts: 12 saved records/,
-        dialog: "Prior attempts",
+        button: /Do not repeat: 12 saved records/,
+        dialog: "Do not repeat",
         item: "Previous attempt 1",
       },
       {
-        button: /Verification: 12 saved records/,
-        dialog: "Verification",
+        button: /Done when: 12 saved records/,
+        dialog: "Done when",
         item: "Verification check 1",
       },
     ];
@@ -1027,14 +1032,14 @@ describe("checkpoint product loop", () => {
   it("returns keyboard focus to the context segment after closing its drawer", async () => {
     render(<MemoryRouter><NowPage /></MemoryRouter>);
 
-    const trigger = screen.getByRole("button", { name: /Next action: 1 saved record/ });
+    const trigger = screen.getByRole("button", { name: /Start here: 1 saved record/ });
     fireEvent.click(trigger);
-    const drawer = screen.getByRole("dialog", { name: "Next action" });
+    const drawer = screen.getByRole("dialog", { name: "Start here" });
     expect(drawer).toHaveAttribute("aria-describedby", "context-detail-description");
     expect(screen.getByRole("button", { name: "Close context details" })).toHaveFocus();
 
     fireEvent.keyDown(document, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Next action" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Start here" })).not.toBeInTheDocument());
     expect(trigger).toHaveFocus();
   });
 

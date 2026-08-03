@@ -16,6 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
+from app.continuation_brief import (
+    ContinuationBriefVariant,
+    resolve_continuation_brief_variant,
+)
 from app.models import (
     CheckpointEvidence,
     CheckpointItem,
@@ -77,6 +81,14 @@ SESSION_CONTEXT_REQUIRED_HEADINGS = (
     "### Current repository state",
     "## Verification state",
 )
+COMPACT_SESSION_CONTEXT_REQUIRED_HEADINGS = (
+    "# Continuation Brief v2",
+    "## Goal",
+    "## State now",
+    "## Start here",
+    "## Do not repeat",
+    "## Done when",
+)
 CHECKPOINT_CATEGORIES = (
     "goal",
     "progress",
@@ -102,6 +114,7 @@ SESSION_HANDOFF_RENDERED_RESULT_CHARS = 160
 # Roughly 1,750 model tokens: enough for bounded evidence without letting
 # session history dominate the authoritative current goal.
 SESSION_HANDOFF_MAX_OVERHEAD_CHARS = 7_000
+COMPACT_SESSION_HANDOFF_MAX_OVERHEAD_CHARS = 3_600
 
 _DECISION_SIGNAL = re.compile(
     r"\b(?:decid(?:e|ed)|we(?:'ll| will)|will use|keep|remove|replace|exclude|"
@@ -5473,8 +5486,34 @@ def render_session_handoff(
     supporting_context: Iterable[dict[str, str]] = (),
     contract: dict[str, Any] | None = None,
     checkpoint_data: dict[str, Any] | None = None,
+    variant: ContinuationBriefVariant | str = ContinuationBriefVariant.LEGACY_V1,
 ) -> str:
-    """Render the compact execution capsule; the response keeps the full contract."""
+    """Render the selected model-facing Session Context projection."""
+
+    resolved_variant = resolve_continuation_brief_variant(variant)
+    renderer = (
+        render_compact_session_handoff
+        if resolved_variant is ContinuationBriefVariant.COMPACT_V2
+        else render_legacy_session_handoff
+    )
+    return renderer(
+        checkpoint,
+        request_verbatim=request_verbatim,
+        supporting_context=supporting_context,
+        contract=contract,
+        checkpoint_data=checkpoint_data,
+    )
+
+
+def render_legacy_session_handoff(
+    checkpoint: WorkCheckpoint,
+    *,
+    request_verbatim: str | None = None,
+    supporting_context: Iterable[dict[str, str]] = (),
+    contract: dict[str, Any] | None = None,
+    checkpoint_data: dict[str, Any] | None = None,
+) -> str:
+    """Render the pre-experiment Session Context projection."""
 
     data = checkpoint_data or checkpoint_to_dict(
         checkpoint,
@@ -6244,17 +6283,360 @@ def render_session_handoff(
     return "\n".join(lines)
 
 
+def render_compact_session_handoff(
+    checkpoint: WorkCheckpoint,
+    *,
+    request_verbatim: str | None = None,
+    supporting_context: Iterable[dict[str, str]] = (),
+    contract: dict[str, Any] | None = None,
+    checkpoint_data: dict[str, Any] | None = None,
+) -> str:
+    """Render the five-part Session Context candidate for the A/B experiment."""
+
+    data = checkpoint_data or checkpoint_to_dict(
+        checkpoint,
+        recovered_goal=request_verbatim,
+    )
+    sections = data["sections"]
+    goals = sections["goal"]
+    goal = goals[0] if goals else {}
+    goal_payload = goal.get("payload") if isinstance(goal.get("payload"), dict) else {}
+    resolved_request = request_verbatim
+    if not isinstance(resolved_request, str) or not resolved_request.strip():
+        resolved_request = goal_payload.get("request_verbatim")
+    if not isinstance(resolved_request, str) or not resolved_request.strip():
+        resolved_request = str(goal.get("statement") or "").strip()
+    if not resolved_request:
+        raise ValueError("The checkpoint has no substantive session goal.")
+    handoff = contract or build_session_handoff_contract(
+        checkpoint,
+        request_verbatim=resolved_request,
+        supporting_context=supporting_context,
+        checkpoint_data=data,
+    )
+    repository = handoff["repository"]
+    reconciliation = handoff["reconciliation"]
+    protected = handoff["files"].get("pre_existing_at_handoff") or []
+    lines = [
+        "# Continuation Brief v2",
+        "",
+        (
+            "> Continue from **Start here**. The Goal and explicit user "
+            "constraints carry authority; prior-agent statements are historical "
+            "evidence until verified against the live repository."
+        ),
+        "",
+        "## Goal",
+        "",
+    ]
+    _append_session_context_quote(
+        lines,
+        handoff["current_goal"]["text"],
+        label="user-authored carried goal",
+    )
+
+    lines.extend([
+        "",
+        "## State now",
+        "",
+        (
+            f"- Mode: {handoff['task_mode']}; authority: "
+            f"{handoff['execution_policy']['permission_mode']}."
+        ),
+        (
+            "- Repository: "
+            f"{repository.get('root') or 'unavailable'}; "
+            f"branch={repository.get('branch') or 'unavailable'}; "
+            f"HEAD={repository.get('head_commit') or 'unavailable'}; "
+            f"relation={repository.get('freshness', {}).get('status') or 'unavailable'}."
+        ),
+        (
+            f"- Protected baseline: {len(protected)} pre-existing change"
+            f"{'' if len(protected) == 1 else 's'}; preserve regardless of "
+            "authorship and inspect live `git status --short` before editing."
+        ),
+        (
+            f"- Reconciliation: {reconciliation['state']}; "
+            + ", ".join(
+                f"{state}={count}"
+                for state, count in reconciliation["counts"].items()
+            )
+            + "."
+        ),
+    ])
+    _append_compact_session_progress(lines, handoff)
+    _append_compact_session_supporting_context(lines, handoff)
+    _append_compact_session_attachments(lines, handoff)
+
+    lines.extend(["", "## Start here", ""])
+    lines.append(f"- First action: {_compact_session_start_action(handoff)}")
+    relevant_paths = _compact_session_relevant_paths(handoff)
+    if relevant_paths:
+        lines.append(
+            "- Before any edit, inspect live `git status --short`, then "
+            + ", ".join(f"`{path}`" for path in relevant_paths[:3])
+            + "."
+        )
+    else:
+        lines.append("- Before any edit, inspect the live repository state.")
+
+    lines.extend(["", "## Do not repeat", ""])
+    _append_compact_session_traps(lines, handoff)
+
+    lines.extend(["", "## Done when", ""])
+    requirements = handoff.get("requirements") or []
+    if requirements:
+        for requirement in requirements:
+            status = str(requirement.get("status") or "remaining").replace(
+                "reported_done",
+                "reported done; verify",
+            )
+            checks = _compact_display_ids(requirement.get("verification_ids") or [])
+            suffix = f"; checks={checks}" if checks else ""
+            requirement_text = _compact_requirement_text(requirement.get("text"))
+            lines.append(
+                f"- {requirement['id']} [{status}{suffix}]: {requirement_text}"
+            )
+    else:
+        lines.append("- Complete and verify the carried goal.")
+    definition = handoff.get("definition_of_done") or {}
+    for item in definition.get("operational") or []:
+        text = _single_line(str(item.get("text") or ""), 500)
+        if text and not any(_presentation_duplicate(text, line) for line in lines[-12:]):
+            lines.append(f"- {text}")
+    verification = handoff.get("verification") or []
+    for item in verification[-SESSION_HANDOFF_RENDERED_VERIFICATION_LIMIT:]:
+        command = _historical_single_line(
+            item.get("command"),
+            SESSION_HANDOFF_RENDERED_COMMAND_CHARS,
+        )
+        statement = _historical_single_line(
+            item.get("statement"),
+            SESSION_HANDOFF_RENDERED_STATEMENT_CHARS,
+        )
+        proof = command or statement
+        if proof:
+            linked = _compact_display_ids(item.get("requirement_ids") or []) or "unmapped"
+            lines.append(
+                f"> [prior {item.get('status') or 'observed'} check; "
+                f"requirements={linked}] {proof}"
+            )
+    lines.extend([
+        "- Preserve every pre-existing repository change.",
+        "",
+        (
+            f"Evidence reference: checkpoint `{data['id']}`. This brief is "
+            "self-contained for the essential start state; when an accompanying "
+            "structured handoff is available, consult it only to resolve a gap "
+            "or conflict."
+        ),
+    ])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _append_compact_session_progress(
+    lines: list[str],
+    handoff: dict[str, Any],
+) -> None:
+    implementation = handoff.get("implementation_summary") or []
+    for item in implementation[-2:]:
+        _append_session_context_quote(
+            lines,
+            _historical_single_line(
+                item.get("statement"),
+                SESSION_HANDOFF_RENDERED_STATEMENT_CHARS,
+            ),
+            label=f"historical current-state claim; {item.get('truth_state') or 'reported'}",
+        )
+
+
+def _append_compact_session_supporting_context(
+    lines: list[str],
+    handoff: dict[str, Any],
+) -> None:
+    supporting = handoff.get("supporting_context") or []
+    if not supporting:
+        return
+    lines.append("- Referenced historical context required by the goal:")
+    for item in supporting:
+        _append_session_context_quote(
+            lines,
+            _self_contained_goal(item["text"]),
+            label=f"historical {item['role']}",
+        )
+
+
+def _append_compact_session_attachments(
+    lines: list[str],
+    handoff: dict[str, Any],
+) -> None:
+    attachments = [
+        item
+        for item in handoff.get("attachment_dependencies") or []
+        if item.get("required") is True
+    ]
+    if not attachments:
+        return
+    lines.append("- Required attachment evidence:")
+    for attachment in attachments:
+        linked = _compact_display_ids(attachment.get("requirement_ids") or []) or "unmapped"
+        lines.append(
+            f"  - {attachment['id']} "
+            f"[{'required' if attachment.get('required') else 'optional'}; "
+            f"{'available' if attachment.get('available') else 'unavailable'}; "
+            f"requirements={linked}]: "
+            f"path={_single_line(attachment.get('path') or 'unavailable', 360)}; "
+            f"SHA-256={attachment.get('sha256') or 'unavailable'}."
+        )
+
+
+def _compact_session_relevant_paths(handoff: dict[str, Any]) -> list[str]:
+    result: list[str] = []
+    files = handoff.get("files") or {}
+    for category in ("modified", "relevant"):
+        for item in files.get(category) or []:
+            path = str(item.get("path") or "").strip()
+            if path and path not in result:
+                result.append(path)
+    return result
+
+
+def _compact_session_start_action(handoff: dict[str, Any]) -> str:
+    requirements = handoff.get("requirements") or []
+    exact = _historical_single_line(
+        (handoff.get("exact_next_action") or {}).get("text"),
+        1_200,
+    )
+    if exact:
+        return _expand_compact_requirement_ids(exact, requirements)
+    conflicted = next(
+        (item for item in requirements if item.get("status") == "conflicted"),
+        None,
+    )
+    reported = next(
+        (item for item in requirements if item.get("status") == "reported_done"),
+        None,
+    )
+    remaining = next(
+        (
+            item
+            for item in requirements
+            if item.get("status") not in {"done", "reported_done"}
+        ),
+        None,
+    )
+    selected = conflicted or remaining or reported
+    if selected is not None:
+        verb = (
+            "Reconcile and then complete"
+            if selected is conflicted
+            else "Verify before relying on the reported completion of"
+            if selected is reported
+            else "Complete"
+        )
+        requirement_id = str(selected.get("id") or "requirement").strip()
+        requirement_text = _compact_requirement_text(selected.get("text"))
+        return f"{verb} {requirement_id}: {requirement_text}"
+    return "Verify the current repository state, then complete the carried goal."
+
+
+def _expand_compact_requirement_ids(
+    action: str,
+    requirements: Iterable[dict[str, Any]],
+) -> str:
+    """Make reconciliation IDs actionable without discarding their identity."""
+
+    expanded = action
+    requirement_map = sorted(
+        (
+            (
+                str(item.get("id") or "").strip(),
+                _compact_requirement_text(item.get("text")),
+            )
+            for item in requirements
+        ),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+    for requirement_id, requirement_text in requirement_map:
+        if not requirement_id or not requirement_text:
+            continue
+        expanded = re.sub(
+            rf"(?<![A-Za-z0-9]){re.escape(requirement_id)}(?![A-Za-z0-9])",
+            lambda match: f"{match.group(0)} ({requirement_text})",
+            expanded,
+        )
+    return expanded
+
+
+def _compact_requirement_text(value: Any) -> str:
+    """Return the lossless single-line requirement form used by v2."""
+
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _append_compact_session_traps(
+    lines: list[str],
+    handoff: dict[str, Any],
+) -> None:
+    emitted = False
+    if handoff.get("constraints"):
+        lines.append("- Keep every explicit constraint in Goal; it remains binding.")
+        emitted = True
+    sections = (
+        ("Failed approach", handoff.get("failed_attempts") or []),
+        ("Active blocker", handoff.get("reconciliation", {}).get("active_reported_blockers") or []),
+        ("Open risk", handoff.get("open_items") or []),
+        ("Decision still in force", handoff.get("decisions") or []),
+    )
+    remaining_slots = 4
+    for label, values in sections:
+        if remaining_slots <= 0:
+            break
+        for item in values[-min(2, remaining_slots):]:
+            statement = _historical_single_line(
+                item.get("statement"),
+                SESSION_HANDOFF_RENDERED_STATEMENT_CHARS,
+            )
+            if not statement:
+                continue
+            _append_session_context_quote(
+                lines,
+                statement,
+                label=f"{label}; historical {item.get('truth_state') or 'reported'}",
+            )
+            emitted = True
+            remaining_slots -= 1
+    if not emitted:
+        lines.append("- No prior failed approach, active blocker, or additional constraint was captured.")
+
+
 def session_handoff_render_issues(
     content: str,
     *,
     request_verbatim: str | None = None,
+    supporting_context: Iterable[dict[str, str]] = (),
+    handoff_contract: dict[str, Any] | None = None,
+    variant: ContinuationBriefVariant | str = ContinuationBriefVariant.LEGACY_V1,
 ) -> list[dict[str, Any]]:
     """Return fail-closed issues for an incomplete Session Context artifact."""
 
+    resolved_variant = resolve_continuation_brief_variant(variant)
+    compact = resolved_variant is ContinuationBriefVariant.COMPACT_V2
+    required_headings = (
+        COMPACT_SESSION_CONTEXT_REQUIRED_HEADINGS
+        if compact
+        else SESSION_CONTEXT_REQUIRED_HEADINGS
+    )
+    max_overhead_chars = (
+        COMPACT_SESSION_HANDOFF_MAX_OVERHEAD_CHARS
+        if compact
+        else SESSION_HANDOFF_MAX_OVERHEAD_CHARS
+    )
     lines = set(content.splitlines())
     missing_sections = [
         heading
-        for heading in SESSION_CONTEXT_REQUIRED_HEADINGS
+        for heading in required_headings
         if heading not in lines
     ]
     issues: list[dict[str, Any]] = []
@@ -6271,19 +6653,148 @@ def session_handoff_render_issues(
         })
     if request_verbatim is not None:
         carried_request_chars = len(_self_contained_goal(request_verbatim))
-        overhead_chars = max(0, len(content) - carried_request_chars)
-        if overhead_chars > SESSION_HANDOFF_MAX_OVERHEAD_CHARS:
+        carried_supporting_chars = sum(
+            len(_self_contained_goal(str(item.get("text") or "")))
+            for item in supporting_context
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        )
+        overhead_chars = max(
+            0,
+            len(content) - carried_request_chars - carried_supporting_chars,
+        )
+        if overhead_chars > max_overhead_chars:
             issues.append({
                 "code": "session_context_overhead_budget_exceeded",
                 "status": "fail",
                 "overhead_chars": overhead_chars,
-                "max_overhead_chars": SESSION_HANDOFF_MAX_OVERHEAD_CHARS,
+                "max_overhead_chars": max_overhead_chars,
                 "message": (
                     "Session Context exceeds its model-facing overhead budget; "
                     "keep detailed evidence in the structured handoff."
                 ),
             })
+    if compact and handoff_contract is not None:
+        missing_fragments = _compact_session_handoff_missing_fragments(
+            content,
+            handoff_contract,
+        )
+        if missing_fragments:
+            issues.append({
+                "code": "compact_session_context_critical_state_missing",
+                "status": "fail",
+                "missing_fragments": missing_fragments,
+                "message": (
+                    "Compact Session Context omits critical start, safety, or "
+                    "completion state."
+                ),
+            })
     return issues
+
+
+def _compact_session_handoff_missing_fragments(
+    content: str,
+    handoff: dict[str, Any],
+) -> list[str]:
+    """Name critical contract fields absent from the compact projection."""
+
+    goal = str((handoff.get("current_goal") or {}).get("text") or "")
+    expected: list[tuple[str, str]] = [
+        *(
+            (f"goal_line_{index}", line.strip())
+            for index, line in enumerate(goal.splitlines(), start=1)
+            if line.strip()
+        ),
+        ("task_mode", f"Mode: {handoff.get('task_mode') or ''};"),
+        (
+            "permission_mode",
+            "authority: "
+            + str(
+                (handoff.get("execution_policy") or {}).get("permission_mode")
+                or ""
+            )
+            + ".",
+        ),
+        (
+            "exact_next_action",
+            _compact_session_start_action(handoff),
+        ),
+    ]
+    repository = handoff.get("repository") or {}
+    expected.extend(
+        (f"repository_{key}", str(repository.get(key) or ""))
+        for key in ("root", "branch", "head_commit")
+    )
+    for item in handoff.get("supporting_context") or []:
+        role = item.get("role") or "unknown"
+        materialized = _self_contained_goal(str(item.get("text") or ""))
+        expected.extend(
+            (f"supporting_context_{role}_line_{index}", line.strip())
+            for index, line in enumerate(materialized.splitlines(), start=1)
+            if line.strip()
+        )
+    for item in handoff.get("attachment_dependencies") or []:
+        if item.get("required") is not True:
+            continue
+        attachment_id = str(item.get("id") or "attachment")
+        expected.extend((
+            (f"attachment_{attachment_id}_id", attachment_id),
+            (
+                f"attachment_{attachment_id}_path",
+                _single_line(str(item.get("path") or ""), 360),
+            ),
+            (f"attachment_{attachment_id}_sha256", str(item.get("sha256") or "")),
+        ))
+    missing = [
+        label
+        for label, value in expected
+        if value.strip() and value.strip() not in content
+    ]
+    done_section = _compact_generated_section(content, "## Done when")
+    done_bullets = [
+        _compact_requirement_text(line[2:])
+        for line in done_section.splitlines()
+        if line.startswith("- ")
+    ]
+    for item in handoff.get("requirements") or []:
+        requirement_id = str(item.get("id") or "").strip()
+        requirement_text = _compact_requirement_text(item.get("text"))
+        requirement_pattern = re.compile(
+            rf"(?<![A-Za-z0-9]){re.escape(requirement_id)}(?![A-Za-z0-9])"
+        )
+        mapped = any(
+            requirement_pattern.search(bullet) is not None
+            and requirement_text.casefold() in bullet.casefold()
+            for bullet in done_bullets
+        )
+        if requirement_id and requirement_text and not mapped:
+            missing.append(f"requirement_{requirement_id}")
+    if "pre-existing" not in content or "preserve" not in content.casefold():
+        missing.append("protected_baseline_policy")
+    return missing
+
+
+def _compact_generated_section(content: str, heading: str) -> str:
+    """Return one exact, unquoted generated v2 section bounded by its peers."""
+
+    lines = content.splitlines()
+    try:
+        start = lines.index(heading) + 1
+    except ValueError:
+        return ""
+    section_headings = frozenset(
+        item
+        for item in COMPACT_SESSION_CONTEXT_REQUIRED_HEADINGS
+        if item.startswith("## ")
+    )
+    end = next(
+        (
+            index
+            for index in range(start, len(lines))
+            if lines[index] in section_headings
+        ),
+        len(lines),
+    )
+    return "\n".join(lines[start:end])
 
 
 def build_session_handoff_artifact(
@@ -6297,6 +6808,7 @@ def build_session_handoff_artifact(
     allow_local_artifacts: bool = False,
     checkpoint_data: dict[str, Any] | None = None,
     repository_comparison: dict[str, Any] | None = None,
+    render_variant: ContinuationBriefVariant | str | None = None,
 ) -> dict[str, Any]:
     """Build the one canonical Session Context artifact used by every surface."""
 
@@ -6313,16 +6825,23 @@ def build_session_handoff_artifact(
         checkpoint_data=data,
         repository_comparison=repository_comparison,
     )
+    resolved_variant = resolve_continuation_brief_variant(
+        render_variant or settings.session_handoff_brief_variant
+    )
     content = render_session_handoff(
         checkpoint,
         request_verbatim=request_verbatim,
         supporting_context=supporting_context,
         contract=contract,
         checkpoint_data=data,
+        variant=resolved_variant,
     )
     render_issues = session_handoff_render_issues(
         content,
         request_verbatim=request_verbatim,
+        supporting_context=contract["supporting_context"],
+        handoff_contract=contract,
+        variant=resolved_variant,
     )
     if render_issues:
         quality = contract["quality_report"]
@@ -6345,6 +6864,7 @@ def build_session_handoff_artifact(
         "snapshot_phase": data["boundary"].get("snapshot_phase"),
         "captured_at": data["boundary"].get("occurred_at"),
         "currentness": data.get("currentness"),
+        "render_variant": resolved_variant.value,
         **contract,
         "content": content,
         "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
