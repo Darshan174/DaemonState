@@ -24,6 +24,12 @@ import DaemonStateIcon from "../components/DaemonStateIcon";
 import openaiIcon from "../assets/openai-icon.png";
 import { ApiError, api } from "../api/client";
 import { WAITLIST_ONLY } from "../config/deployment";
+import {
+  WAITLIST_CONSENT_VERSION,
+  analyticsAttribution,
+  captureWaitlistEvent,
+  waitlistAttribution,
+} from "../waitlist/tracking";
 import "./LandingReplica.css";
 
 const GITHUB_URL = "https://github.com/Darshan174/DaemonState";
@@ -132,7 +138,15 @@ function splitWords(text) {
 
 export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
   const pageRef = useRef(null);
+  const landingViewCapturedRef = useRef(false);
   const [menuOpen, setMenuOpen] = useState(false);
+
+  useEffect(() => {
+    if (landingViewCapturedRef.current) return;
+    landingViewCapturedRef.current = true;
+    const attribution = waitlistAttribution();
+    captureWaitlistEvent("landing_viewed", analyticsAttribution(attribution));
+  }, []);
 
   useEffect(() => {
     const themeColor = document.querySelector('meta[name="theme-color"]');
@@ -799,12 +813,21 @@ function WaitlistForm() {
     event.preventDefault();
     setSubmission("submitting");
     setMessage("Saving your place…");
+    const attribution = waitlistAttribution();
+    const analyticsProperties = analyticsAttribution(attribution);
+    captureWaitlistEvent("waitlist_cta_clicked", analyticsProperties);
 
     try {
-      const result = await api.post("/waitlist", { email, website });
+      const result = await api.post("/waitlist", {
+        email,
+        website,
+        ...attribution,
+        consent_version: WAITLIST_CONSENT_VERSION,
+      });
       setSubmission("success");
       setEmail("");
       setMessage(result.message || "You're on the DaemonState waitlist.");
+      captureWaitlistEvent("waitlist_joined", analyticsProperties);
     } catch (error) {
       setSubmission("error");
       setMessage(
@@ -844,7 +867,7 @@ function WaitlistForm() {
             maxLength={320}
             required
             disabled={isSubmitting || isSuccess}
-            aria-describedby="waitlist-message"
+            aria-describedby="waitlist-message waitlist-consent"
           />
           <button type="submit" disabled={isSubmitting || isSuccess}>
             <span>
@@ -866,6 +889,12 @@ function WaitlistForm() {
             tabIndex={-1}
           />
         </div>
+
+        <p id="waitlist-consent" className="dsr-waitlist-consent">
+          By joining, you agree to receive private-beta access and occasional
+          product updates. Unsubscribe anytime.{" "}
+          <Link to="/privacy" target="_blank" rel="noreferrer">Privacy notice</Link>.
+        </p>
       </form>
 
       <p

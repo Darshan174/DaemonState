@@ -9,6 +9,9 @@
 .env.staging
 .env.example
 !.env.example
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
 *.pem
 *.key
 *.crt
@@ -48,6 +51,7 @@ node_modules/
 frontend/node_modules/
 frontend/dist/
 frontend/.cache/
+frontend/.wrangler/
 .npm
 .yarn/
 *.tsbuildinfo

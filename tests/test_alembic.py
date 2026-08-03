@@ -56,6 +56,8 @@ def test_alembic_upgrade_bootstraps_current_sqlite_schema(tmp_path):
             "requirement_evidence",
             "continuation_outcomes",
             "continuation_stage_requests",
+            "waitlist_signups",
+            "prompt_snippets",
             "alembic_version",
         } <= tables
 
@@ -156,7 +158,34 @@ def test_alembic_upgrade_bootstraps_current_sqlite_schema(tmp_path):
             (("source_document_id",), "source_documents", ("id",)),
         } <= sync_observation_foreign_keys
 
-        assert version == "0017_stage_idempotency"
+        waitlist_columns = {
+            column["name"]
+            for column in inspector.get_columns("waitlist_signups")
+        }
+        assert {
+            "email",
+            "referrer",
+            "utm_source",
+            "utm_medium",
+            "utm_campaign",
+            "status",
+            "priority_score",
+            "consent_at",
+            "consent_version",
+            "email_sync_status",
+            "updated_at",
+        } <= waitlist_columns
+        waitlist_indexes = {
+            item["name"]
+            for item in inspector.get_indexes("waitlist_signups")
+        }
+        assert {
+            "uq_waitlist_signups_email",
+            "ix_waitlist_signups_created_at",
+            "ix_waitlist_signups_status_created_at",
+        } <= waitlist_indexes
+
+        assert version == "0020_waitlist_tracking"
         agent_run_indexes = {
             item["name"] for item in inspector.get_indexes("agent_runs")
         }
