@@ -62,9 +62,9 @@ explicitly unverified historical scope.
 The visible Continue handoff has two render variants behind
 `SESSION_HANDOFF_BRIEF_VARIANT`:
 
-- `legacy_v1` is the default control and immediate rollback.
-- `compact_v2` is the candidate with exactly five sections: Goal, State now,
+- `compact_v2` is the default with exactly five sections: Goal, State now,
   Start here, Do not repeat, and Done when.
+- `legacy_v1` remains available only as an immediate rollback.
 
 Both variants use the same `session_handoff.v1` structured contract, repository
 freshness checks, attachment hashes, copy gate, and protected-baseline policy.
@@ -73,14 +73,16 @@ their existing renderer so the experiment is not confounded across two paths.
 Every staged response records `context_render_variant`, `context_char_count`,
 and `context_estimated_tokens` alongside the context hash.
 
-The candidate is eligible to replace the control only with zero critical-state
-omissions or authority/preservation regressions, at least 80% correct first
-actions, at least a 15-point gain over the control, 30% fewer rediscovery steps,
-and fewer than 10% repeated failed approaches across at least 30 comparable
-submitted tasks. Desktop staging creates no `AgentRun` before the user submits,
-so delivery and prompt-size telemetry alone cannot prove product success; the
-submitted provider session must be linked to observed outcomes before those
-behavioral gates can be evaluated.
+The paired replay justified promoting the compact projection as the reversible
+default. Retain it only with zero critical-state omissions or
+authority/preservation regressions, at least 80% correct first actions, at least
+a 15-point gain over the control, 30% fewer rediscovery steps, and fewer than
+10% repeated failed approaches across at least 30 comparable submitted tasks.
+Desktop staging creates no `AgentRun` before the user submits, so delivery and
+prompt-size telemetry alone cannot prove product success; the submitted
+provider session must be linked to observed outcomes before those behavioral
+gates can be evaluated. Set the variant to `legacy_v1` immediately if a safety
+or action-selection regression appears.
 
 The initial read-only paired replay and its limitations are recorded in
 `docs/experiments/session-handoff-brief-v2-2026-08-03.md`. Re-run the same
