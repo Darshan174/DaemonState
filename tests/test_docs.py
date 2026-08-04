@@ -115,7 +115,7 @@ def test_dockerfile_copies_license_before_package_install():
 def test_compose_passes_the_session_handoff_experiment_variant():
     expected = (
         "SESSION_HANDOFF_BRIEF_VARIANT: "
-        "${SESSION_HANDOFF_BRIEF_VARIANT:-legacy_v1}"
+        "${SESSION_HANDOFF_BRIEF_VARIANT:-compact_v2}"
     )
 
     assert expected in COMPOSE.read_text(encoding="utf-8")

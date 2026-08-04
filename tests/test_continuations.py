@@ -4101,12 +4101,13 @@ async def test_stage_opens_visible_desktop_with_incomplete_foundation_warning(
     assert launch_calls[0]["cwd"] == str(tmp_path)
     assert goal in launch_calls[0]["prompt"]
     assert launch_calls[0]["prompt"].startswith(
-        "# Session Context — task-level working memory\n"
+        "# Continuation Brief v2\n"
     )
+    assert body["delivery"]["context_render_variant"] == "compact_v2"
     assert "Workspace Context readiness: **INCOMPLETE**" not in (
         launch_calls[0]["prompt"]
     )
-    assert "> Activation: this handoff remains context until the user submits" in (
+    assert "> Continue from **Start here**." in (
         launch_calls[0]["prompt"]
     )
     assert list(await db_session.scalars(
