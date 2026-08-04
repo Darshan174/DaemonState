@@ -159,6 +159,19 @@ def test_empty_optional_numeric_environment_value_is_ignored(monkeypatch):
     assert configured.embedding_dimension is None
 
 
+def test_compact_session_handoff_is_default_with_legacy_rollback(monkeypatch):
+    monkeypatch.delenv("SESSION_HANDOFF_BRIEF_VARIANT", raising=False)
+
+    configured = Settings(_env_file=None)
+    rollback = Settings(
+        _env_file=None,
+        session_handoff_brief_variant="legacy_v1",
+    )
+
+    assert configured.session_handoff_brief_variant == "compact_v2"
+    assert rollback.session_handoff_brief_variant == "legacy_v1"
+
+
 def test_prometheus_http_method_labels_have_bounded_cardinality():
     assert normalized_http_method("get") == "GET"
     assert normalized_http_method("BREW-secret-attacker-value") == "OTHER"
