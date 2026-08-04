@@ -58,6 +58,16 @@ from app.services.session_events import NormalizedSessionEvent, persist_session_
 from app.time import utc_now
 
 
+@pytest.fixture
+def legacy_session_handoff_variant(monkeypatch) -> None:
+    """Run legacy-format assertions through the explicit rollback path."""
+
+    monkeypatch.setattr(
+        "app.services.checkpoints.settings.session_handoff_brief_variant",
+        "legacy_v1",
+    )
+
+
 async def test_checkpoint_capture_is_structured_evidenced_and_idempotent(
     db_session,
     tmp_path,
@@ -380,6 +390,7 @@ async def test_session_handoff_api_preserves_verbatim_pre_compaction_context_onl
     db_session,
     tmp_path,
     monkeypatch,
+    legacy_session_handoff_variant,
 ) -> None:
     workspace, document = await _session_source(db_session, tmp_path)
     request_verbatim = (
@@ -486,6 +497,7 @@ async def test_session_handoff_rendering_deduplicates_and_bounds_file_inventory(
     db_session,
     tmp_path,
     monkeypatch,
+    legacy_session_handoff_variant,
 ) -> None:
     workspace, document = await _session_source(db_session, tmp_path)
     await persist_session_events(
@@ -552,6 +564,7 @@ async def test_session_context_carries_complete_latest_task_memory(
     db_session,
     tmp_path,
     monkeypatch,
+    legacy_session_handoff_variant,
 ) -> None:
     workspace, document = await _session_source(db_session, tmp_path)
     events = [
@@ -901,6 +914,7 @@ async def test_session_handoff_rendering_preserves_verification_evidence_fields(
     db_session,
     tmp_path,
     monkeypatch,
+    legacy_session_handoff_variant,
 ) -> None:
     workspace, document = await _session_source(db_session, tmp_path)
     events = _events()
@@ -974,6 +988,7 @@ async def test_session_handoff_reconciles_completion_continuation_conflict(
     db_session,
     tmp_path,
     monkeypatch,
+    legacy_session_handoff_variant,
 ) -> None:
     workspace, document = await _session_source(db_session, tmp_path)
     events = [
@@ -2628,6 +2643,7 @@ async def test_session_handoff_api_recovers_verbatim_goal_for_historical_v5_row(
     client,
     db_session,
     tmp_path,
+    legacy_session_handoff_variant,
 ) -> None:
     workspace, document = await _session_source(db_session, tmp_path)
     request_verbatim = (
@@ -2679,6 +2695,7 @@ async def test_session_handoff_recovers_truncated_goal_from_its_source_revision(
     client,
     db_session,
     tmp_path,
+    legacy_session_handoff_variant,
 ) -> None:
     authoritative_request = (
         "Build source-bound Session Context recovery.\n\n"
@@ -2913,6 +2930,7 @@ async def test_session_handoff_api_renders_latest_captured_session_tip(
     client,
     db_session,
     tmp_path,
+    legacy_session_handoff_variant,
 ) -> None:
     workspace, document = await _session_source(db_session, tmp_path)
     events = [
@@ -3168,6 +3186,7 @@ async def test_session_handoff_keeps_described_historical_image_non_blocking(
     db_session,
     tmp_path,
     monkeypatch,
+    legacy_session_handoff_variant,
 ) -> None:
     workspace, document = await _session_source(db_session, tmp_path)
     declared_path = tmp_path / "historical-workflow.png"
@@ -3258,6 +3277,7 @@ async def test_session_handoff_hashes_exact_provider_attachment_without_markup(
     db_session,
     tmp_path,
     monkeypatch,
+    legacy_session_handoff_variant,
 ) -> None:
     workspace, document = await _session_source(db_session, tmp_path)
     images = [
@@ -3533,6 +3553,7 @@ async def test_session_handoff_excludes_referenced_conversation_transport(
     client,
     db_session,
     tmp_path,
+    legacy_session_handoff_variant,
 ) -> None:
     workspace, document = await _session_source(db_session, tmp_path)
     request = (

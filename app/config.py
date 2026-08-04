@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     continuation_command_timeout_seconds: float = 14_400.0
     # The first continuation-brief experiment is isolated to the visible
     # Session Context handoff. Automatic executions keep their existing prompt.
-    session_handoff_brief_variant: Literal["legacy_v1", "compact_v2"] = "legacy_v1"
+    session_handoff_brief_variant: Literal["legacy_v1", "compact_v2"] = "compact_v2"
     litellm_api_key: str | None = None
     enable_local_embedder: bool = False
     data_dir: str = "./data"
