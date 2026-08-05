@@ -1431,6 +1431,11 @@ function LandingFooter({ waitlistOnlyMode }) {
           <a href="#early-access">Join waitlist</a>
           <a href={GITHUB_URL} target="_blank" rel="noreferrer">GitHub</a>
         </div>
+        <div>
+          <span>Legal</span>
+          <Link to="/permissions-terms">Permissions &amp; terms</Link>
+          <Link to="/privacy">Privacy notice</Link>
+        </div>
       </nav>
 
       <div className="dsr-footer-bottom">
