@@ -1101,7 +1101,7 @@
   max-width: 1260px;
   height: 680px;
   overflow: hidden;
-  border-radius: 20px 20px 0 0;
+  border-radius: 20px;
   background: #f1f1ed;
   color: var(--dsr-ink);
   box-shadow: 0 -30px 90px rgba(255, 255, 255, 0.05);
@@ -1535,21 +1535,11 @@
   margin: 20px 0 0;
 }
 
-.dsr-tools-proof p strong,
-.dsr-tools-proof p span {
-  display: block;
-}
-
 .dsr-tools-proof p strong {
+  display: block;
   font-size: 1.05rem;
   font-weight: 520;
   letter-spacing: -0.04em;
-}
-
-.dsr-tools-proof p span {
-  margin-top: 5px;
-  color: rgba(255, 255, 255, 0.48);
-  font-size: 0.68rem;
 }
 
 .dsr-tools-marquee {
@@ -2803,7 +2793,7 @@
     grid-template-columns: 1fr;
     grid-template-rows: 42px 1fr;
     height: 560px;
-    border-radius: 12px 12px 0 0;
+    border-radius: 12px;
   }
 
   .dsr-system-chrome {

@@ -1288,7 +1288,6 @@ function ToolsBand() {
         </div>
         <p>
           <strong>Your agents, in sync.</strong>
-          <span>Switch tools without resetting the work.</span>
         </p>
       </div>
       <div className="dsr-tools-marquee">
