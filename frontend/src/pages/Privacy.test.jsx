@@ -21,5 +21,7 @@ describe("Privacy", () => {
       .toHaveAttribute("href", "https://github.com/Darshan174");
     expect(screen.getByRole("link", { name: "Return to early access" }))
       .toHaveAttribute("href", "/#early-access");
+    expect(screen.getByRole("link", { name: "Permissions & terms" }))
+      .toHaveAttribute("href", "/permissions-terms");
   });
 });

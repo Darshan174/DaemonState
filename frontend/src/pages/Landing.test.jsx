@@ -48,10 +48,13 @@ describe("Landing", () => {
       "email",
     );
     expect(screen.getByRole("button", { name: "Join waitlist" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Privacy notice" }))
-      .toHaveAttribute("href", "/privacy");
-    expect(screen.getByRole("link", { name: "Privacy notice" }))
-      .toHaveAttribute("target", "_blank");
+    const privacyLinks = screen.getAllByRole("link", { name: "Privacy notice" });
+    expect(privacyLinks.some((link) => link.getAttribute("href") === "/privacy"))
+      .toBe(true);
+    expect(privacyLinks.some((link) => link.getAttribute("target") === "_blank"))
+      .toBe(true);
+    expect(screen.getByRole("link", { name: "Permissions & terms" }))
+      .toHaveAttribute("href", "/permissions-terms");
   });
 
   it("explains the recovery loop across supported coding agents", () => {
