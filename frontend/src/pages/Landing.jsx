@@ -33,6 +33,8 @@ import {
 import "./LandingReplica.css";
 
 const GITHUB_URL = "https://github.com/Darshan174/DaemonState";
+// 0.08s start delay + 0.55s color transition + 0.25s hold + 0.32s fade = 1.2s total.
+const LOADER_MESSAGE_HOLD_SECONDS = 0.25;
 
 const TOOL_NAMES = ["Codex", "Claude Code", "OpenCode", "Cursor", "Any agent"];
 
@@ -212,7 +214,11 @@ export default function Landing({ waitlistOnlyMode = WAITLIST_ONLY }) {
             { autoAlpha: 1, backgroundColor: "#777775" },
             { backgroundColor: "#ffffff", duration: 0.55, delay: 0.08 },
           )
-          .to(loader, { autoAlpha: 0, duration: 0.32 })
+          .to(loader, {
+            autoAlpha: 0,
+            duration: 0.32,
+            delay: LOADER_MESSAGE_HOLD_SECONDS,
+          })
           .from(
             nav,
             { yPercent: -130, duration: 0.7, ease: "power4.out" },
@@ -1430,6 +1436,11 @@ function LandingFooter({ waitlistOnlyMode }) {
           {!waitlistOnlyMode && <Link to="/app">Open product</Link>}
           <a href="#early-access">Join waitlist</a>
           <a href={GITHUB_URL} target="_blank" rel="noreferrer">GitHub</a>
+        </div>
+        <div>
+          <span>Legal</span>
+          <Link to="/permissions-terms">Permissions &amp; terms</Link>
+          <Link to="/privacy">Privacy notice</Link>
         </div>
       </nav>
 

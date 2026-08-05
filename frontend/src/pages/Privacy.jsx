@@ -101,7 +101,10 @@ export default function Privacy() {
 
       <footer className="dsr-privacy-footer">
         <span>© 2026 DaemonState</span>
-        <Link to="/">daemonstate.com</Link>
+        <nav aria-label="Legal navigation">
+          <Link to="/permissions-terms">Permissions &amp; terms</Link>
+          <Link to="/">daemonstate.com</Link>
+        </nav>
       </footer>
     </div>
   );

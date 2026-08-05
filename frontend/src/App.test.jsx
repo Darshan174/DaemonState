@@ -28,6 +28,10 @@ vi.mock("./pages/Connectors", () => ({
   default: () => <h1>Integrations page content</h1>,
 }));
 
+vi.mock("./pages/PermissionsTerms", () => ({
+  default: () => <h1>Permissions &amp; terms</h1>,
+}));
+
 vi.mock("./pages/NowPage", async () => {
   const { useState } = await vi.importActual("react");
   const { useLocation } = await vi.importActual("react-router-dom");
@@ -91,6 +95,17 @@ it("hides product routes only when the waitlist deployment flag is enabled", () 
   expect(waitlistOnly({ VITE_WAITLIST_ONLY: "false" })).toBe(false);
   expect(waitlistOnly({ MODE: "production" })).toBe(false);
   expect(waitlistOnly({ MODE: "development" })).toBe(false);
+});
+
+it("exposes the public permissions and terms route", async () => {
+  render(
+    <MemoryRouter initialEntries={["/permissions-terms"]}>
+      <App />
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByRole("heading", { name: "Permissions & terms" }))
+    .toBeInTheDocument();
 });
 
 it("contains a route render failure and lets the user recover without losing the shell", async () => {
