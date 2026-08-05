@@ -2540,7 +2540,7 @@
 
 .dsr-footer nav {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 40px;
 }
 
@@ -2648,6 +2648,10 @@
 }
 
 @media (max-width: 760px) {
+  .dsr-footer nav {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .dsr-nav {
     height: 80px;
     padding: 0 15px;

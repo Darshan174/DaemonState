@@ -118,6 +118,16 @@
   text-transform: uppercase;
 }
 
+.dsr-privacy-footer nav {
+  display: flex;
+  gap: 22px;
+}
+
+.dsr-privacy-footer a:hover,
+.dsr-privacy-footer a:focus-visible {
+  color: var(--dsr-white);
+}
+
 @media (max-width: 620px) {
   .dsr-privacy-header,
   .dsr-privacy-footer {
@@ -129,6 +139,10 @@
 
   .dsr-privacy-header {
     min-height: 120px;
+  }
+
+  .dsr-privacy-footer nav {
+    flex-wrap: wrap;
   }
 
   .dsr-privacy main {
