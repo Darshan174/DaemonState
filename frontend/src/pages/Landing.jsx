@@ -36,7 +36,8 @@ const GITHUB_URL = "https://github.com/Darshan174/DaemonState";
 // 0.08s start delay + 0.55s color transition + 0.25s hold + 0.32s fade = 1.2s total.
 const LOADER_MESSAGE_HOLD_SECONDS = 0.25;
 
-const TOOL_NAMES = ["Codex", "Claude Code", "OpenCode", "Cursor", "Any agent"];
+const TOOL_NAMES = ["Codex", "Claude Code", "OpenCode", "Cursor"];
+const TOOL_MARQUEE_NAMES = [...TOOL_NAMES, "Any agent"];
 
 const MEMORY_ITEMS = [
   "What you are building",
@@ -1157,8 +1158,10 @@ function AgentLogo({ name }) {
   if (name === "OpenCode") {
     return (
       <span className="dsr-agent-logo dsr-agent-logo-opencode" title="OpenCode">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M22 24H2V0h20zM17 4.8H7v14.4h10z" />
+        <svg viewBox="0 0 96 96" aria-hidden="true">
+          <rect className="dsr-opencode-frame" x="24" y="24" width="48" height="48" />
+          <rect className="dsr-opencode-cutout" x="36" y="36" width="24" height="12" />
+          <rect className="dsr-opencode-screen" x="36" y="48" width="24" height="12" />
         </svg>
       </span>
     );
@@ -1263,16 +1266,21 @@ function SystemFrame() {
 }
 
 function ToolsBand() {
-  const repeatedTools = [...TOOL_NAMES, ...TOOL_NAMES];
+  const repeatedTools = [...TOOL_MARQUEE_NAMES, ...TOOL_MARQUEE_NAMES];
 
   return (
-    <section className="dsr-tools" aria-label="Works across AI coding agents">
+    <section className="dsr-tools" aria-labelledby="tools-heading">
       <div className="dsr-tools-proof">
-        <span className="dsr-tools-proof-kicker">COMPATIBILITY / ONE MEMORY</span>
+        <div className="dsr-tools-proof-copy">
+          <h2 id="tools-heading">
+            Switch tools. <span>Keep the thread.</span>
+          </h2>
+          <p>Decisions, files, failed paths, and next steps move with you.</p>
+        </div>
         <div className="dsr-tools-proof-diagram">
           <div
             className="dsr-tool-avatars"
-            aria-label="Codex, Claude Code, OpenCode, Cursor, and any agent"
+            aria-label="Codex, Claude Code, OpenCode, and Cursor"
           >
             {TOOL_NAMES.map((tool) => (
               <span className="dsr-tool-avatar" key={tool} title={tool}>
@@ -1280,15 +1288,26 @@ function ToolsBand() {
               </span>
             ))}
           </div>
-          <span className="dsr-tools-proof-line" aria-hidden="true" />
-          <div className="dsr-tools-proof-core">
-            <Layers3 aria-hidden="true" />
-            <span>SHARED<br />MEMORY</span>
-          </div>
+          <svg
+            className="dsr-tools-proof-thread"
+            viewBox="0 0 96 44"
+            fill="none"
+            aria-hidden="true"
+          >
+            <path d="M3 25C19 25 18 10 34 12C50 14 47 34 64 32C80 30 78 18 93 20" />
+            <circle cx="3" cy="25" r="2.5" />
+            <circle cx="93" cy="20" r="2.5" />
+          </svg>
+          <aside className="dsr-tools-context-note" aria-label="Project context carried forward">
+            <span>THE WORK SO FAR</span>
+            <strong>comes with you.</strong>
+            <ul>
+              <li><i /> Decisions</li>
+              <li><i /> Key files</li>
+              <li><i /> Next step</li>
+            </ul>
+          </aside>
         </div>
-        <p>
-          <strong>Your agents, in sync.</strong>
-        </p>
       </div>
       <div className="dsr-tools-marquee">
         <div className="dsr-tools-track">
@@ -1387,10 +1406,19 @@ function MemoryConsole() {
           <i /><i /><i />
         </div>
         <div className="dsr-memory-core">
-          <span><DaemonStateIcon size={58} /></span>
-          <small>DAEMONSTATE</small>
-          <strong>CONTEXT CORE</strong>
-          <p>Continuously reconciled</p>
+          <article className="dsr-memory-thread-card">
+            <header>
+              <span>CURRENT THREAD</span>
+              <i aria-hidden="true" />
+            </header>
+            <strong>Provider-neutral handoff</strong>
+            <ul>
+              <li>Decision kept</li>
+              <li>Blocker visible</li>
+              <li>Next move clear</li>
+            </ul>
+          </article>
+          <p>Kept current as the project changes.</p>
         </div>
         <div className="dsr-memory-output-line" aria-hidden="true" />
         <div className="dsr-memory-output">
