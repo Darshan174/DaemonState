@@ -982,43 +982,16 @@ function CarriedContextPanel({
     && Array.isArray(manifest.selected_context)
     && manifest.token_accounting,
   );
-  const summaryOnly = manifest?.summary_only === true;
-  const staged = (
-    String(result?.status || "").trim().toLocaleLowerCase() === "awaiting_user"
-    || ["staged", "loaded", "awaiting_user"].includes(
-      String(result?.delivery?.status || "").trim().toLocaleLowerCase(),
-    )
-  );
-  const desktopHandoff = (
-    String(result?.delivery?.mode || "").trim().toLocaleLowerCase()
-      === "desktop_composer_prefill"
-  );
-  const delivered = summaryOnly || result?.delivery?.status === "delivered";
   const groups = compiled
     ? manifestContextGroups(manifest)
     : checkpointContextGroups(checkpoint);
-  const selectedItems = compiled ? manifest.selected_context : groups.flatMap((group) => group.items);
   const packageBrief = contextPackageBrief({
     groups,
     checkpoint,
     objective,
     compiled,
   });
-  const briefGroupIds = new Set(packageBrief.flatMap((item) => [
-    item.group?.id,
-    ...(item.group?.sourceIds || []),
-  ]).filter(Boolean));
-  const counterGroups = groups.filter(
-    (group) => !briefGroupIds.has(group.id) && group.items.length,
-  );
-  const excludedItems = compiled && Array.isArray(manifest.excluded_context)
-    ? manifest.excluded_context
-    : [];
-  const tokenAccounting = manifest?.token_accounting || {};
-  const renderedTokens = Number(tokenAccounting.rendered_tokens || 0);
-  const tokenBudget = Number(tokenAccounting.budget || manifest?.target_model?.context_budget_tokens || 0);
   const boundary = checkpoint?.boundary || {};
-  const currentness = checkpoint?.currentness?.state || "unknown";
   const sourceProvider = continuationProviderLabel(
     manifest?.continuation?.source_provider
       || manifest?.continuation?.provider
@@ -1027,274 +1000,101 @@ function CarriedContextPanel({
       || latestSession?.connector_type,
     "Linked session",
   );
-  const deliveryProvider = continuationProviderLabel(
-    result?.delivery?.provider || result?.run?.provider,
-    "Target harness",
-  );
   const contract = continuationContractView({ result });
   const snapshotItems = uniqueContextSnapshots(checkpoint, sessionCompactions);
   const visibleSnapshotItems = snapshotItems.slice(-4);
   const hiddenSnapshotCount = Math.max(0, snapshotItems.length - visibleSnapshotItems.length);
-  const previewCount = selectedItems.length;
-  const statusTone = currentness === "captured"
-    ? "border-[#cad9a1] bg-[#f0f5df] text-[#617324] dark:border-[#d9ff68]/20 dark:bg-[#d9ff68]/10 dark:text-[#d9ff68]"
-    : "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200";
 
   return (
-    <section
+    <div
       id="continuity-checkpoint"
-      className="app-surface relative scroll-mt-24 overflow-hidden"
-      aria-labelledby="carried-context-heading"
+      className="relative scroll-mt-24"
     >
-      <div className="pointer-events-none absolute right-0 top-0 h-52 w-52 rounded-full bg-[#d9ff68]/[0.08] blur-3xl dark:bg-[#d9ff68]/[0.04]" aria-hidden="true" />
-      <header className="relative flex flex-col gap-5 border-b border-[#deded5] px-5 py-6 dark:border-[#292925] sm:px-7 sm:py-7 lg:flex-row lg:items-start lg:justify-between lg:px-8">
-        <div className="max-w-3xl">
-          <PanelLabel icon={Layers3}>
-            {compiled
-              ? staged
-                ? desktopHandoff
-                  ? "Desktop handoff"
-                  : "Staged continuation"
-                : delivered
-                  ? "Compiled handoff"
-                  : "Prepared handoff"
-              : "Context handoff preview"}
-          </PanelLabel>
-          <h2 id="carried-context-heading" className="mt-3 text-[clamp(1.65rem,3vw,2.35rem)] font-semibold leading-none tracking-[-0.045em] text-[#171713] dark:text-white">
-            {compiled
-              ? staged
-                ? desktopHandoff
-                  ? "Open requested"
-                  : "Context loaded"
-                : delivered
-                  ? "What carried over"
-                  : "Prepared context package"
-              : "Context ready for selection"}
-          </h2>
-          <p className="mt-3 max-w-2xl text-sm leading-6 text-[#68685f] dark:text-[#aaa9a0]">
-            {compiled
-              ? staged
-                ? desktopHandoff
-                  ? `An open request was sent to ${deliveryProvider}, and the complete prepared context was copied to the clipboard. App rendering cannot be verified here; review the composer before submitting.`
-                  : `The exact context, direction, and execution loop loaded into ${deliveryProvider}. No turn has been submitted.`
-                : delivered && summaryOnly
-                ? `The recorded package summary delivered to ${deliveryProvider}, with exact selection, exclusion, repository, and verification counts.`
-                : delivered
-                  ? `The exact context package delivered to ${deliveryProvider}, including what was selected, excluded, and verified.`
-                  : "The exact context package prepared for this run. Delivery did not complete, so this is not presented as carried over."
-              : checkpoint
-                ? "A source-backed inventory of the saved task boundary. Nothing is presented as carried until repository reconciliation finishes. Continue and Copy Session Context use this session’s latest captured immutable checkpoint by default."
-                : "The linked task is ready. Continue will inspect the repository, compile the final package, and load it before you start the first turn."}
-          </p>
+      <div
+        className="relative w-full overflow-hidden rounded-[1.75rem] border border-black/10 bg-[#171713] p-5 text-white shadow-[0_20px_55px_rgba(23,23,19,0.16)] dark:border-white/10 sm:p-6 lg:p-8"
+        data-testid="context-package-card"
+      >
+        <div className="pointer-events-none absolute inset-0 daemonstate-now-grid opacity-40" aria-hidden="true" />
+        <div className="relative">
+          <HandoffCoverage
+            groups={groups}
+            packageBrief={packageBrief}
+            manifest={manifest}
+            compiled={compiled}
+          />
         </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-2 lg:justify-end">
-          {compiled && renderedTokens && tokenBudget ? (
-            <span className="rounded-full border border-[#d7d7cf] bg-white/70 px-3 py-1.5 text-xs font-semibold tabular-nums text-[#52524b] dark:border-white/10 dark:bg-white/[0.04] dark:text-[#d0d0c8]">
-              {renderedTokens.toLocaleString()} / {tokenBudget.toLocaleString()} estimated tokens
-            </span>
-          ) : checkpoint ? (
-            <span className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${statusTone}`}>
-              {checkpointCurrentnessLabel(currentness)}
-            </span>
-          ) : null}
+      </div>
+
+      {error || sessionHandoffCheckpoint ? (
+        <div className="mt-3 flex flex-wrap items-start justify-between gap-2 px-1">
           {error ? (
             <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
-              Refresh unavailable
+              Context refresh unavailable
             </span>
-          ) : null}
-          <div className="flex flex-col items-end gap-1">
-            <button
-              type="button"
-              onClick={onCopySessionContext}
-              disabled={!sessionHandoffCheckpoint || sessionHandoffPending}
-              aria-label={sessionHandoffCheckpoint
-                ? "Copy current session context"
-                : "Current session context unavailable"}
-              title={sessionHandoffCheckpoint
-                ? "Copy only this session’s latest captured immutable context. No harness is launched or submitted."
-                : "No usable captured context is available for the current session."}
-              className="btn-secondary min-h-11 text-xs disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Clipboard className="h-3.5 w-3.5" aria-hidden="true" />
-              {displayedSessionHandoffState.status === "copied"
-                ? "Session context copied"
-                : displayedSessionHandoffState.status === "copying"
-                  ? "Copying session context…"
-                  : sessionHandoffCheckpoint
-                    ? "Copy session context"
-                    : "Session context unavailable"}
-            </button>
-            {displayedSessionHandoffState.status === "error" ? (
-              <span role="alert" className="max-w-64 text-right text-[10px] font-semibold text-red-700 dark:text-red-300">
-                {displayedSessionHandoffState.message}
-              </span>
-            ) : null}
-          </div>
-        </div>
-      </header>
-
-      <div className="relative px-5 py-6 sm:px-7 sm:py-8 lg:px-8">
-        <div className="w-full">
-          <div
-            className="relative w-full overflow-hidden rounded-[1.35rem] border border-black/10 bg-[#171713] p-4 text-white shadow-[0_20px_55px_rgba(23,23,19,0.16)] dark:border-white/10 sm:p-5 lg:p-6"
-            data-testid="context-package-card"
-          >
-            <div className="pointer-events-none absolute inset-0 daemonstate-now-grid opacity-40" aria-hidden="true" />
-            <div className="relative">
-              <div className="flex flex-wrap items-end justify-between gap-3">
-                <div>
-                  <p className="text-xs font-black uppercase tracking-[0.14em] text-[#d9ff68]">
-                    {compiled
-                      ? staged
-                        ? desktopHandoff
-                          ? "Desktop handoff package"
-                          : "Loaded package"
-                        : delivered
-                          ? "Delivered package"
-                          : "Prepared package"
-                      : "Continuation snapshot"}
-                  </p>
-                  <h3 className="mt-1.5 text-lg font-semibold tracking-[-0.025em]">
-                    {compiled ? "Compiled context package" : "Context prepared for review"}
-                  </h3>
-                  <p className="mt-2 text-xs leading-5 text-[#a9a9a1]">
-                    {compiled
-                      ? `${selectedItems.length + excludedItems.length} considered · ${selectedItems.length} selected · ${excludedItems.length} excluded`
-                      : `${previewCount} context records captured`}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={(event) => openDrawer({
-                    title: compiled ? "Compiled package details" : "Saved boundary details",
-                    subtitle: compiled
-                      ? summaryOnly
-                        ? "A lane-by-lane summary recovered from the recorded package."
-                        : staged
-                          ? desktopHandoff
-                            ? "Every selected item prepared for the visible desktop draft and clipboard."
-                            : "Every selected item loaded into the prepared harness thread."
-                          : "Every selected item in the delivered context package."
-                      : "Every item captured at the saved task boundary.",
-                    items: selectedItems,
-                    mode: compiled ? "selected" : "checkpoint",
-                  }, event.currentTarget)}
-                  className="inline-flex min-h-11 items-center gap-1.5 rounded-full border border-white/15 bg-white/[0.04] px-3 text-xs font-semibold text-[#d8d8cf] transition-colors hover:border-white/30 hover:bg-white/[0.08] hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#d9ff68]/60"
-                >
-                  View full evidence <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
-                </button>
-              </div>
-
-              <div className="mt-4 space-y-2" aria-label="Continuation brief">
-                {packageBrief.map((item) => (
-                  <ContextBriefRow
-                    key={item.id}
-                    item={item}
-                    compiled={compiled}
-                    onOpen={item.group?.items?.length ? (event) => openDrawer({
-                      title: item.label,
-                      subtitle: compiled
-                        ? `${item.group.items.length} selected item${item.group.items.length === 1 ? "" : "s"} supporting this brief.`
-                        : `${item.group.items.length} source-backed item${item.group.items.length === 1 ? "" : "s"} captured at the saved boundary.`,
-                      items: item.group.items,
-                      mode: compiled ? "selected" : "checkpoint",
-                    }, event.currentTarget) : null}
-                  />
-                ))}
-              </div>
-
-              <HandoffCoverage
-                groups={groups}
-                packageBrief={packageBrief}
-                manifest={manifest}
-                compiled={compiled}
-              />
-
-              {counterGroups.length ? (
-                <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3" aria-label="Supporting context counters">
-                  {counterGroups.map((group) => {
-                  const provenance = contextGroupProvenance(group.items);
-                  const visual = contextCategoryVisual(group);
-                  return (
-                    <button
-                      key={group.id}
-                      type="button"
-                      onClick={(event) => openDrawer({
-                        title: group.label,
-                        subtitle: compiled
-                          ? `${group.items.length} selected item${group.items.length === 1 ? "" : "s"} in this compiler lane.`
-                          : `${group.items.length} item${group.items.length === 1 ? "" : "s"} captured at the saved boundary.`,
-                        items: group.items,
-                        mode: compiled ? "selected" : "checkpoint",
-                      }, event.currentTarget)}
-                      className={`group flex min-h-16 items-center justify-between gap-3 rounded-xl border px-3 py-2.5 text-left transition motion-reduce:transition-none motion-reduce:hover:translate-y-0 hover:-translate-y-0.5 hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#d9ff68]/70 ${
-                        group.items.length ? "" : "opacity-55 hover:opacity-85"
-                      }`}
-                      style={{
-                        backgroundColor: visual.background,
-                        borderColor: visual.border,
-                      }}
-                      data-context-color={visual.color}
-                      data-provenance={group.items.length ? provenance.kind || "mixed" : "excluded"}
-                      aria-label={`${group.label}: ${group.items.length} ${compiled ? "selected" : "saved"} record${group.items.length === 1 ? "" : "s"}. ${provenance.label}. Inspect details.`}
-                    >
-                      <span className="min-w-0">
-                        <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: visual.color }} aria-hidden="true" />
-                        <span className="mt-1.5 block text-xs font-semibold leading-4 text-white">
-                          {group.shortLabel || group.label}
-                        </span>
-                        <span className="mt-1 block text-[10px] font-semibold leading-4 text-white/60">
-                          {provenance.label}
-                        </span>
-                      </span>
-                      <span className="shrink-0 text-xl font-semibold tabular-nums tracking-[-0.03em] text-white">
-                        {group.items.length}
-                      </span>
-                    </button>
-                  );
-                })}
-                </div>
+          ) : <span />}
+          {sessionHandoffCheckpoint ? (
+            <div className="flex flex-col items-end gap-1">
+              <button
+                type="button"
+                onClick={onCopySessionContext}
+                disabled={sessionHandoffPending}
+                aria-label="Copy current session context"
+                title="Copy only this session’s latest captured immutable context. No harness is launched or submitted."
+                className="btn-secondary min-h-11 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Clipboard className="h-3.5 w-3.5" aria-hidden="true" />
+                {displayedSessionHandoffState.status === "copied"
+                  ? "Session context copied"
+                  : displayedSessionHandoffState.status === "copying"
+                    ? "Copying session context…"
+                    : "Copy session context"}
+              </button>
+              {displayedSessionHandoffState.status === "error" ? (
+                <span role="alert" className="max-w-64 text-right text-[10px] font-semibold text-red-700 dark:text-red-300">
+                  {displayedSessionHandoffState.message}
+                </span>
               ) : null}
             </div>
-          </div>
+          ) : null}
         </div>
+      ) : null}
 
-        {snapshotItems.length ? (
-          <div className="mt-5 border-t border-[#deded5] pt-5 dark:border-[#292925]">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <p className="text-xs font-semibold text-[#383832] dark:text-[#deded6]">Recovery points</p>
-                <span className="rounded-full bg-[#ecece4] px-2 py-0.5 text-[10px] font-bold tabular-nums text-[#68685f] dark:bg-white/[0.06] dark:text-[#aaa9a0]">
-                  {snapshotItems.length}
-                </span>
-              </div>
-              <p className="text-xs leading-5 text-[#77776e] dark:text-[#aaa9a0]">
-                Review only · the selected task does not change
-              </p>
+      {snapshotItems.length ? (
+        <div className="mt-5 border-t border-[#deded5] pt-5 dark:border-[#292925]">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <p className="text-xs font-semibold text-[#383832] dark:text-[#deded6]">Recovery points</p>
+              <span className="rounded-full bg-[#ecece4] px-2 py-0.5 text-[10px] font-bold tabular-nums text-[#68685f] dark:bg-white/[0.06] dark:text-[#aaa9a0]">
+                {snapshotItems.length}
+              </span>
             </div>
-            <div
-              ref={snapshotScrollerRef}
-              className="no-scrollbar -mx-1 mt-3 overflow-x-auto pb-1 pl-1 pr-6 [scroll-padding-inline-end:1.5rem]"
-            >
-              <ol className="flex min-w-max items-center pr-1" aria-label="Saved boundary history">
-                {hiddenSnapshotCount ? (
-                  <li className="flex items-center">
-                    <button
-                      type="button"
-                      onClick={(event) => openDrawer({
-                        title: "Earlier saved boundaries",
-                        subtitle: `${hiddenSnapshotCount} earlier immutable ${hiddenSnapshotCount === 1 ? "boundary is" : "boundaries are"} not selected for this continuation.`,
-                        items: snapshotItems.slice(0, hiddenSnapshotCount).flatMap(checkpointSnapshotItems),
-                        mode: "checkpoint",
-                      }, event.currentTarget)}
-                      className="inline-flex min-h-11 items-center rounded-full px-2 text-xs font-semibold text-[#77776e] underline decoration-[#b8b8af] underline-offset-4 hover:text-[#171713] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#95b52f]/50 dark:text-[#aaa9a0] dark:hover:text-white"
-                    >
-                      +{hiddenSnapshotCount} earlier
-                    </button>
-                    <span className="mx-1 h-px w-6 bg-[#d1d1c8] dark:bg-[#3a3a34]" aria-hidden="true" />
-                  </li>
-                ) : null}
-                {visibleSnapshotItems.map((snapshot, index) => {
+            <p className="text-xs leading-5 text-[#77776e] dark:text-[#aaa9a0]">
+              Review only · the selected task does not change
+            </p>
+          </div>
+          <div
+            ref={snapshotScrollerRef}
+            className="no-scrollbar -mx-1 mt-3 overflow-x-auto pb-1 pl-1 pr-6 [scroll-padding-inline-end:1.5rem]"
+          >
+            <ol className="flex min-w-max items-center pr-1" aria-label="Saved boundary history">
+              {hiddenSnapshotCount ? (
+                <li className="flex items-center">
+                  <button
+                    type="button"
+                    onClick={(event) => openDrawer({
+                      title: "Earlier saved boundaries",
+                      subtitle: `${hiddenSnapshotCount} earlier immutable ${hiddenSnapshotCount === 1 ? "boundary is" : "boundaries are"} not selected for this continuation.`,
+                      items: snapshotItems.slice(0, hiddenSnapshotCount).flatMap(checkpointSnapshotItems),
+                      mode: "checkpoint",
+                    }, event.currentTarget)}
+                    className="inline-flex min-h-11 items-center rounded-full px-2 text-xs font-semibold text-[#77776e] underline decoration-[#b8b8af] underline-offset-4 hover:text-[#171713] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#95b52f]/50 dark:text-[#aaa9a0] dark:hover:text-white"
+                  >
+                    +{hiddenSnapshotCount} earlier
+                  </button>
+                  <span className="mx-1 h-px w-6 bg-[#d1d1c8] dark:bg-[#3a3a34]" aria-hidden="true" />
+                </li>
+              ) : null}
+              {visibleSnapshotItems.map((snapshot, index) => {
                 const active = snapshot.id === checkpoint?.id;
                 const time = snapshot.boundary?.occurred_at || snapshot.boundary?.captured_at;
                 return (
@@ -1330,27 +1130,26 @@ function CarriedContextPanel({
                     </button>
                   </li>
                 );
-                })}
-              </ol>
-            </div>
+              })}
+            </ol>
           </div>
-        ) : previousCheckpoint ? (
-          <button
-            type="button"
-            onClick={(event) => openDrawer({
-              title: "Earlier saved context",
-              subtitle: "This belongs to another task and is not selected for the current continuation.",
-              items: checkpointSnapshotItems(previousCheckpoint),
-              mode: "checkpoint",
-            }, event.currentTarget)}
-            className="mt-5 inline-flex min-h-11 items-center gap-2 text-xs font-semibold text-[#68685f] underline decoration-[#aaa99f] underline-offset-4 hover:text-[#171713] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#95b52f]/50 dark:text-[#aaa9a0] dark:hover:text-white"
-          >
-            Inspect an earlier task snapshot <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
-          </button>
-        ) : null}
+        </div>
+      ) : previousCheckpoint ? (
+        <button
+          type="button"
+          onClick={(event) => openDrawer({
+            title: "Earlier saved context",
+            subtitle: "This belongs to another task and is not selected for the current continuation.",
+            items: checkpointSnapshotItems(previousCheckpoint),
+            mode: "checkpoint",
+          }, event.currentTarget)}
+          className="mt-5 inline-flex min-h-11 items-center gap-2 text-xs font-semibold text-[#68685f] underline decoration-[#aaa99f] underline-offset-4 hover:text-[#171713] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#95b52f]/50 dark:text-[#aaa9a0] dark:hover:text-white"
+        >
+          Inspect an earlier task snapshot <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
+      ) : null}
 
-        {contract ? <ContinuationContractPanel contract={contract} /> : null}
-      </div>
+      {contract ? <ContinuationContractPanel contract={contract} /> : null}
 
       {drawer ? (
         <div className="fixed inset-0 z-50 flex justify-end" role="presentation">
@@ -1415,7 +1214,7 @@ function CarriedContextPanel({
           </aside>
         </div>
       ) : null}
-    </section>
+    </div>
   );
 }
 
@@ -1565,65 +1364,25 @@ function ContractUnknown({ children }) {
 
 function CarriedContextLoading() {
   return (
-    <section className="app-surface overflow-hidden" aria-busy="true" aria-label="Preparing desktop handoff">
-      <header className="border-b border-[#deded5] px-5 py-6 dark:border-[#292925] sm:px-7 lg:px-8">
-        <PanelLabel icon={Layers3}>Continuation preview</PanelLabel>
-        <div className="mt-3 h-8 w-60 animate-pulse rounded-lg bg-[#e7e7df] motion-reduce:animate-none dark:bg-white/[0.07]" aria-hidden="true" />
-        <div className="mt-3 h-4 w-full max-w-xl animate-pulse rounded-full bg-[#ecece5] motion-reduce:animate-none dark:bg-white/[0.05]" aria-hidden="true" />
-      </header>
-      <div className="px-5 py-6 sm:px-7 sm:py-8 lg:px-8">
-        <div className="h-72 w-full animate-pulse rounded-[1.35rem] bg-[#20201c] motion-reduce:animate-none dark:bg-[#1a1a17]" />
+    <section
+      id="continuity-checkpoint"
+      className="relative scroll-mt-24 overflow-hidden rounded-[1.75rem] border border-black/10 bg-[#171713] p-5 text-white shadow-[0_20px_55px_rgba(23,23,19,0.16)] dark:border-white/10 sm:p-6 lg:p-8"
+      aria-busy="true"
+      aria-label="Preparing Handoff Coverage Dashboard"
+    >
+      <div className="pointer-events-none absolute inset-0 daemonstate-now-grid opacity-40" aria-hidden="true" />
+      <div className="relative animate-pulse motion-reduce:animate-none" aria-hidden="true">
+        <div className="h-3 w-56 rounded-full bg-[#d9ff68]/25" />
+        <div className="mt-4 h-6 w-52 rounded-lg bg-white/10" />
+        <div className="mt-3 h-3 w-full max-w-xl rounded-full bg-white/[0.07]" />
+        <div className="mt-6 h-12 rounded-xl bg-white/[0.055]" />
+        <div className="mt-5 grid gap-2 sm:grid-cols-3">
+          <div className="h-20 rounded-xl bg-white/[0.055]" />
+          <div className="h-20 rounded-xl bg-white/[0.055]" />
+          <div className="h-20 rounded-xl bg-white/[0.055]" />
+        </div>
       </div>
     </section>
-  );
-}
-
-function ContextBriefRow({ item, compiled, onOpen }) {
-  const count = item.group?.items?.length || 0;
-  const visual = contextCategoryVisual(item.group);
-  const content = (
-    <>
-      <span className="flex items-center justify-between gap-3">
-        <span className="flex items-center gap-2">
-          <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: visual.color }} aria-hidden="true" />
-          <span className="text-[10px] font-black uppercase tracking-[0.13em] text-white/55">{item.label}</span>
-        </span>
-        <span className="text-[9px] font-semibold text-white/55">{item.provenance.label}</span>
-      </span>
-      <span className="mt-1.5 block text-xs font-semibold leading-5 text-white">
-        {item.text}
-      </span>
-    </>
-  );
-  const className = "block w-full rounded-xl border px-3.5 py-3 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#d9ff68]/70";
-  const style = {
-    backgroundColor: visual.background,
-    borderColor: visual.border,
-  };
-  if (!onOpen) {
-    return (
-      <div
-        className={`${className} opacity-75`}
-        style={style}
-        data-context-color={visual.color}
-        data-provenance={item.provenance.kind || "mixed"}
-      >
-        {content}
-      </div>
-    );
-  }
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className={`${className} hover:-translate-y-0.5 hover:brightness-110 motion-reduce:hover:translate-y-0`}
-      style={style}
-      data-context-color={visual.color}
-      data-provenance={item.provenance.kind || "mixed"}
-      aria-label={`${item.label}: ${count} ${compiled ? "selected" : "saved"} record${count === 1 ? "" : "s"}. ${item.provenance.label}. Inspect details.`}
-    >
-      {content}
-    </button>
   );
 }
 
@@ -1667,124 +1426,143 @@ function HandoffCoverage({
   const verificationCount = compiled
     ? firstArray(manifest?.verification?.commands).length
     : handoffGroupCount(groups, "verification");
-  const ready = goalCaptured && currentStateCaptured && nextActionCaptured;
-
-  const carriedForward = [
-    goalCaptured ? "Goal captured" : null,
-    currentStateCaptured ? "Current state captured" : null,
-    nextActionCaptured ? "Next action captured" : null,
-    decisionCount ? `${formatHandoffCount(decisionCount, "decision")} captured` : null,
-  ].filter(Boolean);
-  const missing = [
-    !goalCaptured ? "Goal not captured" : null,
-    !currentStateCaptured ? "Current state not captured" : null,
-    !nextActionCaptured ? "Next action not captured" : null,
-    !decisionCount ? "Decisions not captured" : null,
-    !blockerCount ? "Blockers not captured" : null,
-  ].filter(Boolean);
-  const essentialGaps = [
-    !goalCaptured ? { label: "Goal", plural: false } : null,
-    !currentStateCaptured ? { label: "Current state", plural: false } : null,
-    !nextActionCaptured ? { label: "Next action", plural: false } : null,
-  ].filter(Boolean);
-  const available = [
-    goalCaptured ? "Goal" : null,
-    currentStateCaptured ? "current state" : null,
-    nextActionCaptured ? "next action" : null,
-    decisionCount ? formatHandoffCount(decisionCount, "decision") : null,
-  ].filter(Boolean);
-  const statusDetail = ready
-    ? [
-        `${formatHandoffList(available)} are available.`,
-        blockerCount
-          ? `${formatHandoffCount(blockerCount, "blocker")} captured.`
-          : "No blockers were captured.",
-        "The receiving agent should verify the repository before making changes.",
-      ].join(" ")
-    : `${handoffMissingSentence(essentialGaps)} Add the missing context before continuing.`;
+  const essentials = [
+    { label: "Goal", captured: goalCaptured },
+    { label: "Current state", captured: currentStateCaptured },
+    { label: "Next action", captured: nextActionCaptured },
+  ];
+  const essentialGaps = essentials.filter((item) => !item.captured);
+  const ready = essentialGaps.length === 0;
+  const supportingSignals = [
+    { label: "Decisions", value: formatHandoffCount(decisionCount, "decision") },
+    { label: "Relevant files", value: formatHandoffCount(relevantFileCount, "relevant file") },
+    { label: "Previous attempts", value: formatHandoffCount(previousAttemptCount, "previous attempt") },
+    { label: "Verification", value: formatHandoffCount(verificationCount, "verification check") },
+  ];
 
   return (
     <section
-      className="relative mt-4 overflow-hidden rounded-[1.35rem] border border-white/[0.1] bg-white/[0.025] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.055)] backdrop-blur-xl sm:p-5"
+      className="relative"
       aria-labelledby="handoff-coverage-heading"
       data-testid="handoff-coverage"
     >
-      <div className="pointer-events-none absolute -right-16 -top-16 h-40 w-40 rounded-full bg-[#d9ff68]/[0.055] blur-3xl" aria-hidden="true" />
-      <div className="relative flex items-start gap-3">
+      <div className="pointer-events-none absolute -right-16 -top-16 h-48 w-48 rounded-full bg-[#d9ff68]/[0.07] blur-3xl" aria-hidden="true" />
+      <header className="relative flex items-start justify-between gap-5">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <h3 id="handoff-coverage-heading" className="text-xs font-black uppercase tracking-[0.15em] text-[#d9ff68]">
+              Handoff Coverage Dashboard
+            </h3>
+            <span className="rounded-full border border-white/15 bg-white/[0.055] px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.12em] text-white/65">
+              Reference only
+            </span>
+          </div>
+          <p className="mt-3 text-xl font-semibold tracking-[-0.03em] text-white">
+            {ready
+              ? "Ready to continue"
+              : `${essentialGaps.length} essential ${essentialGaps.length === 1 ? "field needs" : "fields need"} context`}
+          </p>
+          <p className="mt-1.5 max-w-2xl text-xs leading-5 text-white/55">
+            {ready
+              ? "Goal, current state, and next action are present in the captured Session Context."
+              : "The attention area shows only essential context that was not captured."}
+          </p>
+        </div>
         <span
-          className={`mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-full border ${
+          className={`grid h-11 w-11 shrink-0 place-items-center rounded-full border ${
             ready
               ? "border-[#d9ff68]/25 bg-[#d9ff68]/10 text-[#d9ff68]"
               : "border-amber-300/25 bg-amber-300/10 text-amber-200"
           }`}
           aria-hidden="true"
         >
-          {ready ? <CheckCircle2 className="h-4 w-4" /> : <ShieldAlert className="h-4 w-4" />}
+          {ready ? <CheckCircle2 className="h-5 w-5" /> : <ShieldAlert className="h-5 w-5" />}
         </span>
-        <div className="min-w-0">
-          <h4 id="handoff-coverage-heading" className="text-[10px] font-black uppercase tracking-[0.16em] text-[#d9ff68]">
-            Handoff coverage
-          </h4>
-          <p className="mt-1 text-base font-semibold tracking-[-0.02em] text-white">
-            {ready ? "Ready to continue" : "Handoff needs context"}
-          </p>
-          <p className="mt-1 text-xs leading-5 text-white/60">
-            {statusDetail}
-          </p>
-        </div>
+      </header>
+
+      <div className="relative mt-5 flex items-start gap-2.5 rounded-xl border border-[#d9ff68]/20 bg-[#d9ff68]/[0.075] px-3.5 py-3 text-xs leading-5 text-[#e8f5c4]">
+        <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[#d9ff68]" aria-hidden="true" />
+        <p>
+          <span className="font-semibold text-[#d9ff68]">Reference only</span>
+          {" — reflects captured Session Context and cannot be edited here."}
+        </p>
       </div>
 
-      <dl className="relative mt-4 grid gap-px overflow-hidden rounded-xl border border-white/10 bg-white/10 sm:grid-cols-3" aria-label="Handoff coverage details">
-        <HandoffCoverageColumn
-          label="Carried forward"
-          items={carriedForward}
-          tone="carried"
-        />
-        <HandoffCoverageColumn
-          label="Supporting context"
-          items={[
-            formatHandoffCount(relevantFileCount, "relevant file"),
-            formatHandoffCount(previousAttemptCount, "previous attempt"),
-            formatHandoffCount(verificationCount, "verification check"),
-          ]}
-          tone="supporting"
-        />
-        <HandoffCoverageColumn
-          label="Missing"
-          items={missing.length ? missing : ["Nothing missing"]}
-          tone="missing"
-        />
-      </dl>
+      <section className="relative mt-5" aria-labelledby="essential-readiness-heading">
+        <div className="flex flex-wrap items-end justify-between gap-2">
+          <h4 id="essential-readiness-heading" className="text-[10px] font-black uppercase tracking-[0.14em] text-white/50">
+            Essential readiness
+          </h4>
+          <p className="text-[10px] font-semibold text-white/40">Goal · Current state · Next action</p>
+        </div>
+        <dl className="mt-2.5 grid gap-2 sm:grid-cols-3" aria-label="Essential readiness status">
+          {essentials.map((item) => (
+            <HandoffEssentialCard key={item.label} {...item} />
+          ))}
+        </dl>
+      </section>
+
+      <section className="relative mt-5" aria-labelledby="supporting-signals-heading">
+        <h4 id="supporting-signals-heading" className="text-[10px] font-black uppercase tracking-[0.14em] text-white/50">
+          Supporting context
+        </h4>
+        <dl className="mt-2.5 grid grid-cols-2 gap-2 lg:grid-cols-4" aria-label="Supporting context counts">
+          {supportingSignals.map((item) => (
+            <HandoffSupportingCard key={item.label} {...item} />
+          ))}
+        </dl>
+        <p className="mt-2.5 flex items-center gap-2 rounded-xl border border-white/10 bg-black/15 px-3.5 py-3 text-xs font-semibold text-white/70">
+          <span className={`h-2 w-2 shrink-0 rounded-full ${blockerCount ? "bg-amber-300" : "bg-white/35"}`} aria-hidden="true" />
+          {blockerCount
+            ? `${formatHandoffCount(blockerCount, "blocker")} reported`
+            : "No blockers reported"}
+        </p>
+      </section>
+
+      {essentialGaps.length ? (
+        <section className="relative mt-5 rounded-xl border border-amber-300/20 bg-amber-300/[0.07] px-3.5 py-3.5" aria-labelledby="handoff-attention-heading">
+          <h4 id="handoff-attention-heading" className="text-[10px] font-black uppercase tracking-[0.14em] text-amber-200">
+            Attention required
+          </h4>
+          <ul className="mt-2 flex flex-wrap gap-2" aria-label="Essential context gaps">
+            {essentialGaps.map((item) => (
+              <li key={item.label} className="rounded-full border border-amber-200/20 bg-black/15 px-2.5 py-1 text-xs font-semibold text-amber-100">
+                {item.label} not captured
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : (
+        <p className="relative mt-5 flex items-center gap-2 rounded-xl border border-[#d9ff68]/15 bg-[#d9ff68]/[0.045] px-3.5 py-3 text-xs font-semibold text-[#dcecae]" aria-label="Essential context gaps">
+          <CheckCircle2 className="h-4 w-4 shrink-0 text-[#d9ff68]" aria-hidden="true" />
+          No essential gaps
+        </p>
+      )}
     </section>
   );
 }
 
-function HandoffCoverageColumn({ label, items, tone }) {
-  const toneClass = {
-    carried: "bg-[#d9ff68]",
-    supporting: "bg-[#b3a0d8]",
-    missing: "bg-[#e2a86d]",
-  }[tone];
+function HandoffEssentialCard({ label, captured }) {
   return (
-    <div
-      className="bg-[#1b1b17]/95 px-3.5 py-3.5"
-      role="group"
-      aria-label={label}
-    >
-      <dt className="text-[10px] font-black uppercase tracking-[0.13em] text-white/45">
-        {label}
-      </dt>
-      <dd className="mt-2.5 space-y-2">
-        {items.map((item, index) => (
-          <span key={`${label}-${index}`} className="flex min-h-5 items-center gap-2 text-xs font-semibold leading-5 text-white/85">
-            <span
-              className={`h-1.5 w-1.5 shrink-0 rounded-full ${toneClass}`}
-              aria-hidden="true"
-            />
-            {item}
-          </span>
-        ))}
+    <div className={`rounded-xl border px-3.5 py-3.5 ${
+      captured
+        ? "border-[#d9ff68]/15 bg-[#d9ff68]/[0.055]"
+        : "border-amber-300/20 bg-amber-300/[0.065]"
+    }`} role="group" aria-label={`${label}: ${captured ? "captured" : "not captured"}`}>
+      <dt className="text-[10px] font-black uppercase tracking-[0.12em] text-white/45">{label}</dt>
+      <dd className={`mt-2 flex items-center gap-2 text-xs font-semibold ${captured ? "text-[#e5f4b9]" : "text-amber-100"}`}>
+        <span className={`h-2 w-2 rounded-full ${captured ? "bg-[#d9ff68]" : "bg-amber-300"}`} aria-hidden="true" />
+        {captured ? "Captured" : "Not captured"}
       </dd>
+    </div>
+  );
+}
+
+function HandoffSupportingCard({ label, value }) {
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.035] px-3.5 py-3.5" role="group" aria-label={`${label}: ${value}`}>
+      <dt className="text-[10px] font-black uppercase tracking-[0.12em] text-white/40">{label}</dt>
+      <dd className="mt-2 text-sm font-semibold tabular-nums tracking-[-0.015em] text-white/85">{value}</dd>
     </div>
   );
 }
@@ -1802,24 +1580,6 @@ function handoffGroupCount(groups, ...ids) {
 
 function formatHandoffCount(count, singular) {
   return `${count} ${singular}${count === 1 ? "" : "s"}`;
-}
-
-function formatHandoffList(items) {
-  if (items.length < 2) return items[0] || "";
-  if (items.length === 2) return `${items[0]} and ${items[1]}`;
-  return `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
-}
-
-function handoffMissingSentence(items) {
-  const labels = items.map((item) => item.label.toLowerCase());
-  const joined = labels.length === 1
-    ? labels[0]
-    : labels.length === 2
-      ? `${labels[0]} and ${labels[1]}`
-      : `${labels.slice(0, -1).join(", ")}, and ${labels.at(-1)}`;
-  const subject = `${joined.charAt(0).toUpperCase()}${joined.slice(1)}`;
-  const verb = items.length === 1 && !items[0].plural ? "was" : "were";
-  return `${subject} ${verb} not captured.`;
 }
 
 function ContextDrawerItem({ item, mode, index, sourceContext }) {
@@ -2784,15 +2544,6 @@ function contextItemProvenance(item = {}) {
     kind: "reported",
     tone: "bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-200",
   };
-}
-
-function checkpointCurrentnessLabel(value) {
-  return {
-    captured: "Current saved boundary",
-    superseded: "Earlier saved boundary",
-    historical: "Older saved boundary",
-    unknown: "Boundary time unknown",
-  }[value] || "Saved boundary";
 }
 
 function humanizeContextValue(value) {
