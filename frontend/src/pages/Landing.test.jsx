@@ -127,10 +127,19 @@ describe("Landing", () => {
     expect(screen.queryByText(/Drag to explore/i)).not.toBeInTheDocument();
     expect(container.querySelector(".dsr-system-frame")).toBeInTheDocument();
     expect(container.querySelectorAll(".dsr-stack-card")).toHaveLength(3);
-    expect(container.querySelectorAll(".dsr-agent-logo")).toHaveLength(13);
+    expect(container.querySelectorAll(".dsr-agent-logo")).toHaveLength(11);
+    expect(container.querySelectorAll(".dsr-tool-avatar")).toHaveLength(4);
+    expect(container.querySelector(".dsr-agent-logo-any")).not.toBeInTheDocument();
     expect(container.querySelectorAll(".dsr-graph-connectors path")).toHaveLength(3);
     expect(container.querySelectorAll(".dsr-tools-track > .is-any-agent")).toHaveLength(2);
-    expect(screen.getByText("Your agents, in sync.")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Switch tools. Keep the thread." }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("comes with you.")).toBeInTheDocument();
+    expect(screen.getByText("Provider-neutral handoff")).toBeInTheDocument();
+    expect(screen.queryByText("COMPATIBILITY / ONE MEMORY")).not.toBeInTheDocument();
+    expect(screen.queryByText(/SHARED MEMORY/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("CONTEXT CORE")).not.toBeInTheDocument();
     expect(mainNavigation).not.toHaveTextContent("01");
     expect(mainNavigation).not.toHaveTextContent("02");
     expect(mainNavigation).not.toHaveTextContent("03");
