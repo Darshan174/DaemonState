@@ -2724,7 +2724,7 @@ def staged_continuation_payload(
         run_payload = payload.get("run")
         if not isinstance(run_payload, dict):
             return None
-        return {
+        restored_payload = {
             "schema_version": str(
                 payload.get("schema_version")
                 or CONTINUATION_STAGE_SCHEMA_VERSION
@@ -2734,6 +2734,14 @@ def staged_continuation_payload(
             "delivery": delivery,
             "run": run_payload,
         }
+        continuation_identity = _compact_staged_continuation_identity(
+            payload,
+            delivery=delivery,
+            harness_session=harness_session,
+        )
+        if continuation_identity is not None:
+            restored_payload["continuation_identity"] = continuation_identity
+        return restored_payload
     active = active_continuation_run_payload(run)
     if active is None:
         return None
@@ -2780,6 +2788,62 @@ def staged_continuation_payload(
             "continuation_identity": identity,
         }
     return payload
+
+
+def _compact_staged_continuation_identity(
+    payload: Mapping[str, Any],
+    *,
+    delivery: Mapping[str, Any],
+    harness_session: Mapping[str, Any],
+) -> dict[str, str] | None:
+    """Retain the source identity needed to reject stale restored handoffs."""
+
+    preparation = payload.get("preparation")
+    manifest = (
+        preparation.get("manifest")
+        if isinstance(preparation, Mapping)
+        else None
+    )
+    continuation = (
+        manifest.get("continuation")
+        if isinstance(manifest, Mapping)
+        else None
+    )
+    if not isinstance(continuation, Mapping):
+        continuation = {}
+
+    def first_text(*values: object) -> str:
+        for value in values:
+            normalized = str(value or "").strip()
+            if normalized:
+                return normalized
+        return ""
+
+    source_provider = first_text(
+        delivery.get("source_provider"),
+        continuation.get("source_provider"),
+        continuation.get("provider"),
+    )
+    source_session_id = first_text(
+        delivery.get("source_session_id"),
+        harness_session.get("source_session_id"),
+        continuation.get("source_session_id"),
+        continuation.get("session_id"),
+    )
+    if not source_provider or not source_session_id:
+        return None
+
+    identity = {
+        "source_provider": source_provider,
+        "source_session_id": source_session_id,
+    }
+    task_id = first_text(continuation.get("task_id"))
+    checkpoint_id = first_text(continuation.get("checkpoint_id"))
+    if task_id:
+        identity["task_id"] = task_id
+    if checkpoint_id:
+        identity["checkpoint_id"] = checkpoint_id
+    return identity
 
 
 def _active_run_error(run: AgentRun) -> ContinuationRunError:

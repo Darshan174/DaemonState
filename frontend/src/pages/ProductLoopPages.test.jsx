@@ -2027,6 +2027,8 @@ Remove screenshot IDs and temporary paths from the Now page.
       delivery: {
         status: "awaiting_user",
         provider: "codex",
+        source_provider: "codex",
+        source_session_id: "session-1",
         handoff_id: "recovered-visible-handoff",
         context_delivery: "desktop_composer_prefill_and_clipboard",
         execution_started: false,
@@ -2069,6 +2071,45 @@ Remove screenshot IDs and temporary paths from the Now page.
     expect(
       mocks.continuation.mutateAsync.mock.calls[2][0].idempotency_key,
     ).not.toBe(firstRequest.idempotency_key);
+  });
+
+  it("does not restore a staged handoff from an older source session", () => {
+    mocks.providers.data.staged_handoff = {
+      schema_version: "continuation.stage.v1",
+      status: "awaiting_user",
+      delivery: {
+        status: "awaiting_user",
+        provider: "opencode",
+        source_provider: "codex",
+        source_session_id: "older-session",
+        handoff_id: "stale-visible-handoff",
+        context_delivery: "clipboard",
+        execution_started: false,
+        harness_session: {
+          handoff_id: "stale-visible-handoff",
+          source_session_id: "older-session",
+          open_requested: true,
+          context_copied: true,
+          context_loaded: false,
+          execution_started: false,
+        },
+      },
+      run: {
+        handoff_id: "stale-visible-handoff",
+        provider: "opencode",
+        objective: "Harden checkpoint capture",
+        status: "awaiting_user",
+        started_at: "2026-07-29T10:06:12Z",
+        execution_started: false,
+      },
+    };
+
+    render(<MemoryRouter><NowPage /></MemoryRouter>);
+
+    expect(screen.queryByText(/Previous OpenCode handoff/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", {
+      name: "Open desktop handoff in OpenCode",
+    })).not.toHaveTextContent("Request again");
   });
 
   it("keeps a legacy active run from creating a duplicate staged thread", async () => {
