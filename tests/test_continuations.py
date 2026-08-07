@@ -3937,6 +3937,14 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     assert staged_handoff["delivery"]["visibility"]["open_verified"] is False
     assert staged_handoff["run"]["provider_session_id"] is None
     assert "preparation" not in staged_handoff
+    assert staged_handoff["continuation_identity"] == {
+        "task_id": body["preparation"]["manifest"]["continuation"]["task_id"],
+        "checkpoint_id": body["preparation"]["manifest"]["continuation"][
+            "checkpoint_id"
+        ],
+        "source_provider": "codex",
+        "source_session_id": "waiting-handoff-source",
+    }
     assert len(json.dumps(staged_handoff)) < 100_000
 
     failed_launch_calls = 0

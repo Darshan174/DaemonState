@@ -3488,15 +3488,41 @@ function stagedHandoffMatchesContinuation(handoff, {
   source,
   checkpointId,
 } = {}) {
-  const identity = handoff?.context_package?.continuation_identity
+  const identity = handoff?.continuation_identity
+    || handoff?.context_package?.continuation_identity
     || handoff?.context_manifest?.continuation
     || handoff?.preparation?.manifest?.continuation
     || null;
-  if (!identity || typeof identity !== "object") return true;
+  const stagedProvider = normalizeProvider(
+    identity?.source_provider
+      || identity?.provider
+      || handoff?.delivery?.source_provider,
+  );
+  const stagedSessionId = String(
+    identity?.source_session_id
+      || identity?.session_id
+      || handoff?.delivery?.source_session_id
+      || handoff?.delivery?.harness_session?.source_session_id
+      || "",
+  ).trim();
+  const currentProvider = normalizeProvider(source?.provider);
+  const currentSessionId = String(source?.sessionId || "").trim();
+  // Restored handoffs are durable hints, not authority. Without an exact
+  // source identity they cannot displace the newest session selected by Now.
+  if (
+    !stagedProvider
+    || !stagedSessionId
+    || !currentProvider
+    || !currentSessionId
+    || stagedProvider !== currentProvider
+    || stagedSessionId !== currentSessionId
+  ) {
+    return false;
+  }
 
   const stagedObjective = canonicalContinuationIdentityText(
-    identity.selected_objective
-      || identity.execution_objective
+    identity?.selected_objective
+      || identity?.execution_objective
       || handoff?.preparation?.objective
       || handoff?.run?.objective,
   );
@@ -3506,21 +3532,10 @@ function stagedHandoffMatchesContinuation(handoff, {
   }
   if (
     checkpointId
-    && identity.checkpoint_id
+    && identity?.checkpoint_id
     && String(identity.checkpoint_id) !== String(checkpointId)
   ) {
     return false;
-  }
-  if (source?.provider && identity.source_provider) {
-    if (
-      normalizeProvider(identity.source_provider) !== normalizeProvider(source.provider)
-      || (
-        identity.source_session_id
-        && String(identity.source_session_id) !== String(source.sessionId || "")
-      )
-    ) {
-      return false;
-    }
   }
   return true;
 }
