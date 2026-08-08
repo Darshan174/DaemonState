@@ -87,6 +87,88 @@ struct LogoControlTests {
 
     @Test
     @MainActor
+    func promptEditorExplicitlyTakesInputFocus() {
+        let controller = PromptDropdownViewController()
+        let panel = InputTestPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 466),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        panel.contentViewController = controller
+        panel.makeKeyAndOrderFront(nil)
+        defer { panel.orderOut(nil) }
+
+        #expect(controller.focusEditor())
+        #expect(controller.editorHasInputFocus)
+    }
+
+    @Test
+    @MainActor
+    func openingPromptPopoverFocusesItsEditor() async throws {
+        let overlay = OverlayPanelController(savedOrigin: nil)
+        let controller = PromptDropdownController()
+        overlay.show()
+        controller.toggle(relativeTo: overlay.promptMenuButton)
+        defer {
+            controller.close()
+            overlay.hide()
+        }
+
+        try await Task<Never, Never>.sleep(nanoseconds: 100_000_000)
+
+        #expect(controller.editorHasInputFocus)
+    }
+
+    @Test
+    @MainActor
+    func promptTextViewHandlesCommandPasteDirectly() {
+        let application = NSApplication.shared
+        let previousMenu = application.mainMenu
+        defer { application.mainMenu = previousMenu }
+        OverlayApplicationMenu.install(on: application)
+        let editMenu = application.mainMenu?.items.first {
+            $0.submenu?.title == "Edit"
+        }?.submenu
+        let pasteItem = editMenu?.items.first {
+            $0.action == #selector(NSText.paste(_:))
+        }
+        #expect(pasteItem?.keyEquivalent == "v")
+        #expect(pasteItem?.target == nil)
+
+        let probe = PasteActionProbeTextView(
+            frame: NSRect(x: 0, y: 0, width: 100, height: 40)
+        )
+        let panel = InputTestPanel(
+            contentRect: probe.frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        panel.contentView = probe
+        panel.makeKeyAndOrderFront(nil)
+        defer { panel.orderOut(nil) }
+        #expect(panel.makeFirstResponder(probe))
+
+        let event = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.command],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: panel.windowNumber,
+            context: nil,
+            characters: "v",
+            charactersIgnoringModifiers: "v",
+            isARepeat: false,
+            keyCode: 9
+        )!
+
+        #expect(panel.performKeyEquivalent(with: event))
+        #expect(probe.receivedPaste)
+    }
+
+    @Test
+    @MainActor
     func heldSubsequentPressesCancelInsertionBeforeTheirRelease() async throws {
         let control = LogoControl(frame: NSRect(x: 0, y: 0, width: 56, height: 56))
         var insertions = 0
@@ -149,5 +231,19 @@ struct LogoControlTests {
     private func waitPastClickDeadline() async throws {
         let milliseconds = Int((NSEvent.doubleClickInterval + 0.14) * 1_000)
         try await Task.sleep(for: .milliseconds(milliseconds))
+    }
+}
+
+@MainActor
+private final class InputTestPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
+
+@MainActor
+private final class PasteActionProbeTextView: PromptTextView {
+    var receivedPaste = false
+
+    override func paste(_ sender: Any?) {
+        receivedPaste = true
     }
 }
