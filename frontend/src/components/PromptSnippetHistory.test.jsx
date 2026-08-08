@@ -229,6 +229,7 @@ describe("PromptSnippetHistory", () => {
     render(<PromptSnippetHistory workspaceId="workspace-1" />);
 
     expect(screen.getByText("No saved prompts yet")).toBeInTheDocument();
+    expect(document.querySelector(".lucide-sparkles")).not.toBeInTheDocument();
     expect(screen.getByText(
       "Use the green + button or paste one directly into the floating dropdown.",
     )).toBeInTheDocument();

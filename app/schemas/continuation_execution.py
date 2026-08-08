@@ -35,6 +35,15 @@ _CURRENT_USER_REQUEST_MARKER_RE = re.compile(
 _IMAGE_TRANSPORT_TAG_RE = re.compile(
     r"(?is)</?image\b[^>]*>",
 )
+_NEGATED_ACTION_SCOPE_RE = re.compile(
+    r"\b(?:cannot|can\s+not|can['’]t|do\s+not|don['’]t|"
+    r"(?:must|may|shall|should)\s+not|(?:must|may|shall|should)n['’]t|"
+    r"(?:is|are|was|were)n['’]t\s+(?:allowed|authorized|permitted)\s+to|"
+    r"not(?!\s+only\b)|"
+    r"(?:barred|disallowed|forbidden|prohibited)\s+(?:from|to)|"
+    r"refrain\s+from|avoid|forbid|prohibit|never)\b",
+    re.IGNORECASE,
+)
 _CONCRETE_OUTCOME_ACTION_RE = re.compile(
     r"\b(?:accomplish|add|allow|build|carry|change|copy|create|debug|"
     r"diagnose|disable|display|divide|document|enable|ensure|expose|finish|"
@@ -100,30 +109,55 @@ _DIRECT_TEST_INTENT_RE = re.compile(
     r"\b(?:tests?|test\s+suite|checks?|lint|typechecks?|build)\b)",
     re.IGNORECASE,
 )
-_DIRECT_REQUEST_BOUNDARY = (
-    r"(?:^|[.!?]\s+|\b(?:and|then|also)\s+|(?:&|\+)\s*)"
-)
+_DIRECT_REQUEST_BOUNDARY = r"(?:^|[.!?;]\s+|\b(?:and|then|also|but)\s+|(?:&|\+)\s*)"
 _DIRECT_REQUEST_PREFIX = (
     r"(?:(?:please|now|immediately)\s+|"
     r"(?:can|could|would|will)\s+you\s+(?:please\s+)?|"
     r"i\s+(?:want|need)\s+you\s+to\s+|"
     r"let(?:'|’)s\s+|you\s+(?:must|should)\s+)?"
 )
+_DIRECT_PRODUCT_SUBJECT = (
+    r"(?:the\s+)?"
+    r"(?:(?!(?:analy[sz]e|answer|audit|check|consider|critique|decide|"
+    r"determine|evaluate|explain|inspect|requirement|review|says?|spec|"
+    r"summari[sz]e|tell|verify|whether)\b)[a-z0-9_-]+\s+){0,3}"
+    r"(?:alerts?|backgrounds?|badges?|banners?|buttons?|cards?|components?|"
+    r"containers?|dialogs?|drawers?|footers?|forms?|headers?|icons?|images?|"
+    r"inputs?|labels?|links?|menus?|"
+    r"messages?|modals?|navbars?|notifications?|pages?|panels?|popovers?|"
+    r"prompts?|screens?|sections?|sidebars?|tables?|tabs?|toasts?|tooltips?|"
+    r"widgets?)"
+)
+_DIRECT_PRODUCT_LOCATION_SCOPE = (
+    r"(?:\s+(?:on|in|within|across|for)\s+(?:the\s+)?"
+    r"[a-z0-9_-]+(?:\s+[a-z0-9_-]+){0,3})?"
+)
+_DIRECT_STATE_REQUEST_BOUNDARY = (
+    r"(?:^|[.!?;]\s+|\b(?:and|then|also|but)\s+|"
+    r"^\s*(?:ffs|hey|wtf)[,;:]\s*)"
+)
 _DIRECT_MUTATION_INTENT_RE = re.compile(
     _DIRECT_REQUEST_BOUNDARY
     + _DIRECT_REQUEST_PREFIX
     + r"(?:add|address|allow|clean(?:\s+up)?|commit|configure|convert|copy|"
-    r"correct|delete|deploy|disable|display|edit|enable|ensure|expose|fix|"
+    r"correct|delete|deploy|disable|"
+    r"display(?!\s+(?:(?:me|us)\b|(?:the\s+)?(?:answer|findings?|results?|"
+    r"status|summary|report|explanation)\b))|"
+    r"edit|enable|ensure|expose|fix|"
     r"harden|hide|implement|improve|install|integrate|merge|migrate|modify|"
     r"move|optimize|paste|patch|persist|prevent|push|refactor|reject|remove|"
     r"rename|reorganize|repair|replace|resolve|restore|retain|route|secure|"
-    r"set|ship|show(?!\s+(?:me|us)\b)|simplify|split|support|surface|"
-    r"tackle|turn\s+(?:on|off)|uninstall|update|upgrade|wire|"
+    r"set|ship|show(?!\s+(?:(?:me|us)\b|(?:the\s+)?(?:answer|findings?|"
+    r"results?|status|summary|report|explanation)\b))|"
+    r"simplify|split|support|surface|"
+    r"tackle|turn\s+(?:on|off)|uninstall|"
+    r"update(?!\s+(?:(?:me|us)\b|(?:the\s+)?(?:current\s+)?status\b))|"
+    r"upgrade|wire|"
     r"document(?!\s+(?:how|what|whether|why)\b)|"
     r"write(?!\s+(?:(?:an?|the)\s+)?"
     r"(?:(?:action|deployment|detailed|engineering|implementation|migration|"
     r"product|project|remediation|rollout|technical|test|testing|written)\s+){0,2}"
-    r"(?:analysis|assessment|plan|report|summary)\b))\b",
+    r"(?:analysis|assessment|explanation|plan|report|review|summary)\b))\b",
     re.IGNORECASE,
 )
 _DIRECT_BUILD_INTENT_RE = re.compile(
@@ -133,22 +167,200 @@ _DIRECT_BUILD_INTENT_RE = re.compile(
     + r"(?!\s+(?:(?:an?|the)\s+)?"
     + r"(?:(?:action|deployment|detailed|engineering|implementation|migration|"
     + r"product|project|remediation|rollout|technical|test|testing|written)\s+){0,2}"
-    + r"(?:analysis|assessment|plan|report|summary)\b)",
+    + r"(?:analysis|assessment|explanation|plan|report|review|summary)\b)",
     re.IGNORECASE,
 )
 _DIRECT_COMPLETION_INTENT_RE = re.compile(
     _DIRECT_REQUEST_BOUNDARY
     + _DIRECT_REQUEST_PREFIX
     + r"(?:(?:carry|complete|continue|deliver|finish|resume|retry)\b"
-    + r"(?!\s+(?:(?:an?|the)\s+)?(?:analysis|assessment|discussion|"
-    + r"explanation|plan|report|review|summary|tests?|checks?|lint|build)\b)|"
+    + r"(?!\s+(?:(?:an?|the)\s+)?"
+    + r"(?:(?:code|implementation|product|repository|security|technical)\s+){0,2}"
+    + r"(?:analysis|assessment|audit(?:ing)?|discussion|explanation|plan|"
+    + r"report(?:ing)?|review(?:ing)?|summary|tests?|checks?|lint|build)\b)|"
     + r"work\s+on\s+(?:this|it)|get\s+(?:this|it)\s+done|ship\s+(?:this|it))",
     re.IGNORECASE,
 )
 _DIRECT_BEHAVIOR_CONSTRAINT_RE = re.compile(
     _DIRECT_REQUEST_BOUNDARY
-    + r"(?:do\s+not|don't|never)\s+"
-    + r"(?:expose|fallback|fall\s+back|hide|launch|leak|lose|pretend|skip)\b",
+    + r"(?:do\s+not|don['’]?t|never)\s+"
+    + r"(?:pretend\b.{0,80}\b(?:handoff|provider\s+task)\b|"
+    + r"launch\b.{0,80}\b(?:agent|handoff|provider)\b)",
+    re.IGNORECASE,
+)
+_DIRECT_NEGATED_PRODUCT_BEHAVIOR_RE = re.compile(
+    _DIRECT_STATE_REQUEST_BOUNDARY
+    + _DIRECT_REQUEST_PREFIX
+    + r"(?:do\s+not|don['’]?t|never)\s+let\s+"
+    + _DIRECT_PRODUCT_SUBJECT
+    + _DIRECT_PRODUCT_LOCATION_SCOPE
+    + r"\s+(?:be|become|remain|stay|appear|render)\s+"
+    + r"(?:(?:fully|completely|partially|slightly|somewhat|too)\s+|"
+    + r"(?:\d|[1-9]\d|100)\s*%\s*)?(?:blurry|broken|clipped|cropped|disabled|"
+    + r"empty|hidden|invisible|misaligned|opaque|overlapping|transparent|"
+    + r"translucent|unreadable|unresponsive)\b",
+    re.IGNORECASE,
+)
+_DIRECT_NEGATED_PRODUCT_ACTION_RE = re.compile(
+    _DIRECT_STATE_REQUEST_BOUNDARY
+    + _DIRECT_REQUEST_PREFIX
+    + r"(?:do\s+not|don['’]?t|never)\s+(?:make|render|keep)\s+"
+    + _DIRECT_PRODUCT_SUBJECT
+    + _DIRECT_PRODUCT_LOCATION_SCOPE
+    + r"\s+(?:(?:fully|completely|partially|slightly|somewhat|too)\s+|"
+    + r"(?:\d|[1-9]\d|100)\s*%\s*)?(?:blurry|broken|clipped|cropped|disabled|"
+    + r"empty|hidden|invisible|misaligned|opaque|overlapping|transparent|"
+    + r"translucent|unreadable|unresponsive|visible)\b",
+    re.IGNORECASE,
+)
+_DIRECT_PROHIBITED_PRODUCT_STATE_RE = re.compile(
+    _DIRECT_STATE_REQUEST_BOUNDARY
+    + _DIRECT_REQUEST_PREFIX
+    + r"(?!(?:analy[sz]e|answer|audit|check|describe|determine|discuss|explain|"
+    + r"generate|give|if|produce|provide|rate|report|review|summari[sz]e|tell|"
+    + r"whether|why|write|i\s+wonder|(?:the\s+)?(?:claim|"
+    + r"documentation|example|explanation|spec|summary))\b)"
+    + _DIRECT_PRODUCT_SUBJECT
+    + _DIRECT_PRODUCT_LOCATION_SCOPE
+    + r"\s+"
+    r"(?:must|should)(?:n['’]?t|\s+not)\s+"
+    r"(?:be|become|remain|stay|appear|render)\s+"
+    r"(?:(?:fully|completely|partially|slightly|somewhat|too)\s+|"
+    r"(?:\d|[1-9]\d|100)\s*%\s*)?(?:blurry|broken|clipped|cropped|disabled|"
+    r"empty|hidden|invisible|misaligned|opaque|overlapping|transparent|"
+    r"translucent|unreadable|unresponsive)\b",
+    re.IGNORECASE,
+)
+_DIRECT_AFFIRMATIVE_PRODUCT_STATE_RE = re.compile(
+    _DIRECT_STATE_REQUEST_BOUNDARY
+    + _DIRECT_REQUEST_PREFIX
+    + r"(?!(?:analy[sz]e|answer|audit|check|describe|determine|discuss|explain|"
+    + r"generate|give|if|produce|provide|rate|report|review|summari[sz]e|tell|"
+    + r"whether|why|write|i\s+wonder|(?:the\s+)?(?:claim|"
+    + r"documentation|example|explanation|spec|summary))\b)"
+    + r"(?:"
+    + _DIRECT_PRODUCT_SUBJECT
+    + _DIRECT_PRODUCT_LOCATION_SCOPE
+    + r"\s+"
+    + r"(?:must|should|needs?\s+to)\s+"
+    + r"(?:be|become|remain|stay|appear|render|have)\s+"
+    + r"(?:(?:fully|completely|partially|slightly|somewhat|too)\s+|"
+    + r"(?:\d|[1-9]\d|100)\s*%\s*)?(?:blurry|broken|clipped|cropped|disabled|"
+    + r"empty|hidden|invisible|misaligned|opaque|overlapping|transparent|"
+    + r"translucent|unreadable|unresponsive)(?:\s+backgrounds?)?|"
+    + r"keep\s+"
+    + _DIRECT_PRODUCT_SUBJECT
+    + _DIRECT_PRODUCT_LOCATION_SCOPE
+    + r"\s+"
+    + r"(?:fully\s+|completely\s+)?(?:opaque|transparent|hidden|visible|"
+    + r"disabled|unreadable|responsive))\b",
+    re.IGNORECASE,
+)
+_DIRECT_MODAL_PRODUCT_STATE_RE = re.compile(
+    _DIRECT_STATE_REQUEST_BOUNDARY
+    + _DIRECT_REQUEST_PREFIX
+    + r"(?!(?:analy[sz]e|answer|audit|check|consider|critique|decide|describe|"
+    + r"determine|discuss|evaluate|explain|generate|give|if|inspect|produce|"
+    + r"provide|rate|report|review|summari[sz]e|tell|verify|whether|why|write|"
+    + r"i\s+wonder|(?:the\s+)?(?:claim|documentation|example|explanation|"
+    + r"requirement|spec|summary))\b)"
+    + r"(?:"
+    + _DIRECT_PRODUCT_SUBJECT
+    + _DIRECT_PRODUCT_LOCATION_SCOPE
+    + r"\s+(?:"
+    + r"(?:can(?:not|['’]t)|may\s+not)\s+be\s+|"
+    + r"(?:has?|have)\s+to\s+be\s+|"
+    + r"(?:is|are)\s+(?:not\s+)?supposed\s+to\s+be\s+|"
+    + r"needs?\s+(?:to\s+(?:be|have)\s+)?"
+    + r")"
+    + r"(?:(?:fully|completely|partially|slightly|somewhat|too)\s+|"
+    + r"(?:\d|[1-9]\d|100)\s*%\s*)?(?:blurry|broken|clipped|cropped|disabled|"
+    + r"empty|hidden|invisible|misaligned|opaque|overlapping|transparent|"
+    + r"translucent|unreadable|unresponsive)(?:\s+backgrounds?)?|"
+    + r"i\s+need\s+"
+    + _DIRECT_PRODUCT_SUBJECT
+    + r"\s+(?:(?:fully|completely|partially|slightly|somewhat|too)\s+)?"
+    + r"(?:blurry|broken|clipped|cropped|disabled|empty|hidden|invisible|"
+    + r"misaligned|opaque|overlapping|transparent|translucent|unreadable|"
+    + r"unresponsive)(?:\s+backgrounds?)?"
+    + r")\b",
+    re.IGNORECASE,
+)
+_DIRECT_DESIRED_PRODUCT_STATE_RE = re.compile(
+    _DIRECT_STATE_REQUEST_BOUNDARY
+    + _DIRECT_REQUEST_PREFIX
+    + r"there\s+(?:must|should)\s+be\s+(?:an?\s+|the\s+)?"
+    r"(?:flow|screen|surface|view|workflow)\b",
+    re.IGNORECASE,
+)
+_NON_DIRECT_STATE_FRAME_RE = re.compile(
+    r"^\s*(?:(?:please\s+)?confirm\b|asking\b|maybe\b|apparently\b|if\b|"
+    r"(?:i|we|you|they)\s+should\s+confirm\b|"
+    r"(?:do(?!\s+not\b)|does|did|is|are|was|were|can|could|would|"
+    r"will|may|might)\b|"
+    r"(?:(?:i|we|they|he|she|someone|somebody)|(?:the\s+)?[a-z0-9_-]+)\s+"
+    r"(?:heard|said|says|reported|reports|claimed|claims|think|believe|"
+    r"understand|wonder)\b)",
+    re.IGNORECASE,
+)
+_ASSISTANT_OUTPUT_CHANGE_RE = re.compile(
+    _DIRECT_REQUEST_BOUNDARY
+    + _DIRECT_REQUEST_PREFIX
+    + r"(?:add|address|apply|carry|change|clean(?:\s+up)?|complete|continue|"
+    + r"copy|correct|create|delete|deliver|document|edit|finish|fix|hide|implement|"
+    + r"improve|make|modify|paste|patch|remove|replace|resume|retry|simplify|"
+    + r"update|write)\s+"
+    + r"(?:"
+    + r"(?:(?:an?|the|this|that|your|my|our|previous|prior|current|missing|"
+    + r"better|concise|detailed|first|last|shorter)\s+){0,4}"
+    + r"(?:analysis|answer|assessment|chat|conversation|discussion|explanation|"
+    + r"findings?|message|paragraph|q\s*&\s*a|question|reply|report|response|"
+    + r"review|sentence|summary|walkthrough)"
+    + r"(?!\s+(?:component|endpoint|file|generator|model|module|page|parser|"
+    + r"service|template|view)\b)|"
+    + r"(?:(?:an?|the|more)\s+)?(?:caveat|context|details?|paragraph|sentence)\b"
+    + r".{0,50}\b"
+    + r"(?:from|in|of|to)\s+(?:(?:the|this|that|your|my|our|previous|final)\s+){0,3}"
+    + r"(?:analysis|answer|explanation|reply|report|response|review|summary)|"
+    + r"(?:this|that|(?:the\s+)?code)\b.{0,30}\b(?:into|to)\s+"
+    + r"(?:(?:the|this|your|my|our)\s+){0,2}(?:answer|reply|response)|"
+    + r"(?:(?:the|this|your|my|our)\s+)?reasoning\b.{0,40}\bin\s+"
+    + r"(?:(?:the|this|your|my|our)\s+){0,2}(?:answer|reply|response)|"
+    + r"(?:(?:the|your|my|our)\s+)?chain\s+of\s+thought\b.{0,50}\bin\s+"
+    + r"(?:(?:the|this|your|my|our)\s+){0,2}(?:answer|reply|response)|"
+    + r"(?:the\s+)?grammar\b.{0,40}\b(?:answer|reply|response)|"
+    + r"back\s+with\s+(?:the\s+)?findings|"
+    + r"on\s+with\s+(?:(?:the|this|your|our)\s+)?(?:conversation|discussion)"
+    + r")\b",
+    re.IGNORECASE,
+)
+_STRUCTURAL_NO_WRITE_RE = re.compile(
+    r"\b(?:"
+    r"analysis[- ]only(?:\s+mode)?|implementation\s+is\s+out\s+of\s+scope|"
+    r"no\s+(?:filesystem\s+changes?|writes?|disk\s+writes?)|"
+    r"make\s+no\s+disk\s+writes?|"
+    r"(?:do\s+not|don['’]?t|never)\s+(?:"
+    r"(?:persist|save)\s+(?:any\s+)?changes?|save\s+to\s+disk|"
+    r"mutate\s+(?:the\s+)?(?:workspace|repository|repo|checkout)|"
+    r"(?:implement|apply|make)\s+(?:it|changes?|the\s+(?:change|patch))|"
+    r"patch\s+(?:it|files?|code|the\s+(?:change|patch))"
+    r")|"
+    r"without\s+(?:patching|mutating|writing(?:\s+to)?)\s+(?:any\s+)?"
+    r"(?:files?|code|filesystem|workspace|repository|repo|checkout|disk)|"
+    r"without\s+applying\s+(?:it|changes?|the\s+patch)|"
+    r"(?:do\s+not|don['’]?t|never)\s+(?:alter|change|edit|modify|save|touch|"
+    r"write)\s+(?:anything|a\s+thing)|"
+    r"(?:do\s+not|don['’]?t|never)\s+touch\s+(?:the\s+)?working\s+tree|"
+    r"without\s+(?:altering|touching|writing)\s+anything|"
+    r"leave\s+everything\s+(?:unchanged|as[- ]is|untouched)|"
+    r"leave\s+(?:the\s+)?working\s+tree\s+(?:clean|unchanged|untouched)|"
+    r"no\s+code\s+modifications?|"
+    r"(?:no|zero)\s+(?:edits?|modifications?)(?=\s*(?:[.!?]|$))|"
+    r"(?:do\s+not|don['’]?t|never)\s+commit\s+(?:any\s+)?edits?|"
+    r"(?:keep|leave)\s+(?:all\s+|any\s+|the\s+)?"
+    r"(?:files?|code|filesystem|workspace|repository|repo|checkout)\s+"
+    r"(?:unchanged|as[- ]is|untouched)"
+    r")\b",
     re.IGNORECASE,
 )
 _DIRECT_REFERENTIAL_CHANGE_INTENT_RE = re.compile(
@@ -183,6 +395,7 @@ _HYPOTHETICAL_CHANGE_INTENT_RE = re.compile(
 _ADVISORY_CHANGE_FRAME_RE = re.compile(
     r"\b(?:how\s+(?:can|could|do|might|should|would)\b|"
     r"what\s+(?:could|should|would|will)\b|"
+    r"(?:answer|describe|discuss|explain)\s+(?:how|if|what|whether|why)\b|"
     r"(?:assess|brainstorm|discuss|explore|investigate|review)\s+"
     r"(?:how|if|what|whether|why)\b)",
     re.IGNORECASE,
@@ -196,7 +409,6 @@ class TaskMode(StrEnum):
     REPORT = "report"
     PLAN = "plan"
     TEST_ONLY = "test_only"
-
 
     @property
     def allows_edits(self) -> bool:
@@ -324,6 +536,7 @@ class ProjectEvidenceLevel(StrEnum):
 
 
 class RepositoryEvidenceKind(StrEnum):
+    FILE_PRESENCE = "file_presence"
     SYMBOL_DECLARATION = "symbol_declaration"
     TEST_LINK = "test_link"
     MANIFEST_DEPENDENCY = "manifest_dependency"
@@ -355,9 +568,7 @@ class AuthoritativeRequest(_FrozenContract):
 
 
 class ContinuationTaskIdentity(_FrozenContract):
-    schema_version: Literal["continuation_task_identity.v1"] = (
-        "continuation_task_identity.v1"
-    )
+    schema_version: Literal["continuation_task_identity.v1"] = "continuation_task_identity.v1"
     id: str = Field(min_length=1, max_length=255)
     workspace_id: UUID
     selected_objective_key: str = Field(min_length=1)
@@ -396,9 +607,7 @@ class AtomicRequirement(_FrozenContract):
     @model_validator(mode="after")
     def validate_lineage_source(self) -> "AtomicRequirement":
         if not self.source_span_ids and not self.source_artifact_ids:
-            raise ValueError(
-                "requirement must be derived from a request span or artifact"
-            )
+            raise ValueError("requirement must be derived from a request span or artifact")
         return self
 
 
@@ -412,12 +621,8 @@ class StructuredHandoffItem(_FrozenContract):
 
 
 class HandoffReconciliation(_FrozenContract):
-    repository_state: RepositoryReconciliationState = (
-        RepositoryReconciliationState.UNKNOWN
-    )
-    summary: str = (
-        "The checkpoint could not be compared with the current repository."
-    )
+    repository_state: RepositoryReconciliationState = RepositoryReconciliationState.UNKNOWN
+    summary: str = "The checkpoint could not be compared with the current repository."
 
 
 class StructuredHandoff(_FrozenContract):
@@ -435,9 +640,7 @@ class StructuredHandoff(_FrozenContract):
     referenced_files: tuple[StructuredHandoffItem, ...] = ()
     prior_verification: tuple[StructuredHandoffItem, ...] = ()
     unknowns: tuple[StructuredHandoffItem, ...] = ()
-    reconciliation: HandoffReconciliation = Field(
-        default_factory=HandoffReconciliation
-    )
+    reconciliation: HandoffReconciliation = Field(default_factory=HandoffReconciliation)
 
 
 class ProjectContextProvenance(_FrozenContract):
@@ -449,6 +652,17 @@ class ProjectContextProvenance(_FrozenContract):
     source_revision_number: int | None = Field(default=None, ge=1)
     source_content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     evidence_text_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evidence_text: str | None = Field(default=None, max_length=2_000)
+
+    @model_validator(mode="after")
+    def validate_exact_evidence_text(self) -> "ProjectContextProvenance":
+        if (
+            self.evidence_text is not None
+            and hashlib.sha256(self.evidence_text.encode("utf-8")).hexdigest()
+            != self.evidence_text_sha256
+        ):
+            raise ValueError("project context evidence text does not match its SHA-256")
+        return self
 
 
 class ProjectContextItem(_FrozenContract):
@@ -481,17 +695,13 @@ class ProjectContextItem(_FrozenContract):
     def strip_statement(cls, value: str) -> str:
         normalized = value.strip()
         if not normalized:
-            raise ValueError(
-                "project context statement must contain visible characters"
-            )
+            raise ValueError("project context statement must contain visible characters")
         return normalized
 
     @model_validator(mode="after")
     def validate_evidence_level(self) -> "ProjectContextItem":
         if not self.evidence_level.durable_current:
-            raise ValueError(
-                "current Project Context may contain only durable evidence levels"
-            )
+            raise ValueError("current Project Context may contain only durable evidence levels")
         if (
             self.evidence_level is ProjectEvidenceLevel.CORROBORATED
             and self.corroboration_count < 2
@@ -518,7 +728,7 @@ class ProjectFoundationSnapshot(_FrozenContract):
 
 
 class RepositoryEvidenceItem(_FrozenContract):
-    """One syntax-level fact observed in the bound repository snapshot.
+    """One file- or syntax-level fact observed in the bound repository snapshot.
 
     This is intentionally separate from durable workspace knowledge. It may
     describe declarations and exact indexer edges, but it cannot claim code
@@ -570,9 +780,12 @@ class RepositoryEvidenceItem(_FrozenContract):
 
     @model_validator(mode="after")
     def validate_kind_shape(self) -> "RepositoryEvidenceItem":
-        symbol_fields = {
+        file_fields = {
             "path",
             "file_sha256",
+        }
+        symbol_fields = {
+            *file_fields,
             "symbol_type",
             "symbol_name",
             "start_line",
@@ -602,16 +815,17 @@ class RepositoryEvidenceItem(_FrozenContract):
         )
         if any(
             value is not None
-            and (
-                value.startswith(("/", "\\"))
-                or ".." in value.replace("\\", "/").split("/")
-            )
+            and (value.startswith(("/", "\\")) or ".." in value.replace("\\", "/").split("/"))
             for value in paths
         ):
-            raise ValueError(
-                "repository evidence paths must be repository-relative"
+            raise ValueError("repository evidence paths must be repository-relative")
+        if self.kind is RepositoryEvidenceKind.FILE_PRESENCE:
+            allowed_fields = file_fields
+            required = (
+                self.path,
+                self.file_sha256,
             )
-        if self.kind is RepositoryEvidenceKind.SYMBOL_DECLARATION:
+        elif self.kind is RepositoryEvidenceKind.SYMBOL_DECLARATION:
             allowed_fields = symbol_fields
             required = (
                 self.path,
@@ -650,13 +864,10 @@ class RepositoryEvidenceItem(_FrozenContract):
         if unexpected_fields:
             raise ValueError(
                 f"{self.kind.value} repository evidence includes fields from "
-                "another evidence kind: "
-                + ", ".join(unexpected_fields)
+                "another evidence kind: " + ", ".join(unexpected_fields)
             )
         if any(value in (None, "") for value in required):
-            raise ValueError(
-                f"{self.kind.value} repository evidence is incomplete"
-            )
+            raise ValueError(f"{self.kind.value} repository evidence is incomplete")
         if (
             self.start_line is not None
             and self.end_line is not None
@@ -807,9 +1018,7 @@ class ExecutionAuthority(_FrozenContract):
     def for_mode(cls, mode: TaskMode) -> "ExecutionAuthority":
         return cls(
             filesystem_mode=(
-                FilesystemMode.WORKSPACE_WRITE
-                if mode.allows_edits
-                else FilesystemMode.READ_ONLY
+                FilesystemMode.WORKSPACE_WRITE if mode.allows_edits else FilesystemMode.READ_ONLY
             ),
             command_mode=(
                 CommandMode.EXECUTE
@@ -829,9 +1038,7 @@ class ExecutionPolicy(_FrozenContract):
 
 
 class ContinuationExecutionContract(_FrozenContract):
-    schema_version: Literal["continuation_execution.v1"] = (
-        CONTINUATION_EXECUTION_SCHEMA_VERSION
-    )
+    schema_version: Literal["continuation_execution.v1"] = CONTINUATION_EXECUTION_SCHEMA_VERSION
     id: str
     context_pack_id: str
     checkpoint_id: str | None = None
@@ -879,21 +1086,13 @@ class ContinuationExecutionContract(_FrozenContract):
     def validate_lineage_and_authority(self) -> "ContinuationExecutionContract":
         if (
             self.task_identity is not None
-            and self.task_identity.authoritative_request_sha256
-            != self.task.request_sha256
+            and self.task_identity.authoritative_request_sha256 != self.task.request_sha256
         ):
-            raise ValueError(
-                "task identity authoritative request hash does not match task"
-            )
-        if (
-            self.task_mode.allows_edits
-            and request_explicitly_forbids_edits(
-                self.task.request_verbatim
-            )
+            raise ValueError("task identity authoritative request hash does not match task")
+        if self.task_mode.allows_edits and request_explicitly_forbids_edits(
+            self.task.request_verbatim
         ):
-            raise ValueError(
-                "explicit no-edit request cannot grant product edit authority"
-            )
+            raise ValueError("explicit no-edit request cannot grant product edit authority")
         span_ids = [span.id for span in self.source_spans]
         if len(span_ids) != len(set(span_ids)):
             raise ValueError("source span IDs must be unique")
@@ -906,18 +1105,14 @@ class ContinuationExecutionContract(_FrozenContract):
             unknown = set(requirement.source_span_ids) - known_spans
             if unknown:
                 raise ValueError(
-                    "requirement references unknown source spans: "
-                    + ", ".join(sorted(unknown))
+                    "requirement references unknown source spans: " + ", ".join(sorted(unknown))
                 )
             covered_spans.update(requirement.source_span_ids)
-        substantive = {
-            span.id for span in self.source_spans if span.substantive
-        }
+        substantive = {span.id for span in self.source_spans if span.substantive}
         missing = substantive - covered_spans
         if missing:
             raise ValueError(
-                "substantive request spans lack requirement coverage: "
-                + ", ".join(sorted(missing))
+                "substantive request spans lack requirement coverage: " + ", ".join(sorted(missing))
             )
         known_requirements = set(requirement_ids)
         known_artifacts = {artifact.id for artifact in self.artifacts}
@@ -925,8 +1120,7 @@ class ContinuationExecutionContract(_FrozenContract):
             unknown = set(requirement.source_artifact_ids) - known_artifacts
             if unknown:
                 raise ValueError(
-                    "requirement references unknown artifacts: "
-                    + ", ".join(sorted(unknown))
+                    "requirement references unknown artifacts: " + ", ".join(sorted(unknown))
                 )
         unknown_done = set(self.definition_of_done) - known_requirements
         if unknown_done:
@@ -940,14 +1134,10 @@ class ContinuationExecutionContract(_FrozenContract):
             if requirement.priority is RequirementPriority.MUST
         }
         if set(self.definition_of_done) != mandatory:
-            raise ValueError(
-                "definition_of_done must contain every and only MUST requirement"
-            )
+            raise ValueError("definition_of_done must contain every and only MUST requirement")
         for span in self.source_spans:
-            if self.task.request_verbatim[span.start_char:span.end_char] != span.text:
-                raise ValueError(
-                    f"source span {span.id} does not match request_verbatim offsets"
-                )
+            if self.task.request_verbatim[span.start_char : span.end_char] != span.text:
+                raise ValueError(f"source span {span.id} does not match request_verbatim offsets")
         verifier_ids = [verifier.id for verifier in self.verification]
         if len(verifier_ids) != len(set(verifier_ids)):
             raise ValueError("verification IDs must be unique")
@@ -964,8 +1154,7 @@ class ContinuationExecutionContract(_FrozenContract):
         }
         if unknown_verifiers:
             raise ValueError(
-                "requirements reference unknown verifiers: "
-                + ", ".join(sorted(unknown_verifiers))
+                "requirements reference unknown verifiers: " + ", ".join(sorted(unknown_verifiers))
             )
         links_from_verifiers = {
             (requirement_id, verifier.id)
@@ -983,39 +1172,27 @@ class ContinuationExecutionContract(_FrozenContract):
                 + ", ".join(sorted(unknown_requirement_links))
             )
         if links_from_requirements != links_from_verifiers:
-            raise ValueError(
-                "requirement and verifier lineage must be bidirectionally consistent"
-            )
-        required_verifier_ids = {
-            verifier.id for verifier in self.verification if verifier.required
-        }
+            raise ValueError("requirement and verifier lineage must be bidirectionally consistent")
+        required_verifier_ids = {verifier.id for verifier in self.verification if verifier.required}
         for requirement in self.requirements:
-            if (
-                requirement.priority is RequirementPriority.MUST
-                and not (set(requirement.verification_ids) & required_verifier_ids)
+            if requirement.priority is RequirementPriority.MUST and not (
+                set(requirement.verification_ids) & required_verifier_ids
             ):
-                raise ValueError(
-                    f"MUST requirement {requirement.id} has no required verifier"
-                )
+                raise ValueError(f"MUST requirement {requirement.id} has no required verifier")
         artifact_ids = [artifact.id for artifact in self.artifacts]
         if len(artifact_ids) != len(set(artifact_ids)):
             raise ValueError("artifact IDs must be unique")
         project_context_ids = [item.id for item in self.project_context]
         if len(project_context_ids) != len(set(project_context_ids)):
             raise ValueError("project context IDs must be unique")
-        repository_evidence_ids = [
-            item.id for item in self.repository_evidence
-        ]
-        if len(repository_evidence_ids) != len(
-            set(repository_evidence_ids)
-        ):
+        repository_evidence_ids = [item.id for item in self.repository_evidence]
+        if len(repository_evidence_ids) != len(set(repository_evidence_ids)):
             raise ValueError("repository evidence IDs must be unique")
         for artifact in self.artifacts:
             unknown = set(artifact.requirement_ids) - known_requirements
             if unknown:
                 raise ValueError(
-                    "artifact references unknown requirements: "
-                    + ", ".join(sorted(unknown))
+                    "artifact references unknown requirements: " + ", ".join(sorted(unknown))
                 )
         artifact_links_from_requirements = {
             (artifact_id, requirement.id)
@@ -1028,10 +1205,7 @@ class ContinuationExecutionContract(_FrozenContract):
             for requirement_id in artifact.requirement_ids
         }
         if artifact_links_from_requirements != artifact_links_from_artifacts:
-            raise ValueError(
-                "artifact and requirement lineage must be bidirectionally "
-                "consistent"
-            )
+            raise ValueError("artifact and requirement lineage must be bidirectionally consistent")
         expected_filesystem_mode = (
             FilesystemMode.WORKSPACE_WRITE
             if self.task_mode.allows_edits
@@ -1105,17 +1279,32 @@ def build_authoritative_request(request_verbatim: str) -> AuthoritativeRequest:
 def _has_direct_change_intent(value: str) -> bool:
     """Recognize affirmative mutation clauses, excluding advisory framing."""
 
+    state_patterns = (
+        _DIRECT_NEGATED_PRODUCT_BEHAVIOR_RE,
+        _DIRECT_NEGATED_PRODUCT_ACTION_RE,
+        _DIRECT_PROHIBITED_PRODUCT_STATE_RE,
+        _DIRECT_AFFIRMATIVE_PRODUCT_STATE_RE,
+        _DIRECT_MODAL_PRODUCT_STATE_RE,
+        _DIRECT_DESIRED_PRODUCT_STATE_RE,
+    )
     for clause in re.split(r"(?<=[.!?])\s+", value):
+        patterns = [
+            _DIRECT_MUTATION_INTENT_RE,
+            _DIRECT_BUILD_INTENT_RE,
+            _DIRECT_COMPLETION_INTENT_RE,
+            _DIRECT_BEHAVIOR_CONSTRAINT_RE,
+            _DIRECT_REFERENTIAL_CHANGE_INTENT_RE,
+        ]
+        if not clause.rstrip().endswith("?") and not _NON_DIRECT_STATE_FRAME_RE.match(clause):
+            patterns.extend(state_patterns)
+        assistant_output_spans = [
+            (match.start(), match.end()) for match in _ASSISTANT_OUTPUT_CHANGE_RE.finditer(clause)
+        ]
         direct_matches = [
             match
-            for pattern in (
-                _DIRECT_MUTATION_INTENT_RE,
-                _DIRECT_BUILD_INTENT_RE,
-                _DIRECT_COMPLETION_INTENT_RE,
-                _DIRECT_BEHAVIOR_CONSTRAINT_RE,
-                _DIRECT_REFERENTIAL_CHANGE_INTENT_RE,
-            )
+            for pattern in patterns
             if (match := pattern.search(clause)) is not None
+            and not any(start <= match.start() < end for start, end in assistant_output_spans)
         ]
         if not direct_matches:
             continue
@@ -1123,13 +1312,24 @@ def _has_direct_change_intent(value: str) -> bool:
         advisory_frame = _ADVISORY_CHANGE_FRAME_RE.search(clause)
         if advisory_frame is None or first_direct.start() < advisory_frame.start():
             return True
+        between = clause[advisory_frame.end() : first_direct.start()]
+        if re.search(
+            r"(?:[,;]\s*|\b)(?:and\s+then|then)\s*$|;\s*$",
+            between,
+            re.IGNORECASE,
+        ):
+            return True
+        if re.match(
+            r"^(?:[,;]\s*)?(?:and\s+then|then)\b|^;\s*",
+            clause[first_direct.start() :],
+            re.IGNORECASE,
+        ):
+            return True
     return False
 
 
 def infer_task_mode(request: str) -> TaskMode:
-    normalized = normalize_request_for_matching(
-        _request_directive_text(request)
-    ).casefold()
+    normalized = normalize_request_for_matching(_request_directive_text(request)).casefold()
     if _TEST_ONLY_INTENT_RE.search(normalized):
         return TaskMode.TEST_ONLY
     explicit_read_only = request_explicitly_forbids_edits(request)
@@ -1155,20 +1355,19 @@ def infer_task_mode(request: str) -> TaskMode:
     )
     review = bool(
         re.search(
-            r"\b(?:review|audit|inspect|assess|check|critique|validate|verify)\b",
+            r"\b(?:review(?:ing)?|audit(?:ing)?|inspect|assess|check|critique|evaluate|rate|"
+            r"validate|verify)\b",
             normalized,
         )
     )
     explanation = bool(
         re.search(
             r"\b(?:answer|brainstorm|describe|discuss|explain|explore|"
-            r"summari[sz]e|walk me through)\b",
+            r"report(?:ing)?|summari[sz]e|walk me through)\b",
             normalized,
         )
     )
-    hypothetical_change = bool(
-        _HYPOTHETICAL_CHANGE_INTENT_RE.search(normalized)
-    )
+    hypothetical_change = bool(_HYPOTHETICAL_CHANGE_INTENT_RE.search(normalized))
     direct_change = _has_direct_change_intent(normalized)
     if explicit_read_only and diagnosis:
         return TaskMode.DIAGNOSE
@@ -1201,20 +1400,49 @@ def infer_task_mode(request: str) -> TaskMode:
 
 
 def request_explicitly_forbids_edits(request: str) -> bool:
-    normalized = normalize_request_for_matching(
-        _request_directive_text(request)
-    ).casefold()
+    normalized = normalize_request_for_matching(_request_directive_text(request)).casefold()
     return bool(
         re.search(
-            r"\b(?:read[- ]only|no edits?|"
+            r"\b(?:read[- ]only|"
+            r"no edits?(?=\s*(?:[.!?]|$)|\s+to\s+(?:any\s+)?(?:files?|code|"
+            r"repository|repo|checkout|workspace)\b)|"
             r"no (?:file|code|product|repository) changes?|"
-            r"do not (?:edit|change|modify|make (?:any )?changes)|"
-            r"don't (?:edit|change|modify|make (?:any )?changes)|"
-            r"without (?:edits?|editing|changes?|changing|modifying|"
+            r"(?:make|apply) (?:no|zero) (?:actual )?"
+            r"(?:changes?|modifications?)(?=\s*(?:[.!?]|$)|\s+to\s+"
+            r"(?:any\s+)?(?:files?|code|repository|repo|checkout|workspace)\b)|"
+            r"change nothing|"
+            r"leave (?:the )?(?:files?|code|repository|repo|checkout|"
+            r"workspace|disk) untouched|"
+            r"(?:do not|don['’]?t|never) "
+            r"(?:(?:actually|directly|ever|really) )?(?:"
+            r"(?:edit|change|modify)(?:\s+or\s+(?:edit|change|modify))?\s+"
+            r"(?:any\s+)?(?:files?|code|product\s+files?|repository|repo|"
+            r"checkout|workspace)|"
+            r"(?:touch|alter|write(?:\s+to)?) (?:any )?(?:files?|code|repository|"
+            r"repo|checkout|workspace|disk)|"
+            r"(?:edit|change|modify) anything|"
+            r"(?:edit|change|modify)(?=\s*(?:[.!?]|$))|"
+            r"make (?:any )?changes)|"
+            r"(?:avoid|refrain\s+from)\s+(?:editing|changing|modifying|"
+            r"touching|altering|writing(?:\s+to)?|saving)\s+(?:any\s+)?"
+            r"(?:files?|code|repository|repo|checkout|workspace|disk)|"
+            r"leave\s+(?:any\s+)?(?:files?|code|repository|repo|checkout|"
+            r"workspace)\s+unchanged|"
+            r"(?:do not|don['’]?t|never)\s+save\s+(?:any\s+)?changes?|"
+            r"without (?:"
+            r"(?:edits?|changes?)(?=\s*(?:[.!?]|$)|\s+to\s+(?:any\s+)?"
+            r"(?:files?|code|repository|repo|checkout|workspace)\b)|"
+            r"(?:editing|changing|modifying)\s+(?:any\s+)?(?:files?|code|"
+            r"product\s+files?|repository|repo|checkout|workspace)|"
+            r"(?:touching|altering|writing(?:\s+to)?) (?:any )?(?:files?|code|"
+            r"repository|repo|checkout|workspace|disk)|"
+            r"(?:editing|changing|modifying) anything|"
+            r"(?:editing|changing|modifying)(?=\s*(?:[.!?]|$))|"
             r"making (?:any )?changes)|"
             r"(?:review|audit|report|findings?) only)\b",
             normalized,
         )
+        or _STRUCTURAL_NO_WRITE_RE.search(normalized)
     )
 
 
@@ -1226,9 +1454,7 @@ def resolve_task_mode(
     if requested_mode is None:
         return inferred
     resolved = (
-        requested_mode
-        if isinstance(requested_mode, TaskMode)
-        else TaskMode(str(requested_mode))
+        requested_mode if isinstance(requested_mode, TaskMode) else TaskMode(str(requested_mode))
     )
     if resolved.allows_edits and request_explicitly_forbids_edits(request):
         return inferred if not inferred.allows_edits else TaskMode.DIAGNOSE
@@ -1251,9 +1477,7 @@ def compile_request_requirements(
             end,
         )
         semantic_text = " ".join(
-            normalize_request_for_matching(
-                request.request_verbatim[semantic_start:semantic_end]
-            )
+            normalize_request_for_matching(request.request_verbatim[semantic_start:semantic_end])
             for semantic_start, semantic_end in semantic_ranges
         ).strip()
         if not semantic_text:
@@ -1271,36 +1495,30 @@ def compile_request_requirements(
             kind = SourceSpanKind.ACCEPTANCE_CRITERION
         elif active_section == "background":
             kind = SourceSpanKind.BACKGROUND
-        elif (
-            _request_list_item(semantic_text)
-            and _background_list_item(semantic_text)
-        ):
+        elif _request_list_item(semantic_text) and _background_list_item(semantic_text):
             kind = SourceSpanKind.BACKGROUND
         elif is_non_verifiable_execution_guidance(semantic_text):
             kind = SourceSpanKind.CONSTRAINT
-        elif (
-            task_mode is TaskMode.CHANGE
-            and _request_list_item(semantic_text)
-        ):
+        elif task_mode is TaskMode.CHANGE and _request_list_item(semantic_text):
             kind = SourceSpanKind.ACCEPTANCE_CRITERION
         else:
             kind = _source_span_kind(semantic_text, task_mode=task_mode)
         span_ids: list[str] = []
         for semantic_start, semantic_end in semantic_ranges:
-            semantic_exact = request.request_verbatim[
-                semantic_start:semantic_end
-            ]
+            semantic_exact = request.request_verbatim[semantic_start:semantic_end]
             span_id = f"S{len(source_spans) + 1}"
             span_ids.append(span_id)
-            source_spans.append(RequestSourceSpan(
-                id=span_id,
-                start_char=semantic_start,
-                end_char=semantic_end,
-                text=semantic_exact,
-                text_sha256=sha256_text(semantic_exact),
-                kind=kind,
-                substantive=True,
-            ))
+            source_spans.append(
+                RequestSourceSpan(
+                    id=span_id,
+                    start_char=semantic_start,
+                    end_char=semantic_end,
+                    text=semantic_exact,
+                    text_sha256=sha256_text(semantic_exact),
+                    kind=kind,
+                    substantive=True,
+                )
+            )
         priority = (
             RequirementPriority.CONTEXT
             if (
@@ -1312,12 +1530,14 @@ def compile_request_requirements(
             )
             else RequirementPriority.MUST
         )
-        requirements.append(AtomicRequirement(
-            id=f"R{len(requirements) + 1}",
-            text=semantic_text,
-            priority=priority,
-            source_span_ids=tuple(span_ids),
-        ))
+        requirements.append(
+            AtomicRequirement(
+                id=f"R{len(requirements) + 1}",
+                text=semantic_text,
+                priority=priority,
+                source_span_ids=tuple(span_ids),
+            )
+        )
     if not source_spans:
         raise ValueError("request contains no substantive source spans")
     return tuple(source_spans), tuple(requirements)
@@ -1398,9 +1618,6 @@ def _request_directive_text(value: str) -> str:
     """Remove quoted/history regions before inferring execution authority."""
 
     raw_value = str(value or "")
-    request_marker = _CURRENT_USER_REQUEST_MARKER_RE.search(raw_value)
-    if request_marker is not None:
-        raw_value = raw_value[request_marker.end():]
     lines: list[str] = []
     fence_marker: str | None = None
     ignore_section = False
@@ -1416,13 +1633,20 @@ def _request_directive_text(value: str) -> str:
             continue
         if fence_marker is not None or stripped.startswith(">"):
             continue
+        request_marker = _CURRENT_USER_REQUEST_MARKER_RE.search(raw_line)
+        if request_marker is not None and not raw_line[: request_marker.start()].strip():
+            # Only a visible top-level marker may reset authority. A marker in
+            # fenced or quoted background was skipped above and cannot expose
+            # the remainder of that untrusted block as a live instruction.
+            lines = []
+            ignore_section = False
+            raw_line = raw_line[request_marker.end() :]
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
         heading_match = re.match(r"^#{1,6}\s+(.+?)\s*$", stripped)
         if heading_match:
-            ignore_section = bool(
-                _NON_AUTHORITATIVE_HEADING_RE.search(
-                    heading_match.group(1)
-                )
-            )
+            ignore_section = bool(_NON_AUTHORITATIVE_HEADING_RE.search(heading_match.group(1)))
             continue
         if ignore_section or _HISTORICAL_SPEECH_RE.search(stripped):
             continue
@@ -1469,7 +1693,7 @@ def _request_directive_text(value: str) -> str:
 def _request_span_is_quoted_or_fenced(value: str, start: int) -> bool:
     prefix = value[:start]
     line_start = prefix.rfind("\n") + 1
-    line = value[line_start:value.find("\n", start) if "\n" in value[start:] else len(value)]
+    line = value[line_start : value.find("\n", start) if "\n" in value[start:] else len(value)]
     if line.lstrip().startswith(">") or re.match(
         r"^\s*(?:`{3,}|~{3,})",
         line,
@@ -1521,10 +1745,7 @@ def _request_span_offsets(value: str) -> list[tuple[int, int]]:
             segment = content[leading:trailing_end]
             segment_start = cursor + leading
             sentence_starts = [0]
-            sentence_starts.extend(
-                match.end()
-                for match in re.finditer(r"(?<=[.!?])\s+", segment)
-            )
+            sentence_starts.extend(match.end() for match in re.finditer(r"(?<=[.!?])\s+", segment))
             sentence_starts = sorted(set(sentence_starts))
             for position, relative_start in enumerate(sentence_starts):
                 relative_end = (
@@ -1532,23 +1753,19 @@ def _request_span_offsets(value: str) -> list[tuple[int, int]]:
                     if position + 1 < len(sentence_starts)
                     else len(segment)
                 )
-                while (
-                    relative_start < relative_end
-                    and segment[relative_start].isspace()
-                ):
+                while relative_start < relative_end and segment[relative_start].isspace():
                     relative_start += 1
-                while (
-                    relative_end > relative_start
-                    and segment[relative_end - 1].isspace()
-                ):
+                while relative_end > relative_start and segment[relative_end - 1].isspace():
                     relative_end -= 1
                 if relative_start < relative_end:
                     sentence = segment[relative_start:relative_end]
                     for clause_start, clause_end in _clause_offsets(sentence):
-                        spans.append((
-                            segment_start + relative_start + clause_start,
-                            segment_start + relative_start + clause_end,
-                        ))
+                        spans.append(
+                            (
+                                segment_start + relative_start + clause_start,
+                                segment_start + relative_start + clause_end,
+                            )
+                        )
         cursor += len(line)
     if cursor < len(value):
         tail = value[cursor:]
@@ -1565,11 +1782,15 @@ def _clause_offsets(value: str) -> list[tuple[int, int]]:
         r"ensure|fix|implement|inspect|investigate|make|remove|repair|"
         r"replace|resume|review|run|ship|test|update|verify|write)"
     )
-    separators = list(re.finditer(
-        rf"(?:;\s+|\s+(?:and|then)\s+)(?={action}\b)",
-        value,
-        re.IGNORECASE,
-    ))
+    separators = [
+        match
+        for match in re.finditer(
+            rf"(?:;\s+|\s+(?:and(?:\s+then)?|then)\s+)(?={action}\b)",
+            value,
+            re.IGNORECASE,
+        )
+        if not _separator_continues_negated_action(value, match)
+    ]
     starts = [0, *(match.end() for match in separators)]
     ends = [*(match.start() for match in separators), len(value)]
     result: list[tuple[int, int]] = []
@@ -1583,6 +1804,33 @@ def _clause_offsets(value: str) -> list[tuple[int, int]]:
     return result
 
 
+def _separator_continues_negated_action(
+    value: str,
+    separator: re.Match[str],
+) -> bool:
+    """Keep coordinated verbs inside the same explicit prohibition.
+
+    Splitting ``cannot copy and make a product`` at ``and make`` turns the
+    prohibited action into an affirmative requirement. Semicolons and a bare
+    ``then`` remain explicit sequence boundaries. ``and``/``and then`` stay
+    inside a negated clause when the negation appears in their current
+    punctuation/adversative scope.
+    """
+
+    joiner = separator.group(0).casefold()
+    if ";" in joiner or ("then" in joiner and "and" not in joiner):
+        return False
+    prefix = value[: separator.start()]
+    scope_start = 0
+    for boundary in re.finditer(
+        r"[;.!?]|\b(?:but|however)\b",
+        prefix,
+        re.IGNORECASE,
+    ):
+        scope_start = boundary.end()
+    return bool(_NEGATED_ACTION_SCOPE_RE.search(prefix[scope_start:]))
+
+
 def _source_span_kind(value: str, *, task_mode: TaskMode) -> SourceSpanKind:
     normalized = normalize_request_for_matching(value)
     lowered = normalized.casefold()
@@ -1592,7 +1840,10 @@ def _source_span_kind(value: str, *, task_mode: TaskMode) -> SourceSpanKind:
         return SourceSpanKind.ACCEPTANCE_CRITERION
     if is_non_verifiable_execution_guidance(normalized):
         return SourceSpanKind.CONSTRAINT
-    if re.search(r"\b(?:do not|don't|must not|never|preserve|without|only)\b", lowered):
+    if _NEGATED_ACTION_SCOPE_RE.search(normalized) or re.search(
+        r"\b(?:preserve|without|only)\b",
+        lowered,
+    ):
         return SourceSpanKind.CONSTRAINT
     if re.search(
         r"\b(?:accomplish|add|build|change|continue|create|debug|diagnose|fix|implement|inspect|"

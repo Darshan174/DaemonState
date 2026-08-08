@@ -35,13 +35,20 @@ from app.services.project_foundation_sections import (
 )
 
 
+# Lessons and known failures are candidates, not automatic promotions. They
+# still require exact evidence, current lifecycle, trusted-human/system proof,
+# or independent corroboration below.
 _DURABLE_FACT_TYPES = frozenset({
     "ai_decision",
     "assumption",
     "constraint",
     "decision",
     "fact",
+    "failed_approach",
+    "failed_attempt",
     "feature",
+    "known_failure",
+    "lesson",
     "meeting_note",
     "metric",
     "milestone",
@@ -56,8 +63,6 @@ _TRANSIENT_FACT_TYPES = frozenset({
     "blocker",
     "changed_file",
     "commit_reference",
-    "failed_attempt",
-    "lesson",
     "open_question",
     "outcome",
     "release",
@@ -446,6 +451,13 @@ def _kind_for_component(component: Component) -> ProjectContextKind:
         return ProjectContextKind.INVARIANT
     if fact_type == "risk":
         return ProjectContextKind.RISK
+    if fact_type in {
+        "failed_approach",
+        "failed_attempt",
+        "known_failure",
+        "lesson",
+    }:
+        return ProjectContextKind.LEARNING
     return ProjectContextKind.CONTEXT
 
 
@@ -480,6 +492,7 @@ def _provenance(
     evidence_sha256 = str(
         getattr(evidence, "text_sha256", "") or ""
     ).strip().casefold()
+    evidence_text = str(getattr(evidence, "text", "") or "")
     return ProjectContextProvenance(
         source_document_id=str(source.id),
         evidence_span_id=str(getattr(evidence, "id")),
@@ -487,6 +500,7 @@ def _provenance(
         source_revision_number=source.revision_number,
         source_content_sha256=source_sha256,
         evidence_text_sha256=evidence_sha256,
+        evidence_text=evidence_text if len(evidence_text) <= 2_000 else None,
     )
 
 

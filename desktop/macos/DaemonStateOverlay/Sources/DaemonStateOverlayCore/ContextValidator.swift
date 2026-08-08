@@ -14,8 +14,8 @@ enum ContextValidator {
     static let checkpointSchemaExpectation =
         "work_checkpoint.v5, work_checkpoint.v6, work_checkpoint.v7, work_checkpoint.v8, work_checkpoint.v9, or work_checkpoint.v10"
     static let sessionSchema = "session_handoff.v1"
-    static let continuationSchema = "continuation.v1"
-    static let projectSchema = "continuation_staging_context.v1"
+    static let contextPackSchema = "context_pack.v2"
+    static let workspaceSchema = "workspace_context.v1"
     static let activitySchema = "now_activity.v1"
     static let linkedRefreshLimit = 8
 
@@ -364,73 +364,130 @@ enum ContextValidator {
         )
     }
 
-    static func verifiedProjectContext(
-        _ continuation: ContinuationEnvelope,
-        workspaceID: String
+    static func verifiedWorkspaceContext(
+        _ response: WorkspaceContextPackEnvelope,
+        workspaceID: String,
+        repoPath: String?
     ) throws -> VerifiedContext {
-        guard continuation.schemaVersion == continuationSchema else {
+        guard response.schemaVersion == contextPackSchema else {
             throw DaemonStateError.unsupportedSchema(
-                expected: continuationSchema,
-                actual: continuation.schemaVersion
+                expected: contextPackSchema,
+                actual: response.schemaVersion
             )
         }
-        guard let identityWorkspaceID = visible(
-            continuation.task?.identity?.workspaceID
-        ) else {
-            throw DaemonStateError.identityMismatch(
-                field: "continuation workspace",
-                expected: workspaceID,
-                actual: nil
+        guard let manifest = response.manifest else {
+            throw DaemonStateError.invalidPayload(
+                "workspace context manifest is missing"
             )
         }
-        guard identityWorkspaceID == workspaceID else {
-            throw DaemonStateError.identityMismatch(
-                field: "continuation workspace",
-                expected: workspaceID,
-                actual: identityWorkspaceID
-            )
-        }
-        guard let project = continuation.projectContext else {
-            throw DaemonStateError.invalidPayload("project_context is missing")
-        }
-        guard project.schemaVersion == projectSchema else {
+        guard manifest.schemaVersion == contextPackSchema else {
             throw DaemonStateError.unsupportedSchema(
-                expected: projectSchema,
-                actual: project.schemaVersion
+                expected: contextPackSchema,
+                actual: manifest.schemaVersion
             )
         }
-        guard project.scope == ContextScope.project.rawValue else {
-            throw DaemonStateError.scopeMismatch(
-                expected: .project,
-                actual: project.scope
+        guard let contextPackID = visible(response.contextPackID),
+              visible(manifest.contextPackID) == contextPackID else {
+            throw DaemonStateError.invalidPayload(
+                "workspace context pack identity is missing or inconsistent"
             )
         }
-        guard let copyReady = project.copyReady else {
-            throw DaemonStateError.invalidPayload("project_context.copy_ready is missing")
+        guard visible(manifest.workspaceID) == workspaceID else {
+            throw DaemonStateError.identityMismatch(
+                field: "workspace context workspace",
+                expected: workspaceID,
+                actual: manifest.workspaceID
+            )
+        }
+        guard normalizedKey(manifest.objectiveKind) == "project_snapshot",
+              normalizedKey(manifest.focus?.kind) == "project_snapshot" else {
+            throw DaemonStateError.invalidPayload(
+                "Workspace Context is not a task-free project snapshot"
+            )
+        }
+        guard manifest.tokenAccounting?.withinBudget == true,
+              manifest.rendering?.withinBudget == true else {
+            throw DaemonStateError.invalidPayload(
+                "Workspace Context exceeds its verified rendering budget"
+            )
+        }
+        guard let foundation = manifest.workspaceFoundation,
+              foundation.hasSupportedSchemaVersion,
+              foundation.objectiveIndependent == true else {
+            throw DaemonStateError.invalidPayload(
+                "workspace foundation is missing or unsupported"
+            )
+        }
+        guard let copyReady = foundation.copyReady else {
+            throw DaemonStateError.invalidPayload(
+                "workspace foundation quality_report.copy_ready is missing"
+            )
         }
         guard copyReady else {
-            let blocking = (project.qualityIssues ?? []).filter {
-                $0.blocksCopy != false
-            }
             throw DaemonStateError.contextNotCopyReady(
                 scope: .project,
-                reasons: issueMessages(blocking)
+                reasons: foundation.blockingMessages
+            )
+        }
+        let semanticSHA256 = try verifyData(
+            foundation.canonicalSemanticData(),
+            expectedSHA256: foundation.semanticSHA256,
+            scope: .project
+        )
+        _ = try verifyData(
+            foundation.canonicalArtifactData(),
+            expectedSHA256: foundation.artifactSHA256,
+            scope: .project
+        )
+        guard let repositoryFingerprint = visible(
+            manifest.repoState?.stateFingerprint
+                ?? manifest.repoState?.snapshotFingerprint
+        ),
+        repositoryFingerprint == visible(
+            foundation.repositorySnapshotFingerprint
+        ) else {
+            throw DaemonStateError.invalidPayload(
+                "workspace foundation is not bound to the repository snapshot"
+            )
+        }
+        guard visible(manifest.repoState?.workspaceFoundationSHA256)
+                == semanticSHA256,
+              visible(manifest.repoState?.workspaceFoundationArtifactSHA256)
+                == visible(foundation.artifactSHA256) else {
+            throw DaemonStateError.invalidPayload(
+                "workspace foundation identity is inconsistent"
+            )
+        }
+        if let expectedRepoPath = normalizedRepositoryPath(repoPath) {
+            let actualRepoPath = normalizedRepositoryPath(
+                manifest.repoState?.repoPath
+            )
+            guard actualRepoPath == expectedRepoPath else {
+                throw DaemonStateError.identityMismatch(
+                    field: "workspace context repository",
+                    expected: expectedRepoPath,
+                    actual: actualRepoPath
+                )
+            }
+        }
+        guard let markdown = response.markdown,
+              markdown == "# Workspace Context"
+                || markdown.hasPrefix("# Workspace Context\n") else {
+            throw DaemonStateError.invalidPayload(
+                "Workspace Context has the wrong document boundary"
             )
         }
         let verified = try verifyContent(
-            project.content,
-            expectedSHA256: project.sha256,
+            markdown,
+            expectedSHA256: manifest.rendering?.markdownSHA256,
             scope: .project
         )
         return VerifiedContext(
             content: verified.content,
             scope: .project,
             workspaceID: workspaceID,
-            schemaVersion: projectSchema,
-            sha256: verified.sha256,
-            checkpointID: visible(continuation.checkpoint?.id),
-            provider: normalizeProvider(continuation.sourceSession?.provider).nilIfEmpty,
-            sessionID: visible(continuation.sourceSession?.sessionID)
+            schemaVersion: workspaceSchema,
+            sha256: verified.sha256
         )
     }
 
@@ -502,6 +559,31 @@ enum ContextValidator {
         return (content, expected)
     }
 
+    private static func verifyData(
+        _ data: Data,
+        expectedSHA256: String?,
+        scope: ContextScope
+    ) throws -> String {
+        guard let expected = visible(expectedSHA256)?.lowercased(),
+              expected.count == 64,
+              expected.unicodeScalars.allSatisfy({
+                  CharacterSet(charactersIn: "0123456789abcdef").contains($0)
+              }) else {
+            throw DaemonStateError.invalidSHA256(scope: scope)
+        }
+        let actual = SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        guard actual == expected else {
+            throw DaemonStateError.integrityMismatch(
+                scope: scope,
+                expected: expected,
+                actual: actual
+            )
+        }
+        return expected
+    }
+
     private static func issueMessages(_ issues: [QualityIssueEnvelope]) -> [String] {
         issues.compactMap { visible($0.message) }
     }
@@ -546,17 +628,20 @@ enum ContextValidator {
             ?? ""
     }
 
+    private static func normalizedRepositoryPath(_ value: String?) -> String? {
+        guard let path = visible(value) else { return nil }
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        if standardized == "/" { return standardized }
+        return standardized.hasSuffix("/")
+            ? String(standardized.dropLast())
+            : standardized
+    }
+
     private static func visible(_ value: String?) -> String? {
         guard let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines),
               !normalized.isEmpty else {
             return nil
         }
         return normalized
-    }
-}
-
-private extension String {
-    var nilIfEmpty: String? {
-        isEmpty ? nil : self
     }
 }

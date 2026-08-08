@@ -26,18 +26,19 @@ from app.services.session_summary import (
 MAX_TRUSTED_REQUEST_IMAGE_BYTES = 32 * 1024 * 1024
 MAX_TRUSTED_REQUEST_TURN_IMAGE_BYTES = 32 * 1024 * 1024
 MAX_LEGACY_CODEX_TURN_BYTES = (
-    ((MAX_TRUSTED_REQUEST_TURN_IMAGE_BYTES + 2) // 3) * 4
-    + 2 * 1024 * 1024
-)
+    (MAX_TRUSTED_REQUEST_TURN_IMAGE_BYTES + 2) // 3
+) * 4 + 2 * 1024 * 1024
 MAX_RASTER_DIMENSION = 32_768
 MAX_RASTER_PIXELS = 100_000_000
 _SOURCE_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_SUPPORTED_RASTER_MIME_TYPES = frozenset({
-    "image/png",
-    "image/jpeg",
-    "image/gif",
-    "image/webp",
-})
+_SUPPORTED_RASTER_MIME_TYPES = frozenset(
+    {
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+    }
+)
 _IMAGE_PATH_RE = re.compile(
     r"(?is)<image\b[^>]*\bpath\s*=\s*"
     r"(?:\"([^\"]+)\"|'([^']+)'|([^\s>]+))[^>]*>",
@@ -56,6 +57,124 @@ class TrustedRequestImageDescriptor:
     size_bytes: int | None = None
     binding_valid: bool = True
     binding_error: str | None = None
+    visual_inspection: Mapping[str, Any] | None = None
+    visual_inspection_attested: bool = False
+
+
+_VISUAL_INSPECTION_OUTPUT_FIELDS = (
+    "producer",
+    "status",
+    "inspected_sha256",
+    "method",
+    "inspector_model",
+    "prompt_definition_sha256",
+    "summary",
+    "anchors",
+    "suspected_surface",
+    "candidate_route",
+    "candidate_files",
+)
+
+
+def trusted_image_inspection_output_sha256(value: Mapping[str, Any]) -> str:
+    """Hash the canonical infrastructure observation payload, excluding its signature field."""
+
+    payload = {field: value.get(field) for field in _VISUAL_INSPECTION_OUTPUT_FIELDS}
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+
+def validated_trusted_image_inspection(
+    descriptor: TrustedRequestImageDescriptor,
+) -> dict[str, Any] | None:
+    """Return bounded, digest-bound visual observations or fail closed."""
+
+    raw = descriptor.visual_inspection
+    expected_sha256 = str(descriptor.sha256 or "").casefold()
+    if (
+        descriptor.binding_valid is not True
+        or str(descriptor.mime_type or "").casefold() not in _SUPPORTED_RASTER_MIME_TYPES
+        or descriptor.visual_inspection_attested is not True
+        or not isinstance(raw, Mapping)
+        or str(raw.get("producer") or "") != "daemonstate_visual_inspection.v1"
+        or str(raw.get("status") or "") != "succeeded"
+        or str(raw.get("inspected_sha256") or "").casefold() != expected_sha256
+        or _SOURCE_SHA256_RE.fullmatch(expected_sha256) is None
+    ):
+        return None
+    prompt_sha256 = str(raw.get("prompt_definition_sha256") or "").casefold()
+    output_sha256 = str(raw.get("output_sha256") or "").casefold()
+    try:
+        computed_output_sha256 = trusted_image_inspection_output_sha256(raw)
+    except (TypeError, ValueError):
+        return None
+    if (
+        _SOURCE_SHA256_RE.fullmatch(prompt_sha256) is None
+        or _SOURCE_SHA256_RE.fullmatch(output_sha256) is None
+        or output_sha256 != computed_output_sha256
+        or not str(raw.get("method") or "").strip()
+        or not str(raw.get("inspector_model") or "").strip()
+    ):
+        return None
+    raw_anchors = raw.get("anchors")
+    if not isinstance(raw_anchors, (list, tuple)) or not 1 <= len(raw_anchors) <= 12:
+        return None
+    anchors: list[dict[str, Any]] = []
+    for value in raw_anchors:
+        if not isinstance(value, Mapping):
+            return None
+        text = " ".join(str(value.get("text") or "").split())[:300]
+        if not text:
+            return None
+        confidence = value.get("confidence")
+        if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
+            confidence = None
+        anchors.append(
+            {
+                "kind": " ".join(str(value.get("kind") or "visual_cue").split())[:50],
+                "text": text,
+                "region": " ".join(str(value.get("region") or "unknown").split())[:50],
+                "confidence": (
+                    max(0.0, min(1.0, float(confidence))) if confidence is not None else None
+                ),
+            }
+        )
+    candidate_files: list[dict[str, str]] = []
+    raw_candidates = raw.get("candidate_files")
+    if isinstance(raw_candidates, (list, tuple)) and len(raw_candidates) <= 8:
+        for value in raw_candidates:
+            if not isinstance(value, Mapping):
+                continue
+            path = " ".join(str(value.get("path") or "").split())[:500]
+            reason = " ".join(str(value.get("reason") or "").split())[:500]
+            if path and reason:
+                candidate_files.append({"path": path, "reason": reason})
+    validated = {
+        "producer": "daemonstate_visual_inspection.v1",
+        "status": "succeeded",
+        "inspected_sha256": expected_sha256,
+        "method": " ".join(str(raw.get("method") or "vision_model").split())[:80],
+        "inspector_model": " ".join(str(raw.get("inspector_model") or "").split())[:160] or None,
+        "prompt_definition_sha256": prompt_sha256 or None,
+        "output_sha256": output_sha256 or None,
+        "summary": " ".join(str(raw.get("summary") or "").split())[:1_000] or None,
+        "anchors": anchors,
+        "suspected_surface": " ".join(str(raw.get("suspected_surface") or "").split())[:160]
+        or None,
+        "candidate_route": " ".join(str(raw.get("candidate_route") or "").split())[:160] or None,
+        "candidate_files": (candidate_files if raw_candidates is not None else None),
+        "trust": "infrastructure_attested_hash_bound_observation",
+    }
+    # The persisted record rendered into a receiving session must itself be a
+    # canonical attested payload.  Reject producer output that only becomes
+    # valid after truncation, whitespace normalization, or field dropping so a
+    # later renderer can independently recompute this exact hash.
+    if trusted_image_inspection_output_sha256(validated) != output_sha256:
+        return None
+    return validated
 
 
 def materialize_trusted_request_image_descriptor(
@@ -94,17 +213,12 @@ def materialize_trusted_request_image_descriptor(
         source,
         mime_type=descriptor.mime_type,
     )
-    if (
-        content is None
-        or hashlib.sha256(content).hexdigest()
-        != descriptor.sha256.casefold()
-    ):
+    if content is None or hashlib.sha256(content).hexdigest() != descriptor.sha256.casefold():
         return replace(
             descriptor,
             binding_valid=False,
             binding_error=(
-                "The provider image could not be durably materialized from "
-                "its source-time digest."
+                "The provider image could not be durably materialized from its source-time digest."
             ),
         )
     stored = _materialize_content_addressed_image(
@@ -116,9 +230,7 @@ def materialize_trusted_request_image_descriptor(
         return replace(
             descriptor,
             binding_valid=False,
-            binding_error=(
-                "The provider image could not be durably materialized."
-            ),
+            binding_error=("The provider image could not be durably materialized."),
         )
     return replace(
         descriptor,
@@ -144,17 +256,11 @@ def _is_content_addressed_artifact_path(
     if suffix is None:
         return False
     try:
-        root = (
-            Path(data_dir).expanduser().resolve()
-            / "request-artifacts"
-            / sha256[:2]
-        )
+        root = Path(data_dir).expanduser().resolve() / "request-artifacts" / sha256[:2]
         candidate = Path(value).expanduser()
         if candidate.name != f"{sha256}{suffix}":
             return False
-        return candidate.parent.resolve(strict=True) == root.resolve(
-            strict=True
-        )
+        return candidate.parent.resolve(strict=True) == root.resolve(strict=True)
     except (OSError, ValueError):
         return False
 
@@ -196,12 +302,7 @@ def resolve_trusted_request_image_artifacts(
                 sha256=str(raw.get("sha256") or "").strip() or None,
                 mime_type=str(raw.get("mime_type") or "").strip() or None,
                 resolved_path=(
-                    str(
-                        raw.get("resolved_path")
-                        or raw.get("stored_path")
-                        or ""
-                    ).strip()
-                    or None
+                    str(raw.get("resolved_path") or raw.get("stored_path") or "").strip() or None
                 ),
                 ordinal=(
                     int(raw["ordinal"])
@@ -216,9 +317,7 @@ def resolve_trusted_request_image_artifacts(
                     else None
                 ),
                 binding_valid=raw.get("binding_valid") is not False,
-                binding_error=(
-                    str(raw.get("binding_error") or "").strip() or None
-                ),
+                binding_error=(str(raw.get("binding_error") or "").strip() or None),
             )
         )
         if descriptor.path and descriptor.path not in trusted:
@@ -257,17 +356,13 @@ def trusted_request_image_descriptors_from_payload(
 
     value = payload if isinstance(payload, Mapping) else {}
     raw_paths = value.get("local_images")
-    if (
-        not isinstance(raw_paths, (list, tuple))
-        or len(raw_paths) > MAX_CONTINUATION_ARTIFACTS
-    ):
+    if not isinstance(raw_paths, (list, tuple)) or len(raw_paths) > MAX_CONTINUATION_ARTIFACTS:
         return ()
     paths = list(raw_paths)
     raw_inputs = value.get("input_images")
     inputs = (
         list(raw_inputs)
-        if isinstance(raw_inputs, (list, tuple))
-        and len(raw_inputs) <= MAX_CONTINUATION_ARTIFACTS
+        if isinstance(raw_inputs, (list, tuple)) and len(raw_inputs) <= MAX_CONTINUATION_ARTIFACTS
         else []
     )
     cardinality_valid = len(paths) == len(inputs)
@@ -286,9 +381,8 @@ def trusted_request_image_descriptors_from_payload(
             ordinal_binding_valid = False
             continue
         inputs_by_ordinal[raw_ordinal] = image
-    ordinal_binding_valid = (
-        ordinal_binding_valid
-        and set(inputs_by_ordinal) == set(range(1, len(inputs) + 1))
+    ordinal_binding_valid = ordinal_binding_valid and set(inputs_by_ordinal) == set(
+        range(1, len(inputs) + 1)
     )
     descriptors: list[TrustedRequestImageDescriptor] = []
     for ordinal, raw_path in enumerate(paths, start=1):
@@ -301,46 +395,36 @@ def trusted_request_image_descriptors_from_payload(
             continue
         image = inputs_by_ordinal.get(ordinal, {})
         source_sha256 = str(image.get("sha256") or "").strip().casefold()
-        image_valid = (
-            image.get("valid") is not False
-            and bool(_SOURCE_SHA256_RE.fullmatch(source_sha256))
+        image_valid = image.get("valid") is not False and bool(
+            _SOURCE_SHA256_RE.fullmatch(source_sha256)
         )
-        binding_valid = (
-            cardinality_valid
-            and ordinal_binding_valid
-            and image_valid
-        )
+        binding_valid = cardinality_valid and ordinal_binding_valid and image_valid
         binding_error = None
         if not cardinality_valid:
-            binding_error = (
-                "The provider image metadata and local path counts differ."
-            )
+            binding_error = "The provider image metadata and local path counts differ."
         elif not ordinal_binding_valid:
-            binding_error = (
-                "The provider image metadata ordinals are missing or ambiguous."
-            )
+            binding_error = "The provider image metadata ordinals are missing or ambiguous."
         elif not image_valid:
             binding_error = str(
-                image.get("error")
-                or "The provider image has no valid source-time SHA-256."
+                image.get("error") or "The provider image has no valid source-time SHA-256."
             )
-        descriptors.append(TrustedRequestImageDescriptor(
-            path=path,
-            sha256=source_sha256 or None,
-            mime_type=str(image.get("mime_type") or "").strip() or None,
-            resolved_path=(
-                str(image.get("stored_path") or "").strip() or None
-            ),
-            ordinal=ordinal,
-            size_bytes=(
-                int(image["size_bytes"])
-                if isinstance(image.get("size_bytes"), int)
-                and not isinstance(image.get("size_bytes"), bool)
-                else None
-            ),
-            binding_valid=binding_valid,
-            binding_error=binding_error,
-        ))
+        descriptors.append(
+            TrustedRequestImageDescriptor(
+                path=path,
+                sha256=source_sha256 or None,
+                mime_type=str(image.get("mime_type") or "").strip() or None,
+                resolved_path=(str(image.get("stored_path") or "").strip() or None),
+                ordinal=ordinal,
+                size_bytes=(
+                    int(image["size_bytes"])
+                    if isinstance(image.get("size_bytes"), int)
+                    and not isinstance(image.get("size_bytes"), bool)
+                    else None
+                ),
+                binding_valid=binding_valid,
+                binding_error=binding_error,
+            )
+        )
     return tuple(descriptors)
 
 
@@ -385,8 +469,7 @@ def recover_codex_request_image_descriptors(
         response.get("type") != "response_item"
         or not isinstance(response_payload, Mapping)
         or response_payload.get("type") != "message"
-        or str(response_payload.get("role") or "").strip().casefold()
-        != "user"
+        or str(response_payload.get("role") or "").strip().casefold() != "user"
         or event.get("type") != "event_msg"
         or not isinstance(event_payload, Mapping)
         or event_payload.get("type") != "user_message"
@@ -405,9 +488,7 @@ def recover_codex_request_image_descriptors(
         response_payload.get("content"),
         data_dir=artifact_data_dir,
     )
-    local_images = structured_local_image_paths(
-        event_payload.get("local_images")
-    )
+    local_images = structured_local_image_paths(event_payload.get("local_images"))
     return _bind_image_descriptors(local_images, input_images)
 
 
@@ -437,17 +518,11 @@ def _resolve_image_path(
         descriptor.sha256 is None
         or _SOURCE_SHA256_RE.fullmatch(descriptor.sha256.casefold()) is None
     ):
-        unavailable_reason = (
-            "The provider attachment has no valid source-time SHA-256."
-        )
+        unavailable_reason = "The provider attachment has no valid source-time SHA-256."
     elif not allow_local_files:
-        unavailable_reason = (
-            "Local artifact access is unavailable for this request."
-        )
+        unavailable_reason = "Local artifact access is unavailable for this request."
     else:
-        unavailable_reason = (
-            "The provider-attached image is not a safe readable local image."
-        )
+        unavailable_reason = "The provider-attached image is not a safe readable local image."
     digest: str | None = None
     readable_path = (
         descriptor.resolved_path
@@ -470,23 +545,17 @@ def _resolve_image_path(
         )
         if digest is not None and digest != descriptor.sha256.casefold():
             digest = None
-            unavailable_reason = (
-                "The provider-attached image no longer matches its source "
-                "digest."
-            )
+            unavailable_reason = "The provider-attached image no longer matches its source digest."
         elif digest is None:
             unavailable_reason = (
-                "The provider-attached image is not a supported, safely "
-                "bounded raster image."
+                "The provider-attached image is not a supported, safely bounded raster image."
             )
     available = digest is not None
     return ArtifactReference(
         id=f"A{index}",
         kind="screenshot",
         path=readable_path,
-        source_path=(
-            path_text if readable_path != path_text else None
-        ),
+        source_path=(path_text if readable_path != path_text else None),
         sha256=digest,
         mime_type=mime_type,
         required=True,
@@ -503,10 +572,7 @@ def _hash_bounded_regular_file(path: Path) -> str | None:
     try:
         descriptor = os.open(path, flags)
         metadata = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_size > MAX_TRUSTED_REQUEST_IMAGE_BYTES
-        ):
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > MAX_TRUSTED_REQUEST_IMAGE_BYTES:
             return None
         digest = hashlib.sha256()
         with os.fdopen(descriptor, "rb", closefd=True) as handle:
@@ -597,9 +663,7 @@ def _bounded_jsonl_window(
                     return ()
                 bytes_read += len(raw)
                 try:
-                    value = json.loads(
-                        raw.decode("utf-8", errors="replace")
-                    )
+                    value = json.loads(raw.decode("utf-8", errors="replace"))
                 except (UnicodeError, json.JSONDecodeError):
                     continue
                 if isinstance(value, dict):
@@ -615,9 +679,7 @@ def _bounded_jsonl_window(
 def _skip_bounded_binary_line(handle: Any) -> bool:
     consumed = 0
     while consumed <= MAX_LEGACY_CODEX_TURN_BYTES:
-        chunk = handle.readline(
-            min(64 * 1024, MAX_LEGACY_CODEX_TURN_BYTES - consumed + 1)
-        )
+        chunk = handle.readline(min(64 * 1024, MAX_LEGACY_CODEX_TURN_BYTES - consumed + 1))
         if not chunk:
             return False
         consumed += len(chunk)
@@ -634,10 +696,7 @@ def _provider_content_text(value: Any) -> str:
     if isinstance(value, Mapping):
         if value.get("type") in {"text", "input_text"}:
             return str(value.get("text") or "").strip()
-        parts = [
-            _provider_content_text(value.get(key))
-            for key in ("text", "content")
-        ]
+        parts = [_provider_content_text(value.get(key)) for key in ("text", "content")]
         return "\n".join(part for part in parts if part).strip()
     if isinstance(value, (list, tuple)):
         parts = [_provider_content_text(item) for item in value]
@@ -647,11 +706,7 @@ def _provider_content_text(value: Any) -> str:
 
 def normalize_request_without_image_transport(value: str) -> str:
     raw = str(value or "")
-    extracted = (
-        extract_user_authored_request(raw)
-        or extract_delegated_user_request(raw)
-        or raw
-    )
+    extracted = extract_user_authored_request(raw) or extract_delegated_user_request(raw) or raw
     without_image_transport = re.sub(
         r"(?is)</?image\b[^>]*>",
         " ",
@@ -661,10 +716,7 @@ def normalize_request_without_image_transport(value: str) -> str:
 
 
 def structured_local_image_paths(value: Any) -> list[str]:
-    if (
-        not isinstance(value, (list, tuple))
-        or len(value) > MAX_CONTINUATION_ARTIFACTS
-    ):
+    if not isinstance(value, (list, tuple)) or len(value) > MAX_CONTINUATION_ARTIFACTS:
         return []
     result: list[str] = []
     for raw in value:
@@ -700,11 +752,7 @@ def structured_input_image_metadata(
         ordinal = len(result) + 1
         if ordinal > MAX_CONTINUATION_ARTIFACTS:
             return []
-        raw_url = str(
-            item.get("image_url")
-            or item.get("url")
-            or ""
-        )
+        raw_url = str(item.get("image_url") or item.get("url") or "")
         image_urls.append(raw_url)
         metadata = _data_url_metadata(raw_url, data_dir=None)
         if metadata is None:
@@ -712,8 +760,7 @@ def structured_input_image_metadata(
                 "mime_type": _declared_data_url_mime(raw_url),
                 "valid": False,
                 "error": (
-                    "The provider input image is not a valid supported "
-                    "bounded raster data URL."
+                    "The provider input image is not a valid supported bounded raster data URL."
                 ),
             }
         metadata["ordinal"] = ordinal
@@ -728,9 +775,7 @@ def structured_input_image_metadata(
     if total_size > MAX_TRUSTED_REQUEST_TURN_IMAGE_BYTES:
         for metadata in result:
             metadata["valid"] = False
-            metadata["error"] = (
-                "The provider turn exceeds the aggregate trusted image limit."
-            )
+            metadata["error"] = "The provider turn exceeds the aggregate trusted image limit."
             metadata.pop("stored_path", None)
     elif data_dir is not None:
         for metadata, raw_url in zip(result, image_urls, strict=True):
@@ -739,9 +784,7 @@ def structured_input_image_metadata(
             durable = _data_url_metadata(raw_url, data_dir=data_dir)
             if durable is None or not durable.get("stored_path"):
                 metadata["valid"] = False
-                metadata["error"] = (
-                    "The provider input image could not be durably stored."
-                )
+                metadata["error"] = "The provider input image could not be durably stored."
                 metadata.pop("stored_path", None)
                 continue
             metadata["stored_path"] = durable["stored_path"]
@@ -800,10 +843,12 @@ def _bind_image_descriptors(
     local_images: list[str],
     input_images: list[dict[str, Any]],
 ) -> tuple[TrustedRequestImageDescriptor, ...]:
-    return trusted_request_image_descriptors_from_payload({
-        "local_images": local_images,
-        "input_images": input_images,
-    })
+    return trusted_request_image_descriptors_from_payload(
+        {
+            "local_images": local_images,
+            "input_images": input_images,
+        }
+    )
 
 
 def _declared_data_url_mime(value: str) -> str | None:
@@ -868,14 +913,14 @@ def _png_dimensions(content: bytes) -> tuple[int, int] | None:
     saw_idat = False
     saw_iend = False
     while offset + 12 <= len(content):
-        chunk_length = int.from_bytes(content[offset:offset + 4], "big")
+        chunk_length = int.from_bytes(content[offset : offset + 4], "big")
         chunk_end = offset + 12 + chunk_length
         if chunk_end > len(content):
             return None
-        chunk_type = content[offset + 4:offset + 8]
-        chunk_data = content[offset + 8:offset + 8 + chunk_length]
+        chunk_type = content[offset + 4 : offset + 8]
+        chunk_data = content[offset + 8 : offset + 8 + chunk_length]
         chunk_crc = int.from_bytes(
-            content[offset + 8 + chunk_length:chunk_end],
+            content[offset + 8 + chunk_length : chunk_end],
             "big",
         )
         if zlib.crc32(chunk_type + chunk_data) & 0xFFFFFFFF != chunk_crc:
@@ -889,16 +934,23 @@ def _png_dimensions(content: bytes) -> tuple[int, int] | None:
 
 
 def _jpeg_dimensions(content: bytes) -> tuple[int, int] | None:
-    if (
-        len(content) < 4
-        or content[:2] != b"\xff\xd8"
-        or content[-2:] != b"\xff\xd9"
-    ):
+    if len(content) < 4 or content[:2] != b"\xff\xd8" or content[-2:] != b"\xff\xd9":
         return None
     offset = 2
     start_of_frame = {
-        0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
-        0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF,
+        0xC0,
+        0xC1,
+        0xC2,
+        0xC3,
+        0xC5,
+        0xC6,
+        0xC7,
+        0xC9,
+        0xCA,
+        0xCB,
+        0xCD,
+        0xCE,
+        0xCF,
     }
     while offset + 1 < len(content):
         if content[offset] != 0xFF:
@@ -916,25 +968,21 @@ def _jpeg_dimensions(content: bytes) -> tuple[int, int] | None:
             break
         if offset + 2 > len(content):
             return None
-        segment_length = int.from_bytes(content[offset:offset + 2], "big")
+        segment_length = int.from_bytes(content[offset : offset + 2], "big")
         if segment_length < 2 or offset + segment_length > len(content):
             return None
         if marker in start_of_frame:
             if segment_length < 7:
                 return None
-            height = int.from_bytes(content[offset + 3:offset + 5], "big")
-            width = int.from_bytes(content[offset + 5:offset + 7], "big")
+            height = int.from_bytes(content[offset + 3 : offset + 5], "big")
+            width = int.from_bytes(content[offset + 5 : offset + 7], "big")
             return width, height
         offset += segment_length
     return None
 
 
 def _gif_dimensions(content: bytes) -> tuple[int, int] | None:
-    if (
-        len(content) < 14
-        or content[:6] not in {b"GIF87a", b"GIF89a"}
-        or content[-1:] != b";"
-    ):
+    if len(content) < 14 or content[:6] not in {b"GIF87a", b"GIF89a"} or content[-1:] != b";":
         return None
     return struct.unpack("<HH", content[6:10])
 
@@ -953,18 +1001,10 @@ def _webp_dimensions(content: bytes) -> tuple[int, int] | None:
         width = int.from_bytes(data[4:7], "little") + 1
         height = int.from_bytes(data[7:10], "little") + 1
         return width, height
-    if (
-        chunk_type == b"VP8L"
-        and len(data) >= 5
-        and data[0] == 0x2F
-    ):
+    if chunk_type == b"VP8L" and len(data) >= 5 and data[0] == 0x2F:
         bits = int.from_bytes(data[1:5], "little")
         return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
-    if (
-        chunk_type == b"VP8 "
-        and len(data) >= 10
-        and data[3:6] == b"\x9d\x01\x2a"
-    ):
+    if chunk_type == b"VP8 " and len(data) >= 10 and data[3:6] == b"\x9d\x01\x2a":
         width = int.from_bytes(data[6:8], "little") & 0x3FFF
         height = int.from_bytes(data[8:10], "little") & 0x3FFF
         return width, height
@@ -998,14 +1038,8 @@ def _materialize_content_addressed_image(
             return None
         target = directory / f"{digest}{suffix}"
         if target.exists():
-            return (
-                target
-                if _hash_bounded_regular_file(target) == digest
-                else None
-            )
-        temporary = directory / (
-            f".{digest}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
-        )
+            return target if _hash_bounded_regular_file(target) == digest else None
+        temporary = directory / (f".{digest}.{os.getpid()}.{secrets.token_hex(8)}.tmp")
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW

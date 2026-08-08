@@ -40,128 +40,226 @@ struct DaemonStateAPITests {
     }
 
     @Test
-    func projectContextReturnsOnlyVerifiedCopyReadyProduct() async throws {
+    func workspaceContextUsesTaskFreeSnapshotEndpoint() async throws {
         defer { URLProtocolStub.reset() }
-        let content = "# Project Context\n\nWait for the next user lead."
+        let content = "# Workspace Context\n\nStable repository facts."
         let digest = sha256(content)
         let api = makeAPI { request in
             #expect(request.httpMethod == "POST")
-            #expect(request.url?.path == "/api/continuations/prepare")
+            #expect(request.url?.path == "/api/context/prepare")
             let body = try jsonBody(request)
             #expect(body["workspace_id"] as? String == "workspace-1")
+            #expect(body["repo_path"] as? String == "/workspace/daemonstate")
+            #expect(body["mode"] as? String == "project_snapshot")
+            #expect(body["objective_origin"] as? String == "project_snapshot")
+            #expect(body["objective"] == nil)
+            #expect(body["checkpoint_id"] == nil)
             return URLProtocolStub.response(
                 for: request,
-                json: """
-                {
-                  "schema_version": "continuation.v1",
-                  "task": {
-                    "identity": {"workspace_id": "workspace-1"}
-                  },
-                  "checkpoint": {"id": "checkpoint-1"},
-                  "source_session": {
-                    "provider": "codex",
-                    "session_id": "session-1"
-                  },
-                  "project_context": {
-                    "schema_version": "continuation_staging_context.v1",
-                    "scope": "project",
-                    "content": "\(escaped(content))",
-                    "sha256": "\(digest)",
-                    "copy_ready": true,
-                    "quality_issues": []
-                  }
-                }
-                """
+                json: workspaceContextJSON(content: content, sha256: digest)
             )
         }
 
         let result = try await api.fetchContext(
             scope: .project,
-            workspaceID: "workspace-1"
+            workspaceID: "workspace-1",
+            repoPath: "/workspace/daemonstate"
         )
 
         #expect(result.content == content)
         #expect(result.scope == .project)
         #expect(result.workspaceID == "workspace-1")
-        #expect(result.schemaVersion == "continuation_staging_context.v1")
+        #expect(result.schemaVersion == "workspace_context.v1")
         #expect(result.sha256 == digest)
-        #expect(result.checkpointID == "checkpoint-1")
-        #expect(result.provider == "codex")
-        #expect(result.sessionID == "session-1")
+        #expect(result.checkpointID == nil)
+        #expect(result.provider == nil)
+        #expect(result.sessionID == nil)
     }
 
     @Test
-    func projectContextRejectsCopyBlockedResponseWithReason() async {
+    func workspaceContextAcceptsWorkspaceFoundationV2() async throws {
         defer { URLProtocolStub.reset() }
-        let content = "# Project Context"
+        let content = "# Workspace Context\n\nVerified v2 repository facts."
         let api = makeAPI { request in
             URLProtocolStub.response(
                 for: request,
-                json: """
-                {
-                  "schema_version": "continuation.v1",
-                  "task": {
-                    "identity": {"workspace_id": "workspace-1"}
-                  },
-                  "project_context": {
-                    "schema_version": "continuation_staging_context.v1",
-                    "scope": "project",
-                    "content": "\(escaped(content))",
-                    "sha256": "\(sha256(content))",
-                    "copy_ready": false,
-                    "quality_issues": [
-                      {
-                        "code": "required_artifact_unresolved",
-                        "message": "A required artifact is unavailable.",
-                        "blocks_copy": true
-                      }
-                    ]
-                  }
-                }
-                """
+                json: workspaceContextJSON(
+                    content: content,
+                    sha256: sha256(content),
+                    foundationSchemaVersion: "workspace_foundation.v2"
+                )
+            )
+        }
+
+        let result = try await api.fetchContext(
+            scope: .project,
+            workspaceID: "workspace-1",
+            repoPath: "/workspace/daemonstate"
+        )
+
+        #expect(result.content == content)
+        #expect(result.scope == .project)
+    }
+
+    @Test
+    func workspaceContextDoesNotUseContinuationCopyReadiness() async throws {
+        defer { URLProtocolStub.reset() }
+        let content = "# Workspace Context\n\nRepository-wide context."
+        let api = makeAPI { request in
+            URLProtocolStub.response(
+                for: request,
+                json: workspaceContextJSON(
+                    content: content,
+                    sha256: sha256(content),
+                    extraTopLevel: """
+                    ,"project_context": {
+                      "copy_ready": false,
+                      "quality_issues": [{"blocks_copy": true}]
+                    }
+                    """
+                )
+            )
+        }
+
+        let result = try await api.fetchContext(
+            scope: .project,
+            workspaceID: "workspace-1",
+            repoPath: "/workspace/daemonstate"
+        )
+
+        #expect(result.content == content)
+    }
+
+    @Test
+    func workspaceContextFailsClosedWhenFoundationIsNotCopyReady() async {
+        defer { URLProtocolStub.reset() }
+        let content = "# Workspace Context\n\nIncomplete repository context."
+        let api = makeAPI { request in
+            URLProtocolStub.response(
+                for: request,
+                json: workspaceContextJSON(
+                    content: content,
+                    sha256: sha256(content),
+                    foundationCopyReady: false
+                )
             )
         }
 
         do {
             _ = try await api.fetchContext(
                 scope: .project,
-                workspaceID: "workspace-1"
+                workspaceID: "workspace-1",
+                repoPath: "/workspace/daemonstate"
             )
-            Issue.record("Expected the copy gate to reject the response")
+            Issue.record("Expected the foundation quality gate to block copy")
         } catch let error as DaemonStateError {
-            #expect(
-                error == .contextNotCopyReady(
-                    scope: .project,
-                    reasons: ["A required artifact is unavailable."]
-                )
-            )
+            guard case let .contextNotCopyReady(scope: .project, reasons) = error else {
+                Issue.record("Unexpected error: \(error)")
+                return
+            }
+            #expect(reasons == [
+                "No safe repository-stated product purpose was found."
+            ])
         } catch {
             Issue.record("Unexpected error: \(error)")
         }
     }
 
     @Test
-    func projectContextRejectsMismatchedSHA256() async {
+    func workspaceFoundationCanonicalHashesMatchTheBackendContract() throws {
+        let json = """
+        {
+          "schema_version": "workspace_foundation.v1",
+          "objective_independent": true,
+          "compiled_at": "2026-08-05T12:00:00Z",
+          "repository_state": {
+            "snapshot_fingerprint": "\(String(repeating: "f", count: 64))",
+            "captured_at": "2026-08-05T12:00:00Z"
+          },
+          "quality_report": {"copy_ready": true, "score": 95.0, "issues": []},
+          "product_profile": {"name": "Café/工具"},
+          "semantic_sha256": "dfe6d4365fc4e5c2818f0289835dc37f13f6746ed263c03d5706e4438c3b60cf",
+          "artifact_sha256": "972306bb79e175f08302dc3641408fbd852d111077298cbe67465e7d1848a15b"
+        }
+        """
+        let foundation = try JSONDecoder().decode(
+            WorkspaceFoundationEnvelope.self,
+            from: Data(json.utf8)
+        )
+
+        #expect(sha256(String(
+            data: try foundation.canonicalSemanticData(),
+            encoding: .utf8
+        )!) == foundation.semanticSHA256)
+        #expect(sha256(String(
+            data: try foundation.canonicalArtifactData(),
+            encoding: .utf8
+        )!) == foundation.artifactSHA256)
+    }
+
+    @Test
+    func workspaceFoundationRecognizesOnlySupportedSchemaVersions() throws {
+        for schemaVersion in [
+            "workspace_foundation.v1",
+            "workspace_foundation.v2",
+        ] {
+            let foundation = try JSONDecoder().decode(
+                WorkspaceFoundationEnvelope.self,
+                from: Data("{\"schema_version\":\"(schemaVersion)\"}".utf8)
+            )
+            #expect(foundation.hasSupportedSchemaVersion)
+        }
+
+        let unsupported = try JSONDecoder().decode(
+            WorkspaceFoundationEnvelope.self,
+            from: Data("{\"schema_version\":\"workspace_foundation.v3\"}".utf8)
+        )
+        #expect(!unsupported.hasSupportedSchemaVersion)
+    }
+
+    @Test
+    func workspaceContextRejectsUnknownWorkspaceFoundationSchema() async {
+        defer { URLProtocolStub.reset() }
+        let content = "# Workspace Context\n\nRepository facts."
+        let api = makeAPI { request in
+            URLProtocolStub.response(
+                for: request,
+                json: workspaceContextJSON(
+                    content: content,
+                    sha256: sha256(content),
+                    foundationSchemaVersion: "workspace_foundation.v3"
+                )
+            )
+        }
+
+        do {
+            _ = try await api.fetchContext(
+                scope: .project,
+                workspaceID: "workspace-1",
+                repoPath: "/workspace/daemonstate"
+            )
+            Issue.record("Expected an unknown foundation schema to fail")
+        } catch let error as DaemonStateError {
+            #expect(
+                error == .invalidPayload(
+                    "workspace foundation is missing or unsupported"
+                )
+            )
+        } catch {
+            Issue.record("Unexpected error: (error)")
+        }
+    }
+
+    @Test
+    func workspaceContextRejectsMismatchedSHA256() async {
         defer { URLProtocolStub.reset() }
         let api = makeAPI { request in
             URLProtocolStub.response(
                 for: request,
-                json: """
-                {
-                  "schema_version": "continuation.v1",
-                  "task": {
-                    "identity": {"workspace_id": "workspace-1"}
-                  },
-                  "project_context": {
-                    "schema_version": "continuation_staging_context.v1",
-                    "scope": "project",
-                    "content": "tampered",
-                    "sha256": "\(String(repeating: "0", count: 64))",
-                    "copy_ready": true,
-                    "quality_issues": []
-                  }
-                }
-                """
+                json: workspaceContextJSON(
+                    content: "# Workspace Context\n\ntampered",
+                    sha256: String(repeating: "0", count: 64)
+                )
             )
         }
 
@@ -182,37 +280,66 @@ struct DaemonStateAPITests {
     }
 
     @Test
-    func projectContextRejectsMissingWorkspaceIdentity() async {
+    func workspaceContextRejectsTaskSpecificContinuationDocument() async {
         defer { URLProtocolStub.reset() }
-        let content = "# Project Context"
+        let content = """
+        # Project / Workspace Context — NOT READY
+
+        ## Session Context — task-specific child
+        """
         let api = makeAPI { request in
             URLProtocolStub.response(
                 for: request,
-                json: """
-                {
-                  "schema_version": "continuation.v1",
-                  "project_context": {
-                    "schema_version": "continuation_staging_context.v1",
-                    "scope": "project",
-                    "content": "\(escaped(content))",
-                    "sha256": "\(sha256(content))",
-                    "copy_ready": true,
-                    "quality_issues": []
-                  }
-                }
-                """
+                json: workspaceContextJSON(
+                    content: content,
+                    sha256: sha256(content)
+                )
             )
         }
 
         do {
             _ = try await api.fetchContext(
                 scope: .project,
-                workspaceID: "workspace-1"
+                workspaceID: "workspace-1",
+                repoPath: "/workspace/daemonstate"
+            )
+            Issue.record("Expected the task-specific document to fail")
+        } catch let error as DaemonStateError {
+            #expect(
+                error == .invalidPayload(
+                    "Workspace Context has the wrong document boundary"
+                )
+            )
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test
+    func workspaceContextRejectsMissingWorkspaceIdentity() async {
+        defer { URLProtocolStub.reset() }
+        let content = "# Workspace Context"
+        let api = makeAPI { request in
+            URLProtocolStub.response(
+                for: request,
+                json: workspaceContextJSON(
+                    content: content,
+                    sha256: sha256(content),
+                    workspaceID: nil
+                )
+            )
+        }
+
+        do {
+            _ = try await api.fetchContext(
+                scope: .project,
+                workspaceID: "workspace-1",
+                repoPath: "/workspace/daemonstate"
             )
             Issue.record("Expected missing workspace identity to fail")
         } catch let error as DaemonStateError {
             guard case .identityMismatch(
-                field: "continuation workspace",
+                field: "workspace context workspace",
                 expected: "workspace-1",
                 actual: nil
             ) = error else {
@@ -915,6 +1042,86 @@ struct DaemonStateAPITests {
             "copy_ready": true,
             "blocking_issues": []
           }
+        }
+        """
+    }
+
+    private func workspaceContextJSON(
+        content: String,
+        sha256: String,
+        workspaceID: String? = "workspace-1",
+        repoPath: String = "/workspace/daemonstate",
+        foundationSchemaVersion: String = "workspace_foundation.v1",
+        foundationCopyReady: Bool = true,
+        extraTopLevel: String = ""
+    ) -> String {
+        let workspaceValue = workspaceID.map {
+            "\"\(escaped($0))\""
+        } ?? "null"
+        let qualityIssues: [[String: Any]] = foundationCopyReady ? [] : [[
+            "id": "issue.product_missing",
+            "blocking": true,
+            "message": "No safe repository-stated product purpose was found.",
+        ]]
+        var foundation: [String: Any] = [
+            "schema_version": foundationSchemaVersion,
+            "objective_independent": true,
+            "repository_state": [
+                "snapshot_fingerprint": "repo-state-fingerprint",
+            ],
+            "quality_report": [
+                "copy_ready": foundationCopyReady,
+                "issues": qualityIssues,
+            ],
+        ]
+        let semanticData = try! JSONSerialization.data(
+            withJSONObject: foundation,
+            options: [.sortedKeys, .withoutEscapingSlashes]
+        )
+        let semanticSHA256 = self.sha256(
+            String(data: semanticData, encoding: .utf8)!
+        )
+        foundation["semantic_sha256"] = semanticSHA256
+        let artifactData = try! JSONSerialization.data(
+            withJSONObject: foundation,
+            options: [.sortedKeys, .withoutEscapingSlashes]
+        )
+        let artifactSHA256 = self.sha256(
+            String(data: artifactData, encoding: .utf8)!
+        )
+        foundation["artifact_sha256"] = artifactSHA256
+        let foundationData = try! JSONSerialization.data(
+            withJSONObject: foundation,
+            options: [.sortedKeys, .withoutEscapingSlashes]
+        )
+        let foundationJSON = String(data: foundationData, encoding: .utf8)!
+        return """
+        {
+          "context_pack_id": "context-pack-1",
+          "schema_version": "context_pack.v2",
+          "markdown": "\(escaped(content))",
+          "selected_context": [],
+          "excluded_context": [],
+          "manifest": {
+            "schema_version": "context_pack.v2",
+            "context_pack_id": "context-pack-1",
+            "workspace_id": \(workspaceValue),
+            "objective_kind": "project_snapshot",
+            "focus": {"kind": "project_snapshot"},
+            "repo_state": {
+              "repo_path": "\(escaped(repoPath))",
+              "state_fingerprint": "repo-state-fingerprint",
+              "workspace_foundation_sha256": "\(semanticSHA256)",
+              "workspace_foundation_artifact_sha256": "\(artifactSHA256)"
+            },
+            "token_accounting": {"within_budget": true},
+            "rendering": {
+              "within_budget": true,
+              "markdown_sha256": "\(sha256)"
+            },
+            "workspace_foundation": \(foundationJSON)
+          }
+          \(extraTopLevel)
         }
         """
     }

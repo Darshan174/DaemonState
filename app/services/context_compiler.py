@@ -29,6 +29,7 @@ from app.schemas.continuation_execution import (
     build_authoritative_request,
     infer_task_mode,
 )
+from app.schemas.workspace_foundation import WorkspaceFoundationArtifact
 from app.services.model_profiles import (
     ModelCapabilityProfile,
     profile_for_target_model,
@@ -41,18 +42,33 @@ from app.services.access import AccessScope, source_access_predicate
 from app.services.focus_policy import focus_eligibility
 from app.services.memory_trust import assess_memory_trust
 from app.services.playbooks import PlaybookService
+from app.services.project_foundation import (
+    CompiledProjectFoundation,
+    compile_workspace_project_foundation,
+)
 from app.services.project_scope import workspace_references, workspace_relevance
 from app.services.provider_freshness import load_provider_freshness
-from app.services.repo_indexer import RANKING_VERSION, RepoFrame, RepoIndexer
+from app.services.repo_indexer import IndexedFile, RANKING_VERSION, RepoFrame, RepoIndexer
 from app.services.repo_paths import RepositoryPathNotAllowed, validated_repository_path
 from app.services.workspace_scope import metadata_dict
+from app.services.workspace_foundation import (
+    WORKSPACE_FOUNDATION_COMPILER_VERSION,
+    compile_workspace_foundation,
+)
+from app.services.workspace_foundation_renderer import (
+    WORKSPACE_FOUNDATION_RENDERER_VERSION,
+    render_workspace_foundation_markdown,
+)
+from app.services.workspace_foundation_verification import (
+    load_workspace_verification_observations,
+)
 from app.taxonomy import canonical_trust_zone
 from app.telemetry import traced
 from app.time import utc_now
 
 
 SCHEMA_VERSION = "context_pack.v2"
-COMPILER_VERSION = "context_compiler.v6"
+COMPILER_VERSION = "context_compiler.v9"
 EVIDENCE_CONTRACT_VERSION = "exact_evidence_span.v1"
 TOKEN_ESTIMATION_METHOD = "chars_div_4.v1"
 PROMPT_INJECTION_PATTERNS = (
@@ -298,6 +314,554 @@ def _empty_repo_frame() -> RepoFrame:
     )
 
 
+_WORKSPACE_INVENTORY_EXCLUDED_DIRECTORIES = frozenset({
+    ".agent-runs",
+    "attached_assets",
+    "build",
+    "coverage",
+    "data",
+    "dist",
+    "fixture",
+    "fixtures",
+    "generated",
+    "node_modules",
+    "test-data",
+    "testdata",
+    "third-party",
+    "third_party",
+    "vendor",
+})
+_WORKSPACE_ENTRYPOINT_NAMES = (
+    "main.py",
+    "app.py",
+    "server.py",
+    "cli.py",
+    "main.tsx",
+    "main.jsx",
+    "main.ts",
+    "main.js",
+    "app.tsx",
+    "app.jsx",
+    "index.tsx",
+    "index.jsx",
+    "index.ts",
+    "index.js",
+)
+_WORKSPACE_SCRIPT_PRIORITY = (
+    "doctor.sh",
+    "setup.sh",
+    "start.sh",
+    "dev.sh",
+    "self-host.sh",
+    "smoke.sh",
+    "bootstrap.sh",
+)
+_WORKSPACE_DOCUMENTATION_PRIORITY = (
+    "architecture.md",
+    "index.md",
+    "readme.md",
+    "self-hosting.md",
+    "runbook.md",
+)
+_WORKSPACE_DEPENDENCY_PRIORITY = (
+    "fastapi",
+    "react",
+    "sqlalchemy",
+    "asyncpg",
+    "aiosqlite",
+    "redis",
+    "mcp",
+    "vite",
+    "react-query",
+    "pydantic",
+    "uvicorn",
+    "litellm",
+)
+
+
+def _workspace_text_excerpt(value: str, limit: int) -> str:
+    normalized = " ".join(str(value or "").split())
+    if len(normalized) <= limit:
+        return normalized
+    prefix = normalized[: max(1, limit - 1)].rstrip()
+    sentence_boundaries = [
+        match.end()
+        for match in re.finditer(r"[.!?](?=\s|$)", prefix)
+        if match.end() >= int(limit * 0.55)
+    ]
+    if sentence_boundaries:
+        return prefix[: sentence_boundaries[-1]].rstrip() + "…"
+    if " " in prefix:
+        prefix = prefix.rsplit(" ", 1)[0]
+    return prefix.rstrip(".,;:") + "…"
+
+
+def _workspace_dependency_sort_key(value: str) -> tuple[int, str]:
+    lowered = str(value).casefold()
+    rank = next(
+        (
+            index
+            for index, marker in enumerate(_WORKSPACE_DEPENDENCY_PRIORITY)
+            if marker in lowered
+        ),
+        len(_WORKSPACE_DEPENDENCY_PRIORITY),
+    )
+    return rank, lowered
+
+
+def _eligible_workspace_inventory_path(path: str) -> bool:
+    normalized = str(path or "").replace("\\", "/").strip("/")
+    if not normalized:
+        return False
+    parts = normalized.casefold().split("/")
+    directories = parts[:-1]
+    return not (
+        any(part.startswith(".") for part in directories)
+        or bool(set(directories) & _WORKSPACE_INVENTORY_EXCLUDED_DIRECTORIES)
+        or any(
+            part.startswith("dummy")
+            or "non-existing" in part
+            or "fixture_project" in part
+            for part in directories
+        )
+        or parts[-1] == ".ds_store"
+    )
+
+
+def _workspace_representative_score(
+    item: IndexedFile,
+    *,
+    area: str,
+) -> tuple[Any, ...]:
+    path = str(item.path).replace("\\", "/")
+    name = Path(path).name.casefold()
+    entrypoint_rank = (
+        _WORKSPACE_ENTRYPOINT_NAMES.index(name)
+        if name in _WORKSPACE_ENTRYPOINT_NAMES
+        else len(_WORKSPACE_ENTRYPOINT_NAMES)
+    )
+    script_rank = (
+        _WORKSPACE_SCRIPT_PRIORITY.index(name)
+        if area.casefold() == "scripts" and name in _WORKSPACE_SCRIPT_PRIORITY
+        else len(_WORKSPACE_SCRIPT_PRIORITY)
+    )
+    documentation_rank = (
+        _WORKSPACE_DOCUMENTATION_PRIORITY.index(name)
+        if area.casefold() == "docs" and name in _WORKSPACE_DOCUMENTATION_PRIORITY
+        else len(_WORKSPACE_DOCUMENTATION_PRIORITY)
+    )
+    is_noise_name = name in {
+        "__init__.py",
+        "conftest.py",
+        "license",
+        "license.md",
+        "license.txt",
+        "notice",
+        "notice.md",
+        "notice.txt",
+    }
+    area_is_tests = area.casefold() in {"test", "tests"}
+    preferred_test = area_is_tests and (
+        name.startswith("test_")
+        or name.endswith((".test.js", ".test.jsx", ".test.ts", ".test.tsx"))
+    )
+    return (
+        is_noise_name,
+        0 if preferred_test else 1,
+        script_rank,
+        documentation_rank,
+        entrypoint_rank,
+        0 if item.route_hints or item.route_owners else 1,
+        0 if item.symbols else 1,
+        0 if item.imports else 1,
+        item.is_config,
+        item.is_test and not area_is_tests,
+        len(Path(path).parts),
+        path.casefold(),
+    )
+
+
+def _readme_inventory_summary(
+    repo_frame: RepoFrame,
+    indexed_files: list[IndexedFile],
+) -> dict[str, Any] | None:
+    readme = next(
+        (
+            item
+            for item in indexed_files
+            if "/" not in item.path
+            and Path(item.path).name.casefold()
+            in {"readme", "readme.md", "readme.txt", "readme.rst"}
+        ),
+        None,
+    )
+    if readme is None or not repo_frame.repo_path:
+        return None
+    try:
+        text = (Path(repo_frame.repo_path) / readme.path).read_text(
+            encoding="utf-8",
+            errors="replace",
+        )[:64_000]
+    except OSError:
+        return None
+
+    html_title = re.search(
+        r"<h1[^>]*>(.*?)</h1>",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    markdown_title = re.search(r"^#\s+(.+?)\s*$", text, re.MULTILINE)
+    title = ""
+    if html_title:
+        title = re.sub(r"<[^>]+>", " ", html_title.group(1))
+    elif markdown_title:
+        title = markdown_title.group(1)
+    title = " ".join(title.split())[:160]
+    if _prompt_injection_risk(title) >= 0.70:
+        title = ""
+
+    paragraphs: list[str] = []
+    current: list[str] = []
+    in_code = False
+    for raw_line in text.splitlines()[:340]:
+        stripped = raw_line.strip()
+        if stripped.startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        if not stripped:
+            if current:
+                paragraph = " ".join(current)
+                if len(paragraph) >= 55:
+                    paragraphs.append(paragraph)
+                current = []
+            continue
+        if (
+            stripped.startswith(
+                ("#", "|", "![", "<img", "<p", "</p", "<h1", "</h1")
+            )
+            or re.match(r"^[-*+]\s+", stripped)
+            or re.match(r"^\d+[.)]\s+", stripped)
+        ):
+            continue
+        cleaned = stripped.lstrip("> ")
+        cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+        cleaned = re.sub(r"!\[[^]]*]\([^)]*\)", "", cleaned)
+        cleaned = re.sub(r"\[([^]]+)]\([^)]*\)", r"\1", cleaned)
+        cleaned = cleaned.replace("**", "").replace("__", "").replace("`", "")
+        cleaned = " ".join(cleaned.split())
+        if cleaned:
+            current.append(cleaned)
+    if current:
+        paragraph = " ".join(current)
+        if len(paragraph) >= 55:
+            paragraphs.append(paragraph)
+    summary = _workspace_text_excerpt(" ".join(paragraphs[:3]), 620)
+    if not summary or _prompt_injection_risk(summary) >= 0.70:
+        summary = ""
+    architecture_terms = {
+        "api",
+        "authentication",
+        "backend",
+        "cli",
+        "database",
+        "docker",
+        "fastapi",
+        "frontend",
+        "mcp",
+        "postgresql",
+        "react",
+        "redis",
+        "service",
+        "sqlite",
+        "storage",
+        "worker",
+    }
+    architecture_candidates = sorted(
+        (
+            (
+                len(architecture_terms & set(_tokenize(paragraph))),
+                -index,
+                paragraph,
+            )
+            for index, paragraph in enumerate(paragraphs)
+        ),
+        reverse=True,
+    )
+    architecture = ""
+    if architecture_candidates and architecture_candidates[0][0] >= 3:
+        architecture = _workspace_text_excerpt(
+            architecture_candidates[0][2],
+            440,
+        )
+        if _prompt_injection_risk(architecture) >= 0.70:
+            architecture = ""
+    if not title and not summary:
+        return None
+    audiences: list[str] = []
+    who_section = re.search(
+        r"^##\s+Who\s+it\s+is\s+for\s*$([\s\S]*?)(?=^##\s+|\Z)",
+        text,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if who_section:
+        for match in re.finditer(
+            r"^\s*[-*+]\s+\*\*([^*]+)\*\*",
+            who_section.group(1),
+            re.MULTILINE,
+        ):
+            audience = " ".join(match.group(1).split())[:100]
+            if _prompt_injection_risk(audience) >= 0.70:
+                continue
+            audiences.append(audience)
+            if len(audiences) >= 4:
+                break
+
+    capabilities: list[dict[str, str]] = []
+    for raw_line in text.splitlines():
+        if not raw_line.strip().startswith("|"):
+            continue
+        cells = [cell.strip() for cell in raw_line.strip().strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        name = re.sub(r"[*_`]", "", cells[0]).strip()
+        description = re.sub(r"[*_`]", "", cells[1]).strip()
+        if (
+            not name
+            or name.casefold() in {"feature", "context"}
+            or set(name) <= {"-", ":", " "}
+            or set(description) <= {"-", ":", " "}
+            or _prompt_injection_risk(f"{name} {description}") >= 0.70
+        ):
+            continue
+        capabilities.append({
+            "name": " ".join(name.split())[:80],
+            "summary": _workspace_text_excerpt(description, 220),
+        })
+        if len(capabilities) >= 6:
+            break
+    return {
+        "path": readme.path,
+        "title": title or None,
+        "summary": summary or None,
+        "architecture": architecture or None,
+        "audiences": audiences,
+        "capabilities": capabilities,
+        "sha256": readme.sha256,
+    }
+
+
+def _workspace_manifest_signals(repo_frame: RepoFrame) -> list[dict[str, Any]]:
+    signals: list[dict[str, Any]] = []
+    indexed_by_path = {item.path: item for item in repo_frame.indexed_files}
+    for path, raw in sorted(repo_frame.package_manifests.items()):
+        if not _eligible_workspace_inventory_path(path):
+            continue
+        manifest = raw if isinstance(raw, dict) else {}
+        scripts = (
+            manifest.get("scripts")
+            if isinstance(manifest.get("scripts"), dict)
+            else {}
+        )
+        dependencies = manifest.get("dependencies")
+        if not isinstance(dependencies, list):
+            dependencies = []
+        name = Path(path).name.casefold()
+        role = {
+            "dockerfile": "container image build definition",
+            "docker-compose.yml": "multi-service local runtime definition",
+            "docker-compose.yaml": "multi-service local runtime definition",
+            "pyproject.toml": "Python package and runtime manifest",
+            "package.json": "JavaScript package and workflow manifest",
+        }.get(name, str(manifest.get("type") or Path(path).name))
+        signals.append({
+            "path": path,
+            "type": str(manifest.get("type") or Path(path).name),
+            "role": role,
+            "sha256": getattr(indexed_by_path.get(path), "sha256", None),
+            "package": str(
+                manifest.get("project") or manifest.get("name") or ""
+            ).strip() or None,
+            "scripts": sorted(str(name) for name in scripts)[:10],
+            "dependencies": sorted(
+                (str(name) for name in dependencies),
+                key=_workspace_dependency_sort_key,
+            )[:10],
+        })
+        if len(signals) >= 6:
+            break
+    return signals
+
+
+def _workspace_repository_inventory(repo_frame: RepoFrame) -> dict[str, Any]:
+    """Return a bounded, objective-independent inventory for Workspace Context."""
+
+    all_indexed_files = sorted(repo_frame.indexed_files, key=lambda item: item.path)
+    indexed_files = [
+        item
+        for item in all_indexed_files
+        if _eligible_workspace_inventory_path(item.path)
+    ]
+    language_counts: dict[str, int] = {}
+    area_counts: dict[str, int] = {}
+    files_by_area: dict[str, list[IndexedFile]] = {}
+    for item in indexed_files:
+        language = item.language or "other"
+        language_counts[language] = language_counts.get(language, 0) + 1
+        normalized_path = item.path.replace("\\", "/").strip("/")
+        area = normalized_path.split("/", 1)[0] if "/" in normalized_path else "(root)"
+        area_counts[area] = area_counts.get(area, 0) + 1
+        files_by_area.setdefault(area, []).append(item)
+
+    selected: list[tuple[IndexedFile, str]] = []
+    selected_paths: set[str] = set()
+
+    def select(item: IndexedFile | None, reason: str) -> None:
+        if item is None or item.path in selected_paths or len(selected) >= 10:
+            return
+        selected_paths.add(item.path)
+        selected.append((item, reason))
+
+    indexed_by_path = {item.path: item for item in indexed_files}
+    readme = next(
+        (
+            item
+            for item in indexed_files
+            if "/" not in item.path
+            and Path(item.path).name.casefold().startswith("readme")
+        ),
+        None,
+    )
+    select(readme, "Root project overview")
+    manifest_priority = {
+        "pyproject.toml": 0,
+        "package.json": 1,
+        "cargo.toml": 2,
+        "go.mod": 3,
+        "dockerfile": 4,
+        "docker-compose.yml": 5,
+    }
+    manifest_paths = sorted(
+        (path for path in repo_frame.manifest_files if path in indexed_by_path),
+        key=lambda path: (
+            manifest_priority.get(Path(path).name.casefold(), 20),
+            len(Path(path).parts),
+            path.casefold(),
+        ),
+    )
+    for path in manifest_paths[:4]:
+        select(indexed_by_path[path], "Project manifest or runtime entrypoint")
+
+    preferred_areas = [
+        "app",
+        "frontend",
+        "src",
+        "scripts",
+        "deploy",
+        "desktop",
+        "docs",
+        "examples",
+    ]
+    ordered_areas = [area for area in preferred_areas if area in files_by_area]
+    ordered_areas.extend(
+        area
+        for area, _count in sorted(
+            area_counts.items(),
+            key=lambda pair: (-pair[1], pair[0]),
+        )
+        if area not in ordered_areas
+        and area != "(root)"
+        and area.casefold() not in {"test", "tests"}
+    )
+    for area in ordered_areas:
+        candidates = sorted(
+            files_by_area[area],
+            key=lambda item: _workspace_representative_score(item, area=area),
+        )
+        select(
+            candidates[0] if candidates else None,
+            f"Representative entrypoint for {area}",
+        )
+
+    workflow_paths = [
+        f"scripts/{name}"
+        for name in _WORKSPACE_SCRIPT_PRIORITY
+        if f"scripts/{name}" in indexed_by_path
+    ][:7]
+    area_roles = {
+        "app": "Python backend and services",
+        "frontend": "web client",
+        "src": "application source",
+        "scripts": "operational and developer automation",
+        "tests": "automated verification",
+        "test": "automated verification",
+        "docs": "project documentation",
+        "desktop": "desktop integration",
+        "deploy": "deployment configuration",
+        "examples": "integration examples",
+    }
+    return {
+        "schema_version": "workspace_repository_inventory.v2",
+        "indexed_file_count": len(all_indexed_files),
+        "eligible_file_count": len(indexed_files),
+        "excluded_noise_file_count": len(all_indexed_files) - len(indexed_files),
+        "test_file_count": sum(1 for item in indexed_files if item.is_test),
+        "manifest_file_count": sum(1 for item in indexed_files if item.is_manifest),
+        "project_name": next(
+            (
+                str(raw.get("project") or raw.get("name") or "").strip()
+                for path, raw in sorted(
+                    repo_frame.package_manifests.items(),
+                    key=lambda item: (
+                        "/" in item[0],
+                        Path(item[0]).name.casefold() != "pyproject.toml",
+                        item[0].casefold(),
+                    ),
+                )
+                if isinstance(raw, dict)
+                and str(raw.get("project") or raw.get("name") or "").strip()
+            ),
+            Path(repo_frame.repo_path).name if repo_frame.repo_path else None,
+        ),
+        "readme": _readme_inventory_summary(repo_frame, indexed_files),
+        "manifest_signals": _workspace_manifest_signals(repo_frame),
+        "workflow_paths": workflow_paths,
+        "languages": [
+            {"name": name, "file_count": count}
+            for name, count in sorted(
+                language_counts.items(),
+                key=lambda pair: (-pair[1], pair[0]),
+            )[:8]
+        ],
+        "areas": [
+            {
+                "path": path,
+                "file_count": count,
+                "role": area_roles.get(path.casefold()),
+            }
+            for path, count in sorted(
+                area_counts.items(),
+                key=lambda pair: (-pair[1], pair[0]),
+            )
+            if path != "(root)"
+        ][:10],
+        "representative_files": [
+            {
+                "path": item.path,
+                "language": item.language,
+                "sha256": item.sha256,
+                "size": item.size,
+                "is_test": item.is_test,
+                "is_manifest": item.is_manifest,
+                "why": reason,
+            }
+            for item, reason in selected
+        ],
+        "truncated": len(indexed_files) > len(selected),
+    }
+
+
 def _bind_repo_state_to_authoritative_snapshot(
     repo_state: dict[str, Any],
     repository: dict[str, Any],
@@ -474,8 +1038,13 @@ class ContextCompiler:
         access_scope = access_scope or AccessScope.local()
         if objective_kind not in {"observed", "project_snapshot"}:
             raise InvalidGoalError("objective_kind must be observed or project_snapshot")
+        is_project_snapshot = objective_kind == "project_snapshot"
+        if is_project_snapshot and (restored_checkpoint is not None or continuation is not None):
+            raise InvalidGoalError(
+                "project_snapshot is task- and session-independent and cannot restore continuation state"
+            )
         effective_origin = objective_origin or (
-            "project_snapshot" if objective_kind == "project_snapshot" else "trusted_human"
+            "project_snapshot" if is_project_snapshot else "trusted_human"
         )
         continuation_frame = _normalize_continuation_metadata(continuation)
         goal, focus = await self._resolve_focus(
@@ -491,8 +1060,8 @@ class ContextCompiler:
         goal_frame = parse_goal(
             goal,
             objective_kind=objective_kind,
-            request_verbatim=request_verbatim,
-            task_mode=task_mode,
+            request_verbatim=None if is_project_snapshot else request_verbatim,
+            task_mode=TaskMode.REPORT if is_project_snapshot else task_mode,
         )
         checkpoint_file_hints = _restored_checkpoint_file_hints(restored_checkpoint)
         if checkpoint_file_hints:
@@ -527,10 +1096,14 @@ class ContextCompiler:
             raise InvalidRepoPathError(
                 "repo_path is required when no workspace evidence scope is supplied"
             )
-        repo_state = repo_frame.to_manifest(goal_frame.keywords, goal_frame.file_hints)
+        retrieval_keywords = set() if is_project_snapshot else goal_frame.keywords
+        retrieval_file_hints = [] if is_project_snapshot else goal_frame.file_hints
+        repo_state = repo_frame.to_manifest(retrieval_keywords, retrieval_file_hints)
+        if is_project_snapshot:
+            repo_state["workspace_inventory"] = _workspace_repository_inventory(repo_frame)
         repository_evidence = repo_frame.repository_evidence_for_goal(
-            goal_frame.keywords,
-            goal_frame.file_hints,
+            retrieval_keywords,
+            retrieval_file_hints,
         )
         if authoritative_repository is not None:
             repo_state = _bind_repo_state_to_authoritative_snapshot(
@@ -539,26 +1112,84 @@ class ContextCompiler:
             )
         affected_code = (
             repo_frame.affected_code_for_goal(goal_frame.keywords, goal_frame.file_hints)
-            if focus["component_id"] is not None
+            if not is_project_snapshot and focus["component_id"] is not None
             else None
         )
-        task_frame = infer_task_frame(
-            goal_frame,
-            repo_frame,
-            profile,
-            affected_code=affected_code,
-        )
-        candidates = await self._collect_candidates(
-            goal_frame,
-            repo_frame,
-            repo_state,
-            task_frame,
-            workspace_uuid,
-            profile,
-            access_scope,
-        )
-        if restored_checkpoint is not None:
-            candidates.append(_restored_checkpoint_candidate(restored_checkpoint))
+        project_foundation: CompiledProjectFoundation | None = None
+        workspace_foundation: WorkspaceFoundationArtifact | None = None
+        workspace_verification_observations = ()
+        if is_project_snapshot and self.session is not None and workspace_uuid is not None:
+            project_foundation = await compile_workspace_project_foundation(
+                self.session,
+                workspace_id=workspace_uuid,
+                repository_fingerprint=(
+                    str(
+                        repo_state.get("state_fingerprint")
+                        or repo_state.get("snapshot_fingerprint")
+                        or ""
+                    ).strip()
+                    or None
+                ),
+                access_scope=access_scope,
+            )
+            repo_state["workspace_inventory"]["foundation"] = (
+                project_foundation.snapshot.model_dump(mode="json")
+            )
+            workspace_verification_observations = (
+                await load_workspace_verification_observations(
+                    self.session,
+                    workspace_uuid,
+                    repo_frame,
+                )
+            )
+        if is_project_snapshot:
+            workspace_foundation = compile_workspace_foundation(
+                frame=repo_frame,
+                inventory=repo_state["workspace_inventory"],
+                durable_foundation=project_foundation,
+                repository_fingerprint=(
+                    str(
+                        repo_state.get("state_fingerprint")
+                        or repo_state.get("snapshot_fingerprint")
+                        or ""
+                    ).strip()
+                    or None
+                ),
+                verification_observations=workspace_verification_observations,
+            )
+            repo_state["workspace_foundation_sha256"] = (
+                workspace_foundation.semantic_sha256
+            )
+            repo_state["workspace_foundation_artifact_sha256"] = (
+                workspace_foundation.artifact_sha256
+            )
+        if is_project_snapshot:
+            task_frame = _project_snapshot_task_frame()
+            candidates = _project_snapshot_candidates(
+                goal_frame,
+                repo_state,
+                project_foundation,
+            )
+            _score_project_snapshot_candidates(candidates)
+        else:
+            task_frame = infer_task_frame(
+                goal_frame,
+                repo_frame,
+                profile,
+                affected_code=affected_code,
+            )
+            candidates = await self._collect_candidates(
+                goal_frame,
+                repo_frame,
+                repo_state,
+                task_frame,
+                workspace_uuid,
+                profile,
+                access_scope,
+            )
+            if restored_checkpoint is not None:
+                candidates.append(_restored_checkpoint_candidate(restored_checkpoint))
+            self._score_candidates(candidates, goal_frame, repo_state)
         if focus["component_id"] is not None:
             focus_candidate = next(
                 (
@@ -581,7 +1212,6 @@ class ContextCompiler:
                 and focus_candidate.source_document_id == focus["source_document_id"]
             ):
                 focus_candidate.truth_state = "current"
-        self._score_candidates(candidates, goal_frame, repo_state)
         selected, excluded = self._select_candidates(candidates, effective_budget, profile)
         if focus["component_id"] is not None and not any(
             candidate.component_id == focus["component_id"] for candidate in selected
@@ -593,7 +1223,11 @@ class ContextCompiler:
         selected, excluded = _assign_citation_ids(selected, excluded, profile)
 
         known_playbook = None
-        if self.session is not None and workspace_uuid is not None:
+        if (
+            not is_project_snapshot
+            and self.session is not None
+            and workspace_uuid is not None
+        ):
             known_playbook = await PlaybookService(self.session).compatible_playbook(
                 workspace_id=workspace_uuid,
                 objective=goal_frame.objective,
@@ -604,7 +1238,14 @@ class ContextCompiler:
         pack_id = str(uuid4()) if persist or compatibility_mode is False else None
         created_at = utc_now().isoformat(timespec="seconds") + "Z"
         while True:
-            health = _context_health(selected, excluded, candidates, repo_state, task_frame)
+            health = _context_health(
+                selected,
+                excluded,
+                candidates,
+                repo_state,
+                task_frame,
+                workspace_foundation=workspace_foundation,
+            )
             manifest = self._build_manifest(
                 context_pack_id=pack_id,
                 created_at=created_at,
@@ -625,6 +1266,11 @@ class ContextCompiler:
                 focus=focus,
                 known_playbook=known_playbook,
                 continuation=continuation_frame,
+                workspace_foundation=(
+                    workspace_foundation.model_dump(mode="json")
+                    if workspace_foundation is not None
+                    else None
+                ),
             )
             markdown = render_context_pack_markdown(manifest, profile)
             rendered_tokens = estimate_tokens(markdown)
@@ -774,10 +1420,7 @@ class ContextCompiler:
                     "invalid_objective_origin",
                     "project_snapshot requires project_snapshot origin and no focus.",
                 )
-            objective = " ".join(str(goal or "").strip().split())
-            if not objective:
-                objective = "Compile a read-only project snapshot from current source evidence."
-            return objective, {
+            return "Compile objective-independent Workspace Context.", {
                 "kind": "project_snapshot",
                 "component_id": None,
                 "fact_type": None,
@@ -1294,6 +1937,7 @@ class ContextCompiler:
             candidate.score = score_candidate(candidate, goal_frame, relevant_paths, selected_file_tokens)
             candidate.rank_features = {
                 **candidate.rank_features,
+                "workspace_snapshot": goal_frame.objective_kind == "project_snapshot",
                 "objective_token_coverage": _coverage(
                     goal_frame.keywords,
                     set(_tokenize(" ".join([
@@ -1385,6 +2029,7 @@ class ContextCompiler:
         focus: dict[str, Any],
         known_playbook: dict[str, Any] | None,
         continuation: dict[str, Any] | None,
+        workspace_foundation: dict[str, Any] | None,
     ) -> dict[str, Any]:
         manifest = {
             "schema_version": SCHEMA_VERSION,
@@ -1394,6 +2039,12 @@ class ContextCompiler:
                 "ranking_version": RANKING_VERSION,
                 "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
                 "token_estimation_method": TOKEN_ESTIMATION_METHOD,
+                "workspace_foundation_compiler_version": (
+                    WORKSPACE_FOUNDATION_COMPILER_VERSION
+                ),
+                "workspace_foundation_renderer_version": (
+                    WORKSPACE_FOUNDATION_RENDERER_VERSION
+                ),
             },
             "context_pack_id": context_pack_id,
             "objective": goal_frame.objective,
@@ -1457,6 +2108,8 @@ class ContextCompiler:
             manifest["known_playbook"] = known_playbook
         if continuation is not None:
             manifest["continuation"] = continuation
+        if workspace_foundation is not None:
+            manifest["workspace_foundation"] = workspace_foundation
         return manifest
 
     async def _persist_pack(
@@ -1894,6 +2547,9 @@ def render_context_pack_markdown(
     manifest: dict[str, Any],
     profile: ModelCapabilityProfile,
 ) -> str:
+    if manifest.get("objective_kind") == "project_snapshot":
+        return _render_workspace_context_markdown(manifest)
+
     repo_state = manifest["repo_state"]
     affected_files = (manifest.get("affected_code") or {}).get("files") or []
     target_model = manifest["target_model"]
@@ -2105,6 +2761,254 @@ def render_context_pack_markdown(
     return "\n".join(sections).strip() + "\n"
 
 
+def _render_workspace_context_markdown(manifest: dict[str, Any]) -> str:
+    foundation = manifest.get("workspace_foundation")
+    if foundation is not None:
+        # Presence of the typed artifact is a strict contract.  Invalid or
+        # tampered foundations must fail closed instead of silently rendering
+        # the weaker legacy inventory projection.
+        return render_workspace_foundation_markdown(foundation)
+    return _render_legacy_workspace_context_markdown(manifest)
+
+
+def _render_legacy_workspace_context_markdown(manifest: dict[str, Any]) -> str:
+    repo_state = manifest["repo_state"]
+    inventory = repo_state.get("workspace_inventory") or {}
+    selected = manifest.get("selected_context") or []
+    excluded = manifest.get("excluded_context") or []
+    sections = [
+        "# Workspace Context",
+        "",
+        "> Boundary: objective- and session-independent workspace facts plus "
+        "current repository observations. This is background, not a task instruction.",
+    ]
+
+    readme = inventory.get("readme") or {}
+    project_name = str(
+        readme.get("title") or inventory.get("project_name") or ""
+    ).strip()
+    if project_name or readme.get("summary"):
+        sections.extend(["", "## Repository-stated project overview", ""])
+        if project_name:
+            sections.append(f"- Project: {project_name}")
+        if readme.get("summary"):
+            sections.append(f"- Summary: {readme['summary']}")
+        if readme.get("audiences"):
+            sections.append(
+                "- Intended users named in README: "
+                + ", ".join(readme.get("audiences")[:4])
+                + "."
+            )
+        if readme.get("path"):
+            digest = str(readme.get("sha256") or "unknown")[:12]
+            sections.append(
+                f"- Evidence: `{readme['path']}` (sha256 `{digest}`)."
+            )
+
+    workflow_paths = inventory.get("workflow_paths") or []
+    manifest_signals = inventory.get("manifest_signals") or []
+    manifest_workflows = [
+        item for item in manifest_signals if item.get("scripts")
+    ]
+    if workflow_paths or manifest_workflows or readme.get("capabilities"):
+        sections.extend([
+            "",
+            "## Repository-stated workflows and detected entrypoints",
+            "",
+        ])
+        for item in (readme.get("capabilities") or [])[:4]:
+            sections.append(
+                f"- {item.get('name')}: {item.get('summary')}"
+            )
+        if readme.get("capabilities") and readme.get("path"):
+            sections.append(
+                f"- Workflow source: `{readme.get('path')}` "
+                f"(sha256 `{str(readme.get('sha256') or 'unknown')[:12]}`)."
+            )
+        if workflow_paths:
+            sections.append(
+                "- Operational scripts: "
+                + ", ".join(f"`{path}`" for path in workflow_paths)
+                + "."
+            )
+        for item in manifest_workflows[:3]:
+            sections.append(
+                f"- `{item.get('path')}` scripts: "
+                + ", ".join(
+                    f"`{name}`" for name in item.get("scripts")[:8]
+                )
+                + "."
+            )
+
+    languages = inventory.get("languages") or []
+    sections.extend(["", "## Architecture and stack signals", ""])
+    if readme.get("architecture"):
+        sections.append(
+            f"- README-stated architecture: {readme.get('architecture')} "
+            f"(`{readme.get('path')}`, sha256 "
+            f"`{str(readme.get('sha256') or 'unknown')[:12]}`)."
+        )
+    sections.append(
+        "- Indexed languages: "
+        + (
+            ", ".join(
+                f"{item.get('name') or 'other'} ({int(item.get('file_count') or 0)})"
+                for item in languages[:6]
+            )
+            or "none"
+        )
+        + "."
+    )
+    for item in manifest_signals[:5]:
+        details: list[str] = [str(item.get("role") or item.get("type") or "manifest")]
+        if item.get("package"):
+            details.append(f"package `{item['package']}`")
+        if item.get("dependencies"):
+            details.append(
+                "dependencies "
+                + ", ".join(
+                    f"`{name}`" for name in item.get("dependencies")[:6]
+                )
+            )
+        detail = "; ".join(details)
+        digest = str(item.get("sha256") or "unknown")[:12]
+        sections.append(
+            f"- `{item.get('path')}`: {detail} (sha256 `{digest}`)."
+        )
+
+    areas = inventory.get("areas") or []
+    representative_files = inventory.get("representative_files") or []
+    displayed_representatives = [
+        item
+        for item in representative_files
+        if Path(str(item.get("path") or "")).name.casefold()
+        not in {"dockerfile", "docker-compose.yml", "docker-compose.yaml"}
+    ][:8]
+    sections.extend(["", "## Repository map", ""])
+    sections.append(
+        "- Main areas: "
+        + (
+            ", ".join(
+                f"`{item.get('path')}`"
+                + (f" — {item.get('role')}" if item.get("role") else "")
+                + f" ({int(item.get('file_count') or 0)} files)"
+                for item in areas[:8]
+            )
+            or "none indexed"
+        )
+        + "."
+    )
+    if displayed_representatives:
+        sections.append("- Representative files:")
+        for item in displayed_representatives:
+            digest = str(item.get("sha256") or "unknown")[:12]
+            sections.append(
+                f"  - `{item.get('path')}` — "
+                f"{item.get('why') or 'repository inventory'} "
+                f"(sha256 `{digest}`)."
+            )
+    else:
+        sections.append("- No local repository files are currently indexed.")
+    if inventory.get("truncated"):
+        sections.append(
+            f"- Inventory is intentionally bounded: showing "
+            f"{len(displayed_representatives)} representatives from "
+            f"{int(inventory.get('eligible_file_count') or 0)} eligible indexed files."
+        )
+
+    knowledge = [
+        item
+        for item in selected
+        if item.get("inclusion_reason") == "workspace_project_foundation"
+    ]
+    sections.extend(["", "## Durable workspace knowledge", ""])
+    if knowledge:
+        section_titles = {
+            "identity": "Identity",
+            "workflows": "Workflows",
+            "architecture": "Architecture",
+            "domain": "Domain",
+            "repository": "Repository responsibilities",
+            "stack": "Stack",
+            "decisions": "Decisions",
+            "conventions": "Conventions",
+            "commands": "Commands",
+            "capabilities": "Capabilities",
+            "constraints": "Constraints",
+            "direction": "Direction",
+        }
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for item in knowledge:
+            section = str(
+                (item.get("rank_features") or {}).get("foundation_section")
+                or "other"
+            )
+            grouped.setdefault(section, []).append(item)
+        for section, items in grouped.items():
+            sections.append(f"- {section_titles.get(section, section.title())}:")
+            for item in items:
+                evidence_level = str(
+                    item.get("evidence_level") or "verified"
+                ).replace("_", " ")
+                sections.append(
+                    f"  - {item.get('title') or 'Workspace fact'}: "
+                    f"{item.get('summary') or ''} ({evidence_level}) "
+                    f"{_citation_refs(item)}".rstrip()
+                )
+    else:
+        foundation = inventory.get("foundation") or {}
+        provisional = int(foundation.get("provisional_fact_count") or 0)
+        conflicting = int(
+            foundation.get("superseded_conflicting_fact_count") or 0
+        )
+        audit = (
+            f" {provisional} provisional and {conflicting} "
+            "superseded/conflicting claim(s) remain excluded."
+            if provisional or conflicting
+            else ""
+        )
+        sections.append(
+            "- No durable fact met the promotion boundary; none was invented."
+            + audit
+        )
+
+    if knowledge:
+        sections.extend(["", "## Durable-fact evidence", ""])
+        sections.extend(_markdown_citation_lines(knowledge))
+
+    if excluded:
+        reason_counts: dict[str, int] = {}
+        for item in excluded:
+            reason = str(item.get("reason") or "other")
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        summary = ", ".join(
+            f"{reason}={count}"
+            for reason, count in sorted(reason_counts.items())
+        )
+        sections.extend([
+            "",
+            f"> Bounded selection omitted {len(excluded)} durable candidate(s) "
+            f"({summary}).",
+        ])
+
+    fingerprint = str(
+        repo_state.get("state_fingerprint")
+        or repo_state.get("snapshot_fingerprint")
+        or "unavailable"
+    )
+    sections.extend([
+        "",
+        "## Snapshot identity",
+        "",
+        f"- Repository: `{project_name or inventory.get('project_name') or 'not locally indexed'}`",
+        f"- Branch: `{repo_state.get('branch') or 'unknown'}`",
+        f"- Head commit: `{repo_state.get('head_commit') or 'unknown'}`",
+        f"- Dirty worktree at compile time: `{str(bool(repo_state.get('dirty'))).lower()}`",
+        f"- Snapshot fingerprint: `{fingerprint}`",
+    ])
+    return "\n".join(sections).strip() + "\n"
+
+
 def estimate_tokens(text: str) -> int:
     return max(1, math.ceil(len(str(text or "")) / 4))
 
@@ -2243,6 +3147,128 @@ def _render_structured_checkpoint_for_audit(value: Any) -> str:
             for item in items
         )
     return "\n".join(lines)
+
+
+def _project_snapshot_task_frame() -> dict[str, Any]:
+    return {
+        "snapshot_mode": True,
+        "implementation_plan": [],
+        "verification_commands": [],
+        "acceptance_criteria": [],
+        "risks": [],
+        "stop_conditions": [],
+    }
+
+
+def _project_snapshot_candidates(
+    goal_frame: GoalFrame,
+    repo_state: dict[str, Any],
+    foundation: CompiledProjectFoundation | None,
+) -> list[ContextCandidate]:
+    candidates = [
+        ContextCandidate(
+            id=f"objective:{_stable_hash(goal_frame.objective)}",
+            item_type="objective",
+            title="Workspace snapshot purpose",
+            summary=goal_frame.objective,
+            token_cost=estimate_tokens(goal_frame.objective),
+            inclusion_reason="trusted_system_snapshot_purpose",
+            trust_zone="trusted_system",
+            confidence=1.0,
+            authority_weight=1.0,
+            mandatory=True,
+            lane="instructions",
+            rank_features={"source": "generated_project_snapshot"},
+            provenance_verified=True,
+            truth_state="current",
+        ),
+        ContextCandidate(
+            id="repo_state:current",
+            item_type="repo_state",
+            title="Current repository snapshot",
+            summary=(
+                f"Branch {repo_state.get('branch') or 'unknown'}, "
+                f"head {repo_state.get('head_commit') or 'unknown'}, "
+                f"dirty={bool(repo_state.get('dirty'))}."
+            ),
+            token_cost=50,
+            inclusion_reason="current_repo_state",
+            trust_zone="trusted_repo",
+            confidence=0.95 if repo_state.get("head_commit") else 0.65,
+            authority_weight=0.9,
+            mandatory=True,
+            lane="instructions",
+            rank_features={"source": "deterministic_repo_state"},
+            provenance_verified=True,
+            truth_state="current",
+        ),
+    ]
+    if foundation is None:
+        return candidates
+    for item in foundation.items:
+        provenance = list(item.provenance_refs)
+        first = provenance[0]
+        trust_zone = {
+            "human_confirmed": "trusted_human",
+            "mechanically_verified": "trusted_repo",
+            "corroborated": "trusted_system",
+        }.get(item.evidence_level.value, "trusted_system")
+        candidates.append(ContextCandidate(
+            id=f"project_foundation:{item.id}",
+            item_type="project_fact",
+            title=item.title,
+            summary=item.statement,
+            token_cost=estimate_tokens(f"{item.title}\n{item.statement}"),
+            inclusion_reason="workspace_project_foundation",
+            trust_zone=trust_zone,
+            confidence=1.0,
+            authority_weight=0.95,
+            evidence_span_id=first.evidence_span_id,
+            source_document_id=first.source_document_id,
+            evidence_text_sha256=first.evidence_text_sha256,
+            source_revision_number=first.source_revision_number,
+            source_content_sha256=first.source_content_sha256,
+            citations=[{
+                "citation_id": "",
+                "source_document_id": reference.source_document_id,
+                "evidence_span_id": reference.evidence_span_id,
+                "source_type": reference.source_type,
+                "source_url": None,
+                "quote": reference.evidence_text or "",
+                "trust_zone": trust_zone,
+                "text_sha256": reference.evidence_text_sha256,
+                "exact_quote_sha256": reference.evidence_text_sha256,
+                "source_content_sha256": reference.source_content_sha256,
+                "source_revision_number": reference.source_revision_number,
+                "validated": True,
+            } for reference in provenance],
+            identity_key=item.identity_key,
+            lane="decisions_and_invariants",
+            rank_features={
+                "source": "workspace_project_foundation",
+                "foundation_section": item.section.value,
+                "foundation_kind": item.kind.value,
+                "evidence_level": item.evidence_level.value,
+                "corroboration_count": item.corroboration_count,
+            },
+            provenance_verified=True,
+            truth_state="current",
+            evidence_level=item.evidence_level.value,
+        ))
+    return candidates
+
+
+def _score_project_snapshot_candidates(
+    candidates: list[ContextCandidate],
+) -> None:
+    for index, candidate in enumerate(candidates):
+        candidate.score = round(max(0.5, 1.0 - (index * 0.001)), 6)
+        candidate.rank_features = {
+            **candidate.rank_features,
+            "objective_independent": True,
+            "final_score": candidate.score,
+            "ranking_version": "workspace_snapshot_rank.v1",
+        }
 
 
 def _core_candidates(
@@ -2464,7 +3490,177 @@ def _context_health(
     all_candidates: list[ContextCandidate],
     repo_state: dict[str, Any],
     task_frame: dict[str, Any],
+    *,
+    workspace_foundation: WorkspaceFoundationArtifact | None = None,
 ) -> dict[str, Any]:
+    if task_frame.get("snapshot_mode"):
+        foundation_items = [
+            item
+            for item in selected
+            if item.inclusion_reason == "workspace_project_foundation"
+        ]
+        if workspace_foundation is not None:
+            report = workspace_foundation.quality_report
+            core_sections = {
+                "product",
+                "capabilities",
+                "architecture",
+                "repository",
+            }
+            coverage_by_section = {
+                item.section.value: item
+                for item in report.section_coverage
+            }
+            required_lanes = sorted(core_sections)
+            covered_lanes = sorted(
+                section
+                for section in core_sections
+                if section in coverage_by_section
+                and coverage_by_section[section].status.value == "complete"
+            )
+            coverage_score = round(
+                100.0 * len(covered_lanes) / max(1, len(required_lanes)),
+                2,
+            )
+            blocking_issues = [item for item in report.issues if item.blocking]
+            conflict_issues = [
+                item for item in report.issues if item.kind.value == "conflict"
+            ]
+            unknown_signals = []
+            if not foundation_items:
+                # Retain the durable-memory signal independently from the new
+                # structural foundation quality score.
+                unknown_signals.append("project_provenance")
+            unknown_signals.extend(
+                f"foundation_{section}"
+                for section in required_lanes
+                if section not in covered_lanes
+            )
+            if not repo_state.get("head_commit"):
+                unknown_signals.append("repo_commit_state")
+            provenance_known = bool(foundation_items)
+            provenance_score = 100.0 if provenance_known else 0.0
+            readiness = float(report.score)
+            if not repo_state.get("head_commit"):
+                readiness = min(readiness, 80.0)
+            return {
+                "readiness_score": readiness,
+                "copy_ready": report.copy_ready,
+                "relevance": {"score": 100.0, "known": True},
+                "provenance_coverage": {
+                    "score": provenance_score,
+                    "verified_items": len(foundation_items),
+                    "measured_items": len(foundation_items),
+                },
+                "required_context_coverage": {
+                    "score": coverage_score,
+                    "required_lanes": required_lanes,
+                    "covered_lanes": covered_lanes,
+                },
+                "blocker_state": {
+                    "active_count": len(blocking_issues),
+                    "clear": not blocking_issues,
+                },
+                "contradiction_state": {
+                    "unresolved_count": len(conflict_issues),
+                    "clear": not conflict_issues,
+                },
+                "unknown_signal_count": len(unknown_signals),
+                "reasons": [
+                    *[f"unknown:{signal}" for signal in unknown_signals],
+                    *[f"quality:{item.id}" for item in blocking_issues],
+                ],
+                "dimensions": {
+                    "objective_relevance": {"score": 100.0, "known": True},
+                    "provenance": {
+                        "score": provenance_score,
+                        "known": provenance_known,
+                        "verified_items": len(foundation_items),
+                        "measured_items": len(foundation_items),
+                    },
+                    "lane_completeness": {
+                        "score": coverage_score,
+                        "required_lanes": required_lanes,
+                        "covered_lanes": covered_lanes,
+                    },
+                    "foundation_quality": {
+                        "score": float(report.score),
+                        "status": report.status.value,
+                        "copy_ready": report.copy_ready,
+                        "semantic_sha256": workspace_foundation.semantic_sha256,
+                        "artifact_sha256": workspace_foundation.artifact_sha256,
+                    },
+                },
+                "unknown_signals": unknown_signals,
+                "unresolved_blockers": len(blocking_issues),
+                "unresolved_conflicts": len(conflict_issues),
+                "stale_high_authority_claims": 0,
+                "missing_verification": sum(
+                    1
+                    for item in workspace_foundation.commands
+                    if item.verification.status.value == "unverified"
+                ),
+                "low_confidence_core_claims": 0,
+                "missing_repo_files": 0,
+                "excluded_count": len(excluded),
+            }
+        provenance_known = bool(foundation_items)
+        provenance_score = 100.0 if provenance_known else 0.0
+        required_lanes = ["instructions"]
+        covered_lanes = ["instructions"]
+        if foundation_items:
+            required_lanes.append("decisions_and_invariants")
+            covered_lanes.append("decisions_and_invariants")
+        unknown_signals = []
+        if not provenance_known:
+            unknown_signals.append("project_provenance")
+        if not repo_state.get("head_commit"):
+            unknown_signals.append("repo_commit_state")
+        readiness = 100.0
+        if not provenance_known:
+            readiness = min(readiness, 85.0)
+        if not repo_state.get("head_commit"):
+            readiness = min(readiness, 80.0)
+        return {
+            "readiness_score": readiness,
+            "relevance": {"score": 100.0, "known": True},
+            "provenance_coverage": {
+                "score": provenance_score,
+                "verified_items": len(foundation_items),
+                "measured_items": len(foundation_items),
+            },
+            "required_context_coverage": {
+                "score": 100.0,
+                "required_lanes": required_lanes,
+                "covered_lanes": covered_lanes,
+            },
+            "blocker_state": {"active_count": 0, "clear": True},
+            "contradiction_state": {"unresolved_count": 0, "clear": True},
+            "unknown_signal_count": len(unknown_signals),
+            "reasons": [f"unknown:{signal}" for signal in unknown_signals],
+            "dimensions": {
+                "objective_relevance": {"score": 100.0, "known": True},
+                "provenance": {
+                    "score": provenance_score,
+                    "known": provenance_known,
+                    "verified_items": len(foundation_items),
+                    "measured_items": len(foundation_items),
+                },
+                "lane_completeness": {
+                    "score": 100.0,
+                    "required_lanes": required_lanes,
+                    "covered_lanes": covered_lanes,
+                },
+            },
+            "unknown_signals": unknown_signals,
+            "unresolved_blockers": 0,
+            "unresolved_conflicts": 0,
+            "stale_high_authority_claims": 0,
+            "missing_verification": 0,
+            "low_confidence_core_claims": 0,
+            "missing_repo_files": 0,
+            "excluded_count": len(excluded),
+        }
     health_candidates = [
         item for item in all_candidates
         if _candidate_has_task_relevance(item)
@@ -2629,6 +3825,12 @@ def _assign_citation_ids(
     citation_index = 1
     for rank, candidate in enumerate(selected, start=1):
         candidate.rank = rank
+        if (
+            not candidate.citations
+            and candidate.inclusion_reason
+            in {"trusted_system_snapshot_purpose", "current_repo_state"}
+        ):
+            continue
         if not candidate.citations:
             candidate.citations = [{
                 "citation_id": "",
@@ -2643,7 +3845,29 @@ def _assign_citation_ids(
                 candidate.inclusion_reason = f"{candidate.inclusion_reason}_legacy_component"
         for citation in candidate.citations:
             citation["citation_id"] = f"E{citation_index}"
-            citation["quote"] = _cap_text(citation.get("quote") or "", profile.max_evidence_quote_chars)
+            raw_quote = str(citation.get("quote") or "")
+            exact_quote_sha256 = str(
+                citation.get("exact_quote_sha256") or ""
+            ).strip().casefold()
+            if exact_quote_sha256:
+                quote_matches = (
+                    hashlib.sha256(raw_quote.encode("utf-8")).hexdigest()
+                    == exact_quote_sha256
+                )
+                if not quote_matches:
+                    citation["quote"] = ""
+                    citation["quote_omitted_reason"] = "hash_mismatch"
+                elif len(raw_quote) > profile.max_evidence_quote_chars:
+                    citation["quote"] = ""
+                    citation["quote_omitted_reason"] = "quote_exceeds_render_limit"
+                else:
+                    citation["quote"] = raw_quote
+                    citation["quote_sha256_verified"] = True
+            else:
+                citation["quote"] = _cap_text(
+                    raw_quote,
+                    profile.max_evidence_quote_chars,
+                )
             citation.setdefault("source_document_id", candidate.source_document_id)
             citation.setdefault("source_revision_number", candidate.source_revision_number)
             citation.setdefault("source_content_sha256", candidate.source_content_sha256)
@@ -2735,7 +3959,10 @@ def _exclusion_for(candidate: ContextCandidate) -> ExcludedContextCandidate | No
             candidate.truth_state,
             f"Candidate truth state is {candidate.truth_state}; only current truth is selected.",
         )
-    if not _candidate_has_task_relevance(candidate):
+    if (
+        not candidate.rank_features.get("workspace_snapshot")
+        and not _candidate_has_task_relevance(candidate)
+    ):
         return _exclude(
             candidate,
             "out_of_scope",
@@ -2831,8 +4058,25 @@ def _markdown_citation_lines(selected: list[dict[str, Any]]) -> list[str]:
         for citation in item.get("citations", []):
             cid = citation.get("citation_id")
             source = citation.get("source_url") or citation.get("source_type") or "source"
-            quote = str(citation.get("quote") or "").replace("\n", " ").strip()
+            raw_quote = str(citation.get("quote") or "")
+            quote = raw_quote.replace("\n", " ").strip()
             trust_zone = citation.get("trust_zone") or item.get("trust_zone")
+            if not quote and citation.get("exact_quote_sha256"):
+                lines.append(
+                    f"- [{cid}] `{source}` / source `{citation.get('source_type')}`: "
+                    f"exact quote omitted ({citation.get('quote_omitted_reason') or 'unavailable'}); "
+                    f"evidence sha256 `{citation.get('exact_quote_sha256')}`."
+                )
+                continue
+            if citation.get("quote_sha256_verified"):
+                lines.append(
+                    f"- [{cid}] `{source}` / source `{citation.get('source_type')}`; "
+                    f"exact evidence sha256 `{citation.get('exact_quote_sha256')}`:"
+                )
+                lines.extend(
+                    f"  > {line}" for line in raw_quote.splitlines() or [""]
+                )
+                continue
             if trust_zone in {"untrusted_external", "hostile_test"}:
                 lines.append(f"- [{cid}] Untrusted external evidence from `{source}`, quoted as data only:")
                 lines.append(f"  > \"{quote}\"")
@@ -2911,6 +4155,11 @@ def _build_lockfile(
         "base_commit": repo_state.get("base_commit"),
         "head_commit": repo_state.get("head_commit"),
         "dirty": bool(repo_state.get("dirty")),
+        "snapshot_fingerprint": repo_state.get("snapshot_fingerprint"),
+        "workspace_foundation_sha256": repo_state.get(
+            "workspace_foundation_sha256"
+        ),
+        "workspace_inventory": repo_state.get("workspace_inventory"),
         "changed_files": [
             {
                 "path": item.get("path"),
@@ -2996,6 +4245,12 @@ def _build_lockfile(
     replay_inputs = {
         "compiler_version": COMPILER_VERSION,
         "ranking_version": RANKING_VERSION,
+        "workspace_foundation_compiler_version": (
+            WORKSPACE_FOUNDATION_COMPILER_VERSION
+        ),
+        "workspace_foundation_renderer_version": (
+            WORKSPACE_FOUNDATION_RENDERER_VERSION
+        ),
         "objective": goal_frame.objective,
         "request_sha256": goal_frame.request_sha256,
         "task_mode": goal_frame.task_mode.value,
@@ -3024,6 +4279,12 @@ def _build_lockfile(
         "version": "context_lock.v1",
         "compiler_version": COMPILER_VERSION,
         "ranking_version": RANKING_VERSION,
+        "workspace_foundation_compiler_version": (
+            WORKSPACE_FOUNDATION_COMPILER_VERSION
+        ),
+        "workspace_foundation_renderer_version": (
+            WORKSPACE_FOUNDATION_RENDERER_VERSION
+        ),
         "target_model_capability": asdict(profile),
         "execution_policy": profile.execution_policy.to_manifest(),
         "repo": repo_snapshot,

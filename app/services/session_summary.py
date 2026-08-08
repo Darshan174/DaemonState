@@ -121,6 +121,16 @@ _NON_TASK_REACTION_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_NON_TASK_ACKNOWLEDGEMENT_RE = re.compile(
+    r"^(?:"
+    r"(?:(?:all|it(?:'s| is)|that(?:'s| is)|this(?:'s| is))\s+)?"
+    r"(?:done|finished|completed)(?:\s+now)?"
+    r"(?:\s*[,;:-]?\s*(?:thanks|thank you))?"
+    r"|ok(?:ay)?|thanks|thank you|got it|understood|sounds good|looks good|"
+    r"great|perfect|cool"
+    r")[.!?…]*$",
+    re.IGNORECASE,
+)
 _TASK_METADATA_KEYS = frozenset({
     "clientthreadid",
     "conversationid",
@@ -665,6 +675,7 @@ def normalize_substantive_user_request(value: str | None) -> str | None:
     """Return executable user work without attachment or continuation transport."""
 
     text = clean_session_message_text(value)
+    acknowledgement_candidate = re.sub(r"\s+", " ", text).strip()
     if (
         len(text) < 4
         or _TOOL_TRANSCRIPT_REQUEST_RE.match(text)
@@ -673,6 +684,7 @@ def normalize_substantive_user_request(value: str | None) -> str | None:
         or is_session_instruction_noise(text)
         or is_continuation_control(text)
         or is_task_identifier_noise(text)
+        or _NON_TASK_ACKNOWLEDGEMENT_RE.fullmatch(acknowledgement_candidate)
     ):
         return None
     reaction_candidate = _CONTINUATION_THREAD_LINE_RE.sub(" ", text)

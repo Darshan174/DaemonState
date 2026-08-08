@@ -52,7 +52,30 @@ from app.services.credentials import (
 from app.services.oauth_state import close_oauth_state_backend
 from app.telemetry import configure_telemetry, shutdown_telemetry
 
-FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+FRONTEND_BUILD_ROOT = (
+    Path(__file__).resolve().parent.parent / "frontend" / "dist"
+)
+
+
+def _resolve_frontend_dist(build_root: Path) -> Path:
+    """Select the browser build produced by the active Vite configuration.
+
+    The Cloudflare Vite plugin emits the current browser bundle under
+    ``dist/client``.  ``dist/index.html`` can be left behind by an older plain
+    Vite build, so preferring the root silently serves stale application code
+    even after a successful build.
+    """
+
+    client_build = build_root / "client"
+    if (
+        (client_build / "index.html").is_file()
+        and (client_build / "assets").is_dir()
+    ):
+        return client_build
+    return build_root
+
+
+FRONTEND_DIST = _resolve_frontend_dist(FRONTEND_BUILD_ROOT)
 logger = logging.getLogger("daemonstate.api")
 _startup_complete = False
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")

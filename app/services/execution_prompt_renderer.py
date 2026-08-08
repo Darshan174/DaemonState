@@ -58,39 +58,55 @@ def render_continuation_staging_context(
         contract.selected_task_lifecycle
         is SelectedTaskLifecycle.COMPLETED
     )
-    lines = [
-        "# Project / Workspace Context — project-level foundation",
-        "",
-        (
-            "> Parent: durable, evidence-backed workspace facts. Child: the "
-            "current task lead and repository boundary."
-        ),
-        (
-            "> Compilation boundary: workspace-wide and objective-independent."
-        ),
-        (
-            "> Promotion boundary: mechanically verified, human-confirmed, and "
-            "independently corroborated facts only. Provisional session claims, "
-            "failed attempts, transient blockers, and task-only details stay out."
-        ),
-        (
-            "> Reference-only boundary: the selected task is completed. This "
-            "artifact does not authorize continuation, reopening, "
-            "re-verification, or execution of that goal. Any further work "
-            "requires a new user-authored lead and freshly compiled Project "
-            "Context."
-            if completed_reference
-            else (
-                "> Activation boundary: This is background only. Begin only "
-                "when the receiving user submits or confirms the authoritative "
-                "lead below; a materially different task requires freshly "
-                "compiled Project Context."
-            )
-        ),
-        "",
-        "## Project foundation",
-        "",
-    ]
+    populated_foundation_sections = {
+        section
+        for item in _iterable(contract.project_context)
+        if (section := _project_foundation_section(item)) is not None
+    }
+    foundation_ready = (
+        PROJECT_FOUNDATION_CORE_SECTIONS <= populated_foundation_sections
+    )
+    if foundation_ready:
+        lines = [
+            "# Project / Workspace Context — project-level foundation",
+            "",
+            (
+                "> Parent: durable, evidence-backed workspace facts. Child: the "
+                "current task lead and repository boundary."
+            ),
+            (
+                "> Compilation boundary: workspace-wide and objective-independent."
+            ),
+            (
+                "> Promotion boundary: mechanically verified, human-confirmed, and "
+                "independently corroborated facts only. Provisional session claims, "
+                "failed attempts, transient blockers, and task-only details stay out."
+            ),
+            (
+                "> Reference-only boundary: the selected task is completed. This "
+                "artifact does not authorize continuation, reopening, "
+                "re-verification, or execution of that goal. Any further work "
+                "requires a new user-authored lead and freshly compiled Project "
+                "Context."
+                if completed_reference
+                else (
+                    "> Activation boundary: This is background only. Begin only "
+                    "when the receiving user submits or confirms the authoritative "
+                    "lead below; a materially different task requires freshly "
+                    "compiled Project Context."
+                )
+            ),
+            "",
+            "## Project foundation",
+            "",
+        ]
+    else:
+        lines = [
+            "# Project / Workspace Context — NOT READY",
+            "",
+            "## Project foundation",
+            "",
+        ]
     _append_project_foundation(lines, contract)
     if completed_reference:
         _append_completed_task_reference(
@@ -402,7 +418,9 @@ def render_continuation_execution_prompt(
         heading="## Current repository evidence",
     )
 
-    read_plan = tuple(_iterable(_field(contract, "read_plan", ())))
+    read_plan = _ordered_read_plan(
+        _field(contract, "read_plan", ()),
+    )
     if read_plan:
         lines.extend(["", "## Read first", ""])
         displayed_read_plan = read_plan[:EXECUTION_RENDERED_READ_PLAN_LIMIT]
@@ -487,8 +505,10 @@ def _append_project_foundation(
     if not contract.project_context:
         lines.extend([
             (
-                "> Foundation readiness: **NOT READY** — no durable "
-                "workspace fact was compiled; do not copy or stage."
+                "> Foundation readiness: **NOT READY** — **DO NOT COPY, STAGE, "
+                "OR USE FOR CONTINUATION.** No current evidence-backed durable "
+                "workspace facts were compiled. The session data below is "
+                "diagnostic only."
             ),
             "",
         ])
@@ -502,8 +522,9 @@ def _append_project_foundation(
         )
         lines.extend([
             (
-                "> Foundation readiness: **NOT READY** — missing core: "
-                f"{missing}. Do not execute; inspect before submitting."
+                "> Foundation readiness: **NOT READY** — **DO NOT COPY, STAGE, "
+                "OR USE FOR CONTINUATION.** Missing core: "
+                f"{missing}."
             ),
             "",
         ])
@@ -529,16 +550,16 @@ def _append_project_foundation(
             "",
         ])
 
+    if not contract.project_context:
+        return
+
     for key, title in PROJECT_FOUNDATION_SECTIONS:
         values = buckets[key]
-        if not values and key not in PROJECT_FOUNDATION_CORE_SECTIONS:
+        if not values:
             continue
         lines.extend([f"### {title}", ""])
-        if values:
-            for item in values:
-                _append_verified_project_fact(lines, item)
-        else:
-            lines.append("- No current evidence-backed durable fact was compiled.")
+        for item in values:
+            _append_verified_project_fact(lines, item)
         lines.append("")
 
     if unclassified:
@@ -919,33 +940,63 @@ def _staging_first_action(
     statuses: tuple[dict[str, Any], ...],
 ) -> str:
     conflicted = [
-        str(_field(item["requirement"], "id", ""))
+        item["requirement"]
         for item in statuses
         if item["status"] == "conflicted"
     ]
     reported = [
-        str(_field(item["requirement"], "id", ""))
+        item["requirement"]
         for item in statuses
         if item["status"] == "reported-complete"
     ]
     remaining = [
-        str(_field(item["requirement"], "id", ""))
+        item["requirement"]
         for item in statuses
         if item["status"] == "remaining"
     ]
+
+    def requirement_label(requirement: Any) -> str:
+        requirement_id = str(_field(requirement, "id", "requirement")).strip()
+        requirement_text = " ".join(
+            str(_field(requirement, "text", "") or "").split()
+        ).rstrip(" .!?;:")
+        return (
+            f"{requirement_id} — {requirement_text}"
+            if requirement_text
+            else requirement_id
+        )
+
+    def remaining_suffix(values: list[Any], *, status: str) -> str:
+        additional = len(values) - 1
+        if additional <= 0:
+            return ""
+        return (
+            f"; then continue with the other {additional} {status} "
+            f"requirement{'s' if additional != 1 else ''} listed with full "
+            "text under Definition of done"
+        )
+
+    allows_edits = bool(contract.task_mode.allows_edits)
+    read_only_suffix = "" if allows_edits else " without editing files"
     actions: list[str] = []
     if conflicted:
         actions.append(
-            f"Reconcile {_compact_identifiers(conflicted)} against the current checkout "
-            "and required proof before relying on historical status"
+            f"Reconcile {requirement_label(conflicted[0])} against the current "
+            "checkout and required proof before relying on historical status"
+            f"{read_only_suffix}"
+            + remaining_suffix(conflicted, status="conflicted")
         )
     if reported:
         actions.append(
-            f"verify {_compact_identifiers(reported)} against the current checkout and "
-            "required proof before relying on reported completion"
+            f"verify {requirement_label(reported[0])} against the current "
+            "checkout and required proof before relying on reported completion"
+            f"{read_only_suffix}"
+            + remaining_suffix(reported, status="reported-complete")
         )
     if remaining:
-        read_plan = tuple(_iterable(_field(contract, "read_plan", ())))[:3]
+        read_plan = _ordered_read_plan(
+            _field(contract, "read_plan", ()),
+        )[:3]
         paths = [
             str(_field(item, "path", "") or "").strip()
             for item in read_plan
@@ -958,10 +1009,13 @@ def _staging_first_action(
         )
         actions.append(
             f"{prefix}, then complete and verify "
-            f"{_compact_identifiers(remaining)}"
+            f"{requirement_label(remaining[0])}{read_only_suffix}"
+            + remaining_suffix(remaining, status="remaining")
         )
     if actions:
-        action = "; then ".join(actions) + "."
+        action = "; then ".join(actions)
+        if not action.endswith((".", "?", "!")):
+            action += "."
         return action[:1].upper() + action[1:]
     focus = str(_field(contract, "execution_focus", "") or "").strip()
     return focus or "Follow the authoritative current lead and record observed proof."
@@ -1074,13 +1128,9 @@ def _append_staging_project_context(
     project_context: Any,
 ) -> None:
     values = tuple(_iterable(project_context))
-    lines.extend(["", "### Task-relevant project context", ""])
     if not values:
-        lines.append(
-            "No current evidence-backed durable workspace facts were compiled. "
-            "Project Context is not ready."
-        )
         return
+    lines.extend(["", "### Task-relevant project context", ""])
     lines.append(
         (
             f"The {len(values)} current evidence-backed foundation fact"
@@ -1105,7 +1155,13 @@ def _append_staging_repository_evidence(
     for item in displayed:
         kind_value = _field(item, "kind", "")
         kind = str(getattr(kind_value, "value", kind_value)).strip()
-        if kind == "symbol_declaration":
+        if kind == "file_presence":
+            lines.append(
+                "- File: "
+                f"{_inline_code(_field(item, 'path', 'unknown'))} — "
+                "present in the bound repository snapshot."
+            )
+        elif kind == "symbol_declaration":
             lines.append(
                 "- Symbol: "
                 f"{_inline_code(_field(item, 'path', 'unknown'))}:"
@@ -1132,13 +1188,13 @@ def _append_staging_repository_evidence(
     omitted = len(values) - len(displayed)
     if omitted:
         lines.append(
-            f"- {omitted} additional syntax-level evidence item"
+            f"- {omitted} additional repository evidence item"
             f"{'' if omitted == 1 else 's'} remain in the contract."
         )
 
 
 def _append_staging_read_plan(lines: list[str], read_plan: Any) -> None:
-    values = tuple(_iterable(read_plan))
+    values = _ordered_read_plan(read_plan)
     if not values:
         return
     lines.extend(["", "### Read first", ""])
@@ -1159,6 +1215,56 @@ def _append_staging_read_plan(lines: list[str], read_plan: Any) -> None:
             f"{omitted} additional read-plan item"
             f"{'' if omitted == 1 else 's'} remain in the contract."
         )
+
+
+def _ordered_read_plan(read_plan: Any) -> tuple[Any, ...]:
+    """Keep implementation surfaces ahead of inferred verification artifacts.
+
+    Repository ranking remains authoritative within each role. The only stable
+    partition applied here moves inferred tests and smoke assets behind the
+    files they verify. A file explicitly named by the user is never demoted,
+    even when its path looks like a test.
+    """
+
+    values = tuple(_iterable(read_plan))
+
+    def role(item: tuple[int, Any]) -> tuple[int, int]:
+        index, value = item
+        reason = " ".join(
+            str(_field(value, "reason", "") or "").casefold().split()
+        )
+        path = str(_field(value, "path", "") or "")
+        explicitly_named = (
+            "task names this file" in reason
+            or "explicit_goal_file_hint" in reason
+        )
+        inferred_verification = (
+            _is_verification_artifact_path(path) and not explicitly_named
+        )
+        return (1 if inferred_verification else 0, index)
+
+    return tuple(
+        value
+        for _index, value in sorted(enumerate(values), key=role)
+    )
+
+
+def _is_verification_artifact_path(path: str) -> bool:
+    normalized = str(path or "").replace("\\", "/").casefold().strip("/")
+    if not normalized:
+        return False
+    parts = normalized.split("/")
+    name = parts[-1]
+    if {"test", "tests", "spec", "specs"} & set(parts[:-1]):
+        return True
+    if re.search(r"(?:^|[-_.])smoke(?:[-_.]|$)", name):
+        return True
+    return bool(
+        name.startswith(("test_", "spec_"))
+        or re.search(r"(?:_test|_spec)\.[^.]+$", name)
+        or ".test." in name
+        or ".spec." in name
+    )
 
 
 def _append_staging_artifacts(
@@ -1262,28 +1368,203 @@ def _append_staging_proof_obligations(
             continue
         emitted = True
         status = status_by_id.get(requirement_id, "remaining")
-        proof = [
-            _verification_description(verifiers[verifier_id])
-            for verifier_id in _iterable(
-                _field(requirement, "verification_ids", ())
-            )
-            if verifier_id in verifiers
-        ]
-        proof = list(dict.fromkeys(value for value in proof if value))
-        lines.append(
-            f"- {requirement_id} [{status}] — proof: "
-            + (
-                "; ".join(proof)
-                if proof
-                else "observed requirement-specific evidence is required."
-            )
+        requirement_text = " ".join(
+            str(_field(requirement, "text", "") or "").split()
         )
+        proof: list[str] = []
+        requires_observed_semantic_proof = False
+        for verifier_id in _iterable(
+            _field(requirement, "verification_ids", ())
+        ):
+            verifier = verifiers.get(verifier_id)
+            if verifier is None:
+                continue
+            verifier_type = _field(verifier, "verifier_type", "")
+            verifier_type = str(
+                getattr(verifier_type, "value", verifier_type)
+            ).strip()
+            if verifier_type == "model_rubric":
+                # "model rubric" is contract machinery, not useful proof
+                # guidance for a receiving user or worker. Render the concrete
+                # observation it requires below instead.
+                requires_observed_semantic_proof = True
+                continue
+            description = _verification_description(verifier)
+            if description:
+                proof.append(description)
+        if requires_observed_semantic_proof or not proof:
+            proof.append(
+                _model_rubric_proof_guidance(
+                    contract,
+                    requirement,
+                )
+            )
+        proof = list(dict.fromkeys(value for value in proof if value))
+        lines.append(f"- {requirement_id} [{status}]: {requirement_text}")
+        lines.append(f"  - Proof: {'; '.join(proof)}.")
     if not emitted:
         lines.append("- Satisfy the authoritative current lead.")
     lines.extend([
         "- Every mandatory verifier has observed passing evidence.",
         "- Protected repository baseline remains intact.",
     ])
+
+
+def _model_rubric_proof_guidance(
+    contract: ContinuationExecutionContract,
+    requirement: Any,
+) -> str:
+    """Turn an abstract rubric into bounded, observable proof guidance.
+
+    Paths are named only when they already exist in the hash-bound repository
+    evidence or objective-ranked read plan. Domain wording asks the worker to
+    observe or record results; it never asserts that a behavior already works.
+    """
+
+    requirement_text = " ".join(
+        str(_field(requirement, "text", "") or "").casefold().split()
+    )
+    repository_paths = _contract_repository_paths(contract)
+
+    if re.search(
+        r"\b(?:copyright|licen[cs](?:e|ed|es|ing)|moneti[sz]e|"
+        r"redistribut(?:e|ion)|resell)\b|\bcommercial(?:ly)?\b",
+        requirement_text,
+    ):
+        license_paths = [
+            path
+            for path in repository_paths
+            if _is_root_license_path(path)
+        ][:2]
+        path_instruction = (
+            f"inspect {_inline_path_list(license_paths)}, then record"
+            if license_paths
+            else "record"
+        )
+        research_instruction = (
+            "; cite the authoritative licensing sources and selection rationale"
+            if re.search(
+                r"\b(?:choose|decide|research|select)\b|\bidk\b",
+                requirement_text,
+            )
+            else ""
+        )
+        return (
+            f"{path_instruction} the exact permission and restriction clauses "
+            f"that address this requirement{research_instruction}; prior-worker "
+            "claims alone do not count"
+        )
+
+    self_host_goal = bool(
+        re.search(
+            r"\bself[- ]?host(?:able|ed|ing)?\b|\bdeployment\b",
+            requirement_text,
+        )
+    )
+    verification_paths = [
+        path
+        for path in repository_paths
+        if _is_verification_artifact_path(path)
+        and (
+            "self-host" in path.casefold()
+            or "self_host" in path.casefold()
+            or "docker" in path.casefold()
+            or "compose" in path.casefold()
+        )
+    ][:2]
+    asks_for_verification = bool(
+        re.search(r"\b(?:check|run|smoke|test|verify)\b", requirement_text)
+    )
+    if self_host_goal and asks_for_verification and verification_paths:
+        return (
+            f"record pass/fail output from "
+            f"{_inline_path_list(verification_paths)} against this exact "
+            "requirement; prior-worker claims alone do not count"
+        )
+    if self_host_goal:
+        implementation_paths = [
+            path
+            for path in repository_paths
+            if _is_self_host_implementation_path(path)
+        ][:3]
+        using_paths = (
+            f" using {_inline_path_list(implementation_paths)}"
+            if implementation_paths
+            else " on a clean self-host setup"
+        )
+        verification_instruction = (
+            f"; record pass/fail output from "
+            f"{_inline_path_list(verification_paths)}"
+            if verification_paths
+            else ""
+        )
+        return (
+            "record observed configuration, startup, and health behavior"
+            f"{using_paths}{verification_instruction}; prior-worker claims "
+            "alone do not count"
+        )
+
+    return (
+        "record observed repository/runtime evidence that this exact "
+        "requirement is satisfied; prior-worker claims alone do not count"
+    )
+
+
+def _contract_repository_paths(
+    contract: ContinuationExecutionContract,
+) -> list[str]:
+    candidates: list[str] = []
+    for item in _ordered_read_plan(_field(contract, "read_plan", ())):
+        candidates.append(str(_field(item, "path", "") or ""))
+    for item in _iterable(_field(contract, "repository_evidence", ())):
+        candidates.extend(
+            str(_field(item, field, "") or "")
+            for field in ("path", "test_path", "target_path", "manifest_path")
+        )
+    return list(dict.fromkeys(
+        path.replace("\\", "/").removeprefix("./")
+        for path in candidates
+        if path
+        and not path.startswith(("/", "\\"))
+        and ".." not in path.replace("\\", "/").split("/")
+    ))
+
+
+def _is_root_license_path(path: str) -> bool:
+    normalized = str(path or "").replace("\\", "/").casefold().strip("/")
+    if not normalized or "/" in normalized:
+        return False
+    stem = normalized.split(".", 1)[0]
+    return stem in {"copying", "licence", "license", "notice"}
+
+
+def _is_self_host_implementation_path(path: str) -> bool:
+    normalized = str(path or "").replace("\\", "/").casefold().strip("/")
+    if not normalized or _is_verification_artifact_path(normalized):
+        return False
+    name = normalized.rsplit("/", 1)[-1]
+    if name.endswith((".md", ".rst", ".txt")):
+        return False
+    return bool(
+        "self-host" in normalized
+        or "self_host" in normalized
+        or name == "dockerfile"
+        or name.startswith("dockerfile.")
+        or re.fullmatch(
+            r"(?:docker-)?compose(?:[._-][a-z0-9_-]+)*\.ya?ml",
+            name,
+        )
+        or name.endswith(".env.example")
+    )
+
+
+def _inline_path_list(paths: list[str]) -> str:
+    rendered = [_inline_code(path) for path in paths]
+    if len(rendered) <= 1:
+        return rendered[0] if rendered else "the relevant repository surface"
+    if len(rendered) == 2:
+        return f"{rendered[0]} and {rendered[1]}"
+    return f"{', '.join(rendered[:-1])}, and {rendered[-1]}"
 
 
 def _append_definition_of_done(

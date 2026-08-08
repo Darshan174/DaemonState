@@ -15,7 +15,6 @@ from app.schemas.continuation_execution import (
     VerifierType,
 )
 from app.services.execution_prompt_renderer import (
-    PROJECT_FOUNDATION_REQUIRED_HEADINGS,
     RENDERED_REPOSITORY_EVIDENCE_LIMIT,
     canonical_contract_json,
     execution_prompt_sha256,
@@ -24,6 +23,7 @@ from app.services.execution_prompt_renderer import (
 )
 from app.services.project_foundation_sections import (
     PROJECT_FOUNDATION_CORE_SECTIONS,
+    PROJECT_FOUNDATION_SECTIONS,
     looks_like_generic_inventory,
 )
 from app.services.provider_capabilities import check_provider_capabilities
@@ -462,8 +462,9 @@ def evaluate_continuation_quality(
                 message=(
                     f"Mandatory requirement {requirement.id} has no required "
                     "executable verifier. Its verification remains unproven, "
-                    "so automatic execution is disabled; the Project Context "
-                    "may still be copied for manual continuation."
+                    "so automatic execution is disabled. This issue alone does "
+                    "not block manual Project Context copy, which remains "
+                    "subject to separate foundation and integrity gates."
                 ),
                 requirement_id=requirement.id,
             ))
@@ -844,9 +845,21 @@ def _check_worker_handoff_shape(
         ))
     if issue_prefix == "project_context_copy":
         lines = set(markdown.splitlines())
+        populated_sections = {
+            item.section for item in contract.project_context
+        }
+        required_foundation_headings = (
+            "## Project foundation",
+            *(
+                f"### {title}"
+                for section, title in PROJECT_FOUNDATION_SECTIONS
+                if section in populated_sections
+            ),
+            "## Session Context — task-specific child",
+        )
         missing_foundation_sections = [
             heading
-            for heading in PROJECT_FOUNDATION_REQUIRED_HEADINGS
+            for heading in required_foundation_headings
             if heading not in lines
         ]
         if missing_foundation_sections:
@@ -961,6 +974,12 @@ def _normalized_foundation_statement(value: str) -> str:
 
 def _repository_evidence_prompt_line(item: Any) -> str:
     kind = str(getattr(item.kind, "value", item.kind))
+    if kind == "file_presence":
+        return (
+            "- File: "
+            f"{_inline_code(item.path)} — "
+            "present in the bound repository snapshot."
+        )
     if kind == "symbol_declaration":
         return (
             "- Symbol: "

@@ -231,7 +231,8 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
                 self.selectWorkspace(workspace.id)
                 let context = try await api.fetchContext(
                     scope: requestedScope,
-                    workspaceID: workspace.id
+                    workspaceID: workspace.id,
+                    repoPath: workspace.repoPath ?? workspace.repoPaths.first
                 )
                 let outcome = try await self.pasteService.deliver(
                     context.content,

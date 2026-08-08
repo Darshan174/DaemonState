@@ -50,7 +50,27 @@ IGNORED_DIRS = {
     "venv",
 }
 INDEXED_SUFFIXES = {
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cs",
+    ".dart",
+    ".ex",
+    ".exs",
+    ".go",
+    ".h",
+    ".hpp",
+    ".java",
     ".py",
+    ".kt",
+    ".kts",
+    ".php",
+    ".rb",
+    ".rs",
+    ".scala",
+    ".svelte",
+    ".swift",
+    ".vue",
     ".js",
     ".jsx",
     ".ts",
@@ -63,7 +83,21 @@ INDEXED_SUFFIXES = {
     ".sh",
 }
 MANIFEST_NAMES = {
+    "Cargo.toml",
+    "Gemfile",
+    "Makefile",
+    "Taskfile.yml",
+    "Taskfile.yaml",
+    "build.gradle",
+    "build.gradle.kts",
+    "composer.json",
+    "deno.json",
+    "deno.jsonc",
+    "go.mod",
+    "mix.exs",
     "package.json",
+    "pnpm-workspace.yaml",
+    "pom.xml",
     "pyproject.toml",
     "requirements.txt",
     "Dockerfile",
@@ -89,11 +123,34 @@ PROJECT_ROOT_MARKERS = {
 MAX_INDEXED_FILES = 5_000
 MAX_INDEXED_BYTES = 50_000_000
 MAX_INDEXED_FILE_BYTES = 400_000
+MAX_INDEXED_CALL_HINTS_PER_FILE = 256
+MAX_INDEXED_HTTP_REFERENCES_PER_FILE = 256
+MAX_SEMANTIC_CHANGE_FILES = 96
+MAX_SEMANTIC_CHANGE_ITEMS = 16
 ENV_FILE_RE = re.compile(r"(^|/)\.env($|[.\-])|\.env\.example$|config\.(?:py|js|ts|json|ya?ml)$")
-RANKING_VERSION = "objective_file_rank.v4"
-REPOSITORY_EVIDENCE_VERSION = "repository_evidence.v1"
+RANKING_VERSION = "objective_file_rank.v5"
+REPOSITORY_EVIDENCE_VERSION = "repository_evidence.v2"
 MAX_REPOSITORY_EVIDENCE_ITEMS = 24
+MAX_REPOSITORY_FILE_EVIDENCE_ITEMS = 14
 _REPO_INDEX_LOCKS: dict[str, asyncio.Lock] = {}
+_PROJECT_METADATA_NAMES = {
+    "copying",
+    "licence",
+    "license",
+    "notice",
+}
+_SELF_HOST_ENV_DIRECTORIES = {
+    "deploy",
+    "deployment",
+    "infra",
+    "ops",
+}
+_WEAK_SYMBOL_TERMS = {
+    "can",
+    "cannot",
+    "self",
+    "themselves",
+}
 _GENERIC_GOAL_TERMS = {
     "a",
     "add",
@@ -170,6 +227,7 @@ _GENERIC_GOAL_TERMS = {
     "on",
     "or",
     "our",
+    "out",
     "open",
     "phase",
     "product",
@@ -202,6 +260,9 @@ _GENERIC_GOAL_TERMS = {
     "this",
     "those",
     "through",
+    "to",
+    "them",
+    "themselves",
     "update",
     "use",
     "used",
@@ -223,6 +284,9 @@ _GENERIC_GOAL_TERMS = {
     "working",
     "would",
     "your",
+    "idk",
+    "research",
+    "u",
 }
 
 
@@ -250,6 +314,29 @@ class IndexedImport:
 class IndexedRouteOwner:
     route: str
     handler_name: str
+    start_line: int
+    end_line: int
+
+
+@dataclass(frozen=True)
+class IndexedCall:
+    """One statically resolved call-shaped reference inside a named caller."""
+
+    caller_name: str
+    caller_start_line: int
+    target_name: str
+    target_specifier: str | None
+    binding_kind: str
+    start_line: int
+    end_line: int
+
+
+@dataclass(frozen=True)
+class IndexedHttpReference:
+    """One static HTTP method/path reference in browser or client code."""
+
+    method: str
+    path: str
     start_line: int
     end_line: int
 
@@ -291,6 +378,8 @@ class IndexedFile:
     import_hints: list[IndexedImport] = field(default_factory=list)
     route_hints: list[str] = field(default_factory=list)
     route_owners: list[IndexedRouteOwner] = field(default_factory=list)
+    call_hints: list[IndexedCall] = field(default_factory=list)
+    http_references: list[IndexedHttpReference] = field(default_factory=list)
     test_references: list[IndexedTestReference] = field(default_factory=list)
     is_test: bool = False
     is_config: bool = False
@@ -327,6 +416,18 @@ class RepoFrame:
         hinted = {hint.strip("./") for hint in file_hints}
         normalized_keywords = set(_tokenize(" ".join(sorted(keywords))))
         retrieval_terms = normalized_keywords - _GENERIC_GOAL_TERMS
+        licensing_goal = _is_licensing_goal(normalized_keywords)
+        self_host_goal = _is_self_host_goal(normalized_keywords)
+        weak_symbol_terms = set(_WEAK_SYMBOL_TERMS)
+        if licensing_goal:
+            # Here "copy" describes a legal permission boundary. Do not let it
+            # retrieve clipboard helpers and UI copy buttons.
+            weak_symbol_terms.update({"copy", "money"})
+        if self_host_goal:
+            # A lone "host" symbol is commonly an HTTP/client detail. The
+            # self-host phrase remains a strong path/domain signal below.
+            weak_symbol_terms.update({"host", "hostable", "hosted", "hosting"})
+        strong_retrieval_terms = retrieval_terms - weak_symbol_terms
         requires_tests = bool(
             {"test", "tests", "pytest", "vitest", "unittest", "spec", "specs"}
             & normalized_keywords
@@ -355,24 +456,79 @@ class RepoFrame:
                 Path(indexed.path).name.lower(),
                 Path(indexed.path).stem.lower(),
             }
-            symbol_tokens = set(_tokenize(" ".join(symbol.name for symbol in indexed.symbols[:100])))
+            symbol_tokens = set(_tokenize(" ".join(
+                symbol.name
+                for symbol in indexed.symbols[:100]
+                if symbol.symbol_type != "module"
+            )))
             import_tokens = set(_tokenize(" ".join(indexed.imports)))
             route_tokens = set(_tokenize(" ".join(indexed.route_hints)))
-            matched_path = sorted(retrieval_terms & path_tokens)
+            matched_domain_path = _domain_path_matches(
+                indexed.path,
+                licensing_goal=licensing_goal,
+                self_host_goal=self_host_goal,
+            )
+            matched_path = sorted(strong_retrieval_terms & path_tokens)
             # Generic action words must not pull in every file containing a
             # similarly named symbol or directory. Preserve the stronger
             # exact-file identity signal, though: a lead naming `remove.py`
             # should still resolve that file.
-            matched_file_name = sorted(normalized_keywords & file_identity)
-            matched_symbols = sorted(retrieval_terms & symbol_tokens)
-            matched_imports = sorted(retrieval_terms & import_tokens)
-            matched_routes = sorted(retrieval_terms & route_tokens)
+            file_name_terms = normalized_keywords - weak_symbol_terms
+            matched_file_name = sorted(file_name_terms & file_identity)
+            if (
+                licensing_goal
+                and _is_project_metadata_name(Path(indexed.path).name)
+                and "/" in indexed.path.replace("\\", "/")
+            ):
+                # A project-level licensing request should start with the root
+                # terms, not bundled dependency/font licenses. Nested terms are
+                # still eligible when the user names their path explicitly.
+                matched_file_name = []
+                matched_path = [
+                    term
+                    for term in matched_path
+                    if term not in {"licence", "license"}
+                ]
+            matched_symbols = sorted(strong_retrieval_terms & symbol_tokens)
+            matched_imports = sorted(strong_retrieval_terms & import_tokens)
+            matched_routes = sorted(strong_retrieval_terms & route_tokens)
             matched_support = sorted(set(matched_imports + matched_routes))
-            matched_terms = sorted(set(matched_path + matched_symbols + matched_support))
+            matched_terms = sorted(set(
+                matched_file_name
+                + matched_domain_path
+                + matched_path
+                + matched_symbols
+                + matched_support
+            ))
+            structural_match = bool(
+                explicit_hint
+                or matched_file_name
+                or matched_domain_path
+                or matched_path
+                or matched_support
+            )
+            if (
+                indexed.is_test
+                and not requires_tests
+                and not structural_match
+                and len(matched_symbols) < 2
+            ):
+                # A single word repeated inside a test name is weak evidence.
+                # Prefer test paths/edges or multi-term declarations so generic
+                # contract tests cannot crowd out the task's implementation.
+                continue
             score = 0.0
             if explicit_hint:
                 score += 5.0
             score += 4.0 * len(matched_file_name)
+            score += sum(
+                3.50
+                if match == "self-host-path"
+                else 2.00
+                if match == "domain-contract-tests"
+                else 2.50
+                for match in matched_domain_path
+            )
             score += 1.20 * len(matched_path)
             score += 0.80 * len(matched_symbols)
             score += 0.35 * len(matched_support)
@@ -382,6 +538,8 @@ class RepoFrame:
                 score += 0.75
             if indexed.is_test and requires_tests and matched_terms:
                 score += 0.30
+            elif indexed.is_test and matched_terms:
+                score -= 0.30
             if "api" in retrieval_terms and "/api/" in f"/{indexed.path}":
                 score += 0.40
             if "cli" in retrieval_terms and "/cli/" in f"/{indexed.path}":
@@ -394,7 +552,7 @@ class RepoFrame:
                 continue
             matched_symbol_declarations = _matching_symbols(
                 indexed,
-                retrieval_terms,
+                strong_retrieval_terms,
                 include_all=explicit_hint,
             )
             line_ranges = [
@@ -418,6 +576,7 @@ class RepoFrame:
                 matched_symbol_declarations,
                 {
                     "file_name": matched_file_name,
+                    "domain_path": matched_domain_path,
                     "path": matched_path,
                     "symbols": matched_symbols,
                     "imports": matched_imports,
@@ -439,7 +598,7 @@ class RepoFrame:
             ]
 
         indexed_by_path = {item.path: item for item in self.indexed_files}
-        return [
+        results = [
             {
                 "path": path,
                 "reason": reason,
@@ -447,6 +606,7 @@ class RepoFrame:
                 "ranking_version": RANKING_VERSION,
                 "matched_terms": matched_terms,
                 "match_basis": match_basis,
+                "why": "",
                 "line_ranges": line_ranges,
                 "matched_symbols": matched_symbols,
                 "lane": "code_and_tests",
@@ -464,6 +624,9 @@ class RepoFrame:
                 match_basis,
             ) in top
         ]
+        for item in results:
+            item["why"] = _human_file_reason(item)
+        return results
 
     def affected_code_for_goal(
         self,
@@ -619,10 +782,18 @@ class RepoFrame:
         relevant_paths = {str(item["path"]) for item in relevant}
 
         symbol_items: list[dict[str, Any]] = []
+        file_items: list[dict[str, Any]] = []
         for file_item in relevant:
             path = str(file_item["path"])
             file_sha256 = str(file_item["sha256"])
-            for symbol in file_item.get("matched_symbols") or []:
+            matched_symbols = file_item.get("matched_symbols") or []
+            if not matched_symbols:
+                file_items.append({
+                    "kind": "file_presence",
+                    "path": path,
+                    "file_sha256": file_sha256,
+                })
+            for symbol in matched_symbols:
                 symbol_items.append({
                     "kind": "symbol_declaration",
                     "path": path,
@@ -716,6 +887,7 @@ class RepoFrame:
         # of test function names in the model-facing prefix. Exact test edges
         # remain stronger than name-shaped test evidence when available.
         bounded_items = [
+            *file_items[:MAX_REPOSITORY_FILE_EVIDENCE_ITEMS],
             *primary_symbols,
             *dependency_items[:8],
             *test_link_items[:6],
@@ -733,6 +905,7 @@ class RepoFrame:
             "items": items,
             "truncated": (
                 len(symbol_items) > 10
+                or len(file_items) > MAX_REPOSITORY_FILE_EVIDENCE_ITEMS
                 or len(test_link_items) > 6
                 or len(dependency_items) > 8
                 or len(bounded_items) > MAX_REPOSITORY_EVIDENCE_ITEMS
@@ -1116,6 +1289,12 @@ def _scan_repo(root: Path) -> RepoFrame:
     git_state = _git_state(root)
     indexed_files = [_index_file(root, path) for path in _iter_interesting_files(root)]
     indexed_files = [item for item in indexed_files if item is not None]
+    git_state["changed_files"] = _annotate_semantic_changes(
+        root,
+        git_state["changed_files"],
+        indexed_files,
+        head_commit=git_state["head_commit"],
+    )
     package_manifests = _package_manifests(root, indexed_files)
     test_files = sorted(item.path for item in indexed_files if item.is_test)
     manifest_files = sorted(item.path for item in indexed_files if item.is_manifest)
@@ -1487,6 +1666,8 @@ def _iter_interesting_files(root: Path) -> list[Path]:
             continue
         if not (
             path.name in MANIFEST_NAMES
+            or _is_project_metadata_name(path.name)
+            or _is_dockerfile_name(path.name)
             or path.suffix in INDEXED_SUFFIXES
             or ENV_FILE_RE.search(path.as_posix())
         ):
@@ -1577,9 +1758,21 @@ def _index_file(root: Path, path: Path) -> IndexedFile | None:
         raw = path.read_bytes()
     except OSError:
         return None
+    return _index_file_bytes(rel, raw)
+
+
+def _index_file_bytes(rel: str, raw: bytes) -> IndexedFile | None:
+    """Index bounded bytes without materializing a temporary file.
+
+    The semantic-change observer uses this same parser for the current file and
+    its HEAD blob. Sharing the parser keeps added/removed symbol claims tied to
+    the exact syntax rules used by the repository scan.
+    """
+
     if len(raw) > MAX_INDEXED_FILE_BYTES:
         return None
     sha = hashlib.sha256(raw).hexdigest()
+    path = Path(rel)
     language = _language_for(path)
     text = _decode(raw)
     symbols: list[IndexedSymbol] = []
@@ -1587,6 +1780,8 @@ def _index_file(root: Path, path: Path) -> IndexedFile | None:
     import_hints: list[IndexedImport] = []
     route_hints: list[str] = []
     route_owners: list[IndexedRouteOwner] = []
+    call_hints: list[IndexedCall] = []
+    http_references: list[IndexedHttpReference] = []
     test_references: list[IndexedTestReference] = []
     test_symbols: list[IndexedSymbol] = []
     if text is not None:
@@ -1594,11 +1789,13 @@ def _index_file(root: Path, path: Path) -> IndexedFile | None:
             symbols, imports, route_hints, import_hints, route_owners = _python_symbols(
                 text, rel
             )
+            call_hints = _python_call_hints(text)
             test_references = _python_test_references(text, rel)
         elif path.suffix in {".js", ".jsx", ".ts", ".tsx"}:
             symbols, imports, route_hints, import_hints, route_owners = _javascript_symbols(
                 text, rel
             )
+            http_references = _javascript_http_references(text)
             test_references, test_symbols = _javascript_test_references(text, rel)
     module_symbol = IndexedSymbol(
         symbol_type="module",
@@ -1619,6 +1816,8 @@ def _index_file(root: Path, path: Path) -> IndexedFile | None:
         import_hints=import_hints,
         route_hints=route_hints,
         route_owners=route_owners,
+        call_hints=call_hints,
+        http_references=http_references,
         test_references=test_references,
         is_test=is_test,
         is_config=is_config,
@@ -1725,6 +1924,272 @@ def _python_symbols(
         import_hints,
         route_owners,
     )
+
+
+def _python_call_hints(text: str) -> list[IndexedCall]:
+    """Return conservative top-level Python caller-to-symbol references.
+
+    A hint is emitted only for a local top-level declaration, a symbol imported
+    with ``from ... import ...``, or an attribute called through an imported
+    module alias. Calls through parameters, object attributes, star imports,
+    dynamic lookups, and ambiguous nested declarations are intentionally absent.
+    """
+
+    try:
+        module = ast.parse(text)
+    except SyntaxError:
+        return []
+
+    bindings: dict[str, tuple[str, str, str | None]] = {}
+    local_targets = {
+        node.name
+        for node in module.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+    callers = [
+        node
+        for node in module.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    for node in module.body:
+        if isinstance(node, ast.ImportFrom):
+            specifier = "." * int(node.level or 0) + (node.module or "")
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                bindings[alias.asname or alias.name] = (
+                    "imported_symbol",
+                    specifier,
+                    alias.name,
+                )
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                local_name = alias.asname or alias.name.split(".", 1)[0]
+                bindings[local_name] = ("imported_module", alias.name, None)
+
+    module_rebindings = _python_module_rebindings(module)
+    hints: list[IndexedCall] = []
+
+    class CallVisitor(ast.NodeVisitor):
+        def __init__(self, caller: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+            self.caller = caller
+            self.shadowed_names = _python_callable_bindings(caller)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            # Do not attribute calls inside a nested function to its parent.
+            return None
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            return None
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return None
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return None
+
+        def visit_Call(self, node: ast.Call) -> None:
+            if len(hints) >= MAX_INDEXED_CALL_HINTS_PER_FILE:
+                return None
+            target_name: str | None = None
+            target_specifier: str | None = None
+            binding_kind: str | None = None
+            if isinstance(node.func, ast.Name):
+                local_name = node.func.id
+                binding = bindings.get(local_name)
+                if binding is not None and binding[0] == "imported_symbol":
+                    if (
+                        local_name not in self.shadowed_names
+                        and local_name not in module_rebindings
+                    ):
+                        binding_kind, target_specifier, imported_name = binding
+                        target_name = imported_name
+                elif (
+                    local_name in local_targets
+                    and local_name not in self.shadowed_names
+                    and local_name not in module_rebindings
+                ):
+                    target_name = local_name
+                    binding_kind = "local_symbol"
+            elif (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+            ):
+                local_name = node.func.value.id
+                binding = bindings.get(local_name)
+                if (
+                    binding is not None
+                    and binding[0] == "imported_module"
+                    and local_name not in self.shadowed_names
+                    and local_name not in module_rebindings
+                ):
+                    binding_kind, target_specifier, _unused = binding
+                    target_name = node.func.attr
+            if target_name and binding_kind:
+                hints.append(IndexedCall(
+                    caller_name=self.caller.name,
+                    caller_start_line=self.caller.lineno,
+                    target_name=target_name,
+                    target_specifier=target_specifier,
+                    binding_kind=binding_kind,
+                    start_line=node.lineno,
+                    end_line=getattr(node, "end_lineno", node.lineno),
+                ))
+            self.generic_visit(node)
+
+    for caller in callers:
+        visitor = CallVisitor(caller)
+        for statement in caller.body:
+            if len(hints) >= MAX_INDEXED_CALL_HINTS_PER_FILE:
+                break
+            visitor.visit(statement)
+        if len(hints) >= MAX_INDEXED_CALL_HINTS_PER_FILE:
+            break
+
+    unique = {
+        (
+            hint.caller_name,
+            hint.caller_start_line,
+            hint.target_name,
+            hint.target_specifier,
+            hint.binding_kind,
+            hint.start_line,
+            hint.end_line,
+        ): hint
+        for hint in hints
+    }
+    return sorted(
+        unique.values(),
+        key=lambda item: (
+            item.start_line,
+            item.end_line,
+            item.caller_start_line,
+            item.caller_name,
+            item.target_specifier or "",
+            item.target_name,
+        ),
+    )[:MAX_INDEXED_CALL_HINTS_PER_FILE]
+
+
+def _python_module_rebindings(module: ast.Module) -> set[str]:
+    """Return names whose imported or declared module binding is overwritten."""
+
+    rebound: set[str] = set()
+
+    class RebindingVisitor(ast.NodeVisitor):
+        def visit_Name(self, node: ast.Name) -> None:
+            if isinstance(node.ctx, (ast.Store, ast.Del)):
+                rebound.add(node.id)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            rebound.add(node.name)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            rebound.add(node.name)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            rebound.add(node.name)
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return None
+
+        def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+            if node.name:
+                rebound.add(node.name)
+            self.generic_visit(node)
+
+        def visit_MatchAs(self, node: ast.MatchAs) -> None:
+            if node.name:
+                rebound.add(node.name)
+            self.generic_visit(node)
+
+        def visit_MatchStar(self, node: ast.MatchStar) -> None:
+            if node.name:
+                rebound.add(node.name)
+
+        def visit_MatchMapping(self, node: ast.MatchMapping) -> None:
+            if node.rest:
+                rebound.add(node.rest)
+            self.generic_visit(node)
+
+    visitor = RebindingVisitor()
+    for statement in module.body:
+        if isinstance(
+            statement,
+            (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+        ):
+            continue
+        visitor.visit(statement)
+    return rebound
+
+
+def _python_callable_bindings(
+    caller: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> set[str]:
+    """Return names lexically bound inside one callable, excluding nested scopes."""
+
+    bound = {
+        argument.arg
+        for argument in (
+            *caller.args.posonlyargs,
+            *caller.args.args,
+            *caller.args.kwonlyargs,
+        )
+    }
+    if caller.args.vararg:
+        bound.add(caller.args.vararg.arg)
+    if caller.args.kwarg:
+        bound.add(caller.args.kwarg.arg)
+
+    class BindingVisitor(ast.NodeVisitor):
+        def visit_Name(self, node: ast.Name) -> None:
+            if isinstance(node.ctx, (ast.Store, ast.Del)):
+                bound.add(node.id)
+
+        def visit_Import(self, node: ast.Import) -> None:
+            for alias in node.names:
+                bound.add(alias.asname or alias.name.split(".", 1)[0])
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            for alias in node.names:
+                if alias.name != "*":
+                    bound.add(alias.asname or alias.name)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            bound.add(node.name)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            bound.add(node.name)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            bound.add(node.name)
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return None
+
+        def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+            if node.name:
+                bound.add(node.name)
+            self.generic_visit(node)
+
+        def visit_MatchAs(self, node: ast.MatchAs) -> None:
+            if node.name:
+                bound.add(node.name)
+            self.generic_visit(node)
+
+        def visit_MatchStar(self, node: ast.MatchStar) -> None:
+            if node.name:
+                bound.add(node.name)
+
+        def visit_MatchMapping(self, node: ast.MatchMapping) -> None:
+            if node.rest:
+                bound.add(node.rest)
+            self.generic_visit(node)
+
+    visitor = BindingVisitor()
+    for statement in caller.body:
+        visitor.visit(statement)
+    return bound
 
 
 def _python_signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
@@ -2090,6 +2555,261 @@ def _javascript_symbols(
     return _dedupe_symbols(symbols), imports, sorted(set(routes)), import_hints, route_owners
 
 
+def _javascript_http_references(text: str) -> list[IndexedHttpReference]:
+    """Collect static HTTP references made through a proven client binding."""
+
+    code_mask = _javascript_code_mask(text)
+    client_bindings = _javascript_http_client_bindings(text, code_mask)
+    if not client_bindings:
+        return []
+    references: list[IndexedHttpReference] = []
+    pattern = re.compile(
+        r"\b(?P<client>[A-Za-z_$][\w$]*)\."
+        r"(?P<method>get|post|put|patch|delete)\s*\(\s*"
+        r"(?P<quote>['\"`])(?P<path>[^'\"`\r\n]{1,500})(?P=quote)",
+        re.IGNORECASE,
+    )
+    for match in pattern.finditer(text):
+        if (
+            len(references) >= MAX_INDEXED_HTTP_REFERENCES_PER_FILE
+            or not code_mask[match.start()]
+            or match.group("client") not in client_bindings
+        ):
+            if len(references) >= MAX_INDEXED_HTTP_REFERENCES_PER_FILE:
+                break
+            continue
+        path = _static_http_path(match.group("path"))
+        if path is None:
+            continue
+        references.append(IndexedHttpReference(
+            method=match.group("method").upper(),
+            path=path,
+            start_line=_line_number_at_offset(text, match.start()),
+            end_line=_line_number_at_offset(text, match.end()),
+        ))
+    unique = {
+        (item.method, item.path, item.start_line, item.end_line): item
+        for item in references
+    }
+    return [
+        unique[key]
+        for key in sorted(unique, key=lambda item: (item[2], *item))
+    ][:MAX_INDEXED_HTTP_REFERENCES_PER_FILE]
+
+
+def _javascript_http_client_bindings(
+    text: str,
+    code_mask: list[bool],
+) -> set[str]:
+    """Return stable client bindings backed by a narrow import or constructor."""
+
+    client_origins: dict[str, list[int | None]] = {}
+    axios_factory_origins: dict[str, list[int | None]] = {}
+
+    def record(
+        origins: dict[str, list[int | None]],
+        name: str,
+        declaration_offset: int | None,
+    ) -> None:
+        if re.fullmatch(r"[A-Za-z_$][\w$]*", name):
+            origins.setdefault(name, []).append(declaration_offset)
+
+    import_pattern = re.compile(
+        r"\bimport\s+(?P<clause>[^;'\"]{1,500}?)\s+from\s*"
+        r"(?P<quote>['\"])(?P<source>[^'\"\r\n]{1,300})(?P=quote)",
+    )
+    for match in import_pattern.finditer(text):
+        if not code_mask[match.start()]:
+            continue
+        source = match.group("source")
+        is_axios = source.casefold() == "axios"
+        if not is_axios and not _looks_like_http_client_module(source):
+            continue
+        for kind, imported_name, local_name in _javascript_import_clause_bindings(
+            match.group("clause")
+        ):
+            is_default_axios = is_axios and (
+                kind in {"default", "namespace"} or imported_name == "default"
+            )
+            if is_default_axios:
+                record(axios_factory_origins, local_name, None)
+                record(client_origins, local_name, None)
+            elif _looks_like_http_client_name(local_name) or _looks_like_http_client_name(
+                imported_name
+            ):
+                record(client_origins, local_name, None)
+
+    require_pattern = re.compile(
+        r"\b(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)\s*=\s*"
+        r"require\(\s*(?P<quote>['\"])(?P<source>[^'\"\r\n]{1,300})"
+        r"(?P=quote)\s*\)",
+    )
+    for match in require_pattern.finditer(text):
+        if not code_mask[match.start()]:
+            continue
+        name = match.group("name")
+        source = match.group("source")
+        declaration_offset = match.start("name")
+        if source.casefold() == "axios":
+            record(axios_factory_origins, name, declaration_offset)
+            record(client_origins, name, declaration_offset)
+        elif (
+            _looks_like_http_client_module(source)
+            and _looks_like_http_client_name(name)
+        ):
+            record(client_origins, name, declaration_offset)
+
+    stable_factories = {
+        name
+        for name, origins in axios_factory_origins.items()
+        if len(origins) == 1
+        and _javascript_binding_is_stable(text, code_mask, name, origins)
+    }
+    constructor_pattern = re.compile(
+        r"\b(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)\s*=\s*"
+        r"(?P<factory>[A-Za-z_$][\w$]*)\.create\s*\(",
+    )
+    for match in constructor_pattern.finditer(text):
+        if (
+            code_mask[match.start()]
+            and match.group("factory") in stable_factories
+        ):
+            record(client_origins, match.group("name"), match.start("name"))
+
+    return {
+        name
+        for name, origins in client_origins.items()
+        if len(origins) == 1
+        and _javascript_binding_is_stable(text, code_mask, name, origins)
+    }
+
+
+def _javascript_import_clause_bindings(
+    clause: str,
+) -> list[tuple[str, str, str]]:
+    """Return ``(kind, imported, local)`` bindings from one static import."""
+
+    value = clause.strip()
+    if value.startswith("type "):
+        return []
+    bindings: list[tuple[str, str, str]] = []
+    if value and value[0] not in {"{", "*"}:
+        default_name = value.split(",", 1)[0].strip()
+        if re.fullmatch(r"[A-Za-z_$][\w$]*", default_name):
+            bindings.append(("default", "default", default_name))
+    namespace = re.search(r"\*\s+as\s+([A-Za-z_$][\w$]*)", value)
+    if namespace:
+        bindings.append(("namespace", "*", namespace.group(1)))
+    named = re.search(r"\{([^}]*)\}", value)
+    if named:
+        for entry in named.group(1).split(","):
+            parts = re.split(r"\s+as\s+", entry.strip().removeprefix("type "))
+            if not parts or not re.fullmatch(r"[A-Za-z_$][\w$]*", parts[0]):
+                continue
+            local_name = parts[-1]
+            if re.fullmatch(r"[A-Za-z_$][\w$]*", local_name):
+                bindings.append(("named", parts[0], local_name))
+    return bindings
+
+
+def _looks_like_http_client_module(specifier: str) -> bool:
+    tokens = re.findall(r"[A-Za-z0-9]+", str(specifier or "").casefold())
+    return any(
+        token in {"api", "axios", "client", "http"}
+        or token.endswith("client")
+        or token.endswith("api")
+        for token in tokens
+    )
+
+
+def _looks_like_http_client_name(name: str) -> bool:
+    value = str(name or "").casefold()
+    return (
+        value in {"api", "axios", "client", "http"}
+        or value.endswith("client")
+        or value.endswith("api")
+    )
+
+
+def _javascript_binding_is_stable(
+    text: str,
+    code_mask: list[bool],
+    name: str,
+    origins: list[int | None],
+) -> bool:
+    """Reject redeclared, reassigned, or parameter-shadowed client bindings."""
+
+    allowed_declarations = {offset for offset in origins if offset is not None}
+    escaped = re.escape(name)
+    declaration_pattern = re.compile(
+        rf"\b(?:const|let|var|class|function)\s+(?P<name>{escaped})\b"
+    )
+    for match in declaration_pattern.finditer(text):
+        if (
+            code_mask[match.start()]
+            and match.start("name") not in allowed_declarations
+        ):
+            return False
+
+    assignment_pattern = re.compile(
+        rf"(?<![\w$.])(?P<name>{escaped})\s*"
+        r"(?P<operator>\+\+|--|(?:\?\?|\|\||&&|[+\-*/%&|^])?=(?!=))"
+    )
+    for match in assignment_pattern.finditer(text):
+        if not code_mask[match.start()]:
+            continue
+        if (
+            match.start("name") not in allowed_declarations
+            or match.group("operator") != "="
+        ):
+            return False
+    prefix_update_pattern = re.compile(rf"(?:\+\+|--)\s*(?P<name>{escaped})\b")
+    if any(
+        code_mask[match.start()]
+        for match in prefix_update_pattern.finditer(text)
+    ):
+        return False
+
+    destructuring_pattern = re.compile(
+        r"\b(?:const|let|var)\s*[\[{](?P<body>[^\]}]{0,500})[\]}]"
+    )
+    if any(
+        code_mask[match.start()]
+        and _javascript_fragment_contains_name(match.group("body"), name)
+        for match in destructuring_pattern.finditer(text)
+    ):
+        return False
+
+    parameter_patterns = (
+        re.compile(r"\bfunction(?:\s+[A-Za-z_$][\w$]*)?\s*\((?P<body>[^()]{0,500})\)"),
+        re.compile(r"(?:\basync\s*)?\((?P<body>[^()]{0,500})\)\s*=>"),
+        re.compile(r"\b(?:async\s+)?(?P<body>[A-Za-z_$][\w$]*)\s*=>"),
+        re.compile(r"\bcatch\s*\((?P<body>[^()]{0,500})\)"),
+    )
+    return not any(
+        code_mask[match.start()]
+        and _javascript_fragment_contains_name(match.group("body"), name)
+        for pattern in parameter_patterns
+        for match in pattern.finditer(text)
+    )
+
+
+def _javascript_fragment_contains_name(fragment: str, name: str) -> bool:
+    return re.search(
+        rf"(?<![\w$]){re.escape(name)}(?![\w$])",
+        str(fragment or ""),
+    ) is not None
+
+
+def _static_http_path(value: str) -> str | None:
+    path = re.sub(r"\$\{[^{}\r\n]{1,200}\}", "{}", str(value or ""))
+    path = path.split("?", 1)[0].strip()
+    if not path.startswith("/") or "${" in path or "\x00" in path:
+        return None
+    path = re.sub(r"/{2,}", "/", path)
+    return path[:500]
+
+
 def _javascript_code_mask(text: str) -> list[bool]:
     """Mark code offsets while conservatively excluding comments and strings."""
     mask = [True] * len(text)
@@ -2233,7 +2953,9 @@ def _git_state(root: Path) -> dict[str, Any]:
     changed_files = []
     untracked_files = []
     for line in status_lines:
-        status = line[:2].strip() or line[:2]
+        # Preserve both porcelain columns. `` M`` and ``M `` distinguish a
+        # worktree edit from an index edit and must not collapse to ``M``.
+        status = line[:2]
         raw_path = line[3:].strip()
         old_path = None
         path = raw_path
@@ -2258,6 +2980,330 @@ def _git_state(root: Path) -> dict[str, Any]:
         "untracked_files": sorted(untracked_files),
         "recent_commits": _recent_commits(root),
     }
+
+
+def _annotate_semantic_changes(
+    root: Path,
+    changed_files: list[dict[str, Any]],
+    indexed_files: list[IndexedFile],
+    *,
+    head_commit: str | None,
+) -> list[dict[str, Any]]:
+    """Attach a bounded HEAD-vs-current syntax delta to dirty paths.
+
+    These records describe observable source changes only. They never infer the
+    author's intent, whether work is complete, or what remains to be done.
+    """
+
+    indexed_by_path = {item.path: item for item in indexed_files}
+    numstat = _git_numstat(root) if head_commit else {}
+    annotated: list[dict[str, Any]] = []
+    for position, raw_change in enumerate(changed_files):
+        change = dict(raw_change)
+        if position >= MAX_SEMANTIC_CHANGE_FILES:
+            change["semantic_delta"] = {
+                "observer": "head_vs_worktree_syntax.v1",
+                "status": "not_observed",
+                "parser_coverage": "not_observed",
+                "parser_languages": [],
+                "reason": "semantic_change_file_bound_exceeded",
+                "complete": False,
+            }
+            annotated.append(change)
+            continue
+
+        path = str(change.get("path") or "").replace("\\", "/")
+        old_path = str(change.get("old_path") or path).replace("\\", "/")
+        status = str(change.get("status") or "")
+        untracked = status == "??"
+        added = untracked or "A" in status
+        deleted = "D" in status
+
+        current_raw = None if deleted else _current_file_bytes(
+            root,
+            path,
+            expected_sha256=change.get("sha256"),
+        )
+        previous_raw = None
+        if not added and head_commit:
+            previous_raw = _git_blob(root, head_commit, old_path)
+
+        current_index = indexed_by_path.get(path)
+        if current_index is None and current_raw is not None:
+            current_index = _index_file_bytes(path, current_raw)
+        previous_index = (
+            _index_file_bytes(old_path, previous_raw)
+            if previous_raw is not None
+            else None
+        )
+        line_counts = numstat.get(path)
+        if line_counts is None and untracked and current_raw is not None:
+            line_counts = (_line_count(current_raw), 0)
+        if line_counts is None and deleted and previous_raw is not None:
+            line_counts = (0, _line_count(previous_raw))
+
+        complete = bool(
+            (added or previous_raw is not None)
+            and (deleted or current_raw is not None)
+        )
+        delta = _semantic_change_delta(
+            previous_index,
+            current_index,
+            previous_raw=previous_raw,
+            current_raw=current_raw,
+            line_counts=line_counts,
+            complete=complete,
+        )
+        change["semantic_delta"] = delta
+        annotated.append(change)
+    return annotated
+
+
+def _semantic_change_delta(
+    previous: IndexedFile | None,
+    current: IndexedFile | None,
+    *,
+    previous_raw: bytes | None,
+    current_raw: bytes | None,
+    line_counts: tuple[int | None, int | None] | None,
+    complete: bool,
+) -> dict[str, Any]:
+    parser_coverage, parser_languages = _semantic_parser_coverage(
+        previous,
+        current,
+        previous_raw=previous_raw,
+        current_raw=current_raw,
+    )
+    previous_symbols = _unique_semantic_symbols(previous, previous_raw)
+    current_symbols = _unique_semantic_symbols(current, current_raw)
+    previous_ids = set(previous_symbols)
+    current_ids = set(current_symbols)
+    added_ids = sorted(current_ids - previous_ids)
+    removed_ids = sorted(previous_ids - current_ids)
+    modified_ids = sorted(
+        identity
+        for identity in previous_ids & current_ids
+        if previous_symbols[identity][1] is not None
+        and current_symbols[identity][1] is not None
+        and previous_symbols[identity][1] != current_symbols[identity][1]
+    )
+
+    previous_routes = set(previous.route_hints if previous else ())
+    current_routes = set(current.route_hints if current else ())
+    previous_imports = set(previous.imports if previous else ())
+    current_imports = set(current.imports if current else ())
+    previous_headings = _markdown_headings(previous_raw) if previous else set()
+    current_headings = _markdown_headings(current_raw) if current else set()
+
+    values: dict[str, list[str]] = {
+        "symbols_added": [_semantic_symbol_label(item) for item in added_ids],
+        "symbols_removed": [_semantic_symbol_label(item) for item in removed_ids],
+        "symbols_modified": [_semantic_symbol_label(item) for item in modified_ids],
+        "routes_added": sorted(current_routes - previous_routes),
+        "routes_removed": sorted(previous_routes - current_routes),
+        "imports_added": sorted(current_imports - previous_imports),
+        "imports_removed": sorted(previous_imports - current_imports),
+        "headings_added": sorted(current_headings - previous_headings),
+        "headings_removed": sorted(previous_headings - current_headings),
+    }
+    truncated = any(len(items) > MAX_SEMANTIC_CHANGE_ITEMS for items in values.values())
+    bounded = {
+        key: items[:MAX_SEMANTIC_CHANGE_ITEMS]
+        for key, items in values.items()
+        if items
+    }
+    added_lines, removed_lines = line_counts or (None, None)
+    semantic_complete = complete and parser_coverage == "parsed" and not truncated
+    return {
+        "observer": "head_vs_worktree_syntax.v1",
+        "status": (
+            "observed"
+            if complete and parser_coverage == "parsed"
+            else "partial"
+        ),
+        "parser_coverage": parser_coverage,
+        "parser_languages": parser_languages,
+        "base": "HEAD",
+        "lines_added": added_lines,
+        "lines_removed": removed_lines,
+        **bounded,
+        "items_truncated": truncated,
+        "complete": semantic_complete,
+    }
+
+
+def _semantic_parser_coverage(
+    previous: IndexedFile | None,
+    current: IndexedFile | None,
+    *,
+    previous_raw: bytes | None,
+    current_raw: bytes | None,
+) -> tuple[str, list[str]]:
+    versions = [
+        (indexed, raw)
+        for indexed, raw in (
+            (previous, previous_raw),
+            (current, current_raw),
+        )
+        if raw is not None
+    ]
+    if not versions:
+        return "not_observed", []
+    languages = sorted({
+        str(indexed.language or "unknown") if indexed is not None else "unknown"
+        for indexed, _raw in versions
+    })
+    parsed = all(
+        _semantic_parser_covers(indexed, raw)
+        for indexed, raw in versions
+    )
+    return ("parsed" if parsed else "line_only"), languages
+
+
+def _semantic_parser_covers(
+    indexed: IndexedFile | None,
+    raw: bytes,
+) -> bool:
+    if indexed is None:
+        return False
+    text = _decode(raw)
+    if text is None:
+        return False
+    if indexed.language == "python":
+        try:
+            ast.parse(text)
+        except SyntaxError:
+            return False
+        return True
+    return indexed.language in {
+        "javascript",
+        "javascript-react",
+        "markdown",
+        "typescript",
+        "typescript-react",
+    }
+
+
+def _unique_semantic_symbols(
+    indexed: IndexedFile | None,
+    raw: bytes | None,
+) -> dict[tuple[str, str], tuple[IndexedSymbol, str | None]]:
+    if indexed is None:
+        return {}
+    candidates: dict[tuple[str, str], list[IndexedSymbol]] = {}
+    for symbol in indexed.symbols:
+        if symbol.symbol_type in {"module", "import", "route"}:
+            continue
+        identity = (symbol.symbol_type, symbol.name)
+        candidates.setdefault(identity, []).append(symbol)
+    return {
+        identity: (symbols[0], _symbol_source_sha256(raw, symbols[0]))
+        for identity, symbols in candidates.items()
+        if len(symbols) == 1
+    }
+
+
+def _symbol_source_sha256(raw: bytes | None, symbol: IndexedSymbol) -> str | None:
+    if raw is None or symbol.start_line is None or symbol.end_line is None:
+        return None
+    text = _decode(raw)
+    if text is None:
+        return None
+    lines = text.splitlines()
+    start = symbol.start_line - 1
+    end = symbol.end_line
+    if start < 0 or end <= start or end > len(lines):
+        return None
+    source = "\n".join(lines[start:end]).strip()
+    return hashlib.sha256(source.encode("utf-8")).hexdigest() if source else None
+
+
+def _semantic_symbol_label(identity: tuple[str, str]) -> str:
+    symbol_type, name = identity
+    return f"{symbol_type}:{name}"[:240]
+
+
+def _markdown_headings(raw: bytes | None) -> set[str]:
+    if raw is None:
+        return set()
+    text = _decode(raw)
+    if text is None:
+        return set()
+    return {
+        " ".join(match.group(1).split())[:240]
+        for line in text.splitlines()
+        if (match := re.match(r"^#{1,6}\s+(.+?)\s*#*\s*$", line)) is not None
+    }
+
+
+def _line_count(raw: bytes) -> int:
+    return len(raw.splitlines())
+
+
+def _git_numstat(root: Path) -> dict[str, tuple[int | None, int | None]]:
+    raw = _git(root, "diff", "--numstat", "-z", "--no-renames", "HEAD", "--")
+    result: dict[str, tuple[int | None, int | None]] = {}
+    for record in raw.split("\x00"):
+        if not record:
+            continue
+        parts = record.split("\t", 2)
+        if len(parts) != 3:
+            continue
+        added, removed, path = parts
+        normalized = path.replace("\\", "/")
+        result[normalized] = (
+            int(added) if added.isdigit() else None,
+            int(removed) if removed.isdigit() else None,
+        )
+    return result
+
+
+def _current_file_bytes(
+    root: Path,
+    path: str,
+    *,
+    expected_sha256: Any,
+) -> bytes | None:
+    normalized = Path(path)
+    if normalized.is_absolute() or any(part in {"", ".", ".."} for part in normalized.parts):
+        return None
+    candidate = root / normalized
+    try:
+        before = candidate.lstat()
+        if candidate.is_symlink() or not candidate.is_file() or before.st_size > MAX_INDEXED_FILE_BYTES:
+            return None
+        raw = candidate.read_bytes()
+        after = candidate.lstat()
+    except OSError:
+        return None
+    if (
+        (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+        != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        or len(raw) != before.st_size
+    ):
+        return None
+    digest = hashlib.sha256(raw).hexdigest()
+    if expected_sha256 is not None and digest != str(expected_sha256).casefold():
+        return None
+    return raw
+
+
+def _git_blob(root: Path, head_commit: str, path: str) -> bytes | None:
+    normalized = Path(path)
+    if normalized.is_absolute() or any(part in {"", ".", ".."} for part in normalized.parts):
+        return None
+    try:
+        proc = subprocess.run(
+            _git_command(root, "cat-file", "blob", f"{head_commit}:{normalized.as_posix()}"),
+            check=False,
+            capture_output=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0 or len(proc.stdout) > MAX_INDEXED_FILE_BYTES:
+        return None
+    return proc.stdout
 
 
 def _recent_commits(root: Path) -> list[dict[str, Any]]:
@@ -2322,16 +3368,57 @@ def _package_manifests(root: Path, indexed_files: list[IndexedFile]) -> dict[str
                 data = json.loads(path.read_text(encoding="utf-8"))
                 manifests[indexed.path] = {
                     "name": data.get("name"),
+                    "description": data.get("description"),
+                    "package_manager": data.get("packageManager"),
                     "scripts": data.get("scripts", {}),
                     "dependencies": sorted((data.get("dependencies") or {}).keys()),
                     "dev_dependencies": sorted((data.get("devDependencies") or {}).keys()),
                 }
             elif path.name == "pyproject.toml":
                 data = tomllib.loads(path.read_text(encoding="utf-8"))
+                project = data.get("project") or {}
+                optional = project.get("optional-dependencies") or {}
                 manifests[indexed.path] = {
-                    "project": (data.get("project") or {}).get("name"),
-                    "dependencies": (data.get("project") or {}).get("dependencies", []),
-                    "optional_dependencies": sorted(((data.get("project") or {}).get("optional-dependencies") or {}).keys()),
+                    "project": project.get("name"),
+                    "description": project.get("description"),
+                    "requires_python": project.get("requires-python"),
+                    "scripts": project.get("scripts") or {},
+                    "dependencies": project.get("dependencies", []),
+                    "dev_dependencies": sorted({
+                        declaration
+                        for values in optional.values()
+                        if isinstance(values, list)
+                        for declaration in values
+                    }),
+                    "optional_dependencies": sorted(optional.keys()),
+                    "tools": sorted((data.get("tool") or {}).keys()),
+                }
+            elif path.name == "Cargo.toml":
+                data = tomllib.loads(path.read_text(encoding="utf-8"))
+                manifests[indexed.path] = {
+                    "project": (data.get("package") or {}).get("name"),
+                    "dependencies": sorted((data.get("dependencies") or {}).keys()),
+                    "dev_dependencies": sorted((data.get("dev-dependencies") or {}).keys()),
+                    "type": "cargo",
+                }
+            elif path.name == "go.mod":
+                content = path.read_text(encoding="utf-8", errors="replace")
+                module = re.search(r"(?m)^\s*module\s+(\S+)", content)
+                manifests[indexed.path] = {
+                    "project": module.group(1) if module else None,
+                    "type": "go_module",
+                }
+            elif path.name in {"composer.json", "deno.json"}:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                dependencies = {
+                    *(data.get("require") or {}).keys(),
+                    *(data.get("dependencies") or {}).keys(),
+                }
+                manifests[indexed.path] = {
+                    "name": data.get("name"),
+                    "scripts": data.get("scripts") or {},
+                    "dependencies": sorted(dependencies),
+                    "type": path.name,
                 }
             else:
                 manifests[indexed.path] = {"type": path.name}
@@ -2341,6 +3428,30 @@ def _package_manifests(root: Path, indexed_files: list[IndexedFile]) -> dict[str
 
 
 def _language_for(path: Path) -> str | None:
+    language_by_suffix = {
+        ".c": "c",
+        ".cc": "cpp",
+        ".cpp": "cpp",
+        ".cs": "csharp",
+        ".dart": "dart",
+        ".ex": "elixir",
+        ".exs": "elixir",
+        ".go": "go",
+        ".h": "c-header",
+        ".hpp": "cpp-header",
+        ".java": "java",
+        ".kt": "kotlin",
+        ".kts": "kotlin",
+        ".php": "php",
+        ".rb": "ruby",
+        ".rs": "rust",
+        ".scala": "scala",
+        ".svelte": "svelte",
+        ".swift": "swift",
+        ".vue": "vue",
+    }
+    if path.suffix in language_by_suffix:
+        return language_by_suffix[path.suffix]
     if path.suffix == ".py":
         return "python"
     if path.suffix in {".js", ".jsx"}:
@@ -2357,7 +3468,7 @@ def _language_for(path: Path) -> str | None:
         return "yaml"
     if path.suffix == ".sh":
         return "shell"
-    if path.name == "Dockerfile":
+    if _is_dockerfile_name(path.name):
         return "dockerfile"
     return None
 
@@ -2376,6 +3487,14 @@ def _is_test_file(rel: str, text: str) -> bool:
         or path.endswith(".spec.tsx")
         or (path.endswith(".py") and name.startswith("test_"))
         or path.endswith("_test.py")
+        or path.endswith("_test.go")
+        or path.endswith("_test.rs")
+        or name.endswith(("tests.swift", "test.java", "tests.java"))
+        or (
+            bool({"test", "tests", "spec", "specs"} & set(Path(path).parts[:-1]))
+            and not path.endswith((".py", ".js", ".jsx", ".ts", ".tsx"))
+            and name not in {"conftest.py", "setup.py"}
+        )
     )
     if path_match:
         return True
@@ -2414,6 +3533,124 @@ def _tokenize(value: str) -> list[str]:
         if len(token) > 1
     ]
     return list(dict.fromkeys(tokens))
+
+
+def _is_licensing_goal(keywords: set[str]) -> bool:
+    return bool({
+        "copyright",
+        "licence",
+        "license",
+        "licensing",
+        "monetise",
+        "monetize",
+    } & keywords)
+
+
+def _is_project_metadata_name(name: str) -> bool:
+    candidate = Path(str(name or "").casefold())
+    return (
+        candidate.stem in _PROJECT_METADATA_NAMES
+        and candidate.suffix in {"", ".md", ".txt"}
+    )
+
+
+def _is_dockerfile_name(name: str) -> bool:
+    normalized = str(name or "").casefold()
+    return normalized == "dockerfile" or normalized.startswith("dockerfile.")
+
+
+def _is_self_host_goal(keywords: set[str]) -> bool:
+    host_terms = {
+        "host",
+        "hostable",
+        "hosted",
+        "hosting",
+        "selfhost",
+        "selfhosting",
+    }
+    return bool(
+        {"self", "selfhost", "selfhosting"} & keywords
+        and host_terms & keywords
+    )
+
+
+def _domain_path_matches(
+    path: str,
+    *,
+    licensing_goal: bool,
+    self_host_goal: bool,
+) -> list[str]:
+    """Return only high-confidence domain/path matches.
+
+    These matches deliberately use the path, not arbitrary source prose or
+    declarations. That keeps legal words such as "copy" and overloaded runtime
+    words such as "host" from expanding a handoff into unrelated code.
+    """
+
+    normalized = str(path or "").replace("\\", "/").casefold()
+    name = Path(normalized).name
+    path_tokens = set(_tokenize(normalized))
+    matches: list[str] = []
+    if (
+        licensing_goal
+        and _is_project_metadata_name(name)
+        and "/" not in normalized
+    ):
+        matches.append("license-file")
+    if self_host_goal:
+        if _is_self_host_surface_path(normalized):
+            matches.append("self-host-surface")
+        elif (
+            "self" in path_tokens
+            and {"host", "hostable", "hosted", "hosting"} & path_tokens
+        ):
+            matches.append("self-host-path")
+    if (
+        (licensing_goal or self_host_goal)
+        and normalized.startswith("tests/")
+        and {
+            "compose",
+            "deployment",
+            "docker",
+            "docs",
+            "documentation",
+            "host",
+            "hosting",
+            "licence",
+            "license",
+            "licensing",
+        }
+        & path_tokens
+    ):
+        matches.append("domain-contract-tests")
+    return matches
+
+
+def _is_self_host_surface_path(path: str) -> bool:
+    normalized = str(path or "").replace("\\", "/").casefold().strip("/")
+    if not normalized:
+        return False
+    parts = normalized.split("/")
+    if {"fixture", "fixtures", "testdata", "test-data"} & set(parts):
+        return False
+    if any(
+        part.startswith("dummy") or "non-existing" in part
+        for part in parts[:-1]
+    ):
+        return False
+    if {"third-party", "third_party", "vendor"} & set(parts[:-1]):
+        return False
+    name = parts[-1]
+    if _is_dockerfile_name(name):
+        return True
+    if re.fullmatch(
+        r"(?:docker-)?compose(?:[._-][a-z0-9_-]+)*\.ya?ml",
+        name,
+    ):
+        return True
+    if name.endswith(".env.example"):
+        return len(parts) == 1 or parts[0] in _SELF_HOST_ENV_DIRECTORIES
+    return False
 
 
 def _matching_symbols(
@@ -2489,7 +3726,7 @@ def _file_reason(indexed: IndexedFile, keywords: set[str]) -> str:
         return "goal_related_api_route"
     if "cli" in keywords and "/cli/" in f"/{indexed.path}":
         return "goal_related_cli_file"
-    if indexed.symbols:
+    if any(symbol.symbol_type != "module" for symbol in indexed.symbols):
         return "goal_related_symbols"
     return "goal_path_or_keyword_match"
 
@@ -2501,6 +3738,7 @@ def _human_file_reason(item: dict[str, Any]) -> str:
     basis = item.get("match_basis") or {}
     for key, label in (
         ("file_name", "File name matches"),
+        ("domain_path", "Conventional task surface matches"),
         ("path", "File name matches"),
         ("routes", "API route matches"),
         ("symbols", "Names inside this file match"),
@@ -2528,7 +3766,12 @@ def _file_match_strength(item: dict[str, Any]) -> str:
     if item.get("reason") == "explicit_goal_file_hint":
         return "named_in_task"
     basis = item.get("match_basis") or {}
-    if basis.get("file_name") or basis.get("path") or basis.get("routes"):
+    if (
+        basis.get("file_name")
+        or basis.get("domain_path")
+        or basis.get("path")
+        or basis.get("routes")
+    ):
         return "strong_match"
     return "possible_match"
 

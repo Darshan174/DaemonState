@@ -26,7 +26,7 @@ from app.database import (
     schema_is_current,
 )
 from app.http_middleware import RequestBodyLimitMiddleware
-from app.main import app
+from app.main import _resolve_frontend_dist, app
 from app.observability import normalized_http_method
 from app.services import auth, oauth_state
 from app.services.repo_paths import RepositoryPathNotAllowed, validated_repository_path
@@ -170,6 +170,24 @@ def test_compact_session_handoff_is_default_with_legacy_rollback(monkeypatch):
 
     assert configured.session_handoff_brief_variant == "compact_v2"
     assert rollback.session_handoff_brief_variant == "legacy_v1"
+
+
+def test_frontend_dist_prefers_current_cloudflare_client_build(tmp_path):
+    stale_assets = tmp_path / "assets"
+    stale_assets.mkdir()
+    (tmp_path / "index.html").write_text("stale root build", encoding="utf-8")
+    client_build = tmp_path / "client"
+    (client_build / "assets").mkdir(parents=True)
+    (client_build / "index.html").write_text("current client build", encoding="utf-8")
+
+    assert _resolve_frontend_dist(tmp_path) == client_build
+
+
+def test_frontend_dist_falls_back_to_plain_vite_build(tmp_path):
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "index.html").write_text("plain vite build", encoding="utf-8")
+
+    assert _resolve_frontend_dist(tmp_path) == tmp_path
 
 
 def test_prometheus_http_method_labels_have_bounded_cardinality():
