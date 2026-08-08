@@ -4,9 +4,12 @@ import asyncio
 import hashlib
 import json
 import re
+import shutil
+import stat
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from pathlib import Path
 from time import monotonic
 from typing import Any
 from uuid import UUID, uuid4
@@ -17,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
-from app.models import AgentRun, ContinuationExecution, SessionEvent
+from app.models import AgentRun, ContinuationExecution, SessionEvent, WorkCheckpoint
 from app.models_continuation_stage import ContinuationStageRequest
 from app.schemas.continuation_execution import (
     ContinuationArtifactInput,
@@ -32,6 +35,7 @@ from app.services.checkpoints import (
     checkpoint_to_dict,
     checkpoints_to_dicts,
     get_checkpoint,
+    resolve_handoff_attachment_reference,
     resolve_session_handoff_attachment_descriptors,
     resolve_session_handoff_request_verbatim,
     resolve_session_handoff_supporting_context,
@@ -87,6 +91,11 @@ from app.services.requirement_verifier import (
     persist_final_outcome,
     persist_requirement_matrix,
 )
+from app.services.runtime_bundle import (
+    RuntimeBundleIntegrityError,
+    copy_verified_artifact,
+    verify_artifact_sha256,
+)
 from app.services.session_summary import (
     is_substantive_user_request,
     normalize_substantive_user_request,
@@ -111,36 +120,45 @@ MAX_BLOCKER_TASK_LENGTH = 140
 PROVIDER_READINESS_CACHE_SECONDS = 30.0
 COMPOSER_READINESS_TIMEOUT_SECONDS = 3.0
 CONTINUATION_STAGE_PENDING_LEASE_SECONDS = 60.0
-_DESKTOP_STAGE_ADVISORY_QUALITY_CODES = frozenset({
-    "project_context_core_sections_empty",
-})
-_provider_readiness_cache: tuple[
-    float,
-    tuple[object, object],
-    tuple[ProviderReadiness, ...],
-] | None = None
-EXTERNAL_BLOCKER_CODES = frozenset({
-    "continuation_repository_changed",
-    "provider_authentication_failed",
-    "provider_authentication_required",
-    "provider_authentication_revoked",
-    "provider_billing_required",
-    "provider_cli_broken",
-    "provider_cli_invalid",
-    "provider_cli_not_found",
-    "provider_cli_update_required",
-    "provider_model_access_required",
-    "provider_model_configuration_required",
-    "provider_readiness_invalid",
-    "provider_readiness_failed",
-    "provider_readiness_timeout",
-    "provider_service_unavailable",
-})
-AMBIGUITY_BLOCKER_CODES = frozenset({
-    "continuation_ambiguity",
-    "continuation_intent_ambiguous",
-    "user_intent_required",
-})
+_DESKTOP_STAGE_ADVISORY_QUALITY_CODES = frozenset(
+    {
+        "project_context_core_sections_empty",
+    }
+)
+_provider_readiness_cache: (
+    tuple[
+        float,
+        tuple[object, object],
+        tuple[ProviderReadiness, ...],
+    ]
+    | None
+) = None
+EXTERNAL_BLOCKER_CODES = frozenset(
+    {
+        "continuation_repository_changed",
+        "provider_authentication_failed",
+        "provider_authentication_required",
+        "provider_authentication_revoked",
+        "provider_billing_required",
+        "provider_cli_broken",
+        "provider_cli_invalid",
+        "provider_cli_not_found",
+        "provider_cli_update_required",
+        "provider_model_access_required",
+        "provider_model_configuration_required",
+        "provider_readiness_invalid",
+        "provider_readiness_failed",
+        "provider_readiness_timeout",
+        "provider_service_unavailable",
+    }
+)
+AMBIGUITY_BLOCKER_CODES = frozenset(
+    {
+        "continuation_ambiguity",
+        "continuation_intent_ambiguous",
+        "user_intent_required",
+    }
+)
 
 
 class ContinuationRunError(ValueError):
@@ -158,6 +176,15 @@ class ContinuationRunError(ValueError):
         self.blocker = blocker
         self.readiness = readiness
         super().__init__(message)
+
+
+@dataclass(frozen=True)
+class DesktopStageAttachmentBundle:
+    """Stable, receiver-readable evidence bound to one desktop handoff."""
+
+    root: Path
+    deliveries: dict[str, dict[str, str]]
+    baseline_delivery: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -206,19 +233,13 @@ class ContinuationStageResult:
         preparation = value.get("preparation")
         delivery = value.get("delivery")
         run = value.get("run")
-        if not all(
-            isinstance(item, dict)
-            for item in (preparation, delivery, run)
-        ):
+        if not all(isinstance(item, dict) for item in (preparation, delivery, run)):
             raise ValueError("Stored continuation stage result is incomplete.")
         return cls(
             preparation=dict(preparation),
             delivery=dict(delivery),
             run=dict(run),
-            schema_version=str(
-                value.get("schema_version")
-                or CONTINUATION_STAGE_SCHEMA_VERSION
-            ),
+            schema_version=str(value.get("schema_version") or CONTINUATION_STAGE_SCHEMA_VERSION),
         )
 
 
@@ -247,23 +268,15 @@ def _continuation_stage_trace_result(
     preparation = payload.get("preparation", {})
     return {
         "daemonstate.context_pack.id": preparation.get("context_pack_id"),
-        "daemonstate.continuation.execution.id": (
-            preparation.get("continuation_execution_id")
-        ),
+        "daemonstate.continuation.execution.id": (preparation.get("continuation_execution_id")),
         "daemonstate.run.id": run.get("run_id"),
         "daemonstate.provider": delivery.get("provider"),
         "daemonstate.source.provider": delivery.get("source_provider"),
         "daemonstate.session.id": run.get("provider_session_id"),
         "daemonstate.delivery.context_sha256": delivery.get("context_sha256"),
-        "daemonstate.delivery.context_render_variant": delivery.get(
-            "context_render_variant"
-        ),
-        "daemonstate.delivery.context_char_count": delivery.get(
-            "context_char_count"
-        ),
-        "daemonstate.delivery.context_estimated_tokens": delivery.get(
-            "context_estimated_tokens"
-        ),
+        "daemonstate.delivery.context_render_variant": delivery.get("context_render_variant"),
+        "daemonstate.delivery.context_char_count": delivery.get("context_char_count"),
+        "daemonstate.delivery.context_estimated_tokens": delivery.get("context_estimated_tokens"),
         "daemonstate.staging.awaiting_user": True,
         "daemonstate.staging.execution_started": False,
         "daemonstate.status": "awaiting_user",
@@ -275,28 +288,18 @@ def _continuation_run_trace_result(
 ) -> dict[str, Any]:
     delivery = result.delivery if isinstance(result.delivery, dict) else {}
     outcome = result.outcome if isinstance(result.outcome, dict) else {}
-    checks = (
-        outcome.get("checks")
-        if isinstance(outcome.get("checks"), dict)
-        else {}
-    )
+    checks = outcome.get("checks") if isinstance(outcome.get("checks"), dict) else {}
     return {
         "daemonstate.context_pack.id": result.preparation.context_pack_id,
-        "daemonstate.continuation.execution.id": (
-            result.preparation.continuation_execution_id
-        ),
+        "daemonstate.continuation.execution.id": (result.preparation.continuation_execution_id),
         "daemonstate.run.id": result.run.run_id,
         "daemonstate.provider": delivery.get("provider"),
         "daemonstate.source.provider": delivery.get("source_provider"),
         "daemonstate.task.mode": delivery.get("task_mode"),
         "daemonstate.status": outcome.get("status"),
         "daemonstate.runtime.worker_succeeded": result.run.status == "completed",
-        "daemonstate.runtime.bundle_integrity_passed": (
-            result.run.runtime_bundle_integrity_passed
-        ),
-        "daemonstate.runtime.preservation_passed": (
-            result.run.preservation_passed
-        ),
+        "daemonstate.runtime.bundle_integrity_passed": (result.run.runtime_bundle_integrity_passed),
+        "daemonstate.runtime.preservation_passed": (result.run.preservation_passed),
         "daemonstate.verification.total": checks.get("total"),
         "daemonstate.verification.passed": checks.get("passed"),
         "daemonstate.verification.failed": checks.get("failed"),
@@ -312,15 +315,11 @@ class ContinuationStageService:
 
     @traced(
         "daemonstate.continuation.stage",
-        attributes=lambda _args, kwargs: (
-            _continuation_boundary_trace_attributes(
-                kwargs,
-                phase="continuation_stage",
-            )
+        attributes=lambda _args, kwargs: _continuation_boundary_trace_attributes(
+            kwargs,
+            phase="continuation_stage",
         ),
-        result_attributes=lambda result: _continuation_stage_trace_result(
-            result
-        ),
+        result_attributes=lambda result: _continuation_stage_trace_result(result),
     )
     async def stage(
         self,
@@ -353,30 +352,20 @@ class ContinuationStageService:
                 status_code=403,
             )
         try:
-            continuation_lead = validate_continuation_lead(
-                continuation_lead
-            )
+            continuation_lead = validate_continuation_lead(continuation_lead)
         except ValueError as exc:
             raise ContinuationRunError(
                 "continuation_lead_invalid",
                 str(exc),
                 status_code=422,
             ) from exc
-        supplied_lead = (
-            continuation_lead is not None
-            or (
-                objective is not None
-                and is_substantive_user_request(
-                    normalize_substantive_user_request(objective)
-                )
-            )
+        supplied_lead = continuation_lead is not None or (
+            objective is not None
+            and is_substantive_user_request(normalize_substantive_user_request(objective))
         )
         source_bound_lead = bool(
             checkpoint_id
-            or (
-                str(source_provider or "").strip()
-                and str(source_session_id or "").strip()
-            )
+            or (str(source_provider or "").strip() and str(source_session_id or "").strip())
         )
         if not supplied_lead and not source_bound_lead:
             raise ContinuationRunError(
@@ -418,9 +407,7 @@ class ContinuationStageService:
                         "did not include its duplicate-protection key."
                     ),
                     "action": "Refresh the Continue page, then try again.",
-                    "affected_tasks": [
-                        _bounded_task(objective or "Current continuation task")
-                    ],
+                    "affected_tasks": [_bounded_task(objective or "Current continuation task")],
                 },
             )
 
@@ -451,17 +438,13 @@ class ContinuationStageService:
             if existing_stage_request is not None:
                 if (
                     existing_stage_request.status == "pending"
-                    and _continuation_stage_pending_expired(
-                        existing_stage_request
-                    )
+                    and _continuation_stage_pending_expired(existing_stage_request)
                 ):
                     await _abandon_continuation_stage_pending(
                         self.session,
                         existing_stage_request,
                     )
-                    raise _uncertain_continuation_stage_error(
-                        existing_stage_request
-                    )
+                    raise _uncertain_continuation_stage_error(existing_stage_request)
                 return _replay_continuation_stage_request(
                     existing_stage_request,
                     request_sha256=stage_request_sha256,
@@ -471,15 +454,12 @@ class ContinuationStageService:
             workspace_id=workspace_id,
         )
 
-        candidates = (
-            PROVIDER_PREFERENCE
-            if normalized_target == "auto"
-            else (normalized_target,)
+        candidates = PROVIDER_PREFERENCE if normalized_target == "auto" else (normalized_target,)
+        composer_readiness = list(
+            await asyncio.gather(
+                *(_bounded_composer_readiness(provider) for provider in candidates)
+            )
         )
-        composer_readiness = list(await asyncio.gather(*(
-            _bounded_composer_readiness(provider)
-            for provider in candidates
-        )))
         selected = next(
             (
                 (provider, readiness)
@@ -508,16 +488,11 @@ class ContinuationStageService:
                     "provider": provider,
                     "message": readiness.message,
                     "action": readiness.action,
-                    "affected_tasks": [_bounded_task(
-                        objective or "Current continuation task"
-                    )],
+                    "affected_tasks": [_bounded_task(objective or "Current continuation task")],
                 },
             )
         selected_provider, selected_composer_readiness = selected
-        if (
-            str(provider_effort or "").strip()
-            and selected_provider != "codex"
-        ):
+        if str(provider_effort or "").strip() and selected_provider != "codex":
             raise ContinuationRunError(
                 "provider_effort_unsupported",
                 (
@@ -533,12 +508,8 @@ class ContinuationStageService:
                         f"{PROVIDER_DISPLAY_NAMES[selected_provider]} does not "
                         "accept the Codex reasoning-effort setting."
                     ),
-                    "action": (
-                        "Remove the reasoning-effort selection or choose Codex."
-                    ),
-                    "affected_tasks": [_bounded_task(
-                        objective or "Current continuation task"
-                    )],
+                    "action": ("Remove the reasoning-effort selection or choose Codex."),
+                    "affected_tasks": [_bounded_task(objective or "Current continuation task")],
                 },
             )
 
@@ -579,19 +550,12 @@ class ContinuationStageService:
             artifacts=artifacts,
         )
         if _repository_baseline_needs_refresh(preparation):
-            refresh_repo_path, _refresh_repository = _repository_coordinates(
-                preparation
-            )
+            refresh_repo_path, _refresh_repository = _repository_coordinates(preparation)
             try:
-                refreshed_snapshot = await capture_repository_snapshot(
-                    refresh_repo_path
-                )
+                refreshed_snapshot = await capture_repository_snapshot(refresh_repo_path)
             except (OSError, ValueError):
                 refreshed_snapshot = None
-            if (
-                refreshed_snapshot is not None
-                and not refreshed_snapshot.status_truncated
-            ):
+            if refreshed_snapshot is not None and not refreshed_snapshot.status_truncated:
                 preparation = await ContinuationService(self.session).prepare(
                     workspace_id=workspace_id,
                     access_scope=access_scope,
@@ -609,9 +573,7 @@ class ContinuationStageService:
                     task_mode=task_mode,
                     artifacts=artifacts,
                 )
-        effective_repo_path, current_repository = _repository_coordinates(
-            preparation
-        )
+        effective_repo_path, current_repository = _repository_coordinates(preparation)
         expected_fingerprint = _repository_fingerprint(current_repository)
 
         try:
@@ -639,9 +601,7 @@ class ContinuationStageService:
                 task_mode=task_mode,
                 artifacts=artifacts,
             )
-            effective_repo_path, current_repository = _repository_coordinates(
-                preparation
-            )
+            effective_repo_path, current_repository = _repository_coordinates(preparation)
             expected_fingerprint = _repository_fingerprint(current_repository)
 
         _execution, contract = await _prepared_execution(
@@ -665,9 +625,7 @@ class ContinuationStageService:
         )
 
         try:
-            repository_after = await capture_repository_snapshot(
-                effective_repo_path
-            )
+            repository_after = await capture_repository_snapshot(effective_repo_path)
             if repository_after.status_fingerprint != expected_fingerprint:
                 raise RepositoryStateChangedError(
                     expected_fingerprint,
@@ -693,9 +651,7 @@ class ContinuationStageService:
                 self.session,
                 workspace_id=workspace_id,
                 context_pack_id=UUID(preparation.context_pack_id),
-                continuation_execution_id=UUID(
-                    preparation.continuation_execution_id
-                ),
+                continuation_execution_id=UUID(preparation.continuation_execution_id),
                 idempotency_key=idempotency_key,
                 request_sha256=stage_request_sha256,
                 target_provider=selected_provider,
@@ -710,9 +666,7 @@ class ContinuationStageService:
         timeout_seconds = max(
             1.0,
             min(
-                request_timeout_seconds
-                if request_timeout_seconds is not None
-                else 20.0,
+                request_timeout_seconds if request_timeout_seconds is not None else 20.0,
                 30.0,
             ),
         )
@@ -726,10 +680,7 @@ class ContinuationStageService:
                 ),
                 timeout=timeout_seconds,
             )
-            if (
-                launch.get("open_requested") is not True
-                or launch.get("context_copied") is not True
-            ):
+            if launch.get("open_requested") is not True or launch.get("context_copied") is not True:
                 raise HarnessLaunchError(
                     (
                         "The desktop open request and complete clipboard copy "
@@ -760,9 +711,7 @@ class ContinuationStageService:
                         "provider CLI or task was started."
                     ),
                     "action": "Open the desktop app, then retry Continue.",
-                    "affected_tasks": _preparation_affected_task_titles(
-                        preparation
-                    ),
+                    "affected_tasks": _preparation_affected_task_titles(preparation),
                 },
             )
             # A timed-out to_thread worker can still be winding down. Keep the
@@ -783,9 +732,7 @@ class ContinuationStageService:
                         f"Open {PROVIDER_DISPLAY_NAMES[selected_provider]} "
                         "Desktop, then retry Continue."
                     ),
-                    "affected_tasks": _preparation_affected_task_titles(
-                        preparation
-                    ),
+                    "affected_tasks": _preparation_affected_task_titles(preparation),
                 },
             )
             if stage_request is not None:
@@ -796,36 +743,29 @@ class ContinuationStageService:
                 )
             raise error from exc
 
-        context_sha256 = hashlib.sha256(
-            context_message.encode("utf-8")
-        ).hexdigest()
-        context_render_variant = str(
-            session_context.get("render_variant") or "legacy_v1"
-        )
+        context_sha256 = hashlib.sha256(context_message.encode("utf-8")).hexdigest()
+        context_render_variant = str(session_context.get("render_variant") or "legacy_v1")
         context_char_count = len(context_message)
         context_estimated_tokens = max(1, (context_char_count + 3) // 4)
-        continuation_lead_sha256 = str(
-            (
-                session_context.get("continuation_lead")
-                if isinstance(
-                    session_context.get("continuation_lead"),
-                    Mapping,
-                )
-                else {}
-            ).get("request_sha256")
-            or ""
-        ).strip() or None
+        continuation_lead_sha256 = (
+            str(
+                (
+                    session_context.get("continuation_lead")
+                    if isinstance(
+                        session_context.get("continuation_lead"),
+                        Mapping,
+                    )
+                    else {}
+                ).get("request_sha256")
+                or ""
+            ).strip()
+            or None
+        )
         handoff_id = str(uuid4())
         source = _normalized_source_provider(preparation.source_session)
         account_access_state = selected_composer_readiness.account_access_state
-        account_access_verified = (
-            selected_composer_readiness.account_access_verified is True
-        )
-        account_access_basis = (
-            "provider_desktop_bridge"
-            if account_access_verified
-            else None
-        )
+        account_access_verified = selected_composer_readiness.account_access_verified is True
+        account_access_basis = "provider_desktop_bridge" if account_access_verified else None
         public_handoff: dict[str, Any] = {
             "handoff_id": handoff_id,
             "provider": selected_provider,
@@ -833,9 +773,7 @@ class ContinuationStageService:
             "launched": False,
             "open_requested": launch.get("open_requested") is True,
             "open_verified": False,
-            "navigation_requested": (
-                launch.get("navigation_requested") is True
-            ),
+            "navigation_requested": (launch.get("navigation_requested") is True),
             "navigation_verified": False,
             "mode": "desktop_composer",
             "navigation": "new_session",
@@ -865,9 +803,7 @@ class ContinuationStageService:
             "requested_provider_model": provider_model,
             "requested_provider_effort": provider_effort,
             "settings_applied": False,
-            "settings_confirmation_required": bool(
-                provider_model or provider_effort
-            ),
+            "settings_confirmation_required": bool(provider_model or provider_effort),
             "account_access_state": account_access_state,
             "account_access_verified": account_access_verified,
             "account_access_basis": account_access_basis,
@@ -881,9 +817,7 @@ class ContinuationStageService:
                 if isinstance(preparation.source_session, dict)
                 else None
             ),
-            "provider_switched": bool(
-                source and source != selected_provider
-            ),
+            "provider_switched": bool(source and source != selected_provider),
             "mode": "desktop_composer_prefill",
             "context_delivery": launch.get("context_delivery"),
             "context_schema_version": SESSION_HANDOFF_SCHEMA_VERSION,
@@ -906,9 +840,7 @@ class ContinuationStageService:
             "requested_provider_model": provider_model,
             "requested_provider_effort": provider_effort,
             "settings_applied": False,
-            "settings_confirmation_required": bool(
-                provider_model or provider_effort
-            ),
+            "settings_confirmation_required": bool(provider_model or provider_effort),
             "account_access_state": account_access_state,
             "account_access_verified": account_access_verified,
             "account_access_basis": account_access_basis,
@@ -919,15 +851,11 @@ class ContinuationStageService:
                 "status": "desktop_composer_open_requested",
                 "context_loaded": False,
                 "context_copied": launch.get("context_copied") is True,
-                "prefill_requested": (
-                    launch.get("prefill_requested") is True
-                ),
+                "prefill_requested": (launch.get("prefill_requested") is True),
                 "execution_started": False,
                 "open_requested": launch.get("open_requested") is True,
                 "open_verified": False,
-                "navigation_requested": (
-                    launch.get("navigation_requested") is True
-                ),
+                "navigation_requested": (launch.get("navigation_requested") is True),
                 "navigation_verified": False,
                 "message": (
                     (
@@ -937,8 +865,7 @@ class ContinuationStageService:
                         "not verified and nothing was submitted."
                     )
                     + (
-                        " Requested model settings must be confirmed in the "
-                        "desktop app."
+                        " Requested model settings must be confirmed in the desktop app."
                         if provider_model or provider_effort
                         else ""
                     )
@@ -952,8 +879,7 @@ class ContinuationStageService:
                             "submitted."
                         )
                         + (
-                            " Requested model settings must be confirmed in "
-                            "the desktop app."
+                            " Requested model settings must be confirmed in the desktop app."
                             if provider_model or provider_effort
                             else ""
                         )
@@ -1007,15 +933,11 @@ class ContinuationRunService:
 
     @traced(
         "daemonstate.continuation.run",
-        attributes=lambda _args, kwargs: (
-            _continuation_boundary_trace_attributes(
-                kwargs,
-                phase="continuation_run",
-            )
+        attributes=lambda _args, kwargs: _continuation_boundary_trace_attributes(
+            kwargs,
+            phase="continuation_run",
         ),
-        result_attributes=lambda result: _continuation_run_trace_result(
-            result
-        ),
+        result_attributes=lambda result: _continuation_run_trace_result(result),
     )
     async def run(
         self,
@@ -1083,19 +1005,12 @@ class ContinuationRunService:
             artifacts=artifacts,
         )
         if _repository_baseline_needs_refresh(preparation):
-            refresh_repo_path, _refresh_repository = _repository_coordinates(
-                preparation
-            )
+            refresh_repo_path, _refresh_repository = _repository_coordinates(preparation)
             try:
-                refreshed_snapshot = await capture_repository_snapshot(
-                    refresh_repo_path
-                )
+                refreshed_snapshot = await capture_repository_snapshot(refresh_repo_path)
             except (OSError, ValueError):
                 refreshed_snapshot = None
-            if (
-                refreshed_snapshot is not None
-                and not refreshed_snapshot.status_truncated
-            ):
+            if refreshed_snapshot is not None and not refreshed_snapshot.status_truncated:
                 # The preservation capture can race with an atomic editor save.
                 # Recompile once from the now-complete state before failing the
                 # closed quality gate.
@@ -1171,15 +1086,10 @@ class ContinuationRunService:
         )
         runner_options = {
             **(
-                {"output_limit_bytes": output_limit_bytes}
-                if output_limit_bytes is not None
-                else {}
+                {"output_limit_bytes": output_limit_bytes} if output_limit_bytes is not None else {}
             ),
             **(
-                {
-                    "verification_timeout_seconds":
-                    verification_timeout_seconds
-                }
+                {"verification_timeout_seconds": verification_timeout_seconds}
                 if verification_timeout_seconds is not None
                 else {}
             ),
@@ -1286,9 +1196,7 @@ class ContinuationRunService:
             "status": "delivered",
             "provider": invocation.provider,
             "source_provider": source_provider,
-            "provider_switched": bool(
-                source_provider and invocation.provider != source_provider
-            ),
+            "provider_switched": bool(source_provider and invocation.provider != source_provider),
             "mode": invocation.mode,
             "context_delivery": invocation.context_delivery,
             "run_id": str(run.id),
@@ -1300,9 +1208,7 @@ class ContinuationRunService:
         }
         if session_bridge.state is not None:
             delivery["harness_session"] = session_bridge.state
-            delivery["visibility"] = _harness_visibility_evidence(
-                session_bridge.state
-            )
+            delivery["visibility"] = _harness_visibility_evidence(session_bridge.state)
         matrix = build_requirement_matrix(
             contract,
             result.verification_results,
@@ -1317,11 +1223,13 @@ class ContinuationRunService:
             matrix=matrix,
         )
         await self.session.commit()
-        attempts = [{
-            "attempt_index": 1,
-            "run_id": str(run.id),
-            "status": matrix.status,
-        }]
+        attempts = [
+            {
+                "attempt_index": 1,
+                "run_id": str(run.id),
+                "status": matrix.status,
+            }
+        ]
         root_run = run
         preservation_baseline = result.repository_before
         session_id = (
@@ -1352,9 +1260,7 @@ class ContinuationRunService:
                     "provider": repair_readiness.provider,
                     "message": repair_readiness.message,
                     "action": repair_readiness.action,
-                    "affected_tasks": _preparation_affected_task_titles(
-                        preparation
-                    ),
+                    "affected_tasks": _preparation_affected_task_titles(preparation),
                 }
                 break
             repair_prompt = render_targeted_repair_prompt(
@@ -1362,9 +1268,7 @@ class ContinuationRunService:
                 canonical_prompt=execution.prompt_markdown,
                 verification_matrix=matrix,
                 attempt_index=attempt_index,
-                current_status_fingerprint=(
-                    result.repository_after.status_fingerprint
-                ),
+                current_status_fingerprint=(result.repository_after.status_fingerprint),
             )
             repair_invocation = build_harness_invocation(
                 invocation.provider,
@@ -1411,19 +1315,11 @@ class ContinuationRunService:
                         repo_path=repair_invocation.repo_path,
                         command=repair_invocation.argv,
                         verify=True,
-                        context_stdin=(
-                            repair_invocation.context_delivery == "stdin"
-                        ),
-                        extra_env=provider_environment(
-                            repair_invocation.provider
-                        ),
-                        expected_status_fingerprint=(
-                            result.repository_after.status_fingerprint
-                        ),
+                        context_stdin=(repair_invocation.context_delivery == "stdin"),
+                        extra_env=provider_environment(repair_invocation.provider),
+                        expected_status_fingerprint=(result.repository_after.status_fingerprint),
                         command_timeout_seconds=effective_command_timeout,
-                        stdout_chunk_observer=(
-                            repair_bridge.observe_stdout_chunk
-                        ),
+                        stdout_chunk_observer=(repair_bridge.observe_stdout_chunk),
                         continuation_execution_id=execution.id,
                         execution_prompt_override=repair_prompt,
                         preservation_baseline=preservation_baseline,
@@ -1434,11 +1330,13 @@ class ContinuationRunService:
                 repair_run.status = "failed"
                 repair_run.ended_at = utc_now()
                 await asyncio.shield(self.session.commit())
-                attempts.append({
-                    "attempt_index": attempt_index,
-                    "run_id": str(repair_run.id),
-                    "status": "execution_failed",
-                })
+                attempts.append(
+                    {
+                        "attempt_index": attempt_index,
+                        "run_id": str(repair_run.id),
+                        "status": "execution_failed",
+                    }
+                )
                 repair_blocker = {
                     "code": "continuation_repository_changed",
                     "message": (
@@ -1456,9 +1354,7 @@ class ContinuationRunService:
                 contract,
                 repair_result.verification_results,
                 worker_succeeded=repair_result.status == "completed",
-                bundle_integrity_passed=(
-                    repair_result.runtime_bundle_integrity_passed
-                ),
+                bundle_integrity_passed=(repair_result.runtime_bundle_integrity_passed),
                 preservation_passed=repair_result.preservation_passed,
             )
             await persist_requirement_matrix(
@@ -1471,11 +1367,13 @@ class ContinuationRunService:
             run = repair_run
             result = repair_result
             matrix = repair_matrix
-            attempts.append({
-                "attempt_index": attempt_index,
-                "run_id": str(run.id),
-                "status": matrix.status,
-            })
+            attempts.append(
+                {
+                    "attempt_index": attempt_index,
+                    "run_id": str(run.id),
+                    "status": matrix.status,
+                }
+            )
             if matrix.verified:
                 break
             progress_signature = _repair_progress_signature(matrix, result)
@@ -1513,9 +1411,7 @@ class ContinuationRunService:
         await self.session.commit()
         if outcome["verified"]:
             preparation_workflow = (
-                preparation.task.get("workflow")
-                if isinstance(preparation.task, dict)
-                else None
+                preparation.task.get("workflow") if isinstance(preparation.task, dict) else None
             )
             transition = await complete_verified_execution_task(
                 self.session,
@@ -1546,18 +1442,15 @@ def _runnable_repository(
     preparation: ContinuationResult,
 ) -> tuple[str, dict[str, Any]]:
     quality_report = getattr(preparation, "quality_report", None)
-    if (
-        isinstance(quality_report, dict)
-        and quality_report.get("launchable") is False
-    ):
+    if isinstance(quality_report, dict) and quality_report.get("launchable") is False:
         raise _quality_gate_error(
             quality_report,
             current_task=preparation.objective,
         )
     readiness = str(preparation.readiness.get("status") or "").strip().lower()
-    checkpoint_status = str(
-        (preparation.checkpoint or {}).get("continuation_status") or ""
-    ).strip().lower()
+    checkpoint_status = (
+        str((preparation.checkpoint or {}).get("continuation_status") or "").strip().lower()
+    )
     if readiness not in {"ready", "review_required"} or checkpoint_status == "blocked":
         blocker = _preparation_blocker(preparation)
         raise ContinuationRunError(
@@ -1599,16 +1492,12 @@ def _repository_baseline_needs_refresh(
             for issue in raw_issues
             if isinstance(issue, dict)
             and (
-                issue.get("severity") == "blocking"
-                or issue.get("blocks_current_execution") is True
+                issue.get("severity") == "blocking" or issue.get("blocks_current_execution") is True
             )
         ]
-    blocking = [
-        issue for issue in raw_blocking if isinstance(issue, dict)
-    ]
+    blocking = [issue for issue in raw_blocking if isinstance(issue, dict)]
     return bool(blocking) and all(
-        issue.get("code") == "repository_baseline_truncated"
-        for issue in blocking
+        issue.get("code") == "repository_baseline_truncated" for issue in blocking
     )
 
 
@@ -1618,9 +1507,7 @@ async def _prepared_execution(
 ) -> tuple[ContinuationExecution, ContinuationExecutionContract]:
     try:
         execution_id = UUID(preparation.continuation_execution_id)
-        contract = ContinuationExecutionContract.model_validate(
-            preparation.execution_contract
-        )
+        contract = ContinuationExecutionContract.model_validate(preparation.execution_contract)
     except (TypeError, ValueError) as exc:
         raise ContinuationRunError(
             "continuation_execution_invalid",
@@ -1647,6 +1534,381 @@ async def _prepared_execution(
     return execution, contract
 
 
+_DESKTOP_STAGE_IMAGE_SUFFIXES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+}
+_DESKTOP_STAGE_ATTACHMENT_RETENTION_POLICY = "retain_for_idempotent_retry_and_late_desktop_open"
+
+
+def _desktop_stage_attachment_identities(
+    required_attachments: list[Mapping[str, Any]],
+    *,
+    final_root: Path,
+) -> list[dict[str, str]]:
+    identities: list[dict[str, str]] = []
+    for attachment in required_attachments:
+        attachment_id = str(attachment.get("id") or "").strip()
+        portable_reference = str(attachment.get("portable_reference") or "").strip()
+        digest = str(attachment.get("content_hash") or attachment.get("sha256") or "").casefold()
+        media_type = str(
+            attachment.get("media_type") or attachment.get("mime_type") or ""
+        ).casefold()
+        suffix = _DESKTOP_STAGE_IMAGE_SUFFIXES.get(media_type)
+        if (
+            re.fullmatch(r"A[1-9][0-9]*", attachment_id) is None
+            or portable_reference != f"handoff://attachments/{attachment_id}"
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            or suffix is None
+            or any(item["id"] == attachment_id for item in identities)
+        ):
+            raise ValueError("required attachment identity is incomplete")
+        filename = f"{attachment_id}{suffix}"
+        identities.append(
+            {
+                "id": attachment_id,
+                "portable_reference": portable_reference,
+                "receiver_local_reference": str(final_root / "attachments" / filename),
+                "sha256": digest,
+                "media_type": media_type,
+                "filename": filename,
+            }
+        )
+    return identities
+
+
+def _desktop_stage_baseline_identity(
+    session_context: Mapping[str, Any],
+    *,
+    final_root: Path,
+) -> tuple[dict[str, str], bytes] | None:
+    repository = session_context.get("repository")
+    repository = repository if isinstance(repository, Mapping) else {}
+    manifest = repository.get("protected_baseline_manifest")
+    manifest = manifest if isinstance(manifest, Mapping) else {}
+    exact_payload = {
+        "schema_version": manifest.get("schema_version"),
+        "complete": manifest.get("complete"),
+        "entry_count": manifest.get("entry_count"),
+        "git_object_format": manifest.get("git_object_format"),
+        "head_commit": manifest.get("head_commit"),
+        "entries": manifest.get("entries"),
+    }
+    try:
+        payload_bytes = json.dumps(
+            exact_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8", errors="surrogateescape")
+    except (TypeError, ValueError, UnicodeError) as exc:
+        if session_context.get("task_mode") == "change":
+            raise ValueError("exact protected baseline cannot be serialized") from exc
+        return None
+    digest = hashlib.sha256(payload_bytes).hexdigest()
+    expected_digest = str(manifest.get("manifest_sha256") or "").casefold()
+    manifest_id = str(manifest.get("id") or "")
+    portable_reference = str(manifest.get("portable_reference") or "")
+    valid = bool(
+        manifest.get("complete") is True
+        and manifest.get("integrity_valid") is True
+        and manifest.get("schema_version") == "protected_baseline.v1"
+        and isinstance(manifest.get("entries"), list)
+        and expected_digest == digest
+        and manifest_id == f"PB-{digest[:12]}"
+        and portable_reference == f"handoff://repository-snapshots/{manifest_id}"
+    )
+    if not valid:
+        if session_context.get("task_mode") == "change":
+            raise ValueError("exact protected baseline is unavailable")
+        return None
+    filename = "protected-baseline.json"
+    return (
+        {
+            "id": manifest_id,
+            "portable_reference": portable_reference,
+            "receiver_local_reference": str(final_root / filename),
+            "manifest_sha256": digest,
+            "filename": filename,
+        },
+        payload_bytes,
+    )
+
+
+def _validated_existing_desktop_stage_bundle(
+    root: Path,
+    *,
+    bundle_id: str,
+    identities: list[dict[str, str]],
+    baseline_identity: dict[str, str] | None,
+) -> tuple[dict[str, dict[str, str]], dict[str, str] | None]:
+    """Reuse only an exact, immutable contract-bound stage bundle."""
+
+    attachments_root = root / "attachments"
+    manifest_path = root / "attachments.json"
+    if (
+        root.is_symlink()
+        or not root.is_dir()
+        or attachments_root.is_symlink()
+        or not attachments_root.is_dir()
+        or manifest_path.is_symlink()
+        or not manifest_path.is_file()
+        or root.stat().st_mode & 0o022
+        or attachments_root.stat().st_mode & 0o022
+        or manifest_path.stat().st_mode & 0o222
+    ):
+        raise RuntimeBundleIntegrityError("existing desktop attachment bundle is not immutable")
+    expected_root_names = {
+        "attachments",
+        "attachments.json",
+    }
+    if baseline_identity is not None:
+        expected_root_names.add(baseline_identity["filename"])
+    if {path.name for path in root.iterdir()} != expected_root_names:
+        raise RuntimeBundleIntegrityError(
+            "existing desktop attachment bundle has unexpected contents"
+        )
+    expected_entries = [
+        {key: value for key, value in identity.items() if key != "filename"}
+        for identity in identities
+    ]
+    expected_baseline = (
+        {key: value for key, value in baseline_identity.items() if key != "filename"}
+        if baseline_identity is not None
+        else None
+    )
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeBundleIntegrityError(
+            "existing desktop attachment manifest is unreadable"
+        ) from exc
+    if manifest != {
+        "schema_version": "desktop_stage_attachments.v1",
+        "bundle_id": bundle_id,
+        "receiver_owned": True,
+        "retention_policy": _DESKTOP_STAGE_ATTACHMENT_RETENTION_POLICY,
+        "attachments": expected_entries,
+        "protected_baseline": expected_baseline,
+    }:
+        raise RuntimeBundleIntegrityError(
+            "existing desktop attachment manifest does not match the contract"
+        )
+    expected_names = {identity["filename"] for identity in identities}
+    if {path.name for path in attachments_root.iterdir()} != expected_names:
+        raise RuntimeBundleIntegrityError(
+            "existing desktop attachment files do not match the contract"
+        )
+    deliveries: dict[str, dict[str, str]] = {}
+    for identity in identities:
+        delivered_path = attachments_root / identity["filename"]
+        if (
+            delivered_path.is_symlink()
+            or not delivered_path.is_file()
+            or delivered_path.stat().st_mode & 0o222
+        ):
+            raise RuntimeBundleIntegrityError(
+                f"existing attachment {identity['id']} is not immutable"
+            )
+        verify_artifact_sha256(
+            delivered_path,
+            artifact_id=identity["id"],
+            expected_sha256=identity["sha256"],
+        )
+        deliveries[identity["id"]] = {
+            "receiver_local_reference": identity["receiver_local_reference"],
+            "sha256": identity["sha256"],
+            "media_type": identity["media_type"],
+        }
+    baseline_delivery: dict[str, str] | None = None
+    if baseline_identity is not None:
+        baseline_path = root / baseline_identity["filename"]
+        if (
+            baseline_path.is_symlink()
+            or not baseline_path.is_file()
+            or baseline_path.stat().st_mode & 0o222
+        ):
+            raise RuntimeBundleIntegrityError(
+                "existing protected-baseline manifest is not immutable"
+            )
+        verify_artifact_sha256(
+            baseline_path,
+            artifact_id=baseline_identity["id"],
+            expected_sha256=baseline_identity["manifest_sha256"],
+        )
+        baseline_delivery = {
+            key: value for key, value in baseline_identity.items() if key != "filename"
+        }
+    return deliveries, baseline_delivery
+
+
+def _materialize_desktop_stage_attachments(
+    checkpoint: WorkCheckpoint,
+    *,
+    request_verbatim: str,
+    session_context: Mapping[str, Any],
+    access_scope: AccessScope,
+    bundle_id: str,
+) -> DesktopStageAttachmentBundle | None:
+    """Deliver checkpoint evidence into a stable receiver bundle.
+
+    The contract-local ``A<n>`` reference, digest, and media type are all
+    resolved again through the checkpoint before any copied path is exposed to
+    the receiving desktop task. The exact protected-baseline payload is bound
+    to its contract SHA-256. Capture-time availability alone is never
+    presented as receiver availability. Published bundles are intentionally
+    retained: a timed-out desktop open can complete late, and exact immutable
+    reuse makes an idempotent retry safe.
+    """
+
+    required_attachments = [
+        item
+        for item in session_context.get("attachment_dependencies") or []
+        if isinstance(item, Mapping) and item.get("required") is True
+    ]
+    try:
+        canonical_bundle_id = str(UUID(str(bundle_id)))
+    except (TypeError, ValueError) as exc:
+        raise ContinuationRunError(
+            "required_stage_evidence_delivery_failed",
+            "Required handoff evidence delivery has no valid identity. No desktop app was opened.",
+            status_code=409,
+        ) from exc
+
+    bundle_parent = Path(settings.data_dir).expanduser().resolve() / "continuation-stage-artifacts"
+    final_root = bundle_parent / canonical_bundle_id
+    temporary_root = bundle_parent / (f".{canonical_bundle_id}.{uuid4().hex}.tmp")
+    temporary_attachments = temporary_root / "attachments"
+    deliveries: dict[str, dict[str, str]] = {}
+    baseline_delivery: dict[str, str] | None = None
+
+    try:
+        identities = _desktop_stage_attachment_identities(
+            required_attachments,
+            final_root=final_root,
+        )
+        baseline = _desktop_stage_baseline_identity(
+            session_context,
+            final_root=final_root,
+        )
+        baseline_identity, baseline_bytes = baseline if baseline is not None else (None, None)
+        if not identities and baseline_identity is None:
+            return None
+        bundle_parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if final_root.exists() or final_root.is_symlink():
+            deliveries, baseline_delivery = _validated_existing_desktop_stage_bundle(
+                final_root,
+                bundle_id=canonical_bundle_id,
+                identities=identities,
+                baseline_identity=baseline_identity,
+            )
+            return DesktopStageAttachmentBundle(
+                root=final_root,
+                deliveries=deliveries,
+                baseline_delivery=baseline_delivery,
+            )
+        temporary_root.mkdir(mode=0o700)
+        temporary_attachments.mkdir(mode=0o700)
+
+        manifest_entries: list[dict[str, str]] = []
+        for identity in identities:
+            resolved = resolve_handoff_attachment_reference(
+                checkpoint,
+                request_verbatim=request_verbatim,
+                portable_reference=identity["portable_reference"],
+                expected_sha256=identity["sha256"],
+                expected_media_type=identity["media_type"],
+                access_scope=access_scope,
+            )
+            temporary_path = temporary_attachments / identity["filename"]
+            copy_verified_artifact(
+                Path(resolved.path),
+                temporary_path,
+                artifact_id=identity["id"],
+                expected_sha256=identity["sha256"],
+            )
+            delivery = {
+                "receiver_local_reference": identity["receiver_local_reference"],
+                "sha256": identity["sha256"],
+                "media_type": identity["media_type"],
+            }
+            deliveries[identity["id"]] = delivery
+            manifest_entries.append(
+                {
+                    "id": identity["id"],
+                    "portable_reference": identity["portable_reference"],
+                    **delivery,
+                }
+            )
+
+        baseline_manifest_entry: dict[str, str] | None = None
+        if baseline_identity is not None and baseline_bytes is not None:
+            baseline_path = temporary_root / baseline_identity["filename"]
+            baseline_path.write_bytes(baseline_bytes)
+            verify_artifact_sha256(
+                baseline_path,
+                artifact_id=baseline_identity["id"],
+                expected_sha256=baseline_identity["manifest_sha256"],
+            )
+            baseline_path.chmod(stat.S_IRUSR)
+            baseline_delivery = {
+                key: value for key, value in baseline_identity.items() if key != "filename"
+            }
+            baseline_manifest_entry = dict(baseline_delivery)
+
+        manifest_path = temporary_root / "attachments.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "desktop_stage_attachments.v1",
+                    "bundle_id": canonical_bundle_id,
+                    "receiver_owned": True,
+                    "retention_policy": _DESKTOP_STAGE_ATTACHMENT_RETENTION_POLICY,
+                    "attachments": manifest_entries,
+                    "protected_baseline": baseline_manifest_entry,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        for path in temporary_attachments.iterdir():
+            path.chmod(stat.S_IRUSR)
+        manifest_path.chmod(stat.S_IRUSR)
+        temporary_attachments.chmod(stat.S_IRUSR | stat.S_IXUSR)
+        temporary_root.chmod(stat.S_IRUSR | stat.S_IXUSR)
+        temporary_root.replace(final_root)
+    except (OSError, RuntimeBundleIntegrityError, ValueError) as exc:
+        if temporary_root.exists() and not temporary_root.is_symlink():
+            shutil.rmtree(temporary_root, ignore_errors=True)
+        raise ContinuationRunError(
+            "required_stage_evidence_delivery_failed",
+            (
+                "Required checkpoint evidence could not be delivered as "
+                "hash-verified receiver-local bytes. No desktop app was opened."
+            ),
+            status_code=409,
+            blocker={
+                "code": "required_stage_evidence_delivery_failed",
+                "title": "Required handoff evidence delivery failed",
+                "message": (
+                    "The receiving task cannot inspect every required image or "
+                    "the exact protected baseline from verified local references."
+                ),
+                "action": "Recapture the current repository and required images, then retry Continue.",
+            },
+        ) from exc
+
+    return DesktopStageAttachmentBundle(
+        root=final_root,
+        deliveries=deliveries,
+        baseline_delivery=baseline_delivery,
+    )
+
+
 async def _canonical_session_context_for_preparation(
     session: AsyncSession,
     preparation: ContinuationResult,
@@ -1658,11 +1920,7 @@ async def _canonical_session_context_for_preparation(
 ) -> dict[str, Any]:
     """Compile the canonical latest-checkpoint Session Context for Continue."""
 
-    checkpoint_summary = (
-        preparation.checkpoint
-        if isinstance(preparation.checkpoint, dict)
-        else {}
-    )
+    checkpoint_summary = preparation.checkpoint if isinstance(preparation.checkpoint, dict) else {}
     checkpoint_id = str(checkpoint_summary.get("id") or "").strip()
     try:
         parsed_checkpoint_id = UUID(checkpoint_id)
@@ -1715,32 +1973,24 @@ async def _canonical_session_context_for_preparation(
     )
     effective_request_verbatim = continuation_lead or request_verbatim
     historical_goal = (
-        preparation.task.get("historical_goal")
-        if isinstance(preparation.task, dict)
-        else None
+        preparation.task.get("historical_goal") if isinstance(preparation.task, dict) else None
     )
     historical_request_sha256 = hashlib.sha256(
         str(request_verbatim or "").encode("utf-8")
     ).hexdigest()
     historical_request_matches = (
-        (
-            continuation_lead is None
-            and contract.task.request_sha256 == historical_request_sha256
-        )
-        or (
-            continuation_lead is not None
-            and isinstance(historical_goal, Mapping)
-            and historical_goal.get("request_sha256")
-            == historical_request_sha256
-        )
+        continuation_lead is None and contract.task.request_sha256 == historical_request_sha256
+    ) or (
+        continuation_lead is not None
+        and isinstance(historical_goal, Mapping)
+        and historical_goal.get("request_sha256") == historical_request_sha256
     )
     if (
         not request_verbatim
         or not effective_request_verbatim
         or not historical_request_matches
-        or hashlib.sha256(
-            effective_request_verbatim.encode("utf-8")
-        ).hexdigest() != contract.task.request_sha256
+        or hashlib.sha256(effective_request_verbatim.encode("utf-8")).hexdigest()
+        != contract.task.request_sha256
     ):
         raise ContinuationRunError(
             "continuation_lead_mismatch",
@@ -1757,13 +2007,11 @@ async def _canonical_session_context_for_preparation(
         request_verbatim=request_verbatim,
         access_scope=access_scope,
     )
-    attachment_descriptors = (
-        await resolve_session_handoff_attachment_descriptors(
-            session,
-            checkpoint,
-            request_verbatim=request_verbatim,
-            access_scope=access_scope,
-        )
+    attachment_descriptors = await resolve_session_handoff_attachment_descriptors(
+        session,
+        checkpoint,
+        request_verbatim=request_verbatim,
+        access_scope=access_scope,
     )
     current_projection = (
         await checkpoints_to_dicts(
@@ -1793,6 +2041,34 @@ async def _canonical_session_context_for_preparation(
             repository_comparison=repository_comparison,
             continuation_lead=continuation_lead,
         )
+        attachment_bundle = _materialize_desktop_stage_attachments(
+            checkpoint,
+            request_verbatim=request_verbatim,
+            session_context=artifact,
+            access_scope=access_scope,
+            bundle_id=str(contract.id),
+        )
+        if attachment_bundle is not None:
+            artifact = build_session_handoff_artifact(
+                checkpoint,
+                request_verbatim=request_verbatim,
+                supporting_context=supporting_context,
+                trusted_attachment_descriptors=attachment_descriptors,
+                allow_local_artifacts=access_scope.principal_id == "local",
+                checkpoint_data=checkpoint_data,
+                repository_comparison=repository_comparison,
+                continuation_lead=continuation_lead,
+                receiver_attachment_deliveries=attachment_bundle.deliveries,
+                receiver_baseline_delivery=attachment_bundle.baseline_delivery,
+            )
+            artifact["receiver_attachment_bundle"] = {
+                "schema_version": "desktop_stage_attachments.v1",
+                "root": str(attachment_bundle.root),
+                "receiver_owned": True,
+                "retention_policy": _DESKTOP_STAGE_ATTACHMENT_RETENTION_POLICY,
+            }
+    except ContinuationRunError:
+        raise
     except ValueError as exc:
         raise ContinuationRunError(
             "session_context_unavailable",
@@ -1801,13 +2077,11 @@ async def _canonical_session_context_for_preparation(
         ) from exc
     handoff_mode = str(artifact.get("task_mode") or "")
     handoff_filesystem_mode = str(
-        (artifact.get("execution_policy") or {}).get("permission_mode")
-        or ""
+        (artifact.get("execution_policy") or {}).get("permission_mode") or ""
     )
     if (
         handoff_mode != contract.task_mode.value
-        or handoff_filesystem_mode
-        != contract.authority.filesystem_mode.value
+        or handoff_filesystem_mode != contract.authority.filesystem_mode.value
     ):
         raise ContinuationRunError(
             "continuation_authority_mismatch",
@@ -1838,9 +2112,7 @@ def _staging_context_for_preparation(
     """
 
     project_context = (
-        preparation.project_context
-        if isinstance(preparation.project_context, dict)
-        else {}
+        preparation.project_context if isinstance(preparation.project_context, dict) else {}
     )
     quality_issues = [
         issue
@@ -1854,49 +2126,33 @@ def _staging_context_for_preparation(
     blocking_stage_issues = [
         issue
         for issue in quality_issues
-        if str(issue.get("code") or "")
-        not in _DESKTOP_STAGE_ADVISORY_QUALITY_CODES
+        if str(issue.get("code") or "") not in _DESKTOP_STAGE_ADVISORY_QUALITY_CODES
     ]
     advisory_only = bool(quality_issues) and not blocking_stage_issues
     rendered_project_context = render_continuation_staging_context(contract)
     expected_content = str(project_context.get("content") or "")
     expected_sha256 = str(project_context.get("sha256") or "").strip()
-    content_sha256 = hashlib.sha256(
-        rendered_project_context.encode("utf-8")
-    ).hexdigest()
+    content_sha256 = hashlib.sha256(rendered_project_context.encode("utf-8")).hexdigest()
     structurally_safe = (
-        project_context.get("schema_version")
-        == STAGING_CONTEXT_SCHEMA_VERSION
+        project_context.get("schema_version") == STAGING_CONTEXT_SCHEMA_VERSION
         and project_context.get("scope") == "project"
         and not blocking_stage_issues
-        and (
-            project_context.get("copy_ready") is True
-            or advisory_only
-        )
+        and (project_context.get("copy_ready") is True or advisory_only)
         and bool(expected_content.strip())
         and expected_content == rendered_project_context
         and expected_sha256 == content_sha256
     )
     lead_matches = contract.task.request_verbatim == expected_lead
     staged_continuation_lead = session_context.get("continuation_lead")
-    continuation_lead_matches = (
-        (
-            not continuation_lead
-            and not staged_continuation_lead
-        )
-        or (
-            bool(continuation_lead)
-            and isinstance(staged_continuation_lead, Mapping)
-            and staged_continuation_lead.get("request_verbatim")
-            == continuation_lead
-            and staged_continuation_lead.get("request_sha256")
-            == hashlib.sha256(continuation_lead.encode("utf-8")).hexdigest()
-        )
+    continuation_lead_matches = (not continuation_lead and not staged_continuation_lead) or (
+        bool(continuation_lead)
+        and isinstance(staged_continuation_lead, Mapping)
+        and staged_continuation_lead.get("request_verbatim") == continuation_lead
+        and staged_continuation_lead.get("request_sha256")
+        == hashlib.sha256(continuation_lead.encode("utf-8")).hexdigest()
     )
     authoritative_session_task = (
-        staged_continuation_lead
-        if continuation_lead
-        else session_context.get("current_goal")
+        staged_continuation_lead if continuation_lead else session_context.get("current_goal")
     )
     session_content = str(session_context.get("content") or "")
     session_sha256 = str(session_context.get("sha256") or "").strip()
@@ -1906,14 +2162,10 @@ def _staging_context_for_preparation(
         else {}
     )
     session_issues = [
-        issue
-        for issue in session_quality.get("blocking_issues", [])
-        if isinstance(issue, Mapping)
+        issue for issue in session_quality.get("blocking_issues", []) if isinstance(issue, Mapping)
     ]
     source_session = (
-        preparation.source_session
-        if isinstance(preparation.source_session, dict)
-        else {}
+        preparation.source_session if isinstance(preparation.source_session, dict) else {}
     )
     session_identity_matches = (
         str(session_context.get("provider") or "").strip().lower()
@@ -1922,25 +2174,17 @@ def _staging_context_for_preparation(
         == str(source_session.get("session_id") or "").strip()
     )
     session_is_safe = (
-        session_context.get("schema_version")
-        == SESSION_HANDOFF_SCHEMA_VERSION
+        session_context.get("schema_version") == SESSION_HANDOFF_SCHEMA_VERSION
         and session_context.get("scope") == "session"
         and session_quality.get("copy_ready") is True
         and not session_issues
         and bool(session_content.strip())
-        and session_sha256
-        == hashlib.sha256(session_content.encode("utf-8")).hexdigest()
+        and session_sha256 == hashlib.sha256(session_content.encode("utf-8")).hexdigest()
         and session_identity_matches
         and isinstance(authoritative_session_task, Mapping)
-        and authoritative_session_task.get("request_sha256")
-        == contract.task.request_sha256
+        and authoritative_session_task.get("request_sha256") == contract.task.request_sha256
     )
-    if (
-        structurally_safe
-        and lead_matches
-        and continuation_lead_matches
-        and session_is_safe
-    ):
+    if structurally_safe and lead_matches and continuation_lead_matches and session_is_safe:
         return session_content
 
     issue_message = next(
@@ -1951,21 +2195,17 @@ def _staging_context_for_preparation(
         ),
         "",
     )
-    message = (
-        issue_message
-        or (
-            "The compiled Session Context does not match the supplied "
-            "immediate lead."
-            if not lead_matches or not continuation_lead_matches
+    message = issue_message or (
+        "The compiled Session Context does not match the supplied immediate lead."
+        if not lead_matches or not continuation_lead_matches
+        else (
+            "The canonical latest-session Session Context failed its "
+            "copy-safety, identity, or integrity checks."
+            if not session_is_safe
             else (
-                "The canonical latest-session Session Context failed its "
-                "copy-safety, identity, or integrity checks."
-                if not session_is_safe
-                else (
-                    "Session Context could not safely inherit the compiled "
-                    "Workspace Context because its copy-safety or integrity "
-                    "checks failed."
-                )
+                "Session Context could not safely inherit the compiled "
+                "Workspace Context because its copy-safety or integrity "
+                "checks failed."
             )
         )
     )
@@ -2001,9 +2241,7 @@ def _staging_context_for_preparation(
                 "Capture fresh Session Context for the exact immediate lead "
                 "before loading it into a harness."
             ),
-            "affected_tasks": [_bounded_task(
-                continuation_lead or expected_lead
-            )],
+            "affected_tasks": [_bounded_task(continuation_lead or expected_lead)],
             "quality_issues": [*quality_issues, *session_issues],
         },
     )
@@ -2014,11 +2252,7 @@ def _quality_gate_error(
     *,
     current_task: str,
 ) -> ContinuationRunError:
-    issues = [
-        issue
-        for issue in report.get("issues", [])
-        if isinstance(issue, dict)
-    ]
+    issues = [issue for issue in report.get("issues", []) if isinstance(issue, dict)]
     message = (
         str(issues[0].get("message") or "").strip()
         if issues
@@ -2043,26 +2277,19 @@ def _quality_gate_error(
 
 
 def _preparation_blocker(preparation: ContinuationResult) -> dict[str, Any]:
-    readiness = (
-        preparation.readiness
-        if isinstance(preparation.readiness, dict)
-        else {}
-    )
+    readiness = preparation.readiness if isinstance(preparation.readiness, dict) else {}
     readiness_issues = readiness.get("blocking_issues")
     if isinstance(readiness_issues, list):
         exact_issue = next(
             (
                 issue
                 for issue in readiness_issues
-                if isinstance(issue, dict)
-                and issue.get("blocks_current_execution", True)
+                if isinstance(issue, dict) and issue.get("blocks_current_execution", True)
             ),
             None,
         )
         if exact_issue is not None:
-            code = str(
-                exact_issue.get("code") or "continuation_preparation_blocked"
-            ).strip()
+            code = str(exact_issue.get("code") or "continuation_preparation_blocked").strip()
             message = str(
                 exact_issue.get("message")
                 or exact_issue.get("statement")
@@ -2091,21 +2318,12 @@ def _preparation_blocker(preparation: ContinuationResult) -> dict[str, Any]:
             (
                 item
                 for item in attention
-                if isinstance(item, dict)
-                and str(item.get("severity") or "").lower() == "error"
+                if isinstance(item, dict) and str(item.get("severity") or "").lower() == "error"
             ),
             None,
         )
-    message = (
-        str(blocking_attention.get("message") or "").strip()
-        if blocking_attention
-        else ""
-    )
-    code = (
-        str(blocking_attention.get("code") or "").strip()
-        if blocking_attention
-        else ""
-    )
+    message = str(blocking_attention.get("message") or "").strip() if blocking_attention else ""
+    code = str(blocking_attention.get("code") or "").strip() if blocking_attention else ""
     if not message:
         message = "Checkpoint verification failed; continuation was not started."
     if not code:
@@ -2125,11 +2343,7 @@ def _preparation_blocker_title(
     issue: dict[str, Any],
 ) -> str:
     blocker = issue.get("blocker")
-    blocker_title = (
-        str(blocker.get("title") or "").strip()
-        if isinstance(blocker, dict)
-        else ""
-    )
+    blocker_title = str(blocker.get("title") or "").strip() if isinstance(blocker, dict) else ""
     normalized = code.casefold()
     if blocker_title and "dependency" in normalized:
         return f"{blocker_title} blocks this continuation"
@@ -2150,11 +2364,7 @@ def _preparation_blocker_action(
     code: str,
     issue: dict[str, Any],
 ) -> str:
-    explicit = str(
-        issue.get("action")
-        or issue.get("recovery_action")
-        or ""
-    ).strip()
+    explicit = str(issue.get("action") or issue.get("recovery_action") or "").strip()
     if explicit:
         return explicit[:500]
     normalized = code.casefold()
@@ -2169,11 +2379,7 @@ def _preparation_blocker_action(
 
 def _issue_provider(issue: dict[str, Any]) -> str | None:
     applicability = issue.get("applicability")
-    providers = (
-        applicability.get("providers")
-        if isinstance(applicability, dict)
-        else None
-    )
+    providers = applicability.get("providers") if isinstance(applicability, dict) else None
     if isinstance(providers, list) and len(providers) == 1:
         provider = str(providers[0] or "").strip()
         return provider or None
@@ -2188,17 +2394,15 @@ def _preparation_affected_task_titles(
     workflow = task.get("workflow")
     candidates: list[Any] = []
     source_session = getattr(preparation, "source_session", None)
-    source_title = (
-        source_session.get("title")
-        if isinstance(source_session, dict)
-        else None
-    )
+    source_title = source_session.get("title") if isinstance(source_session, dict) else None
     if isinstance(workflow, dict):
-        candidates.extend([
-            workflow.get("execution_task"),
-            workflow.get("selected_intent"),
-            *(workflow.get("affected_tasks") or []),
-        ])
+        candidates.extend(
+            [
+                workflow.get("execution_task"),
+                workflow.get("selected_intent"),
+                *(workflow.get("affected_tasks") or []),
+            ]
+        )
     if not any(candidates) and is_substantive_user_request(source_title):
         candidates.append(source_title)
     if not candidates:
@@ -2211,9 +2415,7 @@ def _preparation_affected_task_titles(
             if isinstance(candidate, dict)
             else candidate
         )
-        raw_title = " ".join(
-            str(normalize_substantive_user_request(value) or "").split()
-        )
+        raw_title = " ".join(str(normalize_substantive_user_request(value) or "").split())
         if not raw_title or not is_substantive_user_request(raw_title):
             continue
         title = _bounded_task(raw_title)
@@ -2237,16 +2439,10 @@ async def _refreshed_workflow_after_transition(
 ) -> dict[str, Any] | None:
     if transition.get("status") not in {"completed", "already_completed"}:
         return None
-    selected = (
-        workflow.get("selected_intent")
-        if isinstance(workflow, dict)
-        else None
-    )
+    selected = workflow.get("selected_intent") if isinstance(workflow, dict) else None
     if not isinstance(selected, dict):
         return None
-    selected_objective = str(
-        selected.get("objective") or selected.get("title") or ""
-    ).strip()
+    selected_objective = str(selected.get("objective") or selected.get("title") or "").strip()
     if not selected_objective:
         return None
     try:
@@ -2298,22 +2494,16 @@ def _continuation_stage_request_sha256(
             artifact_payloads.append(dict(artifact))
         else:
             artifact_payloads.append({"value": str(artifact)})
-    normalized_task_mode = (
-        task_mode.value if isinstance(task_mode, TaskMode) else task_mode
-    )
+    normalized_task_mode = task_mode.value if isinstance(task_mode, TaskMode) else task_mode
     canonical = json.dumps(
         {
             "repo_path": repo_path,
             "objective": objective,
             "objective_is_user_edited": objective_is_user_edited,
             "continuation_lead": continuation_lead,
-            "checkpoint_id": (
-                str(checkpoint_id) if checkpoint_id is not None else None
-            ),
+            "checkpoint_id": (str(checkpoint_id) if checkpoint_id is not None else None),
             "checkpoint_source_id": (
-                str(checkpoint_source_id)
-                if checkpoint_source_id is not None
-                else None
+                str(checkpoint_source_id) if checkpoint_source_id is not None else None
             ),
             "source_provider": source_provider,
             "source_session_id": source_session_id,
@@ -2341,9 +2531,7 @@ def _continuation_stage_json_default(value: object) -> str:
         return str(enum_value)
     if isinstance(value, UUID):
         return str(value)
-    raise TypeError(
-        f"Object of type {type(value).__name__} is not JSON serializable"
-    )
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 async def _continuation_stage_request(
@@ -2419,19 +2607,14 @@ async def _claim_continuation_stage_request(
             select(ContinuationStageRequest)
             .where(
                 ContinuationStageRequest.workspace_id == workspace_id,
-                ContinuationStageRequest.status.in_(
-                    ("pending", "succeeded", "failed")
-                ),
+                ContinuationStageRequest.status.in_(("pending", "succeeded", "failed")),
             )
             .limit(1)
         )
         if current is not None:
             raise ContinuationRunError(
                 "desktop_handoff_changed",
-                (
-                    "Another desktop handoff request won the race. "
-                    "No second open request was sent."
-                ),
+                ("Another desktop handoff request won the race. No second open request was sent."),
                 status_code=409,
             )
         raise
@@ -2506,9 +2689,7 @@ def _continuation_stage_pending_expired(
     updated_at = request.updated_at or request.created_at
     if updated_at is None:
         return True
-    cutoff = (now or utc_now()) - timedelta(
-        seconds=CONTINUATION_STAGE_PENDING_LEASE_SECONDS
-    )
+    cutoff = (now or utc_now()) - timedelta(seconds=CONTINUATION_STAGE_PENDING_LEASE_SECONDS)
     return updated_at <= cutoff
 
 
@@ -2587,23 +2768,13 @@ def _replay_continuation_stage_request(
                 )
             ),
             status_code=int(payload.get("status_code") or 409),
-            blocker=(
-                payload.get("blocker")
-                if isinstance(payload.get("blocker"), dict)
-                else None
-            ),
+            blocker=(payload.get("blocker") if isinstance(payload.get("blocker"), dict) else None),
             readiness=(
-                payload.get("readiness")
-                if isinstance(payload.get("readiness"), dict)
-                else None
+                payload.get("readiness") if isinstance(payload.get("readiness"), dict) else None
             ),
         )
-    if (
-        request.status == "abandoned_uncertain"
-        or (
-            request.status == "pending"
-            and _continuation_stage_pending_expired(request)
-        )
+    if request.status == "abandoned_uncertain" or (
+        request.status == "pending" and _continuation_stage_pending_expired(request)
     ):
         raise _uncertain_continuation_stage_error(request)
     raise ContinuationRunError(
@@ -2656,9 +2827,7 @@ def _continuation_run_key(
 ) -> str:
     if not idempotency_key:
         return f"continuation:{uuid4()}"
-    digest = hashlib.sha256(
-        f"{workspace_id}:{idempotency_key}".encode("utf-8")
-    ).hexdigest()
+    digest = hashlib.sha256(f"{workspace_id}:{idempotency_key}".encode("utf-8")).hexdigest()
     return f"continuation:{digest}"
 
 
@@ -2731,9 +2900,7 @@ async def awaiting_continuation_handoff(
         select(ContinuationStageRequest)
         .where(
             ContinuationStageRequest.workspace_id == workspace_id,
-            ContinuationStageRequest.status.in_(
-                ("pending", "succeeded", "failed")
-            ),
+            ContinuationStageRequest.status.in_(("pending", "succeeded", "failed")),
         )
         .execution_options(populate_existing=True)
         .order_by(
@@ -2745,11 +2912,7 @@ async def awaiting_continuation_handoff(
     if latest_desktop_request is not None:
         # A later failed or pending request must not resurrect an older
         # successful dispatch as the workspace's current handoff.
-        return (
-            latest_desktop_request
-            if latest_desktop_request.status == "succeeded"
-            else None
-        )
+        return latest_desktop_request if latest_desktop_request.status == "succeeded" else None
     return await session.scalar(
         select(AgentRun)
         .options(selectinload(AgentRun.observations))
@@ -2771,16 +2934,18 @@ async def reconcile_awaiting_continuation_handoffs(
 ) -> int:
     """Close waiting state after an imported user message activates the thread."""
 
-    runs = list(await session.scalars(
-        select(AgentRun)
-        .where(
-            AgentRun.workspace_id == workspace_id,
-            AgentRun.status == "awaiting_user",
-            AgentRun.provider_session_id.is_not(None),
-            AgentRun.run_key.like("continuation:%"),
+    runs = list(
+        await session.scalars(
+            select(AgentRun)
+            .where(
+                AgentRun.workspace_id == workspace_id,
+                AgentRun.status == "awaiting_user",
+                AgentRun.provider_session_id.is_not(None),
+                AgentRun.run_key.like("continuation:%"),
+            )
+            .order_by(AgentRun.started_at, AgentRun.id)
         )
-        .order_by(AgentRun.started_at, AgentRun.id)
-    ))
+    )
     reconciled = 0
     for run in runs:
         tool = str(run.tool or "").strip().lower()
@@ -2827,11 +2992,7 @@ def staged_continuation_payload(
         if not isinstance(payload, dict):
             return None
         delivery = payload.get("delivery")
-        harness_session = (
-            delivery.get("harness_session")
-            if isinstance(delivery, dict)
-            else None
-        )
+        harness_session = delivery.get("harness_session") if isinstance(delivery, dict) else None
         if (
             payload.get("status") != "awaiting_user"
             or not isinstance(harness_session, dict)
@@ -2849,8 +3010,7 @@ def staged_continuation_payload(
             return None
         restored_payload = {
             "schema_version": str(
-                payload.get("schema_version")
-                or CONTINUATION_STAGE_SCHEMA_VERSION
+                payload.get("schema_version") or CONTINUATION_STAGE_SCHEMA_VERSION
             ),
             "status": "awaiting_user",
             "execution_started": False,
@@ -2884,9 +3044,7 @@ def staged_continuation_payload(
             "context_delivery": session.get("context_delivery"),
             "context_schema_version": session.get("context_schema_version"),
             "execution_started": False,
-            "activation_boundary_verified": (
-                session.get("activation_boundary_verified") is True
-            ),
+            "activation_boundary_verified": (session.get("activation_boundary_verified") is True),
             "observed_turn_count": session.get("observed_turn_count", 0),
             "activation": "next_user_turn",
             "harness_session": session,
@@ -2897,9 +3055,7 @@ def staged_continuation_payload(
             "model": run.model,
             "objective": run.objective,
             "status": run.status,
-            "started_at": (
-                run.started_at.isoformat() if run.started_at else None
-            ),
+            "started_at": (run.started_at.isoformat() if run.started_at else None),
             "provider_session_id": run.provider_session_id,
             "execution_started": False,
         },
@@ -2922,16 +3078,8 @@ def _compact_staged_continuation_identity(
     """Retain the source identity needed to reject stale restored handoffs."""
 
     preparation = payload.get("preparation")
-    manifest = (
-        preparation.get("manifest")
-        if isinstance(preparation, Mapping)
-        else None
-    )
-    continuation = (
-        manifest.get("continuation")
-        if isinstance(manifest, Mapping)
-        else None
-    )
+    manifest = preparation.get("manifest") if isinstance(preparation, Mapping) else None
+    continuation = manifest.get("continuation") if isinstance(manifest, Mapping) else None
     if not isinstance(continuation, Mapping):
         continuation = {}
     run_payload = payload.get("run")
@@ -3006,8 +3154,7 @@ def _active_run_error(run: AgentRun) -> ContinuationRunError:
             "title": "Continuation already running",
             "provider": active.get("provider"),
             "message": (
-                f"{provider} is still working on this continuation. "
-                "No duplicate agent was started."
+                f"{provider} is still working on this continuation. No duplicate agent was started."
             ),
             "action": "Wait for the active run to finish, then retry if needed.",
             "affected_tasks": [objective],
@@ -3036,14 +3183,10 @@ async def provider_readiness(
     ):
         return list(_provider_readiness_cache[2])
 
-    composer_results = await asyncio.gather(*(
-        _bounded_composer_readiness(provider)
-        for provider in PROVIDER_PREFERENCE
-    ))
-    providers = [
-        _composer_provider_readiness(readiness)
-        for readiness in composer_results
-    ]
+    composer_results = await asyncio.gather(
+        *(_bounded_composer_readiness(provider) for provider in PROVIDER_PREFERENCE)
+    )
+    providers = [_composer_provider_readiness(readiness) for readiness in composer_results]
     _provider_readiness_cache = (
         monotonic() + PROVIDER_READINESS_CACHE_SECONDS,
         cache_key,
@@ -3128,8 +3271,7 @@ def _composer_provider_readiness(
         model_catalog_source=readiness.model_catalog_source,
         capabilities={
             "desktop_dispatch_available": (
-                readiness.desktop_available
-                and readiness.url_scheme_registered
+                readiness.desktop_available and readiness.url_scheme_registered
             ),
             "account_access_probe_supported": provider == "codex",
         },
@@ -3177,13 +3319,15 @@ def _visible_provider_readiness(
         "capabilities": cli.capabilities,
     }
     if cli.ready and not visibility.ready:
-        values.update({
-            "ready": False,
-            "status": "unavailable",
-            "code": visibility.code,
-            "message": visibility.message,
-            "action": visibility.action,
-        })
+        values.update(
+            {
+                "ready": False,
+                "status": "unavailable",
+                "code": visibility.code,
+                "message": visibility.message,
+                "action": visibility.action,
+            }
+        )
     return ProviderReadiness(**values)
 
 
@@ -3198,29 +3342,30 @@ async def _select_ready_invocation(
     affected_tasks: list[str] | None = None,
 ) -> HarnessInvocation:
     normalized_target = _target_provider(target_provider)
-    candidates = (
-        PROVIDER_PREFERENCE
-        if normalized_target == "auto"
-        else (normalized_target,)
-    )
+    candidates = PROVIDER_PREFERENCE if normalized_target == "auto" else (normalized_target,)
     selected_models = tuple(
-        continuation_provider_model(provider, provider_model)
-        for provider in candidates
+        continuation_provider_model(provider, provider_model) for provider in candidates
     )
-    readiness_results = list(await asyncio.gather(*(
-        _readiness_for(provider, provider_model=selected_model)
-        for provider, selected_model in zip(
+    readiness_results = list(
+        await asyncio.gather(
+            *(
+                _readiness_for(provider, provider_model=selected_model)
+                for provider, selected_model in zip(
+                    candidates,
+                    selected_models,
+                    strict=True,
+                )
+            )
+        )
+    )
+    for index, (provider, selected_model, readiness) in enumerate(
+        zip(
             candidates,
             selected_models,
+            readiness_results,
             strict=True,
         )
-    )))
-    for index, (provider, selected_model, readiness) in enumerate(zip(
-        candidates,
-        selected_models,
-        readiness_results,
-        strict=True,
-    )):
+    ):
         if not readiness.ready:
             continue
         unsupported = [
@@ -3259,13 +3404,9 @@ async def _select_ready_invocation(
                 status="unavailable",
                 code="provider_cli_not_found",
                 message=(
-                    f"{PROVIDER_DISPLAY_NAMES[provider]} CLI disappeared "
-                    "after its readiness check."
+                    f"{PROVIDER_DISPLAY_NAMES[provider]} CLI disappeared after its readiness check."
                 ),
-                action=(
-                    f"Install the {PROVIDER_DISPLAY_NAMES[provider]} CLI "
-                    "and try again."
-                ),
+                action=(f"Install the {PROVIDER_DISPLAY_NAMES[provider]} CLI and try again."),
             )
             if normalized_target != "auto":
                 raise _provider_readiness_error(
@@ -3287,15 +3428,10 @@ async def _select_ready_invocation(
             explicit=True,
             affected_tasks=affected_tasks,
         )
-    provider_summaries = "; ".join(
-        f"{item.provider}: {item.message}" for item in readiness_results
-    )
+    provider_summaries = "; ".join(f"{item.provider}: {item.message}" for item in readiness_results)
     raise ContinuationRunError(
         "continuation_provider_unavailable",
-        (
-            "No supported local agent is both installed and authenticated. "
-            f"{provider_summaries}"
-        ),
+        (f"No supported local agent is both installed and authenticated. {provider_summaries}"),
         status_code=409,
         blocker={
             "code": "continuation_provider_unavailable",
@@ -3329,10 +3465,7 @@ def _provider_readiness_error(
     selection = "selected" if explicit else "available"
     return ContinuationRunError(
         "continuation_provider_not_ready",
-        (
-            f"The {selection} provider is not ready: "
-            f"{readiness.message}"
-        ),
+        (f"The {selection} provider is not ready: {readiness.message}"),
         status_code=409,
         readiness=readiness.to_dict(),
         blocker={
@@ -3369,21 +3502,15 @@ def _harness_visibility_evidence(state: dict[str, Any]) -> dict[str, Any]:
         )
     elif activity_observed:
         status = "activity_observed"
-        message = (
-            "Renderable provider activity was observed; visible navigation was "
-            "not verified."
-        )
+        message = "Renderable provider activity was observed; visible navigation was not verified."
     else:
         status = "session_captured"
         message = (
-            "The provider session was captured; visible execution was not "
-            "independently observed."
+            "The provider session was captured; visible execution was not independently observed."
         )
     return {
         "status": status,
-        "visible_execution_observed": (
-            navigation_verified and activity_observed
-        ),
+        "visible_execution_observed": (navigation_verified and activity_observed),
         "renderable_activity_observed": activity_observed,
         "navigation_requested": navigation_requested,
         "navigation_verified": navigation_verified,
@@ -3409,24 +3536,20 @@ def _repairable(
         or not session_id
     ):
         return False
-    return any(
-        item.required and item.status == "failed"
-        for item in matrix.evidence
-    )
+    return any(item.required and item.status == "failed" for item in matrix.evidence)
 
 
 def _repair_progress_signature(
     matrix: RequirementVerificationMatrix,
     result: LocalHarnessResult,
 ) -> tuple[tuple[tuple[str, str], ...], str]:
-    unmet = tuple(sorted(
-        (item.requirement_id, item.status)
-        for item in matrix.requirements
-        if (
-            item.priority == "must"
-            and item.status != "passed"
+    unmet = tuple(
+        sorted(
+            (item.requirement_id, item.status)
+            for item in matrix.requirements
+            if (item.priority == "must" and item.status != "passed")
         )
-    ))
+    )
     return unmet, result.repository_after.status_fingerprint
 
 
@@ -3442,10 +3565,7 @@ def _contract_outcome(
     payload = matrix.to_dict()
     blocker = blocker_override or matrix.blocker
     if matrix.status == "execution_failed":
-        failed_count = sum(
-            item.status == "failed"
-            for item in matrix.evidence
-        )
+        failed_count = sum(item.status == "failed" for item in matrix.evidence)
         blocker = _failed_run_blocker(
             result,
             provider=provider,
@@ -3494,10 +3614,7 @@ def _contract_outcome(
             "total": len(checks),
             "passed": sum(item["status"] == "passed" for item in checks),
             "failed": sum(item["status"] == "failed" for item in checks),
-            "unproven": sum(
-                item["status"] not in {"passed", "failed"}
-                for item in checks
-            ),
+            "unproven": sum(item["status"] not in {"passed", "failed"} for item in checks),
             "items": checks,
         },
         **({"blocker": blocker} if blocker is not None else {}),
@@ -3508,11 +3625,7 @@ def _terminal_contract_status(
     matrix_status: str,
     blocker: Mapping[str, Any] | None,
 ) -> str:
-    code = (
-        str(blocker.get("code") or "").strip()
-        if isinstance(blocker, Mapping)
-        else ""
-    )
+    code = str(blocker.get("code") or "").strip() if isinstance(blocker, Mapping) else ""
     if code in EXTERNAL_BLOCKER_CODES:
         return "blocked_external"
     if code in AMBIGUITY_BLOCKER_CODES:
@@ -3527,21 +3640,21 @@ def _outcome(
     current_task: str,
     affected_tasks: list[str] | None = None,
 ) -> dict[str, Any]:
-    agent_changed_files = tuple(
-        getattr(result, "agent_changed_files", result.changed_files)
-    )
+    agent_changed_files = tuple(getattr(result, "agent_changed_files", result.changed_files))
     check_items = []
     for verification in result.verification_results:
         command_result = verification.result
         passed = command_result.exit_code == 0 and not command_result.timed_out
-        check_items.append({
-            "requirement_id": verification.requirement_id,
-            "command": verification.command,
-            "cwd": verification.cwd,
-            "status": "passed" if passed else "failed",
-            "exit_code": command_result.exit_code,
-            "timed_out": command_result.timed_out,
-        })
+        check_items.append(
+            {
+                "requirement_id": verification.requirement_id,
+                "command": verification.command,
+                "cwd": verification.cwd,
+                "status": "passed" if passed else "failed",
+                "exit_code": command_result.exit_code,
+                "timed_out": command_result.timed_out,
+            }
+        )
     passed_count = sum(item["status"] == "passed" for item in check_items)
     failed_count = sum(item["status"] == "failed" for item in check_items)
     if failed_count:
@@ -3562,7 +3675,8 @@ def _outcome(
         )
         status = (
             "blocked_external"
-            if blocker["code"] in {
+            if blocker["code"]
+            in {
                 "provider_authentication_failed",
                 "provider_authentication_revoked",
                 "provider_billing_required",
@@ -3623,8 +3737,7 @@ def _failed_run_blocker(
         code = "provider_invocation_invalid"
         message = invocation_failure
         action = (
-            "Update DaemonState to the corrected OpenCode invocation and "
-            "retry the continuation."
+            "Update DaemonState to the corrected OpenCode invocation and retry the continuation."
         )
     elif cli_failure is not None:
         code = "provider_cli_update_required"
@@ -3645,21 +3758,13 @@ def _failed_run_blocker(
         )
     elif service_failure is not None:
         code = "provider_service_unavailable"
-        http_detail = (
-            f" (HTTP {service_failure})"
-            if service_failure
-            else ""
-        )
-        message = (
-            "OpenCode's selected model provider is temporarily unavailable"
-            f"{http_detail}."
-        )
+        http_detail = f" (HTTP {service_failure})" if service_failure else ""
+        message = f"OpenCode's selected model provider is temporarily unavailable{http_detail}."
         action = "Retry later or choose another configured model."
     elif auth_failure == "revoked":
         code = "provider_authentication_revoked"
         message = (
-            f"{display_name} authentication failed because its OAuth token "
-            "has been revoked (401)."
+            f"{display_name} authentication failed because its OAuth token has been revoked (401)."
         )
         action = PROVIDER_AUTH_ACTIONS[provider]
     elif auth_failure == "authentication":
@@ -3700,18 +3805,12 @@ def _provider_billing_failure(
         return False
 
     stdout = str(getattr(command_result, "stdout", "") or "")
-    if any(
-        _billing_failure_text(error_text)
-        for error_text in _structured_error_details(stdout)
-    ):
+    if any(_billing_failure_text(error_text) for error_text in _structured_error_details(stdout)):
         return True
 
     stderr = str(getattr(command_result, "stderr", "") or "")
     normalized_stderr = stderr.casefold()
-    return (
-        "creditserror" in normalized_stderr
-        and _billing_failure_text(stderr)
-    )
+    return "creditserror" in normalized_stderr and _billing_failure_text(stderr)
 
 
 def _billing_failure_text(value: str) -> bool:
@@ -3785,15 +3884,16 @@ def _provider_invocation_failure(
     exit_code = getattr(command_result, "exit_code", None)
     if not isinstance(exit_code, int) or exit_code == 0:
         return None
-    output = "\n".join((
-        str(getattr(command_result, "stdout", "") or ""),
-        str(getattr(command_result, "stderr", "") or ""),
-    )).casefold()
+    output = "\n".join(
+        (
+            str(getattr(command_result, "stdout", "") or ""),
+            str(getattr(command_result, "stderr", "") or ""),
+        )
+    ).casefold()
     if (
         "file not found:" in output
         and "continue the task using the attached " in output
-        and " context pack. verify the current repository state before editing"
-        in output
+        and " context pack. verify the current repository state before editing" in output
     ):
         return (
             "DaemonState constructed an invalid OpenCode command: OpenCode "
@@ -3829,16 +3929,10 @@ def _provider_cli_compatibility_failure(
                     "Codex could not start because the installed CLI is too old "
                     f"for the configured `{model_match.group(1)}` model."
                 )
-            return (
-                "Codex could not start because the configured model requires "
-                "a newer Codex CLI."
-            )
+            return "Codex could not start because the configured model requires a newer Codex CLI."
 
     stderr = str(getattr(command_result, "stderr", "") or "").casefold()
-    if (
-        "codex_models_manager::cache" in stderr
-        and "supports_reasoning_summaries" in stderr
-    ):
+    if "codex_models_manager::cache" in stderr and "supports_reasoning_summaries" in stderr:
         return (
             "Codex could not start because its model cache is newer than the "
             "installed CLI understands."
@@ -3883,22 +3977,24 @@ def _auth_failure_kind(
         "claude": ("claude", "anthropic"),
         "opencode": ("opencode",),
     }[provider]
-    error_shape = structured or any(
-        marker in normalized
-        for marker in (
-            "api error",
-            "authentication_error",
-            "authentication failed",
-            "authentication required",
-            "error authenticating",
-            "oauth error",
-            "login required",
-            '"error"',
+    error_shape = (
+        structured
+        or any(
+            marker in normalized
+            for marker in (
+                "api error",
+                "authentication_error",
+                "authentication failed",
+                "authentication required",
+                "error authenticating",
+                "oauth error",
+                "login required",
+                '"error"',
+            )
         )
-    ) or bool(re.search(r"(^|\n)\s*(error|fatal)\s*:", normalized))
-    error_shape = error_shape or any(
-        marker in normalized for marker in provider_markers
+        or bool(re.search(r"(^|\n)\s*(error|fatal)\s*:", normalized))
     )
+    error_shape = error_shape or any(marker in normalized for marker in provider_markers)
     if not error_shape:
         return None
 
@@ -3937,10 +4033,7 @@ def _auth_failure_kind(
     )
     if any(marker in normalized for marker in auth_markers):
         return "authentication"
-    if (
-        ("401" in normalized or "unauthorized" in normalized)
-        and auth_context
-    ):
+    if ("401" in normalized or "unauthorized" in normalized) and auth_context:
         return "authentication"
     return None
 
@@ -4031,11 +4124,9 @@ def _error_signal_values(value: Any) -> list[str]:
 
 
 def _bounded_task(value: str | None) -> str:
-    normalized = " ".join(
-        str(normalize_substantive_user_request(value) or "").split()
-    )
+    normalized = " ".join(str(normalize_substantive_user_request(value) or "").split())
     if not normalized:
         return "Current continuation task"
     if len(normalized) <= MAX_BLOCKER_TASK_LENGTH:
         return normalized
-    return f"{normalized[:MAX_BLOCKER_TASK_LENGTH - 1].rstrip()}…"
+    return f"{normalized[: MAX_BLOCKER_TASK_LENGTH - 1].rstrip()}…"

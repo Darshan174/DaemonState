@@ -28,6 +28,7 @@ from app.schemas.continuation_execution import (
     FilesystemMode,
     HandoffTruthState,
     ProjectEvidenceLevel,
+    RequirementPriority,
     SelectedTaskLifecycle,
     TaskMode,
     VerifierType,
@@ -95,9 +96,7 @@ async def _compile(
     )
     db_session.add(pack)
     await db_session.flush()
-    fingerprint = hashlib.sha256(
-        f"{workspace.id}:{request}".encode("utf-8")
-    ).hexdigest()
+    fingerprint = hashlib.sha256(f"{workspace.id}:{request}".encode("utf-8")).hexdigest()
     manifest = {
         "repo_state": {
             "repo_path": str(tmp_path),
@@ -114,8 +113,8 @@ async def _compile(
         manifest["continuation"] = continuation
     if repository_evidence is not None:
         manifest["repository_evidence"] = repository_evidence
-        manifest["repo_state"]["snapshot_fingerprint"] = (
-            repository_evidence.get("snapshot_fingerprint")
+        manifest["repo_state"]["snapshot_fingerprint"] = repository_evidence.get(
+            "snapshot_fingerprint"
         )
     if manifest_artifacts is not None:
         manifest["attachments"] = manifest_artifacts
@@ -283,11 +282,16 @@ def test_project_foundation_bucketing_prefers_specific_semantics(
     statement: str,
     expected: str,
 ) -> None:
-    assert _project_foundation_section({
-        "kind": "context",
-        "title": title,
-        "statement": statement,
-    }) == expected
+    assert (
+        _project_foundation_section(
+            {
+                "kind": "context",
+                "title": title,
+                "statement": statement,
+            }
+        )
+        == expected
+    )
 
 
 async def test_multiline_request_is_lossless_through_api_contract_and_storage(
@@ -298,9 +302,7 @@ async def test_multiline_request_is_lossless_through_api_contract_and_storage(
         "Implement lossless continuation compilation.\n\n"
         "Preserve this indentation exactly:\n"
         "    alpha = 1\n"
-        "    beta = 2\n\n"
-        + ("Detailed acceptance context. " * 180)
-        + "\nFinal byte stays here.\n"
+        "    beta = 2\n\n" + ("Detailed acceptance context. " * 180) + "\nFinal byte stays here.\n"
     )
     assert len(request) > 4_000
     api_payload = ContinuationPrepareRequest(
@@ -321,25 +323,21 @@ async def test_multiline_request_is_lossless_through_api_contract_and_storage(
     assert execution is not None
     assert execution.request_verbatim == request
     assert compiled.contract.task.request_verbatim == request
-    assert compiled.contract.task.request_sha256 == hashlib.sha256(
-        request.encode("utf-8")
-    ).hexdigest()
+    assert (
+        compiled.contract.task.request_sha256 == hashlib.sha256(request.encode("utf-8")).hexdigest()
+    )
     assert len(compiled.contract.task.display_title) <= 180
     assert request in compiled.prompt_markdown
-    assert (
-        f"Request SHA-256: `{compiled.contract.task.request_sha256}`"
-        in compiled.prompt_markdown
-    )
-    persisted_requirements = list(await db_session.scalars(
-        select(ContinuationRequirement).where(
-            ContinuationRequirement.continuation_execution_id
-            == execution.id
+    assert f"Request SHA-256: `{compiled.contract.task.request_sha256}`" in compiled.prompt_markdown
+    persisted_requirements = list(
+        await db_session.scalars(
+            select(ContinuationRequirement).where(
+                ContinuationRequirement.continuation_execution_id == execution.id
+            )
         )
-    ))
+    )
     assert persisted_requirements
-    assert {
-        span.id for span in compiled.contract.source_spans if span.substantive
-    } == {
+    assert {span.id for span in compiled.contract.source_spans if span.substantive} == {
         span_id
         for requirement in compiled.contract.requirements
         for span_id in requirement.source_span_ids
@@ -355,20 +353,14 @@ def test_imperative_completion_language_outweighs_historical_report_words() -> N
     assert infer_task_mode(request) is TaskMode.CHANGE
 
 
-def test_reported_completion_recognizes_result_verbs_without_treating_work_question_as_done() -> None:
-    assert _reported_completion_claim(
-        "Removed the screenshot UI from Continue."
-    )
-    assert _reported_completion_claim(
-        "The screenshot block is removed from both states."
-    )
+def test_reported_completion_recognizes_result_verbs_without_treating_work_question_as_done() -> (
+    None
+):
+    assert _reported_completion_claim("Removed the screenshot UI from Continue.")
+    assert _reported_completion_claim("The screenshot block is removed from both states.")
     assert _reported_completion_claim("Updated the continuation renderer.")
-    assert not _reported_completion_claim(
-        "What can OpenTelemetry work do for this project?"
-    )
-    assert not _reported_completion_claim(
-        "The screenshot UI is not removed."
-    )
+    assert not _reported_completion_claim("What can OpenTelemetry work do for this project?")
+    assert not _reported_completion_claim("The screenshot UI is not removed.")
 
 
 def test_image_transport_tags_are_not_request_spans_or_requirements() -> None:
@@ -404,13 +396,9 @@ def test_exact_prompt_keeps_working_style_as_constraints_not_completion_gates() 
         task_mode=TaskMode.CHANGE,
     )
 
-    assert [
-        (item.text, item.priority.value)
-        for item in requirements
-    ] == [
+    assert [(item.text, item.priority.value) for item in requirements] == [
         (
-            "failed: **Preview Project Context, Current Session Context and "
-            "Project Context**",
+            "failed: **Preview Project Context, Current Session Context and Project Context**",
             "must",
         ),
         (
@@ -424,12 +412,8 @@ def test_exact_prompt_keeps_working_style_as_constraints_not_completion_gates() 
         "constraint",
         "constraint",
     ]
-    assert {
-        span.id for span in spans if span.substantive
-    } == {
-        span_id
-        for requirement in requirements
-        for span_id in requirement.source_span_ids
+    assert {span.id for span in spans if span.substantive} == {
+        span_id for requirement in requirements for span_id in requirement.source_span_ids
     }
     assert all("<image" not in item.text for item in spans)
 
@@ -443,8 +427,7 @@ def test_exact_prompt_keeps_working_style_as_constraints_not_completion_gates() 
             [],
         ),
         (
-            "Implement invoice export. Work carefully and prioritize "
-            "quality over speed.",
+            "Implement invoice export. Work carefully and prioritize quality over speed.",
             ["Implement invoice export."],
             ["Work carefully and prioritize quality over speed."],
         ),
@@ -480,15 +463,9 @@ def test_working_style_does_not_erase_concrete_or_explicit_quality_outcomes(
         task_mode=TaskMode.CHANGE,
     )
 
+    assert [item.text for item in requirements if item.priority.value == "must"] == must_texts
     assert [
-        item.text
-        for item in requirements
-        if item.priority.value == "must"
-    ] == must_texts
-    assert [
-        item.text
-        for item in requirements
-        if item.priority.value == "context"
+        item.text for item in requirements if item.priority.value == "context"
     ] == guidance_texts
 
 
@@ -496,10 +473,7 @@ async def test_execution_prompt_renders_guidance_without_a_fake_verifier(
     db_session,
     tmp_path,
 ) -> None:
-    request = (
-        "Implement invoice export.\n"
-        "Work carefully and prioritize quality over speed."
-    )
+    request = "Implement invoice export.\nWork carefully and prioritize quality over speed."
 
     compiled = await _compile(
         db_session,
@@ -507,28 +481,17 @@ async def test_execution_prompt_renders_guidance_without_a_fake_verifier(
         request=request,
     )
 
-    must = [
-        item
-        for item in compiled.contract.requirements
-        if item.priority.value == "must"
-    ]
-    guidance = [
-        item
-        for item in compiled.contract.requirements
-        if item.priority.value == "context"
-    ]
+    must = [item for item in compiled.contract.requirements if item.priority.value == "must"]
+    guidance = [item for item in compiled.contract.requirements if item.priority.value == "context"]
     assert [item.text for item in must] == ["Implement invoice export."]
-    assert [
-        item.text for item in guidance
-    ] == ["Work carefully and prioritize quality over speed."]
+    assert [item.text for item in guidance] == ["Work carefully and prioritize quality over speed."]
     assert guidance[0].verification_ids == ()
     assert set(compiled.contract.definition_of_done) == {must[0].id}
     assert "## User constraints and execution guidance" in compiled.prompt_markdown
     assert guidance[0].text in compiled.prompt_markdown
     assert f"- {guidance[0].id}: {guidance[0].text}" in compiled.prompt_markdown
     assert not any(
-        guidance[0].id in verifier.requirement_ids
-        for verifier in compiled.contract.verification
+        guidance[0].id in verifier.requirement_ids for verifier in compiled.contract.verification
     )
 
 
@@ -536,10 +499,7 @@ async def test_exact_prompt_with_three_images_has_four_outcomes_not_six(
     db_session,
     tmp_path,
 ) -> None:
-    image_paths = [
-        tmp_path / f"reference-{index}.png"
-        for index in range(1, 4)
-    ]
+    image_paths = [tmp_path / f"reference-{index}.png" for index in range(1, 4)]
     for index, image_path in enumerate(image_paths, start=1):
         image_path.write_bytes(f"trusted-image-{index}".encode())
     request = (
@@ -569,32 +529,20 @@ async def test_exact_prompt_with_three_images_has_four_outcomes_not_six(
         ],
     )
 
-    must = [
-        item
-        for item in compiled.contract.requirements
-        if item.priority.value == "must"
-    ]
-    guidance = [
-        item
-        for item in compiled.contract.requirements
-        if item.priority.value == "context"
-    ]
+    must = [item for item in compiled.contract.requirements if item.priority.value == "must"]
+    guidance = [item for item in compiled.contract.requirements if item.priority.value == "context"]
     assert len(must) == 4
     assert len(guidance) == 2
     assert len(compiled.contract.artifacts) == 3
     assert all(item.available and item.sha256 for item in compiled.contract.artifacts)
-    assert {
-        item.id for item in must
-    } == set(compiled.contract.definition_of_done)
+    assert {item.id for item in must} == set(compiled.contract.definition_of_done)
     guidance_ids = {item.id for item in guidance}
     assert not any(
-        guidance_ids & set(verifier.requirement_ids)
-        for verifier in compiled.contract.verification
+        guidance_ids & set(verifier.requirement_ids) for verifier in compiled.contract.verification
     )
     assert "<image" not in compiled.prompt_markdown.casefold()
     assert all(
-        artifact.sha256 in compiled.prompt_markdown
-        for artifact in compiled.contract.artifacts
+        artifact.sha256 in compiled.prompt_markdown for artifact in compiled.contract.artifacts
     )
 
 
@@ -605,10 +553,7 @@ async def test_worker_prompt_indexes_large_requirement_sets_without_repeating_th
     request = "\n".join(
         [
             "Implement the release workflow.",
-            *(
-                f"- Add independently verifiable release outcome {index}."
-                for index in range(1, 11)
-            ),
+            *(f"- Add independently verifiable release outcome {index}." for index in range(1, 11)),
         ]
     )
 
@@ -630,10 +575,7 @@ async def test_worker_prompt_indexes_large_requirement_sets_without_repeating_th
     assert len(mandatory) > 8
     assert len(mandatory_section) < 1_000
     assert all(requirement.id in mandatory_section for requirement in mandatory)
-    assert all(
-        compiled.prompt_markdown.count(requirement.text) == 1
-        for requirement in mandatory
-    )
+    assert all(compiled.prompt_markdown.count(requirement.text) == 1 for requirement in mandatory)
 
 
 async def test_project_contract_materializes_and_adopts_referenced_context(
@@ -641,19 +583,20 @@ async def test_project_contract_materializes_and_adopts_referenced_context(
     tmp_path,
 ) -> None:
     request = (
-        "[Prompt Quality](chatgpt-conversation://idea-1) "
-        "Implement the idea in the last prompt."
+        "[Prompt Quality](chatgpt-conversation://idea-1) Implement the idea in the last prompt."
     )
-    supporting = [{
-        "role": "assistant",
-        "text": (
-            "Use two context products.\n\n"
-            "- Session Context must paste the session checkpoint.\n"
-            "- Project Context must carry relevant workspace knowledge."
-        ),
-        "source": "embedded_referenced_conversation",
-        "truth_state": "historical_data",
-    }]
+    supporting = [
+        {
+            "role": "assistant",
+            "text": (
+                "Use two context products.\n\n"
+                "- Session Context must paste the session checkpoint.\n"
+                "- Project Context must carry relevant workspace knowledge."
+            ),
+            "source": "embedded_referenced_conversation",
+            "truth_state": "historical_data",
+        }
+    ]
 
     compiled = await _compile(
         db_session,
@@ -663,14 +606,13 @@ async def test_project_contract_materializes_and_adopts_referenced_context(
     )
     staging = render_continuation_staging_context(compiled.contract)
     accepted = {
-        item.text
-        for item in compiled.contract.requirements
-        if item.priority.value == "must"
+        item.text for item in compiled.contract.requirements if item.priority.value == "must"
     }
 
-    assert compiled.contract.supporting_context[0].content_sha256 == hashlib.sha256(
-        supporting[0]["text"].encode("utf-8")
-    ).hexdigest()
+    assert (
+        compiled.contract.supporting_context[0].content_sha256
+        == hashlib.sha256(supporting[0]["text"].encode("utf-8")).hexdigest()
+    )
     assert "> [historical assistant] Use two context products." in staging
     assert "Session Context must paste the session checkpoint." in accepted
     assert "Project Context must carry relevant workspace knowledge." in accepted
@@ -679,9 +621,7 @@ async def test_project_contract_materializes_and_adopts_referenced_context(
         prompt_markdown=compiled.prompt_markdown,
         project_context_markdown=staging,
     )
-    assert "referenced_context_unresolved" not in {
-        issue.code for issue in report.issues
-    }
+    assert "referenced_context_unresolved" not in {issue.code for issue in report.issues}
 
 
 async def test_project_contract_fails_closed_when_reference_is_unresolved(
@@ -692,22 +632,17 @@ async def test_project_contract_fails_closed_when_reference_is_unresolved(
         db_session,
         tmp_path,
         request=(
-            "[Missing](chatgpt-conversation://missing) "
-            "Implement the idea in the last prompt."
+            "[Missing](chatgpt-conversation://missing) Implement the idea in the last prompt."
         ),
     )
     report = evaluate_continuation_quality(
         compiled.contract,
         prompt_markdown=compiled.prompt_markdown,
-        project_context_markdown=render_continuation_staging_context(
-            compiled.contract
-        ),
+        project_context_markdown=render_continuation_staging_context(compiled.contract),
     )
 
     assert report.launchable is False
-    assert "referenced_context_unresolved" in {
-        issue.code for issue in report.issues
-    }
+    assert "referenced_context_unresolved" in {issue.code for issue in report.issues}
 
 
 async def test_repository_contract_uses_one_live_snapshot_for_files_and_hash(
@@ -722,9 +657,7 @@ async def test_repository_contract_uses_one_live_snapshot_for_files_and_hash(
         manifest_changed_files=[{"status": "M", "path": "stale.py"}],
     )
 
-    assert [item.path for item in compiled.contract.repository.preexisting_changes] == [
-        "live.py"
-    ]
+    assert [item.path for item in compiled.contract.repository.preexisting_changes] == ["live.py"]
     assert compiled.contract.repository.status_fingerprint
 
 
@@ -763,9 +696,7 @@ async def test_project_context_projection_is_current_verified_compact_and_data_o
             "id": "verified-architecture-fact",
             "item_type": "component",
             "title": "Telemetry privacy boundary",
-            "summary": (
-                "Operational telemetry excludes prompt and source content."
-            ),
+            "summary": ("Operational telemetry excludes prompt and source content."),
             "status": "active",
             "truth_state": "current",
             "component_id": "telemetry-fact-component",
@@ -868,9 +799,7 @@ async def test_project_context_projection_is_current_verified_compact_and_data_o
             "id": "compiler-shaped-failed-attempt",
             "item_type": "component",
             "title": "Failed attempt: replace the provider adapter",
-            "summary": (
-                "COMPILER_SHAPED_FAILED_ATTEMPT_MUST_STAY_IN_SESSION_CONTEXT"
-            ),
+            "summary": ("COMPILER_SHAPED_FAILED_ATTEMPT_MUST_STAY_IN_SESSION_CONTEXT"),
             "status": "verified",
             "truth_state": "current",
             "component_id": "compiler-shaped-failed-attempt-component",
@@ -948,10 +877,7 @@ async def test_project_context_projection_is_current_verified_compact_and_data_o
     assert compiled.contract.project_foundation is not None
     assert compiled.contract.project_foundation.compilation_scope == "workspace"
     assert compiled.contract.project_foundation.objective_independent is True
-    assert any(
-        item.path == "app/telemetry.py"
-        for item in compiled.contract.read_plan
-    )
+    assert any(item.path == "app/telemetry.py" for item in compiled.contract.read_plan)
 
     staging = render_continuation_staging_context(compiled.contract)
     execution = compiled.prompt_markdown
@@ -967,9 +893,7 @@ async def test_project_context_projection_is_current_verified_compact_and_data_o
     assert "> [decision; mechanically-verified; current]" in staging
     assert "> [context; mechanically-verified; current]" in execution
     assert "> [context; mechanically-verified; current]" in staging
-    assert set(PROJECT_FOUNDATION_REQUIRED_HEADINGS) <= set(
-        staging.splitlines()
-    )
+    assert set(PROJECT_FOUNDATION_REQUIRED_HEADINGS) <= set(staging.splitlines())
     assert "Project / Workspace Context — project-level foundation" in staging
     assert "compiled workspace-wide" in staging
     assert "Provisional session claims, failed attempts" in staging
@@ -1007,10 +931,7 @@ async def test_project_context_projection_is_current_verified_compact_and_data_o
     assert compiled.contract.id not in staging
     assert str(compiled.contract.repository.head_commit) in staging
     assert compiled.contract.task.request_sha256 not in staging
-    assert (
-        f"Request SHA-256: `{compiled.contract.task.request_sha256}`"
-        in execution
-    )
+    assert f"Request SHA-256: `{compiled.contract.task.request_sha256}`" in execution
     assert compiled.contract.id not in execution
     assert "Status fingerprint:" not in execution
     assert "AUDIT_CITATION_MUST_NOT_LEAK" not in execution
@@ -1039,12 +960,18 @@ async def test_repository_evidence_is_typed_hash_bound_and_separate_from_project
         "[project]\ndependencies=['opentelemetry-api']\n",
         encoding="utf-8",
     )
+    license_file = tmp_path / "LICENSE"
+    license_file.write_text(
+        "Current source-available terms.\n",
+        encoding="utf-8",
+    )
     telemetry_sha = hashlib.sha256(telemetry.read_bytes()).hexdigest()
     test_sha = hashlib.sha256(telemetry_test.read_bytes()).hexdigest()
     manifest_sha = hashlib.sha256(manifest_file.read_bytes()).hexdigest()
+    license_sha = hashlib.sha256(license_file.read_bytes()).hexdigest()
     snapshot_fingerprint = "b" * 64
     evidence = {
-        "schema_version": "repository_evidence.v1",
+        "schema_version": "repository_evidence.v2",
         "snapshot_fingerprint": snapshot_fingerprint,
         "head_commit": "a" * 40,
         "truncated": False,
@@ -1079,6 +1006,12 @@ async def test_repository_evidence_is_typed_hash_bound_and_separate_from_project
                 "dependency_name": "opentelemetry-api",
                 "declaration": "opentelemetry-api",
             },
+            {
+                "id": "RE4",
+                "kind": "file_presence",
+                "path": "LICENSE",
+                "file_sha256": license_sha,
+            },
         ],
     }
 
@@ -1091,26 +1024,21 @@ async def test_repository_evidence_is_typed_hash_bound_and_separate_from_project
     )
 
     assert compiled.contract.project_context == ()
-    assert [
-        item.kind.value for item in compiled.contract.repository_evidence
-    ] == [
+    assert [item.kind.value for item in compiled.contract.repository_evidence] == [
         "symbol_declaration",
         "test_link",
         "manifest_dependency",
+        "file_presence",
     ]
-    assert compiled.contract.repository_evidence[0].truth_state == (
-        "observed_at_snapshot"
-    )
-    assert compiled.contract.repository_evidence[0].provenance == (
-        "repository_index"
-    )
-    evidence_line = (
-        "- Symbol: `app/telemetry.py`:1-2 — "
-        "function `configure_telemetry`."
-    )
+    assert compiled.contract.repository_evidence[0].truth_state == ("observed_at_snapshot")
+    assert compiled.contract.repository_evidence[0].provenance == ("repository_index")
+    evidence_line = "- Symbol: `app/telemetry.py`:1-2 — function `configure_telemetry`."
     staging = render_continuation_staging_context(compiled.contract)
     assert evidence_line in compiled.prompt_markdown
     assert evidence_line in staging
+    file_line = "- File: `LICENSE` — present in the bound repository snapshot."
+    assert file_line in compiled.prompt_markdown
+    assert file_line in staging
     valid_report = evaluate_continuation_quality(
         compiled.contract,
         prompt_markdown=compiled.prompt_markdown,
@@ -1145,6 +1073,24 @@ async def test_repository_evidence_is_typed_hash_bound_and_separate_from_project
     )
     assert staging_issue.repository_evidence_id == "RE1"
 
+    legacy_evidence = {
+        **evidence,
+        "schema_version": "repository_evidence.v1",
+        "items": evidence["items"][:3],
+    }
+    legacy = await _compile(
+        db_session,
+        tmp_path,
+        request="Explain legacy v1 OpenTelemetry repository evidence.",
+        task_mode=TaskMode.REPORT,
+        repository_evidence=legacy_evidence,
+    )
+    assert [item.id for item in legacy.contract.repository_evidence] == [
+        "RE1",
+        "RE2",
+        "RE3",
+    ]
+
     telemetry.write_text(
         "def configure_telemetry():\n    return False\n",
         encoding="utf-8",
@@ -1156,9 +1102,7 @@ async def test_repository_evidence_is_typed_hash_bound_and_separate_from_project
         task_mode=TaskMode.REPORT,
         repository_evidence=evidence,
     )
-    assert [
-        item.id for item in stale.contract.repository_evidence
-    ] == ["RE3"]
+    assert [item.id for item in stale.contract.repository_evidence] == ["RE3", "RE4"]
 
 
 async def test_workspace_foundation_uses_evidence_levels_and_controlled_promotion(
@@ -1166,26 +1110,27 @@ async def test_workspace_foundation_uses_evidence_levels_and_controlled_promotio
     tmp_path,
 ) -> None:
     corroborated_statement = (
-        "The supported capability is portable context staging across agent "
-        "harnesses."
+        "The supported capability is portable context staging across agent harnesses."
     )
     conflicted_identity = "capability:conflicted"
     compiled = await _compile(
         db_session,
         tmp_path,
         request="Inspect an unrelated task with no overlapping files.",
-        selected_context=[{
-            "item_type": "decision",
-            "title": "Prompt-ranked fact must not control the parent",
-            "summary": "This selected item is task-scoped.",
-            "status": "active",
-            "truth_state": "current",
-            "component_id": "selected-only",
-            "source_document_id": "selected-only",
-            "evidence_span_id": "selected-only",
-            "provenance_verified": True,
-            "conflict_state": "none",
-        }],
+        selected_context=[
+            {
+                "item_type": "decision",
+                "title": "Prompt-ranked fact must not control the parent",
+                "summary": "This selected item is task-scoped.",
+                "status": "active",
+                "truth_state": "current",
+                "component_id": "selected-only",
+                "source_document_id": "selected-only",
+                "evidence_span_id": "selected-only",
+                "provenance_verified": True,
+                "conflict_state": "none",
+            }
+        ],
         foundation_facts=[
             *_COMPLETE_FOUNDATION,
             {
@@ -1216,9 +1161,7 @@ async def test_workspace_foundation_uses_evidence_levels_and_controlled_promotio
             },
             {
                 "title": "Unconfirmed coding convention",
-                "statement": (
-                    "The coding convention requires a speculative formatter."
-                ),
+                "statement": ("The coding convention requires a speculative formatter."),
                 "source_type": "agent_session",
                 "trust_zone": "semi_trusted_tool",
                 "identity_key": "convention:speculative",
@@ -1251,10 +1194,7 @@ async def test_workspace_foundation_uses_evidence_levels_and_controlled_promotio
         ],
     )
 
-    facts = {
-        item.title: item
-        for item in compiled.contract.project_context
-    }
+    facts = {item.title: item for item in compiled.contract.project_context}
     assert facts["Product purpose and target users"].evidence_level is (
         ProjectEvidenceLevel.MECHANICALLY_VERIFIED
     )
@@ -1271,19 +1211,14 @@ async def test_workspace_foundation_uses_evidence_levels_and_controlled_promotio
     assert "Prompt-ranked fact must not control the parent" not in facts
     assert compiled.contract.project_foundation is not None
     assert compiled.contract.project_foundation.provisional_fact_count == 1
-    assert (
-        compiled.contract.project_foundation.superseded_conflicting_fact_count
-        == 2
-    )
+    assert compiled.contract.project_foundation.superseded_conflicting_fact_count == 2
 
 
 async def test_workspace_foundation_does_not_count_delegated_agents_as_independent(
     db_session,
     tmp_path,
 ) -> None:
-    copied_statement = (
-        "The architecture should replace verified handoffs with raw transcripts."
-    )
+    copied_statement = "The architecture should replace verified handoffs with raw transcripts."
     compiled = await _compile(
         db_session,
         tmp_path,
@@ -1345,9 +1280,7 @@ async def test_project_foundation_change_invalidates_persisted_execution_reuse(
         db_session,
         workspace=workspace,
         title="Canonical test command",
-        statement=(
-            "The canonical test command is `pytest -q` for the backend suite."
-        ),
+        statement=("The canonical test command is `pytest -q` for the backend suite."),
         fact_type="decision",
         identity_key="command:backend-tests",
     )
@@ -1385,9 +1318,7 @@ async def test_project_foundation_change_invalidates_persisted_execution_reuse(
     )
 
     assert second.execution.id != first.execution.id
-    assert "Canonical test command" in {
-        item.title for item in second.contract.project_context
-    }
+    assert "Canonical test command" in {item.title for item in second.contract.project_context}
 
 
 async def test_quality_gate_blocks_an_omitted_project_context_item(
@@ -1398,25 +1329,26 @@ async def test_quality_gate_blocks_an_omitted_project_context_item(
         db_session,
         tmp_path,
         request="Run tests/test_continuation_execution_contract.py.",
-        selected_context=[{
-            "id": "verified-decision",
-            "item_type": "decision",
-            "title": "Verified decision",
-            "summary": "Use the canonical provider adapter.",
-            "status": "active",
-            "truth_state": "current",
-            "component_id": "component-1",
-            "source_document_id": "source-1",
-            "evidence_span_id": "evidence-1",
-            "provenance_verified": True,
-            "conflict_state": "none",
-        }],
+        selected_context=[
+            {
+                "id": "verified-decision",
+                "item_type": "decision",
+                "title": "Verified decision",
+                "summary": "Use the canonical provider adapter.",
+                "status": "active",
+                "truth_state": "current",
+                "component_id": "component-1",
+                "source_document_id": "source-1",
+                "evidence_span_id": "evidence-1",
+                "provenance_verified": True,
+                "conflict_state": "none",
+            }
+        ],
         foundation_facts=_COMPLETE_FOUNDATION,
     )
     item = compiled.contract.project_context[0]
     first_line = (
-        f"> [{item.kind.value}; mechanically-verified; current] "
-        f"{item.title} — {item.statement}"
+        f"> [{item.kind.value}; mechanically-verified; current] {item.title} — {item.statement}"
     )
     assert first_line in compiled.prompt_markdown
 
@@ -1434,9 +1366,7 @@ async def test_quality_gate_blocks_an_omitted_project_context_item(
         prompt_markdown=omitted,
     )
     issue = next(
-        issue
-        for issue in report.issues
-        if issue.code == "project_context_missing_from_prompt"
+        issue for issue in report.issues if issue.code == "project_context_missing_from_prompt"
     )
     assert issue.severity == "blocking"
     assert issue.project_context_id == item.id
@@ -1502,19 +1432,23 @@ async def test_project_context_rejects_raw_conversation_and_historical_tasks(
             "checkpoint": {
                 "id": "checkpoint-with-assistant-history",
                 "sections": {
-                    "progress": [{
-                        "statement": (
-                            "Assistant recommendation: inspect the backend "
-                            "compiler before editing."
-                        ),
-                        "state": "active",
-                        "truth_state": "reported",
-                    }],
-                    "decisions": [{
-                        "statement": raw_conversation,
-                        "state": "active",
-                        "truth_state": "reported",
-                    }],
+                    "progress": [
+                        {
+                            "statement": (
+                                "Assistant recommendation: inspect the backend "
+                                "compiler before editing."
+                            ),
+                            "state": "active",
+                            "truth_state": "reported",
+                        }
+                    ],
+                    "decisions": [
+                        {
+                            "statement": raw_conversation,
+                            "state": "active",
+                            "truth_state": "reported",
+                        }
+                    ],
                 },
             },
         },
@@ -1551,16 +1485,20 @@ async def test_reconciliation_moves_stale_or_conflicting_completion_to_unknowns(
             "checkpoint": {
                 "id": "stale-checkpoint",
                 "sections": {
-                    "progress": [{
-                        "statement": completed,
-                        "state": "completed",
-                        "truth_state": "reported",
-                    }],
-                    "exact_next_action": [{
-                        "statement": completed,
-                        "state": "active",
-                        "truth_state": "reported",
-                    }],
+                    "progress": [
+                        {
+                            "statement": completed,
+                            "state": "completed",
+                            "truth_state": "reported",
+                        }
+                    ],
+                    "exact_next_action": [
+                        {
+                            "statement": completed,
+                            "state": "active",
+                            "truth_state": "reported",
+                        }
+                    ],
                 },
             },
         },
@@ -1608,31 +1546,35 @@ async def test_reconciliation_reclassifies_active_completion_reports_before_repo
                             "statement": statement,
                             "state": "active",
                             "truth_state": "reported",
-                            "evidence": [{
-                                "locator": {
-                                    "sequence_number": 20 + index,
-                                },
-                            }],
+                            "evidence": [
+                                {
+                                    "locator": {
+                                        "sequence_number": 20 + index,
+                                    },
+                                }
+                            ],
                         }
                         for index, statement in enumerate(
                             completion_reports,
                             start=1,
                         )
                     ],
-                    "exact_next_action": [{
-                        "id": "older-recovered-next-action",
-                        "statement": (
-                            "Continue the complete recovered request."
-                        ),
-                        "state": "active",
-                        "truth_state": "reported",
-                        "payload": {
-                            "derived_from_recovered_goal": True,
-                        },
-                        "evidence": [{
-                            "locator": {"sequence_number": 10},
-                        }],
-                    }],
+                    "exact_next_action": [
+                        {
+                            "id": "older-recovered-next-action",
+                            "statement": ("Continue the complete recovered request."),
+                            "state": "active",
+                            "truth_state": "reported",
+                            "payload": {
+                                "derived_from_recovered_goal": True,
+                            },
+                            "evidence": [
+                                {
+                                    "locator": {"sequence_number": 10},
+                                }
+                            ],
+                        }
+                    ],
                 },
             },
         },
@@ -1642,13 +1584,8 @@ async def test_reconciliation_reclassifies_active_completion_reports_before_repo
     assert handoff.completed == ()
     assert handoff.in_progress == ()
     assert handoff.remaining == ()
-    assert tuple(
-        item.statement for item in handoff.unknowns
-    ) == completion_reports
-    assert all(
-        item.truth_state is HandoffTruthState.STALE
-        for item in handoff.unknowns
-    )
+    assert tuple(item.statement for item in handoff.unknowns) == completion_reports
+    assert all(item.truth_state is HandoffTruthState.STALE for item in handoff.unknowns)
     assert (
         "completion claims require revalidation and are listed under Unknowns"
         in handoff.reconciliation.summary
@@ -1676,11 +1613,13 @@ async def test_changed_repo_summary_does_not_invent_missing_completion_unknowns(
             "checkpoint": {
                 "id": "active-work-only",
                 "sections": {
-                    "progress": [{
-                        "statement": "Investigating Project Context retrieval.",
-                        "state": "active",
-                        "truth_state": "reported",
-                    }],
+                    "progress": [
+                        {
+                            "statement": "Investigating Project Context retrieval.",
+                            "state": "active",
+                            "truth_state": "reported",
+                        }
+                    ],
                 },
             },
         },
@@ -1691,10 +1630,7 @@ async def test_changed_repo_summary_does_not_invent_missing_completion_unknowns(
     assert tuple(item.statement for item in handoff.in_progress) == (
         "Investigating Project Context retrieval.",
     )
-    assert (
-        "No historical completion claim was captured"
-        in handoff.reconciliation.summary
-    )
+    assert "No historical completion claim was captured" in handoff.reconciliation.summary
     assert "listed under Unknowns" not in handoff.reconciliation.summary
 
 
@@ -1710,16 +1646,20 @@ async def test_reconciliation_detects_generic_completion_continuation_conflict(
             "checkpoint": {
                 "id": "semantic-conflict",
                 "sections": {
-                    "progress": [{
-                        "statement": "Implemented.",
-                        "state": "active",
-                        "truth_state": "reported",
-                    }],
-                    "exact_next_action": [{
-                        "statement": "Continue the complete recovered request.",
-                        "state": "active",
-                        "truth_state": "reported",
-                    }],
+                    "progress": [
+                        {
+                            "statement": "Implemented.",
+                            "state": "active",
+                            "truth_state": "reported",
+                        }
+                    ],
+                    "exact_next_action": [
+                        {
+                            "statement": "Continue the complete recovered request.",
+                            "state": "active",
+                            "truth_state": "reported",
+                        }
+                    ],
                 },
             },
         },
@@ -1751,9 +1691,7 @@ async def test_copy_quality_gate_requires_lead_repo_reconciliation_and_done(
         project_context_markdown=staging,
     )
     assert not {
-        issue.code
-        for issue in valid.issues
-        if issue.code.startswith("project_context_copy_")
+        issue.code for issue in valid.issues if issue.code.startswith("project_context_copy_")
     }
 
     cases = {
@@ -1778,10 +1716,7 @@ async def test_copy_quality_gate_requires_lead_repo_reconciliation_and_done(
             1,
         ),
         "project_context_copy_foundation_sections_missing": staging.replace(
-            (
-                "### What the project is, who it serves, what problem it "
-                "solves, and why it exists"
-            ),
+            ("### What the project is, who it serves, what problem it solves, and why it exists"),
             "### Project identity notes",
             1,
         ),
@@ -1798,9 +1733,7 @@ async def test_copy_quality_gate_requires_lead_repo_reconciliation_and_done(
         assert expected_code in {issue.code for issue in report.issues}
 
     launch_cases = {
-        "worker_handoff_current_lead_missing": (
-            compiled.prompt_markdown.replace(request, "", 1)
-        ),
+        "worker_handoff_current_lead_missing": (compiled.prompt_markdown.replace(request, "", 1)),
         "worker_handoff_repository_state_missing": (
             compiled.prompt_markdown.replace(
                 compiled.contract.repository.root,
@@ -1816,8 +1749,7 @@ async def test_copy_quality_gate_requires_lead_repo_reconciliation_and_done(
             )
         ),
         "worker_handoff_overhead_budget_exceeded": (
-            compiled.prompt_markdown
-            + ("x" * (EXECUTION_PROMPT_MAX_OVERHEAD_CHARS + 1))
+            compiled.prompt_markdown + ("x" * (EXECUTION_PROMPT_MAX_OVERHEAD_CHARS + 1))
         ),
     }
     for expected_code, malformed in launch_cases.items():
@@ -1841,19 +1773,50 @@ async def test_project_context_explicitly_reports_when_no_workspace_facts_apply(
 
     staging = render_continuation_staging_context(compiled.contract)
 
-    assert "### Task-relevant project context" in staging
-    assert "Activation boundary:" in staging
-    assert "materially different task" in staging
-    assert "No current evidence-backed durable workspace facts were compiled." in staging
-    assert "Foundation readiness: **NOT READY**" in staging
+    assert staging.startswith("# Project / Workspace Context — NOT READY")
+    assert "DO NOT COPY, STAGE, OR USE FOR CONTINUATION" in staging
+    assert staging.count("No current evidence-backed durable workspace facts were compiled.") == 1
+    assert "### Task-relevant project context" not in staging
+    for heading in PROJECT_FOUNDATION_REQUIRED_HEADINGS[1:-1]:
+        assert heading not in staging
     report = evaluate_continuation_quality(
         compiled.contract,
         prompt_markdown=compiled.prompt_markdown,
         project_context_markdown=staging,
     )
-    assert "project_context_foundation_empty" in {
-        issue.code for issue in report.issues
-    }
+    issue_codes = {issue.code for issue in report.issues}
+    assert "project_context_foundation_empty" in issue_codes
+    assert "project_context_copy_foundation_sections_missing" not in issue_codes
+
+
+async def test_incomplete_project_foundation_omits_missing_section_placeholders(
+    db_session,
+    tmp_path,
+) -> None:
+    compiled = await _compile(
+        db_session,
+        tmp_path,
+        request="Inspect Project Context quality.",
+        foundation_facts=_COMPLETE_FOUNDATION[1:],
+    )
+
+    staging = render_continuation_staging_context(compiled.contract)
+
+    identity_heading = PROJECT_FOUNDATION_REQUIRED_HEADINGS[1]
+    assert staging.startswith("# Project / Workspace Context — NOT READY")
+    assert "Foundation readiness: **NOT READY**" in staging
+    assert "DO NOT COPY, STAGE, OR USE FOR CONTINUATION" in staging
+    assert "Missing core: identity" in staging
+    assert identity_heading not in staging
+    assert "No current evidence-backed durable fact was compiled." not in staging
+    report = evaluate_continuation_quality(
+        compiled.contract,
+        prompt_markdown=compiled.prompt_markdown,
+        project_context_markdown=staging,
+    )
+    issue_codes = {issue.code for issue in report.issues}
+    assert "project_context_core_sections_empty" in issue_codes
+    assert "project_context_copy_foundation_sections_missing" not in issue_codes
 
 
 async def test_project_context_quality_gate_rejects_incomplete_conflicting_generic_and_stale_foundations(
@@ -1869,35 +1832,41 @@ async def test_project_context_quality_gate_rejects_incomplete_conflicting_gener
     contract = compiled.contract
     assert contract.project_foundation is not None
 
-    without_identity = contract.model_copy(update={
-        "project_context": tuple(
-            item
-            for item in contract.project_context
-            if item.section.value != "identity"
-        ),
-        "project_foundation": contract.project_foundation.model_copy(update={
-            "included_fact_count": len(contract.project_context) - 1,
-        }),
-    })
+    without_identity = contract.model_copy(
+        update={
+            "project_context": tuple(
+                item for item in contract.project_context if item.section.value != "identity"
+            ),
+            "project_foundation": contract.project_foundation.model_copy(
+                update={
+                    "included_fact_count": len(contract.project_context) - 1,
+                }
+            ),
+        }
+    )
     incomplete = evaluate_continuation_quality(
         without_identity,
         prompt_markdown=render_continuation_staging_context(without_identity),
     )
-    assert "project_context_core_sections_empty" in {
-        issue.code for issue in incomplete.issues
-    }
+    assert "project_context_core_sections_empty" in {issue.code for issue in incomplete.issues}
 
     first = contract.project_context[0]
-    conflicting_item = first.model_copy(update={
-        "id": "P5",
-        "statement": "The product purpose serves a conflicting audience.",
-    })
-    conflicted = contract.model_copy(update={
-        "project_context": (*contract.project_context, conflicting_item),
-        "project_foundation": contract.project_foundation.model_copy(update={
-            "included_fact_count": 5,
-        }),
-    })
+    conflicting_item = first.model_copy(
+        update={
+            "id": "P5",
+            "statement": "The product purpose serves a conflicting audience.",
+        }
+    )
+    conflicted = contract.model_copy(
+        update={
+            "project_context": (*contract.project_context, conflicting_item),
+            "project_foundation": contract.project_foundation.model_copy(
+                update={
+                    "included_fact_count": 5,
+                }
+            ),
+        }
+    )
     conflict_report = evaluate_continuation_quality(
         conflicted,
         prompt_markdown=render_continuation_staging_context(conflicted),
@@ -1907,11 +1876,13 @@ async def test_project_context_quality_gate_rejects_incomplete_conflicting_gener
     }
 
     generic_items = tuple(
-        item.model_copy(update={
-            "title": f"Area: section-{index}",
-            "statement": "Contains files.",
-            "identity_key": f"generic:{index}",
-        })
+        item.model_copy(
+            update={
+                "title": f"Area: section-{index}",
+                "statement": "Contains files.",
+                "identity_key": f"generic:{index}",
+            }
+        )
         for index, item in enumerate(contract.project_context, start=1)
     )
     generic = contract.model_copy(update={"project_context": generic_items})
@@ -1923,33 +1894,37 @@ async def test_project_context_quality_gate_rejects_incomplete_conflicting_gener
         issue.code for issue in generic_report.issues
     }
 
-    stale = contract.model_copy(update={
-        "project_foundation": contract.project_foundation.model_copy(update={
-            "repository_fingerprint": "f" * 64,
-        }),
-    })
+    stale = contract.model_copy(
+        update={
+            "project_foundation": contract.project_foundation.model_copy(
+                update={
+                    "repository_fingerprint": "f" * 64,
+                }
+            ),
+        }
+    )
     stale_report = evaluate_continuation_quality(
         stale,
         prompt_markdown=render_continuation_staging_context(stale),
     )
-    assert "project_context_foundation_stale" in {
-        issue.code for issue in stale_report.issues
-    }
+    assert "project_context_foundation_stale" in {issue.code for issue in stale_report.issues}
 
-    missing_provenance_item = first.model_copy(update={
-        "provenance_refs": (),
-    })
-    missing_provenance = contract.model_copy(update={
-        "project_context": (
-            missing_provenance_item,
-            *contract.project_context[1:],
-        ),
-    })
+    missing_provenance_item = first.model_copy(
+        update={
+            "provenance_refs": (),
+        }
+    )
+    missing_provenance = contract.model_copy(
+        update={
+            "project_context": (
+                missing_provenance_item,
+                *contract.project_context[1:],
+            ),
+        }
+    )
     provenance_report = evaluate_continuation_quality(
         missing_provenance,
-        prompt_markdown=render_continuation_staging_context(
-            missing_provenance
-        ),
+        prompt_markdown=render_continuation_staging_context(missing_provenance),
     )
     assert "project_context_fact_provenance_missing" in {
         issue.code for issue in provenance_report.issues
@@ -1957,18 +1932,20 @@ async def test_project_context_quality_gate_rejects_incomplete_conflicting_gener
 
 
 def test_legacy_compaction_handoff_preserves_requirements_and_agent_state() -> None:
-    handoff = structured_handoff_from_checkpoint({
-        "checkpoint": {
-            "id": "legacy-provider-compaction",
-            "schema_version": "provider_compaction.v1",
-        },
-        "restore_context": {
-            "objective": "Finish the immediate task.",
-            "earlier_requirements": ["Keep A.", "Keep B."],
-            "agent_reported_state": "Half done; the API path remains.",
-            "referenced_files": ["app/api.py"],
-        },
-    })
+    handoff = structured_handoff_from_checkpoint(
+        {
+            "checkpoint": {
+                "id": "legacy-provider-compaction",
+                "schema_version": "provider_compaction.v1",
+            },
+            "restore_context": {
+                "objective": "Finish the immediate task.",
+                "earlier_requirements": ["Keep A.", "Keep B."],
+                "agent_reported_state": "Half done; the API path remains.",
+                "referenced_files": ["app/api.py"],
+            },
+        }
+    )
 
     assert [item.statement for item in handoff.remaining] == [
         "Finish the immediate task.",
@@ -1981,10 +1958,9 @@ def test_legacy_compaction_handoff_preserves_requirements_and_agent_state() -> N
     assert [item.statement for item in handoff.referenced_files] == [
         "app/api.py",
     ]
-    assert {
-        item.truth_state
-        for item in (*handoff.remaining, *handoff.in_progress)
-    } == {HandoffTruthState.AGENT_REPORTED}
+    assert {item.truth_state for item in (*handoff.remaining, *handoff.in_progress)} == {
+        HandoffTruthState.AGENT_REPORTED
+    }
 
 
 async def test_artifact_content_changes_create_a_new_execution_identity(
@@ -2060,9 +2036,7 @@ async def test_artifact_content_changes_create_a_new_execution_identity(
     )
 
     assert first.execution.id != second.execution.id
-    assert first.contract.artifacts[0].sha256 != (
-        second.contract.artifacts[0].sha256
-    )
+    assert first.contract.artifacts[0].sha256 != (second.contract.artifacts[0].sha256)
 
 
 async def test_explicit_artifact_symlink_is_never_followed(
@@ -2078,12 +2052,14 @@ async def test_explicit_artifact_symlink_is_never_followed(
         db_session,
         tmp_path,
         request="Match the supplied screenshot exactly.",
-        manifest_artifacts=[{
-            "id": "reference",
-            "kind": "screenshot",
-            "path": str(link),
-            "required": True,
-        }],
+        manifest_artifacts=[
+            {
+                "id": "reference",
+                "kind": "screenshot",
+                "path": str(link),
+                "required": True,
+            }
+        ],
     )
     artifact = compiled.contract.artifacts[0]
     report = evaluate_continuation_quality(
@@ -2095,9 +2071,7 @@ async def test_explicit_artifact_symlink_is_never_followed(
     assert artifact.available is False
     assert artifact.sha256 is None
     assert report.launchable is False
-    assert "required_artifact_unresolved" in {
-        issue.code for issue in report.issues
-    }
+    assert "required_artifact_unresolved" in {issue.code for issue in report.issues}
 
 
 async def test_prepare_api_preserves_a_long_multiline_request_end_to_end(
@@ -2141,13 +2115,10 @@ async def test_prepare_api_preserves_a_long_multiline_request_end_to_end(
     assert body["quality_report"]["status"] == "blocked"
     assert body["project_context"]["copy_ready"] is False
     assert "project_context_foundation_empty" in {
-        issue["code"]
-        for issue in body["project_context"]["quality_issues"]
-        if issue["blocks_copy"]
+        issue["code"] for issue in body["project_context"]["quality_issues"] if issue["blocks_copy"]
     }
     assert "mandatory_requirement_verification_unexecutable" in {
-        issue["code"]
-        for issue in body["quality_report"]["blocking_issues"]
+        issue["code"] for issue in body["quality_report"]["blocking_issues"]
     }
     unproven = next(
         issue
@@ -2168,9 +2139,7 @@ async def test_prepare_api_preserves_a_long_multiline_request_end_to_end(
     )
     assert execution is not None
     assert execution.request_verbatim == request
-    assert execution.request_sha256 == hashlib.sha256(
-        request.encode("utf-8")
-    ).hexdigest()
+    assert execution.request_sha256 == hashlib.sha256(request.encode("utf-8")).hexdigest()
 
 
 async def test_prepare_api_exposes_presentation_independent_task_identity(
@@ -2185,10 +2154,7 @@ async def test_prepare_api_exposes_presentation_independent_task_identity(
     )
     db_session.add(workspace)
     await db_session.flush()
-    objective = (
-        "daemonstate should send three things together: "
-        "Context:** What..."
-    )
+    objective = "daemonstate should send three things together: Context:** What..."
 
     response = await client.post(
         "/api/continuations/prepare",
@@ -2209,15 +2175,9 @@ async def test_prepare_api_exposes_presentation_independent_task_identity(
         "schema_version": "continuation_task_identity.v1",
         "id": body["task"]["id"],
         "workspace_id": str(workspace.id),
-        "selected_objective_key": (
-            "daemonstate should send three things together context what"
-        ),
-        "selected_objective_sha256": hashlib.sha256(
-            objective.encode("utf-8")
-        ).hexdigest(),
-        "authoritative_request_sha256": hashlib.sha256(
-            objective.encode("utf-8")
-        ).hexdigest(),
+        "selected_objective_key": ("daemonstate should send three things together context what"),
+        "selected_objective_sha256": hashlib.sha256(objective.encode("utf-8")).hexdigest(),
+        "authoritative_request_sha256": hashlib.sha256(objective.encode("utf-8")).hexdigest(),
         "workspace_goal_id": None,
         "selected_component_id": None,
     }
@@ -2287,13 +2247,15 @@ async def test_prepare_api_hashes_and_links_a_supplied_screenshot(
             "repo_path": str(tmp_path),
             "objective": "Match the supplied screenshot exactly.",
             "task_mode": "change",
-            "artifacts": [{
-                "id": "reference-ui",
-                "kind": "screenshot",
-                "path": str(screenshot),
-                "required": True,
-                "visual_summary": "Reference for the required UI state.",
-            }],
+            "artifacts": [
+                {
+                    "id": "reference-ui",
+                    "kind": "screenshot",
+                    "path": str(screenshot),
+                    "required": True,
+                    "visual_summary": "Reference for the required UI state.",
+                }
+            ],
         },
     )
 
@@ -2307,9 +2269,7 @@ async def test_prepare_api_hashes_and_links_a_supplied_screenshot(
     assert artifact["available"] is True
     assert artifact["sha256"] == hashlib.sha256(screenshot_bytes).hexdigest()
     assert artifact["requirement_ids"]
-    assert body["manifest"]["continuation"]["artifacts"][0]["path"] == (
-        str(screenshot)
-    )
+    assert body["manifest"]["continuation"]["artifacts"][0]["path"] == (str(screenshot))
 
 
 def test_artifact_references_reassign_only_colliding_ids(tmp_path) -> None:
@@ -2387,12 +2347,14 @@ async def test_run_api_reports_a_missing_required_attachment_quality_issue(
             "repo_path": str(tmp_path),
             "objective": "Match the supplied screenshot exactly.",
             "target_provider": "codex",
-            "artifacts": [{
-                "id": "missing-reference",
-                "kind": "screenshot",
-                "path": str(missing),
-                "required": True,
-            }],
+            "artifacts": [
+                {
+                    "id": "missing-reference",
+                    "kind": "screenshot",
+                    "path": str(missing),
+                    "required": True,
+                }
+            ],
         },
     )
 
@@ -2400,10 +2362,7 @@ async def test_run_api_reports_a_missing_required_attachment_quality_issue(
     detail = response.json()["detail"]
     assert detail["code"] == "continuation_quality_gate_failed"
     issues = detail["blocker"]["quality_report"]["issues"]
-    missing_issue = next(
-        item for item in issues
-        if item["code"] == "required_artifact_unresolved"
-    )
+    missing_issue = next(item for item in issues if item["code"] == "required_artifact_unresolved")
     assert missing_issue["artifact_id"] == "missing-reference"
     assert "not available with verified content" in missing_issue["message"]
 
@@ -2420,12 +2379,14 @@ async def test_durable_manifest_attachment_is_restored_and_hashed(
         db_session,
         tmp_path,
         request="Match the durable screenshot reference exactly.",
-        manifest_artifacts=[{
-            "id": "manifest-reference",
-            "kind": "screenshot",
-            "local_path": str(screenshot),
-            "required": True,
-        }],
+        manifest_artifacts=[
+            {
+                "id": "manifest-reference",
+                "kind": "screenshot",
+                "local_path": str(screenshot),
+                "required": True,
+            }
+        ],
     )
 
     assert len(compiled.contract.artifacts) == 1
@@ -2448,12 +2409,55 @@ async def test_review_mode_never_compiles_edit_authority(
     )
 
     assert compiled.contract.task_mode is TaskMode.REVIEW
-    assert (
-        compiled.contract.authority.filesystem_mode
-        is FilesystemMode.READ_ONLY
-    )
+    assert compiled.contract.authority.filesystem_mode is FilesystemMode.READ_ONLY
     assert compiled.contract.authority.allow_product_edits is False
     assert "without editing product files" in compiled.prompt_markdown
+
+    staging = render_continuation_staging_context(compiled.contract)
+    first_requirement = next(
+        item for item in compiled.contract.requirements if item.priority is RequirementPriority.MUST
+    )
+    assert f"{first_requirement.id} — {first_requirement.text.rstrip(' .!?;:')}" in staging
+    assert "without editing files" in staging
+
+
+async def test_staging_context_renders_concrete_actions_and_proof_obligations(
+    db_session,
+    tmp_path,
+) -> None:
+    request = (
+        "Update the project license so self-hosting is allowed but commercial "
+        "redistribution is prohibited. "
+        "Make the project self-hostable. "
+        "Add an operator setup command. "
+        "Document rollback steps. "
+        "Run the self-host smoke test."
+    )
+    compiled = await _compile(
+        db_session,
+        tmp_path,
+        request=request,
+    )
+
+    staging = render_continuation_staging_context(compiled.contract)
+    must_requirements = [
+        item for item in compiled.contract.requirements if item.priority is RequirementPriority.MUST
+    ]
+
+    assert len(must_requirements) == 5
+    assert "complete and verify R1–R5" not in staging
+    assert (
+        f"complete and verify {must_requirements[0].id} — "
+        f"{must_requirements[0].text.rstrip(' .!?;:')}"
+    ) in staging
+    assert "other 4 remaining requirements listed with full text" in staging
+    for requirement in must_requirements:
+        assert f"- {requirement.id} [remaining]: {requirement.text}" in staging
+    assert "proof: model rubric" not in staging.casefold()
+    assert (
+        "observed repository/runtime evidence that this exact requirement is "
+        "satisfied; prior-worker claims alone do not count"
+    ) in staging
 
 
 def test_checkpoint_sections_are_projected_without_markdown_round_trip() -> None:
@@ -2462,40 +2466,48 @@ def test_checkpoint_sections_are_projected_without_markdown_round_trip() -> None
             "id": "checkpoint-1",
             "schema_version": "work_checkpoint.v5",
             "sections": {
-                "progress": [{
-                    "id": "progress-1",
-                    "statement": "Implemented the request compiler.",
-                    "state": "completed",
-                    "truth_state": "reported",
-                    "payload": {},
-                    "evidence": [{"type": "session_event"}],
-                }],
-                "exact_next_action": [{
-                    "id": "next-1",
-                    "statement": "Run the focused contract tests.",
-                    "state": "active",
-                    "truth_state": "observed",
-                    "payload": {},
-                    "evidence": [],
-                }],
-                "decisions": [{
-                    "id": "decision-1",
-                    "statement": "Markdown is audit-only.",
-                    "state": "active",
-                    "truth_state": "reported",
-                    "payload": {},
-                    "evidence": [],
-                }],
+                "progress": [
+                    {
+                        "id": "progress-1",
+                        "statement": "Implemented the request compiler.",
+                        "state": "completed",
+                        "truth_state": "reported",
+                        "payload": {},
+                        "evidence": [{"type": "session_event"}],
+                    }
+                ],
+                "exact_next_action": [
+                    {
+                        "id": "next-1",
+                        "statement": "Run the focused contract tests.",
+                        "state": "active",
+                        "truth_state": "observed",
+                        "payload": {},
+                        "evidence": [],
+                    }
+                ],
+                "decisions": [
+                    {
+                        "id": "decision-1",
+                        "statement": "Markdown is audit-only.",
+                        "state": "active",
+                        "truth_state": "reported",
+                        "payload": {},
+                        "evidence": [],
+                    }
+                ],
                 "failed_attempts": [],
                 "blockers": [],
-                "relevant_files": [{
-                    "id": "file-1",
-                    "statement": "app/services/context_compiler.py",
-                    "state": "active",
-                    "truth_state": "observed",
-                    "payload": {},
-                    "evidence": [],
-                }],
+                "relevant_files": [
+                    {
+                        "id": "file-1",
+                        "statement": "app/services/context_compiler.py",
+                        "state": "active",
+                        "truth_state": "observed",
+                        "payload": {},
+                        "evidence": [],
+                    }
+                ],
                 "verification": [],
             },
         },
@@ -2510,16 +2522,9 @@ def test_checkpoint_sections_are_projected_without_markdown_round_trip() -> None
     handoff = structured_handoff_from_checkpoint(restored)
     candidate = _restored_checkpoint_candidate(restored)
 
-    assert handoff.completed[0].statement == (
-        "Implemented the request compiler."
-    )
-    assert (
-        handoff.completed[0].truth_state
-        is HandoffTruthState.AGENT_REPORTED
-    )
-    assert handoff.remaining[0].statement == (
-        "Run the focused contract tests."
-    )
+    assert handoff.completed[0].statement == ("Implemented the request compiler.")
+    assert handoff.completed[0].truth_state is HandoffTruthState.AGENT_REPORTED
+    assert handoff.remaining[0].statement == ("Run the focused contract tests.")
     assert "Completed:\n- [agent_reported]" in candidate.summary
     assert "\n\nRemaining:\n" in candidate.summary
     assert "Markdown is audit-only." in candidate.summary
@@ -2542,14 +2547,12 @@ def test_project_handoff_filters_process_noise_and_superseded_failure() -> None:
                 "decisions": [
                     {
                         "statement": (
-                            "I’m using the browser-control skill to inspect "
-                            "the visible page."
+                            "I’m using the browser-control skill to inspect the visible page."
                         ),
                     },
                     {
                         "statement": (
-                            "Project Context remains task-scoped and "
-                            "provider-independent."
+                            "Project Context remains task-scoped and provider-independent."
                         ),
                     },
                 ],
@@ -2561,9 +2564,11 @@ def test_project_handoff_filters_process_noise_and_superseded_failure() -> None:
                             "cwd": "/workspace",
                             "exit_code": 1,
                         },
-                        "evidence": [{
-                            "locator": {"sequence_number": 10},
-                        }],
+                        "evidence": [
+                            {
+                                "locator": {"sequence_number": 10},
+                            }
+                        ],
                     },
                     {
                         "statement": f"`{unresolved_command}` failed.",
@@ -2572,9 +2577,11 @@ def test_project_handoff_filters_process_noise_and_superseded_failure() -> None:
                             "cwd": "/workspace",
                             "exit_code": 1,
                         },
-                        "evidence": [{
-                            "locator": {"sequence_number": 30},
-                        }],
+                        "evidence": [
+                            {
+                                "locator": {"sequence_number": 30},
+                            }
+                        ],
                     },
                 ],
                 "blockers": [],
@@ -2589,9 +2596,11 @@ def test_project_handoff_filters_process_noise_and_superseded_failure() -> None:
                             "exit_code": 0,
                             "passed": True,
                         },
-                        "evidence": [{
-                            "locator": {"sequence_number": 15},
-                        }],
+                        "evidence": [
+                            {
+                                "locator": {"sequence_number": 15},
+                            }
+                        ],
                     },
                     {
                         "statement": f"`{repeated_command}` passed.",
@@ -2602,9 +2611,11 @@ def test_project_handoff_filters_process_noise_and_superseded_failure() -> None:
                             "exit_code": 0,
                             "passed": True,
                         },
-                        "evidence": [{
-                            "locator": {"sequence_number": 20},
-                        }],
+                        "evidence": [
+                            {
+                                "locator": {"sequence_number": 20},
+                            }
+                        ],
                     },
                     {
                         "statement": "`pytest -q` completed.",
@@ -2615,9 +2626,11 @@ def test_project_handoff_filters_process_noise_and_superseded_failure() -> None:
                             "exit_code": None,
                             "passed": None,
                         },
-                        "evidence": [{
-                            "locator": {"sequence_number": 25},
-                        }],
+                        "evidence": [
+                            {
+                                "locator": {"sequence_number": 25},
+                            }
+                        ],
                     },
                 ],
             },
@@ -2640,7 +2653,7 @@ def test_project_handoff_filters_process_noise_and_superseded_failure() -> None:
 def test_project_discovery_filter_rejects_unsafe_node_probe() -> None:
     safe_probe = (
         "node -e \"const p=require('./frontend/package.json'); "
-        "console.log(p.scripts)\" && "
+        'console.log(p.scripts)" && '
         ".venv/bin/python -m pytest --collect-only -q | tail -5"
     )
     unsafe_probe = (
@@ -2658,8 +2671,7 @@ async def test_project_compiler_excludes_discovery_only_verifier_and_tool_fact(
     tmp_path,
 ) -> None:
     discovery_command = (
-        "node -e \"console.log(require('./package.json').scripts)\" "
-        "&& pytest --collect-only -q"
+        "node -e \"console.log(require('./package.json').scripts)\" && pytest --collect-only -q"
     )
     selected_context = [
         {
@@ -2669,9 +2681,7 @@ async def test_project_compiler_excludes_discovery_only_verifier_and_tool_fact(
             "evidence_span_id": str(uuid4()),
             "item_type": "decision",
             "title": "Inspection approach",
-            "summary": (
-                "I’m using the browser-control skill to inspect the page."
-            ),
+            "summary": ("I’m using the browser-control skill to inspect the page."),
             "provenance_verified": True,
             "truth_state": "current",
             "status": "active",
@@ -2684,9 +2694,7 @@ async def test_project_compiler_excludes_discovery_only_verifier_and_tool_fact(
             "evidence_span_id": str(uuid4()),
             "item_type": "decision",
             "title": "Context boundary",
-            "summary": (
-                "Project Context remains task-scoped and provider-independent."
-            ),
+            "summary": ("Project Context remains task-scoped and provider-independent."),
             "provenance_verified": True,
             "truth_state": "current",
             "status": "active",
@@ -2701,9 +2709,7 @@ async def test_project_compiler_excludes_discovery_only_verifier_and_tool_fact(
             {"id": "discovery", "command": discovery_command},
             {
                 "id": "focused",
-                "command": (
-                    "pytest -q tests/test_continuation_execution_contract.py"
-                ),
+                "command": ("pytest -q tests/test_continuation_execution_contract.py"),
             },
         ],
         selected_context=selected_context,
@@ -2711,25 +2717,17 @@ async def test_project_compiler_excludes_discovery_only_verifier_and_tool_fact(
             *_COMPLETE_FOUNDATION,
             {
                 "title": "Context boundary decision",
-                "statement": (
-                    "Project Context remains workspace-wide and "
-                    "provider-independent."
-                ),
+                "statement": ("Project Context remains workspace-wide and provider-independent."),
                 "fact_type": "decision",
             },
         ],
     )
 
     commands = [
-        " ".join(item.command_argv)
-        for item in compiled.contract.verification
-        if item.command_argv
+        " ".join(item.command_argv) for item in compiled.contract.verification if item.command_argv
     ]
     assert discovery_command not in commands
-    assert any(
-        "test_continuation_execution_contract.py" in command
-        for command in commands
-    )
+    assert any("test_continuation_execution_contract.py" in command for command in commands)
     assert "Project Context remains workspace-wide and provider-independent." in {
         item.statement for item in compiled.contract.project_context
     }
@@ -2748,12 +2746,14 @@ async def test_repository_contract_preserves_deleted_xy_and_renders_kind(
         db_session,
         tmp_path,
         request="Preserve the existing deletion while inspecting the task.",
-        current_changed_files=[{
-            "status": " D",
-            "xy": " D",
-            "change_kind": "deleted",
-            "path": "app/services/codex_app_server_client.py",
-        }],
+        current_changed_files=[
+            {
+                "status": " D",
+                "xy": " D",
+                "change_kind": "deleted",
+                "path": "app/services/codex_app_server_client.py",
+            }
+        ],
     )
 
     change = compiled.contract.repository.preexisting_changes[0]
@@ -2776,15 +2776,14 @@ async def test_exact_requirement_command_mapping_is_launchable(
         tmp_path,
         request=request,
         foundation_facts=_COMPLETE_FOUNDATION,
-        commands=[{
-            "id": "V1",
-            "command": (
-                "python3 -m pytest -q "
-                "tests/test_continuation_execution_contract.py"
-            ),
-            "cwd": str(tmp_path),
-            "required": True,
-        }],
+        commands=[
+            {
+                "id": "V1",
+                "command": ("python3 -m pytest -q tests/test_continuation_execution_contract.py"),
+                "cwd": str(tmp_path),
+                "required": True,
+            }
+        ],
     )
     report = evaluate_continuation_quality(
         compiled.contract,
@@ -2801,9 +2800,7 @@ async def test_exact_requirement_command_mapping_is_launchable(
     )
     assert "V1" in requirement.verification_ids
     rubric = next(
-        item
-        for item in compiled.contract.verification
-        if item.id == f"VR-{requirement.id}"
+        item for item in compiled.contract.verification if item.id == f"VR-{requirement.id}"
     )
     assert rubric.required is False
 
@@ -2819,15 +2816,14 @@ async def test_completed_selected_task_is_persisted_reference_only_and_not_launc
         request=request,
         selected_task_lifecycle=SelectedTaskLifecycle.COMPLETED,
         foundation_facts=_COMPLETE_FOUNDATION,
-        commands=[{
-            "id": "V1",
-            "command": (
-                "python3 -m pytest -q "
-                "tests/test_continuation_execution_contract.py"
-            ),
-            "cwd": str(tmp_path),
-            "required": True,
-        }],
+        commands=[
+            {
+                "id": "V1",
+                "command": ("python3 -m pytest -q tests/test_continuation_execution_contract.py"),
+                "cwd": str(tmp_path),
+                "required": True,
+            }
+        ],
     )
     staged = render_continuation_staging_context(compiled.contract)
     report = evaluate_continuation_quality(
@@ -2838,16 +2834,12 @@ async def test_completed_selected_task_is_persisted_reference_only_and_not_launc
         expected_prompt_sha256=compiled.execution.prompt_sha256,
     )
 
-    assert compiled.contract.selected_task_lifecycle is (
-        SelectedTaskLifecycle.COMPLETED
-    )
+    assert compiled.contract.selected_task_lifecycle is (SelectedTaskLifecycle.COMPLETED)
     assert report.launchable is False
     assert report.automatic_execution_ready is False
-    assert {
-        issue.code
-        for issue in report.issues
-        if issue.severity == "blocking"
-    } == {"selected_task_completed"}
+    assert {issue.code for issue in report.issues if issue.severity == "blocking"} == {
+        "selected_task_completed"
+    }
     assert "### Completed goal retained for reference" in staged
     assert request in staged
     assert "### Authoritative current lead" not in staged
@@ -2876,24 +2868,19 @@ async def test_completed_selected_task_is_persisted_reference_only_and_not_launc
     actionable = evaluate_continuation_quality(
         compiled.contract,
         prompt_markdown=compiled.prompt_markdown,
-        project_context_markdown=(
-            staged + "\n### First action\n\nRe-run the completed task.\n"
-        ),
+        project_context_markdown=(staged + "\n### First action\n\nRe-run the completed task.\n"),
     )
     assert "project_context_copy_completed_action_present" in {
         issue.code for issue in actionable.issues
     }
 
-    persisted = ContinuationExecutionContract.model_validate_json(
-        compiled.execution.contract_json
-    )
-    assert persisted.selected_task_lifecycle is (
-        SelectedTaskLifecycle.COMPLETED
-    )
+    persisted = ContinuationExecutionContract.model_validate_json(compiled.execution.contract_json)
+    assert persisted.selected_task_lifecycle is (SelectedTaskLifecycle.COMPLETED)
     assert render_continuation_staging_context(persisted) == staged
-    assert compiled.execution.contract_sha256 == hashlib.sha256(
-        compiled.execution.contract_json.encode("utf-8")
-    ).hexdigest()
+    assert (
+        compiled.execution.contract_sha256
+        == hashlib.sha256(compiled.execution.contract_json.encode("utf-8")).hexdigest()
+    )
 
 
 async def test_explicit_repository_test_clause_maps_with_multiword_modifier(
@@ -2908,14 +2895,14 @@ async def test_explicit_repository_test_clause_maps_with_multiword_modifier(
             "and run the repository tests."
         ),
         foundation_facts=_COMPLETE_FOUNDATION,
-        commands=[{
-            "id": "V1",
-            "command": (
-                "python3 -m pytest -q tests/test_continuation.py"
-            ),
-            "cwd": str(tmp_path),
-            "required": True,
-        }],
+        commands=[
+            {
+                "id": "V1",
+                "command": ("python3 -m pytest -q tests/test_continuation.py"),
+                "cwd": str(tmp_path),
+                "required": True,
+            }
+        ],
     )
     report = evaluate_continuation_quality(
         compiled.contract,
@@ -2939,12 +2926,14 @@ async def test_unrelated_generic_check_does_not_prove_requirement(
         db_session,
         tmp_path,
         request="Implement invoice export.",
-        commands=[{
-            "id": "V1",
-            "command": "python3 -m pytest -q tests/test_auth.py",
-            "cwd": str(tmp_path),
-            "required": True,
-        }],
+        commands=[
+            {
+                "id": "V1",
+                "command": "python3 -m pytest -q tests/test_auth.py",
+                "cwd": str(tmp_path),
+                "required": True,
+            }
+        ],
     )
     report = evaluate_continuation_quality(
         compiled.contract,
@@ -2952,14 +2941,10 @@ async def test_unrelated_generic_check_does_not_prove_requirement(
     )
 
     assert report.launchable is False
-    command = next(
-        item for item in compiled.contract.verification if item.id == "V1"
-    )
+    command = next(item for item in compiled.contract.verification if item.id == "V1")
     assert command.required is False
     assert command.requirement_ids == ()
-    assert "verifier_executor_unavailable" in {
-        item.code for item in report.issues
-    }
+    assert "verifier_executor_unavailable" in {item.code for item in report.issues}
     assert "mandatory_requirement_verification_unexecutable" in {
         item.code for item in report.issues
     }
@@ -2973,12 +2958,14 @@ async def test_generic_token_overlap_cannot_prove_a_must_requirement(
         db_session,
         tmp_path,
         request="Implement API rate limiting.",
-        commands=[{
-            "id": "V1",
-            "command": "python3 -m pytest -q tests/api/test_health.py",
-            "cwd": str(tmp_path),
-            "required": True,
-        }],
+        commands=[
+            {
+                "id": "V1",
+                "command": "python3 -m pytest -q tests/api/test_health.py",
+                "cwd": str(tmp_path),
+                "required": True,
+            }
+        ],
     )
 
     must = next(
@@ -2986,9 +2973,7 @@ async def test_generic_token_overlap_cannot_prove_a_must_requirement(
         for requirement in compiled.contract.requirements
         if requirement.id in compiled.contract.definition_of_done
     )
-    verifier = next(
-        item for item in compiled.contract.verification if item.id == "V1"
-    )
+    verifier = next(item for item in compiled.contract.verification if item.id == "V1")
 
     assert "V1" not in must.verification_ids
     assert verifier.requirement_ids == ()
@@ -3003,13 +2988,15 @@ async def test_declared_requirement_link_can_authorize_a_focused_verifier(
         db_session,
         tmp_path,
         request="Implement API rate limiting.",
-        commands=[{
-            "id": "V1",
-            "command": "python3 -m pytest -q tests/api/test_rate_limit.py",
-            "cwd": str(tmp_path),
-            "required": True,
-            "requirement_ids": ["R1"],
-        }],
+        commands=[
+            {
+                "id": "V1",
+                "command": "python3 -m pytest -q tests/api/test_rate_limit.py",
+                "cwd": str(tmp_path),
+                "required": True,
+                "requirement_ids": ["R1"],
+            }
+        ],
     )
 
     must = next(
@@ -3017,9 +3004,7 @@ async def test_declared_requirement_link_can_authorize_a_focused_verifier(
         for requirement in compiled.contract.requirements
         if requirement.id in compiled.contract.definition_of_done
     )
-    verifier = next(
-        item for item in compiled.contract.verification if item.id == "V1"
-    )
+    verifier = next(item for item in compiled.contract.verification if item.id == "V1")
 
     assert must.id == "R1"
     assert "V1" in must.verification_ids
@@ -3036,32 +3021,28 @@ async def test_declared_browser_command_replaces_unexecutable_visual_placeholder
         tmp_path,
         request="The provider card appearance matches the required layout.",
         foundation_facts=_COMPLETE_FOUNDATION,
-        commands=[{
-            "id": "V1",
-            "command": "npm test -- frontend/src/pages/NowPage.test.jsx",
-            "cwd": str(tmp_path),
-            "required": True,
-            "requirement_ids": ["R1"],
-            "verifier_type": "browser_assertion",
-        }],
+        commands=[
+            {
+                "id": "V1",
+                "command": "npm test -- frontend/src/pages/NowPage.test.jsx",
+                "cwd": str(tmp_path),
+                "required": True,
+                "requirement_ids": ["R1"],
+                "verifier_type": "browser_assertion",
+            }
+        ],
     )
     report = evaluate_continuation_quality(
         compiled.contract,
         prompt_markdown=compiled.prompt_markdown,
     )
-    verifier = next(
-        item for item in compiled.contract.verification if item.id == "V1"
-    )
+    verifier = next(item for item in compiled.contract.verification if item.id == "V1")
 
     assert verifier.verifier_type is VerifierType.BROWSER_ASSERTION
     assert verifier.command_argv
-    assert "VS-R1" not in {
-        item.id for item in compiled.contract.verification
-    }
+    assert "VS-R1" not in {item.id for item in compiled.contract.verification}
     assert report.launchable is True
-    assert "verifier_command_missing" not in {
-        issue.code for issue in report.issues
-    }
+    assert "verifier_command_missing" not in {issue.code for issue in report.issues}
 
 
 async def test_unresolved_visual_attachment_remains_an_explicit_blocker(
@@ -3096,14 +3077,9 @@ async def test_unresolved_visual_attachment_remains_an_explicit_blocker(
     assert artifact_requirement.source_span_ids == ()
     assert artifact_requirement.source_artifact_ids == (artifact.id,)
     assert "<image" not in artifact_requirement.text
-    assert all(
-        "<image" not in span.text
-        for span in compiled.contract.source_spans
-    )
+    assert all("<image" not in span.text for span in compiled.contract.source_spans)
     assert report.launchable is False
-    issue_codes = {
-        item.code for item in report.issues
-    }
+    issue_codes = {item.code for item in report.issues}
     assert "required_artifact_unresolved" in issue_codes
     assert "verifier_command_missing" in issue_codes
     assert "unavailable" in compiled.prompt_markdown
@@ -3125,10 +3101,7 @@ async def test_request_image_markup_never_authorizes_a_local_file_read(
     compiled = await _compile(
         db_session,
         tmp_path,
-        request=(
-            "Match this screenshot exactly.\n"
-            f'<image path="{local_secret}"></image>'
-        ),
+        request=(f'Match this screenshot exactly.\n<image path="{local_secret}"></image>'),
     )
     artifact = compiled.contract.artifacts[0]
     report = evaluate_continuation_quality(
@@ -3139,9 +3112,7 @@ async def test_request_image_markup_never_authorizes_a_local_file_read(
     assert artifact.path == str(local_secret)
     assert artifact.available is False
     assert artifact.sha256 is None
-    assert "required_artifact_unresolved" in {
-        issue.code for issue in report.issues
-    }
+    assert "required_artifact_unresolved" in {issue.code for issue in report.issues}
 
 
 def _git_init_for_artifact_test(repo_path) -> None:

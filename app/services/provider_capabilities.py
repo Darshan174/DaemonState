@@ -109,30 +109,32 @@ def required_capabilities(contract: Any) -> tuple[str, ...]:
     """Return deterministic task capabilities, tolerating v1 schema growth."""
 
     declared = _field(contract, "required_capabilities", ())
-    result = {
-        str(value).strip()
-        for value in _iterable(declared)
-        if str(value).strip()
-    }
+    result = {str(value).strip() for value in _iterable(declared) if str(value).strip()}
     result.add("command_execution")
 
     mode = _task_mode(contract)
     authority = _field(contract, "authority", {})
-    allow_edits = bool(
-        _field(authority, "allow_product_edits", mode == TaskMode.CHANGE)
-    )
+    allow_edits = bool(_field(authority, "allow_product_edits", mode == TaskMode.CHANGE))
     if not allow_edits:
         result.add("permission_modes")
 
     artifacts = _iterable(_field(contract, "artifacts", ()))
     for artifact in artifacts:
-        kind = str(
-            _field(artifact, "kind", _field(artifact, "artifact_type", ""))
-        ).strip().lower()
-        if kind in {"image", "screenshot", "visual_reference"}:
-            durable_summary = _field(artifact, "visual_summary", None)
-            if not durable_summary:
-                result.add("image_input")
+        kind = str(_field(artifact, "kind", _field(artifact, "artifact_type", ""))).strip().lower()
+        mime_type = str(_field(artifact, "mime_type", "") or "").strip().lower()
+        required = bool(_field(artifact, "required", True))
+        available = bool(_field(artifact, "available", True))
+        if (
+            required
+            and available
+            and (
+                kind in {"image", "screenshot", "visual_reference"}
+                or mime_type.startswith("image/")
+            )
+        ):
+            # A prose summary is derived evidence, not a substitute for the
+            # exact visual bytes when the artifact remains task input.
+            result.add("image_input")
         if _field(artifact, "path", _field(artifact, "local_path", None)):
             result.add("file_context")
     return tuple(sorted(result))
@@ -160,16 +162,18 @@ def check_provider_capabilities(
             "structured_events": "supports_structured_events",
         }.get(requirement)
         supported = bool(attribute and getattr(capabilities, attribute))
-        checks.append(CapabilityCheck(
-            capability=requirement,
-            supported=supported,
-            message=(
-                f"{capabilities.provider} supports {requirement}."
-                if supported
-                else f"{capabilities.provider} cannot enforce required capability "
-                f"{requirement} for this task."
-            ),
-        ))
+        checks.append(
+            CapabilityCheck(
+                capability=requirement,
+                supported=supported,
+                message=(
+                    f"{capabilities.provider} supports {requirement}."
+                    if supported
+                    else f"{capabilities.provider} cannot enforce required capability "
+                    f"{requirement} for this task."
+                ),
+            )
+        )
     return tuple(checks)
 
 

@@ -125,9 +125,7 @@ async def test_prepare_continuation_infers_task_and_captures_session_tip(
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["schema_version"] == "continuation.v1"
-    assert body["objective"] == (
-        "Implement zero-curation continuation for the active coding task."
-    )
+    assert body["objective"] == ("Implement zero-curation continuation for the active coding task.")
     assert body["task"]["origin"] == "session"
     assert body["source_session"]["provider"] == "codex"
     assert body["source_session"]["session_id"] == "zero-curation"
@@ -135,9 +133,7 @@ async def test_prepare_continuation_infers_task_and_captures_session_tip(
     assert body["context_pack_id"]
     assert body["manifest"]["continuation"]["checkpoint_id"] == body["checkpoint"]["id"]
     assert "Restored Session Checkpoint" in body["markdown"]
-    assert body["project_context"]["schema_version"] == (
-        "continuation_staging_context.v1"
-    )
+    assert body["project_context"]["schema_version"] == ("continuation_staging_context.v1")
     assert body["project_context"]["scope"] == "project"
     assert body["project_context"]["copy_ready"] is True
     assert body["quality_report"]["launchable"] is False
@@ -145,28 +141,21 @@ async def test_prepare_continuation_infers_task_and_captures_session_tip(
     verification_issue = next(
         item
         for item in body["project_context"]["quality_issues"]
-        if item["code"]
-        == "mandatory_requirement_verification_unexecutable"
+        if item["code"] == "mandatory_requirement_verification_unexecutable"
     )
     assert verification_issue["blocks_current_execution"] is True
     assert verification_issue["blocks_copy"] is False
     assert body["project_context"]["estimated_tokens"] > 0
-    assert body["project_context"]["sha256"] == hashlib.sha256(
-        body["project_context"]["content"].encode("utf-8")
-    ).hexdigest()
-    assert "### Authoritative current lead" in (
-        body["project_context"]["content"]
+    assert (
+        body["project_context"]["sha256"]
+        == hashlib.sha256(body["project_context"]["content"].encode("utf-8")).hexdigest()
     )
+    assert "### Authoritative current lead" in (body["project_context"]["content"])
     assert body["objective"] in body["project_context"]["content"]
-    assert "### Reconciliation and unresolved state" in (
-        body["project_context"]["content"]
-    )
+    assert "### Reconciliation and unresolved state" in (body["project_context"]["content"])
     assert body["project_context"]["content"] != body["markdown"]
     assert body["project_context"]["content"] != body["execution_prompt"]
-    assert any(
-        item["code"] == "agent_progress_is_reported"
-        for item in body["attention"]
-    )
+    assert any(item["code"] == "agent_progress_is_reported" for item in body["attention"])
 
 
 async def test_prepare_continuation_repairs_an_interrupted_checkpoint_shell(
@@ -219,20 +208,18 @@ async def test_prepare_continuation_repairs_an_interrupted_checkpoint_shell(
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["checkpoint"]["id"] == str(shell_id)
-    assert body["source_session"]["session_id"] == (
-        "repair-interrupted-checkpoint"
-    )
+    assert body["source_session"]["session_id"] == ("repair-interrupted-checkpoint")
     db_session.expire_all()
     repaired = await db_session.get(WorkCheckpoint, shell_id)
     assert repaired is not None
-    assert repaired.payload_sha256 == hashlib.sha256(
-        repaired.payload_json.encode("utf-8")
-    ).hexdigest()
-    assert list(await db_session.scalars(
-        select(CheckpointItem).where(
-            CheckpointItem.checkpoint_id == shell_id
+    assert (
+        repaired.payload_sha256 == hashlib.sha256(repaired.payload_json.encode("utf-8")).hexdigest()
+    )
+    assert list(
+        await db_session.scalars(
+            select(CheckpointItem).where(CheckpointItem.checkpoint_id == shell_id)
         )
-    ))
+    )
 
 
 async def test_completed_selected_task_blocks_execution_but_allows_project_context_copy(
@@ -313,8 +300,7 @@ async def test_completed_selected_task_blocks_execution_but_allows_project_conte
     assert completed_issue.get("blocks_current_execution", True) is True
     assert completed_issue["blocks_copy"] is False
     assert any(
-        item["code"] == "selected_task_completed"
-        for item in body["readiness"]["blocking_issues"]
+        item["code"] == "selected_task_completed" for item in body["readiness"]["blocking_issues"]
     )
 
 
@@ -342,15 +328,10 @@ async def test_prepare_never_marks_mixed_time_repository_context_copy_ready(
     _initialize_git_repository(tmp_path)
     tracked = tmp_path / "app" / "continuation.py"
     original_content = tracked.read_text(encoding="utf-8")
-    changed_content = (
-        "def prepare_continuation():\n"
-        f"    return {mutation_point!r}\n"
-    )
+    changed_content = f"def prepare_continuation():\n    return {mutation_point!r}\n"
 
     if mutation_point == "context_scan_then_revert":
-        original_compile = (
-            continuation_module.ContextCompiler.compile_context_pack
-        )
+        original_compile = continuation_module.ContextCompiler.compile_context_pack
 
         async def scan_transient_repository_state(compiler, *args, **kwargs):
             tracked.write_text(changed_content, encoding="utf-8")
@@ -364,9 +345,7 @@ async def test_prepare_never_marks_mixed_time_repository_context_copy_ready(
             scan_transient_repository_state,
         )
     else:
-        original_execution_compile = (
-            continuation_module.compile_and_persist_continuation_execution
-        )
+        original_execution_compile = continuation_module.compile_and_persist_continuation_execution
 
         async def mutate_after_contract_compile(*args, **kwargs):
             compiled = await original_execution_compile(*args, **kwargs)
@@ -395,8 +374,7 @@ async def test_prepare_never_marks_mixed_time_repository_context_copy_ready(
         (
             issue
             for issue in body["project_context"]["quality_issues"]
-            if issue["code"]
-            == "project_context_repository_changed_during_prepare"
+            if issue["code"] == "project_context_repository_changed_during_prepare"
         ),
         None,
     )
@@ -443,17 +421,12 @@ async def test_prepare_binds_pack_and_contract_to_one_repository_snapshot(
     contract_repository = body["execution_contract"]["repository"]
     assert authoritative["status_fingerprint"] == current["status_fingerprint"]
     assert repo_state["status_fingerprint"] == current["status_fingerprint"]
-    assert (
-        contract_repository["status_fingerprint"]
-        == current["status_fingerprint"]
-    )
+    assert contract_repository["status_fingerprint"] == current["status_fingerprint"]
     assert authoritative["head_commit"] == current["head_commit"]
     assert repo_state["head_commit"] == current["head_commit"]
     assert contract_repository["head_commit"] == current["head_commit"]
     manifest_change = next(
-        item
-        for item in repo_state["changed_files"]
-        if item["path"] == "app/continuation.py"
+        item for item in repo_state["changed_files"] if item["path"] == "app/continuation.py"
     )
     contract_change = next(
         item
@@ -461,12 +434,9 @@ async def test_prepare_binds_pack_and_contract_to_one_repository_snapshot(
         if item["path"] == "app/continuation.py"
     )
     assert manifest_change["sha256"] == contract_change["content_sha256"]
-    assert body["project_context"]["copy_ready"] is True, body[
-        "project_context"
-    ]["quality_issues"]
+    assert body["project_context"]["copy_ready"] is True, body["project_context"]["quality_issues"]
     assert not any(
-        issue["code"]
-        == "project_context_repository_changed_during_prepare"
+        issue["code"] == "project_context_repository_changed_during_prepare"
         for issue in body["project_context"]["quality_issues"]
     )
 
@@ -519,10 +489,7 @@ async def test_prepare_blocks_project_context_copy_for_contract_blocker(
     assert response.status_code == 200
     project_context = response.json()["project_context"]
     assert project_context["copy_ready"] is False
-    issues = {
-        issue["code"]: issue
-        for issue in project_context["quality_issues"]
-    }
+    issues = {issue["code"]: issue for issue in project_context["quality_issues"]}
     assert issues["required_artifact_unresolved"] == {
         "code": "required_artifact_unresolved",
         "severity": "blocking",
@@ -531,9 +498,7 @@ async def test_prepare_blocks_project_context_copy_for_contract_blocker(
         "blocks_current_execution": True,
         "blocks_copy": True,
     }
-    assert issues[
-        "mandatory_requirement_verification_unexecutable"
-    ]["blocks_copy"] is False
+    assert issues["mandatory_requirement_verification_unexecutable"]["blocks_copy"] is False
 
 
 async def test_checkpoint_project_context_recovers_lossless_request_and_images(
@@ -557,28 +522,23 @@ async def test_checkpoint_project_context_recovers_lossless_request_and_images(
         path.write_bytes(content)
         image_paths.append(path)
         image_contents.append(content)
-        image_inputs.append({
-            "mime_type": "image/png",
-            "sha256": hashlib.sha256(content).hexdigest(),
-            "size_bytes": len(content),
-        })
+        image_inputs.append(
+            {
+                "mime_type": "image/png",
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "size_bytes": len(content),
+            }
+        )
     task_text = (
         "Use the historical prompt report as context. "
         "WORK ON THIS AND GET THIS DONE. Implement the Session Context and "
         "Project Context split and verify the visible workflow.\n"
-        + "\n".join(
-            f'<image path="{path}"></image>' for path in image_paths
-        )
+        + "\n".join(f'<image path="{path}"></image>' for path in image_paths)
         + "\n"
     )
     padding_length = 687 - len(task_text)
     assert padding_length > 0
-    request = (
-        task_text
-        + ("Keep every user-authored requirement intact. " * 30)[
-            :padding_length
-        ]
-    )
+    request = task_text + ("Keep every user-authored requirement intact. " * 30)[:padding_length]
     assert len(request) == 687
 
     workspace = await _seed_session(
@@ -591,43 +551,51 @@ async def test_checkpoint_project_context_recovers_lossless_request_and_images(
     sessions_dir = codex_home / "sessions" / "2026" / "07" / "27"
     sessions_dir.mkdir(parents=True)
     rollout = sessions_dir / "rollout.jsonl"
-    rollout.write_text("\n".join([
-        json.dumps({
-            "type": "response_item",
-            "payload": {
-                "type": "message",
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": request},
-                    *[
-                        {
-                            "type": "input_image",
-                            "image_url": (
-                                "data:image/png;base64,"
-                                + base64.b64encode(content).decode("ascii")
-                            ),
-                        }
-                        for content in image_contents
-                    ],
-                ],
-            },
-        }),
-        json.dumps({
-            "type": "event_msg",
-            "payload": {
-                "type": "user_message",
-                "message": request,
-                "local_images": [str(path) for path in image_paths],
-            },
-        }),
-    ]), encoding="utf-8")
+    rollout.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": request},
+                                *[
+                                    {
+                                        "type": "input_image",
+                                        "image_url": (
+                                            "data:image/png;base64,"
+                                            + base64.b64encode(content).decode("ascii")
+                                        ),
+                                    }
+                                    for content in image_contents
+                                ],
+                            ],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "user_message",
+                            "message": request,
+                            "local_images": [str(path) for path in image_paths],
+                        },
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(settings, "codex_home", str(codex_home))
     monkeypatch.setattr(settings, "data_dir", str(tmp_path / "data"))
     source_document = await db_session.scalar(
         select(SourceDocument).where(
             SourceDocument.workspace_id == workspace.id,
-            SourceDocument.external_id
-            == "codex:session:lossless-visual-checkpoint",
+            SourceDocument.external_id == "codex:session:lossless-visual-checkpoint",
         )
     )
     assert source_document is not None
@@ -637,16 +605,17 @@ async def test_checkpoint_project_context_recovers_lossless_request_and_images(
     goal_event = await db_session.scalar(
         select(SessionEvent).where(
             SessionEvent.workspace_id == workspace.id,
-            SessionEvent.provider_event_id
-            == "codex:lossless-visual-checkpoint:user",
+            SessionEvent.provider_event_id == "codex:lossless-visual-checkpoint:user",
         )
     )
     assert goal_event is not None
-    goal_event.payload_json = json.dumps({
-        "cwd": str(tmp_path),
-        "local_images": [str(path) for path in image_paths],
-        "input_images": image_inputs,
-    })
+    goal_event.payload_json = json.dumps(
+        {
+            "cwd": str(tmp_path),
+            "local_images": [str(path) for path in image_paths],
+            "input_images": image_inputs,
+        }
+    )
     _initialize_git_repository(tmp_path)
     checkpoint = await capture_checkpoint(
         db_session,
@@ -670,16 +639,11 @@ async def test_checkpoint_project_context_recovers_lossless_request_and_images(
     body = response.json()
     contract = body["execution_contract"]
     assert contract["task"]["request_verbatim"] == request
-    assert contract["task"]["request_sha256"] == hashlib.sha256(
-        request.encode("utf-8")
-    ).hexdigest()
+    assert contract["task"]["request_sha256"] == hashlib.sha256(request.encode("utf-8")).hexdigest()
     assert contract["task_mode"] == "change"
     assert body["project_context"]["copy_ready"] is True, body["project_context"]
     assert len(contract["artifacts"]) == 3
-    requirements = {
-        requirement["id"]: requirement
-        for requirement in contract["requirements"]
-    }
+    requirements = {requirement["id"]: requirement for requirement in contract["requirements"]}
     for index, artifact in enumerate(contract["artifacts"]):
         assert artifact["id"] == f"A{index + 1}"
         assert artifact["available"] is True
@@ -694,14 +658,10 @@ async def test_checkpoint_project_context_recovers_lossless_request_and_images(
         assert linked["source_span_ids"] == []
         assert linked["source_artifact_ids"] == [artifact["id"]]
     assert all(
-        "<image" not in span["text"]
-        and "</image>" not in span["text"]
+        "<image" not in span["text"] and "</image>" not in span["text"]
         for span in contract["source_spans"]
     )
-    assert all(
-        "<image" not in requirement["text"]
-        for requirement in contract["requirements"]
-    )
+    assert all("<image" not in requirement["text"] for requirement in contract["requirements"])
     for artifact in contract["artifacts"]:
         assert artifact["id"] in body["project_context"]["content"]
         assert artifact["path"] in body["project_context"]["content"]
@@ -711,20 +671,13 @@ async def test_checkpoint_project_context_recovers_lossless_request_and_images(
         "Portable bundle-relative locator (not yet materialized):"
         in body["project_context"]["content"]
     )
-    assert (
-        "DAEMONSTATE_EXECUTION_BUNDLE_PATH"
-        not in body["project_context"]["content"]
-    )
+    assert "DAEMONSTATE_EXECUTION_BUNDLE_PATH" not in body["project_context"]["content"]
     assert "Runtime bundle delivery:" in body["execution_prompt"]
     assert "Requirement linkage:" in body["project_context"]["content"]
     assert "Verification guidance:" in body["project_context"]["content"]
+    assert "inline `<image path=...>` tag" not in body["project_context"]["content"]
     assert (
-        "inline `<image path=...>` tag"
-        not in body["project_context"]["content"]
-    )
-    assert (
-        "Never reopen its original provider/source path"
-        not in body["project_context"]["content"]
+        "Never reopen its original provider/source path" not in body["project_context"]["content"]
     )
 
 
@@ -756,23 +709,25 @@ async def test_prepare_continuation_recovers_legacy_command_failure_checkpoint(
         )
     )
     assert exact_next is not None
-    exact_next.statement = (
-        "Fix the failure from `tool:write_stdin` and rerun that command."
+    exact_next.statement = "Fix the failure from `tool:write_stdin` and rerun that command."
+    db_session.add(
+        CheckpointItem(
+            checkpoint_id=checkpoint.id,
+            item_key="blockers:legacy-command-result",
+            category="blockers",
+            ordinal=0,
+            statement="Latest run of `tool:write_stdin` is failing.",
+            state="active",
+            truth_state="observed",
+            payload_json=json.dumps(
+                {
+                    "command": "tool:write_stdin",
+                    "cwd": None,
+                    "exit_code": 1,
+                }
+            ),
+        )
     )
-    db_session.add(CheckpointItem(
-        checkpoint_id=checkpoint.id,
-        item_key="blockers:legacy-command-result",
-        category="blockers",
-        ordinal=0,
-        statement="Latest run of `tool:write_stdin` is failing.",
-        state="active",
-        truth_state="observed",
-        payload_json=json.dumps({
-            "command": "tool:write_stdin",
-            "cwd": None,
-            "exit_code": 1,
-        }),
-    ))
     await db_session.commit()
 
     response = await client.post(
@@ -789,12 +744,10 @@ async def test_prepare_continuation_recovers_legacy_command_failure_checkpoint(
     body = response.json()
     assert body["readiness"]["status"] == "review_required"
     assert "mandatory_requirement_verification_unexecutable" not in {
-        item["code"]
-        for item in body["readiness"]["blocking_issues"]
+        item["code"] for item in body["readiness"]["blocking_issues"]
     }
     assert "mandatory_requirement_verification_unexecutable" in {
-        item["code"]
-        for item in body["quality_report"]["blocking_issues"]
+        item["code"] for item in body["quality_report"]["blocking_issues"]
     }
     assert body["project_context"]["copy_ready"] is True
     assert body["checkpoint"]["continuation_status"] == "review_required"
@@ -844,9 +797,7 @@ async def test_prepare_continuation_uses_the_exact_requested_source_session(
     assert body["source_session"]["session_id"] == "requested-claude-session"
     assert body["checkpoint"]["goal"] == goal
     assert body["manifest"]["continuation"]["provider"] == "claude"
-    assert body["manifest"]["continuation"]["session_id"] == (
-        "requested-claude-session"
-    )
+    assert body["manifest"]["continuation"]["session_id"] == ("requested-claude-session")
 
 
 async def test_exact_source_session_recovers_its_latest_truncated_request(
@@ -874,20 +825,21 @@ async def test_exact_source_session_recovers_its_latest_truncated_request(
         session_id="truncated-project-context",
         occurred_at="2026-07-23T09:00:00Z",
     )
-    db_session.add(CodeFile(
-        workspace_id=workspace.id,
-        repo_root=str(tmp_path),
-        path="app/continuation.py",
-        identity_key=uuid4().hex * 2,
-        language="python",
-        sha256="1" * 64,
-        size=10,
-    ))
+    db_session.add(
+        CodeFile(
+            workspace_id=workspace.id,
+            repo_root=str(tmp_path),
+            path="app/continuation.py",
+            identity_key=uuid4().hex * 2,
+            language="python",
+            sha256="1" * 64,
+            size=10,
+        )
+    )
     previous_document = await db_session.scalar(
         select(SourceDocument).where(
             SourceDocument.workspace_id == workspace.id,
-            SourceDocument.external_id
-            == "codex:session:truncated-project-context",
+            SourceDocument.external_id == "codex:session:truncated-project-context",
         )
     )
     assert previous_document is not None
@@ -942,15 +894,13 @@ async def test_exact_source_session_recovers_its_latest_truncated_request(
     goal_event = await db_session.scalar(
         select(SessionEvent).where(
             SessionEvent.workspace_id == workspace.id,
-            SessionEvent.provider_event_id
-            == "truncated-project-context:latest-user",
+            SessionEvent.provider_event_id == "truncated-project-context:latest-user",
         )
     )
     tip_event = await db_session.scalar(
         select(SessionEvent).where(
             SessionEvent.workspace_id == workspace.id,
-            SessionEvent.provider_event_id
-            == "truncated-project-context:latest-assistant",
+            SessionEvent.provider_event_id == "truncated-project-context:latest-assistant",
         )
     )
     assert goal_event is not None
@@ -971,12 +921,12 @@ async def test_exact_source_session_recovers_its_latest_truncated_request(
     )
     assert goal_item is not None
     goal_item.statement = "[output truncated]"
-    goal_item.payload_json = json.dumps({
-        "request_verbatim": truncated,
-        "request_sha256": hashlib.sha256(
-            truncated.encode("utf-8")
-        ).hexdigest(),
-    })
+    goal_item.payload_json = json.dumps(
+        {
+            "request_verbatim": truncated,
+            "request_sha256": hashlib.sha256(truncated.encode("utf-8")).hexdigest(),
+        }
+    )
     goal_event.content = truncated
     await db_session.commit()
 
@@ -991,16 +941,12 @@ async def test_exact_source_session_recovers_its_latest_truncated_request(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["execution_contract"]["task"]["request_verbatim"] == (
-        authoritative_request
-    )
+    assert body["execution_contract"]["task"]["request_verbatim"] == (authoritative_request)
     assert body["objective"] == " ".join(authoritative_request.split())
     assert "FULL_PROJECT_CONTEXT_REQUEST" in body["execution_prompt"]
     assert "INNER_DECOY_" not in body["execution_prompt"]
     assert "[output truncated]" not in body["execution_prompt"]
-    assert older_request not in body["execution_contract"]["task"][
-        "request_verbatim"
-    ]
+    assert older_request not in body["execution_contract"]["task"]["request_verbatim"]
     handoff = body["execution_contract"]["handoff"]
     restored_progress = next(
         item
@@ -1009,15 +955,10 @@ async def test_exact_source_session_recovers_its_latest_truncated_request(
     )
     assert restored_progress["truth_state"] in {"stale", "unknown"}
     assert any(
-        "PROJECT_CONTEXT_NEXT_ACTION_RESTORED" in item["statement"]
-        for item in handoff["remaining"]
+        "PROJECT_CONTEXT_NEXT_ACTION_RESTORED" in item["statement"] for item in handoff["remaining"]
     )
-    assert "PROJECT_CONTEXT_PROGRESS_RESTORED" not in body["project_context"][
-        "content"
-    ]
-    assert "PROJECT_CONTEXT_NEXT_ACTION_RESTORED" not in body["project_context"][
-        "content"
-    ]
+    assert "PROJECT_CONTEXT_PROGRESS_RESTORED" not in body["project_context"]["content"]
+    assert "PROJECT_CONTEXT_NEXT_ACTION_RESTORED" not in body["project_context"]["content"]
     assert "### First action" in body["project_context"]["content"]
     assert "MUST status:" in body["project_context"]["content"]
     assert "INNER_DECOY_" not in body["project_context"]["content"]
@@ -1084,17 +1025,11 @@ async def test_project_context_materializes_referenced_conversation_end_to_end(
     assert body["execution_contract"]["task"]["request_verbatim"] == lead
     assert body["execution_contract"]["supporting_context"][1]["role"] == "assistant"
     assert (
-        "> [historical assistant] Use two context products."
-        in body["project_context"]["content"]
+        "> [historical assistant] Use two context products." in body["project_context"]["content"]
     )
-    requirements = {
-        item["text"] for item in body["execution_contract"]["requirements"]
-    }
+    requirements = {item["text"] for item in body["execution_contract"]["requirements"]}
     assert "Session Context must carry the current session checkpoint." in requirements
-    assert (
-        "Project Context must carry task-relevant workspace knowledge."
-        in requirements
-    )
+    assert "Project Context must carry task-relevant workspace knowledge." in requirements
     assert "referenced_context_unresolved" not in {
         item["code"] for item in body["quality_report"]["issues"]
     }
@@ -1105,9 +1040,8 @@ async def test_explicit_checkpoint_recovers_goal_before_compatibility_gate(
     db_session,
     tmp_path,
 ) -> None:
-    request = (
-        "Build Project Context from this exact source-backed checkpoint. "
-        + ("Preserve every authoritative requirement. " * 12)
+    request = "Build Project Context from this exact source-backed checkpoint. " + (
+        "Preserve every authoritative requirement. " * 12
     )
     workspace = await _seed_session(
         db_session,
@@ -1132,18 +1066,19 @@ async def test_explicit_checkpoint_recovers_goal_before_compatibility_gate(
     goal_event = await db_session.scalar(
         select(SessionEvent).where(
             SessionEvent.workspace_id == workspace.id,
-            SessionEvent.provider_event_id
-            == "codex:explicit-recovered-checkpoint:user",
+            SessionEvent.provider_event_id == "codex:explicit-recovered-checkpoint:user",
         )
     )
     assert goal_item is not None
     assert goal_event is not None
     truncated = f"{request[:300]}\n[output truncated]"
     goal_item.statement = "[output truncated]"
-    goal_item.payload_json = json.dumps({
-        "request_verbatim": truncated,
-        "request_sha256": hashlib.sha256(truncated.encode("utf-8")).hexdigest(),
-    })
+    goal_item.payload_json = json.dumps(
+        {
+            "request_verbatim": truncated,
+            "request_sha256": hashlib.sha256(truncated.encode("utf-8")).hexdigest(),
+        }
+    )
     goal_event.content = truncated
     await db_session.commit()
 
@@ -1170,9 +1105,7 @@ async def test_exact_source_session_does_not_fall_back_when_recovery_is_ambiguou
     tmp_path,
 ) -> None:
     older_request = "Implement the obsolete Project Context task."
-    shared_prefix = "Build the exact Project Context task. " + (
-        "shared-source-prefix-" * 20
-    )
+    shared_prefix = "Build the exact Project Context task. " + ("shared-source-prefix-" * 20)
     first_request = f"{shared_prefix}FIRST_ENDING"
     second_request = f"{shared_prefix}SECOND_ENDING"
     workspace = await _seed_session(
@@ -1182,20 +1115,21 @@ async def test_exact_source_session_does_not_fall_back_when_recovery_is_ambiguou
         session_id="ambiguous-project-context",
         occurred_at="2026-07-23T09:00:00Z",
     )
-    db_session.add(CodeFile(
-        workspace_id=workspace.id,
-        repo_root=str(tmp_path),
-        path="app/continuation.py",
-        identity_key=uuid4().hex * 2,
-        language="python",
-        sha256="1" * 64,
-        size=10,
-    ))
+    db_session.add(
+        CodeFile(
+            workspace_id=workspace.id,
+            repo_root=str(tmp_path),
+            path="app/continuation.py",
+            identity_key=uuid4().hex * 2,
+            language="python",
+            sha256="1" * 64,
+            size=10,
+        )
+    )
     previous_document = await db_session.scalar(
         select(SourceDocument).where(
             SourceDocument.workspace_id == workspace.id,
-            SourceDocument.external_id
-            == "codex:session:ambiguous-project-context",
+            SourceDocument.external_id == "codex:session:ambiguous-project-context",
         )
     )
     assert previous_document is not None
@@ -1244,9 +1178,7 @@ async def test_exact_source_session_does_not_fall_back_when_recovery_is_ambiguou
     )
 
     assert response.status_code == 404
-    assert response.json()["detail"]["code"] == (
-        "continuation_source_session_not_found"
-    )
+    assert response.json()["detail"]["code"] == ("continuation_source_session_not_found")
     assert older_request not in response.text
     assert "FIRST_ENDING" not in response.text
     assert "SECOND_ENDING" not in response.text
@@ -1264,11 +1196,13 @@ async def test_exact_source_session_overrides_an_unrelated_workspace_goal(
         goal=session_goal,
         session_id="exact-source-over-current-goal",
     )
-    db_session.add(WorkspaceGoal(
-        workspace_id=workspace.id,
-        title="Work on an unrelated selected workspace goal.",
-        status="active",
-    ))
+    db_session.add(
+        WorkspaceGoal(
+            workspace_id=workspace.id,
+            title="Work on an unrelated selected workspace goal.",
+            status="active",
+        )
+    )
     await db_session.commit()
 
     response = await client.post(
@@ -1286,9 +1220,7 @@ async def test_exact_source_session_overrides_an_unrelated_workspace_goal(
     assert body["objective"] == session_goal
     assert body["task"]["origin"] == "session"
     assert body["source_session"]["provider"] == "codex"
-    assert body["source_session"]["session_id"] == (
-        "exact-source-over-current-goal"
-    )
+    assert body["source_session"]["session_id"] == ("exact-source-over-current-goal")
 
 
 async def test_reported_checkpoint_blocker_is_advisory_not_launch_authority(
@@ -1322,9 +1254,7 @@ async def test_reported_checkpoint_blocker_is_advisory_not_launch_authority(
                 sequence_number=3,
                 event_type="assistant_update",
                 role="assistant",
-                content=(
-                    "Blocker: the agent is waiting for a continuation policy fix."
-                ),
+                content=("Blocker: the agent is waiting for a continuation policy fix."),
                 payload={"cwd": str(tmp_path)},
             ),
         ],
@@ -1345,8 +1275,7 @@ async def test_reported_checkpoint_blocker_is_advisory_not_launch_authority(
     body = response.json()
     assert body["readiness"]["status"] == "review_required"
     assert "mandatory_requirement_verification_unexecutable" not in {
-        item["code"]
-        for item in body["readiness"]["blocking_issues"]
+        item["code"] for item in body["readiness"]["blocking_issues"]
     }
     assert "mandatory_requirement_verification_unexecutable" in {
         item["code"]
@@ -1446,10 +1375,7 @@ async def test_continuation_source_session_requires_a_complete_pair(
             },
         )
         assert response.status_code == 422, response.text
-        assert (
-            "source_provider and source_session_id must be provided together"
-            in response.text
-        )
+        assert "source_provider and source_session_id must be provided together" in response.text
 
 
 async def test_exact_source_session_fails_explicitly_when_missing_or_mismatched(
@@ -1489,13 +1415,9 @@ async def test_exact_source_session_fails_explicitly_when_missing_or_mismatched(
     )
 
     assert mismatch.status_code == 422, mismatch.text
-    assert mismatch.json()["detail"]["code"] == (
-        "continuation_source_session_objective_mismatch"
-    )
+    assert mismatch.json()["detail"]["code"] == ("continuation_source_session_objective_mismatch")
     assert missing.status_code == 404, missing.text
-    assert missing.json()["detail"]["code"] == (
-        "continuation_source_session_not_found"
-    )
+    assert missing.json()["detail"]["code"] == ("continuation_source_session_not_found")
 
 
 async def test_prepare_continuation_rejects_transport_metadata_as_a_goal(
@@ -1580,10 +1502,7 @@ async def test_explicit_objective_excludes_an_unrelated_checkpoint(
         item.get("id") != f"session_checkpoint:{checkpoint.id}"
         for item in body["manifest"]["selected_context"]
     )
-    assert any(
-        item["code"] == "no_compatible_checkpoint"
-        for item in body["attention"]
-    )
+    assert any(item["code"] == "no_compatible_checkpoint" for item in body["attention"])
 
 
 async def test_explicit_repo_excludes_a_repo_less_checkpoint_from_another_session(
@@ -1638,29 +1557,32 @@ async def test_explicit_repo_excludes_a_repo_less_checkpoint_from_another_sessio
     assert body["checkpoint"] is None
     assert body["source_session"] is None
     assert body["manifest"]["continuation"]["checkpoint_id"] is None
-    assert any(
-        item["code"] == "no_compatible_checkpoint"
-        for item in body["attention"]
-    )
+    assert any(item["code"] == "no_compatible_checkpoint" for item in body["attention"])
 
 
 def test_checkpoint_without_branch_fails_closed_against_a_known_current_branch() -> None:
     checkpoint = SimpleNamespace(repo_root="/workspace/project", branch=None)
 
-    assert _checkpoint_repo_compatible(
-        checkpoint,
-        requested_repo="/workspace/project",
-        current_repository={"branch": "main"},
-        allow_missing_repo=False,
-        allow_missing_branch=False,
-    ) is False
-    assert _checkpoint_repo_compatible(
-        checkpoint,
-        requested_repo="/workspace/project",
-        current_repository={"branch": "main"},
-        allow_missing_repo=False,
-        allow_missing_branch=True,
-    ) is True
+    assert (
+        _checkpoint_repo_compatible(
+            checkpoint,
+            requested_repo="/workspace/project",
+            current_repository={"branch": "main"},
+            allow_missing_repo=False,
+            allow_missing_branch=False,
+        )
+        is False
+    )
+    assert (
+        _checkpoint_repo_compatible(
+            checkpoint,
+            requested_repo="/workspace/project",
+            current_repository={"branch": "main"},
+            allow_missing_repo=False,
+            allow_missing_branch=True,
+        )
+        is True
+    )
 
 
 async def test_task_identity_is_stable_across_provider_checkpoints(
@@ -1749,22 +1671,23 @@ async def test_legacy_provider_checkpoint_is_resolved_from_its_exact_source(
     document = await db_session.scalar(
         select(SourceDocument).where(
             SourceDocument.workspace_id == workspace.id,
-            SourceDocument.external_id
-            == "codex:session:legacy-provider-checkpoint",
+            SourceDocument.external_id == "codex:session:legacy-provider-checkpoint",
         )
     )
     assert document is not None
     metadata = json.loads(document.metadata_json)
-    metadata["compaction_checkpoints"] = [{
-        "id": "checkpoint-a1b2c3d4e5f6",
-        "kind": "provider_compaction",
-        "provider": "codex",
-        "occurred_at": "2026-07-23T10:00:00Z",
-        "turn_count": 2,
-        "user_turn_count": 1,
-        "assistant_turn_count": 1,
-        "window_id": 1,
-    }]
+    metadata["compaction_checkpoints"] = [
+        {
+            "id": "checkpoint-a1b2c3d4e5f6",
+            "kind": "provider_compaction",
+            "provider": "codex",
+            "occurred_at": "2026-07-23T10:00:00Z",
+            "turn_count": 2,
+            "user_turn_count": 1,
+            "assistant_turn_count": 1,
+            "window_id": 1,
+        }
+    ]
     document.metadata_json = json.dumps(metadata)
     await db_session.flush()
 
@@ -1787,9 +1710,7 @@ async def test_legacy_provider_checkpoint_is_resolved_from_its_exact_source(
     assert body["readiness"]["status"] == "review_required"
     assert body["project_context"]["copy_ready"] is True
     assert body["quality_report"]["automatic_execution_ready"] is False
-    assert body["manifest"]["continuation"]["checkpoint_id"] == (
-        "checkpoint-a1b2c3d4e5f6"
-    )
+    assert body["manifest"]["continuation"]["checkpoint_id"] == ("checkpoint-a1b2c3d4e5f6")
     assert "Restored Session Checkpoint" in body["markdown"]
 
 
@@ -1824,9 +1745,7 @@ async def test_exact_checkpoint_rejects_hidden_evidence_sources(
         trigger="manual",
     )
     checkpoint_item_id = await db_session.scalar(
-        select(CheckpointItem.id)
-        .where(CheckpointItem.checkpoint_id == checkpoint.id)
-        .limit(1)
+        select(CheckpointItem.id).where(CheckpointItem.checkpoint_id == checkpoint.id).limit(1)
     )
     assert checkpoint_item_id is not None
     hidden_content = "Restricted evidence must not cross an exact checkpoint lookup."
@@ -1847,14 +1766,16 @@ async def test_exact_checkpoint_rejects_hidden_evidence_sources(
     )
     db_session.add(hidden_source)
     await db_session.flush()
-    db_session.add(CheckpointEvidence(
-        checkpoint_item_id=checkpoint_item_id,
-        evidence_type="source_document",
-        source_document_id=hidden_source.id,
-        supports=True,
-        locator_json="{}",
-        evidence_sha256=hashlib.sha256(hidden_content.encode("utf-8")).hexdigest(),
-    ))
+    db_session.add(
+        CheckpointEvidence(
+            checkpoint_item_id=checkpoint_item_id,
+            evidence_type="source_document",
+            source_document_id=hidden_source.id,
+            supports=True,
+            locator_json="{}",
+            evidence_sha256=hashlib.sha256(hidden_content.encode("utf-8")).hexdigest(),
+        )
+    )
     await db_session.flush()
 
     async def workspace_only_scope() -> AccessScope:
@@ -1904,15 +1825,17 @@ async def test_legacy_checkpoint_does_not_match_an_observed_secondary_repository
     assert document is not None
     metadata = json.loads(document.metadata_json)
     metadata["observed_cwds"] = [str(source_repo), str(secondary_repo)]
-    metadata["compaction_checkpoints"] = [{
-        "id": "checkpoint-secondary-repo",
-        "kind": "provider_compaction",
-        "provider": "codex",
-        "turn_count": 2,
-        "user_turn_count": 1,
-        "assistant_turn_count": 1,
-        "window_id": 1,
-    }]
+    metadata["compaction_checkpoints"] = [
+        {
+            "id": "checkpoint-secondary-repo",
+            "kind": "provider_compaction",
+            "provider": "codex",
+            "turn_count": 2,
+            "user_turn_count": 1,
+            "assistant_turn_count": 1,
+            "window_id": 1,
+        }
+    ]
     document.metadata_json = json.dumps(metadata)
     await db_session.flush()
 
@@ -1928,10 +1851,7 @@ async def test_legacy_checkpoint_does_not_match_an_observed_secondary_repository
     )
 
     assert response.status_code == 422
-    assert (
-        response.json()["detail"]["code"]
-        == "checkpoint_repository_mismatch"
-    )
+    assert response.json()["detail"]["code"] == "checkpoint_repository_mismatch"
 
 
 async def test_partial_checkpoint_is_returned_as_review_required(
@@ -1961,10 +1881,7 @@ async def test_partial_checkpoint_is_returned_as_review_required(
     assert body["readiness"]["status"] == "review_required"
     assert body["project_context"]["copy_ready"] is True
     assert body["quality_report"]["automatic_execution_ready"] is False
-    assert any(
-        item["code"] == "checkpoint_partial"
-        for item in body["attention"]
-    )
+    assert any(item["code"] == "checkpoint_partial" for item in body["attention"])
 
 
 async def test_continuation_enforces_workspace_access_and_local_only_controls(
@@ -2008,10 +1925,7 @@ async def test_continuation_enforces_workspace_access_and_local_only_controls(
     assert sync_response.status_code == 403
     assert sync_response.json()["detail"]["code"] == "local_action_required"
     assert command_response.status_code == 422
-    assert (
-        command_response.json()["detail"]["code"]
-        == "checkpoint_command_replay_disabled"
-    )
+    assert command_response.json()["detail"]["code"] == "checkpoint_command_replay_disabled"
 
     async def inaccessible_scope() -> AccessScope:
         return AccessScope(
@@ -2046,15 +1960,17 @@ async def test_failed_prepare_rolls_back_sessions_synchronized_in_the_same_reque
     )
     db_session.add(workspace)
     await db_session.flush()
-    db_session.add(CodeFile(
-        workspace_id=workspace.id,
-        repo_root=str(repo),
-        path="app.py",
-        identity_key=uuid4().hex * 2,
-        language="python",
-        sha256="1" * 64,
-        size=10,
-    ))
+    db_session.add(
+        CodeFile(
+            workspace_id=workspace.id,
+            repo_root=str(repo),
+            path="app.py",
+            identity_key=uuid4().hex * 2,
+            language="python",
+            sha256="1" * 64,
+            size=10,
+        )
+    )
     workspace_id = workspace.id
     await db_session.commit()
 
@@ -2133,22 +2049,23 @@ async def test_automatic_continue_resolves_the_latest_task_after_session_sync(
         session_id="previously-imported-session",
         occurred_at="2026-07-25T09:00:00Z",
     )
-    db_session.add(CodeFile(
-        workspace_id=workspace.id,
-        repo_root=str(tmp_path),
-        path="app/continuation.py",
-        identity_key=uuid4().hex * 2,
-        language="python",
-        sha256="1" * 64,
-        size=10,
-    ))
+    db_session.add(
+        CodeFile(
+            workspace_id=workspace.id,
+            repo_root=str(tmp_path),
+            path="app/continuation.py",
+            identity_key=uuid4().hex * 2,
+            language="python",
+            sha256="1" * 64,
+            size=10,
+        )
+    )
     await db_session.flush()
     discovered = ResolvedSession(
         connector_type="codex",
         session_id="newly-synchronized-session",
         content=(
-            f"[USER]\n{latest_goal}\n\n"
-            "[ASSISTANT]\nProgress: the newest task is ready to continue."
+            f"[USER]\n{latest_goal}\n\n[ASSISTANT]\nProgress: the newest task is ready to continue."
         ),
         metadata={
             "tool": "codex",
@@ -2201,9 +2118,7 @@ async def test_automatic_continue_resolves_the_latest_task_after_session_sync(
     assert body["objective"] == latest_goal, body.get("sync")
     assert body["task"]["origin"] == "session"
     assert body["source_session"]["provider"] == "codex"
-    assert body["source_session"]["session_id"] == (
-        "newly-synchronized-session"
-    )
+    assert body["source_session"]["session_id"] == ("newly-synchronized-session")
     assert body["checkpoint"]["goal"] == latest_goal
 
 
@@ -2230,10 +2145,12 @@ async def test_automatic_continue_ignores_subagents_and_attachment_reactions(
     )
     assert root_source is not None
     root_metadata = json.loads(root_source.metadata_json)
-    root_metadata.update({
-        "thread_source": "user",
-        "title": "Continue AI Infra strategy",
-    })
+    root_metadata.update(
+        {
+            "thread_source": "user",
+            "title": "Continue AI Infra strategy",
+        }
+    )
     root_source.metadata_json = json.dumps(root_metadata)
     reaction = (
         "# Files mentioned by the user:\n\n"
@@ -2267,9 +2184,7 @@ async def test_automatic_continue_ignores_subagents_and_attachment_reactions(
         connector_type="codex",
         session_id=subagent_session_id,
         content=(
-            f"[USER]\n{goal}\n\n"
-            f"[USER]\n{reaction}\n\n"
-            "[ASSISTANT]\nInspecting the failure card."
+            f"[USER]\n{goal}\n\n[USER]\n{reaction}\n\n[ASSISTANT]\nInspecting the failure card."
         ),
         metadata={
             "tool": "codex",
@@ -2424,29 +2339,28 @@ async def test_run_continuation_switches_provider_and_verifies_automatically(
         "filesystem_mode": "workspace_write",
         "command_timeout_seconds": settings.continuation_command_timeout_seconds,
         "root_run_id": body["run"]["run_id"],
-        "attempts": [{
-            "attempt_index": 1,
-            "run_id": body["run"]["run_id"],
-            "status": "verified_complete",
-        }],
+        "attempts": [
+            {
+                "attempt_index": 1,
+                "run_id": body["run"]["run_id"],
+                "status": "verified_complete",
+            }
+        ],
     }
     assert runner_calls["verify"] is True
     assert runner_calls["context_stdin"] is True
     assert runner_calls["command_timeout_seconds"] == (
         settings.continuation_command_timeout_seconds
     )
-    assert runner_calls["extra_env"]["ANTHROPIC_API_KEY"] == (
-        "claude-provider-auth"
-    )
+    assert runner_calls["extra_env"]["ANTHROPIC_API_KEY"] == ("claude-provider-auth")
     assert "DATABASE_URL" not in runner_calls["extra_env"]
     assert "SERVER_API_KEY" not in runner_calls["extra_env"]
-    assert runner_calls["expected_status_fingerprint"] == (
-        body["preparation"]["repository"]["current"]["status_fingerprint"]
+    assert (
+        runner_calls["expected_status_fingerprint"]
+        == (body["preparation"]["repository"]["current"]["status_fingerprint"])
     )
     assert runner_calls["command"][0] == str(fake_claude)
-    assert ("--model", "claude-test-model") == tuple(
-        runner_calls["command"][-2:]
-    )
+    assert ("--model", "claude-test-model") == tuple(runner_calls["command"][-2:])
     assert "--resume" not in runner_calls["command"]
     assert sync_calls == [(workspace_id, False)]
     assert body["outcome"]["verified"] is True
@@ -2461,14 +2375,10 @@ async def test_run_continuation_switches_provider_and_verifies_automatically(
     checks = body["outcome"]["checks"]
     assert checks["passed"] == 1
     assert checks["failed"] == 0
-    required_check = next(
-        item for item in checks["items"] if item["required"]
-    )
+    required_check = next(item for item in checks["items"] if item["required"])
     assert required_check["verifier_id"] == "V1"
     assert required_check["status"] == "passed"
-    assert required_check["command_argv"][-1] == (
-        "tests/test_continuation_provider_fixture.py"
-    )
+    assert required_check["command_argv"][-1] == ("tests/test_continuation_provider_fixture.py")
     assert "browser_fallback" not in response.text.lower()
     assert "copy_fallback" not in response.text.lower()
 
@@ -2484,9 +2394,9 @@ async def test_run_continuation_switches_provider_and_verifies_automatically(
     assert duplicate.status_code == 409
     assert duplicate.json()["detail"]["code"] == "continuation_duplicate"
     assert sync_calls == [(workspace_id, False)]
-    runs = list(await db_session.scalars(
-        select(AgentRun).where(AgentRun.workspace_id == workspace_id)
-    ))
+    runs = list(
+        await db_session.scalars(select(AgentRun).where(AgentRun.workspace_id == workspace_id))
+    )
     assert len(runs) == 1
 
 
@@ -2535,7 +2445,7 @@ async def test_run_continuation_delivers_real_pack_and_records_lineage(
         "from pathlib import Path\n"
         "import sys\n\n"
         "if sys.argv[1:4] == ['auth', 'status', '--json']:\n"
-        "    print('{\"loggedIn\": true, \"authMethod\": \"claude.ai\"}')\n"
+        '    print(\'{"loggedIn": true, "authMethod": "claude.ai"}\')\n'
         "    raise SystemExit(0)\n\n"
         "payload = sys.stdin.read()\n"
         f"Path({str(received_context)!r}).write_text(payload, encoding='utf-8')\n"
@@ -2546,7 +2456,7 @@ async def test_run_continuation_delivers_real_pack_and_records_lineage(
         "    'def prepare_continuation():\\n    return True\\n',\n"
         "    encoding='utf-8',\n"
         ")\n"
-        "print('{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}')\n",
+        'print(\'{"type":"result","subtype":"success","is_error":false}\')\n',
         encoding="utf-8",
     )
     fake_claude.chmod(0o755)
@@ -2603,11 +2513,13 @@ async def test_run_continuation_delivers_real_pack_and_records_lineage(
         "filesystem_mode": "workspace_write",
         "command_timeout_seconds": settings.continuation_command_timeout_seconds,
         "root_run_id": str(run_id),
-        "attempts": [{
-            "attempt_index": 1,
-            "run_id": str(run_id),
-            "status": "verified_complete",
-        }],
+        "attempts": [
+            {
+                "attempt_index": 1,
+                "run_id": str(run_id),
+                "status": "verified_complete",
+            }
+        ],
     }
     assert body["outcome"]["verified"] is True
     mandatory = body["outcome"]["mandatory"]
@@ -2621,14 +2533,10 @@ async def test_run_continuation_delivers_real_pack_and_records_lineage(
         if item["priority"] == "must"
     )
     assert all(
-        item["status"] == "passed"
-        for item in body["outcome"]["evidence"]
-        if item["required"]
+        item["status"] == "passed" for item in body["outcome"]["evidence"] if item["required"]
     )
     assert body["outcome"]["changed_files"] == ["app/continuation.py"]
-    assert received_context.read_text(encoding="utf-8") == (
-        preparation["execution_prompt"]
-    )
+    assert received_context.read_text(encoding="utf-8") == (preparation["execution_prompt"])
     assert goal in received_context.read_text(encoding="utf-8")
     assert "app/continuation.py" in received_context.read_text(encoding="utf-8")
     assert (repo / "app" / "continuation.py").read_text(encoding="utf-8") == (
@@ -2659,11 +2567,13 @@ async def test_run_continuation_delivers_real_pack_and_records_lineage(
     assert run.status == "completed"
     assert run.ended_at is not None
 
-    observations = list(await db_session.scalars(
-        select(RunObservation)
-        .where(RunObservation.agent_run_id == run.id)
-        .order_by(RunObservation.created_at, RunObservation.id)
-    ))
+    observations = list(
+        await db_session.scalars(
+            select(RunObservation)
+            .where(RunObservation.agent_run_id == run.id)
+            .order_by(RunObservation.created_at, RunObservation.id)
+        )
+    )
     assert {item.event_type for item in observations} == {
         "command",
         "patch_summary",
@@ -2672,19 +2582,14 @@ async def test_run_continuation_delivers_real_pack_and_records_lineage(
         "provider_event",
     }
     assert all(item.source_document_id is not None for item in observations)
-    verification = next(
-        item for item in observations if item.event_type == "verification"
-    )
+    verification = next(item for item in observations if item.event_type == "verification")
     assert verification.exit_code == 0
     assert "pytest" in str(verification.command)
     outcome = next(item for item in observations if item.event_type == "outcome")
     outcome_payload = json.loads(outcome.payload_json)
     assert outcome_payload["status"] == "completed"
     assert outcome_payload["verification_results"]
-    assert all(
-        item["exit_code"] == 0
-        for item in outcome_payload["verification_results"]
-    )
+    assert all(item["exit_code"] == 0 for item in outcome_payload["verification_results"])
 
 
 async def test_run_continuation_uses_a_fresh_same_provider_when_needed(
@@ -2728,8 +2633,7 @@ async def test_run_continuation_uses_a_fresh_same_provider_when_needed(
         async def run(self, **kwargs):
             runner_calls.update(kwargs)
             await kwargs["stdout_chunk_observer"](
-                b'{"type":"thread.started",'
-                b'"thread_id":"019f9a4d-f586-79d3-b305-4844518003bd"}\n'
+                b'{"type":"thread.started","thread_id":"019f9a4d-f586-79d3-b305-4844518003bd"}\n'
             )
             await kwargs["stdout_chunk_observer"](
                 b'{"type":"turn.started"}\n'
@@ -2796,9 +2700,7 @@ async def test_run_continuation_uses_a_fresh_same_provider_when_needed(
         "exact_session_supported": True,
         "renderable_activity_observed": True,
     }
-    assert launched_sessions == [
-        ("codex", "019f9a4d-f586-79d3-b305-4844518003bd")
-    ]
+    assert launched_sessions == [("codex", "019f9a4d-f586-79d3-b305-4844518003bd")]
     assert visible_before_completion == [True]
     assert "resume" not in runner_calls["command"]
     assert body["outcome"]["mandatory"] == {
@@ -2847,8 +2749,7 @@ async def test_repair_repository_drift_closes_the_child_run(
             if calls == 2:
                 raise RepositoryStateChangedError("expected", "observed")
             await kwargs["stdout_chunk_observer"](
-                b'{"type":"thread.started",'
-                b'"thread_id":"019f9a4d-f586-79d3-b305-4844518003bd"}\n'
+                b'{"type":"thread.started","thread_id":"019f9a4d-f586-79d3-b305-4844518003bd"}\n'
             )
             run.status = "completed"
             run.ended_at = utc_now()
@@ -2886,14 +2787,14 @@ async def test_repair_repository_drift_closes_the_child_run(
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["status"] == "blocked_external"
-    assert body["outcome"]["blocker"]["code"] == (
-        "continuation_repository_changed"
+    assert body["outcome"]["blocker"]["code"] == ("continuation_repository_changed")
+    runs = list(
+        await db_session.scalars(
+            select(AgentRun)
+            .where(AgentRun.workspace_id == workspace.id)
+            .order_by(AgentRun.attempt_index)
+        )
     )
-    runs = list(await db_session.scalars(
-        select(AgentRun)
-        .where(AgentRun.workspace_id == workspace.id)
-        .order_by(AgentRun.attempt_index)
-    ))
     assert len(runs) == 2
     assert runs[1].parent_agent_run_id == runs[0].id
     assert runs[1].attempt_index == 2
@@ -2920,11 +2821,7 @@ async def test_run_continuation_preserves_exact_source_during_drift_reprepare(
 
         async def prepare(self, **kwargs):
             calls.append(kwargs)
-            fingerprint = (
-                "compiled-before-drift"
-                if len(calls) == 1
-                else "repository-after-drift"
-            )
+            fingerprint = "compiled-before-drift" if len(calls) == 1 else "repository-after-drift"
             return SimpleNamespace(
                 objective="Continue the exact source after repository drift.",
                 task={"workflow": {}},
@@ -3027,9 +2924,7 @@ async def test_run_continuation_recompiles_a_transient_truncated_baseline(
                 repository={
                     "path": str(tmp_path),
                     "current": {
-                        "status_fingerprint": (
-                            "truncated" if truncated else "complete"
-                        ),
+                        "status_fingerprint": ("truncated" if truncated else "complete"),
                     },
                 },
                 quality_report={
@@ -3076,9 +2971,7 @@ async def test_run_continuation_recompiles_a_transient_truncated_baseline(
     )
 
     assert response.status_code == 422, response.text
-    assert response.json()["detail"]["message"] == (
-        "stopped after baseline refresh"
-    )
+    assert response.json()["detail"]["message"] == ("stopped after baseline refresh")
     assert len(calls) == 2
     assert [item["sync_sessions"] for item in calls] == [True, False]
 
@@ -3127,13 +3020,10 @@ async def test_run_continuation_fails_safely_when_no_agent_cli_is_installed(
     )
 
     assert response.status_code == 409
-    assert (
-        response.json()["detail"]["code"]
-        == "continuation_provider_unavailable"
+    assert response.json()["detail"]["code"] == "continuation_provider_unavailable"
+    runs = list(
+        await db_session.scalars(select(AgentRun).where(AgentRun.workspace_id == workspace.id))
     )
-    runs = list(await db_session.scalars(
-        select(AgentRun).where(AgentRun.workspace_id == workspace.id)
-    ))
     assert runs == []
 
 
@@ -3180,19 +3070,14 @@ async def test_provider_readiness_endpoint_returns_structured_local_status(
         ),
     )
 
-    response = await client.get(
-        f"/api/continuations/providers?workspace_id={uuid4()}&refresh=true"
-    )
+    response = await client.get(f"/api/continuations/providers?workspace_id={uuid4()}&refresh=true")
 
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["active_run"] is None
     assert body["latest_run"] is None
     assert body["staged_handoff"] is None
-    providers = {
-        item["provider"]: item
-        for item in body["providers"]
-    }
+    providers = {item["provider"]: item for item in body["providers"]}
     assert set(providers) == {"codex", "claude", "opencode"}
     assert all(
         item["readiness_scope"] == "desktop_dispatch_with_account_evidence"
@@ -3205,16 +3090,12 @@ async def test_provider_readiness_endpoint_returns_structured_local_status(
     assert providers["codex"]["desktop_handoff_supported"] is True
     assert providers["codex"]["code"] == "desktop_account_access_verified"
     assert providers["codex"]["capabilities"]["desktop_dispatch_available"] is True
-    assert providers["codex"]["capabilities"][
-        "account_access_probe_supported"
-    ] is True
+    assert providers["codex"]["capabilities"]["account_access_probe_supported"] is True
     assert providers["opencode"]["ready"] is True
     assert providers["opencode"]["status"] == "ready"
     assert providers["opencode"]["desktop_handoff_supported"] is True
     assert providers["opencode"]["code"] == "desktop_dispatch_ready"
-    assert providers["opencode"]["capabilities"][
-        "account_access_probe_supported"
-    ] is False
+    assert providers["opencode"]["capabilities"]["account_access_probe_supported"] is False
     assert providers["claude"]["ready"] is False
     assert providers["claude"]["desktop_handoff_supported"] is False
     assert providers["claude"]["code"] == "desktop_app_missing"
@@ -3327,15 +3208,11 @@ async def test_stage_accepts_continuation_lead_without_explicit_source_boundary(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["preparation"]["source_session"]["session_id"] == (
-        "lead-only-stage-source"
+    assert body["preparation"]["source_session"]["session_id"] == ("lead-only-stage-source")
+    assert body["preparation"]["task"]["historical_goal"]["text"] == (historical_goal)
+    assert (
+        body["preparation"]["execution_contract"]["task"]["request_verbatim"] == continuation_lead
     )
-    assert body["preparation"]["task"]["historical_goal"]["text"] == (
-        historical_goal
-    )
-    assert body["preparation"]["execution_contract"]["task"][
-        "request_verbatim"
-    ] == continuation_lead
     assert len(launch_calls) == 1
 
 
@@ -3372,9 +3249,7 @@ async def test_stage_requires_an_idempotency_key_before_desktop_dispatch(
     )
 
     assert response.status_code == 422, response.text
-    assert response.json()["detail"]["code"] == (
-        "continuation_idempotency_key_required"
-    )
+    assert response.json()["detail"]["code"] == ("continuation_idempotency_key_required")
     assert list(await db_session.scalars(select(ContinuationStageRequest))) == []
     assert list(await db_session.scalars(select(AgentRun))) == []
 
@@ -3449,9 +3324,7 @@ async def test_stage_rejects_session_context_before_two_compactions(
     _initialize_git_repository(tmp_path)
     monkeypatch.setattr(
         "app.services.continuation_runtime.launch_harness_composer",
-        lambda *_args, **_kwargs: pytest.fail(
-            "an under-compacted session must not reach Desktop"
-        ),
+        lambda *_args, **_kwargs: pytest.fail("an under-compacted session must not reach Desktop"),
     )
 
     response = await client.post(
@@ -3497,9 +3370,7 @@ async def test_stage_opens_installed_desktop_with_unverified_account_access(
             url_scheme_registered=True,
             required_url_scheme=provider,
             code="desktop_dispatch_ready",
-            message=(
-                f"{provider} is ready to receive the draft."
-            ),
+            message=(f"{provider} is ready to receive the draft."),
             action=f"Open {provider} Desktop.",
             account_access_state="unverified",
             account_access_verified=False,
@@ -3570,9 +3441,7 @@ async def test_stage_records_automatic_codex_account_evidence(
             url_scheme_registered=True,
             required_url_scheme=provider,
             code="desktop_account_access_verified",
-            message=(
-                f"{provider} reports signed-in account and model access."
-            ),
+            message=(f"{provider} reports signed-in account and model access."),
             action=f"Open {provider} Desktop.",
             account_access_state="verified",
             account_access_verified=True,
@@ -3614,6 +3483,7 @@ async def test_stage_records_automatic_codex_account_evidence(
     assert body["delivery"]["account_access_basis"] == "provider_desktop_bridge"
     assert launch_calls == ["codex"]
     assert list(await db_session.scalars(select(AgentRun))) == []
+
 
 @pytest.mark.parametrize("target_provider", ("claude", "opencode"))
 async def test_stage_rejects_codex_reasoning_effort_for_other_desktops(
@@ -3682,15 +3552,11 @@ async def test_stage_auto_rejects_codex_effort_after_selecting_claude(
             url_scheme_registered=provider != "codex",
             required_url_scheme=provider,
             code=(
-                "desktop_account_access_verified"
-                if provider != "codex"
-                else "desktop_app_missing"
+                "desktop_account_access_verified" if provider != "codex" else "desktop_app_missing"
             ),
             message=f"{provider} readiness",
             action=f"Open {provider}.",
-            account_access_state=(
-                "verified" if provider != "codex" else "not_checked"
-            ),
+            account_access_state=("verified" if provider != "codex" else "not_checked"),
             account_access_verified=provider != "codex",
         )
 
@@ -3730,6 +3596,7 @@ async def test_stage_auto_rejects_codex_effort_after_selecting_claude(
     (
         "historical_goal",
         "continuation_lead",
+        "requested_task_mode",
         "expected_task_mode",
         "expected_filesystem_mode",
     ),
@@ -3737,12 +3604,14 @@ async def test_stage_auto_rejects_codex_effort_after_selecting_claude(
         (
             "Review the dashboard and report risks without editing files.",
             "Implement the dashboard improvements and update the tests.",
+            "review",
             "change",
             "workspace_write",
         ),
         (
             "Implement the dashboard improvements and update the tests.",
             "Review the dashboard and report risks without editing files.",
+            "change",
             "review",
             "read_only",
         ),
@@ -3755,6 +3624,7 @@ async def test_stage_compiles_typed_metadata_from_effective_continuation_lead(
     tmp_path,
     historical_goal,
     continuation_lead,
+    requested_task_mode,
     expected_task_mode,
     expected_filesystem_mode,
 ) -> None:
@@ -3794,6 +3664,7 @@ async def test_stage_compiles_typed_metadata_from_effective_continuation_lead(
             "source_provider": "codex",
             "source_session_id": f"effective-lead-{expected_task_mode}",
             "continuation_lead": continuation_lead,
+            "task_mode": requested_task_mode,
         },
     )
 
@@ -3802,25 +3673,18 @@ async def test_stage_compiles_typed_metadata_from_effective_continuation_lead(
     contract = body["preparation"]["execution_contract"]
     assert contract["task"]["request_verbatim"] == continuation_lead
     assert contract["task_mode"] == expected_task_mode
-    assert contract["authority"]["filesystem_mode"] == (
-        expected_filesystem_mode
-    )
-    assert body["preparation"]["task"]["historical_goal"]["text"] == (
-        historical_goal
-    )
+    assert contract["authority"]["filesystem_mode"] == (expected_filesystem_mode)
+    assert body["preparation"]["task"]["historical_goal"]["text"] == (historical_goal)
     assert body["preparation"]["checkpoint"]["goal"] == historical_goal
     assert body["delivery"]["task_mode"] == expected_task_mode
     assert body["delivery"]["filesystem_mode"] == expected_filesystem_mode
     assert body["run"]["objective"] == body["preparation"]["objective"]
-    expected_lead_sha256 = hashlib.sha256(
-        continuation_lead.encode("utf-8")
-    ).hexdigest()
-    assert body["delivery"]["continuation_lead_sha256"] == (
-        expected_lead_sha256
+    expected_lead_sha256 = hashlib.sha256(continuation_lead.encode("utf-8")).hexdigest()
+    assert body["delivery"]["continuation_lead_sha256"] == (expected_lead_sha256)
+    assert (
+        body["preparation"]["manifest"]["continuation"]["continuation_lead_sha256"]
+        == expected_lead_sha256
     )
-    assert body["preparation"]["manifest"]["continuation"][
-        "continuation_lead_sha256"
-    ] == expected_lead_sha256
     assert len(launch_calls) == 1
 
 
@@ -3834,10 +3698,7 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     target_provider,
     brief_variant,
 ) -> None:
-    goal = (
-        "Make the carried Session Context clear and visually polished for the "
-        "confirmed lead."
-    )
+    goal = "Make the carried Session Context clear and visually polished for the confirmed lead."
     workspace = await _seed_session(
         db_session,
         tmp_path,
@@ -3860,11 +3721,13 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
         pytest.fail("desktop handoff must not probe a provider CLI")
 
     def fake_launch(provider: str, *, cwd: str, prompt: str):
-        launch_calls.append({
-            "provider": provider,
-            "cwd": cwd,
-            "prompt": prompt,
-        })
+        launch_calls.append(
+            {
+                "provider": provider,
+                "cwd": cwd,
+                "prompt": prompt,
+            }
+        )
         return {
             "launched": False,
             "open_requested": True,
@@ -3913,12 +3776,9 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     )
     stage_key = f"stage-context-and-wait-{brief_variant}"
     continuation_lead = (
-        "Review the evidence-backed handoff dashboard.\n"
-        "Then continue with the selected provider."
+        "Review the evidence-backed handoff dashboard.\nThen continue with the selected provider."
     )
-    continuation_lead_sha256 = hashlib.sha256(
-        continuation_lead.encode("utf-8")
-    ).hexdigest()
+    continuation_lead_sha256 = hashlib.sha256(continuation_lead.encode("utf-8")).hexdigest()
 
     response = await client.post(
         "/api/continuations/stage",
@@ -3953,25 +3813,17 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
         "high" if target_provider == "codex" else None
     )
     assert body["delivery"]["settings_applied"] is False
-    assert body["delivery"]["settings_confirmation_required"] is (
-        target_provider == "codex"
-    )
+    assert body["delivery"]["settings_confirmation_required"] is (target_provider == "codex")
     assert body["delivery"]["mode"] == "desktop_composer_prefill"
-    assert body["delivery"]["context_delivery"] == (
-        "desktop_composer_prefill_and_clipboard"
-    )
-    assert body["delivery"]["context_schema_version"] == (
-        "session_handoff.v1"
-    )
+    assert body["delivery"]["context_delivery"] == ("desktop_composer_prefill_and_clipboard")
+    assert body["delivery"]["context_schema_version"] == ("session_handoff.v1")
     assert body["delivery"]["context_scope"] == "session"
     assert body["delivery"]["context_render_variant"] == brief_variant
     assert body["delivery"]["source_session_id"] == "waiting-handoff-source"
-    assert body["delivery"]["continuation_lead_sha256"] == (
-        continuation_lead_sha256
+    assert body["delivery"]["continuation_lead_sha256"] == (continuation_lead_sha256)
+    assert (
+        body["delivery"]["harness_session"]["continuation_lead_sha256"] == continuation_lead_sha256
     )
-    assert body["delivery"]["harness_session"][
-        "continuation_lead_sha256"
-    ] == continuation_lead_sha256
     assert body["delivery"]["handoff_id"] == body["run"]["handoff_id"]
     assert "session_id" not in body["delivery"]["harness_session"]
     assert body["delivery"]["harness_session"]["awaiting_user"] is True
@@ -3981,28 +3833,21 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     assert body["delivery"]["harness_session"]["open_verified"] is False
     assert body["delivery"]["harness_session"]["context_loaded"] is False
     assert body["delivery"]["harness_session"]["context_copied"] is True
-    assert body["delivery"]["harness_session"]["context_render_variant"] == (
-        brief_variant
-    )
-    assert body["delivery"]["harness_session"]["source_session_id"] == (
-        "waiting-handoff-source"
-    )
+    assert body["delivery"]["harness_session"]["context_render_variant"] == (brief_variant)
+    assert body["delivery"]["harness_session"]["source_session_id"] == ("waiting-handoff-source")
     assert body["delivery"]["harness_session"]["prefill_requested"] is True
     assert body["run"]["provider_session_id"] is None
-    assert body["run"]["continuation_lead_sha256"] == (
-        continuation_lead_sha256
-    )
+    assert body["run"]["continuation_lead_sha256"] == (continuation_lead_sha256)
     assert body["run"]["objective"] == body["preparation"]["objective"]
-    assert body["preparation"]["execution_contract"]["task"][
-        "request_verbatim"
-    ] == continuation_lead
+    assert (
+        body["preparation"]["execution_contract"]["task"]["request_verbatim"] == continuation_lead
+    )
     assert body["preparation"]["task"]["historical_goal"]["text"] == goal
-    assert body["delivery"]["task_mode"] == body["preparation"][
-        "execution_contract"
-    ]["task_mode"]
-    assert body["delivery"]["filesystem_mode"] == body["preparation"][
-        "execution_contract"
-    ]["authority"]["filesystem_mode"]
+    assert body["delivery"]["task_mode"] == body["preparation"]["execution_contract"]["task_mode"]
+    assert (
+        body["delivery"]["filesystem_mode"]
+        == body["preparation"]["execution_contract"]["authority"]["filesystem_mode"]
+    )
     assert body["preparation"]["quality_report"]["launchable"] is False
     assert body["preparation"]["project_context"]["copy_ready"] is True
     assert any(
@@ -4012,10 +3857,7 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     assert len(launch_calls) == 1
     staged_context = str(launch_calls[0]["prompt"])
     canonical_handoff = await client.post(
-        (
-            "/api/checkpoints/"
-            f"{body['preparation']['checkpoint']['id']}/handoff"
-        ),
+        (f"/api/checkpoints/{body['preparation']['checkpoint']['id']}/handoff"),
         json={
             "workspace_id": str(workspace.id),
             "continuation_lead": continuation_lead,
@@ -4023,15 +3865,41 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     )
     assert canonical_handoff.status_code == 200, canonical_handoff.text
     assert canonical_handoff.json()["schema_version"] == "session_handoff.v1"
-    assert canonical_handoff.json()["continuation_lead"]["request_verbatim"] == (
-        continuation_lead
-    )
+    assert canonical_handoff.json()["continuation_lead"]["request_verbatim"] == (continuation_lead)
     assert canonical_handoff.json()["current_goal"]["request_verbatim"] == goal
     assert canonical_handoff.json()["task_mode"] == body["delivery"]["task_mode"]
-    assert canonical_handoff.json()["execution_policy"]["permission_mode"] == (
-        body["delivery"]["filesystem_mode"]
+    assert (
+        canonical_handoff.json()["execution_policy"]["permission_mode"]
+        == (body["delivery"]["filesystem_mode"])
     )
-    assert staged_context == canonical_handoff.json()["content"]
+    canonical_context = canonical_handoff.json()["content"]
+    receiver_baseline_line = next(
+        line
+        for line in staged_context.splitlines()
+        if line.startswith("- Receiver-local protected-baseline manifest:")
+    )
+    receiver_baseline_parts = receiver_baseline_line.split("`")
+    receiver_baseline_path = Path(receiver_baseline_parts[1])
+    receiver_baseline_sha256 = receiver_baseline_parts[3]
+    assert receiver_baseline_path.is_file()
+    assert (
+        hashlib.sha256(receiver_baseline_path.read_bytes()).hexdigest() == receiver_baseline_sha256
+    )
+    assert "Receiver-local protected-baseline manifest:" not in canonical_context
+
+    # A fresh endpoint call performs a fresh read-only repository capture, so
+    # its observation timestamp is intentionally newer. The desktop stage also
+    # enriches only the receiving copy with a verified receiver-local baseline
+    # path; the checkpoint endpoint remains source-provenance-only.
+    def without_capture_time(value: str) -> str:
+        return "\n".join(
+            line
+            for line in value.splitlines()
+            if not line.startswith("- Captured at: `")
+            and not line.startswith("- Receiver-local protected-baseline manifest:")
+        )
+
+    assert without_capture_time(staged_context) == without_capture_time(canonical_context)
     expected_heading = (
         "# Continuation Brief v2\n"
         if brief_variant == "compact_v2"
@@ -4043,13 +3911,14 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     assert "Reasoning effort" not in staged_context
     if brief_variant == "compact_v2":
         assert {
-            "## Continue with",
             "## Goal",
             "## State now",
             "## Start here",
             "## Do not repeat",
             "## Done when",
         } <= set(staged_context.splitlines())
+        assert "## Continue with" not in staged_context
+        assert "Current user instruction (authoritative)" in staged_context
         assert "## Current main goal" not in staged_context
         assert "## Exact next action" not in staged_context
     else:
@@ -4072,40 +3941,39 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     assert "next user lead" not in staged_context
     assert "future instruction" not in staged_context
     assert "Inspect → implement → test → fix → verify" not in staged_context
-    assert staged_context.count("> Activation:") == (
-        0 if brief_variant == "compact_v2" else 1
-    )
+    assert staged_context.count("> Activation:") == (0 if brief_variant == "compact_v2" else 1)
     assert "### First action" not in staged_context
     assert (
         "## Done when" in staged_context
         if brief_variant == "compact_v2"
         else "### Definition of done" in staged_context
     )
-    assert (
-        "# Project / Workspace Context — project-level foundation"
-        not in staged_context
-    )
+    assert "# Project / Workspace Context — project-level foundation" not in staged_context
     assert "Complete the immediate task" not in staged_context
     assert launch_calls[0]["provider"] == target_provider
     assert launch_calls[0]["cwd"] == str(tmp_path)
-    assert body["delivery"]["context_sha256"] == hashlib.sha256(
-        staged_context.encode("utf-8")
-    ).hexdigest()
+    assert (
+        body["delivery"]["context_sha256"]
+        == hashlib.sha256(staged_context.encode("utf-8")).hexdigest()
+    )
     assert body["delivery"]["context_char_count"] == len(staged_context)
     assert body["delivery"]["context_estimated_tokens"] == max(
         1,
         (len(staged_context) + 3) // 4,
     )
-    assert subprocess.run(
-        ["git", "-C", str(tmp_path), "status", "--porcelain=v1"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout == baseline
+    assert (
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "status", "--porcelain=v1"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        == baseline
+    )
 
-    runs = list(await db_session.scalars(
-        select(AgentRun).where(AgentRun.workspace_id == workspace.id)
-    ))
+    runs = list(
+        await db_session.scalars(select(AgentRun).where(AgentRun.workspace_id == workspace.id))
+    )
     assert runs == []
     observations = list(await db_session.scalars(select(RunObservation)))
     assert observations == []
@@ -4128,11 +3996,13 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     assert replay.status_code == 200, replay.text
     assert replay.json() == body
     assert len(launch_calls) == 1
-    stage_requests = list(await db_session.scalars(
-        select(ContinuationStageRequest).where(
-            ContinuationStageRequest.workspace_id == workspace_id
+    stage_requests = list(
+        await db_session.scalars(
+            select(ContinuationStageRequest).where(
+                ContinuationStageRequest.workspace_id == workspace_id
+            )
         )
-    ))
+    )
     assert len(stage_requests) == 1
     assert stage_requests[0].status == "succeeded"
     assert stage_requests[0].target_provider == target_provider
@@ -4146,22 +4016,16 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
             "target_provider": target_provider,
             "source_provider": "codex",
             "source_session_id": "waiting-handoff-source",
-            "continuation_lead": (
-                continuation_lead + " Verify the final rendering."
-            ),
+            "continuation_lead": (continuation_lead + " Verify the final rendering."),
             **requested_settings,
         },
     )
     assert changed_lead_conflict.status_code == 409
-    assert changed_lead_conflict.json()["detail"]["code"] == (
-        "continuation_idempotency_conflict"
-    )
+    assert changed_lead_conflict.json()["detail"]["code"] == ("continuation_idempotency_conflict")
     assert len(launch_calls) == 1
 
     conflicting_provider = next(
-        provider
-        for provider in ("codex", "claude", "opencode")
-        if provider != target_provider
+        provider for provider in ("codex", "claude", "opencode") if provider != target_provider
     )
     conflict = await client.post(
         "/api/continuations/stage",
@@ -4175,26 +4039,18 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
         },
     )
     assert conflict.status_code == 409, conflict.text
-    assert conflict.json()["detail"]["code"] == (
-        "continuation_idempotency_conflict"
-    )
+    assert conflict.json()["detail"]["code"] == ("continuation_idempotency_conflict")
     assert len(launch_calls) == 1
 
-    providers = await client.get(
-        f"/api/continuations/providers?workspace_id={workspace_id}"
-    )
+    providers = await client.get(f"/api/continuations/providers?workspace_id={workspace_id}")
     assert providers.status_code == 200, providers.text
     provider_body = providers.json()
     assert provider_body["active_run"] is None
     assert provider_body["latest_run"] is None
     selected_provider = next(
-        item
-        for item in provider_body["providers"]
-        if item["provider"] == target_provider
+        item for item in provider_body["providers"] if item["provider"] == target_provider
     )
-    assert selected_provider["readiness_scope"] == (
-        "desktop_dispatch_with_account_evidence"
-    )
+    assert selected_provider["readiness_scope"] == ("desktop_dispatch_with_account_evidence")
     assert selected_provider["desktop_handoff_supported"] is True
     assert selected_provider["context_staging_supported"] is False
     staged_handoff = provider_body["staged_handoff"]
@@ -4208,14 +4064,10 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     assert "preparation" not in staged_handoff
     assert staged_handoff["continuation_identity"] == {
         "task_id": body["preparation"]["manifest"]["continuation"]["task_id"],
-        "checkpoint_id": body["preparation"]["manifest"]["continuation"][
-            "checkpoint_id"
-        ],
+        "checkpoint_id": body["preparation"]["manifest"]["continuation"]["checkpoint_id"],
         "source_provider": "codex",
         "source_session_id": "waiting-handoff-source",
-        "selected_objective": body["preparation"]["manifest"][
-            "continuation"
-        ]["selected_objective"],
+        "selected_objective": body["preparation"]["manifest"]["continuation"]["selected_objective"],
         "continuation_lead_sha256": continuation_lead_sha256,
     }
     assert len(json.dumps(staged_handoff)) < 100_000
@@ -4253,11 +4105,13 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     assert later_failure.json()["detail"]["code"] == "desktop_open_failed"
     assert failed_launch_calls == 1
 
-    stage_requests = list(await db_session.scalars(
-        select(ContinuationStageRequest).where(
-            ContinuationStageRequest.workspace_id == workspace_id
+    stage_requests = list(
+        await db_session.scalars(
+            select(ContinuationStageRequest).where(
+                ContinuationStageRequest.workspace_id == workspace_id
+            )
         )
-    ))
+    )
     assert {item.status for item in stage_requests} == {
         "superseded_succeeded",
         "failed",
@@ -4268,9 +4122,7 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     await db_session.commit()
     db_session.expire_all()
 
-    after_failure = await client.get(
-        f"/api/continuations/providers?workspace_id={workspace_id}"
-    )
+    after_failure = await client.get(f"/api/continuations/providers?workspace_id={workspace_id}")
     assert after_failure.status_code == 200, after_failure.text
     assert after_failure.json()["staged_handoff"] is None
 
@@ -4308,12 +4160,14 @@ async def test_stage_opens_visible_desktop_with_incomplete_foundation_warning(
         provider="codex",
         compaction_count=2,
     )
-    foundation = list(await db_session.scalars(
-        select(Component).where(
-            Component.workspace_id == workspace.id,
-            Component.identity_key.like("fixture:%"),
+    foundation = list(
+        await db_session.scalars(
+            select(Component).where(
+                Component.workspace_id == workspace.id,
+                Component.identity_key.like("fixture:%"),
+            )
         )
-    ))
+    )
     for component in foundation:
         if component.identity_key != "fixture:project-purpose":
             component.status = "superseded"
@@ -4322,11 +4176,13 @@ async def test_stage_opens_visible_desktop_with_incomplete_foundation_warning(
     launch_calls: list[dict[str, str]] = []
 
     def fake_launch(provider: str, *, cwd: str, prompt: str):
-        launch_calls.append({
-            "provider": provider,
-            "cwd": cwd,
-            "prompt": prompt,
-        })
+        launch_calls.append(
+            {
+                "provider": provider,
+                "cwd": cwd,
+                "prompt": prompt,
+            }
+        )
         return {
             "launched": False,
             "open_requested": True,
@@ -4383,19 +4239,16 @@ async def test_stage_opens_visible_desktop_with_incomplete_foundation_warning(
     assert launch_calls[0]["provider"] == "codex"
     assert launch_calls[0]["cwd"] == str(tmp_path)
     assert goal in launch_calls[0]["prompt"]
-    assert launch_calls[0]["prompt"].startswith(
-        "# Continuation Brief v2\n"
-    )
+    assert launch_calls[0]["prompt"].startswith("# Continuation Brief v2\n")
     assert body["delivery"]["context_render_variant"] == "compact_v2"
-    assert "Workspace Context readiness: **INCOMPLETE**" not in (
-        launch_calls[0]["prompt"]
+    assert "Workspace Context readiness: **INCOMPLETE**" not in (launch_calls[0]["prompt"])
+    assert "> Continue from **Start here**." in (launch_calls[0]["prompt"])
+    assert (
+        list(
+            await db_session.scalars(select(AgentRun).where(AgentRun.workspace_id == workspace.id))
+        )
+        == []
     )
-    assert "> Continue from **Start here**." in (
-        launch_calls[0]["prompt"]
-    )
-    assert list(await db_session.scalars(
-        select(AgentRun).where(AgentRun.workspace_id == workspace.id)
-    )) == []
 
 
 async def test_stage_failure_is_replayed_without_opening_another_draft(
@@ -4453,15 +4306,17 @@ async def test_stage_failure_is_replayed_without_opening_another_draft(
     request = await db_session.scalar(
         select(ContinuationStageRequest).where(
             ContinuationStageRequest.workspace_id == workspace_id,
-            ContinuationStageRequest.idempotency_key
-            == "failed-desktop-handoff",
+            ContinuationStageRequest.idempotency_key == "failed-desktop-handoff",
         )
     )
     assert request is not None
     assert request.status == "failed"
-    assert list(await db_session.scalars(
-        select(AgentRun).where(AgentRun.workspace_id == workspace_id)
-    )) == []
+    assert (
+        list(
+            await db_session.scalars(select(AgentRun).where(AgentRun.workspace_id == workspace_id))
+        )
+        == []
+    )
 
     def succeed_launch(_provider: str, *, cwd: str, prompt: str):
         nonlocal launch_calls
@@ -4499,8 +4354,7 @@ async def test_stage_failure_is_replayed_without_opening_another_draft(
     superseded_failure = await db_session.scalar(
         select(ContinuationStageRequest).where(
             ContinuationStageRequest.workspace_id == workspace_id,
-            ContinuationStageRequest.idempotency_key
-            == "failed-desktop-handoff",
+            ContinuationStageRequest.idempotency_key == "failed-desktop-handoff",
         )
     )
     assert superseded_failure is not None
@@ -4572,8 +4426,7 @@ async def test_stage_expires_a_crashed_pending_reservation_before_retry(
     request = await db_session.scalar(
         select(ContinuationStageRequest).where(
             ContinuationStageRequest.workspace_id == workspace_id,
-            ContinuationStageRequest.idempotency_key
-            == "crashed-reservation",
+            ContinuationStageRequest.idempotency_key == "crashed-reservation",
         )
     )
     assert request is not None
@@ -4588,9 +4441,7 @@ async def test_stage_expires_a_crashed_pending_reservation_before_retry(
         json={**base_payload, "idempotency_key": "crashed-reservation"},
     )
     assert recovery_notice.status_code == 409, recovery_notice.text
-    assert recovery_notice.json()["detail"]["code"] == (
-        "desktop_handoff_outcome_unknown"
-    )
+    assert recovery_notice.json()["detail"]["code"] == ("desktop_handoff_outcome_unknown")
     assert "check the selected desktop app" in (
         recovery_notice.json()["detail"]["blocker"]["action"].lower()
     )
@@ -4600,8 +4451,7 @@ async def test_stage_expires_a_crashed_pending_reservation_before_retry(
     abandoned = await db_session.scalar(
         select(ContinuationStageRequest).where(
             ContinuationStageRequest.workspace_id == workspace_id,
-            ContinuationStageRequest.idempotency_key
-            == "crashed-reservation",
+            ContinuationStageRequest.idempotency_key == "crashed-reservation",
         )
     )
     assert abandoned is not None
@@ -4619,19 +4469,16 @@ async def test_stage_expires_a_crashed_pending_reservation_before_retry(
         json={**base_payload, "idempotency_key": "crashed-reservation"},
     )
     assert old_key_replay.status_code == 409, old_key_replay.text
-    assert old_key_replay.json()["detail"]["code"] == (
-        "desktop_handoff_outcome_unknown"
-    )
+    assert old_key_replay.json()["detail"]["code"] == ("desktop_handoff_outcome_unknown")
     assert launch_calls == 2
-    requests = list(await db_session.scalars(
-        select(ContinuationStageRequest).where(
-            ContinuationStageRequest.workspace_id == workspace_id
+    requests = list(
+        await db_session.scalars(
+            select(ContinuationStageRequest).where(
+                ContinuationStageRequest.workspace_id == workspace_id
+            )
         )
-    ))
-    assert sum(
-        item.status in {"pending", "succeeded", "failed"}
-        for item in requests
-    ) == 1
+    )
+    assert sum(item.status in {"pending", "succeeded", "failed"} for item in requests) == 1
 
 
 async def test_cancelled_stage_keeps_its_reservation_until_launcher_stops(
@@ -4687,10 +4534,12 @@ async def test_cancelled_stage_keeps_its_reservation_until_launcher_stops(
         "source_session_id": "cancelled-desktop-reservation",
         "request_timeout_seconds": 10.0,
     }
-    first = asyncio.create_task(service.stage(
-        **stage_kwargs,
-        idempotency_key="cancelled-first-request",
-    ))
+    first = asyncio.create_task(
+        service.stage(
+            **stage_kwargs,
+            idempotency_key="cancelled-first-request",
+        )
+    )
     try:
         for _ in range(200):
             if launcher_started.is_set():
@@ -4716,8 +4565,7 @@ async def test_cancelled_stage_keeps_its_reservation_until_launcher_stops(
     request = await db_session.scalar(
         select(ContinuationStageRequest).where(
             ContinuationStageRequest.workspace_id == workspace_id,
-            ContinuationStageRequest.idempotency_key
-            == "cancelled-first-request",
+            ContinuationStageRequest.idempotency_key == "cancelled-first-request",
         )
     )
     assert request is not None
@@ -4826,9 +4674,7 @@ async def test_running_continuation_is_reported_and_blocks_a_duplicate_workspace
         lambda provider, **_kwargs: status,
     )
 
-    providers = await client.get(
-        f"/api/continuations/providers?workspace_id={workspace_id}"
-    )
+    providers = await client.get(f"/api/continuations/providers?workspace_id={workspace_id}")
     duplicate = await client.post(
         "/api/continuations",
         json={
@@ -4855,18 +4701,16 @@ async def test_running_continuation_is_reported_and_blocks_a_duplicate_workspace
     assert detail["blocker"]["title"] == "Continuation already running"
     assert detail["blocker"]["active_run"]["run_id"] == str(run_id)
     assert "No duplicate agent was started" in detail["blocker"]["message"]
-    runs = list(await db_session.scalars(
-        select(AgentRun).where(AgentRun.workspace_id == workspace_id)
-    ))
+    runs = list(
+        await db_session.scalars(select(AgentRun).where(AgentRun.workspace_id == workspace_id))
+    )
     assert [item.id for item in runs] == [run_id]
 
     run.status = "failed"
     run.ended_at = utc_now()
     await db_session.commit()
 
-    terminal = await client.get(
-        f"/api/continuations/providers?workspace_id={workspace_id}"
-    )
+    terminal = await client.get(f"/api/continuations/providers?workspace_id={workspace_id}")
 
     assert terminal.status_code == 200, terminal.text
     assert terminal.json()["active_run"] is None
@@ -4982,8 +4826,7 @@ async def test_explicit_provider_selection_never_falls_back(
             status="authentication_required",
             code="provider_authentication_revoked",
             message=(
-                "Claude Code authentication failed because its OAuth token "
-                "has been revoked (401)."
+                "Claude Code authentication failed because its OAuth token has been revoked (401)."
             ),
             action="Run `claude auth login` and try again.",
         ),
@@ -5018,9 +4861,9 @@ async def test_explicit_provider_selection_never_falls_back(
         "action": statuses["claude"].action,
         "affected_tasks": [goal],
     }
-    runs = list(await db_session.scalars(
-        select(AgentRun).where(AgentRun.workspace_id == workspace.id)
-    ))
+    runs = list(
+        await db_session.scalars(select(AgentRun).where(AgentRun.workspace_id == workspace.id))
+    )
     assert runs == []
 
 
@@ -5093,13 +4936,8 @@ async def test_provider_readiness_is_rechecked_immediately_before_launch(
 
     assert response.status_code == 409, response.text
     assert calls == 2
-    assert (
-        response.json()["detail"]["blocker"]["code"]
-        == "provider_authentication_required"
-    )
-    run = await db_session.scalar(
-        select(AgentRun).where(AgentRun.workspace_id == workspace.id)
-    )
+    assert response.json()["detail"]["blocker"]["code"] == "provider_authentication_required"
+    run = await db_session.scalar(select(AgentRun).where(AgentRun.workspace_id == workspace.id))
     assert run is not None
     assert run.status == "failed"
 
@@ -5140,8 +4978,7 @@ async def test_revoked_child_auth_failure_returns_a_blocked_outcome(
                 cwd=tmp_path,
                 command_exit_code=1,
                 command_stderr=(
-                    "Claude authentication failed: OAuth token has been "
-                    "revoked (401 Unauthorized)"
+                    "Claude authentication failed: OAuth token has been revoked (401 Unauthorized)"
                 ),
             )
 
@@ -5176,8 +5013,7 @@ async def test_revoked_child_auth_failure_returns_a_blocked_outcome(
         "code": "provider_authentication_revoked",
         "provider": "claude",
         "message": (
-            "Claude Code authentication failed because its OAuth token "
-            "has been revoked (401)."
+            "Claude Code authentication failed because its OAuth token has been revoked (401)."
         ),
         "action": "Run `claude auth login` and try again.",
         "affected_tasks": [goal],
@@ -5218,25 +5054,29 @@ async def test_opencode_credits_error_returns_a_billing_required_blocker(
                 check_exit_code=None,
                 cwd=tmp_path,
                 command_exit_code=0,
-                command_stdout=json.dumps({
-                    "type": "error",
-                    "error": {
-                        "name": "AI_APICallError",
-                        "data": {
-                            "message": "Insufficient balance.",
-                            "statusCode": 401,
-                            "responseBody": json.dumps({
-                                "type": "error",
-                                "error": {
-                                    "type": "CreditsError",
-                                    "message": (
-                                        "Insufficient balance. Manage your billing."
-                                    ),
-                                },
-                            }),
+                command_stdout=json.dumps(
+                    {
+                        "type": "error",
+                        "error": {
+                            "name": "AI_APICallError",
+                            "data": {
+                                "message": "Insufficient balance.",
+                                "statusCode": 401,
+                                "responseBody": json.dumps(
+                                    {
+                                        "type": "error",
+                                        "error": {
+                                            "type": "CreditsError",
+                                            "message": (
+                                                "Insufficient balance. Manage your billing."
+                                            ),
+                                        },
+                                    }
+                                ),
+                            },
                         },
-                    },
-                }),
+                    }
+                ),
             )
 
     monkeypatch.setattr(
@@ -5318,22 +5158,26 @@ async def test_opencode_http_500_returns_a_service_unavailable_blocker(
                 check_exit_code=None,
                 cwd=tmp_path,
                 command_exit_code=0,
-                command_stdout=json.dumps({
-                    "type": "error",
-                    "error": {
-                        "name": "AI_APICallError",
-                        "data": {
-                            "message": "Internal server error",
-                            "statusCode": 500,
+                command_stdout=json.dumps(
+                    {
+                        "type": "error",
+                        "error": {
+                            "name": "AI_APICallError",
+                            "data": {
+                                "message": "Internal server error",
+                                "statusCode": 500,
+                            },
+                            "requestBodyValues": {
+                                "messages": [
+                                    {
+                                        "role": "user",
+                                        "content": "Fix the repository billing workflow.",
+                                    }
+                                ],
+                            },
                         },
-                        "requestBodyValues": {
-                            "messages": [{
-                                "role": "user",
-                                "content": "Fix the repository billing workflow.",
-                            }],
-                        },
-                    },
-                }),
+                    }
+                ),
             )
 
     monkeypatch.setattr(
@@ -5369,10 +5213,7 @@ async def test_opencode_http_500_returns_a_service_unavailable_blocker(
     assert body["outcome"]["blocker"] == {
         "code": "provider_service_unavailable",
         "provider": "opencode",
-        "message": (
-            "OpenCode's selected model provider is temporarily unavailable "
-            "(HTTP 500)."
-        ),
+        "message": ("OpenCode's selected model provider is temporarily unavailable (HTTP 500)."),
         "action": "Retry later or choose another configured model.",
         "affected_tasks": [goal],
     }
@@ -5400,17 +5241,19 @@ async def test_outdated_codex_cli_returns_the_exact_model_blocker(
     async def fake_sync(*_args, **_kwargs):
         return {"failed": 0}
 
-    provider_error = json.dumps({
-        "type": "error",
-        "status": 400,
-        "error": {
-            "type": "invalid_request_error",
-            "message": (
-                "The 'gpt-5.6-sol' model requires a newer version of Codex. "
-                "Please upgrade to the latest app or CLI and try again."
-            ),
-        },
-    })
+    provider_error = json.dumps(
+        {
+            "type": "error",
+            "status": 400,
+            "error": {
+                "type": "invalid_request_error",
+                "message": (
+                    "The 'gpt-5.6-sol' model requires a newer version of Codex. "
+                    "Please upgrade to the latest app or CLI and try again."
+                ),
+            },
+        }
+    )
 
     class FakeRunner:
         def __init__(self, _session):
@@ -5424,10 +5267,12 @@ async def test_outdated_codex_cli_returns_the_exact_model_blocker(
                 check_exit_code=None,
                 cwd=tmp_path,
                 command_exit_code=1,
-                command_stdout=json.dumps({
-                    "type": "error",
-                    "message": provider_error,
-                }),
+                command_stdout=json.dumps(
+                    {
+                        "type": "error",
+                        "message": provider_error,
+                    }
+                ),
                 command_stderr=(
                     "ERROR codex_models_manager::cache: failed to load models "
                     "cache: missing field `supports_reasoning_summaries`"
@@ -5570,34 +5415,40 @@ async def test_run_continuation_does_not_launch_a_truly_blocked_checkpoint(
                             "id": "feature-4",
                             "title": "Feature 4",
                         },
-                        "affected_tasks": [{
-                            "id": "feature-5",
-                            "title": "Feature 5",
-                        }],
+                        "affected_tasks": [
+                            {
+                                "id": "feature-5",
+                                "title": "Feature 5",
+                            }
+                        ],
                     },
                 },
                 readiness={
                     "status": "blocked",
-                    "blocking_issues": [{
-                        "code": "dependency_prerequisite_not_actionable",
-                        "message": (
-                            '"Feature 4" cannot continue because prerequisite '
-                            '"Feature 3" is paused.'
-                        ),
-                        "blocker": {
-                            "id": "feature-3",
-                            "title": "Feature 3",
-                        },
-                        "blocking_tasks": [{
-                            "id": "feature-3",
-                            "title": "Feature 3",
-                        }],
-                        "affected_tasks": [
-                            {"id": "feature-3", "title": "Feature 3"},
-                            {"id": "feature-4", "title": "Feature 4"},
-                            {"id": "feature-5", "title": "Feature 5"},
-                        ],
-                    }],
+                    "blocking_issues": [
+                        {
+                            "code": "dependency_prerequisite_not_actionable",
+                            "message": (
+                                '"Feature 4" cannot continue because prerequisite '
+                                '"Feature 3" is paused.'
+                            ),
+                            "blocker": {
+                                "id": "feature-3",
+                                "title": "Feature 3",
+                            },
+                            "blocking_tasks": [
+                                {
+                                    "id": "feature-3",
+                                    "title": "Feature 3",
+                                }
+                            ],
+                            "affected_tasks": [
+                                {"id": "feature-3", "title": "Feature 3"},
+                                {"id": "feature-4", "title": "Feature 4"},
+                                {"id": "feature-5", "title": "Feature 5"},
+                            ],
+                        }
+                    ],
                 },
                 checkpoint={"continuation_status": "blocked"},
                 attention=[],
@@ -5622,18 +5473,12 @@ async def test_run_continuation_does_not_launch_a_truly_blocked_checkpoint(
     )
 
     assert response.status_code == 409
-    assert (
-        response.json()["detail"]["code"]
-        == "continuation_preparation_blocked"
-    )
+    assert response.json()["detail"]["code"] == "continuation_preparation_blocked"
     assert response.json()["detail"]["blocker"] == {
         "code": "dependency_prerequisite_not_actionable",
         "title": "Feature 3 blocks this continuation",
         "provider": None,
-        "message": (
-            '"Feature 4" cannot continue because prerequisite '
-            '"Feature 3" is paused.'
-        ),
+        "message": ('"Feature 4" cannot continue because prerequisite "Feature 3" is paused.'),
         "action": "Make the blocking prerequisite actionable, then retry.",
         "blocking_tasks": [{"id": "feature-3", "title": "Feature 3"}],
         "affected_tasks": [
@@ -5680,8 +5525,7 @@ def _verifiable_provider_goal(repo_path: Path, statement: str) -> str:
     test_path = repo_path / "tests" / "test_continuation_provider_fixture.py"
     test_path.parent.mkdir(exist_ok=True)
     test_path.write_text(
-        "def test_continuation_provider_fixture():\n"
-        "    assert True\n",
+        "def test_continuation_provider_fixture():\n    assert True\n",
         encoding="utf-8",
     )
     return (
@@ -5740,10 +5584,7 @@ def _fake_executable(tmp_path: Path, name: str) -> Path:
             "fi\n"
         ),
         "opencode": (
-            'if [ "$1 $2" = "auth list" ]; then\n'
-            '  printf "1 credential\\n"\n'
-            "  exit 0\n"
-            "fi\n"
+            'if [ "$1 $2" = "auth list" ]; then\n  printf "1 credential\\n"\n  exit 0\nfi\n'
         ),
     }.get(name, "")
     executable.write_text(
@@ -5773,18 +5614,22 @@ def _fake_harness_result(
             exit_code=check_exit_code,
             timed_out=False,
         )
-        verification_results = (SimpleNamespace(
-            requirement_id="V1",
-            command="python3 -m pytest -q",
-            cwd=str(cwd),
-            result=command_result,
-        ),)
-        serialized_checks = [{
-            "requirement_id": "V1",
-            "command": "python3 -m pytest -q",
-            "cwd": str(cwd),
-            "result": {"exit_code": check_exit_code, "timed_out": False},
-        }]
+        verification_results = (
+            SimpleNamespace(
+                requirement_id="V1",
+                command="python3 -m pytest -q",
+                cwd=str(cwd),
+                result=command_result,
+            ),
+        )
+        serialized_checks = [
+            {
+                "requirement_id": "V1",
+                "command": "python3 -m pytest -q",
+                "cwd": str(cwd),
+                "result": {"exit_code": check_exit_code, "timed_out": False},
+            }
+        ]
     payload = {
         "context_pack_id": str(uuid4()),
         "run_id": run_id,
@@ -5794,9 +5639,7 @@ def _fake_harness_result(
     }
     command_result = SimpleNamespace(
         exit_code=(
-            command_exit_code
-            if command_exit_code is not None
-            else (1 if status == "failed" else 0)
+            command_exit_code if command_exit_code is not None else (1 if status == "failed" else 0)
         ),
         stdout=command_stdout,
         stderr=command_stderr,
@@ -5938,9 +5781,7 @@ async def _seed_session(
             ),
             *[
                 NormalizedSessionEvent(
-                    provider_event_id=(
-                        f"{provider}:{session_id}:compaction:{index}"
-                    ),
+                    provider_event_id=(f"{provider}:{session_id}:compaction:{index}"),
                     sequence_number=2 + index,
                     event_type="compaction_boundary",
                     occurred_at=occurred_at,
@@ -6051,21 +5892,23 @@ async def _seed_project_foundation(
         db_session.add(revision)
         await db_session.flush()
         claim.current_revision_id = revision.id
-        db_session.add(Component(
-            id=uuid4(),
-            workspace_id=workspace.id,
-            model_id=model.id,
-            source_document_id=document.id,
-            claim_id=claim.id,
-            identity_key=identity_key,
-            name=title,
-            value=statement,
-            fact_type="fact",
-            temporal="current",
-            confidence=0.95,
-            authority_weight=0.9,
-            status="active",
-        ))
+        db_session.add(
+            Component(
+                id=uuid4(),
+                workspace_id=workspace.id,
+                model_id=model.id,
+                source_document_id=document.id,
+                claim_id=claim.id,
+                identity_key=identity_key,
+                name=title,
+                value=statement,
+                fact_type="fact",
+                temporal="current",
+                confidence=0.95,
+                authority_weight=0.9,
+                status="active",
+            )
+        )
     await db_session.flush()
 
 

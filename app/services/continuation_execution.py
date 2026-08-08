@@ -63,7 +63,7 @@ from app.services.project_foundation import (
 from app.time import utc_now
 
 
-WORKER_CONTEXT_PROJECTION_VERSION = "worker_context_projection.v7"
+WORKER_CONTEXT_PROJECTION_VERSION = "worker_context_projection.v8"
 _TOOL_SELECTION_DECISION_RE = re.compile(
     r"\b(?:i|we)\s*(?:(?:'ll|’ll|will|would|should|can)\s+|"
     r"(?:am|are|'m|’m|'re|’re)\s+(?:now\s+)?)"
@@ -89,26 +89,30 @@ _READ_ONLY_PROJECT_COMMANDS = {
     "type",
     "which",
 }
-_SESSION_ONLY_PROJECT_CONTEXT_ITEM_TYPES = frozenset({
-    "failed_approach",
-    "failed_approaches",
-    "failed_attempt",
-    "failed_attempts",
-    "learning",
-    "lesson",
-    "lessons",
-    "prior_failure",
-    "prior_failures",
-    "takeaway",
-})
-_GENERIC_PROJECT_CONTEXT_ITEM_TYPES = frozenset({
-    "",
-    "component",
-    "context",
-    "fact",
-    "file",
-    "relationship",
-})
+_SESSION_ONLY_PROJECT_CONTEXT_ITEM_TYPES = frozenset(
+    {
+        "failed_approach",
+        "failed_approaches",
+        "failed_attempt",
+        "failed_attempts",
+        "learning",
+        "lesson",
+        "lessons",
+        "prior_failure",
+        "prior_failures",
+        "takeaway",
+    }
+)
+_GENERIC_PROJECT_CONTEXT_ITEM_TYPES = frozenset(
+    {
+        "",
+        "component",
+        "context",
+        "fact",
+        "file",
+        "relationship",
+    }
+)
 _LEGACY_SESSION_ONLY_TITLE_PREFIXES = (
     "failed approach:",
     "failed attempt:",
@@ -141,9 +145,7 @@ async def compile_and_persist_continuation_execution(
     selected_task_lifecycle: SelectedTaskLifecycle | str | None = None,
     checkpoint_id: UUID | str | None = None,
     execution_focus: str | None = None,
-    artifacts: Iterable[
-        ArtifactReference | ContinuationArtifactInput | dict[str, Any]
-    ] = (),
+    artifacts: Iterable[ArtifactReference | ContinuationArtifactInput | dict[str, Any]] = (),
     supporting_context: Iterable[dict[str, Any]] = (),
 ) -> CompiledContinuationExecution:
     """Compile and persist the canonical worker contract for one continuation.
@@ -240,9 +242,7 @@ async def compile_and_persist_continuation_execution(
         task=authoritative_request,
         selected_task_lifecycle=selected_lifecycle,
         task_identity=task_identity_contract,
-        execution_focus=(
-            str(execution_focus).strip() if execution_focus else None
-        ),
+        execution_focus=(str(execution_focus).strip() if execution_focus else None),
         source_spans=source_spans,
         requirements=requirements,
         definition_of_done=tuple(
@@ -272,17 +272,16 @@ async def compile_and_persist_continuation_execution(
         selected_task_lifecycle=selected_lifecycle,
         checkpoint_id=checkpoint_key,
         repository_fingerprint=repository_contract.status_fingerprint,
-        project_foundation_sha256=sha256_text(json.dumps(
-            {
-                "snapshot": project_foundation.snapshot.model_dump(mode="json"),
-                "items": [
-                    item.model_dump(mode="json")
-                    for item in project_foundation.items
-                ],
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )),
+        project_foundation_sha256=sha256_text(
+            json.dumps(
+                {
+                    "snapshot": project_foundation.snapshot.model_dump(mode="json"),
+                    "items": [item.model_dump(mode="json") for item in project_foundation.items],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        ),
         execution_focus=execution_focus,
         artifacts=artifact_references,
         supporting_context=supporting_context_items,
@@ -359,15 +358,9 @@ def structured_handoff_from_checkpoint(
     """
 
     payload = restored_checkpoint if isinstance(restored_checkpoint, dict) else {}
-    checkpoint = (
-        payload.get("checkpoint")
-        if isinstance(payload.get("checkpoint"), dict)
-        else {}
-    )
+    checkpoint = payload.get("checkpoint") if isinstance(payload.get("checkpoint"), dict) else {}
     restored = (
-        payload.get("restore_context")
-        if isinstance(payload.get("restore_context"), dict)
-        else {}
+        payload.get("restore_context") if isinstance(payload.get("restore_context"), dict) else {}
     )
     sections = (
         checkpoint.get("sections")
@@ -379,12 +372,8 @@ def structured_handoff_from_checkpoint(
     if sections:
         sections = _project_handoff_sections(sections)
     progress = _handoff_items(sections.get("progress"), category="progress")
-    completed = tuple(
-        item for item in progress if _completed_state(item.state)
-    )
-    in_progress = tuple(
-        item for item in progress if not _completed_state(item.state)
-    )
+    completed = tuple(item for item in progress if _completed_state(item.state))
+    in_progress = tuple(item for item in progress if not _completed_state(item.state))
     remaining = _handoff_items(
         sections.get("exact_next_action"),
         category="exact_next_action",
@@ -427,39 +416,38 @@ def structured_handoff_from_checkpoint(
         objective = _safe_historical_statement(restored.get("objective"))
         legacy_remaining: list[StructuredHandoffItem] = []
         if objective:
-            legacy_remaining.append(StructuredHandoffItem(
+            legacy_remaining.append(
+                StructuredHandoffItem(
                     id="legacy:objective",
                     statement=objective,
                     state="active",
                     truth_state=HandoffTruthState.AGENT_REPORTED,
                     payload={"legacy_checkpoint": True},
-            ))
+                )
+            )
         earlier_requirements = restored.get("earlier_requirements")
         if isinstance(earlier_requirements, list):
-            seen_legacy = {
-                " ".join(item.statement.split())
-                for item in legacy_remaining
-            }
+            seen_legacy = {" ".join(item.statement.split()) for item in legacy_remaining}
             for index, value in enumerate(earlier_requirements, start=1):
                 statement = _safe_historical_statement(value)
                 dedupe = " ".join(statement.split())
                 if not statement or dedupe in seen_legacy:
                     continue
                 seen_legacy.add(dedupe)
-                legacy_remaining.append(StructuredHandoffItem(
-                    id=f"legacy:requirement:{index}",
-                    statement=statement,
-                    state="active",
-                    truth_state=HandoffTruthState.AGENT_REPORTED,
-                    payload={
-                        "legacy_checkpoint": True,
-                        "source": "earlier_user_requirement",
-                    },
-                ))
+                legacy_remaining.append(
+                    StructuredHandoffItem(
+                        id=f"legacy:requirement:{index}",
+                        statement=statement,
+                        state="active",
+                        truth_state=HandoffTruthState.AGENT_REPORTED,
+                        payload={
+                            "legacy_checkpoint": True,
+                            "source": "earlier_user_requirement",
+                        },
+                    )
+                )
         remaining = tuple(legacy_remaining)
-        agent_state = _safe_historical_statement(
-            restored.get("agent_reported_state")
-        )
+        agent_state = _safe_historical_statement(restored.get("agent_reported_state"))
         if agent_state:
             in_progress = (
                 StructuredHandoffItem(
@@ -477,13 +465,15 @@ def structured_handoff_from_checkpoint(
                 statement = str(value or "").strip()
                 if not statement or _looks_like_conversation_dump(statement):
                     continue
-                legacy_files.append(StructuredHandoffItem(
-                    id=f"legacy:file:{index}",
-                    statement=statement[:1_200],
-                    state="active",
-                    truth_state=HandoffTruthState.AGENT_REPORTED,
-                    payload={"legacy_checkpoint": True},
-                ))
+                legacy_files.append(
+                    StructuredHandoffItem(
+                        id=f"legacy:file:{index}",
+                        statement=statement[:1_200],
+                        state="active",
+                        truth_state=HandoffTruthState.AGENT_REPORTED,
+                        payload={"legacy_checkpoint": True},
+                    )
+                )
             files = tuple(legacy_files)
 
     return StructuredHandoff(
@@ -492,9 +482,7 @@ def structured_handoff_from_checkpoint(
             or str(restored.get("checkpoint_id") or "").strip()
             or None
         ),
-        schema_version=(
-            str(checkpoint.get("schema_version") or "").strip() or None
-        ),
+        schema_version=(str(checkpoint.get("schema_version") or "").strip() or None),
         completed=completed,
         in_progress=in_progress,
         remaining=remaining,
@@ -516,28 +504,18 @@ def _project_handoff_sections(
     """Remove presentation/process noise without weakening historical truth."""
 
     projected = {
-        key: [
-            item for item in value if isinstance(item, dict)
-        ]
+        key: [item for item in value if isinstance(item, dict)]
         for key, value in sections.items()
         if isinstance(value, list)
     }
     projected["decisions"] = [
         item
         for item in projected.get("decisions", [])
-        if not _is_tool_selection_statement(
-            str(item.get("statement") or "")
-        )
+        if not _is_tool_selection_statement(str(item.get("statement") or ""))
     ]
-    projected["discoveries"] = _dedupe_raw_handoff_items(
-        projected.get("discoveries", [])
-    )
-    projected["open_items"] = _dedupe_raw_handoff_items(
-        projected.get("open_items", [])
-    )
-    projected["useful_commands"] = _dedupe_raw_command_items(
-        projected.get("useful_commands", [])
-    )
+    projected["discoveries"] = _dedupe_raw_handoff_items(projected.get("discoveries", []))
+    projected["open_items"] = _dedupe_raw_handoff_items(projected.get("open_items", []))
+    projected["useful_commands"] = _dedupe_raw_command_items(projected.get("useful_commands", []))
     projected["verification"] = [
         item
         for item in projected.get("verification", [])
@@ -562,9 +540,7 @@ def _project_handoff_sections(
             continue
         key = _handoff_command_key(item)
         failed_sequence = _handoff_item_sequence(item)
-        passing_sequence = (
-            passing_sequences.get(key) if key is not None else None
-        )
+        passing_sequence = passing_sequences.get(key) if key is not None else None
         if (
             failed_sequence is not None
             and passing_sequence is not None
@@ -640,13 +616,10 @@ def _handoff_item_sequence(item: dict[str, Any]) -> int | None:
     sequences = [
         evidence.get("locator", {}).get("sequence_number")
         for evidence in item.get("evidence") or []
-        if isinstance(evidence, dict)
-        and isinstance(evidence.get("locator"), dict)
+        if isinstance(evidence, dict) and isinstance(evidence.get("locator"), dict)
     ]
     values = [
-        value
-        for value in sequences
-        if isinstance(value, int) and not isinstance(value, bool)
+        value for value in sequences if isinstance(value, int) and not isinstance(value, bool)
     ]
     return max(values) if values else None
 
@@ -675,7 +648,8 @@ def _handoff_observation_has_definitive_outcome(
     return bool(
         isinstance(passed, bool)
         or (isinstance(exit_code, int) and not isinstance(exit_code, bool))
-        or state in {
+        or state
+        in {
             "failed",
             "failure",
             "passed",
@@ -729,18 +703,11 @@ def _is_discovery_segment(segment: tuple[str, ...]) -> bool:
     lowered = tuple(value.casefold() for value in segment[1:])
     if executable in {"pytest", "py.test"}:
         return any(
-            value == "--collect-only"
-            or value.startswith("--collect-only=")
-            for value in lowered
+            value == "--collect-only" or value.startswith("--collect-only=") for value in lowered
         )
-    if (
-        executable.startswith("python")
-        and len(lowered) >= 3
-        and lowered[:2] == ("-m", "pytest")
-    ):
+    if executable.startswith("python") and len(lowered) >= 3 and lowered[:2] == ("-m", "pytest"):
         return any(
-            value == "--collect-only"
-            or value.startswith("--collect-only=")
+            value == "--collect-only" or value.startswith("--collect-only=")
             for value in lowered[2:]
         )
     if executable == "node":
@@ -764,11 +731,7 @@ def _is_discovery_segment(segment: tuple[str, ...]) -> bool:
     if executable == "sed" and any(
         value == "--in-place"
         or value.startswith("--in-place=")
-        or (
-            value.startswith("-")
-            and not value.startswith("--")
-            and "i" in value[1:]
-        )
+        or (value.startswith("-") and not value.startswith("--") and "i" in value[1:])
         for value in lowered
     ):
         return False
@@ -785,10 +748,7 @@ def _is_discovery_segment(segment: tuple[str, ...]) -> bool:
 
 
 def _is_safe_package_script_probe(segment: tuple[str, ...]) -> bool:
-    if (
-        len(segment) != 3
-        or segment[1].casefold() not in {"-e", "--eval"}
-    ):
+    if len(segment) != 3 or segment[1].casefold() not in {"-e", "--eval"}:
         return False
     script = segment[2]
     lowered = script.casefold()
@@ -807,8 +767,7 @@ def _is_safe_package_script_probe(segment: tuple[str, ...]) -> bool:
         re.IGNORECASE,
     )
     return bool(required_modules) and all(
-        _is_safe_relative_package_json(module)
-        for module in required_modules
+        _is_safe_relative_package_json(module) for module in required_modules
     )
 
 
@@ -817,11 +776,7 @@ def _is_safe_relative_package_json(module: str) -> bool:
     if not normalized or normalized.startswith("/") or "\x00" in normalized:
         return False
     parts = [part for part in normalized.split("/") if part not in {"", "."}]
-    return bool(
-        parts
-        and parts[-1].casefold() == "package.json"
-        and ".." not in parts
-    )
+    return bool(parts and parts[-1].casefold() == "package.json" and ".." not in parts)
 
 
 def reconcile_structured_handoff(
@@ -850,29 +805,24 @@ def reconcile_structured_handoff(
     # the current repository. Otherwise "Implemented." is misleadingly
     # rendered under In progress and escapes stale-completion reconciliation.
     semantically_completed = [
-        item for item in in_progress
-        if _reported_completion_claim(item.statement)
+        item for item in in_progress if _reported_completion_claim(item.statement)
     ]
     if semantically_completed:
-        semantically_completed_ids = {
-            item.id for item in semantically_completed
-        }
-        in_progress = [
-            item
-            for item in in_progress
-            if item.id not in semantically_completed_ids
-        ]
+        semantically_completed_ids = {item.id for item in semantically_completed}
+        in_progress = [item for item in in_progress if item.id not in semantically_completed_ids]
         completed.extend(
-            item.model_copy(update={
-                "state": "reported_complete",
-                "payload": {
-                    **item.payload,
-                    "reconciliation_reason": (
-                        "The statement reports completed work even though the "
-                        "checkpoint stored it with an active progress state."
-                    ),
-                },
-            })
+            item.model_copy(
+                update={
+                    "state": "reported_complete",
+                    "payload": {
+                        **item.payload,
+                        "reconciliation_reason": (
+                            "The statement reports completed work even though the "
+                            "checkpoint stored it with an active progress state."
+                        ),
+                    },
+                }
+            )
             for item in semantically_completed
         )
         completed = _dedupe_handoff_items(completed)
@@ -890,69 +840,48 @@ def reconcile_structured_handoff(
         )
     }
     if superseded_continuation_ids:
-        in_progress = [
-            item
-            for item in in_progress
-            if item.id not in superseded_continuation_ids
-        ]
-        remaining = [
-            item
-            for item in remaining
-            if item.id not in superseded_continuation_ids
-        ]
+        in_progress = [item for item in in_progress if item.id not in superseded_continuation_ids]
+        remaining = [item for item in remaining if item.id not in superseded_continuation_ids]
 
     captured_completion_claims = bool(completed) or any(
-        _reported_completion_claim(item.statement)
-        for item in unknowns
+        _reported_completion_claim(item.statement) for item in unknowns
     )
     completion_claims = [
-        item
-        for item in (*completed, *in_progress)
-        if _generic_completion_claim(item.statement)
+        item for item in (*completed, *in_progress) if _generic_completion_claim(item.statement)
     ]
     continuation_claims = [
-        item
-        for item in (*in_progress, *remaining)
-        if _generic_continuation_claim(item.statement)
+        item for item in (*in_progress, *remaining) if _generic_continuation_claim(item.statement)
     ]
     if completion_claims and continuation_claims:
         completion_ids = {item.id for item in completion_claims}
         continuation_ids = {item.id for item in continuation_claims}
-        completed = [
-            item for item in completed if item.id not in completion_ids
-        ]
+        completed = [item for item in completed if item.id not in completion_ids]
         in_progress = [
-            item
-            for item in in_progress
-            if item.id not in completion_ids | continuation_ids
+            item for item in in_progress if item.id not in completion_ids | continuation_ids
         ]
-        remaining = [
-            item for item in remaining if item.id not in continuation_ids
-        ]
-        unknowns.append(StructuredHandoffItem(
-            id=(
-                "reconciliation:semantic-conflict:"
-                f"{sha256_text('|'.join(sorted(completion_ids | continuation_ids)))[:16]}"
-            ),
-            statement=(
-                "Prior session reports conflict: completion was claimed while "
-                "a continuation action still remained."
-            ),
-            state="requires_reconciliation",
-            truth_state=HandoffTruthState.CONTRADICTED,
-            payload={
-                "reconciliation_reason": (
-                    "A generic completion claim conflicts with a generic "
-                    "continuation instruction."
+        remaining = [item for item in remaining if item.id not in continuation_ids]
+        unknowns.append(
+            StructuredHandoffItem(
+                id=(
+                    "reconciliation:semantic-conflict:"
+                    f"{sha256_text('|'.join(sorted(completion_ids | continuation_ids)))[:16]}"
                 ),
-                "completion_claims": [
-                    item.statement for item in completion_claims
-                ],
-                "continuation_claims": [
-                    item.statement for item in continuation_claims
-                ],
-            },
-        ))
+                statement=(
+                    "Prior session reports conflict: completion was claimed while "
+                    "a continuation action still remained."
+                ),
+                state="requires_reconciliation",
+                truth_state=HandoffTruthState.CONTRADICTED,
+                payload={
+                    "reconciliation_reason": (
+                        "A generic completion claim conflicts with a generic "
+                        "continuation instruction."
+                    ),
+                    "completion_claims": [item.statement for item in completion_claims],
+                    "continuation_claims": [item.statement for item in continuation_claims],
+                },
+            )
+        )
 
     buckets = {
         "completed": completed,
@@ -969,10 +898,7 @@ def reconcile_structured_handoff(
             locations.setdefault(key, set()).add(bucket_name)
             representative.setdefault(key, item)
 
-    contradicted_keys = {
-        key for key, bucket_names in locations.items()
-        if len(bucket_names) > 1
-    }
+    contradicted_keys = {key for key, bucket_names in locations.items() if len(bucket_names) > 1}
     if contradicted_keys:
         completed = [
             item
@@ -991,17 +917,21 @@ def reconcile_structured_handoff(
         ]
         for key in sorted(contradicted_keys):
             item = representative[key]
-            unknowns.append(item.model_copy(update={
-                "id": f"reconciliation:contradicted:{sha256_text(key)[:16]}",
-                "state": "requires_reconciliation",
-                "truth_state": HandoffTruthState.CONTRADICTED,
-                "payload": {
-                    "reconciliation_reason": (
-                        "The checkpoint placed the same work in conflicting "
-                        "completed, in-progress, or remaining sections."
-                    ),
-                },
-            }))
+            unknowns.append(
+                item.model_copy(
+                    update={
+                        "id": f"reconciliation:contradicted:{sha256_text(key)[:16]}",
+                        "state": "requires_reconciliation",
+                        "truth_state": HandoffTruthState.CONTRADICTED,
+                        "payload": {
+                            "reconciliation_reason": (
+                                "The checkpoint placed the same work in conflicting "
+                                "completed, in-progress, or remaining sections."
+                            ),
+                        },
+                    }
+                )
+            )
 
     unresolved_completion: list[StructuredHandoffItem] = []
     if relation is not RepositoryReconciliationState.MATCHES_CHECKPOINT:
@@ -1013,26 +943,29 @@ def reconcile_structured_handoff(
             }:
                 retained_completion.append(item)
                 continue
-            unresolved_completion.append(item.model_copy(update={
-                "id": (
-                    "reconciliation:completion:"
-                    f"{sha256_text(_handoff_statement_key(item.statement))[:16]}"
-                ),
-                "state": "requires_revalidation",
-                "truth_state": (
-                    HandoffTruthState.STALE
-                    if relation
-                    is RepositoryReconciliationState.CHANGED_SINCE_CHECKPOINT
-                    else HandoffTruthState.UNKNOWN
-                ),
-                "payload": {
-                    **item.payload,
-                    "reconciliation_reason": (
-                        "The completion claim is historical and the checkpoint "
-                        "repository snapshot is not the current proven state."
-                    ),
-                },
-            }))
+            unresolved_completion.append(
+                item.model_copy(
+                    update={
+                        "id": (
+                            "reconciliation:completion:"
+                            f"{sha256_text(_handoff_statement_key(item.statement))[:16]}"
+                        ),
+                        "state": "requires_revalidation",
+                        "truth_state": (
+                            HandoffTruthState.STALE
+                            if relation is RepositoryReconciliationState.CHANGED_SINCE_CHECKPOINT
+                            else HandoffTruthState.UNKNOWN
+                        ),
+                        "payload": {
+                            **item.payload,
+                            "reconciliation_reason": (
+                                "The completion claim is historical and the checkpoint "
+                                "repository snapshot is not the current proven state."
+                            ),
+                        },
+                    }
+                )
+            )
         unknowns.extend(unresolved_completion)
         completed = retained_completion
 
@@ -1045,8 +978,7 @@ def reconcile_structured_handoff(
     else:
         relation_summary = (
             "The repository changed after the checkpoint."
-            if relation
-            is RepositoryReconciliationState.CHANGED_SINCE_CHECKPOINT
+            if relation is RepositoryReconciliationState.CHANGED_SINCE_CHECKPOINT
             else "The checkpoint and current repository could not be matched."
         )
         if unresolved_completion:
@@ -1072,16 +1004,18 @@ def reconcile_structured_handoff(
                 "captured; inspect the current repository before relying on "
                 "the remaining handoff state."
             )
-    return handoff.model_copy(update={
-        "completed": tuple(completed),
-        "in_progress": tuple(_dedupe_handoff_items(in_progress)),
-        "remaining": tuple(_dedupe_handoff_items(remaining)),
-        "unknowns": tuple(unknowns),
-        "reconciliation": HandoffReconciliation(
-            repository_state=relation,
-            summary=summary,
-        ),
-    })
+    return handoff.model_copy(
+        update={
+            "completed": tuple(completed),
+            "in_progress": tuple(_dedupe_handoff_items(in_progress)),
+            "remaining": tuple(_dedupe_handoff_items(remaining)),
+            "unknowns": tuple(unknowns),
+            "reconciliation": HandoffReconciliation(
+                repository_state=relation,
+                summary=summary,
+            ),
+        }
+    )
 
 
 def _checkpoint_repository_relation(
@@ -1089,17 +1023,11 @@ def _checkpoint_repository_relation(
     manifest: dict[str, Any],
 ) -> RepositoryReconciliationState:
     continuation = (
-        manifest.get("continuation")
-        if isinstance(manifest.get("continuation"), dict)
-        else {}
+        manifest.get("continuation") if isinstance(manifest.get("continuation"), dict) else {}
     )
-    checkpoint_fingerprint = str(
-        continuation.get("checkpoint_fingerprint") or ""
-    ).strip()
+    checkpoint_fingerprint = str(continuation.get("checkpoint_fingerprint") or "").strip()
     current_fingerprint = str(
-        repository.status_fingerprint
-        or continuation.get("current_repo_fingerprint")
-        or ""
+        repository.status_fingerprint or continuation.get("current_repo_fingerprint") or ""
     ).strip()
     if not checkpoint_fingerprint or not current_fingerprint:
         return RepositoryReconciliationState.UNKNOWN
@@ -1109,18 +1037,12 @@ def _checkpoint_repository_relation(
 
 
 def _handoff_statement_key(value: str) -> str:
-    return " ".join(
-        re.sub(r"[^a-z0-9/_.-]+", " ", value.casefold()).split()
-    )
+    return " ".join(re.sub(r"[^a-z0-9/_.-]+", " ", value.casefold()).split())
 
 
 def _handoff_sequence(item: StructuredHandoffItem) -> int | None:
     for evidence in item.evidence:
-        locator = (
-            evidence.get("locator")
-            if isinstance(evidence.get("locator"), dict)
-            else {}
-        )
+        locator = evidence.get("locator") if isinstance(evidence.get("locator"), dict) else {}
         value = locator.get("sequence_number")
         if isinstance(value, int):
             return value
@@ -1139,10 +1061,9 @@ def _recovered_continuation_superseded(
     *,
     completed: Iterable[StructuredHandoffItem],
 ) -> bool:
-    if (
-        item.payload.get("derived_from_recovered_goal") is not True
-        or not _generic_continuation_claim(item.statement)
-    ):
+    if item.payload.get(
+        "derived_from_recovered_goal"
+    ) is not True or not _generic_continuation_claim(item.statement):
         return False
     continuation_sequence = _handoff_sequence(item)
     if continuation_sequence is None:
@@ -1150,8 +1071,7 @@ def _recovered_continuation_superseded(
     return any(
         completion_sequence > continuation_sequence
         for completed_item in completed
-        if (completion_sequence := _handoff_sequence(completed_item))
-        is not None
+        if (completion_sequence := _handoff_sequence(completed_item)) is not None
     )
 
 
@@ -1163,13 +1083,15 @@ def _generic_completion_claim(value: str) -> bool:
         re.IGNORECASE,
     ):
         return False
-    return bool(re.fullmatch(
-        r"(?:implemented|completed|done|finished|fixed)"
-        r"(?:\s+(?:it|everything|end[\s-]*to[\s-]*end|"
-        r"the\s+(?:task|work|request)))?[.!]?",
-        normalized,
-        re.IGNORECASE,
-    ))
+    return bool(
+        re.fullmatch(
+            r"(?:implemented|completed|done|finished|fixed)"
+            r"(?:\s+(?:it|everything|end[\s-]*to[\s-]*end|"
+            r"the\s+(?:task|work|request)))?[.!]?",
+            normalized,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _reported_completion_claim(value: str) -> bool:
@@ -1190,25 +1112,29 @@ def _reported_completion_claim(value: str) -> bool:
         re.IGNORECASE,
     ):
         return False
-    return _generic_completion_claim(normalized) or bool(re.search(
-        r"\b(?:added|built|captured|completed|confirmed|created|fixed|"
-        r"implemented|passed|removed|replaced|updated|wired)\b|"
-        r"\b(?:is|are|was|were)\s+"
-        r"(?:fully\s+)?(?:added|built|captured|complete|completed|confirmed|"
-        r"created|fixed|implemented|in\s+place|passed|removed|replaced|"
-        r"updated|wired|working)\b",
-        normalized,
-        re.IGNORECASE,
-    ))
+    return _generic_completion_claim(normalized) or bool(
+        re.search(
+            r"\b(?:added|built|captured|completed|confirmed|created|fixed|"
+            r"implemented|passed|removed|replaced|updated|wired)\b|"
+            r"\b(?:is|are|was|were)\s+"
+            r"(?:fully\s+)?(?:added|built|captured|complete|completed|confirmed|"
+            r"created|fixed|implemented|in\s+place|passed|removed|replaced|"
+            r"updated|wired|working)\b",
+            normalized,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _generic_continuation_claim(value: str) -> bool:
-    return bool(re.match(
-        r"^(?:continue|complete|finish|resume)\b[\s\S]*"
-        r"(?:request|task|work)\b",
-        " ".join(str(value or "").split()),
-        re.IGNORECASE,
-    ))
+    return bool(
+        re.match(
+            r"^(?:continue|complete|finish|resume)\b[\s\S]*"
+            r"(?:request|task|work)\b",
+            " ".join(str(value or "").split()),
+            re.IGNORECASE,
+        )
+    )
 
 
 def _dedupe_handoff_items(
@@ -1230,31 +1156,25 @@ def _repository_evidence_items(
     *,
     repository: RepositoryContract,
 ) -> tuple[RepositoryEvidenceItem, ...]:
-    """Bind syntax-level index evidence to files that still hash identically.
+    """Bind file- or syntax-level evidence to files that still hash identically.
 
     Repository evidence is deliberately separate from durable project facts:
-    declarations and exact index edges are observable, but they do not prove
-    code behavior or architectural intent.
+    File presence, declarations, and exact index edges are observable, but
+    they do not prove code behavior or architectural intent.
     """
 
     payload = manifest.get("repository_evidence")
-    if (
-        not isinstance(payload, dict)
-        or payload.get("schema_version") != "repository_evidence.v1"
-        or repository.status_truncated
-    ):
+    if not isinstance(payload, dict) or repository.status_truncated:
         return ()
-    repo_state = (
-        manifest.get("repo_state")
-        if isinstance(manifest.get("repo_state"), dict)
-        else {}
-    )
-    evidence_fingerprint = str(
-        payload.get("snapshot_fingerprint") or ""
-    ).strip()
-    manifest_fingerprint = str(
-        repo_state.get("snapshot_fingerprint") or ""
-    ).strip()
+    evidence_schema_version = str(payload.get("schema_version") or "")
+    if evidence_schema_version not in {
+        "repository_evidence.v1",
+        "repository_evidence.v2",
+    }:
+        return ()
+    repo_state = manifest.get("repo_state") if isinstance(manifest.get("repo_state"), dict) else {}
+    evidence_fingerprint = str(payload.get("snapshot_fingerprint") or "").strip()
+    manifest_fingerprint = str(repo_state.get("snapshot_fingerprint") or "").strip()
     if (
         not evidence_fingerprint
         or not manifest_fingerprint
@@ -1262,11 +1182,7 @@ def _repository_evidence_items(
     ):
         return ()
     evidence_head = str(payload.get("head_commit") or "").strip()
-    if (
-        evidence_head
-        and repository.head_commit
-        and evidence_head != repository.head_commit
-    ):
+    if evidence_head and repository.head_commit and evidence_head != repository.head_commit:
         return ()
     raw_items = payload.get("items")
     if not isinstance(raw_items, list):
@@ -1285,6 +1201,13 @@ def _repository_evidence_items(
         try:
             item = RepositoryEvidenceItem.model_validate(raw)
         except ValueError:
+            continue
+        if (
+            evidence_schema_version == "repository_evidence.v1"
+            and item.kind is RepositoryEvidenceKind.FILE_PRESENCE
+        ):
+            # v1 was a closed syntax-evidence schema. File-level evidence was
+            # introduced in v2; do not silently reinterpret a v1 payload.
             continue
         file_bindings = _repository_evidence_file_bindings(item)
         if not file_bindings or any(
@@ -1305,7 +1228,10 @@ def _repository_evidence_items(
 def _repository_evidence_file_bindings(
     item: RepositoryEvidenceItem,
 ) -> tuple[tuple[str, str], ...]:
-    if item.kind is RepositoryEvidenceKind.SYMBOL_DECLARATION:
+    if item.kind in {
+        RepositoryEvidenceKind.FILE_PRESENCE,
+        RepositoryEvidenceKind.SYMBOL_DECLARATION,
+    }:
         return ((str(item.path), str(item.file_sha256)),)
     if item.kind is RepositoryEvidenceKind.TEST_LINK:
         return (
@@ -1322,11 +1248,7 @@ def _repository_evidence_file_matches(
     expected_sha256: str,
 ) -> bool:
     normalized = str(path or "").replace("\\", "/").removeprefix("./")
-    if (
-        not normalized
-        or normalized.startswith("/")
-        or ".." in normalized.split("/")
-    ):
+    if not normalized or normalized.startswith("/") or ".." in normalized.split("/"):
         return False
     try:
         candidate = (root / normalized).resolve(strict=True)
@@ -1364,10 +1286,8 @@ def _eligible_session_context_reference(
         or not str(raw.get("evidence_span_id") or "").strip()
         or raw.get("provenance_verified") is not True
         or str(raw.get("truth_state") or "").strip().casefold() != "current"
-        or str(raw.get("status") or "").strip().casefold()
-        not in {"active", "verified"}
-        or str(raw.get("conflict_state") or "none").strip().casefold()
-        not in {"", "none"}
+        or str(raw.get("status") or "").strip().casefold() not in {"active", "verified"}
+        or str(raw.get("conflict_state") or "none").strip().casefold() not in {"", "none"}
         or _selected_context_prompt_risk(raw) >= 0.70
     ):
         return False
@@ -1380,13 +1300,16 @@ def _looks_like_conversation_dump(value: str) -> bool:
     """Reject transcript-shaped blobs from the compact project projection."""
 
     normalized = value.casefold()
-    if any(marker in normalized for marker in (
-        "referenced chatgpt conversation",
-        '"conversationid"',
-        '"conversation":[',
-        '"content_type":"text"',
-        "chatgpt-conversation://",
-    )):
+    if any(
+        marker in normalized
+        for marker in (
+            "referenced chatgpt conversation",
+            '"conversationid"',
+            '"conversation":[',
+            '"content_type":"text"',
+            "chatgpt-conversation://",
+        )
+    ):
         return True
     json_roles = re.findall(
         r'"role"\s*:\s*"(?:user|assistant|system|developer)"',
@@ -1411,9 +1334,7 @@ def _continuation_task_identity(
     supplied: ContinuationTaskIdentity | dict[str, Any] | None,
 ) -> ContinuationTaskIdentity:
     continuation = (
-        manifest.get("continuation")
-        if isinstance(manifest.get("continuation"), dict)
-        else {}
+        manifest.get("continuation") if isinstance(manifest.get("continuation"), dict) else {}
     )
     raw_identity: ContinuationTaskIdentity | dict[str, Any] | None = supplied
     if raw_identity is None and isinstance(
@@ -1428,18 +1349,13 @@ def _continuation_task_identity(
             else ContinuationTaskIdentity.model_validate(raw_identity)
         )
         if identity.workspace_id != workspace_id:
-            raise ValueError(
-                "task identity workspace does not match continuation workspace"
-            )
+            raise ValueError("task identity workspace does not match continuation workspace")
         if identity.authoritative_request_sha256 != task.request_sha256:
-            raise ValueError(
-                "task identity request hash does not match authoritative request"
-            )
+            raise ValueError("task identity request hash does not match authoritative request")
         return identity
 
     selected_objective = str(
-        continuation.get("selected_objective")
-        or task.request_normalized
+        continuation.get("selected_objective") or task.request_normalized
     ).strip()
     selected_objective_key = re.sub(
         r"[^a-z0-9]+",
@@ -1449,16 +1365,10 @@ def _continuation_task_identity(
     root = str(Path(repository.root).expanduser())
     branch = " ".join(str(repository.branch or "").casefold().split())
     fallback_digest = hashlib.sha256(
-        (
-            f"{workspace_id}:{root}:{branch}:"
-            f"{selected_objective_key}"
-        ).encode("utf-8")
+        (f"{workspace_id}:{root}:{branch}:{selected_objective_key}").encode("utf-8")
     ).hexdigest()
     return ContinuationTaskIdentity(
-        id=(
-            str(continuation.get("task_id") or "").strip()
-            or f"task:{fallback_digest[:24]}"
-        ),
+        id=(str(continuation.get("task_id") or "").strip() or f"task:{fallback_digest[:24]}"),
         workspace_id=workspace_id,
         selected_objective_key=selected_objective_key,
         selected_objective_sha256=sha256_text(selected_objective),
@@ -1473,8 +1383,7 @@ def _selected_context_kind(value: dict[str, Any]) -> ProjectContextKind:
     if item_type in _SESSION_ONLY_PROJECT_CONTEXT_ITEM_TYPES:
         return ProjectContextKind.LEARNING
     if item_type in _GENERIC_PROJECT_CONTEXT_ITEM_TYPES and (
-        lane == "prior_failures"
-        or title.startswith(_LEGACY_SESSION_ONLY_TITLE_PREFIXES)
+        lane == "prior_failures" or title.startswith(_LEGACY_SESSION_ONLY_TITLE_PREFIXES)
     ):
         # Older context_pack.v2 manifests represented extracted lessons and
         # failed attempts as generic components. Keep those persisted shapes
@@ -1538,13 +1447,15 @@ def _supporting_context_items(
         if not text or key in seen:
             continue
         seen.add(key)
-        result.append(SupportingContextItem(
-            role=role,
-            text=text,
-            source=source,
-            truth_state="historical_data",
-            content_sha256=key[1],
-        ))
+        result.append(
+            SupportingContextItem(
+                role=role,
+                text=text,
+                source=source,
+                truth_state="historical_data",
+                content_sha256=key[1],
+            )
+        )
     return tuple(result)
 
 
@@ -1559,9 +1470,7 @@ def _augment_requirements_from_supporting_context(
         return requirements
     derived = derive_session_handoff_requirements(
         request_verbatim,
-        supporting_context=(
-            item.model_dump(mode="json") for item in supporting_context
-        ),
+        supporting_context=(item.model_dump(mode="json") for item in supporting_context),
     )
     accepted = [
         item
@@ -1584,22 +1493,21 @@ def _augment_requirements_from_supporting_context(
         source_spans[0],
     )
     result = list(requirements)
-    seen = {
-        re.sub(r"\W+", " ", item.text.casefold()).strip()
-        for item in result
-    }
+    seen = {re.sub(r"\W+", " ", item.text.casefold()).strip() for item in result}
     for item in accepted:
         text = " ".join(str(item.get("text") or "").split())
         key = re.sub(r"\W+", " ", text.casefold()).strip()
         if not key or key in seen:
             continue
         seen.add(key)
-        result.append(AtomicRequirement(
-            id=f"R{len(result) + 1}",
-            text=text,
-            priority=RequirementPriority.MUST,
-            source_span_ids=(adoption_span.id,),
-        ))
+        result.append(
+            AtomicRequirement(
+                id=f"R{len(result) + 1}",
+                text=text,
+                priority=RequirementPriority.MUST,
+                source_span_ids=(adoption_span.id,),
+            )
+        )
     return tuple(result)
 
 
@@ -1616,17 +1524,11 @@ def _link_requirement_verifiers(
     checks never become universal proof.
     """
 
-    requirement_links: dict[str, list[str]] = {
-        requirement.id: [] for requirement in requirements
-    }
-    command_links: dict[str, list[str]] = {
-        verifier.id: [] for verifier in command_verifiers
-    }
+    requirement_links: dict[str, list[str]] = {requirement.id: [] for requirement in requirements}
+    command_links: dict[str, list[str]] = {verifier.id: [] for verifier in command_verifiers}
     supplemental: list[VerificationSpec] = []
     artifact_requirement_ids = {
-        requirement_id
-        for artifact in artifacts
-        for requirement_id in artifact.requirement_ids
+        requirement_id for artifact in artifacts for requirement_id in artifact.requirement_ids
     }
     requirement_values = tuple(requirements)
     for requirement in requirement_values:
@@ -1645,30 +1547,31 @@ def _link_requirement_verifiers(
             (
                 verifier
                 for verifier in matching_commands
-                if verifier.verifier_type is semantic_type
-                and verifier.command_argv
+                if verifier.verifier_type is semantic_type and verifier.command_argv
             ),
             None,
         )
         if semantic_type is not None and semantic_executor is None:
             verifier_id = f"VS-{requirement.id}"
-            supplemental.append(VerificationSpec(
-                id=verifier_id,
-                verifier_type=semantic_type,
-                requirement_ids=(requirement.id,),
-                required=True,
-                rubric=(
-                    "Verify this exact requirement against observed runtime or "
-                    f"visual evidence: {requirement.text}"
-                    if semantic_type
-                    in {
-                        VerifierType.BROWSER_ASSERTION,
-                        VerifierType.SCREENSHOT_COMPARISON,
-                        VerifierType.EVENT_ASSERTION,
-                    }
-                    else None
-                ),
-            ))
+            supplemental.append(
+                VerificationSpec(
+                    id=verifier_id,
+                    verifier_type=semantic_type,
+                    requirement_ids=(requirement.id,),
+                    required=True,
+                    rubric=(
+                        "Verify this exact requirement against observed runtime or "
+                        f"visual evidence: {requirement.text}"
+                        if semantic_type
+                        in {
+                            VerifierType.BROWSER_ASSERTION,
+                            VerifierType.SCREENSHOT_COMPARISON,
+                            VerifierType.EVENT_ASSERTION,
+                        }
+                        else None
+                    ),
+                )
+            )
             requirement_links[requirement.id].append(verifier_id)
 
         for verifier in matching_commands:
@@ -1678,38 +1581,33 @@ def _link_requirement_verifiers(
         # A model rubric records the semantic proof contract but remains
         # supplemental when a real deterministic/runtime verifier exists.
         rubric_id = f"VR-{requirement.id}"
-        has_required_executor = bool(
-            semantic_type is not None or matching_commands
+        has_required_executor = bool(semantic_type is not None or matching_commands)
+        supplemental.append(
+            VerificationSpec(
+                id=rubric_id,
+                verifier_type=VerifierType.MODEL_RUBRIC,
+                requirement_ids=(requirement.id,),
+                required=not has_required_executor,
+                rubric=(
+                    "Judge the observed repository/runtime evidence for this exact "
+                    f"requirement; a worker claim alone is not proof: {requirement.text}"
+                ),
+            )
         )
-        supplemental.append(VerificationSpec(
-            id=rubric_id,
-            verifier_type=VerifierType.MODEL_RUBRIC,
-            requirement_ids=(requirement.id,),
-            required=not has_required_executor,
-            rubric=(
-                "Judge the observed repository/runtime evidence for this exact "
-                f"requirement; a worker claim alone is not proof: {requirement.text}"
-            ),
-        ))
         requirement_links[requirement.id].append(rubric_id)
 
     linked_commands = tuple(
         verifier.model_copy(
             update={
                 "requirement_ids": tuple(command_links[verifier.id]),
-                "required": (
-                    verifier.required
-                    and bool(command_links[verifier.id])
-                ),
+                "required": (verifier.required and bool(command_links[verifier.id])),
             }
         )
         for verifier in command_verifiers
     )
     linked_requirements = tuple(
         requirement.model_copy(
-            update={
-                "verification_ids": tuple(requirement_links[requirement.id])
-            }
+            update={"verification_ids": tuple(requirement_links[requirement.id])}
         )
         if requirement.priority is RequirementPriority.MUST
         else requirement
@@ -1729,8 +1627,7 @@ def _command_verifiers(
     verification = manifest.get("verification")
     commands = (
         verification.get("commands")
-        if isinstance(verification, dict)
-        and isinstance(verification.get("commands"), list)
+        if isinstance(verification, dict) and isinstance(verification.get("commands"), list)
         else []
     )
     result: list[VerificationSpec] = []
@@ -1748,25 +1645,24 @@ def _command_verifiers(
         if not argv:
             continue
         identifier = str(value.get("id") or f"VC{index}").strip()
-        if (
-            identifier.startswith(("VR-", "VS-"))
-            or identifier in used_ids
-        ):
+        if identifier.startswith(("VR-", "VS-")) or identifier in used_ids:
             identifier = f"VC{index}"
         used_ids.add(identifier)
         cwd = _relative_cwd(
             str(value.get("cwd") or repository_root),
             repository_root,
         )
-        result.append(VerificationSpec(
-            id=identifier,
-            verifier_type=_declared_command_verifier_type(value, argv),
-            requirement_ids=_declared_requirement_ids(value),
-            command_argv=argv,
-            cwd=cwd,
-            required=bool(value.get("required", True)),
-            expected_exit_code=0,
-        ))
+        result.append(
+            VerificationSpec(
+                id=identifier,
+                verifier_type=_declared_command_verifier_type(value, argv),
+                requirement_ids=_declared_requirement_ids(value),
+                command_argv=argv,
+                cwd=cwd,
+                required=bool(value.get("required", True)),
+                expected_exit_code=0,
+            )
+        )
     return tuple(result)
 
 
@@ -1781,9 +1677,7 @@ def _semantic_verifier_type(
         normalized,
     ):
         return (
-            VerifierType.SCREENSHOT_COMPARISON
-            if has_artifact
-            else VerifierType.BROWSER_ASSERTION
+            VerifierType.SCREENSHOT_COMPARISON if has_artifact else VerifierType.BROWSER_ASSERTION
         )
     if re.search(
         r"\b(?:browser|dom|page|route renders|screen|ui|visible|card|selector)\b",
@@ -1805,11 +1699,10 @@ def _command_matches_requirement(
     if requirement.id in verifier.requirement_ids:
         return True
     requirement_text = requirement.text
-    if (
-        verifier.verifier_type
-        in {VerifierType.UNIT_TEST, VerifierType.INTEGRATION_TEST}
-        and _has_explicit_test_intent(requirement_text)
-    ):
+    if verifier.verifier_type in {
+        VerifierType.UNIT_TEST,
+        VerifierType.INTEGRATION_TEST,
+    } and _has_explicit_test_intent(requirement_text):
         return True
     requirement_paths = {
         match.group(0).strip("`'\".,:;()[]{}")
@@ -1821,17 +1714,12 @@ def _command_matches_requirement(
     verifier_paths = _verifier_paths(verifier)
     if requirement_paths & verifier_paths:
         return True
-    requirement_stems = {
-        Path(path).stem.casefold()
-        for path in requirement_paths
-    }
+    requirement_stems = {Path(path).stem.casefold() for path in requirement_paths}
     verifier_test_stems = {
         stem
         for path in verifier_paths
         if Path(path).name.casefold().startswith("test")
-        for stem in [
-            re.sub(r"^test[_-]?", "", Path(path).stem.casefold())
-        ]
+        for stem in [re.sub(r"^test[_-]?", "", Path(path).stem.casefold())]
         if stem
     }
     if requirement_stems & verifier_test_stems:
@@ -1844,15 +1732,17 @@ def _command_matches_requirement(
 
 
 def _has_explicit_test_intent(requirement_text: str) -> bool:
-    return bool(re.search(
-        r"\b(?:pytest|vitest|playwright|unittest)\b|"
-        r"\b(?:add|create|execute|fix|rerun|run|update|verify|write)\b"
-        r"(?:\W+\w+){0,5}\W+tests?\b|"
-        r"\btests?\b(?:\W+\w+){0,5}\W+"
-        r"(?:coverage|pass|passing|suite)\b",
-        requirement_text,
-        re.IGNORECASE,
-    ))
+    return bool(
+        re.search(
+            r"\b(?:pytest|vitest|playwright|unittest)\b|"
+            r"\b(?:add|create|execute|fix|rerun|run|update|verify|write)\b"
+            r"(?:\W+\w+){0,5}\W+tests?\b|"
+            r"\btests?\b(?:\W+\w+){0,5}\W+"
+            r"(?:coverage|pass|passing|suite)\b",
+            requirement_text,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _declared_requirement_ids(value: dict[str, Any]) -> tuple[str, ...]:
@@ -1862,11 +1752,9 @@ def _declared_requirement_ids(value: dict[str, Any]) -> tuple[str, ...]:
     else:
         singular = value.get("requirement_id")
         candidates = (singular,) if singular is not None else ()
-    return tuple(dict.fromkeys(
-        identifier
-        for item in candidates
-        if (identifier := str(item or "").strip())
-    ))
+    return tuple(
+        dict.fromkeys(identifier for item in candidates if (identifier := str(item or "").strip()))
+    )
 
 
 def _declared_command_verifier_type(
@@ -1904,9 +1792,7 @@ def _verifier_paths(verifier: VerificationSpec) -> set[str]:
 def _artifact_references(
     request_verbatim: str,
     *,
-    supplied: Iterable[
-        ArtifactReference | ContinuationArtifactInput | dict[str, Any]
-    ],
+    supplied: Iterable[ArtifactReference | ContinuationArtifactInput | dict[str, Any]],
 ) -> tuple[ArtifactReference, ...]:
     result: list[ArtifactReference] = []
     seen_paths: set[str] = set()
@@ -1929,11 +1815,7 @@ def _artifact_references(
             raise ValueError("artifact inputs must be ArtifactReference objects")
         artifact_paths = {
             artifact.path,
-            *(
-                (artifact.source_path,)
-                if artifact.source_path
-                else ()
-            ),
+            *((artifact.source_path,) if artifact.source_path else ()),
         }
         if artifact_paths & seen_paths:
             continue
@@ -1960,20 +1842,21 @@ def _artifact_references(
         # embedded image markup visible to the worker and quality gate, but
         # never resolve or hash the referenced path unless the same path was
         # supplied through the explicit artifact API or trusted manifest.
-        result.append(ArtifactReference(
-            id=f"A{len(result) + 1}",
-            kind="screenshot",
-            path=path,
-            sha256=None,
-            mime_type=mimetypes.guess_type(path)[0],
-            required=True,
-            available=False,
-            requirement_ids=(),
-        ))
+        result.append(
+            ArtifactReference(
+                id=f"A{len(result) + 1}",
+                kind="screenshot",
+                path=path,
+                sha256=None,
+                mime_type=mimetypes.guess_type(path)[0],
+                required=True,
+                available=False,
+                requirement_ids=(),
+            )
+        )
     if len(result) > MAX_CONTINUATION_ARTIFACTS:
         raise ValueError(
-            "continuation artifacts exceed the supported limit of "
-            f"{MAX_CONTINUATION_ARTIFACTS}"
+            f"continuation artifacts exceed the supported limit of {MAX_CONTINUATION_ARTIFACTS}"
         )
     # Provider-recovered artifacts use compact A1/A2/... identifiers, while
     # callers may legitimately supply those same IDs for explicit artifacts.
@@ -2009,9 +1892,7 @@ def _augment_requirements_from_artifacts(
 
     result_requirements = list(requirements)
     result_artifacts: list[ArtifactReference] = []
-    known_requirement_ids = {
-        requirement.id for requirement in result_requirements
-    }
+    known_requirement_ids = {requirement.id for requirement in result_requirements}
     for artifact in artifacts:
         linked_ids = tuple(
             requirement_id
@@ -2020,20 +1901,20 @@ def _augment_requirements_from_artifacts(
         )
         if artifact.required and not linked_ids:
             requirement_id = f"R{len(result_requirements) + 1}"
-            result_requirements.append(AtomicRequirement(
-                id=requirement_id,
-                text=(
-                    "Use this required visual attachment as an implementation "
-                    "reference and verify the resulting interface against it."
-                ),
-                priority=RequirementPriority.MUST,
-                source_artifact_ids=(artifact.id,),
-            ))
+            result_requirements.append(
+                AtomicRequirement(
+                    id=requirement_id,
+                    text=(
+                        "Use this required visual attachment as an implementation "
+                        "reference and verify the resulting interface against it."
+                    ),
+                    priority=RequirementPriority.MUST,
+                    source_artifact_ids=(artifact.id,),
+                )
+            )
             known_requirement_ids.add(requirement_id)
             linked_ids = (requirement_id,)
-        result_artifacts.append(
-            artifact.model_copy(update={"requirement_ids": linked_ids})
-        )
+        result_artifacts.append(artifact.model_copy(update={"requirement_ids": linked_ids}))
     return tuple(result_requirements), tuple(result_artifacts)
 
 
@@ -2051,11 +1932,13 @@ def _manifest_artifact_inputs(
     ]
     continuation = manifest.get("continuation")
     if isinstance(continuation, dict):
-        containers.extend([
-            continuation.get("artifacts"),
-            continuation.get("attachments"),
-            continuation.get("visual_artifacts"),
-        ])
+        containers.extend(
+            [
+                continuation.get("artifacts"),
+                continuation.get("attachments"),
+                continuation.get("visual_artifacts"),
+            ]
+        )
     selected = manifest.get("selected_context")
     if isinstance(selected, list):
         for item in selected:
@@ -2070,10 +1953,12 @@ def _manifest_artifact_inputs(
                 "visual_reference",
             }:
                 containers.append([item])
-            containers.extend([
-                item.get("artifacts"),
-                item.get("attachments"),
-            ])
+            containers.extend(
+                [
+                    item.get("artifacts"),
+                    item.get("attachments"),
+                ]
+            )
 
     result: list[dict[str, Any]] = []
     for container in containers:
@@ -2087,9 +1972,7 @@ def _manifest_artifact_inputs(
         for raw in values:
             if not isinstance(raw, dict):
                 continue
-            path = str(
-                raw.get("path") or raw.get("local_path") or ""
-            ).strip()
+            path = str(raw.get("path") or raw.get("local_path") or "").strip()
             if not path:
                 continue
             result.append(raw)
@@ -2104,9 +1987,7 @@ def _artifact_from_input(
     fallback_id: str,
     requirement_ids: tuple[str, ...],
 ) -> ArtifactReference:
-    path_text = str(
-        value.get("path") or value.get("local_path") or ""
-    ).strip()
+    path_text = str(value.get("path") or value.get("local_path") or "").strip()
     if not path_text:
         raise ValueError("artifact path is required")
     path = Path(path_text).expanduser()
@@ -2134,19 +2015,12 @@ def _artifact_from_input(
         id=str(value.get("id") or fallback_id),
         kind=str(value.get("kind") or "attachment"),
         path=path_text,
-        source_path=(
-            str(value.get("source_path") or "").strip() or None
-        ),
+        source_path=(str(value.get("source_path") or "").strip() or None),
         sha256=digest,
-        mime_type=(
-            str(value.get("mime_type") or "").strip()
-            or mimetypes.guess_type(path_text)[0]
-        ),
+        mime_type=(str(value.get("mime_type") or "").strip() or mimetypes.guess_type(path_text)[0]),
         required=bool(value.get("required", True)),
         available=available,
-        visual_summary=(
-            str(value.get("visual_summary") or "").strip() or None
-        ),
+        visual_summary=(str(value.get("visual_summary") or "").strip() or None),
         requirement_ids=linked,
     )
 
@@ -2166,17 +2040,8 @@ def _repository_contract(
     current = repository if isinstance(repository, dict) else {}
     if isinstance(current.get("current"), dict):
         current = current["current"]
-    repo_state = (
-        manifest.get("repo_state")
-        if isinstance(manifest.get("repo_state"), dict)
-        else {}
-    )
-    root = str(
-        current.get("root")
-        or current.get("path")
-        or repo_state.get("repo_path")
-        or "."
-    )
+    repo_state = manifest.get("repo_state") if isinstance(manifest.get("repo_state"), dict) else {}
+    root = str(current.get("root") or current.get("path") or repo_state.get("repo_path") or ".")
     changes: list[PreexistingChange] = []
     raw_changes = current.get("changed_file_entries")
     if not isinstance(raw_changes, list):
@@ -2192,10 +2057,7 @@ def _repository_contract(
                 or (status if len(status) == 2 else "")
                 or None
             )
-            change_kind = (
-                str(raw.get("change_kind") or "").strip()
-                or _git_change_kind(status)
-            )
+            change_kind = str(raw.get("change_kind") or "").strip() or _git_change_kind(status)
             digest = str(raw.get("sha256") or "").strip() or None
         else:
             path = str(raw or "").strip()
@@ -2205,33 +2067,24 @@ def _repository_contract(
             digest = None
         if not path:
             continue
-        changes.append(PreexistingChange(
-            status=status,
-            path=path,
-            xy=xy if xy is not None and len(xy) == 2 else None,
-            change_kind=change_kind,
-            content_sha256=(
-                digest if digest and len(digest) == 64 else None
-            ),
-        ))
-    fingerprint = str(
-        current.get("status_fingerprint")
-        or repo_state.get("state_fingerprint")
-        or ""
-    ).strip() or None
+        changes.append(
+            PreexistingChange(
+                status=status,
+                path=path,
+                xy=xy if xy is not None and len(xy) == 2 else None,
+                change_kind=change_kind,
+                content_sha256=(digest if digest and len(digest) == 64 else None),
+            )
+        )
+    fingerprint = (
+        str(current.get("status_fingerprint") or repo_state.get("state_fingerprint") or "").strip()
+        or None
+    )
     return RepositoryContract(
         root=root,
-        branch=(
-            str(current.get("branch") or repo_state.get("branch") or "").strip()
-            or None
-        ),
+        branch=(str(current.get("branch") or repo_state.get("branch") or "").strip() or None),
         head_commit=(
-            str(
-                current.get("head_commit")
-                or repo_state.get("head_commit")
-                or ""
-            ).strip()
-            or None
+            str(current.get("head_commit") or repo_state.get("head_commit") or "").strip() or None
         ),
         status_fingerprint=fingerprint,
         status_truncated=bool(current.get("status_truncated", False)),
@@ -2282,15 +2135,10 @@ def _read_plan(
     affected = manifest.get("affected_code")
     affected_files = (
         affected.get("files")
-        if isinstance(affected, dict)
-        and isinstance(affected.get("files"), list)
+        if isinstance(affected, dict) and isinstance(affected.get("files"), list)
         else []
     )
-    repo_state = (
-        manifest.get("repo_state")
-        if isinstance(manifest.get("repo_state"), dict)
-        else {}
-    )
+    repo_state = manifest.get("repo_state") if isinstance(manifest.get("repo_state"), dict) else {}
     relevant = (
         repo_state.get("relevant_files")
         if isinstance(repo_state.get("relevant_files"), list)
@@ -2299,32 +2147,64 @@ def _read_plan(
     candidates: list[tuple[str, str, str | None]] = []
     for item in affected_files:
         if isinstance(item, dict):
-            candidates.append((
-                str(item.get("path") or "").strip(),
-                str(
-                    item.get("why")
-                    or item.get("role")
-                    or "Objective-matched implementation surface."
-                ).strip(),
-                str(item.get("symbol") or "").strip() or None,
-            ))
+            candidates.append(
+                (
+                    str(item.get("path") or "").strip(),
+                    str(
+                        item.get("why")
+                        or item.get("role")
+                        or "Objective-matched implementation surface."
+                    ).strip(),
+                    str(item.get("symbol") or "").strip() or None,
+                )
+            )
             for related in item.get("related_tests") or []:
                 if not isinstance(related, dict):
                     continue
-                candidates.append((
-                    str(related.get("path") or "").strip(),
+                candidates.append(
+                    (
+                        str(related.get("path") or "").strip(),
+                        str(
+                            related.get("why") or "Exact repository test-path relationship."
+                        ).strip(),
+                        None,
+                    )
+                )
+    # Current objective-ranked repository paths take precedence over carried
+    # checkpoint or graph references. This keeps an unknown/stale checkpoint
+    # from filling the worker's first-read budget with lexically coincidental
+    # files from a prior task.
+    for item in relevant:
+        if isinstance(item, dict):
+            reason = str(item.get("reason") or "").strip()
+            if reason == "repo_state_fallback":
+                continue
+            candidates.append(
+                (
+                    str(item.get("path") or "").strip(),
                     str(
-                        related.get("why")
-                        or "Exact repository test-path relationship."
+                        item.get("why") or reason or "Matched the authoritative current lead."
                     ).strip(),
-                    None,
-                ))
+                    str(item.get("symbol") or "").strip() or None,
+                )
+            )
+    objective_paths = {
+        path.replace("\\", "/").removeprefix("./") for path, _reason, _symbol in candidates if path
+    }
+    checkpoint_matches = (
+        handoff.reconciliation.repository_state is RepositoryReconciliationState.MATCHES_CHECKPOINT
+    )
     for item in handoff.referenced_files:
-        candidates.append((
-            item.statement,
-            "Referenced by the restored checkpoint; validate before editing.",
-            None,
-        ))
+        normalized = item.statement.replace("\\", "/").removeprefix("./")
+        if not checkpoint_matches and normalized not in objective_paths:
+            continue
+        candidates.append(
+            (
+                item.statement,
+                "Referenced by the restored checkpoint; validate before editing.",
+                None,
+            )
+        )
     selected_context = manifest.get("selected_context")
     # Task-ranked Session Context can improve the task's read plan, but it is
     # never an input to the objective-independent Project Context foundation.
@@ -2346,25 +2226,21 @@ def _read_plan(
         for file_ref in file_refs:
             if not isinstance(file_ref, dict):
                 continue
-            candidates.append((
-                str(file_ref.get("path") or "").strip(),
-                (
-                    f"Supports accepted current {kind.value}: {title}."
-                    if title
-                    else f"Supports accepted current {kind.value}."
-                ),
-                str(file_ref.get("symbol") or "").strip() or None,
-            ))
-    for item in relevant:
-        if isinstance(item, dict):
-            reason = str(item.get("reason") or "").strip()
-            if reason == "repo_state_fallback":
+            path = str(file_ref.get("path") or "").strip()
+            normalized = path.replace("\\", "/").removeprefix("./")
+            if objective_paths and normalized not in objective_paths:
                 continue
-            candidates.append((
-                str(item.get("path") or "").strip(),
-                reason or "Matched the authoritative current lead.",
-                str(item.get("symbol") or "").strip() or None,
-            ))
+            candidates.append(
+                (
+                    path,
+                    (
+                        f"Supports accepted current {kind.value}: {title}."
+                        if title
+                        else f"Supports accepted current {kind.value}."
+                    ),
+                    str(file_ref.get("symbol") or "").strip() or None,
+                )
+            )
     for path, reason, symbol in candidates:
         normalized = path.replace("\\", "/").removeprefix("./")
         if (
@@ -2375,12 +2251,14 @@ def _read_plan(
         ):
             continue
         seen.add(normalized)
-        result.append(ReadPlanItem(
-            path=normalized,
-            reason=reason or "Matched the request.",
-            symbol=symbol,
-            priority=len(result),
-        ))
+        result.append(
+            ReadPlanItem(
+                path=normalized,
+                reason=reason or "Matched the request.",
+                symbol=symbol,
+                priority=len(result),
+            )
+        )
         if len(result) >= 20:
             break
     return tuple(result)
@@ -2395,10 +2273,7 @@ def _handoff_items(value: Any, *, category: str) -> tuple[StructuredHandoffItem,
         if not isinstance(raw, dict):
             continue
         raw_statement = str(raw.get("statement") or "").strip()
-        if (
-            category == "relevant_files"
-            and _looks_like_conversation_dump(raw_statement)
-        ):
+        if category == "relevant_files" and _looks_like_conversation_dump(raw_statement):
             continue
         statement = _safe_historical_statement(raw_statement)
         if not statement:
@@ -2407,24 +2282,19 @@ def _handoff_items(value: Any, *, category: str) -> tuple[StructuredHandoffItem,
         if deduplication_key in seen_statements:
             continue
         seen_statements.add(deduplication_key)
-        evidence = tuple(
-            item for item in raw.get("evidence") or [] if isinstance(item, dict)
+        evidence = tuple(item for item in raw.get("evidence") or [] if isinstance(item, dict))
+        result.append(
+            StructuredHandoffItem(
+                id=(
+                    str(raw.get("id") or raw.get("item_key") or "").strip() or f"{category}:{index}"
+                ),
+                statement=statement,
+                state=str(raw.get("state") or "active").strip() or "active",
+                truth_state=_handoff_truth_state(raw, evidence),
+                evidence=evidence,
+                payload=(raw.get("payload") if isinstance(raw.get("payload"), dict) else {}),
+            )
         )
-        result.append(StructuredHandoffItem(
-            id=(
-                str(raw.get("id") or raw.get("item_key") or "").strip()
-                or f"{category}:{index}"
-            ),
-            statement=statement,
-            state=str(raw.get("state") or "active").strip() or "active",
-            truth_state=_handoff_truth_state(raw, evidence),
-            evidence=evidence,
-            payload=(
-                raw.get("payload")
-                if isinstance(raw.get("payload"), dict)
-                else {}
-            ),
-        ))
     return tuple(result)
 
 
@@ -2499,11 +2369,13 @@ def _required_capabilities(
         result.append(RequiredCapability.COMMAND_EXECUTION)
     if any(
         (
-            artifact.kind.casefold()
-            in {"image", "screenshot", "visual_reference"}
-            or str(artifact.mime_type or "").casefold().startswith("image/")
+            artifact.required
+            and artifact.available
+            and (
+                artifact.kind.casefold() in {"image", "screenshot", "visual_reference"}
+                or str(artifact.mime_type or "").casefold().startswith("image/")
+            )
         )
-        and not artifact.visual_summary
         for artifact in artifacts
     ):
         result.append(RequiredCapability.IMAGE_INPUT)
@@ -2575,14 +2447,8 @@ def _execution_idempotency_key(
         "repository_fingerprint": repository_fingerprint,
         "project_foundation_sha256": project_foundation_sha256,
         "execution_focus": str(execution_focus or "").strip() or None,
-        "artifacts": [
-            artifact.model_dump(mode="json")
-            for artifact in artifacts
-        ],
-        "supporting_context": [
-            item.model_dump(mode="json")
-            for item in supporting_context
-        ],
+        "artifacts": [artifact.model_dump(mode="json") for artifact in artifacts],
+        "supporting_context": [item.model_dump(mode="json") for item in supporting_context],
     }
     if selected_task_lifecycle is not SelectedTaskLifecycle.ACTIVE:
         payload["selected_task_lifecycle"] = selected_task_lifecycle.value
@@ -2594,9 +2460,7 @@ def _execution_idempotency_key(
 def _compiled_existing(
     execution: ContinuationExecution,
 ) -> CompiledContinuationExecution:
-    contract = ContinuationExecutionContract.model_validate_json(
-        execution.contract_json
-    )
+    contract = ContinuationExecutionContract.model_validate_json(execution.contract_json)
     if execution.contract_sha256 != sha256_text(execution.contract_json):
         raise ValueError("Persisted continuation contract failed its integrity check")
     if execution.prompt_sha256 != sha256_text(execution.prompt_markdown):
