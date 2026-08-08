@@ -44,19 +44,13 @@ class RuntimeBundle:
             RUNTIME_BUNDLE_ROOT_ENVIRONMENT: str(self.root),
             "DAEMONSTATE_EXECUTION_PROMPT_PATH": str(self.execution_path),
             "DAEMONSTATE_EXECUTION_CONTRACT_PATH": str(self.contract_path),
-            "DAEMONSTATE_EXECUTION_ARTIFACTS_MANIFEST_PATH": str(
-                self.artifacts_path
-            ),
-            "DAEMONSTATE_EXECUTION_ATTACHMENTS_PATH": str(
-                self.attachments_path
-            ),
+            "DAEMONSTATE_EXECUTION_ARTIFACTS_MANIFEST_PATH": str(self.artifacts_path),
+            "DAEMONSTATE_EXECUTION_ATTACHMENTS_PATH": str(self.attachments_path),
         }
 
     def verify_integrity(self) -> None:
         observed_paths = {
-            str(path.relative_to(self.root))
-            for path in self.root.rglob("*")
-            if path.is_file()
+            str(path.relative_to(self.root)) for path in self.root.rglob("*") if path.is_file()
         }
         expected_paths = set(self.expected_hashes)
         if observed_paths != expected_paths:
@@ -79,9 +73,7 @@ class RuntimeBundle:
                 )
             observed_hash = _sha256_file(path)
             if observed_hash != expected_hash:
-                raise RuntimeBundleIntegrityError(
-                    f"runtime bundle hash changed: {relative_path}"
-                )
+                raise RuntimeBundleIntegrityError(f"runtime bundle hash changed: {relative_path}")
 
 
 @contextmanager
@@ -112,16 +104,16 @@ def materialize_runtime_bundle(
     for ordinal, artifact in enumerate(contract.artifacts, start=1):
         if not artifact.available:
             if artifact.required:
-                raise RuntimeBundleIntegrityError(
-                    f"required artifact {artifact.id} is unavailable"
-                )
-            artifact_entries.append({
-                **artifact.model_dump(mode="json"),
-                "source_path": None,
-                "path": None,
-                "bundle_path": None,
-                "delivery": None,
-            })
+                raise RuntimeBundleIntegrityError(f"required artifact {artifact.id} is unavailable")
+            artifact_entries.append(
+                {
+                    **artifact.model_dump(mode="json"),
+                    "source_path": None,
+                    "path": None,
+                    "bundle_path": None,
+                    "delivery": None,
+                }
+            )
             continue
         if not artifact.sha256:
             raise RuntimeBundleIntegrityError(
@@ -134,25 +126,25 @@ def materialize_runtime_bundle(
         )
         target = root / relative_path
         target.parent.mkdir(parents=True, exist_ok=True)
-        _copy_verified_artifact(
+        copy_verified_artifact(
             source_path,
             target,
             artifact_id=artifact.id,
             expected_sha256=artifact.sha256,
         )
-        artifact_entries.append({
-            **artifact.model_dump(mode="json"),
-            "source_path": None,
-            "path": relative_path,
-            "bundle_path": relative_path,
-            "delivery": {
-                "kind": "runtime_bundle_relative",
-                "bundle_root_environment_variable": (
-                    RUNTIME_BUNDLE_ROOT_ENVIRONMENT
-                ),
+        artifact_entries.append(
+            {
+                **artifact.model_dump(mode="json"),
+                "source_path": None,
+                "path": relative_path,
                 "bundle_path": relative_path,
-            },
-        })
+                "delivery": {
+                    "kind": "runtime_bundle_relative",
+                    "bundle_root_environment_variable": (RUNTIME_BUNDLE_ROOT_ENVIRONMENT),
+                    "bundle_path": relative_path,
+                },
+            }
+        )
 
     _write_read_only(execution_path, prompt_markdown.encode("utf-8"))
     _write_read_only(
@@ -166,9 +158,7 @@ def materialize_runtime_bundle(
     artifact_manifest = {
         "schema_version": RUNTIME_ARTIFACTS_SCHEMA_VERSION,
         "portable": True,
-        "bundle_root_environment_variable": (
-            RUNTIME_BUNDLE_ROOT_ENVIRONMENT
-        ),
+        "bundle_root_environment_variable": (RUNTIME_BUNDLE_ROOT_ENVIRONMENT),
         "attachment_directory": "attachments",
         "path_semantics": {
             "path": "bundle_relative",
@@ -181,40 +171,25 @@ def materialize_runtime_bundle(
     _write_read_only(artifacts_path, _canonical_json(artifact_manifest))
     _write_read_only(
         verification_path,
-        _canonical_json([
-            item.model_dump(mode="json") for item in contract.verification
-        ]),
+        _canonical_json([item.model_dump(mode="json") for item in contract.verification]),
     )
 
-    initial_files = [
-        path
-        for path in root.rglob("*")
-        if path.is_file()
-    ]
-    content_hashes = {
-        str(path.relative_to(root)): _sha256_file(path)
-        for path in initial_files
-    }
+    initial_files = [path for path in root.rglob("*") if path.is_file()]
+    content_hashes = {str(path.relative_to(root)): _sha256_file(path) for path in initial_files}
     manifest = {
         "schema_version": RUNTIME_BUNDLE_SCHEMA_VERSION,
         "execution_id": str(contract.id),
         "contract_schema_version": contract.schema_version,
         "portability": {
-            "bundle_root_environment_variable": (
-                RUNTIME_BUNDLE_ROOT_ENVIRONMENT
-            ),
+            "bundle_root_environment_variable": (RUNTIME_BUNDLE_ROOT_ENVIRONMENT),
             "file_paths": "bundle_relative",
         },
         "attachments": {
             "manifest_path": str(artifacts_path.relative_to(root)),
             "directory_path": str(attachments.relative_to(root)),
             "artifact_count": len(artifact_entries),
-            "available_count": sum(
-                1 for item in artifact_entries if item["available"]
-            ),
-            "required_count": sum(
-                1 for item in artifact_entries if item["required"]
-            ),
+            "available_count": sum(1 for item in artifact_entries if item["available"]),
+            "required_count": sum(1 for item in artifact_entries if item["required"]),
             "content_identity": "sha256",
         },
         "files": content_hashes,
@@ -287,7 +262,7 @@ def _canonical_json(value: Any) -> bytes:
     ).encode("utf-8")
 
 
-def _copy_verified_artifact(
+def copy_verified_artifact(
     source_path: Path,
     target_path: Path,
     *,
@@ -316,9 +291,7 @@ def _copy_verified_artifact(
         source_fd = os.open(source_path, source_flags)
         metadata = os.fstat(source_fd)
         if not stat.S_ISREG(metadata.st_mode):
-            raise RuntimeBundleIntegrityError(
-                f"artifact {artifact_id} is not a regular file"
-            )
+            raise RuntimeBundleIntegrityError(f"artifact {artifact_id} is not a regular file")
         if metadata.st_size > MAX_BUNDLE_FILE_BYTES:
             raise RuntimeBundleIntegrityError(
                 f"artifact {artifact_id} exceeds the runtime bundle file limit"
@@ -384,6 +357,54 @@ def _copy_verified_artifact(
             except OSError:
                 pass
     _make_read_only(target_path)
+
+
+def verify_artifact_sha256(
+    source_path: Path,
+    *,
+    artifact_id: str,
+    expected_sha256: str,
+) -> None:
+    """Reverify one immutable artifact through a no-follow descriptor."""
+
+    source_flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        source_flags |= os.O_NOFOLLOW
+    source_fd: int | None = None
+    try:
+        source_fd = os.open(source_path, source_flags)
+        metadata = os.fstat(source_fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeBundleIntegrityError(f"artifact {artifact_id} is not a regular file")
+        if metadata.st_size > MAX_BUNDLE_FILE_BYTES:
+            raise RuntimeBundleIntegrityError(
+                f"artifact {artifact_id} exceeds the runtime bundle file limit"
+            )
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(source_fd, 1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_BUNDLE_FILE_BYTES:
+                raise RuntimeBundleIntegrityError(
+                    f"artifact {artifact_id} exceeds the runtime bundle file limit"
+                )
+            digest.update(chunk)
+        if digest.hexdigest() != expected_sha256:
+            raise RuntimeBundleIntegrityError(
+                f"artifact {artifact_id} bytes do not match contract SHA-256"
+            )
+    except RuntimeBundleIntegrityError:
+        raise
+    except OSError as exc:
+        raise RuntimeBundleIntegrityError(
+            f"artifact {artifact_id} could not be verified safely"
+        ) from exc
+    finally:
+        if source_fd is not None:
+            os.close(source_fd)
 
 
 def _sha256_file(path: Path) -> str:

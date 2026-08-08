@@ -270,7 +270,13 @@ describe("HarnessContinuationCard", () => {
       );
       expect(artwork).toHaveClass("grayscale");
       expect(artwork).not.toHaveStyle({ color: "#D4AF37" });
-      expect(screen.getByRole("article")).toHaveStyle({
+      expect(screen.getByRole("article")).toHaveClass(
+        "bg-[#fbfbf6]",
+        "dark:bg-[#141411]",
+        "text-[#34342f]",
+        "dark:text-white",
+      );
+      expect(screen.getByRole("article")).not.toHaveStyle({
         backgroundColor: "#171715",
       });
       const button = screen.getByRole("button", { name: /Open desktop handoff in/ });

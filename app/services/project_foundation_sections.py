@@ -169,6 +169,19 @@ def classify_project_foundation_section(
     }:
         return ProjectFoundationSection.CONSTRAINTS
     text = f"{title} {statement}"
+    if kind_value == ProjectContextKind.LEARNING.value:
+        for section in (
+            ProjectFoundationSection.CONVENTIONS,
+            ProjectFoundationSection.ARCHITECTURE,
+            ProjectFoundationSection.CONSTRAINTS,
+            ProjectFoundationSection.REPOSITORY,
+            ProjectFoundationSection.STACK,
+        ):
+            if _PATTERNS[section].search(text):
+                return section
+        if re.match(r"\s*(?:failed|known failure|failure)", title, re.IGNORECASE):
+            return ProjectFoundationSection.CONSTRAINTS
+        return ProjectFoundationSection.CONVENTIONS
     for section in _PATTERN_PRIORITY:
         if _PATTERNS[section].search(text):
             return section

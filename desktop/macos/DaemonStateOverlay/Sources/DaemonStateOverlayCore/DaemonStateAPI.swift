@@ -159,7 +159,8 @@ public final class DaemonStateAPI: @unchecked Sendable {
 
     public func fetchContext(
         scope: ContextScope,
-        workspaceID: String
+        workspaceID: String,
+        repoPath: String? = nil
     ) async throws -> VerifiedContext {
         let workspaceID = workspaceID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !workspaceID.isEmpty else {
@@ -169,7 +170,10 @@ public final class DaemonStateAPI: @unchecked Sendable {
         case .session:
             return try await fetchSessionContext(workspaceID: workspaceID)
         case .project:
-            return try await fetchProjectContext(workspaceID: workspaceID)
+            return try await fetchWorkspaceContext(
+                workspaceID: workspaceID,
+                repoPath: repoPath
+            )
         }
     }
 
@@ -349,15 +353,28 @@ public final class DaemonStateAPI: @unchecked Sendable {
         )
     }
 
-    private func fetchProjectContext(workspaceID: String) async throws -> VerifiedContext {
-        let response: ContinuationEnvelope = try await send(
+    private func fetchWorkspaceContext(
+        workspaceID: String,
+        repoPath: String?
+    ) async throws -> VerifiedContext {
+        let candidateRepoPath = repoPath?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ) ?? ""
+        let normalizedRepoPath = candidateRepoPath.isEmpty
+            ? nil
+            : candidateRepoPath
+        let response: WorkspaceContextPackEnvelope = try await send(
             method: "POST",
-            path: ["continuations", "prepare"],
-            body: PrepareContinuationRequest(workspaceID: workspaceID)
+            path: ["context", "prepare"],
+            body: PrepareWorkspaceContextRequest(
+                workspaceID: workspaceID,
+                repoPath: normalizedRepoPath
+            )
         )
-        return try ContextValidator.verifiedProjectContext(
+        return try ContextValidator.verifiedWorkspaceContext(
             response,
-            workspaceID: workspaceID
+            workspaceID: workspaceID,
+            repoPath: normalizedRepoPath
         )
     }
 

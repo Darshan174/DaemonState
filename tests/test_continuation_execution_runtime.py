@@ -28,6 +28,7 @@ from app.schemas.continuation_execution import (
     ArtifactReference,
     ContinuationExecutionContract,
     ExecutionAuthority,
+    HandoffReconciliation,
     HandoffTruthState,
     PreexistingChange,
     ProjectContextItem,
@@ -40,6 +41,7 @@ from app.schemas.continuation_execution import (
     RepositoryContract,
     RepositoryEvidenceItem,
     RepositoryEvidenceKind,
+    RepositoryReconciliationState,
     RequestSourceSpan,
     RequiredCapability,
     RequirementPriority,
@@ -98,10 +100,9 @@ def _git(root: Path, *args: str) -> None:
     )
 
 
-def test_worker_projection_version_invalidates_pre_normalization_prompts() -> None:
+def test_worker_projection_version_invalidates_pre_relevance_prompts() -> None:
     assert (
-        continuation_execution.WORKER_CONTEXT_PROJECTION_VERSION
-        == "worker_context_projection.v7"
+        continuation_execution.WORKER_CONTEXT_PROJECTION_VERSION == "worker_context_projection.v8"
     )
 
 
@@ -123,9 +124,7 @@ async def _contract(
     verifier_type: VerifierType = VerifierType.UNIT_TEST,
     command_argv: tuple[str, ...] | None = None,
 ) -> ContinuationExecutionContract:
-    request_text = (
-        "Update the continuation worker and prove it with the exact runtime test."
-    )
+    request_text = "Update the continuation worker and prove it with the exact runtime test."
     request = build_authoritative_request(request_text)
     verifier_id = "V1"
     requirement = AtomicRequirement(
@@ -219,23 +218,27 @@ def _complete_project_foundation() -> tuple[ProjectContextItem, ...]:
     )
     result = []
     for index, (section, title, statement) in enumerate(values, start=1):
-        result.append(ProjectContextItem(
-            id=f"P{index}",
-            kind=ProjectContextKind.CONTEXT,
-            section=section,
-            title=title,
-            statement=statement,
-            identity_key=f"runtime-fixture:{section.value}",
-            evidence_level=ProjectEvidenceLevel.MECHANICALLY_VERIFIED,
-            provenance_refs=(ProjectContextProvenance(
-                source_document_id=f"source-{index}",
-                evidence_span_id=f"evidence-{index}",
-                source_type="local_repository",
-                source_revision_number=1,
-                source_content_sha256=f"{index}" * 64,
-                evidence_text_sha256=f"{index}" * 64,
-            ),),
-        ))
+        result.append(
+            ProjectContextItem(
+                id=f"P{index}",
+                kind=ProjectContextKind.CONTEXT,
+                section=section,
+                title=title,
+                statement=statement,
+                identity_key=f"runtime-fixture:{section.value}",
+                evidence_level=ProjectEvidenceLevel.MECHANICALLY_VERIFIED,
+                provenance_refs=(
+                    ProjectContextProvenance(
+                        source_document_id=f"source-{index}",
+                        evidence_span_id=f"evidence-{index}",
+                        source_type="local_repository",
+                        source_revision_number=1,
+                        source_content_sha256=f"{index}" * 64,
+                        evidence_text_sha256=f"{index}" * 64,
+                    ),
+                ),
+            )
+        )
     return tuple(result)
 
 
@@ -278,9 +281,7 @@ async def test_staging_context_is_a_compact_truth_capsule(
         required=True,
         requirement_ids=("R1",),
     )
-    requirement = contract.requirements[0].model_copy(
-        update={"source_artifact_ids": ("A1",)}
-    )
+    requirement = contract.requirements[0].model_copy(update={"source_artifact_ids": ("A1",)})
     contract = contract.model_copy(
         update={
             "requirements": (requirement,),
@@ -353,11 +354,13 @@ async def test_visible_desktop_stage_allows_only_incomplete_core_advisory(
     preparation = SimpleNamespace(
         project_context={
             **base_context,
-            "quality_issues": [{
-                "code": "project_context_core_sections_empty",
-                "message": "Project Context core sections are incomplete.",
-                "blocks_copy": True,
-            }],
+            "quality_issues": [
+                {
+                    "code": "project_context_core_sections_empty",
+                    "message": "Project Context core sections are incomplete.",
+                    "blocks_copy": True,
+                }
+            ],
         },
         source_session={
             "provider": "codex",
@@ -372,9 +375,7 @@ async def test_visible_desktop_stage_allows_only_incomplete_core_advisory(
         session_context=session_context,
     )
     assert staged_session == session_content
-    assert staged_session.startswith(
-        "# Session Context — task-level working memory\n"
-    )
+    assert staged_session.startswith("# Session Context — task-level working memory\n")
 
     for code in (
         "project_context_foundation_stale",
@@ -384,11 +385,13 @@ async def test_visible_desktop_stage_allows_only_incomplete_core_advisory(
         blocked = SimpleNamespace(
             project_context={
                 **base_context,
-                "quality_issues": [{
-                    "code": code,
-                    "message": f"Blocking issue: {code}.",
-                    "blocks_copy": True,
-                }],
+                "quality_issues": [
+                    {
+                        "code": code,
+                        "message": f"Blocking issue: {code}.",
+                        "blocks_copy": True,
+                    }
+                ],
             },
             source_session=preparation.source_session,
         )
@@ -463,10 +466,7 @@ async def test_visible_desktop_stage_allows_only_incomplete_core_advisory(
                 remaining=(
                     StructuredHandoffItem(
                         id="remaining-1",
-                        statement=(
-                            "The continuation worker still needs the exact "
-                            "runtime test."
-                        ),
+                        statement=("The continuation worker still needs the exact runtime test."),
                         truth_state=HandoffTruthState.AGENT_REPORTED,
                     ),
                 ),
@@ -482,9 +482,7 @@ async def test_staging_context_derives_only_scoped_requirement_status(
     expected_status: str,
     expected_action: str,
 ) -> None:
-    contract = (await _contract(_repository(tmp_path))).model_copy(
-        update={"handoff": handoff}
-    )
+    contract = (await _contract(_repository(tmp_path))).model_copy(update={"handoff": handoff})
 
     staged = render_continuation_staging_context(contract)
 
@@ -497,11 +495,11 @@ async def test_staging_context_ignores_generic_carried_next_action_per_requireme
     tmp_path,
 ) -> None:
     contract = await _contract(_repository(tmp_path))
-    removal = contract.requirements[0].model_copy(update={
-        "text": (
-            "Remove Session Evidence and Compilation at Load from Continue."
-        ),
-    })
+    removal = contract.requirements[0].model_copy(
+        update={
+            "text": ("Remove Session Evidence and Compilation at Load from Continue."),
+        }
+    )
     telemetry = AtomicRequirement(
         id="R2",
         text="Explain how OpenTelemetry can help this project.",
@@ -532,11 +530,13 @@ async def test_staging_context_ignores_generic_carried_next_action_per_requireme
             ),
         ),
     )
-    contract = contract.model_copy(update={
-        "requirements": (removal, telemetry),
-        "definition_of_done": ("R1", "R2"),
-        "handoff": handoff,
-    })
+    contract = contract.model_copy(
+        update={
+            "requirements": (removal, telemetry),
+            "definition_of_done": ("R1", "R2"),
+            "handoff": handoff,
+        }
+    )
 
     staged = render_continuation_staging_context(contract)
 
@@ -557,15 +557,18 @@ async def test_staging_context_separates_current_facts_and_repository_evidence(
     tmp_path,
 ) -> None:
     contract = await _contract(_repository(tmp_path))
-    repository = contract.repository.model_copy(update={
-        "preexisting_changes": (
-            PreexistingChange(status="modified", path="README.md", xy=" M"),
-            PreexistingChange(status="untracked", path="notes.txt", xy="??"),
-        ),
-    })
-    contract = contract.model_copy(update={
-        "repository": repository,
-        "project_context": (
+    repository = contract.repository.model_copy(
+        update={
+            "preexisting_changes": (
+                PreexistingChange(status="modified", path="README.md", xy=" M"),
+                PreexistingChange(status="untracked", path="notes.txt", xy="??"),
+            ),
+        }
+    )
+    contract = contract.model_copy(
+        update={
+            "repository": repository,
+            "project_context": (
                 ProjectContextItem(
                     id="P1",
                     kind=ProjectContextKind.INVARIANT,
@@ -573,39 +576,40 @@ async def test_staging_context_separates_current_facts_and_repository_evidence(
                     title="Runtime boundary",
                     statement="Workers consume the hash-bound execution contract.",
                     identity_key="runtime:hash-bound-contract",
-                    evidence_level=(
-                        ProjectEvidenceLevel.MECHANICALLY_VERIFIED
+                    evidence_level=(ProjectEvidenceLevel.MECHANICALLY_VERIFIED),
+                    provenance_refs=(
+                        ProjectContextProvenance(
+                            source_document_id="source-runtime-boundary",
+                            evidence_span_id="evidence-runtime-boundary",
+                            source_type="local_repository",
+                            source_revision_number=1,
+                            source_content_sha256="a" * 64,
+                            evidence_text_sha256="b" * 64,
+                        ),
                     ),
-                    provenance_refs=(ProjectContextProvenance(
-                        source_document_id="source-runtime-boundary",
-                        evidence_span_id="evidence-runtime-boundary",
-                        source_type="local_repository",
-                        source_revision_number=1,
-                        source_content_sha256="a" * 64,
-                        evidence_text_sha256="b" * 64,
-                    ),),
                 ),
-        ),
-        "repository_evidence": (
-            RepositoryEvidenceItem(
-                id="RE1",
-                kind=RepositoryEvidenceKind.SYMBOL_DECLARATION,
-                path="app/services/worker.py",
-                file_sha256="a" * 64,
-                symbol_type="function",
-                symbol_name="run_worker",
-                start_line=10,
-                end_line=20,
             ),
-        ),
-        "read_plan": tuple(
-            ReadPlanItem(
-                path=f"app/path_{index}.py",
-                reason=f"Inspect item {index}.",
-            )
-            for index in range(1, 11)
-        ),
-    })
+            "repository_evidence": (
+                RepositoryEvidenceItem(
+                    id="RE1",
+                    kind=RepositoryEvidenceKind.SYMBOL_DECLARATION,
+                    path="app/services/worker.py",
+                    file_sha256="a" * 64,
+                    symbol_type="function",
+                    symbol_name="run_worker",
+                    start_line=10,
+                    end_line=20,
+                ),
+            ),
+            "read_plan": tuple(
+                ReadPlanItem(
+                    path=f"app/path_{index}.py",
+                    reason=f"Inspect item {index}.",
+                )
+                for index in range(1, 11)
+            ),
+        }
+    )
 
     staged = render_continuation_staging_context(contract)
     executable = render_continuation_execution_prompt(contract)
@@ -617,14 +621,8 @@ async def test_staging_context_separates_current_facts_and_repository_evidence(
     ) in staged
     assert "### Current repository evidence" in staged
     assert "## Current repository evidence" in executable
-    assert (
-        "Symbol: `app/services/worker.py`:10-20 — function `run_worker`."
-        in staged
-    )
-    assert (
-        "Symbol: `app/services/worker.py`:10-20 — function `run_worker`."
-        in executable
-    )
+    assert "Symbol: `app/services/worker.py`:10-20 — function `run_worker`." in staged
+    assert "Symbol: `app/services/worker.py`:10-20 — function `run_worker`." in executable
     assert "source sha256" in staged
     assert "evidence sha256" in staged
     assert "source-runtime-boundary" not in staged
@@ -638,23 +636,231 @@ async def test_staging_context_separates_current_facts_and_repository_evidence(
 @pytest.mark.asyncio
 async def test_execution_prompt_omits_absent_read_plan_symbols(tmp_path) -> None:
     contract = await _contract(_repository(tmp_path))
-    contract = contract.model_copy(update={
-        "read_plan": (
-            ReadPlanItem(
-                path="README.md",
-                symbol=None,
-                reason="Inspect the repository overview.",
+    contract = contract.model_copy(
+        update={
+            "read_plan": (
+                ReadPlanItem(
+                    path="README.md",
+                    symbol=None,
+                    reason="Inspect the repository overview.",
+                ),
             ),
-        ),
-    })
+        }
+    )
 
     prompt = render_continuation_execution_prompt(contract)
 
-    assert (
-        "1. `README.md` — Inspect the repository overview."
-        in prompt
-    )
+    assert "1. `README.md` — Inspect the repository overview." in prompt
     assert "`README.md` — None —" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_rendered_read_plan_puts_implementation_before_inferred_verifiers(
+    tmp_path,
+) -> None:
+    contract = await _contract(_repository(tmp_path))
+    contract = contract.model_copy(
+        update={
+            "read_plan": (
+                ReadPlanItem(
+                    path="scripts/self-host-smoke.sh",
+                    reason="Conventional task surface matches: self-host-path.",
+                ),
+                ReadPlanItem(
+                    path="scripts/self-host.sh",
+                    reason="Conventional task surface matches: self-host-path.",
+                ),
+                ReadPlanItem(
+                    path="Dockerfile",
+                    reason="Conventional task surface matches: self-host-surface.",
+                ),
+                ReadPlanItem(
+                    path="tests/test_self_host.py",
+                    reason="Names inside this file match: self, host.",
+                ),
+            ),
+        }
+    )
+
+    for rendered in (
+        render_continuation_staging_context(contract),
+        render_continuation_execution_prompt(contract),
+    ):
+        assert rendered.index("`scripts/self-host.sh`") < rendered.index(
+            "`scripts/self-host-smoke.sh`"
+        )
+        assert rendered.index("`Dockerfile`") < rendered.index("`tests/test_self_host.py`")
+
+    explicitly_named = contract.model_copy(
+        update={
+            "read_plan": (
+                ReadPlanItem(
+                    path="scripts/self-host-smoke.sh",
+                    reason="The task names this file.",
+                ),
+                ReadPlanItem(
+                    path="scripts/self-host.sh",
+                    reason="Conventional task surface matches: self-host-path.",
+                ),
+            ),
+        }
+    )
+    staged = render_continuation_staging_context(explicitly_named)
+    assert staged.index("`scripts/self-host-smoke.sh`") < staged.index("`scripts/self-host.sh`")
+
+
+@pytest.mark.asyncio
+async def test_model_rubric_proof_names_observed_license_and_self_host_paths(
+    tmp_path,
+) -> None:
+    contract = await _contract(
+        _repository(tmp_path),
+        verifier_type=VerifierType.MODEL_RUBRIC,
+        command_argv=(),
+    )
+    license_requirement = contract.requirements[0].model_copy(
+        update={
+            "text": ("Research and update the license so commercial redistribution is prohibited."),
+        }
+    )
+    license_contract = contract.model_copy(
+        update={
+            "requirements": (license_requirement,),
+            "read_plan": (
+                ReadPlanItem(
+                    path="vendor/LICENSE",
+                    reason="A dependency license was indexed.",
+                ),
+                ReadPlanItem(
+                    path="LICENSE",
+                    reason="File name matches: license.",
+                ),
+                ReadPlanItem(
+                    path="NOTICE",
+                    reason="Conventional task surface matches: license-file.",
+                ),
+            ),
+        }
+    )
+
+    license_staged = render_continuation_staging_context(license_contract)
+    license_proof = next(
+        line.strip() for line in license_staged.splitlines() if line.strip().startswith("- Proof:")
+    )
+    assert "inspect `LICENSE` and `NOTICE`, then record" in license_proof
+    assert "exact permission and restriction clauses" in license_proof
+    assert "authoritative licensing sources and selection rationale" in license_proof
+    assert "vendor/LICENSE" not in license_proof
+
+    self_host_requirement = contract.requirements[0].model_copy(
+        update={
+            "text": "Make the project self-hostable.",
+        }
+    )
+    self_host_contract = contract.model_copy(
+        update={
+            "requirements": (self_host_requirement,),
+            "read_plan": (
+                ReadPlanItem(
+                    path="scripts/self-host-smoke.sh",
+                    reason="Conventional task surface matches: self-host-path.",
+                ),
+                ReadPlanItem(
+                    path="scripts/self-host.sh",
+                    reason="Conventional task surface matches: self-host-path.",
+                ),
+                ReadPlanItem(
+                    path="Dockerfile",
+                    reason="Conventional task surface matches: self-host-surface.",
+                ),
+                ReadPlanItem(
+                    path=".env.example",
+                    reason="Conventional task surface matches: self-host-surface.",
+                ),
+            ),
+        }
+    )
+
+    self_host_staged = render_continuation_staging_context(self_host_contract)
+    self_host_proof = next(
+        line.strip()
+        for line in self_host_staged.splitlines()
+        if line.strip().startswith("- Proof:")
+    )
+    assert "using `scripts/self-host.sh`, `Dockerfile`, and `.env.example`" in self_host_proof
+    assert "pass/fail output from `scripts/self-host-smoke.sh`" in self_host_proof
+    assert "proof: model rubric" not in self_host_staged.casefold()
+
+
+def test_read_plan_prioritizes_current_goal_paths_over_unknown_checkpoint_files() -> None:
+    manifest = {
+        "repo_state": {
+            "relevant_files": [
+                {
+                    "path": "LICENSE",
+                    "reason": "goal_path_or_keyword_match",
+                    "why": "File name matches: license.",
+                },
+                {
+                    "path": "scripts/self-host.sh",
+                    "reason": "goal_related_symbols",
+                    "why": ("Conventional task surface matches: self-host-path."),
+                },
+                {
+                    "path": "docs/self-hosting.md",
+                    "reason": "goal_related_symbols",
+                    "why": ("Conventional task surface matches: self-host-path."),
+                },
+            ],
+        },
+    }
+    handoff = StructuredHandoff(
+        referenced_files=(
+            StructuredHandoffItem(
+                id="stale-context-contract",
+                statement="tests/test_continuation_execution_contract.py",
+            ),
+            StructuredHandoffItem(
+                id="still-relevant-doc",
+                statement="docs/self-hosting.md",
+            ),
+        ),
+    )
+
+    read_plan = continuation_execution._read_plan(manifest, handoff)
+
+    assert [item.path for item in read_plan] == [
+        "LICENSE",
+        "scripts/self-host.sh",
+        "docs/self-hosting.md",
+    ]
+    assert read_plan[0].reason == "File name matches: license."
+
+
+@pytest.mark.parametrize(
+    "repository_state",
+    [
+        RepositoryReconciliationState.UNKNOWN,
+        RepositoryReconciliationState.CHANGED_SINCE_CHECKPOINT,
+    ],
+)
+def test_read_plan_drops_unreconciled_checkpoint_files_without_objective_matches(
+    repository_state: RepositoryReconciliationState,
+) -> None:
+    handoff = StructuredHandoff(
+        referenced_files=(
+            StructuredHandoffItem(
+                id="stale-file",
+                statement="tests/old_task.py",
+            ),
+        ),
+        reconciliation=HandoffReconciliation(
+            repository_state=repository_state,
+            summary="The checkpoint is not verified against this checkout.",
+        ),
+    )
+
+    assert continuation_execution._read_plan({}, handoff) == ()
 
 
 @pytest.mark.asyncio
@@ -674,9 +880,7 @@ async def test_quality_gate_blocks_automatic_run_without_executable_proof(
         runnable,
         prompt_markdown=prompt,
         provider="codex",
-        expected_contract_sha256=sha256_text(
-            canonical_contract_json(runnable)
-        ),
+        expected_contract_sha256=sha256_text(canonical_contract_json(runnable)),
         expected_prompt_sha256=execution_prompt_sha256(prompt),
     )
 
@@ -703,10 +907,7 @@ async def test_quality_gate_blocks_automatic_run_without_executable_proof(
         "verifier_executor_unavailable",
         "verifier_command_missing",
     }
-    assert (
-        issues["mandatory_requirement_verification_unexecutable"].severity
-        == "blocking"
-    )
+    assert issues["mandatory_requirement_verification_unexecutable"].severity == "blocking"
     assert issues["verifier_executor_unavailable"].severity == "warning"
     assert issues["verifier_command_missing"].severity == "warning"
 
@@ -723,14 +924,16 @@ async def test_quality_gate_allows_required_executable_proof_alongside_rubric(
         command_argv=(),
         rubric="Judge the resulting user-visible behavior.",
     )
-    mixed = contract.model_copy(update={
-        "requirements": (
-            contract.requirements[0].model_copy(
-                update={"verification_ids": ("V1", "V2")},
+    mixed = contract.model_copy(
+        update={
+            "requirements": (
+                contract.requirements[0].model_copy(
+                    update={"verification_ids": ("V1", "V2")},
+                ),
             ),
-        ),
-        "verification": (*contract.verification, rubric),
-    })
+            "verification": (*contract.verification, rubric),
+        }
+    )
 
     report = evaluate_continuation_quality(
         mixed,
@@ -742,9 +945,10 @@ async def test_quality_gate_allows_required_executable_proof_alongside_rubric(
     assert "mandatory_requirement_verification_unexecutable" not in {
         issue.code for issue in report.issues
     }
-    assert {
-        issue.code for issue in report.issues
-    } >= {"verifier_executor_unavailable", "verifier_command_missing"}
+    assert {issue.code for issue in report.issues} >= {
+        "verifier_executor_unavailable",
+        "verifier_command_missing",
+    }
 
 
 @pytest.mark.asyncio
@@ -923,10 +1127,13 @@ async def test_large_dirty_file_uses_complete_digest_baseline(
     assert baseline.status_truncated is False
     assert baseline._preservation_complete is True
     assert baseline._preservation_files[0].baseline_sha256 is not None
-    assert evaluate_continuation_quality(
-        contract,
-        prompt_markdown=prompt,
-    ).launchable is True
+    assert (
+        evaluate_continuation_quality(
+            contract,
+            prompt_markdown=prompt,
+        ).launchable
+        is True
+    )
 
     unchanged = await capture_repository_snapshot(root)
     assert await _preservation_passed(
@@ -1051,11 +1258,7 @@ async def test_sensitive_staged_deletion_with_worktree_copy_is_preserved(
 
     assert baseline.status_truncated is False
     assert baseline._preservation_complete is True
-    sensitive_proofs = [
-        proof
-        for proof in baseline._preservation_files
-        if proof.path == ".env"
-    ]
+    sensitive_proofs = [proof for proof in baseline._preservation_files if proof.path == ".env"]
     assert sensitive_proofs
     assert all(proof.baseline_sha256 is not None for proof in sensitive_proofs)
     assert await _preservation_passed(
@@ -1078,10 +1281,13 @@ async def test_renamed_dirty_file_has_a_complete_preservation_baseline(
     assert snapshot.status_truncated is False
     assert snapshot._preservation_complete is True
     assert set(snapshot.changed_files) == {"README.md", "RENAMED.md"}
-    assert evaluate_continuation_quality(
-        contract,
-        prompt_markdown=render_continuation_execution_prompt(contract),
-    ).launchable is True
+    assert (
+        evaluate_continuation_quality(
+            contract,
+            prompt_markdown=render_continuation_execution_prompt(contract),
+        ).launchable
+        is True
+    )
 
 
 @pytest.mark.asyncio
@@ -1235,7 +1441,7 @@ async def test_failed_git_status_is_never_reported_as_clean(
     tmp_path,
 ) -> None:
     root = _repository(tmp_path)
-    real_git = local_harness._git
+    real_git = local_harness._git_machine
     status_calls = 0
 
     async def failed_status(snapshot_root, *args, limit):
@@ -1254,7 +1460,7 @@ async def test_failed_git_status_is_never_reported_as_clean(
             )
         return await real_git(snapshot_root, *args, limit=limit)
 
-    monkeypatch.setattr(local_harness, "_git", failed_status)
+    monkeypatch.setattr(local_harness, "_git_machine", failed_status)
 
     observed = await capture_repository_snapshot(root)
 
@@ -1348,45 +1554,43 @@ async def test_runtime_bundle_paths_do_not_collide_after_id_sanitization(
     second_path = tmp_path / "second.png"
     first_path.write_bytes(b"first-image")
     second_path.write_bytes(b"second-image")
-    contract = (await _contract(root)).model_copy(update={
-        "artifacts": (
-            ArtifactReference(
-                id="screen:a",
-                kind="screenshot",
-                path=str(first_path),
-                sha256=hashlib.sha256(b"first-image").hexdigest(),
-                mime_type="image/png",
-                required=True,
-                available=True,
-                requirement_ids=("R1",),
+    contract = (await _contract(root)).model_copy(
+        update={
+            "artifacts": (
+                ArtifactReference(
+                    id="screen:a",
+                    kind="screenshot",
+                    path=str(first_path),
+                    sha256=hashlib.sha256(b"first-image").hexdigest(),
+                    mime_type="image/png",
+                    required=True,
+                    available=True,
+                    requirement_ids=("R1",),
+                ),
+                ArtifactReference(
+                    id="screen-a",
+                    kind="screenshot",
+                    path=str(second_path),
+                    sha256=hashlib.sha256(b"second-image").hexdigest(),
+                    mime_type="image/png",
+                    required=True,
+                    available=True,
+                    requirement_ids=("R1",),
+                ),
             ),
-            ArtifactReference(
-                id="screen-a",
-                kind="screenshot",
-                path=str(second_path),
-                sha256=hashlib.sha256(b"second-image").hexdigest(),
-                mime_type="image/png",
-                required=True,
-                available=True,
-                requirement_ids=("R1",),
-            ),
-        ),
-    })
+        }
+    )
     prompt = render_continuation_execution_prompt(contract)
 
     with materialize_runtime_bundle(
         contract,
         prompt_markdown=prompt,
     ) as bundle:
-        artifact_manifest = json.loads(
-            bundle.artifacts_path.read_text(encoding="utf-8")
-        )
+        artifact_manifest = json.loads(bundle.artifacts_path.read_text(encoding="utf-8"))
         entries = artifact_manifest["artifacts"]
         bundled_paths = [entry["bundle_path"] for entry in entries]
 
-        assert artifact_manifest["schema_version"] == (
-            "continuation_runtime_artifacts.v1"
-        )
+        assert artifact_manifest["schema_version"] == ("continuation_runtime_artifacts.v1")
         assert artifact_manifest["portable"] is True
         assert artifact_manifest["path_semantics"] == {
             "bundle_path": "bundle_relative",
@@ -1400,9 +1604,7 @@ async def test_runtime_bundle_paths_do_not_collide_after_id_sanitization(
         ]
         assert [entry["path"] for entry in entries] == bundled_paths
         assert all(entry["source_path"] is None for entry in entries)
-        assert str(first_path) not in bundle.artifacts_path.read_text(
-            encoding="utf-8"
-        )
+        assert str(first_path) not in bundle.artifacts_path.read_text(encoding="utf-8")
         assert len(set(bundled_paths)) == 2
         assert (bundle.root / bundled_paths[0]).read_bytes() == b"first-image"
         assert (bundle.root / bundled_paths[1]).read_bytes() == b"second-image"
@@ -1418,13 +1620,9 @@ async def test_runtime_bundle_paths_do_not_collide_after_id_sanitization(
         assert hashlib.sha256(b"first-image").hexdigest() in staged
         assert "DAEMONSTATE_EXECUTION_BUNDLE_PATH" not in staged
         assert "Portable bundle-relative locator (not yet materialized)" in staged
-        bundle_manifest = json.loads(
-            bundle.manifest_path.read_text(encoding="utf-8")
-        )
+        bundle_manifest = json.loads(bundle.manifest_path.read_text(encoding="utf-8"))
         assert bundle_manifest["portability"] == {
-            "bundle_root_environment_variable": (
-                "DAEMONSTATE_EXECUTION_BUNDLE_PATH"
-            ),
+            "bundle_root_environment_variable": ("DAEMONSTATE_EXECUTION_BUNDLE_PATH"),
             "file_paths": "bundle_relative",
         }
         assert bundle_manifest["attachments"] == {
@@ -1435,12 +1633,12 @@ async def test_runtime_bundle_paths_do_not_collide_after_id_sanitization(
             "manifest_path": "artifacts.json",
             "required_count": 2,
         }
-        assert bundle.environment()[
-            "DAEMONSTATE_EXECUTION_ARTIFACTS_MANIFEST_PATH"
-        ] == str(bundle.artifacts_path)
-        assert bundle.environment()[
-            "DAEMONSTATE_EXECUTION_ATTACHMENTS_PATH"
-        ] == str(bundle.attachments_path)
+        assert bundle.environment()["DAEMONSTATE_EXECUTION_ARTIFACTS_MANIFEST_PATH"] == str(
+            bundle.artifacts_path
+        )
+        assert bundle.environment()["DAEMONSTATE_EXECUTION_ATTACHMENTS_PATH"] == str(
+            bundle.attachments_path
+        )
 
 
 @pytest.mark.asyncio
@@ -1450,20 +1648,22 @@ async def test_runtime_bundle_rejects_artifact_byte_mismatch(
     root = _repository(tmp_path)
     artifact_path = tmp_path / "changed.png"
     artifact_path.write_bytes(b"contract-bound-bytes")
-    contract = (await _contract(root)).model_copy(update={
-        "artifacts": (
-            ArtifactReference(
-                id="changed-artifact",
-                kind="screenshot",
-                path=str(artifact_path),
-                sha256=hashlib.sha256(b"contract-bound-bytes").hexdigest(),
-                mime_type="image/png",
-                required=True,
-                available=True,
-                requirement_ids=("R1",),
+    contract = (await _contract(root)).model_copy(
+        update={
+            "artifacts": (
+                ArtifactReference(
+                    id="changed-artifact",
+                    kind="screenshot",
+                    path=str(artifact_path),
+                    sha256=hashlib.sha256(b"contract-bound-bytes").hexdigest(),
+                    mime_type="image/png",
+                    required=True,
+                    available=True,
+                    requirement_ids=("R1",),
+                ),
             ),
-        ),
-    })
+        }
+    )
     artifact_path.write_bytes(b"changed-after-contract")
 
     with pytest.raises(
@@ -1487,20 +1687,22 @@ async def test_runtime_bundle_path_swap_cannot_change_opened_artifact(
     original_bytes = b"contract-bound-before-path-swap"
     replacement_bytes = b"replacement-after-source-open"
     artifact_path.write_bytes(original_bytes)
-    contract = (await _contract(root)).model_copy(update={
-        "artifacts": (
-            ArtifactReference(
-                id="race-artifact",
-                kind="screenshot",
-                path=str(artifact_path),
-                sha256=hashlib.sha256(original_bytes).hexdigest(),
-                mime_type="image/png",
-                required=True,
-                available=True,
-                requirement_ids=("R1",),
+    contract = (await _contract(root)).model_copy(
+        update={
+            "artifacts": (
+                ArtifactReference(
+                    id="race-artifact",
+                    kind="screenshot",
+                    path=str(artifact_path),
+                    sha256=hashlib.sha256(original_bytes).hexdigest(),
+                    mime_type="image/png",
+                    required=True,
+                    available=True,
+                    requirement_ids=("R1",),
+                ),
             ),
-        ),
-    })
+        }
+    )
     original_open = runtime_bundle.os.open
     swapped = False
 
@@ -1520,9 +1722,7 @@ async def test_runtime_bundle_path_swap_cannot_change_opened_artifact(
         contract,
         prompt_markdown=render_continuation_execution_prompt(contract),
     ) as bundle:
-        artifact_manifest = json.loads(
-            bundle.artifacts_path.read_text(encoding="utf-8")
-        )
+        artifact_manifest = json.loads(bundle.artifacts_path.read_text(encoding="utf-8"))
         bundled_path = artifact_manifest["artifacts"][0]["bundle_path"]
         assert (bundle.root / bundled_path).read_bytes() == original_bytes
         assert artifact_path.read_bytes() == replacement_bytes
@@ -1573,9 +1773,7 @@ async def test_local_harness_delivers_execution_prompt_not_audit_pack(
         prompt_markdown=prompt,
         prompt_sha256=execution_prompt_sha256(prompt),
         status="launchable",
-        idempotency_key=hashlib.sha256(
-            f"execution:{contract.id}".encode()
-        ).hexdigest(),
+        idempotency_key=hashlib.sha256(f"execution:{contract.id}".encode()).hexdigest(),
     )
     run = AgentRun(
         id=uuid4(),
@@ -1645,8 +1843,7 @@ async def test_local_harness_delivers_execution_prompt_not_audit_pack(
             exit_code=1,
             stdout="",
             stderr=(
-                "Claude authentication failed: OAuth token has been revoked "
-                "(401 Unauthorized)"
+                "Claude authentication failed: OAuth token has been revoked (401 Unauthorized)"
             ),
             stdout_truncated=False,
             stderr_truncated=False,
@@ -1680,6 +1877,4 @@ async def test_local_harness_delivers_execution_prompt_not_audit_pack(
     assert stored is not None
     assert stored.status == "blocked_external"
     assert execution.status == "blocked_external"
-    assert json.loads(stored.blocker_json)["code"] == (
-        "provider_authentication_revoked"
-    )
+    assert json.loads(stored.blocker_json)["code"] == ("provider_authentication_revoked")

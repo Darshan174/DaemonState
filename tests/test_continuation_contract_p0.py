@@ -11,6 +11,7 @@ from app.models import SourceDocument, Workspace
 from app.schemas.continuation_execution import (
     ExecutionAuthority,
     FilesystemMode,
+    ProjectContextProvenance,
     RequirementPriority,
     SourceSpanKind,
     TaskMode,
@@ -28,6 +29,28 @@ from app.services.session_events import (
     NormalizedSessionEvent,
     persist_session_events,
 )
+
+
+def test_project_context_provenance_rejects_non_hash_bound_evidence_text() -> None:
+    evidence_text = "The API uses exact source-backed evidence."
+    fields = {
+        "source_document_id": "source-1",
+        "evidence_span_id": "span-1",
+        "source_type": "local",
+        "source_revision_number": 1,
+        "source_content_sha256": "a" * 64,
+        "evidence_text_sha256": hashlib.sha256(evidence_text.encode()).hexdigest(),
+    }
+
+    assert ProjectContextProvenance(
+        **fields,
+        evidence_text=evidence_text,
+    ).evidence_text == evidence_text
+    with pytest.raises(ValueError, match="does not match its SHA-256"):
+        ProjectContextProvenance(
+            **fields,
+            evidence_text="A fabricated paraphrase.",
+        )
 
 
 def test_explicit_no_edit_explanation_never_grants_write_authority() -> None:
@@ -280,6 +303,85 @@ def test_declarative_acceptance_bullets_are_musts_but_background_is_context() ->
         )
     assert classified["Acceptance criteria"][0] is RequirementPriority.CONTEXT
     assert classified["Background:"][0] is RequirementPriority.CONTEXT
+
+
+def test_negated_coordinated_actions_are_not_inverted_into_positive_requirements() -> None:
+    request_text = (
+        "I want u to update the license of this project, where users can use "
+        "the project, self host it, but cannot copy and make product out of "
+        "it and make them selfs money. idk anything about license of a "
+        "project, research and work on this. also make this project self "
+        "hostable"
+    )
+
+    spans, requirements = compile_request_requirements(
+        build_authoritative_request(request_text),
+        task_mode=TaskMode.CHANGE,
+    )
+
+    assert [item.text for item in requirements] == [
+        (
+            "I want u to update the license of this project, where users can "
+            "use the project, self host it, but cannot copy and make product "
+            "out of it and make them selfs money."
+        ),
+        "idk anything about license of a project, research and work on this.",
+        "also make this project self hostable",
+    ]
+    assert [span.kind for span in spans] == [
+        SourceSpanKind.CONSTRAINT,
+        SourceSpanKind.REQUIREMENT,
+        SourceSpanKind.REQUIREMENT,
+    ]
+    assert all(item.priority is RequirementPriority.MUST for item in requirements)
+    assert not any(
+        item.text.startswith(("make product", "make them selfs money"))
+        for item in requirements
+    )
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        "Users can't redistribute and make a competing product.",
+        "Users can not redistribute and make a competing product.",
+        "Users may not redistribute and make a competing product.",
+        "Users mustn't redistribute and make a competing product.",
+        "Users aren't allowed to redistribute and make a competing product.",
+        "You are instructed not to copy and make a competing product.",
+        "Users are not supposed to copy and make a competing product.",
+        "Users must refrain from copying and make a competing product.",
+        "Users are barred from copying and make a competing product.",
+        "Users are disallowed from copying and make a competing product.",
+        "Users are prohibited from redistributing and make a competing product.",
+        "Do not remove the notice and then make a proprietary fork.",
+        "Users are not permitted to resell and make money from the code.",
+    ],
+)
+def test_negation_scope_survives_coordinated_action_variants(
+    request_text: str,
+) -> None:
+    spans, requirements = compile_request_requirements(
+        build_authoritative_request(request_text),
+        task_mode=TaskMode.CHANGE,
+    )
+
+    assert [item.text for item in requirements] == [request_text]
+    assert [span.kind for span in spans] == [SourceSpanKind.CONSTRAINT]
+
+
+def test_positive_or_sequenced_actions_still_split_into_atomic_requirements() -> None:
+    for request_text in (
+        "Build the package and make the release.",
+        "Users not only copy the package and make the release.",
+        "Do not remove the notice; make the release.",
+        "Do not remove the notice, then make the release.",
+    ):
+        _, requirements = compile_request_requirements(
+            build_authoritative_request(request_text),
+            task_mode=TaskMode.CHANGE,
+        )
+        assert len(requirements) == 2
 
 
 def test_unheaded_declarative_bullets_are_musts_without_promoting_background() -> None:

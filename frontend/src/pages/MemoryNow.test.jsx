@@ -13,6 +13,16 @@ function sha256Text(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => (
+      `${JSON.stringify(key)}:${canonicalJson(value[key])}`
+    )).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 const SECTION_IDS = [
   "goal",
   "requirements",
@@ -264,17 +274,69 @@ const preparedTaskIdentity = {
 };
 
 const projectContextContent = [
-  "# Project Context",
+  "# Workspace Context",
   "",
-  "Wait for the next user lead.",
+  "> Boundary: objective- and session-independent workspace facts plus current repository observations.",
   "",
-  "Carried task: Run the real Codex continuation.",
+  "## Repository map",
+  "",
+  "- Indexed files: `42`",
   "",
   "PROJECT_CONTEXT_ONLY",
 ].join("\n");
 
+const selectedContextAudit = [
+  { title: "Current repository state" },
+  { title: "Durable workspace decision" },
+];
+
+const excludedContextAudit = [
+  { title: "Raw test stdout", reason: "low signal" },
+];
+
+const workspaceFoundationSemanticPayload = {
+  schema_version: "workspace_foundation.v1",
+  objective_independent: true,
+  repository_state: {
+    snapshot_fingerprint: "repo-state-fingerprint",
+  },
+  quality_report: {
+    status: "warning",
+    score: 95,
+    copy_ready: true,
+    publishable: true,
+    issues: [],
+  },
+};
+
+const workspaceFoundationPayload = {
+  ...workspaceFoundationSemanticPayload,
+  semantic_sha256: sha256Text(canonicalJson(workspaceFoundationSemanticPayload)),
+};
+
+const workspaceFoundation = {
+  ...workspaceFoundationPayload,
+  artifact_sha256: sha256Text(canonicalJson(workspaceFoundationPayload)),
+};
+
+function workspaceFoundationForSchema(schemaVersion, additionalFields = {}) {
+  const semanticPayload = {
+    ...workspaceFoundationSemanticPayload,
+    ...additionalFields,
+    schema_version: schemaVersion,
+  };
+  const artifactPayload = {
+    ...semanticPayload,
+    semantic_sha256: sha256Text(canonicalJson(semanticPayload)),
+  };
+  return {
+    ...artifactPayload,
+    artifact_sha256: sha256Text(canonicalJson(artifactPayload)),
+  };
+}
+
 const preparedContext = {
-  schema_version: "continuation.v1",
+  schema_version: "context_pack.v2",
   objective: "Harden checkpoint capture",
   task: {
     id: "task-1",
@@ -334,11 +396,39 @@ const preparedContext = {
     },
     project_context: [],
   },
-  markdown: "# Audit ContextPack\n\nAUDIT_MARKDOWN_MUST_NOT_BE_COPIED",
+  markdown: projectContextContent,
+  selected_context: selectedContextAudit,
+  excluded_context: excludedContextAudit,
+  health_score: 1,
   manifest: {
     schema_version: "context_pack.v2",
     context_pack_id: "pack-1",
+    workspace_id: "workspace-1",
     objective: "Harden checkpoint capture",
+    objective_kind: "project_snapshot",
+    focus: {
+      kind: "project_snapshot",
+      component_id: null,
+      objective_origin: "project_snapshot",
+    },
+    repo_state: {
+      repo_path: "/workspace/daemonstate",
+      branch: "main",
+      head_commit: "abc123",
+      dirty: false,
+      state_fingerprint: "repo-state-fingerprint",
+      workspace_foundation_sha256: workspaceFoundation.semantic_sha256,
+      workspace_foundation_artifact_sha256: workspaceFoundation.artifact_sha256,
+      workspace_inventory: {
+        schema_version: "workspace_repository_inventory.v2",
+        indexed_file_count: 42,
+        test_file_count: 8,
+        manifest_file_count: 2,
+        languages: [{ name: "python", file_count: 42 }],
+        areas: [{ path: "app", file_count: 42 }],
+        representative_files: [{ path: "app/main.py", why: "Representative file for app" }],
+      },
+    },
     continuation: {
       task_id: "task-1",
       execution_objective: "Harden checkpoint capture",
@@ -347,16 +437,31 @@ const preparedContext = {
     },
     target_model: { name: "gpt-5.6" },
     token_accounting: { rendered_tokens: 1480, within_budget: true },
-    rendering: { within_budget: true },
-    selected_context: [
-      { title: "Current goal" },
-      { title: "Exact next action" },
-    ],
-    excluded_context: [
-      { title: "Raw test stdout", reason: "low signal" },
-    ],
+    rendering: {
+      within_budget: true,
+      markdown_sha256: sha256Text(projectContextContent),
+      estimated_tokens: 1480,
+    },
+    selected_context: selectedContextAudit,
+    excluded_context: excludedContextAudit,
+    workspace_foundation: workspaceFoundation,
   },
 };
+
+function preparedContextForFoundation(foundation) {
+  return {
+    ...preparedContext,
+    manifest: {
+      ...preparedContext.manifest,
+      repo_state: {
+        ...preparedContext.manifest.repo_state,
+        workspace_foundation_sha256: foundation.semantic_sha256,
+        workspace_foundation_artifact_sha256: foundation.artifact_sha256,
+      },
+      workspace_foundation: foundation,
+    },
+  };
+}
 
 const mocks = vi.hoisted(() => ({
   workspace: {
@@ -388,6 +493,7 @@ vi.mock("./useProductWorkspace", () => ({
 
 vi.mock("../context-map/api", () => ({
   useContextDigest: () => mocks.digest,
+  usePrepareContext: () => mocks.prepare,
   useProjectMemory: (...args) => {
     mocks.memoryHook(...args);
     return mocks.memory;
@@ -396,7 +502,6 @@ vi.mock("../context-map/api", () => ({
 
 vi.mock("../api/hooks", () => ({
   useLatestCheckpoint: (...args) => mocks.latestHook(...args),
-  usePrepareContinuation: () => mocks.prepare,
   useCaptureCheckpoint: () => mocks.capture,
   useCheckpointHandoff: () => mocks.handoff,
   useSessionLibrary: () => mocks.library,
@@ -409,6 +514,13 @@ function renderMemory() {
     </MemoryRouter>,
   );
 }
+
+const workspaceSnapshotPayload = {
+  workspace_id: "workspace-1",
+  repo_path: "/workspace/daemonstate",
+  mode: "project_snapshot",
+  objective_origin: "project_snapshot",
+};
 
 function persistSelectedSessions(sessions) {
   mocks.library.data = { sessions };
@@ -609,7 +721,7 @@ describe("ExecutePage", () => {
     }
   });
 
-  it("does not send an unbound same-task workspace checkpoint to the compiler", async () => {
+  it("prepares Workspace Context without binding a task, checkpoint, or session", async () => {
     const observedRun = {
       ...mocks.digest.data.activity.primary,
       tool: "daemonstate:codex",
@@ -620,11 +732,10 @@ describe("ExecutePage", () => {
 
     renderMemory();
 
-    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith({
-      workspace_id: "workspace-1",
-      repo_path: "/workspace/daemonstate",
-      objective: "Harden checkpoint capture",
-    }));
+    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith(
+      workspaceSnapshotPayload,
+    ));
+    expect(mocks.prepare.mutateAsync.mock.calls[0][0]).not.toHaveProperty("objective");
     expect(mocks.prepare.mutateAsync.mock.calls[0][0]).not.toHaveProperty("checkpoint_id");
     expect(mocks.prepare.mutateAsync.mock.calls[0][0]).not.toHaveProperty("source_session_id");
     expect(mocks.handoff.mutateAsync).not.toHaveBeenCalled();
@@ -706,11 +817,11 @@ describe("ExecutePage", () => {
       "dark:bg-[#141411]",
     );
     const projectPreview = screen.getByRole("region", {
-      name: "Project Context prompt preview",
+      name: "Workspace Context prompt preview",
     });
     await waitFor(() => {
       expect(within(projectPreview).getByLabelText(
-        "Project Context prompt preview content",
+        "Workspace Context prompt preview content",
       )).toHaveTextContent("PROJECT_CONTEXT_ONLY");
     });
     expect(projectPreview.querySelectorAll("[data-pen-motif]")).toHaveLength(0);
@@ -1430,7 +1541,7 @@ describe("ExecutePage", () => {
       name: "Harden checkpoint capture Session Context prompt preview",
     }).querySelector("[data-pen-motif]")).toBeNull();
     expect(within(workspaceContext).getByRole("region", {
-      name: "Project Context prompt preview",
+      name: "Workspace Context prompt preview",
     }).querySelector("[data-pen-motif]")).toBeNull();
 
     expect(within(sessionCard).queryByText(
@@ -1449,17 +1560,17 @@ describe("ExecutePage", () => {
     expect(within(workspaceContext).queryByText("Parent context")).not.toBeInTheDocument();
     expect(within(workspaceContext).queryByText("Workspace-wide · source-backed")).not.toBeInTheDocument();
     expect(within(workspaceContext).queryByText(
-      /durable Project Context foundation every continuation inherits.*active session is contained below/i,
+      /durable Workspace Context foundation every continuation inherits.*active session is contained below/i,
     )).not.toBeInTheDocument();
     expect(within(workspaceContext).queryByText(/^Workspace scope$/)).not.toBeInTheDocument();
     expect(within(workspaceContext).queryByText(/^Repository$/)).not.toBeInTheDocument();
     expect(within(workspaceContext).queryByText(/^Compiled size$/)).not.toBeInTheDocument();
     expect(workspaceContext.querySelector("dl")).toBeNull();
     await waitFor(() => expect(within(workspaceContext).getByRole("button", {
-      name: "Preview Project Context",
+      name: "Preview Workspace Context",
     })).toHaveTextContent("Open full preview"));
     const projectCopy = within(workspaceContext).getByRole("button", {
-      name: "Copy Project Context",
+      name: "Copy Workspace Context",
     });
     expect(projectCopy).toBeEnabled();
     expect(projectCopy).toHaveClass("btn-primary");
@@ -1767,43 +1878,189 @@ describe("ExecutePage", () => {
     )).toBeInTheDocument());
   });
 
-  it("copies Project Context directly from its card, never audit or execution text", async () => {
+  it("copies the complete Workspace Context snapshot directly from its card", async () => {
     renderMemory();
 
     const workspaceContext = screen.getByRole("region", { name: "Workspace Context" });
     fireEvent.click(within(workspaceContext).getByRole("button", {
-      name: "Copy Project Context",
+      name: "Copy Workspace Context",
     }));
 
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-      preparedContext.project_context.content,
+      preparedContext.markdown,
     ));
-    expect(navigator.clipboard.writeText).not.toHaveBeenCalledWith(preparedContext.markdown);
     expect(navigator.clipboard.writeText).not.toHaveBeenCalledWith(preparedContext.execution_prompt);
   });
 
-  it("rejects Project Context whose content no longer matches its hash", async () => {
+  it("uses the same canonical foundation hashes as the backend contract", async () => {
+    const backendFoundation = {
+      schema_version: "workspace_foundation.v1",
+      objective_independent: true,
+      compiled_at: "2026-08-05T12:00:00Z",
+      repository_state: {
+        snapshot_fingerprint: "f".repeat(64),
+        captured_at: "2026-08-05T12:00:00Z",
+      },
+      quality_report: { copy_ready: true, score: 95.0, issues: [] },
+      product_profile: { name: "Café/工具" },
+      semantic_sha256: "dfe6d4365fc4e5c2818f0289835dc37f13f6746ed263c03d5706e4438c3b60cf",
+      artifact_sha256: "972306bb79e175f08302dc3641408fbd852d111077298cbe67465e7d1848a15b",
+    };
     mocks.prepare.mutateAsync.mockResolvedValue({
       ...preparedContext,
-      project_context: {
-        ...preparedContext.project_context,
-        content: `${preparedContext.project_context.content}\nTAMPERED`,
+      manifest: {
+        ...preparedContext.manifest,
+        repo_state: {
+          ...preparedContext.manifest.repo_state,
+          state_fingerprint: "f".repeat(64),
+          workspace_foundation_sha256: backendFoundation.semantic_sha256,
+          workspace_foundation_artifact_sha256: backendFoundation.artifact_sha256,
+        },
+        workspace_foundation: backendFoundation,
       },
     });
     renderMemory();
 
     const workspaceContext = screen.getByRole("region", { name: "Workspace Context" });
     fireEvent.click(within(workspaceContext).getByRole("button", {
-      name: "Copy Project Context",
+      name: "Copy Workspace Context",
+    }));
+
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      preparedContext.markdown,
+    ));
+  });
+
+  it("accepts a hash-valid workspace_foundation.v2 artifact", async () => {
+    const v2Foundation = workspaceFoundationForSchema("workspace_foundation.v2", {
+      verification_runs: [{
+        command: "npm test",
+        snapshot: "repo-state-fingerprint",
+        exit_code: 0,
+        result: "passed",
+        failures: [],
+      }],
+    });
+    mocks.prepare.mutateAsync.mockResolvedValue(
+      preparedContextForFoundation(v2Foundation),
+    );
+    renderMemory();
+
+    const workspaceContext = screen.getByRole("region", { name: "Workspace Context" });
+    fireEvent.click(within(workspaceContext).getByRole("button", {
+      name: "Copy Workspace Context",
+    }));
+
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      preparedContext.markdown,
+    ));
+  });
+
+  it("rejects an unknown Workspace Foundation schema even when its hashes are valid", async () => {
+    const unsupportedFoundation = workspaceFoundationForSchema("workspace_foundation.v3");
+    mocks.prepare.mutateAsync.mockResolvedValue(
+      preparedContextForFoundation(unsupportedFoundation),
+    );
+    renderMemory();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "compiler returned an incomplete Workspace Context",
+    );
+    expect(screen.getByRole("button", {
+      name: "Copy Workspace Context",
+    })).toBeDisabled();
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+  });
+
+  it("recompiles immediately before copy so a valid cached preview cannot go stale", async () => {
+    const freshMarkdown = projectContextContent.replace(
+      "PROJECT_CONTEXT_ONLY",
+      "FRESH_REPOSITORY_SNAPSHOT",
+    );
+    const freshContext = {
+      ...preparedContext,
+      context_pack_id: "pack-2",
+      markdown: freshMarkdown,
+      manifest: {
+        ...preparedContext.manifest,
+        context_pack_id: "pack-2",
+        rendering: {
+          ...preparedContext.manifest.rendering,
+          markdown_sha256: sha256Text(freshMarkdown),
+        },
+      },
+    };
+    mocks.prepare.mutateAsync
+      .mockResolvedValueOnce(preparedContext)
+      .mockResolvedValueOnce(freshContext);
+    renderMemory();
+
+    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledTimes(1));
+    const workspaceContext = screen.getByRole("region", { name: "Workspace Context" });
+    fireEvent.click(within(workspaceContext).getByRole("button", {
+      name: "Copy Workspace Context",
+    }));
+
+    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      freshMarkdown,
+    ));
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalledWith(projectContextContent);
+  });
+
+  it("rejects Workspace Context whose content no longer matches its hash", async () => {
+    mocks.prepare.mutateAsync.mockResolvedValue({
+      ...preparedContext,
+      markdown: `${preparedContext.markdown}\nTAMPERED`,
+    });
+    renderMemory();
+
+    const workspaceContext = screen.getByRole("region", { name: "Workspace Context" });
+    fireEvent.click(within(workspaceContext).getByRole("button", {
+      name: "Copy Workspace Context",
     }));
 
     expect(await screen.findByText(
-      /Project Context failed its content integrity check/,
+      /Workspace Context failed its content integrity check/,
     )).toBeInTheDocument();
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
   });
 
-  it("never copies Project Context that fails its worker-handoff quality gate", async () => {
+  it("rejects a continuation staging document presented as Workspace Context", async () => {
+    const continuationStagingContent = [
+      "# Project / Workspace Context — NOT READY",
+      "",
+      "## Session Context — task-specific child",
+      "",
+      "### Authoritative current lead",
+      "",
+      "### Definition of done",
+    ].join("\n");
+    mocks.prepare.mutateAsync.mockResolvedValue({
+      ...preparedContext,
+      markdown: continuationStagingContent,
+      manifest: {
+        ...preparedContext.manifest,
+        rendering: {
+          ...preparedContext.manifest.rendering,
+          markdown_sha256: sha256Text(continuationStagingContent),
+        },
+      },
+    });
+    renderMemory();
+
+    const workspaceContext = screen.getByRole("region", { name: "Workspace Context" });
+    fireEvent.click(within(workspaceContext).getByRole("button", {
+      name: "Copy Workspace Context",
+    }));
+
+    expect(await screen.findByText(
+      /compiler returned an incomplete Workspace Context/,
+    )).toBeInTheDocument();
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+  });
+
+  it("does not apply task handoff quality gates to Workspace Context", async () => {
     mocks.prepare.mutateAsync.mockResolvedValue({
       ...preparedContext,
       readiness: {
@@ -1844,12 +2101,55 @@ describe("ExecutePage", () => {
 
     const workspaceContext = screen.getByRole("region", { name: "Workspace Context" });
     fireEvent.click(within(workspaceContext).getByRole("button", {
-      name: "Copy Project Context",
+      name: "Copy Workspace Context",
     }));
 
     await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalled());
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      preparedContext.markdown,
+    ));
+    expect(within(workspaceContext).queryByText("Not copy-ready")).not.toBeInTheDocument();
+  });
+
+  it("fails closed when the Workspace Foundation quality gate blocks copy", async () => {
+    const blockedFoundationPayload = {
+      ...workspaceFoundationPayload,
+      quality_report: {
+        status: "fail",
+        score: 45,
+        copy_ready: false,
+        publishable: false,
+        issues: [{
+          id: "issue.product_missing",
+          blocking: true,
+          message: "No safe repository-stated product purpose was found.",
+        }],
+      },
+    };
+    const blockedFoundation = {
+      ...blockedFoundationPayload,
+      artifact_sha256: sha256Text(canonicalJson(blockedFoundationPayload)),
+    };
+    mocks.prepare.mutateAsync.mockResolvedValue({
+      ...preparedContext,
+      manifest: {
+        ...preparedContext.manifest,
+        repo_state: {
+          ...preparedContext.manifest.repo_state,
+          workspace_foundation_artifact_sha256: blockedFoundation.artifact_sha256,
+        },
+        workspace_foundation: blockedFoundation,
+      },
+    });
+    renderMemory();
+
+    const workspaceContext = screen.getByRole("region", { name: "Workspace Context" });
+    fireEvent.click(within(workspaceContext).getByRole("button", {
+      name: "Copy Workspace Context",
+    }));
+
     expect(await screen.findByText(
-      /Project Context is not copy-ready.*omits the definition of done/,
+      /Workspace Context is not copy-ready.*No safe repository-stated product purpose/i,
     )).toBeInTheDocument();
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
   });
@@ -1930,7 +2230,7 @@ describe("ExecutePage", () => {
     expect(screen.queryByText("Repair the billing schema")).not.toBeInTheDocument();
   });
 
-  it("keeps an unassigned latest session out of project truth without creating an implicit Session Context", () => {
+  it("keeps an unassigned latest session out of Workspace Context while still compiling the workspace", async () => {
     mocks.digest.data = {
       ...digestData(),
       current_goal: null,
@@ -1955,9 +2255,11 @@ describe("ExecutePage", () => {
     expect(screen.queryByText("Implemented normalized session events")).not.toBeInTheDocument();
     expect(document.querySelectorAll("[data-session-context-card]")).toHaveLength(0);
     expect(screen.getByRole("button", {
-      name: "Preview Project Context",
-    })).toBeDisabled();
-    expect(mocks.prepare.mutateAsync).not.toHaveBeenCalled();
+      name: "Preview Workspace Context",
+    })).toBeEnabled();
+    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith(
+      workspaceSnapshotPayload,
+    ));
     expect(mocks.handoff.mutateAsync).not.toHaveBeenCalled();
   });
 
@@ -1970,12 +2272,11 @@ describe("ExecutePage", () => {
 
     renderMemory();
 
-    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith({
-      workspace_id: "workspace-1",
-      repo_path: "/workspace/daemonstate",
-      objective: "Harden checkpoint capture",
-    }));
+    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith(
+      workspaceSnapshotPayload,
+    ));
     const payload = mocks.prepare.mutateAsync.mock.calls[0][0];
+    expect(payload).not.toHaveProperty("objective");
     expect(payload).not.toHaveProperty("checkpoint_id");
     expect(payload).not.toHaveProperty("source_session_id");
     expect(document.querySelectorAll("[data-session-context-card]")).toHaveLength(0);
@@ -2022,20 +2323,17 @@ describe("ExecutePage", () => {
 
     renderMemory();
 
-    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith({
-      workspace_id: "workspace-1",
-      repo_path: "/workspace/daemonstate",
-      source_provider: "codex",
-      source_session_id: "session-1",
-    }));
+    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith(
+      workspaceSnapshotPayload,
+    ));
     expect(await screen.findByLabelText(
-      "Project Context prompt preview content",
+      "Workspace Context prompt preview content",
     )).toHaveTextContent("PROJECT_CONTEXT_ONLY");
     expect(document.querySelectorAll("[data-session-context-card]")).toHaveLength(0);
     expect(mocks.handoff.mutateAsync).not.toHaveBeenCalled();
   });
 
-  it("recovers Project Context from a scoped session without promoting its generated title", async () => {
+  it("does not let a scoped session replace task-independent Workspace Context", async () => {
     const recoveredObjective = "Recover the source-backed task from this session.";
     const recoveredProjectContent = "# Project Context\n\nRECOVERED_FROM_SCOPED_SESSION";
     const recoveredIdentity = {
@@ -2123,19 +2421,17 @@ describe("ExecutePage", () => {
     expect(document.querySelectorAll("[data-session-context-card]")).toHaveLength(0);
     expect(mocks.handoff.mutateAsync).not.toHaveBeenCalled();
 
-    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith({
-      workspace_id: "workspace-1",
-      repo_path: "/workspace/daemonstate",
-      source_provider: "codex",
-      source_session_id: "session-1",
-    }));
+    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith(
+      workspaceSnapshotPayload,
+    ));
     expect(mocks.prepare.mutateAsync.mock.calls[0][0]).not.toHaveProperty("objective");
+    expect(mocks.prepare.mutateAsync.mock.calls[0][0]).not.toHaveProperty("source_session_id");
     expect(await screen.findByLabelText(
-      "Project Context prompt preview content",
-    )).toHaveTextContent("RECOVERED_FROM_SCOPED_SESSION");
+      "Workspace Context prompt preview content",
+    )).toHaveTextContent("PROJECT_CONTEXT_ONLY");
   });
 
-  it("pins a compatible source session when an authoritative goal has no checkpoint", async () => {
+  it("does not pin a source session when preparing Workspace Context", async () => {
     mocks.checkpoint.data = null;
     mocks.prepare.mutateAsync.mockResolvedValue({
       ...preparedContext,
@@ -2155,14 +2451,12 @@ describe("ExecutePage", () => {
 
     renderMemory();
 
-    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith({
-      workspace_id: "workspace-1",
-      repo_path: "/workspace/daemonstate",
-      source_provider: "codex",
-      source_session_id: "session-1",
-    }));
+    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith(
+      workspaceSnapshotPayload,
+    ));
+    expect(mocks.prepare.mutateAsync.mock.calls[0][0]).not.toHaveProperty("source_provider");
     expect(await screen.findByLabelText(
-      "Project Context prompt preview content",
+      "Workspace Context prompt preview content",
     )).toHaveTextContent("PROJECT_CONTEXT_ONLY");
     expect(screen.queryByRole("link", { name: /Continue/ })).not.toBeInTheDocument();
   });
@@ -2180,7 +2474,7 @@ describe("ExecutePage", () => {
     expect(screen.queryByText("3 observed verification checks passed")).not.toBeInTheDocument();
   });
 
-  it("keeps failed verification out of the removed status hero while compiling the scoped task", async () => {
+  it("keeps failed task verification out of task-independent Workspace Context preparation", async () => {
     mocks.digest.data.activity.primary.verification = {
       observed: 1,
       passed: 0,
@@ -2196,11 +2490,9 @@ describe("ExecutePage", () => {
 
     renderMemory();
 
-    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith({
-      workspace_id: "workspace-1",
-      repo_path: "/workspace/daemonstate",
-      checkpoint_id: "checkpoint-1",
-    }));
+    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith(
+      workspaceSnapshotPayload,
+    ));
     expect(screen.queryByText("Verification failed")).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Continue/ })).not.toBeInTheDocument();
   });
@@ -2270,59 +2562,61 @@ describe("ExecutePage", () => {
     expect(screen.queryByText("Ready to continue")).not.toBeInTheDocument();
   });
 
-  it("previews and copies only the Project Context while keeping audit data advanced", async () => {
+  it("previews and copies the Workspace Context while keeping audit data advanced", async () => {
     renderMemory();
 
-    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith({
-      workspace_id: "workspace-1",
-      repo_path: "/workspace/daemonstate",
-      checkpoint_id: "checkpoint-1",
-    }));
+    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith(
+      workspaceSnapshotPayload,
+    ));
     expect(mocks.prepare.mutateAsync).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("region", {
-      name: "Project Context prompt preview",
-    })).toHaveTextContent("PROJECT_CONTEXT_ONLY");
-    const previewTrigger = screen.getByRole("button", { name: "Preview Project Context" });
-    expect(previewTrigger).toHaveTextContent("Open full preview");
+    const previewTrigger = screen.getByRole("button", { name: "Preview Workspace Context" });
+    await waitFor(() => {
+      expect(screen.getByRole("region", {
+        name: "Workspace Context prompt preview",
+      })).toHaveTextContent("PROJECT_CONTEXT_ONLY");
+      expect(previewTrigger).toHaveTextContent("Open full preview");
+    });
     fireEvent.click(previewTrigger);
 
-    const dialog = await screen.findByRole("dialog", { name: "Project Context Preview" });
-    expect(within(dialog).getByText("Verified parent projection")).toBeInTheDocument();
-    expect(within(dialog).getByText("continuation_staging_context.v1")).toBeInTheDocument();
-    expect(within(dialog).getByText(/Run the real Codex continuation/)).toBeInTheDocument();
-    expect(within(dialog).getByText(/PROJECT_CONTEXT_ONLY/)).toBeInTheDocument();
+    const dialog = await screen.findByRole("dialog", { name: "Workspace Context Preview" });
+    expect(within(dialog).getByText("Whole workspace")).toBeInTheDocument();
+    expect(within(dialog).getByText("workspace_context.v1")).toBeInTheDocument();
+    expect(within(dialog).getByLabelText(
+      "Workspace Context prompt content",
+    )).toHaveTextContent("PROJECT_CONTEXT_ONLY");
     expect(screen.getByRole("region", {
-      name: "Project Context prompt preview",
+      name: "Workspace Context prompt preview",
     })).toHaveTextContent("PROJECT_CONTEXT_ONLY");
 
     const advanced = within(dialog).getByText("Advanced audit details").closest("details");
     expect(advanced).not.toHaveAttribute("open");
     fireEvent.click(within(dialog).getByText("Advanced audit details"));
     expect(advanced).toHaveAttribute("open");
-    expect(within(dialog).getByText(/AUDIT_MARKDOWN_MUST_NOT_BE_COPIED/)).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Advanced audit markdown")).toHaveTextContent(
+      "PROJECT_CONTEXT_ONLY",
+    );
     expect(within(dialog).getByText("Raw test stdout")).toBeInTheDocument();
     expect(within(dialog).getByText("low signal")).toBeInTheDocument();
 
-    const close = within(dialog).getByRole("button", { name: "Close Project Context Preview" });
+    const close = within(dialog).getByRole("button", { name: "Close Workspace Context Preview" });
     expect(close).toHaveFocus();
     fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
     const auditMarkdown = within(dialog).getByLabelText("Advanced audit markdown");
     expect(auditMarkdown).toHaveFocus();
-    const copy = within(dialog).getByRole("button", { name: "Copy Project Context" });
+    const copy = within(dialog).getByRole("button", { name: "Copy Workspace Context" });
     fireEvent.click(copy);
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-      preparedContext.project_context.content,
+      preparedContext.markdown,
     ));
-    expect(navigator.clipboard.writeText).not.toHaveBeenCalledWith(preparedContext.markdown);
     expect(navigator.clipboard.writeText).not.toHaveBeenCalledWith(preparedContext.execution_prompt);
     fireEvent.keyDown(window, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog", {
-      name: "Project Context Preview",
+      name: "Workspace Context Preview",
     })).not.toBeInTheDocument());
     await waitFor(() => expect(previewTrigger).toHaveFocus());
   });
 
-  it("recovers the lossless checkpoint request without resending its display goal or dropping images", async () => {
+  it("keeps checkpoint requests and attachments out of Workspace Context preparation", async () => {
     const displayGoal = "Continue the saved visual-context task. ".padEnd(174, "x");
     const fullRequest = (
       `${displayGoal}\n`
@@ -2388,19 +2682,18 @@ describe("ExecutePage", () => {
 
     renderMemory();
 
-    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith({
-      workspace_id: "workspace-1",
-      repo_path: "/workspace/daemonstate",
-      checkpoint_id: "checkpoint-1",
-    }));
+    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith(
+      workspaceSnapshotPayload,
+    ));
     expect(mocks.prepare.mutateAsync.mock.calls[0][0]).not.toHaveProperty("objective");
-    fireEvent.click(screen.getByRole("button", { name: "Preview Project Context" }));
+    expect(mocks.prepare.mutateAsync.mock.calls[0][0]).not.toHaveProperty("checkpoint_id");
+    fireEvent.click(screen.getByRole("button", { name: "Preview Workspace Context" }));
     expect(await screen.findByRole("dialog", {
-      name: "Project Context Preview",
+      name: "Workspace Context Preview",
     })).toBeInTheDocument();
   });
 
-  it("fails closed when compilation drops a source-bound attachment", async () => {
+  it("does not burden Workspace Context with continuation attachment review", async () => {
     const artifact = {
       id: "A1",
       kind: "screenshot",
@@ -2427,15 +2720,16 @@ describe("ExecutePage", () => {
 
     renderMemory();
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "compiler dropped a referenced attachment",
-    );
+    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith(
+      workspaceSnapshotPayload,
+    ));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByRole("button", {
-      name: "Preview Project Context",
-    })).toBeDisabled();
+      name: "Preview Workspace Context",
+    })).toBeEnabled();
   });
 
-  it("preserves the authoritative objective verbatim when preparing context", async () => {
+  it("does not bind Workspace Context to the authoritative task objective", async () => {
     const exactObjective = "Fix `api/v1` timeout: preserve exact input.";
     mocks.digest.data.current_goal.title = exactObjective;
     mocks.digest.data.activity.primary.request = exactObjective;
@@ -2489,16 +2783,15 @@ describe("ExecutePage", () => {
     });
     renderMemory();
 
-    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith({
-      workspace_id: "workspace-1",
-      repo_path: "/workspace/daemonstate",
-      objective: exactObjective,
-    }));
-    fireEvent.click(screen.getByRole("button", { name: "Preview Project Context" }));
-    expect(await screen.findByRole("dialog", { name: "Project Context Preview" })).toBeInTheDocument();
+    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith(
+      workspaceSnapshotPayload,
+    ));
+    expect(mocks.prepare.mutateAsync.mock.calls[0][0]).not.toHaveProperty("objective");
+    fireEvent.click(screen.getByRole("button", { name: "Preview Workspace Context" }));
+    expect(await screen.findByRole("dialog", { name: "Workspace Context Preview" })).toBeInTheDocument();
   });
 
-  it("does not sanitize Context labels while validating the canonical task identity", async () => {
+  it("does not send task labels while compiling Workspace Context", async () => {
     const exactObjective = (
       "DaemonState should send three things together: "
       + "Context:** What happened, decisions, files, failures, current state."
@@ -2559,18 +2852,19 @@ describe("ExecutePage", () => {
     renderMemory();
 
     await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith(
-      expect.objectContaining({ objective: exactObjective }),
+      workspaceSnapshotPayload,
     ));
+    expect(mocks.prepare.mutateAsync.mock.calls[0][0]).not.toHaveProperty("objective");
     fireEvent.click(screen.getByRole("button", {
-      name: "Preview Project Context",
+      name: "Preview Workspace Context",
     }));
     expect(await screen.findByRole("dialog", {
-      name: "Project Context Preview",
+      name: "Workspace Context Preview",
     })).toBeInTheDocument();
     expect(screen.queryByText(/belongs to a different task/i)).not.toBeInTheDocument();
   });
 
-  it("rejects a compiler response whose execution contract carries a split task identity", async () => {
+  it("ignores continuation task identity when the workspace snapshot identity is valid", async () => {
     mocks.prepare.mutateAsync.mockResolvedValue({
       ...preparedContext,
       execution_contract: {
@@ -2584,15 +2878,16 @@ describe("ExecutePage", () => {
     renderMemory();
 
     fireEvent.click(screen.getAllByRole("button", {
-      name: "Preview Project Context",
+      name: "Preview Workspace Context",
     })[0]);
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "compiler returned an incomplete continuation context",
-    );
+    expect(await screen.findByRole("dialog", {
+      name: "Workspace Context Preview",
+    })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
-  it("rejects an incomplete or cross-task compiler response", async () => {
+  it("ignores cross-task continuation fields in a valid workspace snapshot", async () => {
     mocks.checkpoint.data = null;
     delete mocks.digest.data.activity.primary.session_id;
     const unrelatedIdentity = {
@@ -2641,13 +2936,14 @@ describe("ExecutePage", () => {
     });
     renderMemory();
 
-    expect(await screen.findByText(
-      "The compiled context belongs to a different task.",
-    )).toBeInTheDocument();
-    expect(screen.queryByText(/Run the real Codex continuation/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Preview Workspace Context" }));
+    expect(await screen.findByRole("dialog", {
+      name: "Workspace Context Preview",
+    })).toBeInTheDocument();
+    expect(screen.queryByText(/belongs to a different task/i)).not.toBeInTheDocument();
   });
 
-  it("accepts and discloses an unfinished prerequisite that switches source and checkpoint", async () => {
+  it("keeps session prerequisites out of Workspace Context", async () => {
     mocks.prepare.mutateAsync.mockResolvedValue({
       ...preparedContext,
       objective: "Repair the checkpoint database migration",
@@ -2689,21 +2985,18 @@ describe("ExecutePage", () => {
     });
     renderMemory();
 
-    fireEvent.click(screen.getAllByRole("button", { name: "Preview Project Context" })[0]);
+    const preview = screen.getByRole("button", { name: "Preview Workspace Context" });
+    await waitFor(() => expect(preview).toHaveTextContent("Open full preview"));
+    fireEvent.click(preview);
 
-    const dialog = await screen.findByRole("dialog", { name: "Project Context Preview" });
-    expect(within(dialog).getByText(/starts with the unfinished prerequisite/)).toHaveTextContent(
-      "Repair the checkpoint database migration",
-    );
-    expect(within(dialog).getByText(/starts with the unfinished prerequisite/)).toHaveTextContent(
-      "Harden checkpoint capture",
-    );
-    expect(within(dialog).getByText(/starts with the unfinished prerequisite/)).toHaveTextContent(
-      "different checkpoint or source session",
+    const dialog = await screen.findByRole("dialog", { name: "Workspace Context Preview" });
+    expect(within(dialog).queryByText(/unfinished prerequisite/i)).not.toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Workspace Context prompt content")).toHaveTextContent(
+      "PROJECT_CONTEXT_ONLY",
     );
   });
 
-  it("discloses blocked compiler readiness in the full preview without the removed hero", async () => {
+  it("does not turn task readiness into a Workspace Context review gate", async () => {
     mocks.prepare.mutateAsync.mockResolvedValue({
       ...preparedContext,
       readiness: {
@@ -2718,16 +3011,21 @@ describe("ExecutePage", () => {
     });
     renderMemory();
 
-    fireEvent.click(screen.getAllByRole("button", { name: "Preview Project Context" })[0]);
+    const preview = screen.getByRole("button", { name: "Preview Workspace Context" });
+    await waitFor(() => expect(preview).toHaveTextContent("Open full preview"));
+    fireEvent.click(preview);
 
-    const dialog = await screen.findByRole("dialog", { name: "Project Context Preview" });
-    expect(within(dialog).getByText(/Compiler readiness: Blocked/)).toBeInTheDocument();
+    const dialog = await screen.findByRole("dialog", { name: "Workspace Context Preview" });
+    expect(within(dialog).queryByText(/Compiler readiness/)).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", {
+      name: "Copy Workspace Context",
+    })).toBeEnabled();
     expect(screen.queryByText("Continuation blocked")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Review compiled context" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Continue with Session Context/ })).not.toBeInTheDocument();
   });
 
-  it("shows changed repository freshness in the preview without the removed readiness hero", async () => {
+  it("reports repository indexing without using continuation freshness as a gate", async () => {
     mocks.prepare.mutateAsync.mockResolvedValue({
       ...preparedContext,
       repository: {
@@ -2740,10 +3038,10 @@ describe("ExecutePage", () => {
     });
     renderMemory();
 
-    fireEvent.click(screen.getAllByRole("button", { name: "Preview Project Context" })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: "Preview Workspace Context" })[0]);
 
-    const dialog = await screen.findByRole("dialog", { name: "Project Context Preview" });
-    expect(within(dialog).getByText("Changed")).toBeInTheDocument();
+    const dialog = await screen.findByRole("dialog", { name: "Workspace Context Preview" });
+    expect(await within(dialog).findByText("Indexed")).toBeInTheDocument();
     expect(screen.queryByText("Continuation blocked")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Review compiled context" })).not.toBeInTheDocument();
     expect(screen.queryByText("Ready to continue")).not.toBeInTheDocument();
@@ -2779,17 +3077,40 @@ describe("ExecutePage", () => {
       },
       "compiled context belongs to a different checkpoint",
     ],
-  ])("rejects a same-task response anchored to another %s", async (_kind, result, message) => {
+  ])("ignores continuation %s anchors when the workspace snapshot is valid", async (_kind, result, _message) => {
     mocks.prepare.mutateAsync.mockResolvedValue(result);
     renderMemory();
 
-    fireEvent.click(screen.getAllByRole("button", { name: "Preview Project Context" })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: "Preview Workspace Context" })[0]);
 
-    const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(message);
+    expect(await screen.findByRole("dialog", {
+      name: "Workspace Context Preview",
+    })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
-  it("rejects a same-task response from another source session", async () => {
+  it("rejects a Workspace Context artifact from another repository", async () => {
+    mocks.prepare.mutateAsync.mockResolvedValue({
+      ...preparedContext,
+      manifest: {
+        ...preparedContext.manifest,
+        repo_state: {
+          ...preparedContext.manifest.repo_state,
+          repo_path: "/workspace/different-project",
+        },
+      },
+    });
+    renderMemory();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "compiled context belongs to a different repository",
+    );
+    expect(screen.getByRole("button", {
+      name: "Copy Workspace Context",
+    })).toBeDisabled();
+  });
+
+  it("ignores source-session identity when preparing Workspace Context", async () => {
     mocks.digest.data = {
       ...digestData(),
       current_goal: null,
@@ -2817,15 +3138,13 @@ describe("ExecutePage", () => {
     });
     renderMemory();
 
-    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith({
-      workspace_id: "workspace-1",
-      repo_path: "/workspace/daemonstate",
-      source_provider: "codex",
-      source_session_id: "session-1",
-    }));
-    expect(await screen.findByText(
-      "The compiled context belongs to a different source session.",
-    )).toBeInTheDocument();
+    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith(
+      workspaceSnapshotPayload,
+    ));
+    expect(screen.queryByText(/belongs to a different source session/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", {
+      name: "Copy Workspace Context",
+    })).toBeEnabled();
   });
 
   it("labels partial live data without restoring removed summary claims", () => {
@@ -2865,7 +3184,7 @@ describe("ExecutePage", () => {
     expect(screen.queryByText("No conflict affecting continuation")).not.toBeInTheDocument();
   });
 
-  it("shows the selected-session empty state and keeps Workspace Context unavailable when no task can be detected", () => {
+  it("keeps Workspace Context available when no task can be detected", async () => {
     mocks.digest.data = {
       ...digestData(),
       current_goal: null,
@@ -2884,17 +3203,20 @@ describe("ExecutePage", () => {
     expect(screen.getByRole("heading", {
       name: "Choose Session Contexts",
     })).toBeInTheDocument();
-    expect(screen.getByRole("region", {
-      name: "Project Context prompt preview",
-    })).toHaveTextContent("Choose an active task to compile the workspace foundation");
+    await waitFor(() => expect(screen.getByRole("region", {
+      name: "Workspace Context prompt preview",
+    })).toHaveTextContent("PROJECT_CONTEXT_ONLY"));
     expect(screen.getByRole("button", {
-      name: "Preview Project Context",
-    })).toBeDisabled();
-    expect(mocks.prepare.mutateAsync).not.toHaveBeenCalled();
+      name: "Preview Workspace Context",
+    })).toBeEnabled();
+    expect(screen.getByRole("button", {
+      name: "Copy Workspace Context",
+    })).toBeEnabled();
+    expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith(workspaceSnapshotPayload);
     expect(mocks.handoff.mutateAsync).not.toHaveBeenCalled();
   });
 
-  it("fails closed when both current activity and project memory are unavailable", () => {
+  it("falls back to repository Workspace Context when live activity and memory are unavailable", async () => {
     mocks.digest.data = null;
     mocks.digest.isError = true;
     mocks.memory.data = null;
@@ -2902,11 +3224,17 @@ describe("ExecutePage", () => {
 
     renderMemory();
 
-    expect(screen.getByRole("alert")).toHaveTextContent("Workspace Context is unavailable");
-    expect(screen.queryByText("Ready to continue")).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Inspect context sources" })).toHaveAttribute(
-      "href",
-      "/app/execute/inspector",
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Some live context is temporarily unavailable",
     );
+    await waitFor(() => expect(mocks.prepare.mutateAsync).toHaveBeenCalledWith(
+      workspaceSnapshotPayload,
+    ));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", {
+      name: "Copy Workspace Context",
+    })).toBeEnabled();
+    expect(screen.queryByText("Ready to continue")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Inspect context sources" })).not.toBeInTheDocument();
   });
 });

@@ -28,6 +28,7 @@ from app.schemas.continuation_execution import (
     FilesystemMode,
     HandoffTruthState,
     ProjectEvidenceLevel,
+    RequirementPriority,
     SelectedTaskLifecycle,
     TaskMode,
     VerifierType,
@@ -1039,12 +1040,18 @@ async def test_repository_evidence_is_typed_hash_bound_and_separate_from_project
         "[project]\ndependencies=['opentelemetry-api']\n",
         encoding="utf-8",
     )
+    license_file = tmp_path / "LICENSE"
+    license_file.write_text(
+        "Current source-available terms.\n",
+        encoding="utf-8",
+    )
     telemetry_sha = hashlib.sha256(telemetry.read_bytes()).hexdigest()
     test_sha = hashlib.sha256(telemetry_test.read_bytes()).hexdigest()
     manifest_sha = hashlib.sha256(manifest_file.read_bytes()).hexdigest()
+    license_sha = hashlib.sha256(license_file.read_bytes()).hexdigest()
     snapshot_fingerprint = "b" * 64
     evidence = {
-        "schema_version": "repository_evidence.v1",
+        "schema_version": "repository_evidence.v2",
         "snapshot_fingerprint": snapshot_fingerprint,
         "head_commit": "a" * 40,
         "truncated": False,
@@ -1079,6 +1086,12 @@ async def test_repository_evidence_is_typed_hash_bound_and_separate_from_project
                 "dependency_name": "opentelemetry-api",
                 "declaration": "opentelemetry-api",
             },
+            {
+                "id": "RE4",
+                "kind": "file_presence",
+                "path": "LICENSE",
+                "file_sha256": license_sha,
+            },
         ],
     }
 
@@ -1097,6 +1110,7 @@ async def test_repository_evidence_is_typed_hash_bound_and_separate_from_project
         "symbol_declaration",
         "test_link",
         "manifest_dependency",
+        "file_presence",
     ]
     assert compiled.contract.repository_evidence[0].truth_state == (
         "observed_at_snapshot"
@@ -1111,6 +1125,9 @@ async def test_repository_evidence_is_typed_hash_bound_and_separate_from_project
     staging = render_continuation_staging_context(compiled.contract)
     assert evidence_line in compiled.prompt_markdown
     assert evidence_line in staging
+    file_line = "- File: `LICENSE` — present in the bound repository snapshot."
+    assert file_line in compiled.prompt_markdown
+    assert file_line in staging
     valid_report = evaluate_continuation_quality(
         compiled.contract,
         prompt_markdown=compiled.prompt_markdown,
@@ -1145,6 +1162,24 @@ async def test_repository_evidence_is_typed_hash_bound_and_separate_from_project
     )
     assert staging_issue.repository_evidence_id == "RE1"
 
+    legacy_evidence = {
+        **evidence,
+        "schema_version": "repository_evidence.v1",
+        "items": evidence["items"][:3],
+    }
+    legacy = await _compile(
+        db_session,
+        tmp_path,
+        request="Explain legacy v1 OpenTelemetry repository evidence.",
+        task_mode=TaskMode.REPORT,
+        repository_evidence=legacy_evidence,
+    )
+    assert [item.id for item in legacy.contract.repository_evidence] == [
+        "RE1",
+        "RE2",
+        "RE3",
+    ]
+
     telemetry.write_text(
         "def configure_telemetry():\n    return False\n",
         encoding="utf-8",
@@ -1158,7 +1193,7 @@ async def test_repository_evidence_is_typed_hash_bound_and_separate_from_project
     )
     assert [
         item.id for item in stale.contract.repository_evidence
-    ] == ["RE3"]
+    ] == ["RE3", "RE4"]
 
 
 async def test_workspace_foundation_uses_evidence_levels_and_controlled_promotion(
@@ -1841,19 +1876,52 @@ async def test_project_context_explicitly_reports_when_no_workspace_facts_apply(
 
     staging = render_continuation_staging_context(compiled.contract)
 
-    assert "### Task-relevant project context" in staging
-    assert "Activation boundary:" in staging
-    assert "materially different task" in staging
-    assert "No current evidence-backed durable workspace facts were compiled." in staging
-    assert "Foundation readiness: **NOT READY**" in staging
+    assert staging.startswith("# Project / Workspace Context — NOT READY")
+    assert "DO NOT COPY, STAGE, OR USE FOR CONTINUATION" in staging
+    assert staging.count(
+        "No current evidence-backed durable workspace facts were compiled."
+    ) == 1
+    assert "### Task-relevant project context" not in staging
+    for heading in PROJECT_FOUNDATION_REQUIRED_HEADINGS[1:-1]:
+        assert heading not in staging
     report = evaluate_continuation_quality(
         compiled.contract,
         prompt_markdown=compiled.prompt_markdown,
         project_context_markdown=staging,
     )
-    assert "project_context_foundation_empty" in {
-        issue.code for issue in report.issues
-    }
+    issue_codes = {issue.code for issue in report.issues}
+    assert "project_context_foundation_empty" in issue_codes
+    assert "project_context_copy_foundation_sections_missing" not in issue_codes
+
+
+async def test_incomplete_project_foundation_omits_missing_section_placeholders(
+    db_session,
+    tmp_path,
+) -> None:
+    compiled = await _compile(
+        db_session,
+        tmp_path,
+        request="Inspect Project Context quality.",
+        foundation_facts=_COMPLETE_FOUNDATION[1:],
+    )
+
+    staging = render_continuation_staging_context(compiled.contract)
+
+    identity_heading = PROJECT_FOUNDATION_REQUIRED_HEADINGS[1]
+    assert staging.startswith("# Project / Workspace Context — NOT READY")
+    assert "Foundation readiness: **NOT READY**" in staging
+    assert "DO NOT COPY, STAGE, OR USE FOR CONTINUATION" in staging
+    assert "Missing core: identity" in staging
+    assert identity_heading not in staging
+    assert "No current evidence-backed durable fact was compiled." not in staging
+    report = evaluate_continuation_quality(
+        compiled.contract,
+        prompt_markdown=compiled.prompt_markdown,
+        project_context_markdown=staging,
+    )
+    issue_codes = {issue.code for issue in report.issues}
+    assert "project_context_core_sections_empty" in issue_codes
+    assert "project_context_copy_foundation_sections_missing" not in issue_codes
 
 
 async def test_project_context_quality_gate_rejects_incomplete_conflicting_generic_and_stale_foundations(
@@ -2454,6 +2522,62 @@ async def test_review_mode_never_compiles_edit_authority(
     )
     assert compiled.contract.authority.allow_product_edits is False
     assert "without editing product files" in compiled.prompt_markdown
+
+    staging = render_continuation_staging_context(compiled.contract)
+    first_requirement = next(
+        item
+        for item in compiled.contract.requirements
+        if item.priority is RequirementPriority.MUST
+    )
+    assert (
+        f"{first_requirement.id} — {first_requirement.text.rstrip(' .!?;:')}"
+        in staging
+    )
+    assert "without editing files" in staging
+
+
+async def test_staging_context_renders_concrete_actions_and_proof_obligations(
+    db_session,
+    tmp_path,
+) -> None:
+    request = (
+        "Update the project license so self-hosting is allowed but commercial "
+        "redistribution is prohibited. "
+        "Make the project self-hostable. "
+        "Add an operator setup command. "
+        "Document rollback steps. "
+        "Run the self-host smoke test."
+    )
+    compiled = await _compile(
+        db_session,
+        tmp_path,
+        request=request,
+    )
+
+    staging = render_continuation_staging_context(compiled.contract)
+    must_requirements = [
+        item
+        for item in compiled.contract.requirements
+        if item.priority is RequirementPriority.MUST
+    ]
+
+    assert len(must_requirements) == 5
+    assert "complete and verify R1–R5" not in staging
+    assert (
+        f"complete and verify {must_requirements[0].id} — "
+        f"{must_requirements[0].text.rstrip(' .!?;:')}"
+    ) in staging
+    assert "other 4 remaining requirements listed with full text" in staging
+    for requirement in must_requirements:
+        assert (
+            f"- {requirement.id} [remaining]: {requirement.text}"
+            in staging
+        )
+    assert "proof: model rubric" not in staging.casefold()
+    assert (
+        "observed repository/runtime evidence that this exact requirement is "
+        "satisfied; prior-worker claims alone do not count"
+    ) in staging
 
 
 def test_checkpoint_sections_are_projected_without_markdown_round_trip() -> None:
