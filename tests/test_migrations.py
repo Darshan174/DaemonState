@@ -31,8 +31,108 @@ from app.models import (
     RunObservation,
     SourceDocument,
     SyncJob,
+    WaitlistSignup,
     Workspace,
 )
+
+
+class TestWaitlistTrackingCompatibilityMigration:
+    async def test_upgrades_legacy_table_preserves_rows_and_is_idempotent(
+        self,
+        tmp_path,
+    ):
+        database_path = tmp_path / "legacy-waitlist.db"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+        legacy_created_at = "2026-08-01 10:00:00"
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+                await conn.execute(text("DROP TABLE waitlist_signups"))
+                await conn.execute(text("""
+                    CREATE TABLE waitlist_signups (
+                        id CHAR(32) NOT NULL PRIMARY KEY,
+                        email VARCHAR(320) NOT NULL,
+                        source VARCHAR(64) NOT NULL DEFAULT 'landing',
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+                await conn.execute(text("""
+                    CREATE UNIQUE INDEX uq_waitlist_signups_email
+                    ON waitlist_signups (email)
+                """))
+                await conn.execute(text("""
+                    CREATE INDEX ix_waitlist_signups_created_at
+                    ON waitlist_signups (created_at)
+                """))
+                await conn.execute(
+                    text("""
+                        INSERT INTO waitlist_signups (id, email, source, created_at)
+                        VALUES (:id, :email, 'landing', :created_at)
+                    """),
+                    {
+                        "id": "0" * 31 + "1",
+                        "email": "Builder@Example.com",
+                        "created_at": legacy_created_at,
+                    },
+                )
+
+            async with engine.begin() as conn:
+                await run_migrations(conn)
+                await run_migrations(conn)
+
+            async with engine.connect() as conn:
+                column_rows = (
+                    await conn.execute(text("PRAGMA table_info(waitlist_signups)"))
+                ).fetchall()
+                columns = {str(row[1]): row for row in column_rows}
+                indexes = {
+                    str(row[1])
+                    for row in (
+                        await conn.execute(
+                            text("PRAGMA index_list(waitlist_signups)")
+                        )
+                    ).fetchall()
+                }
+                legacy_row = (
+                    await conn.execute(text("""
+                        SELECT email, source, status, priority_score,
+                               email_sync_status, created_at, updated_at
+                        FROM waitlist_signups
+                        WHERE id = :id
+                    """), {"id": "0" * 31 + "1"})
+                ).one()
+
+            assert {column.name for column in WaitlistSignup.__table__.columns} <= set(
+                columns
+            )
+            assert columns["updated_at"][3] == 1
+            assert "CURRENT_TIMESTAMP" in str(columns["updated_at"][4]).upper()
+            assert {
+                "uq_waitlist_signups_email",
+                "ix_waitlist_signups_created_at",
+                "ix_waitlist_signups_status_created_at",
+            } <= indexes
+            assert tuple(legacy_row) == (
+                "Builder@Example.com",
+                "landing",
+                "new",
+                0,
+                "pending",
+                legacy_created_at,
+                legacy_created_at,
+            )
+
+            async with AsyncSession(engine, expire_on_commit=False) as session:
+                signup = WaitlistSignup(email="fresh@example.com")
+                session.add(signup)
+                await session.commit()
+                await session.refresh(signup)
+                assert signup.status == "new"
+                assert signup.priority_score == 0
+                assert signup.email_sync_status == "pending"
+                assert signup.updated_at is not None
+        finally:
+            await engine.dispose()
 
 
 class TestRelationshipConfidenceEvidenceMigration:

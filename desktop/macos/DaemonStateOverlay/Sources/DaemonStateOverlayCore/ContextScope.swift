@@ -30,7 +30,7 @@ public enum ContextScope: String, Codable, CaseIterable, Sendable {
         case .session:
             return "Session Context"
         case .project:
-            return "Project Context"
+            return "Workspace Context"
         }
     }
 }

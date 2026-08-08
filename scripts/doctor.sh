@@ -174,7 +174,7 @@ process.exit(supported ? 0 : 1);
     warn "frontend dependencies missing; run: bash scripts/setup.sh"
   fi
 
-  if [[ -f "frontend/dist/index.html" ]]; then
+  if [[ -f "frontend/dist/client/index.html" || -f "frontend/dist/index.html" ]]; then
     ok "frontend build present"
   else
     warn "frontend build missing; run: bash scripts/setup.sh or (cd frontend && npm run build)"

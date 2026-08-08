@@ -2858,32 +2858,55 @@
 
 .daemonstate-now-hero {
   background-image:
-    radial-gradient(circle at 84% 0%, rgba(255, 255, 255, 0.08), transparent 22rem),
-    linear-gradient(135deg, #171713, #0f0f0d);
+    radial-gradient(circle at 84% 0%, rgba(255, 255, 255, 0.92), transparent 22rem),
+    linear-gradient(135deg, #fbfbf7, #efefe9);
   animation: daemonstate-visual-arrive 620ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-.daemonstate-now-grid {
-  opacity: 0.42;
+.dark .daemonstate-now-hero {
   background-image:
-    linear-gradient(rgba(255, 255, 255, 0.055) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.055) 1px, transparent 1px);
+    radial-gradient(circle at 84% 0%, rgba(255, 255, 255, 0.08), transparent 22rem),
+    linear-gradient(135deg, #171713, #0f0f0d);
+}
+
+.daemonstate-now-grid {
+  opacity: 0.72;
+  background-image:
+    linear-gradient(rgba(154, 154, 146, 0.24) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(154, 154, 146, 0.24) 1px, transparent 1px);
   background-size: 34px 34px;
   mask-image: linear-gradient(90deg, transparent, black 38%, black);
 }
 
+.dark .daemonstate-now-grid {
+  opacity: 0.52;
+  background-image:
+    linear-gradient(rgba(192, 192, 184, 0.12) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(192, 192, 184, 0.12) 1px, transparent 1px);
+}
+
 .daemonstate-now-orbit {
+  box-shadow:
+    0 0 0 3.5rem rgba(154, 154, 146, 0.045),
+    0 0 0 7rem rgba(154, 154, 146, 0.025);
+  animation: daemonstate-orbit-breathe 7s ease-in-out infinite;
+}
+
+.dark .daemonstate-now-orbit {
   box-shadow:
     0 0 0 3.5rem rgba(255, 255, 255, 0.018),
     0 0 0 7rem rgba(255, 255, 255, 0.012);
-  animation: daemonstate-orbit-breathe 7s ease-in-out infinite;
 }
 
 .daemonstate-harness-fan {
   --daemonstate-mobile-deck-bleed: 1.25rem;
   --daemonstate-mobile-card-width: min(280px, calc(100vw - 4rem));
-  scrollbar-color: rgba(217, 255, 104, 0.42) transparent;
+  scrollbar-color: rgba(126, 126, 118, 0.42) transparent;
   scrollbar-width: thin;
+}
+
+.dark .daemonstate-harness-fan {
+  scrollbar-color: rgba(217, 255, 104, 0.42) transparent;
 }
 
 .daemonstate-archive-fan {
@@ -2950,8 +2973,12 @@
 }
 
 .daemonstate-harness-fan::-webkit-scrollbar-thumb {
-  background: rgba(217, 255, 104, 0.42);
+  background: rgba(126, 126, 118, 0.42);
   border-radius: 999px;
+}
+
+.dark .daemonstate-harness-fan::-webkit-scrollbar-thumb {
+  background: rgba(217, 255, 104, 0.42);
 }
 
 @media (min-width: 768px) {

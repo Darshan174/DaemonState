@@ -7,16 +7,12 @@ import {
   CheckCircle2,
   Clipboard,
   Clock3,
-  Eye,
   FileCode2,
   GitBranch,
   History,
   Layers3,
-  Loader2,
-  PencilLine,
   PlayCircle,
   RefreshCw,
-  RotateCcw,
   ShieldAlert,
   ShieldCheck,
   X,
@@ -152,28 +148,13 @@ export default function NowPage() {
   const [continuationError, setContinuationError] = useState(null);
   const [pendingProvider, setPendingProvider] = useState(null);
   const [hoveredContinuationProvider, setHoveredContinuationProvider] = useState(null);
-  const [continuationLeadDraft, setContinuationLeadDraft] = useState("");
-  const [continuationLeadTouched, setContinuationLeadTouched] = useState(false);
-  const [continuationPreviewResult, setContinuationPreviewResult] = useState(null);
-  const [evidenceRefreshState, setEvidenceRefreshState] = useState("idle");
   const [sessionHandoffState, setSessionHandoffState] = useState({
     checkpointId: null,
     status: "idle",
     message: null,
   });
   const continuationLeadSourceKeyRef = useRef(continuationLeadSourceKey);
-  const continuationLead = continuationLeadTouched
-    ? continuationLeadDraft
-    : capturedContinuationLead;
-  const continuationLeadEdited = Boolean(
-    continuationLeadTouched
-    && continuationLeadDraft !== capturedContinuationLead,
-  );
-  const continuationIntentPayload = continuationLeadEdited
-    ? {
-        continuation_lead: continuationLeadDraft,
-      }
-    : {};
+  const continuationLead = capturedContinuationLead;
   const continuationRequestKey = JSON.stringify([
     workspace.activeWorkspaceId || "",
     digestQuery.data?.current_goal?.title || "",
@@ -196,7 +177,6 @@ export default function NowPage() {
       || "",
     primaryCheckpointQuery.data?.sections?.goal?.[0]?.statement || "",
     continuationLead,
-    continuationLeadEdited,
   ]);
   const continuationRequestKeyRef = useRef(continuationRequestKey);
   const continuationStageInFlightRef = useRef(false);
@@ -210,13 +190,7 @@ export default function NowPage() {
   useEffect(() => {
     if (continuationLeadSourceKeyRef.current === continuationLeadSourceKey) return;
     continuationLeadSourceKeyRef.current = continuationLeadSourceKey;
-    setContinuationLeadDraft(capturedContinuationLead);
-    setContinuationLeadTouched(false);
-    setContinuationPreviewResult(null);
-  }, [
-    capturedContinuationLead,
-    continuationLeadSourceKey,
-  ]);
+  }, [continuationLeadSourceKey]);
   useEffect(() => {
     if (continuationRequestKeyRef.current === continuationRequestKey) return;
     continuationRequestKeyRef.current = continuationRequestKey;
@@ -225,7 +199,6 @@ export default function NowPage() {
     setContinuationResult(null);
     setContinuationError(null);
     setPendingProvider(null);
-    setContinuationPreviewResult(null);
   }, [continuationRequestKey, continuationState, stageContinuation.isPending]);
   if (!workspace.workspacesQuery.isLoading && !workspace.activeWorkspaceId) {
     return (
@@ -346,8 +319,7 @@ export default function NowPage() {
   const continuationLeadSourceBound = Boolean(
     continuationSource,
   );
-  const continuationLeadResolvable = continuationLeadSourceBound
-    && (!continuationLeadTouched || continuationLeadAvailable);
+  const continuationLeadResolvable = continuationLeadSourceBound;
   const continuationAnchorAvailable = continuationLeadSourceBound;
   const continuationDisplayObjective = continuationLead
     || (continuationSource
@@ -408,7 +380,6 @@ export default function NowPage() {
               source_session_id: continuationSource.sessionId,
             }
           : {}),
-        ...continuationIntentPayload,
       });
       if (continuationPageMountedRef.current) {
         clearContinuationStageRequestReservation(requestReservation);
@@ -583,11 +554,8 @@ export default function NowPage() {
     || (recoveredContinuationVisible
       ? contextPackageSummaryToManifest(latestContinuationRun?.context_package)
       : null)
-    || continuationPreviewResult?.manifest
     || null;
-  const carriedContextResult = displayedContinuationResult
-    || continuationPreviewResult
-    || null;
+  const carriedContextResult = displayedContinuationResult || null;
   const copyCurrentSessionContext = async () => {
     if (!workspace.activeWorkspaceId || !latestSessionContextCheckpoint) return;
     setSessionHandoffState({
@@ -621,74 +589,11 @@ export default function NowPage() {
       });
     }
   };
-  const prepareContinuationPreview = async () => {
-    if (
-      !workspace.activeWorkspaceId
-      || !continuationLeadResolvable
-      || !latestSessionContextCheckpoint
-    ) {
-      throw new Error("A current checkpoint and continuation lead are required before previewing the handoff.");
-    }
-    const previewRequestKey = continuationRequestKey;
-    const preview = await checkpointHandoff.mutateAsync({
-      workspaceId: workspace.activeWorkspaceId,
-      checkpointId: latestSessionContextCheckpoint.id,
-      ...(continuationLeadEdited
-        ? { continuationLead: continuationLeadDraft }
-        : {}),
-    });
-    if (continuationRequestKeyRef.current !== previewRequestKey) {
-      throw new Error("The continuation lead changed while the preview was compiling. Preview the updated lead again.");
-    }
-    setContinuationPreviewResult(preview);
-    return preview;
-  };
-  const refreshContinuationEvidence = async () => {
-    setEvidenceRefreshState("refreshing");
-    setContinuationPreviewResult(null);
-    const refreshers = [
-      latestSessionDiscoveryQuery.refetch,
-      digestQuery.refetch,
-      checkpointQuery.refetch,
-      workspaceCheckpointQuery.refetch,
-      checkpointHistoryQuery.refetch,
-    ].filter((refetch) => typeof refetch === "function");
-    try {
-      for (const refetch of refreshers) {
-        const refreshResult = await refetch({ throwOnError: true });
-        if (
-          refreshResult?.isError
-          || refreshResult?.status === "error"
-        ) {
-          throw refreshResult.error || new Error("Evidence could not be refreshed.");
-        }
-      }
-      setEvidenceRefreshState("refreshed");
-    } catch (refreshError) {
-      setEvidenceRefreshState("error");
-      throw refreshError;
-    }
-  };
-  const focusContinuationHarnesses = () => {
-    const harnesses = document.getElementById("continuation-harnesses");
-    harnesses?.scrollIntoView?.({ behavior: "smooth", block: "center" });
-    const firstReadyHarness = harnesses?.querySelector("button:not([disabled])");
-    firstReadyHarness?.focus?.({ preventScroll: true });
-  };
-  const updateContinuationLead = (value) => {
-    setContinuationLeadDraft(value);
-    setContinuationLeadTouched(true);
-  };
-  const restoreCapturedContinuationLead = () => {
-    setContinuationLeadDraft(capturedContinuationLead);
-    setContinuationLeadTouched(false);
-  };
-
   return (
     <div className="app-page daemonstate-now-page relative">
-      <header className="daemonstate-now-hero relative overflow-hidden rounded-[1.75rem] border border-black/10 bg-[#171713] text-white shadow-[0_24px_70px_rgba(23,23,19,0.16)] dark:border-[#292929]">
+      <header className="daemonstate-now-hero relative overflow-hidden rounded-[1.75rem] border border-[#d3d3cb] bg-[#f7f7f2] text-[#171713] shadow-[0_24px_70px_rgba(23,23,19,0.10)] dark:border-[#292929] dark:bg-[#171713] dark:text-white dark:shadow-[0_24px_70px_rgba(0,0,0,0.34)]">
         <div className="daemonstate-now-grid pointer-events-none absolute inset-0" aria-hidden="true" />
-        <div className="daemonstate-now-orbit pointer-events-none absolute -right-24 -top-32 h-80 w-80 rounded-full border border-white/10" aria-hidden="true" />
+        <div className="daemonstate-now-orbit pointer-events-none absolute -right-24 -top-32 h-80 w-80 rounded-full border border-[#b8b8b0]/45 dark:border-white/10" aria-hidden="true" />
         <div className="relative px-4 pb-5 pt-4 sm:px-6 sm:pb-6 sm:pt-5 lg:px-8">
           <div className="flex justify-end">
             <FloatingContextToggle workspaceId={workspace.activeWorkspaceId} />
@@ -696,13 +601,13 @@ export default function NowPage() {
 
           <div className="mt-3 sm:mt-4">
             <div className="max-w-3xl">
-              <p className="text-xs font-black uppercase tracking-[0.18em] text-[#d9ff68]">
+              <p className="text-xs font-black uppercase tracking-[0.18em] text-[#65751d] dark:text-[#d9ff68]">
                 Choose the next harness
               </p>
-              <h1 className="mt-2 text-[clamp(2rem,4.2vw,3.25rem)] font-semibold leading-[0.96] tracking-[-0.055em] text-white">
+              <h1 className="mt-2 text-[clamp(2rem,4.2vw,3.25rem)] font-semibold leading-[0.96] tracking-[-0.055em] text-[#171713] dark:text-white">
                 Continue with Session Context
               </h1>
-              <p className="mt-3 hidden max-w-2xl text-sm leading-6 text-[#b8b8af] lg:block lg:text-[15px]">
+              <p className="mt-3 hidden max-w-2xl text-sm leading-6 text-[#68685f] dark:text-[#b8b8af] lg:block lg:text-[15px]">
                 The newest available session is selected by default. Choose a harness to open its Session Context.
               </p>
             </div>
@@ -718,36 +623,22 @@ export default function NowPage() {
             </dl>
 
             <nav
-              className="mx-auto mt-6 grid w-full max-w-4xl auto-rows-fr gap-4 sm:grid-cols-2"
-              aria-label="Other task paths"
+              className="mx-auto mt-6 w-full max-w-4xl"
+              aria-label="Custom session selection"
             >
               <Link
-                to="/app/library"
-                aria-label="Prepare an older session"
-                className="group flex h-full min-h-20 items-center gap-3 rounded-2xl border border-white/[0.12] bg-white/[0.045] px-4 py-3.5 text-left backdrop-blur-md transition hover:-translate-y-0.5 hover:border-[#d9ff68]/45 hover:bg-white/[0.075] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#d9ff68]/70 motion-reduce:hover:translate-y-0"
-              >
-                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-black/15 text-[#d9ff68]">
-                  <History className="h-4 w-4" aria-hidden="true" />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-semibold text-white">Prepare an older session</span>
-                  <span className="mt-1 block text-[11px] leading-4 text-white/50">Browse historical sessions without replacing Continue.</span>
-                </span>
-                <ArrowRight className="h-4 w-4 shrink-0 text-white/35 transition-transform group-hover:translate-x-0.5 group-hover:text-[#d9ff68]" aria-hidden="true" />
-              </Link>
-              <Link
                 to="/app/execute"
-                aria-label="Choose explicit context in Execute"
-                className="group flex h-full min-h-20 items-center gap-3 rounded-2xl border border-white/[0.12] bg-white/[0.045] px-4 py-3.5 text-left backdrop-blur-md transition hover:-translate-y-0.5 hover:border-[#d9ff68]/45 hover:bg-white/[0.075] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#d9ff68]/70 motion-reduce:hover:translate-y-0"
+                aria-label="Choose custom sessions in Execute"
+                className="group flex min-h-20 w-full items-center gap-3 rounded-2xl border border-[#d3d3cb] bg-white/70 px-4 py-3.5 text-left shadow-[0_8px_24px_rgba(23,23,19,0.04)] backdrop-blur-md transition hover:-translate-y-0.5 hover:border-[#9cad58] hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#849633]/70 motion-reduce:hover:translate-y-0 dark:border-white/[0.12] dark:bg-white/[0.045] dark:shadow-none dark:hover:border-[#d9ff68]/45 dark:hover:bg-white/[0.075] dark:focus-visible:ring-[#d9ff68]/70"
               >
-                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-black/15 text-[#d9ff68]">
+                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-[#d4d4cc] bg-[#efefe9] text-[#65751d] dark:border-white/10 dark:bg-black/15 dark:text-[#d9ff68]">
                   <Layers3 className="h-4 w-4" aria-hidden="true" />
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-semibold text-white">Choose explicit context in Execute</span>
-                  <span className="mt-1 block text-[11px] leading-4 text-white/50">Assemble the workspace envelope in Execute.</span>
+                  <span className="block text-sm font-semibold text-[#24241f] dark:text-white">Choose custom sessions in Execute</span>
+                  <span className="mt-1 block text-[11px] leading-4 text-[#77776e] dark:text-white/50">Select the Session Contexts to include in your execution workspace.</span>
                 </span>
-                <ArrowRight className="h-4 w-4 shrink-0 text-white/35 transition-transform group-hover:translate-x-0.5 group-hover:text-[#d9ff68]" aria-hidden="true" />
+                <ArrowRight className="h-4 w-4 shrink-0 text-[#8a8a80] transition-transform group-hover:translate-x-0.5 group-hover:text-[#65751d] dark:text-white/35 dark:group-hover:text-[#d9ff68]" aria-hidden="true" />
               </Link>
             </nav>
 
@@ -812,7 +703,7 @@ export default function NowPage() {
                         || continuationProvidersQuery.refetch
                       )?.()}
                       disabled={continuationProvidersQuery.isFetching}
-                      className="inline-flex min-h-11 items-center gap-1.5 rounded-full border border-white/15 bg-white/[0.04] px-3 text-xs font-semibold text-[#d0d0c8] transition-colors hover:border-white/30 hover:text-white disabled:cursor-wait disabled:opacity-60"
+                      className="inline-flex min-h-11 items-center gap-1.5 rounded-full border border-[#d1d1c8] bg-white/65 px-3 text-xs font-semibold text-[#5f5f57] transition-colors hover:border-[#9d9d93] hover:text-[#171713] disabled:cursor-wait disabled:opacity-60 dark:border-white/15 dark:bg-white/[0.04] dark:text-[#d0d0c8] dark:hover:border-white/30 dark:hover:text-white"
                     >
                       <RefreshCw
                         className={`h-3.5 w-3.5 ${continuationProvidersQuery.isFetching ? "animate-spin motion-reduce:animate-none" : ""}`}
@@ -828,7 +719,7 @@ export default function NowPage() {
                       type="button"
                       onClick={() => latestSessionDiscoveryQuery.refetch?.()}
                       disabled={latestSessionDiscoveryQuery.isFetching}
-                      className="inline-flex min-h-11 items-center gap-1.5 rounded-full border border-white/15 bg-white/[0.04] px-3 text-xs font-semibold text-[#d0d0c8] transition-colors hover:border-white/30 hover:text-white disabled:cursor-wait disabled:opacity-60"
+                      className="inline-flex min-h-11 items-center gap-1.5 rounded-full border border-[#d1d1c8] bg-white/65 px-3 text-xs font-semibold text-[#5f5f57] transition-colors hover:border-[#9d9d93] hover:text-[#171713] disabled:cursor-wait disabled:opacity-60 dark:border-white/15 dark:bg-white/[0.04] dark:text-[#d0d0c8] dark:hover:border-white/30 dark:hover:text-white"
                     >
                       <RefreshCw
                         className={`h-3.5 w-3.5 ${latestSessionDiscoveryQuery.isFetching ? "animate-spin motion-reduce:animate-none" : ""}`}
@@ -841,7 +732,7 @@ export default function NowPage() {
                   ) : null}
                 </div>
                 {continueAction.kind === "choose" || continueAction.kind === "unavailable" ? (
-                  <Link to="/app/library" className="group inline-flex min-h-11 items-center gap-1.5 text-xs font-semibold text-[#d9ff68]">
+                  <Link to="/app/library" className="group inline-flex min-h-11 items-center gap-1.5 text-xs font-semibold text-[#65751d] dark:text-[#d9ff68]">
                     Choose work to continue
                     <ArrowRight className="h-3.5 w-3.5 transition-transform motion-reduce:transition-none group-hover:translate-x-0.5" aria-hidden="true" />
                   </Link>
@@ -849,7 +740,7 @@ export default function NowPage() {
               </div>
             ) : null}
             {continueAction.description ? (
-              <p className="mt-3 text-xs leading-5 text-[#97978f]">
+              <p className="mt-3 text-xs leading-5 text-[#77776e] dark:text-[#97978f]">
                 {continueAction.description}
               </p>
             ) : null}
@@ -926,18 +817,6 @@ export default function NowPage() {
         manifest={carriedContextManifest}
         result={carriedContextResult}
         latestSession={latestSession}
-        objective={capturedContinuationLead || continuationDisplayObjective}
-        continuationLead={continuationLead}
-        continuationLeadEdited={continuationLeadEdited}
-        onContinuationLeadChange={updateContinuationLead}
-        onRestoreContinuationLead={restoreCapturedContinuationLead}
-        continuationLeadLocked={continuationWorkflowPending}
-        onRefreshEvidence={refreshContinuationEvidence}
-        evidenceRefreshState={evidenceRefreshState}
-        onPreviewHandoff={prepareContinuationPreview}
-        previewPending={checkpointHandoff.isPending}
-        onContinue={focusContinuationHarnesses}
-        continuationReady={continuationTaskReady && sessionContextReady}
         sessionHandoffCheckpoint={latestSessionContextCheckpoint}
         sessionHandoffState={sessionHandoffState}
         sessionHandoffPending={checkpointHandoff.isPending}
@@ -1041,18 +920,6 @@ function CarriedContextPanel({
   manifest,
   result,
   latestSession,
-  objective,
-  continuationLead,
-  continuationLeadEdited,
-  onContinuationLeadChange,
-  onRestoreContinuationLead,
-  continuationLeadLocked,
-  onRefreshEvidence,
-  evidenceRefreshState,
-  onPreviewHandoff,
-  previewPending,
-  onContinue,
-  continuationReady,
   sessionHandoffCheckpoint,
   sessionHandoffState,
   sessionHandoffPending,
@@ -1065,8 +932,6 @@ function CarriedContextPanel({
   const closeButtonRef = useRef(null);
   const returnFocusRef = useRef(null);
   const snapshotScrollerRef = useRef(null);
-  const [handoffActionError, setHandoffActionError] = useState(null);
-  const [previewCopyState, setPreviewCopyState] = useState("idle");
   const displayedSessionHandoffState = (
     sessionHandoffState?.checkpointId === sessionHandoffCheckpoint?.id
       ? sessionHandoffState
@@ -1125,80 +990,11 @@ function CarriedContextPanel({
 
   const openDrawer = (nextDrawer, trigger) => {
     returnFocusRef.current = trigger || document.activeElement;
-    setPreviewCopyState("idle");
     setDrawer(nextDrawer);
   };
 
-  const refreshEvidence = async () => {
-    setHandoffActionError(null);
-    try {
-      await onRefreshEvidence?.();
-    } catch (refreshError) {
-      setHandoffActionError(
-        refreshError?.message || "Evidence could not be refreshed.",
-      );
-    }
-  };
+  if (isLoading) return null;
 
-  const previewHandoff = async (trigger) => {
-    setHandoffActionError(null);
-    try {
-      const preview = await onPreviewHandoff?.();
-      const canonicalContent = typeof preview?.content === "string"
-        && preview.content.trim()
-        ? preview.content
-        : null;
-      const content = canonicalContent ?? firstMultilineText(
-        preview?.project_context?.content,
-        preview?.execution_prompt,
-        preview?.markdown,
-      );
-      if (!content.trim()) {
-        throw new Error("The compiler returned no previewable handoff content.");
-      }
-      openDrawer({
-        title: "Exact handoff preview",
-        subtitle: "This read-only Session Context is compiled by the same canonical pipeline used when you continue.",
-        content,
-        items: [],
-        mode: "preview",
-      }, trigger);
-    } catch (previewError) {
-      setHandoffActionError(
-        previewError?.message || "The exact handoff could not be compiled.",
-      );
-    }
-  };
-
-  const copyPreview = async () => {
-    if (!drawer?.content) return;
-    setPreviewCopyState("copying");
-    try {
-      await writeClipboard(drawer.content);
-      setPreviewCopyState("copied");
-    } catch {
-      setPreviewCopyState("error");
-    }
-  };
-
-  if (isLoading) {
-    return <CarriedContextLoading />;
-  }
-
-  const compiled = Boolean(
-    manifest
-    && Array.isArray(manifest.selected_context)
-    && manifest.token_accounting,
-  );
-  const groups = compiled
-    ? manifestContextGroups(manifest)
-    : checkpointContextGroups(checkpoint);
-  const packageBrief = contextPackageBrief({
-    groups,
-    checkpoint,
-    objective,
-    compiled,
-  });
   const boundary = checkpoint?.boundary || {};
   const sourceProvider = continuationProviderLabel(
     manifest?.continuation?.source_provider
@@ -1218,46 +1014,6 @@ function CarriedContextPanel({
       id="continuity-checkpoint"
       className="relative scroll-mt-24"
     >
-      <div
-        className="relative w-full overflow-hidden rounded-[1.75rem] border border-black/10 bg-[#171713] p-5 text-white shadow-[0_18px_48px_rgba(23,23,19,0.14)] dark:border-white/10 sm:p-6 lg:p-7"
-        data-testid="context-package-card"
-      >
-        <div className="relative">
-          <HandoffCoverage
-            groups={groups}
-            packageBrief={packageBrief}
-            manifest={manifest}
-            compiled={compiled}
-            continuationLead={continuationLead}
-            continuationLeadEdited={continuationLeadEdited}
-            onContinuationLeadChange={onContinuationLeadChange}
-            onRestoreContinuationLead={onRestoreContinuationLead}
-            continuationLeadLocked={continuationLeadLocked}
-            onInspect={openDrawer}
-            onRefreshEvidence={refreshEvidence}
-            evidenceRefreshState={evidenceRefreshState}
-            onPreviewHandoff={previewHandoff}
-            previewPending={previewPending}
-            onContinue={onContinue}
-            continuationReady={continuationReady}
-            observedAt={
-              manifest?.created_at
-              || checkpoint?.boundary?.captured_at
-              || checkpoint?.boundary?.occurred_at
-              || latestSession?.updated_at
-            }
-            repositoryRevision={
-              manifest?.repo_state?.head_commit
-              || manifest?.repo_state?.commit
-              || checkpoint?.boundary?.repository?.head_commit
-              || checkpoint?.activity?.head_commit
-              || checkpoint?.repo?.head_commit
-            }
-            actionError={handoffActionError}
-          />
-        </div>
-      </div>
-
       {error || sessionHandoffCheckpoint ? (
         <div className="mt-3 flex flex-wrap items-start justify-between gap-2 px-1">
           {error ? (
@@ -1417,17 +1173,7 @@ function CarriedContextPanel({
               </button>
             </header>
             <div className="flex-1 overflow-y-auto px-5 py-5 sm:px-7">
-              {drawer.content ? (
-                <div className="overflow-hidden rounded-2xl border border-[#d7d7cf] bg-[#171713] shadow-inner dark:border-white/10">
-                  <div className="flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3 text-[10px] font-black uppercase tracking-[0.12em] text-white/45">
-                    <span>Session Context</span>
-                    <span>Read only</span>
-                  </div>
-                  <pre className="max-h-[calc(100dvh-15rem)] overflow-auto whitespace-pre-wrap break-words p-4 font-mono text-[11px] leading-5 text-[#e5e5dc] sm:p-5">
-                    {drawer.content}
-                  </pre>
-                </div>
-              ) : drawer.items.length ? (
+              {drawer.items.length ? (
                 <ol className="space-y-3">
                   {drawer.items.map((item, index) => (
                     <ContextDrawerItem
@@ -1450,32 +1196,9 @@ function CarriedContextPanel({
               )}
             </div>
             <footer className="border-t border-[#deded5] px-5 py-4 dark:border-[#292925] sm:px-7">
-              {drawer.mode === "preview" ? (
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <p className="text-xs leading-5 text-[#77776e] dark:text-[#aaa9a0]">
-                    {previewCopyState === "error"
-                      ? "Could not copy the preview."
-                      : "Nothing here is editable; update the continuation lead or its evidence instead."}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={copyPreview}
-                    disabled={previewCopyState === "copying"}
-                    className="btn-secondary min-h-11 text-xs disabled:cursor-wait disabled:opacity-60"
-                  >
-                    <Clipboard className="h-3.5 w-3.5" aria-hidden="true" />
-                    {previewCopyState === "copying"
-                      ? "Copying…"
-                      : previewCopyState === "copied"
-                        ? "Copied"
-                        : "Copy handoff"}
-                  </button>
-                </div>
-              ) : (
-                <Link to={drawer.mode === "excluded" ? "/app/execute/inspector?view=review" : "/app/execute/inspector"} className="group inline-flex min-h-11 items-center gap-2 text-xs font-semibold text-[#171713] dark:text-[#d9ff68]">
-                  Open project memory <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
-                </Link>
-              )}
+              <Link to={drawer.mode === "excluded" ? "/app/execute/inspector?view=review" : "/app/execute/inspector"} className="group inline-flex min-h-11 items-center gap-2 text-xs font-semibold text-[#171713] dark:text-[#d9ff68]">
+                Open project memory <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
+              </Link>
             </footer>
           </aside>
         </div>,
@@ -1627,572 +1350,6 @@ function ContractUnknown({ children }) {
       {children}
     </p>
   );
-}
-
-function CarriedContextLoading() {
-  return (
-    <section
-      id="continuity-checkpoint"
-      className="relative scroll-mt-24 overflow-hidden rounded-[1.75rem] border border-black/10 bg-[#171713] p-5 text-white shadow-[0_18px_48px_rgba(23,23,19,0.14)] dark:border-white/10 sm:p-6 lg:p-7"
-      aria-busy="true"
-      aria-label="Preparing what the next agent will know"
-    >
-      <div className="relative animate-pulse motion-reduce:animate-none" aria-hidden="true">
-        <div className="flex items-center justify-between gap-6">
-          <div className="h-3 w-32 rounded-full bg-white/10" />
-          <div className="h-3 w-24 rounded-full bg-white/[0.06]" />
-        </div>
-        <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(13rem,0.72fr)_minmax(0,1.5fr)] lg:items-end">
-          <div className="h-7 w-44 rounded-lg bg-white/10" />
-          <div className="grid border-y border-white/10 sm:grid-cols-3 sm:divide-x sm:divide-white/10">
-            <div className="h-16" />
-            <div className="h-16" />
-            <div className="h-16" />
-          </div>
-        </div>
-        <div className="mt-6 border-t border-white/10 pt-4">
-          <div className="h-3 w-28 rounded-full bg-white/[0.07]" />
-          <div className="mt-4 grid grid-cols-2 gap-5 sm:grid-cols-5">
-            {[0, 1, 2, 3, 4].map((item) => (
-              <div key={item}>
-                <div className="h-5 w-8 rounded bg-white/10" />
-                <div className="mt-2 h-2.5 w-16 rounded-full bg-white/[0.06]" />
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function HandoffCoverage({
-  groups,
-  packageBrief,
-  manifest,
-  compiled,
-  continuationLead,
-  continuationLeadEdited,
-  onContinuationLeadChange,
-  onRestoreContinuationLead,
-  continuationLeadLocked,
-  onInspect,
-  onRefreshEvidence,
-  evidenceRefreshState,
-  onPreviewHandoff,
-  previewPending,
-  onContinue,
-  continuationReady,
-  observedAt,
-  repositoryRevision,
-  actionError,
-}) {
-  const briefById = new Map(packageBrief.map((item) => [item.id, item]));
-  const fields = [
-    handoffFieldFromBrief({
-      id: "goal",
-      label: "Goal",
-      brief: briefById.get("brief-goal"),
-      missingPrefix: "No task goal was captured",
-    }),
-    handoffFieldFromBrief({
-      id: "current-state",
-      label: "Current state",
-      brief: briefById.get("brief-current"),
-      missingPrefix: "No current-state update was captured",
-    }),
-    handoffLeadField(continuationLead, continuationLeadEdited),
-  ];
-  const currentState = fields[1];
-  const essentialGaps = fields.filter((field) => field.missing);
-  const supportingSections = handoffSupportingSections({
-    groups,
-    manifest,
-    compiled,
-  });
-  const verificationCount = supportingSections.find(
-    (item) => item.id === "verification",
-  )?.count || 0;
-  const blockerCount = supportingSections.find(
-    (item) => item.id === "blockers",
-  )?.count || 0;
-  const risks = handoffRisks({
-    currentState,
-    verificationCount,
-    blockerCount,
-  });
-  const missingEssentialSummary = essentialGaps
-    .map((item) => item.label.toLowerCase())
-    .join(" and ");
-  const readiness = essentialGaps.length
-    ? continuationReady
-      ? {
-          label: "Needs review",
-          detail: `Missing from saved evidence: ${missingEssentialSummary}. Verify it in the live workspace before acting.`,
-          tone: "amber",
-        }
-      : {
-          label: "Needs input",
-          detail: `Required before this brief is trustworthy: ${missingEssentialSummary}.`,
-          tone: "amber",
-        }
-    : risks.length
-      ? {
-          label: "Needs review",
-          detail: "The lead is clear, but some repository or verification evidence still needs review.",
-          tone: "amber",
-        }
-      : {
-          label: "Ready to continue",
-          detail: "The immediate lead and its supporting evidence are current enough to hand off.",
-          tone: "ready",
-        };
-  const metadata = [
-    "Read-only preview",
-    compiled
-      ? "Compiled from session and repository"
-      : "Built from the latest saved boundary",
-    observedAt ? `Updated ${formatTimeAgo(observedAt)}` : "Update time unavailable",
-  ].join(" · ");
-  const visibleSupportingSections = supportingSections.filter((section) => (
-    section.items.length > 0 || section.id === "verification"
-  ));
-
-  return (
-    <section
-      className="relative overflow-hidden"
-      aria-label="What the next agent will know"
-      data-testid="handoff-coverage"
-    >
-      <div className="pointer-events-none absolute -right-28 -top-36 h-72 w-72 rounded-full bg-[#d9ff68]/[0.08] blur-3xl" aria-hidden="true" />
-      <header className="relative flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex min-w-0 items-start gap-3.5">
-          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl border border-[#d9ff68]/25 bg-[#d9ff68]/10 text-[#d9ff68] shadow-[0_10px_30px_rgba(217,255,104,0.08)]">
-            <ShieldCheck className="h-4 w-4" aria-hidden="true" />
-          </span>
-          <div className="min-w-0">
-            <p className="text-[10px] font-black uppercase tracking-[0.16em] text-[#d9ff68]/75">Continuation brief</p>
-            <h3 id="handoff-coverage-heading" className="mt-1.5 text-xl font-semibold tracking-[-0.035em] text-white sm:text-2xl">
-              What the next agent will know
-            </h3>
-            <p className="mt-2 max-w-2xl text-xs leading-5 text-white/60">
-              {metadata}
-              {repositoryRevision ? ` · Revision ${String(repositoryRevision).slice(0, 8)}` : ""}
-            </p>
-          </div>
-        </div>
-        <span className="inline-flex w-fit items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.055] px-3 py-1.5 text-[10px] font-bold text-white/60 backdrop-blur">
-          <Eye className="h-3 w-3" aria-hidden="true" /> Reference with proof
-        </span>
-      </header>
-
-      <div className="relative mt-6 grid gap-5 xl:grid-cols-[minmax(0,1.55fr)_minmax(17rem,0.62fr)]">
-        <div className="rounded-2xl border border-white/10 bg-black/15 p-4 shadow-inner sm:p-5">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <label htmlFor="continuation-lead" className="text-[11px] font-black uppercase tracking-[0.13em] text-white/55">Continue with</label>
-            <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-[#d9ff68]/10 px-2.5 py-1 text-[10px] font-bold text-[#d9ff68]">
-                <PencilLine className="h-3 w-3" aria-hidden="true" />
-                {continuationLeadEdited ? "Your override" : "Latest user request"}
-              </span>
-              {continuationLeadEdited ? (
-                <button type="button" onClick={onRestoreContinuationLead} disabled={continuationLeadLocked} className="inline-flex min-h-9 items-center gap-1.5 rounded-lg px-2 text-[10px] font-bold text-white/55 transition hover:bg-white/[0.06] hover:text-white disabled:cursor-not-allowed disabled:opacity-40">
-                  <RotateCcw className="h-3 w-3" aria-hidden="true" /> Restore captured lead
-                </button>
-              ) : null}
-            </div>
-          </div>
-          <textarea
-            id="continuation-lead"
-            aria-label="Continue with — immediate continuation lead"
-            aria-describedby="continuation-lead-help"
-            rows={3}
-            value={continuationLead || ""}
-            onChange={(event) => onContinuationLeadChange?.(event.target.value)}
-            disabled={continuationLeadLocked}
-            maxLength={12_000}
-            placeholder="Tell the next agent exactly what to do next…"
-            className="mt-3 w-full resize-y rounded-xl border border-white/10 bg-white/[0.055] px-4 py-3 text-sm font-medium leading-6 text-white outline-none transition placeholder:text-white/25 hover:border-white/20 focus:border-[#d9ff68]/55 focus:bg-white/[0.075] focus:ring-4 focus:ring-[#d9ff68]/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
-          />
-          <p id="continuation-lead-help" className="mt-2 text-[11px] leading-5 text-white/60">
-            This is the only editable part. The reference below stays evidence-linked and read only.
-          </p>
-        </div>
-
-        <HandoffReadinessCard
-          readiness={readiness}
-          continuationReady={continuationReady}
-          evidenceRefreshState={evidenceRefreshState}
-          onRefreshEvidence={onRefreshEvidence}
-          previewPending={previewPending}
-          onPreviewHandoff={onPreviewHandoff}
-          onContinue={onContinue}
-        />
-      </div>
-
-      {actionError ? (
-        <p role="alert" className="relative mt-3 rounded-xl border border-red-300/20 bg-red-300/[0.08] px-4 py-3 text-xs leading-5 text-red-100">{actionError}</p>
-      ) : null}
-
-      <section className="relative mt-6" aria-labelledby="essential-handoff-heading">
-        <div className="flex flex-wrap items-end justify-between gap-2">
-          <div>
-            <h4 id="essential-handoff-heading" className="text-[10px] font-black uppercase tracking-[0.14em] text-white/60">Essential handoff</h4>
-            <p className="mt-1.5 text-xs leading-5 text-white/55">Open any claim to inspect what supports it.</p>
-          </div>
-          <span className="text-[10px] font-semibold text-white/55">{fields.length - essentialGaps.length}/{fields.length} present</span>
-        </div>
-        <div className="mt-3 grid gap-3 lg:grid-cols-3">
-          {fields.map((field) => (
-            <HandoffFieldCard key={field.id} field={field} onInspect={onInspect} />
-          ))}
-        </div>
-      </section>
-
-      {risks.length ? <HandoffRisks risks={risks} /> : null}
-
-      <section className="relative mt-6 border-t border-white/10 pt-5" aria-labelledby="supporting-signals-heading">
-        <div className="flex flex-wrap items-end justify-between gap-2">
-          <div>
-            <h4 id="supporting-signals-heading" className="text-[10px] font-black uppercase tracking-[0.13em] text-white/60">Supporting evidence</h4>
-            <p className="mt-1.5 text-xs leading-5 text-white/55">The most relevant evidence is shown directly; open a section to see its sources.</p>
-          </div>
-          {!blockerCount ? (
-            <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-white/55">
-              <ShieldCheck className="h-3 w-3 text-[#d9ff68]/60" aria-hidden="true" /> No blockers found in captured evidence
-            </span>
-          ) : null}
-        </div>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          {visibleSupportingSections.map((section) => (
-            <HandoffEvidenceCard key={section.id} section={section} onInspect={onInspect} />
-          ))}
-        </div>
-      </section>
-    </section>
-  );
-}
-
-function HandoffReadinessCard({
-  readiness,
-  continuationReady,
-  evidenceRefreshState,
-  onRefreshEvidence,
-  previewPending,
-  onPreviewHandoff,
-  onContinue,
-}) {
-  return (
-    <aside
-      className={`rounded-2xl border p-4 sm:p-5 ${
-        readiness.tone === "ready"
-          ? "border-[#d9ff68]/20 bg-[#d9ff68]/[0.075]"
-          : "border-amber-200/20 bg-amber-200/[0.06]"
-      }`}
-      aria-label={`Continuation readiness: ${readiness.label}`}
-    >
-      <div className="flex items-center gap-2.5">
-        {readiness.tone === "ready" ? (
-          <CheckCircle2 className="h-4 w-4 shrink-0 text-[#d9ff68]" aria-hidden="true" />
-        ) : (
-          <ShieldAlert className="h-4 w-4 shrink-0 text-amber-200" aria-hidden="true" />
-        )}
-        <p className={`text-sm font-semibold ${readiness.tone === "ready" ? "text-[#d9ff68]" : "text-amber-100"}`}>
-          {readiness.label}
-        </p>
-      </div>
-      <p className="mt-3 text-xs leading-5 text-white/55">{readiness.detail}</p>
-      <div className="mt-4 grid gap-2 sm:grid-cols-2">
-        <button
-          type="button"
-          onClick={onRefreshEvidence}
-          disabled={evidenceRefreshState === "refreshing"}
-          className="inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.055] px-3 text-[11px] font-semibold text-white/70 transition hover:border-white/20 hover:bg-white/[0.09] hover:text-white disabled:cursor-wait disabled:opacity-55"
-        >
-          <RefreshCw className={`h-3.5 w-3.5 ${evidenceRefreshState === "refreshing" ? "animate-spin motion-reduce:animate-none" : ""}`} aria-hidden="true" />
-          {evidenceRefreshState === "refreshing"
-            ? "Refreshing…"
-            : evidenceRefreshState === "refreshed"
-              ? "Evidence refreshed"
-              : "Refresh evidence"}
-        </button>
-        <button
-          type="button"
-          onClick={(event) => onPreviewHandoff?.(event.currentTarget)}
-          disabled={previewPending || !continuationReady}
-          className="inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.055] px-3 text-[11px] font-semibold text-white/70 transition hover:border-white/20 hover:bg-white/[0.09] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {previewPending ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-          ) : (
-            <Eye className="h-3.5 w-3.5" aria-hidden="true" />
-          )}
-          {previewPending ? "Compiling…" : "Preview exact handoff"}
-        </button>
-      </div>
-      <button
-        type="button"
-        onClick={onContinue}
-        disabled={!continuationReady}
-        className="mt-2 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-[#d9ff68] px-4 text-xs font-bold text-[#171713] shadow-[0_10px_28px_rgba(217,255,104,0.12)] transition hover:bg-[#e3ff91] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#d9ff68] focus-visible:ring-offset-2 focus-visible:ring-offset-[#171713] disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/35 disabled:shadow-none"
-      >
-        Continue <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
-      </button>
-    </aside>
-  );
-}
-
-function HandoffFieldCard({ field, onInspect }) {
-  const statusTone = handoffStatusTone(field.status.kind);
-  const evidenceCount = field.items.length;
-  return (
-    <div role="group" aria-label={`${field.label}: ${field.status.label.toLowerCase()}`} className="min-w-0">
-      <button
-        type="button"
-        onClick={(event) => onInspect?.({
-          title: `${field.label} evidence`,
-          subtitle: evidenceCount
-            ? `${field.status.label} · ${formatHandoffCount(evidenceCount, "supporting source")}`
-            : `${field.status.label} · no eligible source was captured`,
-          items: field.items,
-          mode: "included",
-        }, event.currentTarget)}
-        className="group flex h-full min-h-40 w-full flex-col rounded-2xl border border-white/10 bg-white/[0.035] p-4 text-left transition hover:-translate-y-0.5 hover:border-white/20 hover:bg-white/[0.06] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#d9ff68]/60 motion-reduce:hover:translate-y-0"
-      >
-        <span className="flex w-full items-center justify-between gap-2">
-          <span className="text-[10px] font-black uppercase tracking-[0.12em] text-white/60">{field.label}</span>
-          <span className={`rounded-full px-2.5 py-1 text-[9px] font-bold ${statusTone}`}>{field.status.label}</span>
-        </span>
-        <span className={`mt-4 line-clamp-4 text-sm font-medium leading-6 ${field.missing ? "text-white/55" : "text-white/85"}`}>
-          {field.text}
-        </span>
-        <span className="mt-auto flex w-full items-center justify-between gap-2 pt-4 text-[10px] font-semibold text-white/55">
-          <span>{evidenceCount ? formatHandoffCount(evidenceCount, "source") : "No source"}</span>
-          <span className="inline-flex items-center gap-1 text-white/60 transition group-hover:text-[#d9ff68]">
-            Inspect <ArrowRight className="h-3 w-3" aria-hidden="true" />
-          </span>
-        </span>
-      </button>
-    </div>
-  );
-}
-
-function HandoffEvidenceCard({ section, onInspect }) {
-  const visibleItems = section.items.slice(0, 2);
-  const countLabel = formatHandoffCount(section.count, section.singular);
-  return (
-    <div role="group" aria-label={`${section.label}: ${countLabel}`} className="min-w-0">
-      <button
-        type="button"
-        onClick={(event) => onInspect?.({
-          title: section.label,
-          subtitle: section.count
-            ? `${countLabel} selected for this continuation`
-            : section.empty,
-          items: section.items,
-          mode: "included",
-        }, event.currentTarget)}
-        className="group flex h-full min-h-36 w-full flex-col rounded-2xl border border-white/[0.08] bg-white/[0.025] p-4 text-left transition hover:border-white/15 hover:bg-white/[0.05] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#d9ff68]/60"
-      >
-        <span className="flex w-full items-center justify-between gap-3">
-          <span className="text-[10px] font-black uppercase tracking-[0.12em] text-white/60">{section.label}</span>
-          <span className="rounded-full bg-white/[0.065] px-2 py-0.5 text-[10px] font-bold tabular-nums text-white/55">{section.count}</span>
-        </span>
-        <span className="mt-3 space-y-2">
-          {visibleItems.length ? visibleItems.map((item, index) => (
-            <span key={item.id || `${section.id}-${index}`} className="flex gap-2 text-[11px] leading-5 text-white/60">
-              <span className="mt-2 h-1 w-1 shrink-0 rounded-full bg-[#d9ff68]/65" aria-hidden="true" />
-              <span className="line-clamp-2">{handoffEvidenceItemText(item)}</span>
-            </span>
-          )) : (
-            <span className="block text-[11px] leading-5 text-white/55">{section.empty}</span>
-          )}
-        </span>
-        <span className="mt-auto inline-flex items-center gap-1 pt-3 text-[10px] font-semibold text-white/55 transition group-hover:text-[#d9ff68]">
-          {section.count > visibleItems.length ? `View all ${section.count}` : "Inspect evidence"}
-          <ArrowRight className="h-3 w-3" aria-hidden="true" />
-        </span>
-      </button>
-    </div>
-  );
-}
-
-function HandoffRisks({ risks }) {
-  return (
-    <section className="relative mt-5 rounded-2xl border border-amber-200/15 bg-amber-200/[0.045] p-4 sm:p-5" aria-labelledby="handoff-risks-heading">
-      <div className="flex items-center gap-2">
-        <ShieldAlert className="h-4 w-4 text-amber-200" aria-hidden="true" />
-        <h4 id="handoff-risks-heading" className="text-[10px] font-black uppercase tracking-[0.13em] text-amber-100/70">Risks before continuing</h4>
-      </div>
-      <div className="mt-3 grid gap-2 lg:grid-cols-2">
-        {risks.map((risk) => (
-          <div key={risk.id} className="rounded-xl border border-white/[0.07] bg-black/10 px-3.5 py-3">
-            <p className="text-xs font-semibold text-white/80">{risk.title}</p>
-            <p className="mt-1 text-[11px] leading-5 text-white/60">{risk.impact}</p>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function handoffFieldFromBrief({ id, label, brief, missingPrefix }) {
-  const text = String(brief?.text || "").trim();
-  const missing = !text || text.toLowerCase().startsWith(missingPrefix.toLowerCase());
-  return {
-    id,
-    label,
-    text: text || missingPrefix,
-    missing,
-    status: missing
-      ? { kind: "missing", label: "Missing" }
-      : handoffProvenanceStatus(brief?.provenance),
-    items: brief?.group?.items?.length ? brief.group.items : [],
-  };
-}
-
-function handoffLeadField(value, edited) {
-  const text = String(value || "").trim();
-  return {
-    id: "continuation-lead",
-    label: "Continuation lead",
-    text: text || "Add the immediate instruction for the next agent.",
-    missing: !text,
-    status: text
-      ? { kind: "human", label: edited ? "Edited by you" : "User stated" }
-      : { kind: "missing", label: "Missing" },
-    items: text
-      ? [{
-          id: "continuation-lead",
-          statement: text,
-          item_type: "continuation_lead",
-          truth_state: "user_stated",
-          trust_zone: "trusted_human",
-          source_label: edited ? "Current user input" : "Latest session user request",
-        }]
-      : [],
-  };
-}
-
-function handoffProvenanceStatus(provenance = {}) {
-  switch (provenance.kind) {
-    case "human":
-      return { kind: "human", label: "User stated" };
-    case "observed":
-      return { kind: "observed", label: "Verified" };
-    case "review":
-      return { kind: "review", label: "Needs review" };
-    case "mixed":
-      return { kind: "mixed", label: "Mixed evidence" };
-    case "summary":
-      return { kind: "summary", label: "Recorded summary" };
-    default:
-      return { kind: "reported", label: "Agent reported" };
-  }
-}
-
-function handoffStatusTone(kind) {
-  if (kind === "observed") return "bg-[#d9ff68]/10 text-[#d9ff68]";
-  if (kind === "human") return "bg-[#8db7d1]/15 text-[#b9d7e8]";
-  if (kind === "missing" || kind === "review") return "bg-amber-200/10 text-amber-100";
-  return "bg-white/[0.07] text-white/55";
-}
-
-function handoffSupportingSections({ groups, manifest, compiled }) {
-  const makeSection = ({ id, label, singular, ids, empty, manifestItems }) => {
-    const group = groups.find((candidate) => ids.includes(candidate.id));
-    const items = manifestItems?.length ? manifestItems : (group?.items || []);
-    return { id, label, singular, empty, items, count: items.length };
-  };
-  const relevantFiles = compiled
-    ? firstArray(manifest?.repo_state?.relevant_files).map((item, index) => ({
-        ...(typeof item === "object" && item ? item : {}),
-        id: item?.id || `relevant-file-${index}`,
-        statement: typeof item === "string" ? item : item?.path || item?.statement,
-        item_type: "relevant_file",
-        trust_zone: item?.trust_zone || "trusted_repo",
-        provenance_verified: item?.provenance_verified ?? true,
-      }))
-    : [];
-  return [
-    makeSection({
-      id: "files",
-      label: "Relevant files",
-      singular: "relevant file",
-      ids: ["relevant_files", "code_and_tests"],
-      empty: "No task-relevant file was selected.",
-      manifestItems: relevantFiles,
-    }),
-    makeSection({
-      id: "decisions",
-      label: "Decisions",
-      singular: "decision",
-      ids: ["decisions", "decisions_and_invariants"],
-      empty: "No active decision was captured.",
-    }),
-    makeSection({
-      id: "attempts",
-      label: "Previous attempts",
-      singular: "previous attempt",
-      ids: ["failed_attempts", "prior_failures"],
-      empty: "No failed or rejected attempt was captured.",
-    }),
-    makeSection({
-      id: "verification",
-      label: "Verification",
-      singular: "verification check",
-      ids: ["verification"],
-      empty: "No checks were captured after the latest changes.",
-    }),
-    makeSection({
-      id: "blockers",
-      label: "Blockers",
-      singular: "blocker",
-      ids: ["blockers", "blockers_and_questions"],
-      empty: "No blockers found in captured evidence.",
-    }),
-  ];
-}
-
-function handoffRisks({ currentState, verificationCount, blockerCount }) {
-  const risks = [];
-  if (currentState.missing) {
-    risks.push({
-      id: "current-state-missing",
-      title: "Repository state is missing",
-      impact: "The next agent may repeat completed work or act on stale files. Refresh evidence before continuing.",
-    });
-  } else if (!["observed", "human"].includes(currentState.status.kind)) {
-    risks.push({
-      id: "current-state-unverified",
-      title: "Current state is not repository-verified",
-      impact: "Treat the summary as a lead, then inspect the live working tree before making changes.",
-    });
-  }
-  if (!verificationCount) {
-    risks.push({
-      id: "verification-missing",
-      title: "No current verification is recorded",
-      impact: "The next agent cannot tell whether the latest changes were checked. Run or capture the relevant checks.",
-    });
-  }
-  if (blockerCount) {
-    risks.push({
-      id: "blockers-present",
-      title: `${formatHandoffCount(blockerCount, "blocker")} need attention`,
-      impact: "Inspect the blocker evidence so the next agent does not repeat a known dead end.",
-    });
-  }
-  return risks;
-}
-
-function handoffEvidenceItemText(item) {
-  return contextBriefItemText(item)
-    || String(item?.path || item?.command || item?.id || "Captured evidence");
-}
-
-function formatHandoffCount(count, singular) {
-  return `${count} ${singular}${count === 1 ? "" : "s"}`;
 }
 
 function ContextDrawerItem({ item, mode, index, sourceContext }) {
@@ -2731,298 +1888,6 @@ function firstFiniteNumber(...values) {
   return null;
 }
 
-function manifestContextGroups(manifest) {
-  const selected = Array.isArray(manifest?.selected_context) ? manifest.selected_context : [];
-  const byLane = new Map();
-  selected.forEach((item) => {
-    const id = contextPresentationGroupId(item);
-    const current = byLane.get(id) || [];
-    current.push(item);
-    byLane.set(id, current);
-  });
-  const groups = Array.from(byLane.entries()).map(([id, items]) => ({
-    id,
-    label: CONTEXT_GROUP_META[id].label,
-    shortLabel: CONTEXT_GROUP_META[id].shortLabel,
-    meta: CONTEXT_GROUP_META[id],
-    items,
-    weight: contextGroupWeight(items),
-  }));
-  return groups.sort((left, right) => right.weight - left.weight);
-}
-
-function checkpointContextGroups(checkpoint) {
-  const sections = checkpoint?.sections || {};
-  return CHECKPOINT_GROUPS.map(([section, label, groupId, shortLabel]) => {
-    const sourceItems = Array.isArray(sections[section]) ? sections[section] : [];
-    const items = sourceItems.map((item) => (
-      section === "goal"
-        ? { ...item, trust_zone: item.trust_zone || "trusted_human" }
-        : item
-    ));
-    return {
-      id: section,
-      label,
-      shortLabel,
-      meta: CONTEXT_GROUP_META[groupId],
-      items,
-      weight: contextGroupWeight(items),
-    };
-  });
-}
-
-function contextPackageBrief({
-  groups = [],
-  checkpoint,
-  objective,
-  compiled = false,
-} = {}) {
-  const findGroup = (...ids) => groups.find((group) => ids.includes(group.id));
-  const goalGroup = findGroup("goal");
-  const currentGroup = findGroup("current_state", "progress");
-  const nextGroup = findGroup("next_action", "exact_next_action");
-  const blockerGroup = findGroup("blockers_and_questions", "blockers");
-  const failedAttemptGroup = findGroup("prior_failures", "failed_attempts");
-  const verificationGroup = findGroup("verification");
-  const objectiveText = contextBriefText(objective);
-  const savedGoalText = contextBriefItemText(goalGroup?.items?.[0]);
-  const checkpointGoalText = contextBriefItemText(checkpoint?.sections?.goal?.[0]);
-  const selectedGoalText = [
-    { text: objectiveText, boost: compiled ? 0 : 4 },
-    { text: savedGoalText, boost: compiled ? 8 : 0 },
-    { text: checkpointGoalText, boost: 0 },
-  ].sort((left, right) => (
-    contextGoalBriefScore(right.text) + right.boost
-      - contextGoalBriefScore(left.text) - left.boost
-  ))[0]?.text
-    || "No task goal was captured at this boundary.";
-  const goalText = generatedGoalBrief(selectedGoalText);
-  const goalUsesSelectedObjective = Boolean(
-    objectiveText && selectedGoalText === objectiveText,
-  );
-  const briefGoalGroup = goalUsesSelectedObjective
-    ? {
-        ...(goalGroup || {
-          id: "goal",
-          label: "Goal",
-          shortLabel: "Goal",
-          meta: CONTEXT_GROUP_META.goal,
-        }),
-        items: [{
-          id: "selected-task-goal",
-          statement: objectiveText,
-          item_type: "authoritative_request",
-          truth_state: "user_stated",
-          trust_zone: "trusted_human",
-        }],
-      }
-    : goalGroup;
-  const currentText = contextBriefItemText(contextCurrentStateItem(currentGroup?.items))
-    || checkpointCurrentStateBrief(checkpoint);
-  const capturedNextText = contextBriefItemText(nextGroup?.items?.[0])
-    || contextBriefItemText(checkpoint?.sections?.exact_next_action?.[0]);
-  let nextText = usefulNextActionBrief(capturedNextText)
-    ? capturedNextText
-    : "No explicit next action captured.";
-  if (
-    nextText.toLowerCase().startsWith("continue the current request:")
-    && contextBriefComparableText(nextText) === contextBriefComparableText(`Continue the current request: ${goalText}`)
-  ) {
-    nextText = "No explicit next action captured.";
-  }
-  const hasExplicitNextAction = nextText !== "No explicit next action captured.";
-  const avoidGroups = [failedAttemptGroup, blockerGroup]
-    .filter((group) => group?.items?.length);
-  const avoidItems = avoidGroups.flatMap((group) => group.items);
-  const avoidGroup = {
-    id: "brief-do-not-repeat",
-    label: "Do not repeat",
-    shortLabel: "Avoid",
-    meta: CONTEXT_GROUP_META.prior_failures,
-    items: avoidItems,
-    sourceIds: avoidGroups.map((group) => group.id),
-  };
-  const avoidText = contextBriefItemText(avoidItems.at(-1))
-    || "No failed approach or active blocker was captured.";
-  const verificationText = contextBriefItemText(verificationGroup?.items?.at(-1))
-    || "No completion check was captured.";
-  const humanFallback = {
-    label: "User-authoritative",
-    kind: "human",
-  };
-  const reportedFallback = {
-    label: "Agent-reported",
-    kind: "reported",
-  };
-  return [
-    {
-      id: "brief-goal",
-      label: "Goal",
-      text: goalText,
-      group: briefGoalGroup,
-      provenance: briefGoalGroup?.items?.length ? contextGroupProvenance(briefGoalGroup.items) : humanFallback,
-    },
-    {
-      id: "brief-current",
-      label: "State now",
-      text: currentText,
-      group: currentGroup,
-      provenance: currentGroup?.items?.length
-        ? contextGroupProvenance(currentGroup.items)
-        : checkpoint?.activity?.changed_files?.length || checkpoint?.activity?.verification?.observed
-          ? { label: "Repository-verified", kind: "observed" }
-          : reportedFallback,
-    },
-    {
-      id: "brief-next",
-      label: "Start here",
-      text: nextText,
-      group: nextGroup,
-      provenance: hasExplicitNextAction && nextGroup?.items?.length
-        ? contextGroupProvenance(nextGroup.items)
-        : { label: "Not captured", kind: "summary" },
-    },
-    {
-      id: "brief-avoid",
-      label: "Do not repeat",
-      text: avoidText,
-      group: avoidGroup,
-      provenance: avoidGroup?.items?.length
-        ? contextGroupProvenance(avoidGroup.items)
-        : { label: "Not captured", kind: "summary" },
-    },
-    {
-      id: "brief-done",
-      label: "Done when",
-      text: verificationText,
-      group: verificationGroup,
-      provenance: verificationGroup?.items?.length
-        ? contextGroupProvenance(verificationGroup.items)
-        : { label: "Not captured", kind: "summary" },
-    },
-  ].map((item) => ({
-    ...item,
-    text: truncateContextBrief(item.text, compiled ? 190 : 170),
-  }));
-}
-
-function checkpointCurrentStateBrief(checkpoint) {
-  const latestUpdate = contextBriefText(checkpoint?.activity?.latest_update);
-  if (latestUpdate) return latestUpdate;
-  const changedFiles = firstPopulatedArray(
-    checkpoint?.activity?.agent_changed_files,
-    checkpoint?.activity?.changed_files,
-  );
-  const observed = Number(checkpoint?.activity?.verification?.observed || 0);
-  const passed = Number(checkpoint?.activity?.verification?.passed || 0);
-  if (changedFiles.length || observed) {
-    const parts = [];
-    if (changedFiles.length) {
-      parts.push(`${changedFiles.length} changed ${changedFiles.length === 1 ? "file is" : "files are"} recorded`);
-    }
-    if (observed) parts.push(`${passed}/${observed} checks passed`);
-    return `${parts.join(" · ")} at this saved boundary.`;
-  }
-  return "No current-state update was captured at this boundary.";
-}
-
-function contextCurrentStateItem(items = []) {
-  return [...items]
-    .map((item, index) => ({
-      item,
-      score: contextCurrentStateScore(contextBriefItemText(item), index),
-    }))
-    .sort((left, right) => right.score - left.score)[0]?.item;
-}
-
-function contextCurrentStateScore(value, index = 0) {
-  const text = String(value || "");
-  if (!text) return -1_000;
-  const positiveSignals = text.match(/\b(?:added|built|completed|fixed|green|implemented|updated|verified|wired)\b/gi)?.length || 0;
-  const verificationSignal = /\b(?:checks?|suite|tests?|validation)\b.{0,50}\bpassed\b/i.test(text) ? 1 : 0;
-  const issueSignals = text.match(/\b(?:bug|can be|can still|does not|failed run|fail-open|failure mode|falsely|incorrect|never|old task|p[0-3]|report\b|renders as|should|still|substitute|without checking|without ever)\b/gi)?.length || 0;
-  const pathSignals = text.match(/\/[A-Za-z0-9_.@+-]+\/|[A-Za-z0-9_.@+-]+\.(?:py|tsx?|jsx?):\d+/g)?.length || 0;
-  const readableLength = text.length >= 35 && text.length <= 190 ? 24 : 0;
-  return ((positiveSignals + verificationSignal) * 55)
-    - (issueSignals * 70)
-    - (pathSignals * 12)
-    + readableLength
-    + (index * 0.25);
-}
-
-function contextBriefItemText(item) {
-  if (!item) return "";
-  return contextBriefText(item.statement || item.summary || item.title);
-}
-
-function contextBriefText(value) {
-  const withoutInternalLinks = String(value || "")
-    .replace(/\[([^\]]+)\]\(chatgpt-conversation:\/\/[^)]+\)/gi, "$1")
-    .replace(/chatgpt-conversation:(?:\/\/)?[^\s)]*/gi, "");
-  return normalizeContextNarrativeText(withoutInternalLinks)
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function truncateContextBrief(value, limit = 180) {
-  const text = String(value || "").trim();
-  if (text.length <= limit) return text;
-  const clipped = text.slice(0, limit + 1);
-  const boundary = clipped.lastIndexOf(" ");
-  return `${clipped.slice(0, boundary > limit * 0.72 ? boundary : limit).trimEnd()}…`;
-}
-
-function contextBriefComparableText(value) {
-  return String(value || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
-
-function usefulNextActionBrief(value) {
-  const comparable = contextBriefComparableText(value);
-  if (comparable.length < 12) return false;
-  if (/\b(?:output truncated|truncated output|unknown task)\b/.test(comparable)) return false;
-  return ![
-    "blocker",
-    "blockers",
-    "current state",
-    "exact next action",
-    "next",
-    "next action",
-    "next step",
-    "progress",
-    "verification",
-  ].includes(comparable);
-}
-
-function contextGoalBriefScore(value) {
-  const text = String(value || "").trim();
-  if (!text) return -1_000;
-  if (/\b(?:output truncated|truncated output|current observed task|untitled task|unknown task)\b/i.test(text)) {
-    return -1_000 + text.length;
-  }
-  const trailingFragmentPenalty = /\b(?:a|an|and|for|from|of|or|the|to|with)$/i.test(text) ? 80 : 0;
-  return Math.min(text.length, 240) - trailingFragmentPenalty;
-}
-
-function generatedGoalBrief(value) {
-  const text = String(value || "").trim();
-  const describesLicenceChange = /\blicen[cs]e\b/i.test(text);
-  const allowsSelfHosting = /\bself(?:[\s-]+)host(?:ed|ing)?\b/i.test(text);
-  const restrictsCommercialRedistribution = (
-    /\b(?:commercial|redistribut(?:e|ed|es|ing|ion)|resell|re-sell|paid product|hosted service)\b/i.test(text)
-  );
-  if (
-    describesLicenceChange
-    && allowsSelfHosting
-    && restrictsCommercialRedistribution
-  ) {
-    return "Update the project licence to allow self-hosting while preventing commercial redistribution.";
-  }
-  return text;
-}
-
 function checkpointSnapshotItems(snapshot) {
   return CHECKPOINT_GROUPS.flatMap(([section, label]) => (
     (snapshot?.sections?.[section] || []).map((item) => ({
@@ -3074,48 +1939,6 @@ function uniqueContextSnapshots(checkpoint, sessionCompactions = []) {
       return (Number.isFinite(leftTime) ? leftTime : 0)
         - (Number.isFinite(rightTime) ? rightTime : 0);
     });
-}
-
-function contextGroupWeight(items = []) {
-  const tokenWeight = items.reduce((sum, item) => sum + Number(item?.token_cost || 0), 0);
-  return tokenWeight > 0 ? tokenWeight : items.length;
-}
-
-function contextPresentationGroupId(item = {}) {
-  const raw = [
-    item.display_section,
-    item.presentation_section,
-    item.item_type,
-    item.id,
-  ].filter(Boolean).join(" ").toLowerCase();
-  if (/\b(goal|objective|original[_\s-]?request|authoritative[_\s-]?request)\b/.test(raw)) {
-    return "goal";
-  }
-  if (/\b(next[_\s-]?action|next[_\s-]?step|handoff)\b/.test(raw)) {
-    return "next_action";
-  }
-  if (/\b(progress|current[_\s-]?state|status|working[_\s-]?state)\b/.test(raw)) {
-    return "current_state";
-  }
-  return CONTEXT_GROUP_META[item.lane] ? item.lane : "supporting_context";
-}
-
-function contextCategoryVisual(group = {}) {
-  const meta = group.meta || CONTEXT_GROUP_META.supporting_context;
-  return {
-    color: meta.color,
-    border: `${meta.color}66`,
-    background: meta.soft,
-  };
-}
-
-function contextGroupProvenance(items) {
-  if (!items.length) return { label: "None captured" };
-  const states = items.map(contextItemProvenance);
-  const labels = new Set(states.map((item) => item.label));
-  if (labels.size === 1) return states[0];
-  if (states.some((item) => item.kind === "review")) return { label: "Mixed · review present", kind: "review" };
-  return { label: "Mixed provenance", kind: "mixed" };
 }
 
 function contextItemProvenance(item = {}) {
@@ -3243,12 +2066,12 @@ function CheckpointPanel({
             </p>
 
             {previousCheckpoint ? (
-              <article className="relative mt-7 overflow-hidden rounded-2xl bg-[#171713] p-5 text-white dark:bg-[#e8e8df] dark:text-[#171713]">
-                <div className="absolute -right-10 -top-14 h-36 w-36 rounded-full border border-white/10 dark:border-black/10" aria-hidden="true" />
+              <article className="relative mt-7 overflow-hidden rounded-2xl border border-[#d8d8cf] bg-[#f0f0e9] p-5 text-[#171713] dark:border-white/10 dark:bg-[#171713] dark:text-white">
+                <div className="absolute -right-10 -top-14 h-36 w-36 rounded-full border border-black/10 dark:border-white/10" aria-hidden="true" />
                 <div className="relative flex flex-wrap items-center justify-between gap-3">
-                  <p className="text-xs font-semibold text-white/65 dark:text-black/55">Earlier saved context · another task</p>
+                  <p className="text-xs font-semibold text-black/55 dark:text-white/65">Earlier saved context · another task</p>
                   {earlierBoundary.occurred_at ? (
-                    <time dateTime={earlierBoundary.occurred_at} className="text-xs font-semibold text-white/65 dark:text-black/55">
+                    <time dateTime={earlierBoundary.occurred_at} className="text-xs font-semibold text-black/55 dark:text-white/65">
                       {formatBoundaryTime(earlierBoundary.occurred_at)}
                     </time>
                   ) : null}
@@ -3256,7 +2079,7 @@ function CheckpointPanel({
                 <p className="relative mt-4 max-w-2xl text-lg font-semibold leading-7 tracking-[-0.02em]">
                   {earlierGoal || "Goal was not captured"}
                 </p>
-                <p className="relative mt-3 text-xs leading-5 text-white/60 dark:text-black/55">
+                <p className="relative mt-3 text-xs leading-5 text-black/55 dark:text-white/60">
                   It is kept in history and is not being used as the current task’s next action.
                 </p>
                 <Link to="/app/library" className="group relative mt-5 inline-flex min-h-11 items-center gap-2 text-xs font-semibold">
@@ -3492,13 +2315,13 @@ function TaskStatusRibbon({ activity, checkpoint, loading = false, error = false
     ? {
         value: "Loading evidence",
         detail: "Reading current activity",
-        tone: "text-[#d9ff68]",
+        tone: "text-[#617324] dark:text-[#d9ff68]",
       }
     : error
       ? {
           value: "Evidence unavailable",
           detail: "Current activity could not be loaded",
-          tone: "text-red-200",
+          tone: "text-red-700 dark:text-red-200",
         }
       : activityEvidenceStatus(activity);
   const freshness = activityFreshnessStatus({
@@ -3509,7 +2332,7 @@ function TaskStatusRibbon({ activity, checkpoint, loading = false, error = false
   });
 
   return (
-    <dl className="relative grid border-t border-white/10 bg-black/10 sm:grid-cols-2" aria-label="Observed work status">
+    <dl className="relative grid border-t border-[#d0d0c8] bg-white/35 dark:border-white/10 dark:bg-black/10 sm:grid-cols-2" aria-label="Observed work status">
       <StatusRibbonItem
         label="Evidence"
         value={evidence.value}
@@ -3520,7 +2343,7 @@ function TaskStatusRibbon({ activity, checkpoint, loading = false, error = false
         label="Freshness"
         value={freshness.value}
         detail={freshness.detail}
-        tone="text-white"
+        tone="text-[#292922] dark:text-white"
       />
     </dl>
   );
@@ -3602,7 +2425,7 @@ function formatExactActivityTime(value) {
 
 function StatusRibbonItem({ label, value, detail, tone }) {
   return (
-    <div className="border-b border-white/10 px-5 py-4 last:border-b-0 sm:border-b-0 sm:border-r sm:px-7 sm:last:border-r-0 lg:px-9">
+    <div className="border-b border-[#d0d0c8] px-5 py-4 last:border-b-0 dark:border-white/10 sm:border-b-0 sm:border-r sm:px-7 sm:last:border-r-0 lg:px-9">
       <dt className="text-[9px] font-bold uppercase tracking-[0.17em] text-[#85857c]">{label}</dt>
       <dd className={`mt-1.5 text-sm font-semibold ${tone}`}>{value}</dd>
       <dd className="mt-1 text-[10px] leading-4 text-[#929289]">{detail}</dd>
@@ -3977,7 +2800,7 @@ function activityEvidenceStatus(activity) {
     return {
       value: "No evidence",
       detail: "Nothing observed or reported",
-      tone: "text-[#c5c5bc]",
+      tone: "text-[#68685f] dark:text-[#c5c5bc]",
       panelTone: "text-[#68685f] dark:text-[#bdbdb4]",
     };
   }
@@ -3985,7 +2808,7 @@ function activityEvidenceStatus(activity) {
     return {
       value: "Observed run",
       detail: "Repository and run evidence",
-      tone: "text-[#d9ff68]",
+      tone: "text-[#617324] dark:text-[#d9ff68]",
       panelTone: "text-[#617324] dark:text-[#d9ff68]",
     };
   }
@@ -3993,7 +2816,7 @@ function activityEvidenceStatus(activity) {
     return {
       value: "Saved boundary",
       detail: "Immutable recovery evidence",
-      tone: "text-sky-200",
+      tone: "text-sky-700 dark:text-sky-200",
       panelTone: "text-sky-700 dark:text-sky-200",
     };
   }
@@ -4001,14 +2824,14 @@ function activityEvidenceStatus(activity) {
     return {
       value: "Needs assignment",
       detail: "Excluded from project truth",
-      tone: "text-amber-200",
+      tone: "text-amber-700 dark:text-amber-200",
       panelTone: "text-amber-700 dark:text-amber-200",
     };
   }
   return {
     value: "Agent-reported",
     detail: "Imported session claim",
-    tone: "text-sky-200",
+    tone: "text-sky-700 dark:text-sky-200",
     panelTone: "text-sky-700 dark:text-sky-200",
   };
 }
@@ -4416,14 +3239,14 @@ function ContinuationWorkflowStatus({
       <div
         role="status"
         aria-busy="true"
-        className="rounded-xl border border-[#d9ff68]/25 bg-[#d9ff68]/[0.08] px-3 py-3 text-xs text-[#e7ffad]"
+        className="rounded-xl border border-[#aabe56]/55 bg-[#eef5d5] px-3 py-3 text-xs text-[#536119] dark:border-[#d9ff68]/25 dark:bg-[#d9ff68]/[0.08] dark:text-[#e7ffad]"
       >
         <p className="font-semibold">Requesting a desktop handoff in {provider}</p>
-        <div className="mt-2 flex items-center gap-2 rounded-lg bg-black/15 px-2.5 py-2 text-xs leading-5 text-[#d8e6b5]">
+        <div className="mt-2 flex items-center gap-2 rounded-lg bg-white/60 px-2.5 py-2 text-xs leading-5 text-[#536119] dark:bg-black/15 dark:text-[#d8e6b5]">
           <RefreshCw className="h-3.5 w-3.5 shrink-0 animate-spin opacity-70 motion-reduce:animate-none" aria-hidden="true" />
           {CONTINUATION_STARTING_PHASE}
         </div>
-        <p className="mt-2 text-xs leading-5 text-[#aab28f]">
+        <p className="mt-2 text-xs leading-5 text-[#68685f] dark:text-[#aab28f]">
           Compiling context and requesting the selected desktop app. No provider CLI or task is being started.
         </p>
       </div>
@@ -4452,12 +3275,12 @@ function ContinuationWorkflowStatus({
     return (
       <div
         role="status"
-        className="rounded-xl border border-[#d9ff68]/25 bg-[#d9ff68]/[0.08] px-3 py-3 text-xs text-[#e7ffad]"
+        className="rounded-xl border border-[#aabe56]/55 bg-[#eef5d5] px-3 py-3 text-xs text-[#536119] dark:border-[#d9ff68]/25 dark:bg-[#d9ff68]/[0.08] dark:text-[#e7ffad]"
       >
         <p className="font-semibold">
           {restored ? restoredTitle : `Continue in ${provider}`}
         </p>
-        <p className="mt-1 text-xs leading-5 text-[#c8d6a7]">
+        <p className="mt-1 text-xs leading-5 text-[#606952] dark:text-[#c8d6a7]">
           {restored
             ? "Nothing is running now. Request again if needed."
             : prefillRequested
@@ -4465,7 +3288,7 @@ function ContinuationWorkflowStatus({
               : `Context copied. Paste it into ${provider}, then send it.`}
         </p>
         {sessionContextAdvisory ? (
-          <div className="mt-2 rounded-lg border border-amber-300/25 bg-amber-300/[0.08] px-2.5 py-2 text-amber-100">
+          <div className="mt-2 rounded-lg border border-amber-300/70 bg-amber-50 px-2.5 py-2 text-amber-800 dark:border-amber-300/25 dark:bg-amber-300/[0.08] dark:text-amber-100">
             <p className="font-semibold">Session Context needs repository review</p>
             <p className="mt-1 text-xs leading-5 opacity-85">
               Its inherited Workspace Context is incomplete. Review the repository
@@ -4493,7 +3316,7 @@ function ContinuationWorkflowStatus({
       <div
         role="status"
         aria-busy="true"
-        className="rounded-xl border border-[#d9ff68]/25 bg-[#d9ff68]/[0.08] px-3 py-3 text-xs text-[#e7ffad]"
+        className="rounded-xl border border-[#aabe56]/55 bg-[#eef5d5] px-3 py-3 text-xs text-[#536119] dark:border-[#d9ff68]/25 dark:bg-[#d9ff68]/[0.08] dark:text-[#e7ffad]"
       >
         <p className="font-semibold">
           {activeProvider
@@ -4501,7 +3324,7 @@ function ContinuationWorkflowStatus({
             : "A previous automatic continuation is still active"}
         </p>
         {activeRun ? (
-          <p className="mt-1 text-xs leading-5 text-[#c8d6a7]">
+          <p className="mt-1 text-xs leading-5 text-[#606952] dark:text-[#c8d6a7]">
             This recorded run is still active on this machine
             {activeStartedAt ? ` · started ${activeStartedAt}` : ""}.
             Context staging will remain unavailable until it ends.
@@ -4527,13 +3350,13 @@ function ContinuationWorkflowStatus({
       (item) => !continuationCheckPassed(item),
     );
     return (
-      <div role="alert" className="rounded-xl border border-red-300/25 bg-red-300/[0.08] px-3 py-3 text-xs text-red-100">
+      <div role="alert" className="rounded-xl border border-red-300/70 bg-red-50 px-3 py-3 text-xs text-red-800 dark:border-red-300/25 dark:bg-red-300/[0.08] dark:text-red-100">
         <p className="font-semibold">{detail.title}</p>
         <p className="mt-1 leading-5 opacity-85">
           {detail.message}
         </p>
         {detail.affectedTasks?.length ? (
-          <div className="mt-2 border-t border-red-100/10 pt-2">
+          <div className="mt-2 border-t border-red-200 pt-2 dark:border-red-100/10">
             <p className="text-xs font-semibold uppercase tracking-[0.14em] opacity-70">
               Affected tasks
             </p>
@@ -4548,7 +3371,7 @@ function ContinuationWorkflowStatus({
           </div>
         ) : null}
         {failedChecks.length ? (
-          <div className="mt-2 border-t border-red-100/10 pt-2">
+          <div className="mt-2 border-t border-red-200 pt-2 dark:border-red-100/10">
             <p className="text-xs font-semibold uppercase tracking-[0.14em] opacity-70">
               Failed checks
             </p>
@@ -4556,9 +3379,9 @@ function ContinuationWorkflowStatus({
               {failedChecks.map((check, index) => (
                 <li
                   key={check.requirement_id || check.command || index}
-                  className="rounded-lg bg-black/15 px-2.5 py-2"
+                  className="rounded-lg bg-red-100/70 px-2.5 py-2 dark:bg-black/15"
                 >
-                  <code className="break-all text-xs text-red-50">
+                  <code className="break-all text-xs text-red-800 dark:text-red-50">
                     {preserveContinuationText(check.command) || "Unnamed verification check"}
                   </code>
                   {continuationCheckDetail(check) ? (
@@ -4572,7 +3395,7 @@ function ContinuationWorkflowStatus({
           </div>
         ) : null}
         {detail.action ? (
-          <p className="mt-2 rounded-lg bg-red-100/[0.06] px-2.5 py-2 text-xs font-semibold leading-5">
+          <p className="mt-2 rounded-lg bg-red-100 px-2.5 py-2 text-xs font-semibold leading-5 dark:bg-red-100/[0.06]">
             Next: {detail.action}
           </p>
         ) : null}
@@ -4616,7 +3439,7 @@ function ContinuationWorkflowStatus({
     || null;
 
   return (
-    <div role="status" className="rounded-xl border border-[#d9ff68]/25 bg-[#d9ff68]/[0.08] px-3 py-3 text-xs text-[#e7ffad]">
+    <div role="status" className="rounded-xl border border-[#aabe56]/55 bg-[#eef5d5] px-3 py-3 text-xs text-[#536119] dark:border-[#d9ff68]/25 dark:bg-[#d9ff68]/[0.08] dark:text-[#e7ffad]">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <p className="font-semibold">
@@ -4631,8 +3454,8 @@ function ContinuationWorkflowStatus({
         </div>
         <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${
           verified
-            ? "border-[#d9ff68]/30 bg-[#d9ff68]/10 text-[#d9ff68]"
-            : "border-amber-300/30 bg-amber-300/10 text-amber-200"
+            ? "border-[#91aa35]/40 bg-[#dfe9b9] text-[#536119] dark:border-[#d9ff68]/30 dark:bg-[#d9ff68]/10 dark:text-[#d9ff68]"
+            : "border-amber-400/50 bg-amber-100 text-amber-800 dark:border-amber-300/30 dark:bg-amber-300/10 dark:text-amber-200"
         }`}>
           {verified ? "Verified outcome" : "Verification incomplete"}
         </span>
@@ -4649,7 +3472,7 @@ function ContinuationWorkflowStatus({
         session={harnessSession}
       />
 
-      <dl className="mt-3 grid gap-2 border-t border-white/10 pt-3">
+      <dl className="mt-3 grid gap-2 border-t border-[#cbd7a0] pt-3 dark:border-white/10">
         <div>
           <dt className="text-xs font-semibold uppercase tracking-[0.14em] opacity-60">
             Repository changes
@@ -4677,7 +3500,7 @@ function ContinuationWorkflowStatus({
       </dl>
 
       {!verified ? (
-        <p className="mt-2 border-t border-amber-200/15 pt-2 text-xs leading-5 text-amber-100/80">
+        <p className="mt-2 border-t border-amber-300/60 pt-2 text-xs leading-5 text-amber-800 dark:border-amber-200/15 dark:text-amber-100/80">
           The run finished, but successful task continuation is not proven.
         </p>
       ) : null}
@@ -4724,7 +3547,7 @@ function HarnessSessionAction({
 
   return (
     <div className={`mt-2 rounded-lg px-2.5 py-2 ${
-      danger ? "bg-red-100/[0.06]" : "bg-black/15"
+      danger ? "bg-red-100 dark:bg-red-100/[0.06]" : "bg-white/60 dark:bg-black/15"
     }`}>
       <p className="text-xs leading-5 opacity-80">
         {awaitingUser
@@ -4772,13 +3595,13 @@ function ContinuationTaskQueue({ workflow, advanced = false }) {
   if (!buckets.length) return null;
 
   return (
-    <div className="mt-3 border-t border-white/10 pt-3">
+    <div className="mt-3 border-t border-[#cbd7a0] pt-3 dark:border-white/10">
       <p className="text-xs font-semibold uppercase tracking-[0.14em] opacity-60">
         {advanced ? "Workflow advanced after verification" : "Execution plan"}
       </p>
       <dl className="mt-2 grid gap-2 sm:grid-cols-2">
         {buckets.map(([label, tasks]) => (
-          <div key={label} className="rounded-lg bg-white/[0.045] px-2.5 py-2">
+          <div key={label} className="rounded-lg bg-white/60 px-2.5 py-2 dark:bg-white/[0.045]">
             <dt className="text-xs font-black uppercase tracking-[0.13em] opacity-60">
               {label}
             </dt>

@@ -113,8 +113,18 @@ class RepositorySnapshot:
     _entries: tuple[tuple[str, str, str | None], ...]
     _preservation_files: tuple[_BaselineFile, ...] = ()
     _preservation_complete: bool = True
+    protected_baseline: dict[str, Any] | None = None
+    captured_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        exact_worktree_hashes = {
+            str(item.get("path") or ""): str(
+                (item.get("worktree") or {}).get("content_sha256") or ""
+            )
+            or None
+            for item in (self.protected_baseline or {}).get("entries") or []
+            if isinstance(item, dict) and str(item.get("path") or "")
+        }
         return {
             "root": self.root,
             "branch": self.branch,
@@ -125,15 +135,22 @@ class RepositorySnapshot:
                 {
                     "status": status,
                     "xy": status,
+                    "index_status": status[0],
+                    "worktree_status": status[1],
                     "change_kind": _git_change_kind(status),
                     "path": path,
                     "sha256": digest,
+                    "content_hash": exact_worktree_hashes.get(path),
+                    "worktree_content_sha256": exact_worktree_hashes.get(path),
+                    "legacy_bounded_digest": digest,
                 }
                 for status, path, digest in self._entries
             ],
             "status_fingerprint": self.status_fingerprint,
             "diff_summary": self.diff_summary,
             "status_truncated": self.status_truncated,
+            "captured_at": self.captured_at,
+            "protected_baseline": self.protected_baseline,
         }
 
 
@@ -223,26 +240,17 @@ def _local_harness_trace_result(
     result: LocalHarnessResult,
 ) -> dict[str, Any]:
     total = len(result.verification_results)
-    passed = sum(
-        item.result.exit_code == 0
-        for item in result.verification_results
-    )
+    passed = sum(item.result.exit_code == 0 for item in result.verification_results)
     return {
         "daemonstate.context_pack.id": result.context_pack_id,
-        "daemonstate.continuation.execution.id": (
-            result.continuation_execution_id
-        ),
+        "daemonstate.continuation.execution.id": (result.continuation_execution_id),
         "daemonstate.run.id": result.run_id,
         "daemonstate.status": result.status,
         "daemonstate.runtime.worker_succeeded": result.status == "completed",
-        "daemonstate.runtime.bundle_integrity_passed": (
-            result.runtime_bundle_integrity_passed
-        ),
+        "daemonstate.runtime.bundle_integrity_passed": (result.runtime_bundle_integrity_passed),
         "daemonstate.runtime.preservation_passed": result.preservation_passed,
         "daemonstate.runtime.changed_file_count": len(result.changed_files),
-        "daemonstate.repository.fingerprint": (
-            result.repository_after.status_fingerprint
-        ),
+        "daemonstate.repository.fingerprint": (result.repository_after.status_fingerprint),
         "daemonstate.verification.total": total,
         "daemonstate.verification.passed": passed,
         "daemonstate.verification.failed": total - passed,
@@ -310,9 +318,7 @@ class LocalHarnessRunner:
         verification_timeout_seconds: float = DEFAULT_VERIFICATION_TIMEOUT_SECONDS,
     ) -> None:
         if not 1 <= output_limit_bytes <= MAX_OUTPUT_LIMIT_BYTES:
-            raise ValueError(
-                f"output_limit_bytes must be between 1 and {MAX_OUTPUT_LIMIT_BYTES}"
-            )
+            raise ValueError(f"output_limit_bytes must be between 1 and {MAX_OUTPUT_LIMIT_BYTES}")
         if command_timeout_seconds <= 0:
             raise ValueError("command_timeout_seconds must be positive")
         if verification_timeout_seconds <= 0:
@@ -327,9 +333,7 @@ class LocalHarnessRunner:
         attributes=lambda _args, kwargs: {
             "daemonstate.phase": "harness_execute",
             "daemonstate.context_pack.id": kwargs.get("context_pack_id"),
-            "daemonstate.continuation.execution.id": kwargs.get(
-                "continuation_execution_id"
-            ),
+            "daemonstate.continuation.execution.id": kwargs.get("continuation_execution_id"),
             "daemonstate.run.id": kwargs.get("run_id"),
             "daemonstate.verification.enabled": kwargs.get("verify", False),
         },
@@ -379,49 +383,30 @@ class LocalHarnessRunner:
             )
             execution = await self.session.get(ContinuationExecution, execution_uuid)
             if execution is None:
-                raise ValueError(
-                    f"ContinuationExecution not found: {execution_uuid}"
-                )
+                raise ValueError(f"ContinuationExecution not found: {execution_uuid}")
             if execution.context_pack_id != pack.id:
-                raise ValueError(
-                    "ContinuationExecution is not linked to the supplied ContextPack"
-                )
+                raise ValueError("ContinuationExecution is not linked to the supplied ContextPack")
             if run.continuation_execution_id != execution.id:
-                raise ValueError(
-                    "AgentRun is not linked to the supplied ContinuationExecution"
-                )
-            contract = ContinuationExecutionContract.model_validate_json(
-                execution.contract_json
-            )
+                raise ValueError("AgentRun is not linked to the supplied ContinuationExecution")
+            contract = ContinuationExecutionContract.model_validate_json(execution.contract_json)
             if str(contract.id) != str(execution.id):
                 raise ValueError("ContinuationExecution contract identity does not match")
             if execution_prompt_override is not None:
-                if not execution_prompt_override.startswith(
-                    execution.prompt_markdown
-                ):
-                    raise ValueError(
-                        "repair prompt must preserve the canonical execution prompt"
-                    )
+                if not execution_prompt_override.startswith(execution.prompt_markdown):
+                    raise ValueError("repair prompt must preserve the canonical execution prompt")
                 context_text = execution_prompt_override
             else:
                 context_text = execution.prompt_markdown
         else:
             if execution_prompt_override is not None:
-                raise ValueError(
-                    "execution_prompt_override requires ContinuationExecution"
-                )
+                raise ValueError("execution_prompt_override requires ContinuationExecution")
             if preservation_baseline is not None:
-                raise ValueError(
-                    "preservation_baseline requires ContinuationExecution"
-                )
+                raise ValueError("preservation_baseline requires ContinuationExecution")
             if run.continuation_execution_id is not None:
-                raise ValueError(
-                    "ContinuationExecution is required for a continuation AgentRun"
-                )
+                raise ValueError("ContinuationExecution is required for a continuation AgentRun")
             if str(run.run_key or "").startswith("continuation:"):
                 raise ValueError(
-                    "continuation AgentRun requires the canonical "
-                    "ContinuationExecution prompt"
+                    "continuation AgentRun requires the canonical ContinuationExecution prompt"
                 )
             context_text = pack.markdown
         if run.status != "running":
@@ -444,18 +429,14 @@ class LocalHarnessRunner:
             preservation_baseline is not None
             and Path(preservation_baseline.root).resolve() != repo_root
         ):
-            raise ValueError(
-                "preservation_baseline belongs to a different repository"
-            )
+            raise ValueError("preservation_baseline belongs to a different repository")
         compiled_fingerprint = (
             contract.repository.status_fingerprint
             if contract is not None and preservation_baseline is None
             else None
         )
         expected_fingerprints = {
-            value
-            for value in (expected_status_fingerprint, compiled_fingerprint)
-            if value
+            value for value in (expected_status_fingerprint, compiled_fingerprint) if value
         }
         if len(expected_fingerprints) > 1:
             run.status = "failed"
@@ -487,16 +468,16 @@ class LocalHarnessRunner:
             context_text=context_text,
         ) as materialized:
             context_path = str(materialized.path)
-            child_argv = tuple(context_path if arg == CONTEXT_FILE_PLACEHOLDER else arg for arg in argv)
+            child_argv = tuple(
+                context_path if arg == CONTEXT_FILE_PLACEHOLDER else arg for arg in argv
+            )
             child_env = _child_environment(
                 extra_env,
                 context_path=context_path,
                 context_pack_id=pack.id,
                 run_id=run.id,
                 model_profile=pack.model_profile,
-                continuation_execution_id=(
-                    execution.id if execution is not None else None
-                ),
+                continuation_execution_id=(execution.id if execution is not None else None),
                 runtime_environment=materialized.runtime_environment,
             )
             child_result = await _run_command(
@@ -618,9 +599,7 @@ class LocalHarnessRunner:
             agent_changed_files=tuple(agent_changed_files),
             changed_files=tuple(changed_files),
             verification_results=tuple(verification_results),
-            continuation_execution_id=(
-                str(execution.id) if execution is not None else None
-            ),
+            continuation_execution_id=(str(execution.id) if execution is not None else None),
             runtime_bundle_integrity_passed=bundle_integrity_passed,
             preservation_passed=preservation_passed,
         )
@@ -823,9 +802,7 @@ def _materialized_context(
             )
         return
 
-    with tempfile.TemporaryDirectory(
-        prefix="daemonstate-harness-"
-    ) as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="daemonstate-harness-") as temp_dir:
         context_file = Path(temp_dir) / "context-pack.md"
         context_file.write_text(context_text, encoding="utf-8")
         context_file.chmod(stat.S_IRUSR)
@@ -862,9 +839,7 @@ def _child_environment(
             "DAEMONSTATE_RUN_ID": str(run_id),
             "DAEMONSTATE_MODEL_PROFILE": model_profile or "",
             "DAEMONSTATE_EXECUTION_ID": (
-                str(continuation_execution_id)
-                if continuation_execution_id is not None
-                else ""
+                str(continuation_execution_id) if continuation_execution_id is not None else ""
             ),
         }
     )
@@ -872,15 +847,8 @@ def _child_environment(
         for key, value in runtime_environment.items():
             key_text = str(key)
             value_text = str(value)
-            if (
-                not key_text
-                or "\x00" in key_text
-                or "=" in key_text
-                or "\x00" in value_text
-            ):
-                raise ValueError(
-                    "runtime_environment contains an invalid environment entry"
-                )
+            if not key_text or "\x00" in key_text or "=" in key_text or "\x00" in value_text:
+                raise ValueError("runtime_environment contains an invalid environment entry")
             env[key_text] = value_text
     return env
 
@@ -894,14 +862,13 @@ async def _run_command(
     timeout_seconds: float,
     stdin_data: bytes | None = None,
     stdout_chunk_observer: StdoutChunkObserver | None = None,
+    redact_output: bool = True,
 ) -> CommandResult:
     if stdin_data is not None:
         if not isinstance(stdin_data, bytes):
             raise TypeError("stdin_data must be bytes")
         if len(stdin_data) > MAX_CONTEXT_STDIN_BYTES:
-            raise ValueError(
-                f"stdin_data exceeds the {MAX_CONTEXT_STDIN_BYTES}-byte limit"
-            )
+            raise ValueError(f"stdin_data exceeds the {MAX_CONTEXT_STDIN_BYTES}-byte limit")
     started = time.monotonic()
     try:
         process = await asyncio.create_subprocess_exec(
@@ -909,9 +876,7 @@ async def _run_command(
             cwd=str(cwd),
             env=dict(env),
             stdin=(
-                asyncio.subprocess.PIPE
-                if stdin_data is not None
-                else asyncio.subprocess.DEVNULL
+                asyncio.subprocess.PIPE if stdin_data is not None else asyncio.subprocess.DEVNULL
             ),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -941,9 +906,7 @@ async def _run_command(
     )
     stderr_task = asyncio.create_task(_read_bounded(process.stderr, output_limit_bytes))
     stdin_task = (
-        asyncio.create_task(_write_stdin(process, stdin_data))
-        if stdin_data is not None
-        else None
+        asyncio.create_task(_write_stdin(process, stdin_data)) if stdin_data is not None else None
     )
     timed_out = False
     try:
@@ -958,10 +921,7 @@ async def _run_command(
         stdout_task.cancel()
         stderr_task.cancel()
         await asyncio.gather(
-            *(
-                [stdout_task, stderr_task]
-                + ([stdin_task] if stdin_task is not None else [])
-            ),
+            *([stdout_task, stderr_task] + ([stdin_task] if stdin_task is not None else [])),
             return_exceptions=True,
         )
         raise
@@ -999,8 +959,16 @@ async def _run_command(
     return CommandResult(
         argv=_redacted_argv(argv),
         exit_code=exit_code,
-        stdout=_captured_output_text(stdout_capture, output_limit_bytes),
-        stderr=_captured_output_text(stderr_capture, output_limit_bytes),
+        stdout=(
+            _captured_output_text(stdout_capture, output_limit_bytes)
+            if redact_output
+            else _captured_machine_output_text(stdout_capture)
+        ),
+        stderr=(
+            _captured_output_text(stderr_capture, output_limit_bytes)
+            if redact_output
+            else _captured_machine_output_text(stderr_capture)
+        ),
         stdout_truncated=stdout_capture.truncated,
         stderr_truncated=stderr_capture.truncated,
         timed_out=timed_out,
@@ -1101,10 +1069,7 @@ async def _read_bounded(
         if not chunk:
             continue
         if not tail:
-            tail_starts_at_line_boundary = (
-                head_limit == 0
-                or head.endswith(b"\n")
-            )
+            tail_starts_at_line_boundary = head_limit == 0 or head.endswith(b"\n")
         if len(tail) + len(chunk) > tail_limit:
             truncated = True
         if tail_limit:
@@ -1113,14 +1078,8 @@ async def _read_bounded(
                 overflow = len(tail) - tail_limit
                 tail_starts_at_line_boundary = tail[overflow - 1] == 0x0A
                 del tail[:overflow]
-    if (
-        track_structured_events
-        and structured_buffer
-        and not structured_line_overflow
-    ):
-        terminal_state = _structured_terminal_state_from_line(
-            bytes(structured_buffer)
-        )
+    if track_structured_events and structured_buffer and not structured_line_overflow:
+        terminal_state = _structured_terminal_state_from_line(bytes(structured_buffer))
         if terminal_state is not None:
             structured_terminal_error = terminal_state
     return _BoundedStreamCapture(
@@ -1176,7 +1135,7 @@ async def _repository_snapshot(root: Path) -> RepositorySnapshot:
     branch_result, head_result, status_result, diff_result = await asyncio.gather(
         _git(root, "rev-parse", "--abbrev-ref", "HEAD", limit=1_024),
         _git(root, "rev-parse", "HEAD", limit=1_024),
-        _git(
+        _git_machine(
             root,
             "status",
             "--porcelain=v1",
@@ -1195,26 +1154,28 @@ async def _repository_snapshot(root: Path) -> RepositorySnapshot:
     entries, paths_truncated = await _status_entries(
         root,
         status_result.stdout,
-        output_truncated=(
-            status_result.stdout_truncated
-            or status_failed
-            or branch_failed
-        ),
+        output_truncated=(status_result.stdout_truncated or status_failed or branch_failed),
     )
-    preservation_files, preservation_complete = (
-        await _capture_preservation_baseline(
-            root,
-            head_commit=head_result.stdout.strip(),
-            entries=entries,
-        )
+    protected_baseline, protected_baseline_complete = await _capture_protected_baseline_manifest(
+        root,
+        head_commit=head_result.stdout.strip(),
+        entries=entries,
     )
-    paths_truncated = paths_truncated or not preservation_complete
+    preservation_files, preservation_complete = await _capture_preservation_baseline(
+        root,
+        entries=entries,
+        protected_baseline=protected_baseline,
+    )
+    paths_truncated = (
+        paths_truncated or not preservation_complete or not protected_baseline_complete
+    )
     if not paths_truncated and not await _repository_capture_is_current(
         root,
         branch=branch,
         head_commit=head_result.stdout.strip(),
         entries=entries,
         preservation_files=preservation_files,
+        protected_baseline=protected_baseline,
     ):
         preservation_complete = False
         paths_truncated = True
@@ -1222,14 +1183,14 @@ async def _repository_snapshot(root: Path) -> RepositorySnapshot:
         "branch": branch,
         "head_commit": head_result.stdout.strip(),
         "entries": entries,
-        "preservation": [
-            _preservation_proof_fingerprint(proof)
-            for proof in preservation_files
-        ],
+        "preservation": [_preservation_proof_fingerprint(proof) for proof in preservation_files],
+        "protected_baseline_sha256": protected_baseline.get("manifest_sha256"),
         "status_truncated": paths_truncated,
     }
     fingerprint = hashlib.sha256(
-        json.dumps(fingerprint_payload, sort_keys=True, separators=(",", ":")).encode()
+        json.dumps(fingerprint_payload, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8", errors="surrogateescape"
+        )
     ).hexdigest()
     return RepositorySnapshot(
         root=str(root),
@@ -1243,6 +1204,8 @@ async def _repository_snapshot(root: Path) -> RepositorySnapshot:
         _entries=tuple(entries),
         _preservation_files=preservation_files,
         _preservation_complete=preservation_complete,
+        protected_baseline=protected_baseline,
+        captured_at=utc_now().isoformat(),
     )
 
 
@@ -1283,6 +1246,265 @@ async def _status_entries(
     return entries, truncated
 
 
+async def _capture_protected_baseline_manifest(
+    root: Path,
+    *,
+    head_commit: str,
+    entries: Sequence[tuple[str, str, str | None]],
+) -> tuple[dict[str, Any], bool]:
+    """Bind Git index state independently from exact worktree bytes."""
+
+    paths = sorted({path for _status, path, _digest in entries})
+    object_format_result = await _git(
+        root,
+        "rev-parse",
+        "--show-object-format",
+        limit=128,
+    )
+    index_rows, index_complete = await _git_index_rows(root, paths)
+    head_rows, head_complete = await _git_head_rows(
+        root,
+        head_commit=head_commit,
+        paths=paths,
+    )
+    worktree_rows, worktree_complete = await asyncio.to_thread(
+        _exact_worktree_rows,
+        root,
+        paths,
+    )
+    manifest_entries: list[dict[str, Any]] = []
+    for status_code, path, _legacy_digest in entries:
+        stages = index_rows.get(path, [])
+        head = head_rows.get(path)
+        worktree = worktree_rows.get(path, {"state": "unknown"})
+        manifest_entries.append(
+            {
+                "path": path,
+                "xy": status_code,
+                "index_status": status_code[0],
+                "worktree_status": status_code[1],
+                "change_kind": _git_change_kind(status_code),
+                "head": (head if head is not None else {"state": "absent"}),
+                "index": (
+                    {"state": "present", "stages": stages}
+                    if stages
+                    else {"state": "absent", "stages": []}
+                ),
+                "worktree": worktree,
+            }
+        )
+    manifest_entries.sort(key=lambda item: str(item["path"]))
+    object_format = object_format_result.stdout.strip()
+    complete = bool(
+        object_format_result.exit_code == 0
+        and not object_format_result.timed_out
+        and object_format in {"sha1", "sha256"}
+        and index_complete
+        and head_complete
+        and worktree_complete
+        # Porcelain may legitimately emit more than one record for one path,
+        # for example a staged deletion plus an untracked worktree copy after
+        # `git rm --cached`. Every record is part of the exact baseline.
+        and len(manifest_entries) == len(entries)
+        and _protected_baseline_layers_match_status(manifest_entries)
+    )
+    unsigned = {
+        "schema_version": "protected_baseline.v1",
+        "complete": complete,
+        "entry_count": len(manifest_entries),
+        "git_object_format": object_format or None,
+        "head_commit": head_commit,
+        "entries": manifest_entries,
+    }
+    manifest_sha256 = hashlib.sha256(
+        json.dumps(
+            unsigned,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8", errors="surrogateescape")
+    ).hexdigest()
+    return {
+        **unsigned,
+        "id": f"PB-{manifest_sha256[:12]}",
+        "manifest_sha256": manifest_sha256,
+    }, complete
+
+
+async def _git_index_rows(
+    root: Path,
+    paths: Sequence[str],
+) -> tuple[dict[str, list[dict[str, Any]]], bool]:
+    rows: dict[str, list[dict[str, Any]]] = {}
+    complete = True
+    for chunk in _path_chunks(paths):
+        result = await _git_machine(
+            root,
+            "--literal-pathspecs",
+            "ls-files",
+            "--stage",
+            "-z",
+            "--",
+            *chunk,
+            limit=MAX_OUTPUT_LIMIT_BYTES,
+        )
+        if result.exit_code != 0 or result.timed_out or result.stdout_truncated:
+            complete = False
+            continue
+        for token in result.stdout.split("\x00"):
+            if not token:
+                continue
+            metadata, separator, raw_path = token.partition("\t")
+            fields = metadata.split()
+            safe_path = _normalized_relative_path(raw_path) if separator else None
+            if safe_path is None or len(fields) != 3 or not fields[2].isdigit():
+                complete = False
+                continue
+            rows.setdefault(safe_path, []).append(
+                {
+                    "stage": int(fields[2]),
+                    "mode": fields[0],
+                    "object_id": fields[1],
+                }
+            )
+    for stages in rows.values():
+        stages.sort(key=lambda item: int(item["stage"]))
+    return rows, complete
+
+
+async def _git_head_rows(
+    root: Path,
+    *,
+    head_commit: str,
+    paths: Sequence[str],
+) -> tuple[dict[str, dict[str, Any]], bool]:
+    rows: dict[str, dict[str, Any]] = {}
+    complete = True
+    for chunk in _path_chunks(paths):
+        result = await _git_machine(
+            root,
+            "--literal-pathspecs",
+            "ls-tree",
+            "-z",
+            head_commit,
+            "--",
+            *chunk,
+            limit=MAX_OUTPUT_LIMIT_BYTES,
+        )
+        if result.exit_code != 0 or result.timed_out or result.stdout_truncated:
+            complete = False
+            continue
+        for token in result.stdout.split("\x00"):
+            if not token:
+                continue
+            metadata, separator, raw_path = token.partition("\t")
+            fields = metadata.split()
+            safe_path = _normalized_relative_path(raw_path) if separator else None
+            if safe_path is None or len(fields) != 3:
+                complete = False
+                continue
+            rows[safe_path] = {
+                "state": "present",
+                "mode": fields[0],
+                "object_type": fields[1],
+                "object_id": fields[2],
+            }
+    return rows, complete
+
+
+def _path_chunks(paths: Sequence[str], *, size: int = 100) -> Iterator[tuple[str, ...]]:
+    for start in range(0, len(paths), size):
+        yield tuple(paths[start : start + size])
+
+
+def _exact_worktree_rows(
+    root: Path,
+    paths: Sequence[str],
+) -> tuple[dict[str, dict[str, Any]], bool]:
+    rows: dict[str, dict[str, Any]] = {}
+    complete = True
+    for relative_path in paths:
+        state, state_complete = _exact_worktree_state(root / relative_path)
+        rows[relative_path] = state
+        complete = complete and state_complete
+    return rows, complete
+
+
+def _exact_worktree_state(path: Path) -> tuple[dict[str, Any], bool]:
+    try:
+        details = path.lstat()
+    except FileNotFoundError:
+        return {"state": "absent"}, True
+    except OSError:
+        return {"state": "unknown"}, False
+    if stat.S_ISLNK(details.st_mode):
+        try:
+            target = os.readlink(path).encode("utf-8", errors="surrogateescape")
+        except OSError:
+            return {"state": "unknown"}, False
+        return (
+            {
+                "state": "present",
+                "file_type": "symlink",
+                "mode": "120000",
+                "content_sha256": hashlib.sha256(target).hexdigest(),
+            },
+            True,
+        )
+    if stat.S_ISREG(details.st_mode):
+        digest = hashlib.sha256()
+        try:
+            with path.open("rb") as handle:
+                while chunk := handle.read(1024 * 1024):
+                    digest.update(chunk)
+        except OSError:
+            return {"state": "unknown"}, False
+        executable = bool(details.st_mode & stat.S_IXUSR)
+        return (
+            {
+                "state": "present",
+                "file_type": "file",
+                "mode": "100755" if executable else "100644",
+                "content_sha256": digest.hexdigest(),
+                "size_bytes": details.st_size,
+            },
+            True,
+        )
+    if stat.S_ISDIR(details.st_mode):
+        try:
+            result = subprocess.run(
+                (
+                    "git",
+                    "-c",
+                    f"safe.directory={path}",
+                    "-C",
+                    str(path),
+                    "rev-parse",
+                    "HEAD",
+                ),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=5.0,
+                text=True,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return {"state": "unknown", "file_type": "directory"}, False
+        commit = result.stdout.strip()
+        if result.returncode == 0 and commit:
+            return (
+                {
+                    "state": "present",
+                    "file_type": "submodule",
+                    "mode": "160000",
+                    "object_id": commit,
+                },
+                True,
+            )
+    return {"state": "unknown"}, False
+
+
 def _git_change_kind(status_code: str) -> str:
     """Translate an exact porcelain XY code without discarding that code."""
 
@@ -1306,6 +1528,36 @@ def _git_change_kind(status_code: str) -> str:
     return "changed"
 
 
+def _protected_baseline_layers_match_status(entries: Sequence[Mapping[str, Any]]) -> bool:
+    """Reject a self-consistent hash whose Git layers contradict porcelain XY."""
+
+    for item in entries:
+        xy = str(item.get("xy") or "")
+        index = item.get("index")
+        worktree = item.get("worktree")
+        head = item.get("head")
+        if len(xy) != 2 or not all(isinstance(layer, Mapping) for layer in (index, worktree, head)):
+            return False
+        index_status, worktree_status = xy
+        index_present = index.get("state") == "present"
+        worktree_present = worktree.get("state") == "present"
+        head_present = head.get("state") == "present"
+        if index_status in {"D", "?"}:
+            if index_present:
+                return False
+        elif not index_present:
+            return False
+        if worktree_status == "D":
+            if worktree_present:
+                return False
+        elif worktree_status == "?" or worktree_status != " " or index_status != "D":
+            if not worktree_present:
+                return False
+        if index_status not in {"A", "?"} and worktree_status != "?" and not head_present:
+            return False
+    return True
+
+
 async def _repository_capture_is_current(
     root: Path,
     *,
@@ -1313,13 +1565,14 @@ async def _repository_capture_is_current(
     head_commit: str,
     entries: Sequence[tuple[str, str, str | None]],
     preservation_files: Sequence[_BaselineFile],
+    protected_baseline: Mapping[str, Any],
 ) -> bool:
     """Confirm status and proof content did not change during capture."""
 
     current_branch, current_head, current_status = await asyncio.gather(
         _git(root, "rev-parse", "--abbrev-ref", "HEAD", limit=1_024),
         _git(root, "rev-parse", "HEAD", limit=1_024),
-        _git(
+        _git_machine(
             root,
             "status",
             "--porcelain=v1",
@@ -1347,23 +1600,45 @@ async def _repository_capture_is_current(
     )
     if observed_truncated or observed_entries != list(entries):
         return False
-    proof_matches = await asyncio.gather(*(
-        asyncio.to_thread(
-            _baseline_file_unchanged,
-            root,
-            proof,
+    observed_baseline, observed_baseline_complete = await _capture_protected_baseline_manifest(
+        root,
+        head_commit=head_commit,
+        entries=observed_entries,
+    )
+    if not observed_baseline_complete or observed_baseline.get(
+        "manifest_sha256"
+    ) != protected_baseline.get("manifest_sha256"):
+        return False
+    proof_matches = await asyncio.gather(
+        *(
+            asyncio.to_thread(
+                _baseline_file_unchanged,
+                root,
+                proof,
+            )
+            for proof in preservation_files
         )
-        for proof in preservation_files
-    ))
+    )
     return all(proof_matches)
 
 
 async def _capture_preservation_baseline(
     root: Path,
     *,
-    head_commit: str,
     entries: Sequence[tuple[str, str, str | None]],
+    protected_baseline: Mapping[str, Any],
 ) -> tuple[tuple[_BaselineFile, ...], bool]:
+    index_stages_by_path: dict[str, list[Mapping[str, Any]]] = {}
+    for item in protected_baseline.get("entries") or []:
+        if not isinstance(item, Mapping):
+            continue
+        path = str(item.get("path") or "")
+        index = item.get("index")
+        if not path or not isinstance(index, Mapping):
+            continue
+        stages = index.get("stages")
+        if isinstance(stages, list):
+            index_stages_by_path[path] = [stage for stage in stages if isinstance(stage, Mapping)]
     proofs: list[_BaselineFile] = []
     total_bytes = 0
     complete = True
@@ -1384,28 +1659,32 @@ async def _capture_preservation_baseline(
                 if "D" not in status_code:
                     complete = False
                     continue
-                proofs.append(_BaselineFile(
-                    path=relative_path,
-                    status=status_code,
-                    base_content=None,
-                    baseline_content=None,
-                    baseline_mode=None,
-                    exact_content_required=True,
-                ))
+                proofs.append(
+                    _BaselineFile(
+                        path=relative_path,
+                        status=status_code,
+                        base_content=None,
+                        baseline_content=None,
+                        baseline_mode=None,
+                        exact_content_required=True,
+                    )
+                )
                 continue
             if digest_state is None:
                 complete = False
                 continue
             baseline_sha256, baseline_mode = digest_state
-            proofs.append(_BaselineFile(
-                path=relative_path,
-                status=status_code,
-                base_content=None,
-                baseline_content=None,
-                baseline_mode=baseline_mode,
-                exact_content_required=True,
-                baseline_sha256=baseline_sha256,
-            ))
+            proofs.append(
+                _BaselineFile(
+                    path=relative_path,
+                    status=status_code,
+                    base_content=None,
+                    baseline_content=None,
+                    baseline_mode=baseline_mode,
+                    exact_content_required=True,
+                    baseline_sha256=baseline_sha256,
+                )
+            )
             continue
         baseline = await asyncio.to_thread(
             _read_preservation_file,
@@ -1420,38 +1699,52 @@ async def _capture_preservation_baseline(
                 complete = False
                 continue
             baseline_sha256, baseline_mode = digest_state
-            proofs.append(_BaselineFile(
-                path=relative_path,
-                status=status_code,
-                base_content=None,
-                baseline_content=None,
-                baseline_mode=baseline_mode,
-                exact_content_required=True,
-                baseline_sha256=baseline_sha256,
-            ))
+            proofs.append(
+                _BaselineFile(
+                    path=relative_path,
+                    status=status_code,
+                    base_content=None,
+                    baseline_content=None,
+                    baseline_mode=baseline_mode,
+                    exact_content_required=True,
+                    baseline_sha256=baseline_sha256,
+                )
+            )
             continue
         baseline_content, baseline_mode, baseline_exact = baseline
         if baseline_content is None:
             if "D" not in status_code:
                 complete = False
                 continue
-            proofs.append(_BaselineFile(
-                path=relative_path,
-                status=status_code,
-                base_content=None,
-                baseline_content=None,
-                baseline_mode=baseline_mode,
-                exact_content_required=True,
-            ))
+            proofs.append(
+                _BaselineFile(
+                    path=relative_path,
+                    status=status_code,
+                    base_content=None,
+                    baseline_content=None,
+                    baseline_mode=baseline_mode,
+                    exact_content_required=True,
+                )
+            )
             continue
-        base_size = await _git(
-            root,
-            "cat-file",
-            "-s",
-            f"{head_commit}:{relative_path}",
-            limit=128,
+        index_stages = index_stages_by_path.get(relative_path, [])
+        stage_zero = [stage for stage in index_stages if stage.get("stage") == 0]
+        unmerged_index = bool(index_stages and len(stage_zero) != 1)
+        base_object_id = (
+            str(stage_zero[0].get("object_id") or "").strip() if len(stage_zero) == 1 else ""
         )
-        if base_size.exit_code == 0:
+        base_size = (
+            await _git(
+                root,
+                "cat-file",
+                "-s",
+                base_object_id,
+                limit=128,
+            )
+            if base_object_id
+            else None
+        )
+        if base_size is not None and base_size.exit_code == 0:
             try:
                 parsed_size = int(base_size.stdout.strip())
             except ValueError:
@@ -1463,13 +1756,15 @@ async def _capture_preservation_baseline(
                 base_content = await asyncio.to_thread(
                     _git_blob_bytes,
                     root,
-                    f"{head_commit}:{relative_path}",
+                    base_object_id,
                 )
                 if base_content is None or len(base_content) != parsed_size:
                     base_content = None
                     baseline_exact = True
         else:
             base_content = None
+            if unmerged_index:
+                baseline_exact = True
         proof_bytes = len(base_content or b"") + len(baseline_content)
         baseline_sha256: str | None = None
         if total_bytes + proof_bytes > MAX_PRESERVATION_TOTAL_BYTES:
@@ -1491,15 +1786,17 @@ async def _capture_preservation_baseline(
             or b"\x00" in (base_content or b"")
             or b"\x00" in (baseline_content or b"")
         )
-        proofs.append(_BaselineFile(
-            path=relative_path,
-            status=status_code,
-            base_content=base_content,
-            baseline_content=baseline_content,
-            baseline_mode=baseline_mode,
-            exact_content_required=exact,
-            baseline_sha256=baseline_sha256,
-        ))
+        proofs.append(
+            _BaselineFile(
+                path=relative_path,
+                status=status_code,
+                base_content=base_content,
+                baseline_content=baseline_content,
+                baseline_mode=baseline_mode,
+                exact_content_required=exact,
+                baseline_sha256=baseline_sha256,
+            )
+        )
     return tuple(proofs), complete and len(proofs) == len(entries)
 
 
@@ -1509,9 +1806,7 @@ def _preservation_proof_fingerprint(
     if proof.baseline_sha256 is not None:
         digest = proof.baseline_sha256
     elif proof.baseline_content is not None:
-        digest = hashlib.sha256(
-            b"retained-content\x00" + proof.baseline_content
-        ).hexdigest()
+        digest = hashlib.sha256(b"retained-content\x00" + proof.baseline_content).hexdigest()
     else:
         digest = None
     return proof.path, proof.status, digest, proof.baseline_mode
@@ -1574,9 +1869,7 @@ def _preservation_file_digest(path: Path) -> tuple[str, int] | None:
         digest = hashlib.sha256()
         if stat.S_ISLNK(details.st_mode):
             digest.update(b"symlink\x00")
-            digest.update(
-                os.readlink(path).encode("utf-8", errors="surrogateescape")
-            )
+            digest.update(os.readlink(path).encode("utf-8", errors="surrogateescape"))
         elif stat.S_ISREG(details.st_mode):
             digest.update(b"file\x00")
             with path.open("rb") as handle:
@@ -1612,7 +1905,7 @@ async def _observed_changed_files(
         if before_entries.get(path) != after_entries.get(path)
     }
     if before.head_commit != after.head_commit:
-        committed = await _git(
+        committed = await _git_machine(
             root,
             "diff",
             "--name-only",
@@ -1668,6 +1961,26 @@ async def _git(root: Path, *args: str, limit: int) -> CommandResult:
         env=os.environ,
         output_limit_bytes=limit,
         timeout_seconds=10.0,
+    )
+
+
+async def _git_machine(root: Path, *args: str, limit: int) -> CommandResult:
+    """Run Git for private machine parsing without human-output redaction."""
+
+    return await _run_command(
+        (
+            "git",
+            "-c",
+            f"safe.directory={root}",
+            "-C",
+            str(root),
+            *args,
+        ),
+        cwd=root,
+        env=os.environ,
+        output_limit_bytes=limit,
+        timeout_seconds=10.0,
+        redact_output=False,
     )
 
 
@@ -1766,44 +2079,69 @@ async def _preservation_passed(
 ) -> bool:
     """Prove original dirty changes survive while allowing additive work."""
 
-    if (
-        before.status_truncated
-        or after.status_truncated
-        or not before._preservation_complete
-    ):
+    if before.status_truncated or after.status_truncated or not before._preservation_complete:
         return False
     if contract.repository.status_fingerprint != before.status_fingerprint:
         return False
     if before.branch != after.branch:
         return False
+    if not _protected_index_state_preserved(before, after):
+        return False
 
     if contract.authority.filesystem_mode.value == "read_only":
-        unchanged = (
-            before.head_commit == after.head_commit
-            and before._entries == after._entries
-        )
+        unchanged = before.head_commit == after.head_commit and before._entries == after._entries
         if not unchanged:
             return False
-        exact = await asyncio.gather(*(
+        exact = await asyncio.gather(
+            *(
+                asyncio.to_thread(
+                    _baseline_file_unchanged,
+                    Path(before.root),
+                    proof,
+                )
+                for proof in before._preservation_files
+            )
+        )
+        return all(exact)
+    if before.head_commit != after.head_commit:
+        return False
+    preserved = await asyncio.gather(
+        *(
             asyncio.to_thread(
-                _baseline_file_unchanged,
+                _baseline_file_preserved,
                 Path(before.root),
                 proof,
             )
             for proof in before._preservation_files
-        ))
-        return all(exact)
-    if before.head_commit != after.head_commit:
-        return False
-    preserved = await asyncio.gather(*(
-        asyncio.to_thread(
-            _baseline_file_preserved,
-            Path(before.root),
-            proof,
         )
-        for proof in before._preservation_files
-    ))
+    )
     return all(preserved)
+
+
+def _protected_index_state_preserved(
+    before: RepositorySnapshot,
+    after: RepositorySnapshot,
+) -> bool:
+    """Require every pre-existing index stage to remain byte-identical."""
+
+    before_manifest = before.protected_baseline or {}
+    after_manifest = after.protected_baseline or {}
+    if before_manifest.get("complete") is not True or after_manifest.get("complete") is not True:
+        return False
+    before_entries = {
+        str(item.get("path") or ""): item
+        for item in before_manifest.get("entries") or []
+        if isinstance(item, dict) and str(item.get("path") or "")
+    }
+    after_entries = {
+        str(item.get("path") or ""): item
+        for item in after_manifest.get("entries") or []
+        if isinstance(item, dict) and str(item.get("path") or "")
+    }
+    return all(
+        (after_entries.get(path) or {}).get("index") == item.get("index")
+        for path, item in before_entries.items()
+    )
 
 
 def _baseline_file_unchanged(root: Path, proof: _BaselineFile) -> bool:
@@ -1817,10 +2155,7 @@ def _baseline_file_unchanged(root: Path, proof: _BaselineFile) -> bool:
     if final is None:
         return False
     final_content, final_mode, _final_exact = final
-    return (
-        final_content == proof.baseline_content
-        and final_mode == proof.baseline_mode
-    )
+    return final_content == proof.baseline_content and final_mode == proof.baseline_mode
 
 
 def _baseline_file_preserved(root: Path, proof: _BaselineFile) -> bool:
@@ -1838,11 +2173,7 @@ def _baseline_file_preserved(root: Path, proof: _BaselineFile) -> bool:
         return final_content is None
     if final_content is None or final_mode != proof.baseline_mode:
         return False
-    if (
-        proof.exact_content_required
-        or final_exact
-        or b"\x00" in final_content
-    ):
+    if proof.exact_content_required or final_exact or b"\x00" in final_content:
         return final_content == proof.baseline_content
     if final_content == proof.baseline_content:
         return True
@@ -1890,16 +2221,8 @@ def _text_baseline_delta_preserved(
             continue
         removed = base_lines[base_start:base_end]
         required = baseline_lines[new_start:new_end]
-        left_anchor = (
-            base_lines[base_start - 1]
-            if base_start > 0
-            else None
-        )
-        right_anchor = (
-            base_lines[base_end]
-            if base_end < len(base_lines)
-            else None
-        )
+        left_anchor = base_lines[base_start - 1] if base_start > 0 else None
+        right_anchor = base_lines[base_end] if base_end < len(base_lines) else None
         if required and not _anchored_subsequence(
             final_lines,
             required=required,
@@ -1921,21 +2244,14 @@ def _anchored_subsequence(
     right_anchor: bytes | None,
 ) -> bool:
     starts = (
-        [
-            index
-            for index, line in enumerate(final_lines)
-            if line == left_anchor
-        ]
+        [index for index, line in enumerate(final_lines) if line == left_anchor]
         if left_anchor is not None
         else [-1]
     )
     for start in starts:
         cursor = start + 1
         for required_line in required:
-            while (
-                cursor < len(final_lines)
-                and final_lines[cursor] != required_line
-            ):
+            while cursor < len(final_lines) and final_lines[cursor] != required_line:
                 cursor += 1
             if cursor >= len(final_lines):
                 break
@@ -1947,10 +2263,7 @@ def _anchored_subsequence(
 
 
 def _worker_status(child_result: CommandResult) -> str:
-    if (
-        child_result.exit_code != 0
-        or _command_has_structured_terminal_error(child_result)
-    ):
+    if child_result.exit_code != 0 or _command_has_structured_terminal_error(child_result):
         return "failed"
     return "completed"
 
@@ -1959,10 +2272,7 @@ def _terminal_status(
     child_result: CommandResult,
     verification_results: Sequence[VerificationResult],
 ) -> str:
-    if (
-        child_result.exit_code != 0
-        or _command_has_structured_terminal_error(child_result)
-    ):
+    if child_result.exit_code != 0 or _command_has_structured_terminal_error(child_result):
         return "failed"
     if any(item.result.exit_code != 0 for item in verification_results):
         return "failed"
@@ -1983,9 +2293,7 @@ def _structured_terminal_state_from_line(
     raw_line: str | bytes,
 ) -> bool | None:
     line = (
-        raw_line.decode("utf-8", errors="replace")
-        if isinstance(raw_line, bytes)
-        else raw_line
+        raw_line.decode("utf-8", errors="replace") if isinstance(raw_line, bytes) else raw_line
     ).strip()
     if not line:
         return None
@@ -2008,18 +2316,16 @@ def _structured_terminal_state_from_line(
     if payload_type == "step_finish":
         part = payload.get("part")
         reason = str(
-            payload.get("reason")
-            or (part.get("reason") if isinstance(part, Mapping) else "")
-            or ""
+            payload.get("reason") or (part.get("reason") if isinstance(part, Mapping) else "") or ""
         ).casefold()
         if reason in {"tool-calls", "tool_calls"}:
             # OpenCode can exit zero after a tool call without ever returning
             # for a final assistant turn. That is an incomplete provider run.
             return True
-    if (
-        payload_type in {"result", "step_finish", "turn.completed"}
-        or subtype in {"success", "completed"}
-    ):
+    if payload_type in {"result", "step_finish", "turn.completed"} or subtype in {
+        "success",
+        "completed",
+    }:
         return False
     return None
 
@@ -2124,10 +2430,14 @@ def _captured_output_text(
     return rendered
 
 
+def _captured_machine_output_text(capture: _BoundedStreamCapture) -> str:
+    """Decode bounded Git protocol output losslessly for private parsing."""
+
+    return (capture.head + capture.tail).decode("utf-8", errors="surrogateescape")
+
+
 def _truncated_output_marker(limit_bytes: int) -> str:
-    return TRUNCATED_OUTPUT.encode("utf-8")[:limit_bytes].decode(
-        "utf-8", errors="ignore"
-    )
+    return TRUNCATED_OUTPUT.encode("utf-8")[:limit_bytes].decode("utf-8", errors="ignore")
 
 
 def _safe_relative_path(value: str) -> str | None:
@@ -2138,7 +2448,13 @@ def _safe_relative_path(value: str) -> str | None:
 
 
 def _normalized_relative_path(value: str) -> str | None:
-    normalized = str(value or "").replace("\\", "/").removeprefix("./")
+    # Git's `-z` formats already use `/` as their path separator. A backslash
+    # is a legal POSIX filename byte and must not become a directory separator.
+    normalized = str(value or "").removeprefix("./")
+    if any(0xDC80 <= ord(character) <= 0xDCFF for character in normalized):
+        # The JSON handoff schema is UTF-8 text. Fail the capture closed rather
+        # than corrupting or exposing a non-UTF-8 Git path under a false name.
+        return None
     path = PurePosixPath(normalized)
     if not normalized or path.is_absolute() or ".." in path.parts:
         return None
