@@ -22,6 +22,10 @@ from app.services.context_compiler import (
     InvalidRepoPathError,
 )
 from app.services.continuation import ContinuationError, ContinuationService
+from app.services.checkpoints import (
+    MAX_CONTINUATION_LEAD_CHARS,
+    validate_continuation_lead,
+)
 from app.services.harness_outcomes import HarnessOutcomeService
 from app.services.harness_launcher import HarnessLaunchError, launch_harness_session
 from app.services.harness_sessions import recorded_harness_session
@@ -149,7 +153,16 @@ class ContinuationRunRequest(_ContinuationRequest):
 
 
 class ContinuationStageRequest(ContinuationRunRequest):
-    pass
+    continuation_lead: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=MAX_CONTINUATION_LEAD_CHARS,
+    )
+
+    @field_validator("continuation_lead")
+    @classmethod
+    def validate_continuation_lead(cls, value: str | None) -> str | None:
+        return validate_continuation_lead(value)
 
 
 class ContinuationHarnessOpenRequest(BaseModel):
@@ -393,6 +406,7 @@ async def stage_continuation(
                 repo_path=payload.repo_path,
                 objective=payload.objective,
                 objective_is_user_edited=payload.objective_is_user_edited,
+                continuation_lead=payload.continuation_lead,
                 checkpoint_id=payload.checkpoint_id,
                 checkpoint_source_id=payload.checkpoint_source_id,
                 source_provider=payload.source_provider,

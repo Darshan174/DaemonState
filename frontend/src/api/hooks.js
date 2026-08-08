@@ -2031,9 +2031,10 @@ export function useResumeCheckpoint() {
 
 export function useCheckpointHandoff() {
   return useMutation({
-    mutationFn: ({ workspaceId, checkpointId }) =>
+    mutationFn: ({ workspaceId, checkpointId, continuationLead }) =>
       api.post(`/checkpoints/${encodeURIComponent(checkpointId)}/handoff`, {
         workspace_id: workspaceId,
+        ...(continuationLead ? { continuation_lead: continuationLead } : {}),
       }),
   });
 }

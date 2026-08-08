@@ -31,7 +31,7 @@ and current repository state.
 | Artifact | Scope and purpose | Behavior |
 |---|---|---|
 | **Session Context** | The task-specific child captured from one session's latest immutable tip. It records that session's current working state and its relationship to the Project Context parent. Repository freshness is checked at handoff time and the current snapshot is used when available. | Continue always selects the newest available session, renders the canonical `session_handoff.v1` artifact, copies it, requests a visible composer in the selected desktop app, and waits for the user to submit. Historical Library sessions and recovery points route through Prepare or Execute and never override Continue. |
-| **Project / Workspace Context** | The durable parent foundation shared by every session in the workspace. It is compiled from all current workspace evidence without using the current prompt, objective, file overlap, selected session, or task ranking. Durable project facts and syntax-level repository observations remain separate. | Mechanically verified, human-confirmed, and corroborated durable facts may enter the current parent. Provisional claims stay outside it; superseded or conflicting facts remain historical. Its separate rendering remains `continuation_staging_context.v1`. |
+| **Project / Workspace Context** | The durable parent foundation shared by every session in the workspace. It is compiled from all current workspace evidence without using the current prompt, objective, file overlap, selected session, or task ranking. Durable project facts and syntax-level repository observations remain separate. | Mechanically verified, human-confirmed, and corroborated durable facts may enter the current parent. Provisional claims stay outside it; superseded or conflicting facts remain historical. Execute's direct artifact is `workspace_foundation.v2` rendered by `workspace_foundation_renderer.v2`; Continue embeds the compatible parent projection in `continuation_staging_context.v1`. |
 | **Execution Prompt** | The provider-neutral worker command rendered as `continuation_execution_prompt.v1` from the typed `continuation_execution.v1` contract. | Used only by an automatic run path that starts the worker, observes it, and applies requirement-linked verification. |
 | **Audit ContextPack** | `context_pack.v2`, with complete selection, exclusion, provenance, citation, risk, and reconciliation records. | Durable audit and advanced inspection only. Its Markdown is never the continuation worker instruction. |
 
@@ -50,10 +50,11 @@ The model-facing Session and Project renderings remain bounded. Session Context
 contains the latest task state and an explicit parent-child boundary, plus only
 the task-relevant evidence-backed workspace facts it inherits. Project /
 Workspace Context remains the separately rendered objective-independent parent.
-Event numbers, capture timestamps, selection scores, full dirty-file
-inventories, and other audit metadata remain in the structured contract or
-Audit ContextPack. A generic “continue the current request” record cannot
-reopen a requirement with a newer scoped completion claim. Prior-agent
+Event numbers, selection scores, full manifest layers, and other audit metadata
+remain in the structured contract or Audit ContextPack. Compact Session Context
+renders capture time and a bounded `XY` status inventory or summary because
+they are execution-critical. A generic “continue the current request” record
+cannot reopen a requirement with a newer scoped completion claim. Prior-agent
 interpretations that make a deictic request self-contained are retained only as
 explicitly unverified historical scope.
 
@@ -62,8 +63,11 @@ explicitly unverified historical scope.
 The visible Continue handoff has two render variants behind
 `SESSION_HANDOFF_BRIEF_VARIANT`:
 
-- `compact_v2` is the default with exactly five sections: Goal, State now,
-  Start here, Do not repeat, and Done when.
+- `compact_v2` is the default with five core sections: Goal, State now,
+  Start here, Do not repeat, and Done when. A separately supplied current user
+  lead is folded into Goal and supersedes the historical goal when task type,
+  requirements, and next action are compiled; compact output never adds a
+  sixth section.
 - `legacy_v1` remains available only as an immediate rollback.
 
 Both variants use the same `session_handoff.v1` structured contract, repository
@@ -72,6 +76,79 @@ Only the model-facing projection changes; automatic execution prompts remain on
 their existing renderer so the experiment is not confounded across two paths.
 Every staged response records `context_render_variant`, `context_char_count`,
 and `context_estimated_tokens` alongside the context hash.
+
+The compact contract retains the exact user wording and hash while also
+compiling an executable normalized requirement. Task intent and required
+runtime capability are separate from observed permission. The current compiler
+does not ingest a harness permission observation, so it renders capture
+permission as unavailable and tells edit tasks to validate live write
+permission. Task mode expresses the required capability only. Vague product
+targets are either tied to current evidence or marked unresolved. Numeric
+ranking scores remain internal; the brief shows at most three candidates with
+their evidence reasons and never assigns a component merely to look complete.
+An unresolved target produces a discovery brief and keeps
+`automatic_execution_ready=false`.
+
+Required attachments are evidence for user-authored outcomes, not synthetic
+completion requirements. Compact output identifies each attachment with a
+contract-local handoff reference, media type, SHA-256, receiver-availability state,
+inspection state, and linked requirement IDs. Capture-host paths remain in the
+structured provenance and are never presented as portable availability.
+Artifact infrastructure owns portable-reference resolution, materialization,
+and hash verification; the receiving agent inspects already verified bytes and
+is never told to recreate or checksum the artifact itself. Visible desktop
+staging resolves each required `A<n>` against its checkpoint-bound hash/media
+identity, copies it into a receiver-owned local bundle, and rebuilds the brief
+with that verified local reference; delivery failure prevents the desktop app
+from opening. Automatic execution separately copies the bytes into its runtime
+bundle and re-verifies their digest.
+A visual dependency that is missing, ambiguously linked, unavailable in the
+receiver, or not inspected prevents automatic execution readiness.
+
+When a trusted image-capable capture service supplies a successful attested
+inspection, the inspection record is bound to the exact source-image SHA-256,
+has an integrity-checked observation payload, and carries only bounded visual
+anchors, a suspected surface or route, and candidate files. Provider-authored
+metadata cannot self-attest. The anchors narrow discovery but never resolve a
+repository target on their own. The built-in local ingestion path does not
+manufacture an inspection, and no production producer currently creates these
+observations. Without an infrastructure-owned descriptor carrying a
+self-integrity-hashed observation, the dependency remains explicitly
+uninspected; a text summary does not satisfy an image-input capability
+requirement.
+
+Repository protection uses `protected_baseline.v1`, not a count or a bounded
+file digest. Its manifest hash binds the HEAD commit, Git object format, every
+captured porcelain `XY` record, each changed path's HEAD object and index
+stage/object IDs, and exact worktree presence and SHA-256. Captured branch,
+time, and repository fingerprint are recorded alongside it. Compact output
+renders that capture identity and either a bounded `XY` inventory or a status
+summary. Desktop staging also writes the exact hash-verified manifest to a
+receiver-local read-only path. The receiving agent uses `git status --short`
+for orientation; server/runtime preservation validates the exact layers.
+Pre-existing text changes may receive only additive requirement-specific work
+while their captured dirty hunks remain anchored. Index stage/object state,
+binary files, symlinks, sensitive paths, and read-only tasks remain exact; the
+whole file must not be staged, unstaged, reverted, or reformatted. Legacy
+snapshots without exact index object/stage identity remain visible but are
+labeled incomplete and do not silently become exact baselines.
+
+Start here is an ordered evidence-aware sequence rather than a second generic
+summary. An unmet terminal prerequisite—such as an incomplete repository
+manifest, unavailable receiver artifact, or stale session boundary—stops the
+sequence and requires a regenerated Session Context; stale downstream edit
+steps are not rendered. Once prerequisites are satisfied, unresolved visual
+work inspects the infrastructure-verified attachment first, checks the live
+worktree once against the protected manifest, reviews recovered candidates,
+performs a target-specific style search, grounds the route/component/style
+source, and only then permits editing. Done when keeps observable acceptance
+separate from a future-facing verification plan; planned checks are never
+counted as prior observed proof. Shared components, tokens, or ancestor styles
+expand visual verification to every affected consumer. Opacity fixes also
+preserve unrequested layout, spacing, typography, borders, shadows, and content
+while maintaining readable text and icon contrast. Checkpoint IDs,
+reconciliation counters, numeric heuristics, and other audit-only metadata stay
+in the structured artifact rather than the main execution path.
 
 The paired replay justified promoting the compact projection as the reversible
 default. Retain it only with zero critical-state omissions or
@@ -110,8 +187,9 @@ editor that retained focus, but it never presses Enter and does not weaken the
 same context identity, quality, or hash checks.
 
 Direct copy paths fail closed. Session Context requires
-`quality_report.copy_ready=true`; Project Context requires
-`project_context.copy_ready=true`. Superseded session boundaries, unresolved
+`quality_report.copy_ready=true`; direct Workspace Context requires a valid
+`workspace_foundation.v2` artifact with
+`workspace_foundation.quality_report.copy_ready=true`. Superseded session boundaries, unresolved
 referenced conversations, incomplete repository snapshots, missing required
 artifacts, contradictory authority, and malformed handoff sections remain
 previewable with explicit issues but cannot be copied. Automatic execution has
@@ -128,8 +206,9 @@ Every integrity, freshness, provenance, and conflict failure remains blocking.
 An entirely empty parent is explicitly **not ready** and is never inherited or
 staged.
 
-Clipboard delivery is integrity-checked in the browser: the rendered content
-must match its server-provided SHA-256, and Session Context must also match the
+Clipboard delivery is integrity-checked in the browser and native client: the rendered content
+must match its server-provided SHA-256, the Workspace Foundation artifact and
+repository binding must match their hashes, and Session Context must also match the
 selected provider, session, checkpoint, and immutable boundary. Copy performs
 a fresh handoff/repository check rather than trusting a cached preview. Project
 Context is likewise recompiled immediately before copy.

@@ -491,6 +491,39 @@ async def test_session_handoff_api_preserves_verbatim_pre_compaction_context_onl
         handoff["content"].encode("utf-8")
     ).hexdigest()
 
+    continuation_lead = (
+        "Review the evidence-backed dashboard before continuing.\n"
+        "Keep the historical goal unchanged."
+    )
+    preview_response = await client.post(
+        f"/api/checkpoints/{checkpoint.id}/handoff",
+        json={
+            "workspace_id": str(workspace.id),
+            "continuation_lead": continuation_lead,
+        },
+    )
+
+    assert preview_response.status_code == 200, preview_response.text
+    preview = preview_response.json()
+    assert preview["continuation_lead"] == {
+        "request_verbatim": continuation_lead,
+        "text": continuation_lead,
+        "authority": "current_user_authored",
+        "request_sha256": hashlib.sha256(
+            continuation_lead.encode("utf-8")
+        ).hexdigest(),
+        "overrides_historical_next_action": True,
+    }
+    assert preview["current_goal"] == handoff["current_goal"]
+    assert "## Continue with — current user lead" in preview["content"]
+    assert "Review the evidence-backed dashboard before continuing." in (
+        preview["content"]
+    )
+    assert "> Keep the historical goal unchanged." in preview["content"]
+    assert preview["sha256"] == hashlib.sha256(
+        preview["content"].encode("utf-8")
+    ).hexdigest()
+
 
 async def test_session_handoff_rendering_deduplicates_and_bounds_file_inventory(
     client,
@@ -2484,6 +2517,61 @@ async def test_session_handoff_materializes_adopted_referenced_context(
     )["status"] == "pass"
 
 
+async def test_fresh_continuation_lead_cannot_reuse_historical_reference(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    historical_reference = {
+        "conversationId": "historical-reference-a",
+        "conversation": [{
+            "role": "assistant",
+            "content": "HISTORICAL_A_REQUIREMENT must be implemented.",
+        }],
+    }
+    historical_request = (
+        "## Referenced ChatGPT conversation:\n"
+        f"{json.dumps(historical_reference)}\n"
+        "## My request for Codex:\n"
+        "[Historical A](chatgpt-conversation://historical-reference-a) "
+        "Implement the referenced proposal."
+    )
+    workspace, document = await _session_source(db_session, tmp_path)
+    events = _events()
+    events[0] = replace(events[0], content=historical_request)
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="fresh-lead-reference-binding",
+        events=events,
+    )
+    checkpoint = (await capture_missing_compaction_checkpoints(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="fresh-lead-reference-binding",
+    ))[0]
+    await db_session.commit()
+    await _qualify_session_context(db_session, checkpoint)
+
+    response = await client.post(
+        f"/api/checkpoints/{checkpoint.id}/handoff",
+        json={
+            "workspace_id": str(workspace.id),
+            "continuation_lead": (
+                "[Fresh B](chatgpt-conversation://fresh-reference-b) "
+                "Implement the referenced proposal."
+            ),
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert "not bound to this lead" in response.json()["detail"]
+    assert "HISTORICAL_A_REQUIREMENT" not in response.text
+
+
 async def test_session_handoff_rejects_unmaterialized_external_goal_dependency(
     client,
     db_session,
@@ -3422,6 +3510,88 @@ async def test_session_handoff_hashes_exact_provider_attachment_without_markup(
     assert all(
         hashlib.sha256(image_bytes).hexdigest() in handoff["content"]
         for _, image_bytes in images
+    )
+
+
+async def test_fresh_continuation_lead_cannot_reuse_historical_attachment(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    image_path = tmp_path / "historical-provider-reference.png"
+    image_bytes = _test_png((110, 70, 30))
+    image_path.write_bytes(image_bytes)
+    historical_request = (
+        "Match the attached screenshot exactly for the historical settings "
+        "panel."
+    )
+    events = _events()
+    events[0] = replace(
+        events[0],
+        content=historical_request,
+        payload={
+            "local_images": [str(image_path)],
+            "input_images": [{
+                "sha256": hashlib.sha256(image_bytes).hexdigest(),
+                "mime_type": "image/png",
+            }],
+        },
+    )
+    workspace, document = await _session_source(db_session, tmp_path)
+    monkeypatch.setattr(
+        "app.services.checkpoints.capture_repository_snapshot",
+        _async_value(_snapshot(tmp_path)),
+    )
+    monkeypatch.setattr(
+        "app.services.checkpoints.settings.data_dir",
+        str(tmp_path / "artifact-data"),
+    )
+    await persist_session_events(
+        db_session,
+        workspace_id=workspace.id,
+        source_document=document,
+        provider="codex",
+        session_id="fresh-lead-attachment-binding",
+        events=events,
+    )
+    checkpoint = (await capture_missing_compaction_checkpoints(
+        db_session,
+        workspace_id=workspace.id,
+        provider="codex",
+        session_id="fresh-lead-attachment-binding",
+    ))[0]
+    await db_session.commit()
+    await _qualify_session_context(db_session, checkpoint)
+
+    response = await client.post(
+        f"/api/checkpoints/{checkpoint.id}/handoff",
+        json={
+            "workspace_id": str(workspace.id),
+            "continuation_lead": (
+                "Use the attached screenshot as the exact source of truth for "
+                "a different dashboard."
+            ),
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert "not bound to this lead" in response.json()["detail"]
+    assert hashlib.sha256(image_bytes).hexdigest() not in response.text
+
+    self_contained = await client.post(
+        f"/api/checkpoints/{checkpoint.id}/handoff",
+        json={
+            "workspace_id": str(workspace.id),
+            "continuation_lead": (
+                "Verify the checkpoint tests and report any failures."
+            ),
+        },
+    )
+    assert self_contained.status_code == 200, self_contained.text
+    assert self_contained.json()["attachment_dependencies"] == []
+    assert hashlib.sha256(image_bytes).hexdigest() not in (
+        self_contained.json()["content"]
     )
 
 

@@ -1,154 +1,403 @@
 # Architecture
 
-DaemonState is a self-hosted context compiler for AI-native builders.
-Its job is to reconstruct the current project state from AI coding sessions,
-code-host activity, conversations, documents, and repo state, then prepare
-trustworthy context for the next human or agent action.
+DaemonState is a self-hosted context compiler and continuation runtime for AI
+coding agents. It reconstructs project state from repository observations,
+local agent sessions, configured providers, documents, and measured run
+evidence, then produces two deliberately separate outputs:
 
-The graph is implementation infrastructure. The product output is a project
-brief: what happened, what matters, what is blocked, what drifted, and what to
-do next.
+- **Workspace Context**, the objective-independent project-wide parent; and
+- **Session Context**, the task-specific child captured from one agent session.
 
-The core contract is source-backed: every extracted fact starts as a raw
-`SourceDocument`, and graph nodes keep enough provenance for users and agents to
-audit where a claim came from.
+The source-backed graph and revision ledger support this work. They are not the
+primary product output and are never allowed to invent an instruction from
+topology, confidence, or display placement.
 
-The intended v2 runtime loop is:
+## Runtime profiles
 
-```text
-prepare context -> agent works -> observe result -> ingest result -> improve next context
-```
-
-Observed current behavior in this checkout: the v2 runtime persistence tables,
-compiler service, `POST /api/context/prepare`, CLI prepare path, and MCP
-observation write tools are present. MCP `prepare_task` calls the compiler
-service when importable and reports `compiler_unavailable` only on integration
-branches where the service is absent.
-
-`context_pack.v2` is the compiler artifact: markdown for an agent/human plus a
-manifest for auditing selected context, excluded context, risks, verification
-commands, stop conditions, and rendering metadata.
-
-## Runtime Shape
+### Workstation
 
 ```text
-Agent / Browser / CLI
-        |
-        | authenticated HTTP
-        v
-TLS proxy -> FastAPI app
-                    |
-                    +-> PostgreSQL/pgvector (durable project state)
-                    +-> Redis (distributed request limits and OAuth nonces)
-                    +-> sync workers (leased, fenced, retryable jobs)
-
-Trusted local agent -> MCP stdio -> the same application services
+Browser on loopback
+       |
+       v
+FastAPI + built React bundle ---- local-only desktop dispatch
+       |                                  |
+       |                                  +--> Codex / Claude / OpenCode app
+       |
+       +--> SQLite
+       +--> local sync worker
+       +--> repository indexer / watcher
+       +--> local agent-session resolvers
+       +--> optional provider CLI adapters
+       +--> optional MCP stdio process
+       +--> optional macOS floating control
 ```
 
-The app is intentionally deployable as one process for bare-metal development.
-SQLite remains the zero-setup local path; Docker Compose and production
-deployments use PostgreSQL with pgvector so indexed vector and full-text search
-are available.
+This is the full product profile. The API, repository, local agent histories,
+and coding tools run as the same workstation user. Browser staging can request a
+new desktop composer on macOS; CLI continuation can start a non-interactive
+provider process and measure its result.
 
-The production profile is a fail-closed, single-tenant substrate. API startup is
-gated on explicit configuration and the current Alembic schema; migrations run
-separately under a PostgreSQL advisory lock. Requests have bounded bodies,
-authentication, distributed rate limits, request IDs, security headers, JSON
-logs, health probes, and Prometheus metrics. OAuth state is encrypted,
-connector-bound, short-lived, and single-use. Local repository reads are
-restricted to canonical allow-listed roots.
+### Personal Docker
 
-Connector jobs use database leases, heartbeats, claim tokens, bounded execution,
-and conditional completion so a stale worker cannot finalize a reclaimed job.
-Delivery remains at-least-once, so provider ingestion must stay idempotent.
+```text
+Browser on loopback
+       |
+       v
+FastAPI + React ---- PostgreSQL/pgvector
+       |                    ^
+       +---- sync worker ---+
+       |
+       +---- /workspace (read-only host repository mount)
+```
 
-The supplied Compose production profile has a single-host failure domain and
-does not claim multi-tenant authorization or high availability. MCP is a trusted
-local stdio interface and is not a public network listener. See the
-[production runbook](production-runbook.md) for the deployment and scaling
-boundary.
+The one-shot migration service must complete before the API starts, and the API
+must become healthy before the worker starts. Docker cannot see host-only agent
+history or desktop applications and cannot write to the mounted repository.
 
-## Data Model
+### Hardened single-host API
 
-Observed legacy graph tables:
+```text
+API client
+    |
+    v
+Caddy TLS proxy
+    |
+    v
+FastAPI app ---- PostgreSQL/pgvector
+    |                     ^
+    +---- Redis           |
+    +---- sync worker ----+
+    +---- read-only repository mount
+    +---- Prometheus metrics
+```
 
-| Table | Purpose |
+The production profile uses immutable images, file-backed secrets, explicit
+migrations under an advisory lock, a separate application database role,
+distributed request limiting, bounded resources, JSON logs, and guarded
+backup/restore tools. It is API-only (`SERVE_FRONTEND=false`), single-tenant,
+single-host, and not highly available.
+
+## Main data flow
+
+```text
+local repository       local agent history       configured providers/uploads
+       |                        |                            |
+       +------------------------+----------------------------+
+                                v
+                    immutable SourceDocument revision
+                                |
+                                v
+                 deterministic / bounded model extraction
+                                |
+                 +--------------+--------------+
+                 |                             |
+                 v                             v
+       claims, components, facts       evidenced relationships
+                 |                             |
+                 +--------------+--------------+
+                                |
+            +-------------------+-------------------+
+            |                                       |
+            v                                       v
+Workspace Foundation Compiler             checkpoint/handoff compiler
+            |                                       |
+            v                                       v
+    Workspace Context                         Session Context
+            |                                       |
+            +-------------------+-------------------+
+                                v
+                    browser, CLI, or MCP delivery
+                                |
+                                v
+                optional measured AgentRun observations
+                                |
+                                +----> next compilation cycle
+```
+
+Raw content is durable before projection. If extraction or a worker is
+interrupted, unprocessed source revisions remain recoverable.
+
+## Persistence model
+
+The SQLAlchemy model is shared by SQLite and PostgreSQL, with pgvector-specific
+retrieval available in the PostgreSQL profile.
+
+### Project boundary and sources
+
+| Record | Purpose |
 |---|---|
-| `workspaces` | User-visible workspace/project containers. |
-| `connectors` | Workspace-scoped connector state and config. |
-| `sync_jobs` | Connector sync attempts, status, and errors. |
-| `source_documents` | Raw source evidence from files, providers, and agent sessions. |
-| `models` | Semantic buckets such as Decision, Task, Issue, PR, Document. |
-| `components` | Atomic extracted facts with status, temporal state, confidence, and provenance. |
-| `relationships` | Typed edges with confidence, origin, status, and evidence. |
+| `workspaces` | User-visible project/demo/sandbox boundary, lifecycle, and current selection scope. |
+| `workspace_goals` | Explicit active goal for task resolution. |
+| `source_documents` | Immutable raw content revisions with source identity, hashes, workspace, visibility, metadata, and supersession. |
+| `source_read_grants` | Principal-specific access to restricted source revisions, bound to a permission snapshot. |
+| `connectors` | Workspace-scoped encrypted provider configuration and current connection state. |
+| `sync_jobs` | Leased connector/source work, retries, heartbeats, claim tokens, terminal state, and errors. |
 
-Observed current behavior: `SourceDocument`, `Component`, and related v2 tables
-have direct nullable `workspace_id` columns. Some legacy rows may still carry
-workspace hints in metadata, so shared workspace-scope helpers remain the safest
-path for mixed data.
+### Knowledge and provenance
 
-Implemented in this branch, v2 adds source-backed runtime and compiler tables:
+| Record | Purpose |
+|---|---|
+| `evidence_spans` | Exact source-backed text spans and hashes. |
+| `claims` / `claim_revisions` | Stable claim identity plus append-only valid-time/transaction-time lifecycle. |
+| `models` / `components` | Legacy semantic buckets and atomic source-backed facts used by current graph/query/memory projections. |
+| `entities`, `facts`, `mentions`, `entity_aliases` | Normalized identity/fact projection for richer source-backed reasoning. |
+| `relationships` | Typed graph edges with evidence, origin, confidence, lifecycle, and review state. |
+| `unresolved_relationships` | Relationship candidates whose target cannot be resolved safely. |
 
-- `evidence_spans`, `claims`, and `claim_revisions`;
-- `context_packs` and `context_pack_items`;
-- `agent_runs` and `run_observations`;
-- `code_files`, `code_symbols`, `code_edges`, and `repo_events`.
+### Repository observations
 
-Trust zones separate generated instructions from source evidence. Slack, email,
-Drive, web, uploads, and agent-observation text are treated as evidence, not as
-instructions to execute.
+| Record | Purpose |
+|---|---|
+| `code_files` | Workspace/repository-scoped file identity, hashes, syntax metadata, and snapshot state. |
+| `code_symbols` | Bounded declarations/definitions with file/line identity. |
+| `code_edges` | Deterministically observed imports, route ownership, local calls, and test links. |
+| `repo_events` | Bounded watcher snapshots and change evidence. |
 
-## Ingestion Flow
+### Continuation and execution
 
-1. A connector, upload, import, or demo seed creates a `SourceDocument`.
-2. `IngestionService.process_document()` chooses a deterministic extractor when
-   the source supports one.
-3. GitHub issues/PRs and AI session sources use deterministic extractors.
-4. Other source types use LiteLLM extraction when configured, then regex
-   fallback.
-5. Extracted facts are upserted as `Component` rows.
-6. Relationships are created only when the extracted relationship has enough
-   confidence and can resolve to a target component.
-7. The source document is marked processed.
+| Record | Purpose |
+|---|---|
+| `session_events` | Normalized provider session ledger with sequence and event identity. |
+| `work_checkpoints` | Immutable session boundary and repository fingerprint. |
+| `checkpoint_items`, `checkpoint_evidence`, `checkpoint_verifications` | Structured checkpoint state, sources, and reconciliation results. |
+| `context_packs`, `context_pack_items` | Persisted `context_pack.v2` audit manifest/Markdown and selected/excluded items. |
+| `continuation_executions`, requirements/observations | Typed provider-neutral request, authority, requirement, verifier, prompt, and idempotency contract. |
+| `agent_runs`, `run_observations` | Measured worker/provider execution and bounded Git/check/output evidence. |
+| `open_loops` | Durable unresolved work derived from current evidence. |
+| `verified_playbooks` | Human-reviewed reusable workflow candidates. |
 
-## Provenance Rules
+Schema changes are applied through Alembic. `daemonstate db deploy` reconciles
+an unversioned legacy database once and then uses immutable revisions. Compose
+starts no long-running process until the migration gate succeeds.
 
-- Preserve raw source content before extraction.
-- Every important fact should expose `provenance`, `excerpt`, source type, and
-  source document ID through graph/query APIs.
-- Every relationship should expose `evidence`, `origin`, confidence, and review
-  status.
-- Do not create a parallel vector-only knowledge base beside the structured
-  graph. Retrieval should return graph components and source-backed traces.
+## Source ingestion
 
-## Query And Agent Outputs
+1. A connector, upload, CLI import, local session resolver, repository indexer,
+   demo seed, or runtime recorder proposes a source revision.
+2. `ingest_source_document_revision` computes stable source identity and content
+   hashes, deduplicates unchanged input, and appends a revision when content
+   changed.
+3. The transaction commits the raw revision before projection.
+4. Local development can process inline/background; production queues durable
+   worker ingestion.
+5. `IngestionService` chooses a deterministic extractor where available.
+6. GitHub issues/PRs and supported agent sessions use typed deterministic
+   extractors. Other sources can use a configured LiteLLM extraction model and
+   fall back to bounded regex behavior.
+7. Facts and relationships are upserted only with the required evidence and
+   resolvable identity. Unknown targets remain unresolved instead of becoming a
+   guessed edge.
+8. The source revision is marked processed.
 
-All production model calls follow the versioned, trust-separated
-[prompt quality contract](prompt-quality.md), including strict local output
-validation and deterministic fallbacks.
+Provider delivery is at-least-once. External IDs, source hashes, conditional
+job completion, and revision deduplication make retries safe.
 
-`POST /api/query` returns a stable `query.v1` response with retrieval knobs:
-`top_k`, `min_confidence`, and optional `hybrid`. The response includes
-`trace.facts_used`, relationship expansion evidence, and deterministic reranker
-features such as exact-match score and query-token coverage. When no embedding
-provider is configured, retrieval is explicitly lexical-only rather than
-non-semantic hash-vector ranking.
+## Repository indexer
 
-Observed legacy context packs can still be generated from either the full graph
-or a selected component plus one-hop neighbors. The v2 path is available through
-`POST /api/context/prepare`, `daemonstate prepare`, and MCP `prepare_task`, with
-remaining hardening focused on final manifest consistency and idempotency.
+`RepoIndexer` performs one bounded, Git-aware scan. It records repository root,
+branch/detached state, HEAD, dirty status entries, changed paths, supported
+files, manifests, languages, declarations, routes, imports, tests, and hashes.
 
-The intended high-level outputs are:
+It does not execute project commands. Deterministic follow-on adapters derive:
 
-- a current project-state brief;
-- blockers, risks, and unresolved work;
-- mismatches between agent-session intent and recorded project state;
-- source-backed answers to project questions;
-- a focused context packet for the next agent run.
+- project-root and top-level-area source evidence;
+- exact local-module imports;
+- route-to-handler ownership;
+- binding-resolved local calls where the parser can prove them;
+- static HTTP route references; and
+- deterministic test-path/test-symbol links.
 
-## Launch Demo
+An import is structural evidence, not proof that a call happened. A test link
+is impact evidence, not proof that the test ran. Unsupported languages can
+still contribute file and line-level state while semantic coverage remains
+explicitly incomplete.
 
-`POST /api/seed-demo` creates an idempotent workspace seed from launch-available
-source families only: GitHub, Slack, Gmail, Google Drive, and Codex. It does not
-mark provider connectors as authenticated or connected.
+Repository paths are canonicalized. `ALLOWED_REPO_ROOTS` constrains all local
+reads when set. Docker fixes the allowed root to the read-only `/workspace`
+mount.
+
+## Workspace Foundation Compiler
+
+Project-snapshot mode calls `ContextCompiler` with no user objective or session
+continuation. It produces a repository inventory, compiles durable project
+facts from authorized sources, loads compatible verification observations, and
+passes those inputs to `WorkspaceFoundationCompiler`.
+
+The resulting `workspace_foundation.v2` payload contains typed records and a
+central evidence registry. Records refer to evidence IDs; file-bound evidence
+includes current SHA-256, optional line/symbol/heading identity, derivation rule,
+and evidence tier.
+
+### Evidence tiers
+
+Runtime/test verification, code observation, system verification,
+documentation statements, human confirmation, and independent corroboration
+remain distinct. Historical/provisional and conflicting/superseded evidence is
+retained for audit but cannot support a current foundation record.
+
+### Compiler lanes
+
+1. Read bounded repository-stated product claims and system flows.
+2. Observe stack, architecture, commands, and required-check policy.
+3. Map capabilities to candidate/exact routes, symbols, files, and edges.
+4. Construct implementation traces without turning imports or proximity into
+   runtime calls.
+5. Classify current repository state and attach bounded semantic deltas without
+   inferring intent or completion.
+6. Attach verification state to declared commands only when a persisted
+   local-harness observation and exact repository-after snapshot match the
+   current frame.
+7. Compile repository engineering knowledge separately from evidence-gated
+   durable project knowledge.
+8. Compute copy safety, semantic coverage, and repository health separately.
+9. Bind the semantic payload and complete artifact to SHA-256 hashes and render
+   a bounded Workspace Context.
+
+The v2 artifact schema already reserves first-class `production_flows`,
+`verification_runs`, `change_intents`, and `durable_facts` collections. The
+default compiler currently leaves those four collections empty, and the
+default renderer does not project them. Their stricter admission rules are
+documented as the completion contract rather than presented as shipped output.
+
+The browser validates schema, workspace/repository identity, quality, content
+hash, semantic hash, and artifact hash. Copy recompiles immediately so a valid
+but stale preview cannot cross the clipboard boundary.
+
+See [Workspace Foundation Compiler](workspace-foundation-compiler.md) for the
+record and quality contract.
+
+## Session checkpoints and handoffs
+
+Local session adapters normalize provider events into a workspace-scoped
+ledger. Capture selects a stable boundary—usually the current tip or an exact
+pre-compaction event—and writes an immutable checkpoint with structured items
+for goal, progress, decisions, attempts, files, verification, blockers, and next
+action.
+
+Handoff compilation:
+
+1. authorizes every source before it can influence output;
+2. verifies that provider, session, source revision, checkpoint, and sequence
+   still match;
+3. reconciles the captured repository state with the live repository;
+4. verifies attachments and required portable references;
+5. separates durable project facts from task-local session state;
+6. emits `session_handoff.v1` plus a bounded `compact_v2` or rollback
+   `legacy_v1` Markdown projection; and
+7. blocks direct copy on integrity, freshness, contradiction, missing-artifact,
+   or quality failures.
+
+Session commands remain quoted historical evidence. No checkpoint endpoint
+replays them automatically.
+
+## Continuation execution
+
+Continuation preparation resolves a task from an explicit user objective, the
+active workspace goal, or the latest substantive request in an authorized
+in-scope session. An explicitly pinned provider/session or checkpoint fails if
+it cannot be loaded; the runtime does not substitute a different task.
+
+It then persists:
+
+- a complete audit `context_pack.v2`;
+- a `continuation_execution.v1` typed contract with the byte-preserved request
+  and SHA-256;
+- source-span-to-requirement lineage and MUST/SHOULD priority;
+- task-mode-specific authority;
+- repository and pre-existing-change protection;
+- required artifacts and receiver availability;
+- a bounded read plan; and
+- requirement-linked command, browser, screenshot, event, or external
+  verification contracts.
+
+Browser staging renders a reviewable context, copies it, and requests a macOS
+desktop composer. It starts no provider process and creates no `AgentRun`.
+
+CLI/HTTP run invokes an audited local adapter, captures bounded stdout/stderr and
+Git state, applies preservation gates, executes only typed requirement-linked
+verifiers, and records an outcome. Provider exit and self-report do not prove
+completion.
+
+## Query and retrieval
+
+`POST /api/query` returns `query.v1` with the question, answer, confidence,
+ranked components, sources, and a trace that names retrieval/ranking/calibration
+strategies, facts used, and relationship evidence.
+
+Modes:
+
+- `indexed`: persisted authorized sources only;
+- `live`: bounded local repository and/or configured GitHub retrieval; and
+- `combined`: both, without obscuring the origin lane.
+
+When no embedding model is configured, behavior is explicitly lexical-only.
+The disabled-by-default hashing embedder is not represented as semantic search.
+Authorization predicates are applied before source evidence becomes a
+retrieval candidate.
+
+## Access and trust boundaries
+
+### API scopes
+
+- With no keys configured, loopback personal installs use unrestricted local
+  scope.
+- `SERVER_API_KEY` maps to unrestricted administrator scope.
+- configured principal tokens map server-side to allowed workspace IDs;
+  request-authored workspace claims are ignored.
+- restricted source revisions require a current matching read grant.
+- inaccessible sources are filtered in SQL before retrieval, memory promotion,
+  checkpoint compilation, or corroboration counts.
+
+### Local actions
+
+Provider readiness, desktop staging, automatic provider runs, recorded-session
+open, and native overlay control validate a loopback peer. Forwarded headers do
+not turn a remote request into a local action. Some routes also require the
+trusted `local` principal.
+
+### Untrusted content
+
+Slack, email, Drive, uploads, web/provider text, and imported agent narration
+are evidence, not instructions. Model-facing renderers keep sources in separate
+trust zones, blockquote historical content, score common prompt-injection
+patterns, and exclude high-risk/unsupported candidates under the compiler
+contract.
+
+### Secrets
+
+Connector credentials are Fernet-encrypted at rest. OAuth state is encrypted,
+short-lived, single-use, and connector-bound. API and metrics authentication
+are separate. Production consumes secrets from mounted files, drops privileges
+before importing the app, and does not expose secrets in the Compose
+environment.
+
+## Observability
+
+- Structured request IDs appear in responses and logs.
+- Prometheus covers request totals/duration/in-flight state, readiness, rate
+  limiting, workers, and relevant runtime counters.
+- Production JSON logs avoid raw request/source content by contract.
+- Optional OpenTelemetry exports metadata-only spans. Content capture is
+  rejected, and production endpoints must use HTTPS.
+- Captured provider output and repository scans have size/count/time bounds.
+
+## Failure and scaling boundaries
+
+- SQLite is the zero-setup workstation store; it is not the production
+  concurrency path.
+- The production database, Redis, app, worker, proxy, and metrics services share
+  one host/failure domain.
+- Prometheus multiprocess collection is not configured, so production permits
+  one API worker.
+- Connector delivery is at-least-once and workers depend on idempotent ingestion.
+- Static repository analysis does not prove runtime behavior or external
+  provider effects.
+- Browser dispatch proves only that a local open request was attempted.
+- The dashboard has no login/session/CSRF boundary and therefore stays out of
+  the public production profile.
+- Multi-tenant policy, managed object storage, high availability, and
+  multi-region recovery are not implemented.
+
+For deployment procedures, see [Self-hosting](self-hosting.md) and the
+[Production runbook](production-runbook.md).
