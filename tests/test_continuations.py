@@ -41,7 +41,10 @@ from app.models import (
 from app.models_continuation_stage import ContinuationStageRequest
 from app.services.access import AccessScope
 from app.services import continuation as continuation_module
-from app.services.checkpoints import capture_checkpoint
+from app.services.checkpoints import (
+    MAX_CONTINUATION_LEAD_CHARS,
+    capture_checkpoint,
+)
 from app.services.continuation import _checkpoint_repo_compatible
 from app.services.continuation_quality_gate import (
     ContinuationQualityIssue,
@@ -3231,6 +3234,111 @@ async def test_stage_requires_a_lead_or_exact_source_boundary(client) -> None:
     assert "unknown future instruction" in response.json()["detail"]["message"]
 
 
+@pytest.mark.parametrize(
+    "endpoint",
+    (
+        "/api/continuations/stage",
+        f"/api/checkpoints/{uuid4()}/handoff",
+    ),
+)
+@pytest.mark.parametrize(
+    "continuation_lead, expected_message",
+    (
+        (
+            "Continue",
+            "must be a substantive user instruction",
+        ),
+        (
+            "x" * (MAX_CONTINUATION_LEAD_CHARS + 1),
+            "at most 12000 characters",
+        ),
+    ),
+)
+async def test_continuation_lead_validation_is_shared_and_bounded(
+    client,
+    endpoint,
+    continuation_lead,
+    expected_message,
+) -> None:
+    response = await client.post(
+        endpoint,
+        json={
+            "workspace_id": str(uuid4()),
+            "continuation_lead": continuation_lead,
+            **(
+                {
+                    "idempotency_key": "shared-lead-validation",
+                    "target_provider": "codex",
+                }
+                if endpoint.endswith("/stage")
+                else {}
+            ),
+        },
+    )
+
+    assert response.status_code == 422
+    assert expected_message in response.text.replace(",", "")
+
+
+async def test_stage_accepts_continuation_lead_without_explicit_source_boundary(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    historical_goal = "Review the existing dashboard without editing files."
+    continuation_lead = "Implement the approved dashboard improvements."
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=historical_goal,
+        session_id="lead-only-stage-source",
+        provider="codex",
+        compaction_count=2,
+    )
+    _initialize_git_repository(tmp_path)
+    launch_calls: list[str] = []
+
+    def fake_launch(_provider: str, *, cwd: str, prompt: str):
+        assert cwd == str(tmp_path)
+        launch_calls.append(prompt)
+        return {
+            "open_requested": True,
+            "navigation_requested": True,
+            "prefill_requested": True,
+            "context_copied": True,
+            "context_delivery": "desktop_composer_prefill_and_clipboard",
+        }
+
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.launch_harness_composer",
+        fake_launch,
+    )
+    response = await client.post(
+        "/api/continuations/stage",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "idempotency_key": "lead-only-stage",
+            "target_provider": "codex",
+            "continuation_lead": continuation_lead,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["preparation"]["source_session"]["session_id"] == (
+        "lead-only-stage-source"
+    )
+    assert body["preparation"]["task"]["historical_goal"]["text"] == (
+        historical_goal
+    )
+    assert body["preparation"]["execution_contract"]["task"][
+        "request_verbatim"
+    ] == continuation_lead
+    assert len(launch_calls) == 1
+
+
 async def test_stage_requires_an_idempotency_key_before_desktop_dispatch(
     client,
     db_session,
@@ -3618,6 +3726,104 @@ async def test_stage_auto_rejects_codex_effort_after_selecting_claude(
     assert list(await db_session.scalars(select(AgentRun))) == []
 
 
+@pytest.mark.parametrize(
+    (
+        "historical_goal",
+        "continuation_lead",
+        "expected_task_mode",
+        "expected_filesystem_mode",
+    ),
+    (
+        (
+            "Review the dashboard and report risks without editing files.",
+            "Implement the dashboard improvements and update the tests.",
+            "change",
+            "workspace_write",
+        ),
+        (
+            "Implement the dashboard improvements and update the tests.",
+            "Review the dashboard and report risks without editing files.",
+            "review",
+            "read_only",
+        ),
+    ),
+)
+async def test_stage_compiles_typed_metadata_from_effective_continuation_lead(
+    client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+    historical_goal,
+    continuation_lead,
+    expected_task_mode,
+    expected_filesystem_mode,
+) -> None:
+    workspace = await _seed_session(
+        db_session,
+        tmp_path,
+        goal=historical_goal,
+        session_id=f"effective-lead-{expected_task_mode}",
+        provider="codex",
+        compaction_count=2,
+    )
+    _initialize_git_repository(tmp_path)
+    launch_calls: list[str] = []
+
+    def fake_launch(_provider: str, *, cwd: str, prompt: str):
+        assert cwd == str(tmp_path)
+        launch_calls.append(prompt)
+        return {
+            "open_requested": True,
+            "navigation_requested": True,
+            "prefill_requested": True,
+            "context_copied": True,
+            "context_delivery": "desktop_composer_prefill_and_clipboard",
+        }
+
+    monkeypatch.setattr(
+        "app.services.continuation_runtime.launch_harness_composer",
+        fake_launch,
+    )
+    response = await client.post(
+        "/api/continuations/stage",
+        json={
+            "workspace_id": str(workspace.id),
+            "repo_path": str(tmp_path),
+            "idempotency_key": f"effective-lead-{expected_task_mode}",
+            "target_provider": "codex",
+            "source_provider": "codex",
+            "source_session_id": f"effective-lead-{expected_task_mode}",
+            "continuation_lead": continuation_lead,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    contract = body["preparation"]["execution_contract"]
+    assert contract["task"]["request_verbatim"] == continuation_lead
+    assert contract["task_mode"] == expected_task_mode
+    assert contract["authority"]["filesystem_mode"] == (
+        expected_filesystem_mode
+    )
+    assert body["preparation"]["task"]["historical_goal"]["text"] == (
+        historical_goal
+    )
+    assert body["preparation"]["checkpoint"]["goal"] == historical_goal
+    assert body["delivery"]["task_mode"] == expected_task_mode
+    assert body["delivery"]["filesystem_mode"] == expected_filesystem_mode
+    assert body["run"]["objective"] == body["preparation"]["objective"]
+    expected_lead_sha256 = hashlib.sha256(
+        continuation_lead.encode("utf-8")
+    ).hexdigest()
+    assert body["delivery"]["continuation_lead_sha256"] == (
+        expected_lead_sha256
+    )
+    assert body["preparation"]["manifest"]["continuation"][
+        "continuation_lead_sha256"
+    ] == expected_lead_sha256
+    assert len(launch_calls) == 1
+
+
 @pytest.mark.parametrize("target_provider", ("codex", "claude", "opencode"))
 @pytest.mark.parametrize("brief_variant", ("legacy_v1", "compact_v2"))
 async def test_stage_continuation_opens_selected_desktop_without_execution(
@@ -3706,6 +3912,13 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
         else {}
     )
     stage_key = f"stage-context-and-wait-{brief_variant}"
+    continuation_lead = (
+        "Review the evidence-backed handoff dashboard.\n"
+        "Then continue with the selected provider."
+    )
+    continuation_lead_sha256 = hashlib.sha256(
+        continuation_lead.encode("utf-8")
+    ).hexdigest()
 
     response = await client.post(
         "/api/continuations/stage",
@@ -3716,6 +3929,7 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
             "target_provider": target_provider,
             "source_provider": "codex",
             "source_session_id": "waiting-handoff-source",
+            "continuation_lead": continuation_lead,
             **requested_settings,
         },
     )
@@ -3752,6 +3966,12 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     assert body["delivery"]["context_scope"] == "session"
     assert body["delivery"]["context_render_variant"] == brief_variant
     assert body["delivery"]["source_session_id"] == "waiting-handoff-source"
+    assert body["delivery"]["continuation_lead_sha256"] == (
+        continuation_lead_sha256
+    )
+    assert body["delivery"]["harness_session"][
+        "continuation_lead_sha256"
+    ] == continuation_lead_sha256
     assert body["delivery"]["handoff_id"] == body["run"]["handoff_id"]
     assert "session_id" not in body["delivery"]["harness_session"]
     assert body["delivery"]["harness_session"]["awaiting_user"] is True
@@ -3769,6 +3989,20 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     )
     assert body["delivery"]["harness_session"]["prefill_requested"] is True
     assert body["run"]["provider_session_id"] is None
+    assert body["run"]["continuation_lead_sha256"] == (
+        continuation_lead_sha256
+    )
+    assert body["run"]["objective"] == body["preparation"]["objective"]
+    assert body["preparation"]["execution_contract"]["task"][
+        "request_verbatim"
+    ] == continuation_lead
+    assert body["preparation"]["task"]["historical_goal"]["text"] == goal
+    assert body["delivery"]["task_mode"] == body["preparation"][
+        "execution_contract"
+    ]["task_mode"]
+    assert body["delivery"]["filesystem_mode"] == body["preparation"][
+        "execution_contract"
+    ]["authority"]["filesystem_mode"]
     assert body["preparation"]["quality_report"]["launchable"] is False
     assert body["preparation"]["project_context"]["copy_ready"] is True
     assert any(
@@ -3782,10 +4016,21 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
             "/api/checkpoints/"
             f"{body['preparation']['checkpoint']['id']}/handoff"
         ),
-        json={"workspace_id": str(workspace.id)},
+        json={
+            "workspace_id": str(workspace.id),
+            "continuation_lead": continuation_lead,
+        },
     )
     assert canonical_handoff.status_code == 200, canonical_handoff.text
     assert canonical_handoff.json()["schema_version"] == "session_handoff.v1"
+    assert canonical_handoff.json()["continuation_lead"]["request_verbatim"] == (
+        continuation_lead
+    )
+    assert canonical_handoff.json()["current_goal"]["request_verbatim"] == goal
+    assert canonical_handoff.json()["task_mode"] == body["delivery"]["task_mode"]
+    assert canonical_handoff.json()["execution_policy"]["permission_mode"] == (
+        body["delivery"]["filesystem_mode"]
+    )
     assert staged_context == canonical_handoff.json()["content"]
     expected_heading = (
         "# Continuation Brief v2\n"
@@ -3798,6 +4043,7 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     assert "Reasoning effort" not in staged_context
     if brief_variant == "compact_v2":
         assert {
+            "## Continue with",
             "## Goal",
             "## State now",
             "## Start here",
@@ -3807,6 +4053,7 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
         assert "## Current main goal" not in staged_context
         assert "## Exact next action" not in staged_context
     else:
+        assert "## Continue with — current user lead" in staged_context
         assert "## Current main goal" in staged_context
         assert "## Current state" in staged_context
         assert "## Exact next action" in staged_context
@@ -3874,6 +4121,7 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
             "target_provider": target_provider,
             "source_provider": "codex",
             "source_session_id": "waiting-handoff-source",
+            "continuation_lead": continuation_lead,
             **requested_settings,
         },
     )
@@ -3888,6 +4136,27 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
     assert len(stage_requests) == 1
     assert stage_requests[0].status == "succeeded"
     assert stage_requests[0].target_provider == target_provider
+
+    changed_lead_conflict = await client.post(
+        "/api/continuations/stage",
+        json={
+            "workspace_id": str(workspace_id),
+            "repo_path": str(tmp_path),
+            "idempotency_key": stage_key,
+            "target_provider": target_provider,
+            "source_provider": "codex",
+            "source_session_id": "waiting-handoff-source",
+            "continuation_lead": (
+                continuation_lead + " Verify the final rendering."
+            ),
+            **requested_settings,
+        },
+    )
+    assert changed_lead_conflict.status_code == 409
+    assert changed_lead_conflict.json()["detail"]["code"] == (
+        "continuation_idempotency_conflict"
+    )
+    assert len(launch_calls) == 1
 
     conflicting_provider = next(
         provider
@@ -3944,6 +4213,10 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
         ],
         "source_provider": "codex",
         "source_session_id": "waiting-handoff-source",
+        "selected_objective": body["preparation"]["manifest"][
+            "continuation"
+        ]["selected_objective"],
+        "continuation_lead_sha256": continuation_lead_sha256,
     }
     assert len(json.dumps(staged_handoff)) < 100_000
 
@@ -3972,6 +4245,7 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
             "target_provider": target_provider,
             "source_provider": "codex",
             "source_session_id": "waiting-handoff-source",
+            "continuation_lead": continuation_lead,
             **requested_settings,
         },
     )
@@ -4009,6 +4283,7 @@ async def test_stage_continuation_opens_selected_desktop_without_execution(
             "target_provider": target_provider,
             "source_provider": "codex",
             "source_session_id": "waiting-handoff-source",
+            "continuation_lead": continuation_lead,
             **requested_settings,
         },
     )

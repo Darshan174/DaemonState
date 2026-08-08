@@ -28,6 +28,10 @@ _NON_AUTHORITATIVE_HEADING_RE = re.compile(
     r"for reference|untrusted)\b",
     re.IGNORECASE,
 )
+_CURRENT_USER_REQUEST_MARKER_RE = re.compile(
+    r"(?<!\S)#{1,6}\s*My request(?: for Codex)?:\s*",
+    re.IGNORECASE,
+)
 _IMAGE_TRANSPORT_TAG_RE = re.compile(
     r"(?is)</?image\b[^>]*>",
 )
@@ -1393,10 +1397,14 @@ def _request_section_heading(value: str) -> str | None:
 def _request_directive_text(value: str) -> str:
     """Remove quoted/history regions before inferring execution authority."""
 
+    raw_value = str(value or "")
+    request_marker = _CURRENT_USER_REQUEST_MARKER_RE.search(raw_value)
+    if request_marker is not None:
+        raw_value = raw_value[request_marker.end():]
     lines: list[str] = []
     fence_marker: str | None = None
     ignore_section = False
-    for raw_line in str(value or "").splitlines():
+    for raw_line in raw_value.splitlines():
         stripped = raw_line.strip()
         fence_match = re.match(r"^(`{3,}|~{3,})", stripped)
         if fence_match:
@@ -1425,8 +1433,36 @@ def _request_directive_text(value: str) -> str:
             " ",
             raw_line,
         )
-        if without_inline_history.strip():
-            lines.append(without_inline_history)
+        without_reference_links = re.sub(
+            r"\[[^\]\n]{1,500}\]\([^\)\n]{1,2000}\)",
+            " ",
+            without_inline_history,
+        )
+        without_request_wrapper = re.sub(
+            r"^\s*(?:[-*+]|\d+[.)])\s+",
+            "",
+            without_reference_links,
+        )
+        without_request_wrapper = re.sub(
+            r"^\s*\*\*(?:action|goal|request|task)\s*:?\*\*\s*",
+            "",
+            without_request_wrapper,
+            flags=re.IGNORECASE,
+        )
+        without_request_wrapper = re.sub(
+            r"^\s*(?:action|goal|request|task)\s*:\s*",
+            "",
+            without_request_wrapper,
+            flags=re.IGNORECASE,
+        )
+        without_quoted_history = re.sub(
+            r'"[^"\n]{1,500}"|“[^”\n]{1,500}”|'
+            r"(?<!\w)'[^'\n]{1,500}'(?!\w)|‘[^’\n]{1,500}’",
+            " ",
+            without_request_wrapper,
+        )
+        if without_quoted_history.strip():
+            lines.append(without_quoted_history)
     return "\n".join(lines)
 
 

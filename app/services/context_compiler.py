@@ -3434,6 +3434,9 @@ def _normalize_continuation_metadata(
         "current_repo_fingerprint": 64,
         "task_mode": 32,
         "request_sha256": 64,
+        "continuation_lead_sha256": 64,
+        "historical_request_sha256": 64,
+        "historical_objective": None,
     }
     normalized: dict[str, Any] = {}
     for key, limit in limits.items():

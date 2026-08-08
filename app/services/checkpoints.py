@@ -111,6 +111,7 @@ SESSION_HANDOFF_RENDERED_VERIFICATION_LIMIT = 2
 SESSION_HANDOFF_RENDERED_STATEMENT_CHARS = 300
 SESSION_HANDOFF_RENDERED_COMMAND_CHARS = 240
 SESSION_HANDOFF_RENDERED_RESULT_CHARS = 160
+MAX_CONTINUATION_LEAD_CHARS = 12_000
 # Roughly 1,750 model tokens: enough for bounded evidence without letting
 # session history dominate the authoritative current goal.
 SESSION_HANDOFF_MAX_OVERHEAD_CHARS = 7_000
@@ -322,7 +323,7 @@ _REFERENCED_CONVERSATION_MARKER_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _CURRENT_CODEX_REQUEST_MARKER_RE = re.compile(
-    r"(?<!\S)#{1,6}\s*My request for Codex:\s*",
+    r"(?<!\S)#{1,6}\s*My request(?: for Codex)?:\s*",
     re.IGNORECASE,
 )
 _CHATGPT_MARKDOWN_LINK_RE = re.compile(
@@ -436,6 +437,20 @@ _SESSION_ATTACHMENT_VISUAL_DEPENDENCY_RE = re.compile(
     r"\b(?:attached|image|screenshot|reference|mockup|design|visual)\b"
     r".{0,160}\b(?:source\s+of\s+truth|colou?rs?|spacing|typography|"
     r"responsive|layout)\b"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+_CONTINUATION_LEAD_ATTACHMENT_DEPENDENCY_RE = re.compile(
+    r"(?:"
+    r"\b(?:attached|attachment)\b|"
+    r"\b(?:inspect|look\s+at|analy[sz]e|examine|review|check|compare|"
+    r"debug|diagnose|explain|use|match|copy|recreate|replicate|mirror|follow)\b"
+    r".{0,120}\b(?:this|that|the\s+attached)\s+"
+    r"(?:image|screenshot|mockup|visual\s+reference)\b|"
+    r"\b(?:this|that|the\s+attached)\s+"
+    r"(?:image|screenshot|mockup|visual\s+reference)\b"
+    r".{0,120}\b(?:inspect|look|analy[sz]e|examine|review|check|compare|"
+    r"debug|diagnose|explain|use|match|copy|recreate|replicate|mirror|follow)\b"
     r")",
     re.IGNORECASE | re.DOTALL,
 )
@@ -2922,6 +2937,20 @@ def _request_requires_materialized_context(request_verbatim: str) -> bool:
     )
 
 
+def _continuation_lead_requires_unbound_evidence(
+    request_verbatim: str,
+) -> bool:
+    """Return whether a fresh lead needs evidence not bound to its user turn."""
+
+    return bool(
+        _request_requires_materialized_context(request_verbatim)
+        or _SESSION_IMAGE_TAG_RE.search(request_verbatim)
+        or _CONTINUATION_LEAD_ATTACHMENT_DEPENDENCY_RE.search(
+            request_verbatim
+        )
+    )
+
+
 def session_request_requires_materialized_context(request_verbatim: str) -> bool:
     """Return whether a portable handoff must embed referenced session material."""
 
@@ -4040,10 +4069,28 @@ def _session_task_directive_text(request_verbatim: str) -> str:
     return "\n".join(lines)
 
 
+def validate_continuation_lead(value: str | None) -> str | None:
+    if value is None:
+        return None
+    raw = str(value)
+    if len(raw) > MAX_CONTINUATION_LEAD_CHARS:
+        raise ValueError(
+            "The continuation lead must be at most "
+            f"{MAX_CONTINUATION_LEAD_CHARS:,} characters."
+        )
+    normalized = normalize_substantive_user_request(raw)
+    if not raw.strip() or not is_substantive_user_request(normalized):
+        raise ValueError(
+            "The continuation lead must be a substantive user instruction."
+        )
+    return raw
+
+
 def build_session_handoff_contract(
     checkpoint: WorkCheckpoint,
     *,
     request_verbatim: str,
+    continuation_lead: str | None = None,
     supporting_context: Iterable[dict[str, str]] = (),
     trusted_attachment_descriptors: Iterable[
         TrustedRequestImageDescriptor
@@ -4054,8 +4101,27 @@ def build_session_handoff_contract(
 ) -> dict[str, Any]:
     """Build the typed, reconciled contract used by the copyable rendering."""
 
+    normalized_continuation_lead = validate_continuation_lead(
+        continuation_lead
+    )
+    effective_request = normalized_continuation_lead or request_verbatim
+    lead_matches_historical_request = bool(
+        normalized_continuation_lead
+        and _sha256(normalized_continuation_lead) == _sha256(request_verbatim)
+    )
+    if (
+        normalized_continuation_lead
+        and not lead_matches_historical_request
+        and _continuation_lead_requires_unbound_evidence(effective_request)
+    ):
+        raise ValueError(
+            "The continuation lead depends on referenced conversation or "
+            "attachment evidence that is not bound to this lead. Capture the "
+            "evidence in a new user turn or rewrite the lead so it is "
+            "self-contained."
+        )
     normalized_supporting = _normalize_supporting_context(list(supporting_context))
-    dependency_required = _request_requires_materialized_context(request_verbatim)
+    dependency_required = _request_requires_materialized_context(effective_request)
     if dependency_required and not normalized_supporting:
         raise ValueError(
             "The session goal depends on referenced conversation context that "
@@ -4068,10 +4134,14 @@ def build_session_handoff_contract(
     )
     sections = _handoff_presentation_sections(data["sections"])
     derived_requirements = _derive_session_requirements_from_fragments(
-        request_verbatim,
-        request_fragments=_stored_session_request_fragments(
-            sections,
-            request_verbatim=request_verbatim,
+        effective_request,
+        request_fragments=(
+            []
+            if normalized_continuation_lead
+            else _stored_session_request_fragments(
+                sections,
+                request_verbatim=request_verbatim,
+            )
         ),
         supporting_context=normalized_supporting,
     )
@@ -4089,27 +4159,45 @@ def build_session_handoff_contract(
             "id": f"R{len(requirements) + 1}",
         })
     attachment_dependencies = _session_attachment_dependencies(
-        request_verbatim,
-        trusted_descriptors=trusted_attachment_descriptors,
+        effective_request,
+        trusted_descriptors=(
+            trusted_attachment_descriptors
+            if not normalized_continuation_lead
+            or lead_matches_historical_request
+            else ()
+        ),
         allow_local_files=allow_local_artifacts,
     )
     requirements.extend(_session_attachment_requirements(
         attachment_dependencies,
         start_index=len(requirements),
     ))
-    task_mode = _infer_session_task_mode(request_verbatim)
+    task_mode = _infer_session_task_mode(effective_request)
+    effective_progress = (
+        [] if normalized_continuation_lead else sections["progress"]
+    )
+    effective_next_actions = (
+        [] if normalized_continuation_lead else sections["exact_next_action"]
+    )
+    effective_blockers = (
+        [] if normalized_continuation_lead else sections["blockers"]
+    )
+    effective_verification = (
+        [] if normalized_continuation_lead else sections["verification"]
+    )
     verification = _session_handoff_verification(
-        sections["verification"],
+        effective_verification,
         requirements=requirements,
-        progress=sections["progress"],
+        progress=effective_progress,
     )
     reconciliation = _reconcile_session_handoff(
         requirements=requirements,
-        progress=sections["progress"],
-        next_actions=sections["exact_next_action"],
-        blockers=sections["blockers"],
+        progress=effective_progress,
+        next_actions=effective_next_actions,
+        blockers=effective_blockers,
         verification=verification,
         task_mode=task_mode,
+        fresh_user_lead=normalized_continuation_lead is not None,
     )
     requirement_status = {
         item["requirement_id"]: item for item in reconciliation["requirements"]
@@ -4130,7 +4218,7 @@ def build_session_handoff_contract(
             "verification_ids": verification_by_requirement.get(requirement["id"], []),
             "reported_scope_hints": _reported_requirement_scope_hints(
                 requirement["text"],
-                progress=sections["progress"],
+                progress=effective_progress,
             ),
             "attachment_ids": [
                 attachment["id"]
@@ -4201,10 +4289,22 @@ def build_session_handoff_contract(
             "text": _self_contained_goal(request_verbatim),
             "authority": "user_authored",
             "request_sha256": _sha256(request_verbatim),
-            "self_contained": not dependency_required or bool(normalized_supporting),
+            "self_contained": (
+                not _request_requires_materialized_context(request_verbatim)
+                or bool(normalized_supporting)
+            ),
             "materialized_dependency_count": len(normalized_supporting),
             "attachment_dependency_count": len(attachment_dependencies),
         },
+        **({
+            "continuation_lead": {
+                "request_verbatim": normalized_continuation_lead,
+                "text": normalized_continuation_lead,
+                "authority": "current_user_authored",
+                "request_sha256": _sha256(normalized_continuation_lead),
+                "overrides_historical_next_action": True,
+            },
+        } if normalized_continuation_lead else {}),
         "supporting_context": normalized_supporting,
         "attachment_dependencies": attachment_dependencies,
         "constraints": execution_guidance,
@@ -4403,6 +4503,7 @@ def _reconcile_session_handoff(
     blockers: Iterable[dict[str, Any]],
     verification: list[dict[str, Any]],
     task_mode: str,
+    fresh_user_lead: bool = False,
 ) -> dict[str, Any]:
     progress_items = list(progress)
     all_next_items = list(next_actions)
@@ -4546,6 +4647,10 @@ def _reconcile_session_handoff(
                 "A generic continuation fallback applies because no scoped "
                 "completion evidence was captured for this requirement."
             )
+        elif fresh_user_lead:
+            status = "remaining"
+            authority = "current_user_authored"
+            basis = "The current user-authored continuation lead requests this work."
         else:
             status = "unknown"
             authority = "none"
@@ -5554,9 +5659,23 @@ def render_legacy_session_handoff(
             "Exact next action; a newer user-authored lead overrides it."
         ),
         "",
-        "## Current main goal",
-        "",
     ]
+    continuation_lead = handoff.get("continuation_lead") or {}
+    if continuation_lead.get("text"):
+        lines.extend([
+            "## Continue with — current user lead",
+            "",
+        ])
+        _append_session_context_quote(
+            lines,
+            continuation_lead["text"],
+            label=(
+                "current user-authored instruction; overrides historical "
+                "next action"
+            ),
+        )
+        lines.append("")
+    lines.extend(["## Current main goal", ""])
     _append_session_context_quote(
         lines,
         handoff["current_goal"]["text"],
@@ -6317,23 +6436,52 @@ def render_compact_session_handoff(
     repository = handoff["repository"]
     reconciliation = handoff["reconciliation"]
     protected = handoff["files"].get("pre_existing_at_handoff") or []
+    continuation_lead = handoff.get("continuation_lead") or {}
+    intent = handoff.get("intent") or {}
+    readiness = handoff.get("readiness") or {}
+    normalized_goal = _compact_requirement_text(
+        intent.get("normalized_requirement")
+        or continuation_lead.get("text")
+        or handoff["current_goal"]["text"]
+    )
+    readiness_label = str(
+        readiness.get("label") or "Readiness not evaluated"
+    )
     lines = [
         "# Continuation Brief v2",
         "",
         (
-            "> Continue from **Start here**. The Goal and explicit user "
-            "constraints carry authority; prior-agent statements are historical "
-            "evidence until verified against the live repository."
+            "> Continue from **Start here**. The latest user-authored lead and "
+            "explicit constraints carry authority; prior-agent statements and "
+            "prior session permissions are historical evidence."
         ),
         "",
-        "## Goal",
+        f"Status: **{readiness_label}**",
         "",
     ]
-    _append_session_context_quote(
-        lines,
-        handoff["current_goal"]["text"],
-        label="user-authored carried goal",
-    )
+    if continuation_lead.get("text"):
+        lines.extend(["## Continue with", ""])
+        _append_session_context_quote(
+            lines,
+            continuation_lead["text"],
+            label=(
+                "current user-authored instruction; authoritative; overrides "
+                "the historical next action"
+            ),
+        )
+        lines.extend(["", "## Goal", "", f"- Desired outcome: {normalized_goal}", ""])
+        _append_session_context_quote(
+            lines,
+            handoff["current_goal"]["text"],
+            label="prior carried goal; historical reference",
+        )
+    else:
+        lines.extend(["## Goal", "", f"- Desired outcome: {normalized_goal}", ""])
+        _append_session_context_quote(
+            lines,
+            handoff["current_goal"]["text"],
+            label="original user request; authoritative",
+        )
 
     lines.extend([
         "",
@@ -6653,6 +6801,14 @@ def session_handoff_render_issues(
         })
     if request_verbatim is not None:
         carried_request_chars = len(_self_contained_goal(request_verbatim))
+        carried_lead_chars = len(
+            str(
+                (handoff_contract or {}).get("continuation_lead", {}).get(
+                    "text"
+                )
+                or ""
+            )
+        )
         carried_supporting_chars = sum(
             len(_self_contained_goal(str(item.get("text") or "")))
             for item in supporting_context
@@ -6660,7 +6816,10 @@ def session_handoff_render_issues(
         )
         overhead_chars = max(
             0,
-            len(content) - carried_request_chars - carried_supporting_chars,
+            len(content)
+            - carried_request_chars
+            - carried_lead_chars
+            - carried_supporting_chars,
         )
         if overhead_chars > max_overhead_chars:
             issues.append({
@@ -6698,6 +6857,11 @@ def _compact_session_handoff_missing_fragments(
     """Name critical contract fields absent from the compact projection."""
 
     goal = str((handoff.get("current_goal") or {}).get("text") or "")
+    continuation_lead = str(
+        (handoff.get("continuation_lead") or {}).get("text") or ""
+    )
+    intent = handoff.get("intent") or {}
+    readiness = handoff.get("readiness") or {}
     expected: list[tuple[str, str]] = [
         *(
             (f"goal_line_{index}", line.strip())
@@ -6717,6 +6881,19 @@ def _compact_session_handoff_missing_fragments(
         (
             "exact_next_action",
             _compact_session_start_action(handoff),
+        ),
+        (
+            "normalized_requirement",
+            str(intent.get("normalized_requirement") or ""),
+        ),
+        ("readiness", str(readiness.get("label") or "")),
+        *(
+            (f"continuation_lead_line_{index}", line.strip())
+            for index, line in enumerate(
+                continuation_lead.splitlines(),
+                start=1,
+            )
+            if line.strip()
         ),
     ]
     repository = handoff.get("repository") or {}
@@ -6801,6 +6978,7 @@ def build_session_handoff_artifact(
     checkpoint: WorkCheckpoint,
     *,
     request_verbatim: str,
+    continuation_lead: str | None = None,
     supporting_context: Iterable[dict[str, str]] = (),
     trusted_attachment_descriptors: Iterable[
         TrustedRequestImageDescriptor
@@ -6819,6 +6997,7 @@ def build_session_handoff_artifact(
     contract = build_session_handoff_contract(
         checkpoint,
         request_verbatim=request_verbatim,
+        continuation_lead=continuation_lead,
         supporting_context=supporting_context,
         trusted_attachment_descriptors=trusted_attachment_descriptors,
         allow_local_artifacts=allow_local_artifacts,

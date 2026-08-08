@@ -35,6 +35,7 @@ from app.services.checkpoints import (
     resolve_session_handoff_attachment_descriptors,
     resolve_session_handoff_request_verbatim,
     resolve_session_handoff_supporting_context,
+    validate_continuation_lead,
 )
 from app.services.continuation import ContinuationResult, ContinuationService
 from app.services.harness_adapters import (
@@ -329,6 +330,7 @@ class ContinuationStageService:
         repo_path: str | None = None,
         objective: str | None = None,
         objective_is_user_edited: bool = False,
+        continuation_lead: str | None = None,
         checkpoint_id: UUID | str | None = None,
         checkpoint_source_id: UUID | None = None,
         source_provider: str | None = None,
@@ -350,10 +352,23 @@ class ContinuationStageService:
                 "A continuation can be staged only from the local app.",
                 status_code=403,
             )
+        try:
+            continuation_lead = validate_continuation_lead(
+                continuation_lead
+            )
+        except ValueError as exc:
+            raise ContinuationRunError(
+                "continuation_lead_invalid",
+                str(exc),
+                status_code=422,
+            ) from exc
         supplied_lead = (
-            objective is not None
-            and is_substantive_user_request(
-                normalize_substantive_user_request(objective)
+            continuation_lead is not None
+            or (
+                objective is not None
+                and is_substantive_user_request(
+                    normalize_substantive_user_request(objective)
+                )
             )
         )
         source_bound_lead = bool(
@@ -414,6 +429,7 @@ class ContinuationStageService:
             repo_path=repo_path,
             objective=objective,
             objective_is_user_edited=objective_is_user_edited,
+            continuation_lead=continuation_lead,
             checkpoint_id=checkpoint_id,
             checkpoint_source_id=checkpoint_source_id,
             source_provider=source_provider,
@@ -549,6 +565,7 @@ class ContinuationStageService:
             repo_path=repo_path,
             objective=objective,
             objective_is_user_edited=objective_is_user_edited,
+            continuation_lead=continuation_lead,
             checkpoint_id=checkpoint_id,
             checkpoint_source_id=checkpoint_source_id,
             source_provider=source_provider,
@@ -581,6 +598,7 @@ class ContinuationStageService:
                     repo_path=repo_path,
                     objective=objective,
                     objective_is_user_edited=objective_is_user_edited,
+                    continuation_lead=continuation_lead,
                     checkpoint_id=checkpoint_id,
                     checkpoint_source_id=checkpoint_source_id,
                     source_provider=source_provider,
@@ -610,6 +628,7 @@ class ContinuationStageService:
                 repo_path=repo_path,
                 objective=objective,
                 objective_is_user_edited=objective_is_user_edited,
+                continuation_lead=continuation_lead,
                 checkpoint_id=checkpoint_id,
                 checkpoint_source_id=checkpoint_source_id,
                 source_provider=source_provider,
@@ -635,11 +654,13 @@ class ContinuationStageService:
             contract=contract,
             workspace_id=workspace_id,
             access_scope=access_scope,
+            continuation_lead=continuation_lead,
         )
         context_message = _staging_context_for_preparation(
             preparation,
             contract=contract,
-            expected_lead=objective or contract.task.request_verbatim,
+            expected_lead=contract.task.request_verbatim,
+            continuation_lead=continuation_lead,
             session_context=session_context,
         )
 
@@ -783,6 +804,17 @@ class ContinuationStageService:
         )
         context_char_count = len(context_message)
         context_estimated_tokens = max(1, (context_char_count + 3) // 4)
+        continuation_lead_sha256 = str(
+            (
+                session_context.get("continuation_lead")
+                if isinstance(
+                    session_context.get("continuation_lead"),
+                    Mapping,
+                )
+                else {}
+            ).get("request_sha256")
+            or ""
+        ).strip() or None
         handoff_id = str(uuid4())
         source = _normalized_source_provider(preparation.source_session)
         account_access_state = selected_composer_readiness.account_access_state
@@ -820,6 +852,11 @@ class ContinuationStageService:
             "context_render_variant": context_render_variant,
             "context_char_count": context_char_count,
             "context_estimated_tokens": context_estimated_tokens,
+            **(
+                {"continuation_lead_sha256": continuation_lead_sha256}
+                if continuation_lead_sha256
+                else {}
+            ),
             "source_session_id": (
                 preparation.source_session.get("session_id")
                 if isinstance(preparation.source_session, dict)
@@ -855,6 +892,11 @@ class ContinuationStageService:
             "context_render_variant": context_render_variant,
             "context_char_count": context_char_count,
             "context_estimated_tokens": context_estimated_tokens,
+            **(
+                {"continuation_lead_sha256": continuation_lead_sha256}
+                if continuation_lead_sha256
+                else {}
+            ),
             "execution_started": False,
             "activation_boundary_verified": False,
             "activation": "user_review_and_submit",
@@ -928,6 +970,11 @@ class ContinuationStageService:
                 "provider": selected_provider,
                 "provider_session_id": None,
                 "objective": preparation.objective,
+                **(
+                    {"continuation_lead_sha256": continuation_lead_sha256}
+                    if continuation_lead_sha256
+                    else {}
+                ),
                 "started_at": utc_now().isoformat(),
                 "execution_started": False,
                 "provider_model": None,
@@ -1607,6 +1654,7 @@ async def _canonical_session_context_for_preparation(
     contract: ContinuationExecutionContract,
     workspace_id: UUID,
     access_scope: AccessScope,
+    continuation_lead: str | None = None,
 ) -> dict[str, Any]:
     """Compile the canonical latest-checkpoint Session Context for Continue."""
 
@@ -1665,10 +1713,34 @@ async def _canonical_session_context_for_preparation(
         checkpoint,
         access_scope=access_scope,
     )
+    effective_request_verbatim = continuation_lead or request_verbatim
+    historical_goal = (
+        preparation.task.get("historical_goal")
+        if isinstance(preparation.task, dict)
+        else None
+    )
+    historical_request_sha256 = hashlib.sha256(
+        str(request_verbatim or "").encode("utf-8")
+    ).hexdigest()
+    historical_request_matches = (
+        (
+            continuation_lead is None
+            and contract.task.request_sha256 == historical_request_sha256
+        )
+        or (
+            continuation_lead is not None
+            and isinstance(historical_goal, Mapping)
+            and historical_goal.get("request_sha256")
+            == historical_request_sha256
+        )
+    )
     if (
         not request_verbatim
-        or hashlib.sha256(request_verbatim.encode("utf-8")).hexdigest()
-        != contract.task.request_sha256
+        or not effective_request_verbatim
+        or not historical_request_matches
+        or hashlib.sha256(
+            effective_request_verbatim.encode("utf-8")
+        ).hexdigest() != contract.task.request_sha256
     ):
         raise ContinuationRunError(
             "continuation_lead_mismatch",
@@ -1711,7 +1783,7 @@ async def _canonical_session_context_for_preparation(
     )
     repository_comparison = await compare_checkpoint_repository(checkpoint)
     try:
-        return build_session_handoff_artifact(
+        artifact = build_session_handoff_artifact(
             checkpoint,
             request_verbatim=request_verbatim,
             supporting_context=supporting_context,
@@ -1719,6 +1791,7 @@ async def _canonical_session_context_for_preparation(
             allow_local_artifacts=access_scope.principal_id == "local",
             checkpoint_data=checkpoint_data,
             repository_comparison=repository_comparison,
+            continuation_lead=continuation_lead,
         )
     except ValueError as exc:
         raise ContinuationRunError(
@@ -1726,6 +1799,26 @@ async def _canonical_session_context_for_preparation(
             f"{exc} No desktop app was opened.",
             status_code=409,
         ) from exc
+    handoff_mode = str(artifact.get("task_mode") or "")
+    handoff_filesystem_mode = str(
+        (artifact.get("execution_policy") or {}).get("permission_mode")
+        or ""
+    )
+    if (
+        handoff_mode != contract.task_mode.value
+        or handoff_filesystem_mode
+        != contract.authority.filesystem_mode.value
+    ):
+        raise ContinuationRunError(
+            "continuation_authority_mismatch",
+            (
+                "The Session Context mode or filesystem authority does not "
+                "match the prepared execution contract. No desktop app was "
+                "opened."
+            ),
+            status_code=409,
+        )
+    return artifact
 
 
 def _staging_context_for_preparation(
@@ -1733,6 +1826,7 @@ def _staging_context_for_preparation(
     *,
     contract: ContinuationExecutionContract,
     expected_lead: str,
+    continuation_lead: str | None = None,
     session_context: Mapping[str, Any],
 ) -> str:
     """Return a hash-bound Session Context for the supplied lead.
@@ -1784,6 +1878,26 @@ def _staging_context_for_preparation(
         and expected_sha256 == content_sha256
     )
     lead_matches = contract.task.request_verbatim == expected_lead
+    staged_continuation_lead = session_context.get("continuation_lead")
+    continuation_lead_matches = (
+        (
+            not continuation_lead
+            and not staged_continuation_lead
+        )
+        or (
+            bool(continuation_lead)
+            and isinstance(staged_continuation_lead, Mapping)
+            and staged_continuation_lead.get("request_verbatim")
+            == continuation_lead
+            and staged_continuation_lead.get("request_sha256")
+            == hashlib.sha256(continuation_lead.encode("utf-8")).hexdigest()
+        )
+    )
+    authoritative_session_task = (
+        staged_continuation_lead
+        if continuation_lead
+        else session_context.get("current_goal")
+    )
     session_content = str(session_context.get("content") or "")
     session_sha256 = str(session_context.get("sha256") or "").strip()
     session_quality = (
@@ -1817,11 +1931,16 @@ def _staging_context_for_preparation(
         and session_sha256
         == hashlib.sha256(session_content.encode("utf-8")).hexdigest()
         and session_identity_matches
-        and (
-            session_context.get("current_goal") or {}
-        ).get("request_sha256") == contract.task.request_sha256
+        and isinstance(authoritative_session_task, Mapping)
+        and authoritative_session_task.get("request_sha256")
+        == contract.task.request_sha256
     )
-    if structurally_safe and lead_matches and session_is_safe:
+    if (
+        structurally_safe
+        and lead_matches
+        and continuation_lead_matches
+        and session_is_safe
+    ):
         return session_content
 
     issue_message = next(
@@ -1837,7 +1956,7 @@ def _staging_context_for_preparation(
         or (
             "The compiled Session Context does not match the supplied "
             "immediate lead."
-            if not lead_matches
+            if not lead_matches or not continuation_lead_matches
             else (
                 "The canonical latest-session Session Context failed its "
                 "copy-safety, identity, or integrity checks."
@@ -1853,7 +1972,7 @@ def _staging_context_for_preparation(
     raise ContinuationRunError(
         (
             "continuation_lead_mismatch"
-            if not lead_matches
+            if not lead_matches or not continuation_lead_matches
             else (
                 "session_context_staging_blocked"
                 if not session_is_safe
@@ -1865,7 +1984,7 @@ def _staging_context_for_preparation(
         blocker={
             "code": (
                 "continuation_lead_mismatch"
-                if not lead_matches
+                if not lead_matches or not continuation_lead_matches
                 else (
                     "session_context_staging_blocked"
                     if not session_is_safe
@@ -1874,7 +1993,7 @@ def _staging_context_for_preparation(
             ),
             "title": (
                 "Immediate lead changed"
-                if not lead_matches
+                if not lead_matches or not continuation_lead_matches
                 else "Session Context is not safe to stage"
             ),
             "message": message,
@@ -1882,7 +2001,9 @@ def _staging_context_for_preparation(
                 "Capture fresh Session Context for the exact immediate lead "
                 "before loading it into a harness."
             ),
-            "affected_tasks": [_bounded_task(expected_lead)],
+            "affected_tasks": [_bounded_task(
+                continuation_lead or expected_lead
+            )],
             "quality_issues": [*quality_issues, *session_issues],
         },
     )
@@ -2156,6 +2277,7 @@ def _continuation_stage_request_sha256(
     repo_path: str | None,
     objective: str | None,
     objective_is_user_edited: bool,
+    continuation_lead: str | None,
     checkpoint_id: UUID | str | None,
     checkpoint_source_id: UUID | None,
     source_provider: str | None,
@@ -2184,6 +2306,7 @@ def _continuation_stage_request_sha256(
             "repo_path": repo_path,
             "objective": objective,
             "objective_is_user_edited": objective_is_user_edited,
+            "continuation_lead": continuation_lead,
             "checkpoint_id": (
                 str(checkpoint_id) if checkpoint_id is not None else None
             ),
@@ -2811,6 +2934,9 @@ def _compact_staged_continuation_identity(
     )
     if not isinstance(continuation, Mapping):
         continuation = {}
+    run_payload = payload.get("run")
+    if not isinstance(run_payload, Mapping):
+        run_payload = {}
 
     def first_text(*values: object) -> str:
         for value in values:
@@ -2837,6 +2963,21 @@ def _compact_staged_continuation_identity(
         "source_provider": source_provider,
         "source_session_id": source_session_id,
     }
+    selected_objective = first_text(
+        continuation.get("selected_objective"),
+        continuation.get("execution_objective"),
+        run_payload.get("objective"),
+    )
+    continuation_lead_sha256 = first_text(
+        delivery.get("continuation_lead_sha256"),
+        harness_session.get("continuation_lead_sha256"),
+        continuation.get("continuation_lead_sha256"),
+        run_payload.get("continuation_lead_sha256"),
+    )
+    if selected_objective:
+        identity["selected_objective"] = selected_objective
+    if continuation_lead_sha256:
+        identity["continuation_lead_sha256"] = continuation_lead_sha256
     task_id = first_text(continuation.get("task_id"))
     checkpoint_id = first_text(continuation.get("checkpoint_id"))
     if task_id:
