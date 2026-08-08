@@ -1,5 +1,9 @@
 import AppKit
 import DaemonStateOverlayCore
+import Darwin
+
+// Mirrors INSTANCE_CONFLICT_EXIT_CODE in app/services/desktop_overlay.py.
+private let instanceConflictExitCode: Int32 = 75
 
 private enum PreferenceKey {
     static let workspaceID = "DaemonStateOverlay.workspaceID"
@@ -104,8 +108,7 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
                 controlToken: configuration.controlToken
             )
         } catch OverlayRuntimeControlError.anotherInstanceIsRunning {
-            NSApplication.shared.terminate(nil)
-            return
+            Darwin.exit(instanceConflictExitCode)
         } catch {
             NSApplication.shared.terminate(nil)
             return
@@ -165,7 +168,12 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
                 workspaceID: workspaceID
             )
         }
-        publishRuntimeState()
+        guard publishRuntimeState() else {
+            runtimeController?.stop()
+            runtimeController = nil
+            NSApplication.shared.terminate(nil)
+            return
+        }
 
         Task { [weak self] in
             await self?.refreshWorkspaces(showFailure: false)
@@ -632,11 +640,12 @@ final class OverlayApplicationDelegate: NSObject, NSApplicationDelegate {
         publishRuntimeState()
     }
 
-    private func publishRuntimeState() {
+    @discardableResult
+    private func publishRuntimeState() -> Bool {
         runtimeController?.publish(
             visible: panelController?.window?.isVisible == true,
             workspaceID: preferredWorkspaceID
-        )
+        ) ?? false
     }
 
     private func capturePasteTarget() {

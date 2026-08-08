@@ -7,10 +7,26 @@ import Foundation
 public final class DaemonStateAPI: @unchecked Sendable {
     public let baseURL: URL
     private let session: URLSession
+    private let sessionContextRetryDelays: [Duration]
 
     public init(baseURL: URL, session: URLSession = .shared) {
         self.baseURL = baseURL
         self.session = session
+        sessionContextRetryDelays = [
+            .milliseconds(250),
+            .milliseconds(750),
+            .seconds(2),
+        ]
+    }
+
+    init(
+        baseURL: URL,
+        session: URLSession,
+        sessionContextRetryDelays: [Duration]
+    ) {
+        self.baseURL = baseURL
+        self.session = session
+        self.sessionContextRetryDelays = sessionContextRetryDelays
     }
 
     public func workspaces() async throws -> [WorkspaceSummary] {
@@ -157,7 +173,27 @@ public final class DaemonStateAPI: @unchecked Sendable {
         }
     }
 
-    private func fetchSessionContext(workspaceID: String) async throws -> VerifiedContext {
+    private func fetchSessionContext(
+        workspaceID: String
+    ) async throws -> VerifiedContext {
+        for retryDelay in sessionContextRetryDelays {
+            do {
+                return try await fetchSessionContextOnce(
+                    workspaceID: workspaceID
+                )
+            } catch {
+                guard Self.isTransientSessionContextError(error) else {
+                    throw error
+                }
+                try await Task.sleep(for: retryDelay)
+            }
+        }
+        return try await fetchSessionContextOnce(workspaceID: workspaceID)
+    }
+
+    private func fetchSessionContextOnce(
+        workspaceID: String
+    ) async throws -> VerifiedContext {
         let refresh: RefreshLinkedEnvelope = try await send(
             method: "POST",
             path: ["connectors", "ai-session", "refresh-linked"],
@@ -233,6 +269,18 @@ public final class DaemonStateAPI: @unchecked Sendable {
             activeSession: activeSession,
             checkpoint: checkpoint
         )
+    }
+
+    private static func isTransientSessionContextError(_ error: Error) -> Bool {
+        guard let error = error as? DaemonStateError else { return false }
+        switch error {
+        case .network, .invalidHTTPResponse:
+            return true
+        case let .httpError(statusCode, _, _):
+            return (500..<600).contains(statusCode)
+        default:
+            return false
+        }
     }
 
     private func requireSessionContextEligibility(
@@ -489,6 +537,17 @@ public final class DaemonStateAPI: @unchecked Sendable {
             let message = detail["message"] as? String
                 ?? detail["detail"] as? String
                 ?? "The service rejected the request."
+            return (code, message)
+        }
+        if let serviceError = payload["error"] as? [String: Any] {
+            let code = serviceError["code"] as? String
+            let message = serviceError["message"] as? String
+                ?? "The service rejected the request."
+            if let requestID = serviceError["request_id"] as? String,
+               !requestID.isEmpty
+            {
+                return (code, "\(message) Request \(requestID).")
+            }
             return (code, message)
         }
         return (
