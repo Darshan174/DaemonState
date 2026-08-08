@@ -86,6 +86,40 @@ struct OverlayRuntimeControlTests {
     }
 
     @Test
+    @MainActor
+    func republishesStateWhenTheStateFileDisappears() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let controller = try OverlayRuntimeController(
+            controlToken: "control-token-heartbeat",
+            runtimeDirectory: directory,
+            stateRepairInterval: .milliseconds(20)
+        )
+        defer { controller.stop() }
+
+        controller.start { _, _ in }
+        let workspaceID = "6e7a71eb-df4f-4899-9aab-ee487f5a0649"
+        #expect(controller.publish(visible: true, workspaceID: workspaceID))
+
+        let stateURL = directory.appendingPathComponent(
+            OverlayRuntimeController.stateFileName
+        )
+        try FileManager.default.removeItem(at: stateURL)
+        #expect(!FileManager.default.fileExists(atPath: stateURL.path))
+
+        try await Task<Never, Never>.sleep(nanoseconds: 100_000_000)
+
+        let stateData = try Data(contentsOf: stateURL)
+        let state = try JSONDecoder().decode(
+            OverlayRuntimeState.self,
+            from: stateData
+        )
+        #expect(state.controlToken == "control-token-heartbeat")
+        #expect(state.visible)
+        #expect(state.workspaceID == workspaceID)
+    }
+
+    @Test
     func runtimeDirectoryOverrideMustBeAbsolute() {
         let fallback = OverlayRuntimeController.defaultRuntimeDirectory(
             environment: [

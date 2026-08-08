@@ -42,6 +42,10 @@ final class PromptDropdownController: NSObject, NSPopoverDelegate {
         saveTask?.cancel()
     }
 
+    var editorHasInputFocus: Bool {
+        contentController.editorHasInputFocus
+    }
+
     func toggle(relativeTo button: NSView) {
         if popover.isShown {
             close()
@@ -57,12 +61,15 @@ final class PromptDropdownController: NSObject, NSPopoverDelegate {
             prompts: cachedPrompts,
             selectedIDs: selectedPromptIDs?() ?? []
         )
+        NSApp.activate(ignoringOtherApps: true)
         popover.show(
             relativeTo: button.bounds,
             of: button,
             preferredEdge: .maxY
         )
-        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async { [weak self] in
+            self?.contentController.focusEditor()
+        }
         refresh()
     }
 
@@ -162,11 +169,11 @@ final class PromptDropdownController: NSObject, NSPopoverDelegate {
 }
 
 @MainActor
-private final class PromptDropdownViewController: NSViewController, NSTextViewDelegate {
+final class PromptDropdownViewController: NSViewController, NSTextViewDelegate {
     var onSave: ((String) -> Void)?
     var onSelect: ((PromptSnippet) -> Void)?
 
-    private let promptTextView = NSTextView()
+    private let promptTextView = PromptTextView()
     private let characterLabel = NSTextField(labelWithString: "0 / 20,000")
     private let saveButton = NSButton(title: "Save prompt", target: nil, action: nil)
     private let statusLabel = NSTextField(labelWithString: "")
@@ -188,6 +195,24 @@ private final class PromptDropdownViewController: NSViewController, NSTextViewDe
         ).cgColor
         view = root
         buildInterface()
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        focusEditor()
+    }
+
+    @discardableResult
+    func focusEditor() -> Bool {
+        _ = view
+        guard let window = view.window else { return false }
+        window.initialFirstResponder = promptTextView
+        window.makeKey()
+        return window.makeFirstResponder(promptTextView)
+    }
+
+    var editorHasInputFocus: Bool {
+        view.window?.firstResponder === promptTextView
     }
 
     func update(prompts: [PromptSnippet], selectedIDs: Set<String>) {
@@ -526,6 +551,26 @@ private final class PromptDropdownViewController: NSViewController, NSTextViewDe
         label.textColor = NSColor(calibratedWhite: 0.52, alpha: 1)
         label.alignment = .center
         return label
+    }
+}
+
+@MainActor
+class PromptTextView: NSTextView {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([
+            .command,
+            .shift,
+            .option,
+            .control,
+        ])
+        if modifiers == .command,
+           event.charactersIgnoringModifiers?.lowercased() == "v",
+           window?.firstResponder === self
+        {
+            paste(nil)
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
     }
 }
 
