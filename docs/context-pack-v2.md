@@ -1,8 +1,10 @@
 # Context Pack v2 Contract
 
-Status: final Agent 1 implementation contract. The current `ContextPackAgent`
-emits a legacy markdown handoff; this document defines the v2 output contract
-that Agent 3 and Agent 4 must implement.
+Status: implemented schema contract retained for maintainers. It defines the
+persisted `context_pack.v2` task-pack boundary; Workspace Context additionally
+embeds the objective-independent `workspace_foundation.v2` artifact described
+in the [Workspace Foundation Compiler](workspace-foundation-compiler.md).
+For current user-facing behavior, see the [product guide](product-guide.md).
 
 Every v2 pack has two outputs:
 
@@ -1155,7 +1157,7 @@ Finish GitHub connector pagination and add tests.
 
 ## Acceptance Criteria
 
-Agent 3 compiler tests must assert:
+Compiler/API/CLI tests must assert:
 
 - manifest has `schema_version = "context_pack.v2"`;
 - manifest uses `context_pack_id`, `created_at`, and `item_type`; it does not
@@ -1186,7 +1188,7 @@ Agent 3 compiler tests must assert:
   pack/items can be read back, or explicitly emits tested
   `persistence.mode = "file_output_only"` with `context_pack_id = null`.
 
-Agent 4 evals must assert:
+Evaluation and MCP tests must assert:
 
 - context recall for required files and decisions;
 - precision against stale or unsupported connector context;

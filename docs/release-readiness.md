@@ -1,14 +1,19 @@
-# Release Readiness Review
+# Release Readiness Snapshot (2026-07-28)
+
+> This is a historical maintainer snapshot, retained for its verification
+> record. It is not the source of truth for the current product surface. See
+> the [documentation home](README.md), [product guide](product-guide.md), and
+> current tests before making a release decision.
 
 Last updated: 2026-07-28
 Reviewed: 2026-05-01 by Xiaomi MiMo V2.5 Pro; refreshed 2026-07-28 after the self-hosting and licensing pass.
 
 ## Score
 
-Current v2 branch source-release readiness: 8.0/10
+Source-release readiness at the time of review: 8.0/10
 
-This score is for the current Context Compiler v2 working tree, not a public
-release tag. It reflects implemented backend/runtime persistence, compiler,
+This score was for the Context Compiler v2 working tree reviewed on the date
+above, not a public release tag. It reflects the then-implemented backend/runtime persistence, compiler,
 API/CLI prepare surfaces, MCP bridge behavior, and passing backend tests, while
 still calling out final hardening gaps below.
 

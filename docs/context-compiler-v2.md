@@ -1,10 +1,15 @@
 # Context Compiler v2 Contract
 
-Status: proposed implementation contract. This pass does not implement or
-modify product code.
+Status: historical implementation contract. It is retained as design and
+acceptance rationale for `context_pack.v2`; it is not a description of the
+entire current product. See the [product guide](product-guide.md),
+[architecture](architecture.md), and
+[Workspace Foundation Compiler](workspace-foundation-compiler.md) for current
+behavior.
 
-This document turns the v2 plan into the contract that implementation agents
-must build against. It preserves the current launch baseline:
+This document turned the v2 plan into the contract that implementation agents
+used during the compiler rollout. Its observed baseline is the checkout that
+existed when the contract was written:
 
 - current graph reads use `SourceDocument`, `Model`, `Component`,
   `Relationship`, and `UnresolvedRelationship`;
@@ -12,7 +17,7 @@ must build against. It preserves the current launch baseline:
 - legacy `Component` rows remain readable even when no v2 `Claim` exists;
 - connector status semantics do not change.
 
-## Observed Baseline
+## Historical Observed Baseline
 
 - `SourceDocument` stores raw content, source type, external ID, author, URL,
   metadata, workspace scope, ingest time, and process time.
