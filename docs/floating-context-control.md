@@ -22,13 +22,14 @@ The normal logo is Session Context. A lime halo indicates Workspace Context.
 Transient animation and a small status bubble report preparation, success,
 copy-only fallback, or failure; the bubble disappears when idle.
 
-“Workspace Context” is the compact-control label for the existing
-`continuation_staging_context.v1` Project Context. The control inserts the
-quality-gated, workspace-wide durable parent foundation rather than a
-prompt-ranked projection or an unfiltered workspace dump. Session-only
-failures, rejected attempts, and transient blockers are not promoted.
-Mechanically verified, human-confirmed, and corroborated durable facts may
-appear; provisional and superseded/conflicting facts may not.
+For Workspace Context, the control calls `POST /api/context/prepare` in
+`project_snapshot` mode and validates the returned `workspace_foundation.v2`
+artifact. It inserts that quality-gated, workspace-wide durable parent rather
+than a prompt-ranked projection, the task-oriented
+`continuation_staging_context.v1` rendering, or an unfiltered workspace dump.
+Session-only failures, rejected attempts, and transient blockers are not
+promoted. Mechanically verified, human-confirmed, and corroborated durable
+facts may appear; provisional and superseded/conflicting facts may not.
 
 ## Show or hide it from Continue
 
@@ -95,10 +96,11 @@ The same settings can be supplied as `DAEMONSTATE_WORKSPACE_ID` and
   when needed, and verifies the exact provider, session, checkpoint, boundary,
   `copy_ready` flag, and SHA-256. Missing or ambiguous session identity fails
   closed.
-- Workspace insertion recompiles Project Context from all current evidence in
-  the selected workspace, independent of the current lead, and verifies its
-  core-section completeness, evidence provenance, repository freshness,
-  schema, scope, `copy_ready` flag, and SHA-256.
+- Workspace insertion recompiles Workspace Context from all current evidence
+  in the selected workspace, independent of the current lead, and verifies its
+  `project_snapshot` scope, `workspace_foundation.v2` artifact, core-section
+  completeness, evidence provenance, repository freshness, copy-ready state,
+  rendering digest, semantic digest, and artifact digest.
 - The control never silently falls back from Session Context to Workspace
   Context or vice versa.
 - Verified content is written to the clipboard before insertion. If the
