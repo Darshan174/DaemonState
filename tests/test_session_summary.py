@@ -1,3 +1,5 @@
+import pytest
+
 from app.services.session_summary import (
     clean_session_message_text,
     derive_latest_session_topic,
@@ -365,6 +367,56 @@ def test_continuation_controls_are_not_substantive_goals() -> None:
 
     assert is_continuation_control("Continue implementing checkpoint selection") is False
     assert is_substantive_user_request("Continue implementing checkpoint selection") is True
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "done",
+        "Done!",
+        "all done",
+        "it's done",
+        "finished",
+        "completed, thanks",
+        "okay",
+        "thank you",
+        "got it",
+        "sounds good",
+        "perfect",
+    ),
+)
+def test_standalone_acknowledgements_are_not_substantive_goals(value: str) -> None:
+    assert normalize_substantive_user_request(value) is None
+    assert is_substantive_user_request(value) is False
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "Done when npm test passes.",
+        "When done, run the focused tests.",
+        "Mark the migration as done.",
+        "Done with authentication; now push the branch.",
+    ),
+)
+def test_actionable_done_phrases_remain_substantive(value: str) -> None:
+    assert normalize_substantive_user_request(value) == value
+    assert is_substantive_user_request(value) is True
+
+
+def test_latest_topic_falls_back_past_standalone_done_acknowledgement() -> None:
+    content = """
+[USER]
+Push changes made from this session.
+
+[ASSISTANT]
+Authenticate GitHub, then I can finish the push.
+
+[USER]
+done
+"""
+
+    assert derive_latest_session_topic(content) == "Push changes made from this session"
 
 
 def test_transport_schema_keys_never_become_session_topics_or_goals() -> None:

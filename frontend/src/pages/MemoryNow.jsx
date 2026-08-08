@@ -19,14 +19,17 @@ import {
   useCaptureCheckpoint,
   useCheckpointHandoff,
   useLatestCheckpoint,
-  usePrepareContinuation,
   useSessionLibrary,
 } from "../api/hooks";
 import HarnessDeckBackdrop from "../components/HarnessDeckBackdrop";
 import { HarnessArtwork } from "../components/HarnessBrand";
 import ProductLoadingState from "../components/ProductLoadingState";
 import WorkspaceTopicGate from "../components/WorkspaceTopicGate";
-import { useContextDigest, useProjectMemory } from "../context-map/api";
+import {
+  useContextDigest,
+  usePrepareContext,
+  useProjectMemory,
+} from "../context-map/api";
 import { cleanDisplayText, formatTimeAgo } from "../context-map/digest";
 import {
   copyReadySessionContextContent,
@@ -78,6 +81,10 @@ const SUPPORTED_CHECKPOINT_SCHEMAS = new Set([
   "work_checkpoint.v9",
   "work_checkpoint.v10",
 ]);
+const SUPPORTED_WORKSPACE_FOUNDATION_SCHEMAS = new Set([
+  "workspace_foundation.v1",
+  "workspace_foundation.v2",
+]);
 const CURRENT_CHECKPOINT_SCHEMA = "work_checkpoint.v10";
 const SESSION_NETWORK_RETRY_DELAYS_MS = [120, 300];
 
@@ -100,9 +107,9 @@ export default function ExecutePage() {
       ? storedExecuteSessions
       : []
   );
-  // Execute no longer owns an automatic current-session card. The digest
-  // primary remains relevant only to Workspace Context compilation; every
-  // visible Session Context below is explicitly selected by the user.
+  // Execute no longer owns an automatic current-session card. Workspace
+  // Context compilation below is workspace/repository scoped; every visible
+  // Session Context is explicitly selected by the user.
   const candidateActivity = digestQuery.data?.activity?.primary || null;
   const checkpointActivity = candidateActivity;
   const activityProvider = normalizeProvider(
@@ -155,16 +162,16 @@ export default function ExecutePage() {
     sessionId: hasScopedSession ? activitySessionId : null,
     enabled: checkpointLookupEnabled,
   });
-  const prepareContinuation = usePrepareContinuation();
+  const prepareWorkspaceContext = usePrepareContext();
   const [previewOpen, setPreviewOpen] = useState(false);
   const [preparedContext, setPreparedContext] = useState(null);
   const [preparedContextAnchorKey, setPreparedContextAnchorKey] = useState(null);
   const [previewError, setPreviewError] = useState(null);
   const previewReturnFocusRef = useRef(null);
-  const autoProjectPreviewKeyRef = useRef(null);
-  const projectCompilePromiseRef = useRef(null);
+  const autoWorkspacePreviewKeyRef = useRef(null);
+  const workspaceCompilePromiseRef = useRef(null);
   const closePreview = useCallback(() => setPreviewOpen(false), []);
-  const [projectCopyState, setProjectCopyState] = useState("idle");
+  const [workspaceCopyState, setWorkspaceCopyState] = useState("idle");
 
   useEffect(() => {
     if (storedExecuteWorkspaceRef.current === workspace.activeWorkspaceId) {
@@ -187,10 +194,18 @@ export default function ExecutePage() {
     memoryQuery.data,
     workspace.activeWorkspace,
   ]);
-  const activeAnchorRef = useRef(projection.anchorKey);
-  activeAnchorRef.current = projection.anchorKey;
+  const workspaceRepoPath = rawText(
+    workspace.activeWorkspace?.repo_path
+    || digestQuery.data?.scope?.project_paths?.[0],
+  );
+  const workspaceContextKey = JSON.stringify([
+    workspace.activeWorkspaceId || "",
+    normalizeComparableRepoPath(workspaceRepoPath),
+  ]);
+  const activeWorkspaceContextKeyRef = useRef(workspaceContextKey);
+  activeWorkspaceContextKeyRef.current = workspaceContextKey;
   const currentPreparedContext = (
-    preparedContextAnchorKey === projection.anchorKey
+    preparedContextAnchorKey === workspaceContextKey
       ? preparedContext
       : null
   );
@@ -200,8 +215,8 @@ export default function ExecutePage() {
     setPreparedContext(null);
     setPreparedContextAnchorKey(null);
     setPreviewError(null);
-    setProjectCopyState("idle");
-  }, [workspace.activeWorkspaceId, projection.anchorKey]);
+    setWorkspaceCopyState("idle");
+  }, [workspaceContextKey]);
 
   const firstLoad = (
     workspace.workspacesQuery.isLoading
@@ -209,77 +224,83 @@ export default function ExecutePage() {
     || (memoryQuery.isLoading && !memoryQuery.data)
     || (checkpointLookupEnabled && checkpointQuery.isLoading && !checkpointQuery.data)
   );
-  const dataUnavailable = (
-    digestQuery.isError
-    && !digestQuery.data
-    && memoryQuery.isError
-    && !memoryQuery.data
-  );
+  const workspaceSelectionLoading = workspace.workspacesQuery.isLoading;
   const partialData = digestQuery.isError || memoryQuery.isError || checkpointQuery.isError;
-  const projectPreviewPreparing = Boolean(
-    prepareContinuation.isPending
+  const workspacePreviewPreparing = Boolean(
+    prepareWorkspaceContext.isPending
     || (
-      projection.previewAvailable
+      workspace.activeWorkspaceId
       && !currentPreparedContext
       && !previewError
     )
   );
-  const projectPreviewRetryable = projectContextErrorIsRetryable(previewError);
+  const workspacePreviewRetryable = workspaceContextErrorIsRetryable(previewError);
 
-  const compileProjectContext = useCallback(async ({ force = false } = {}) => {
-    if (!projection.previewAvailable || !workspace.activeWorkspaceId) {
-      throw new Error("Project Context is unavailable until an active task is selected.");
+  const compileWorkspaceContext = useCallback(async ({ force = false } = {}) => {
+    if (!workspace.activeWorkspaceId) {
+      throw new Error("Workspace Context is unavailable because no workspace is selected.");
     }
     if (currentPreparedContext && !force) return currentPreparedContext;
-    const requestAnchor = projection.anchorKey;
+    const requestAnchor = workspaceContextKey;
     if (
       !force
-      && projectCompilePromiseRef.current?.key === requestAnchor
+      && workspaceCompilePromiseRef.current?.key === requestAnchor
     ) {
-      return projectCompilePromiseRef.current.promise;
+      return workspaceCompilePromiseRef.current.promise;
     }
 
     const operation = (async () => {
-      const response = await prepareContinuation.mutateAsync(projection.preparePayload);
-      if (activeAnchorRef.current !== requestAnchor) {
-        throw new Error("The active task changed while Project Context was compiling.");
+      const response = await prepareWorkspaceContext.mutateAsync({
+        workspace_id: workspace.activeWorkspaceId,
+        ...(workspaceRepoPath ? { repo_path: workspaceRepoPath } : {}),
+        mode: "project_snapshot",
+        objective_origin: "project_snapshot",
+      });
+      if (activeWorkspaceContextKeyRef.current !== requestAnchor) {
+        throw new Error("The selected workspace changed while Workspace Context was compiling.");
       }
-      const result = validatePreparedContext(
-        response,
-        projection.previewIdentity,
+      const result = validateWorkspaceContext(response, {
+        workspaceId: workspace.activeWorkspaceId,
+        repoPath: workspaceRepoPath,
+      });
+      await requireMatchingContentSha256(
+        result.workspace_context.content,
+        result.workspace_context.sha256,
+        "Workspace Context",
       );
+      if (activeWorkspaceContextKeyRef.current !== requestAnchor) {
+        throw new Error("The selected workspace changed while Workspace Context was compiling.");
+      }
       setPreparedContext(result);
       setPreparedContextAnchorKey(requestAnchor);
       return result;
     })();
-    projectCompilePromiseRef.current = { key: requestAnchor, promise: operation };
+    workspaceCompilePromiseRef.current = { key: requestAnchor, promise: operation };
     try {
       return await operation;
     } finally {
-      if (projectCompilePromiseRef.current?.promise === operation) {
-        projectCompilePromiseRef.current = null;
+      if (workspaceCompilePromiseRef.current?.promise === operation) {
+        workspaceCompilePromiseRef.current = null;
       }
     }
   }, [
     currentPreparedContext,
-    prepareContinuation,
-    projection.anchorKey,
-    projection.preparePayload,
-    projection.previewAvailable,
-    projection.previewIdentity,
+    prepareWorkspaceContext,
     workspace.activeWorkspaceId,
+    workspaceContextKey,
+    workspaceRepoPath,
   ]);
 
   const generatePreview = async (trigger = null) => {
-    if (!projection.previewAvailable || !workspace.activeWorkspaceId) return;
+    if (!workspace.activeWorkspaceId) return;
     previewReturnFocusRef.current = trigger || document.activeElement;
     setPreviewOpen(true);
-    if (currentPreparedContext || prepareContinuation.isPending) return;
+    if (currentPreparedContext || prepareWorkspaceContext.isPending) return;
     setPreviewError(null);
     try {
-      await compileProjectContext();
+      await compileWorkspaceContext();
     } catch (error) {
-      setPreviewError(error?.message || "Could not generate Project Context.");
+      setPreviewError(error?.message || "Could not generate Workspace Context.");
     }
   };
 
@@ -288,63 +309,58 @@ export default function ExecutePage() {
     setPreparedContextAnchorKey(null);
     setPreviewError(null);
     try {
-      await compileProjectContext({ force: true });
+      await compileWorkspaceContext({ force: true });
     } catch (error) {
-      setPreviewError(error?.message || "Could not generate Project Context.");
+      setPreviewError(error?.message || "Could not generate Workspace Context.");
     }
   };
 
-  const copyProjectContext = async () => {
-    setProjectCopyState("copying");
+  const copyWorkspaceContext = async () => {
+    setWorkspaceCopyState("copying");
     setPreviewError(null);
     try {
-      const result = await compileProjectContext();
-      await writeClipboard(await projectContextContent(result));
-      setProjectCopyState("copied");
+      // Clipboard content is an execution boundary. Recompile immediately so
+      // an internally valid but repository-stale preview cannot be copied.
+      const result = await compileWorkspaceContext({ force: true });
+      await writeClipboard(await workspaceContextContent(result));
+      setWorkspaceCopyState("copied");
       return true;
     } catch (error) {
-      setProjectCopyState("error");
-      setPreviewError(error?.message || "Project Context could not be copied.");
+      setWorkspaceCopyState("error");
+      setPreviewError(error?.message || "Workspace Context could not be copied.");
       return false;
     }
   };
 
   useEffect(() => {
     if (
-      firstLoad
-      || dataUnavailable
+      workspaceSelectionLoading
       || !workspace.activeWorkspaceId
-      || !projection.previewAvailable
       || currentPreparedContext
-      || prepareContinuation.isPending
+      || prepareWorkspaceContext.isPending
     ) return undefined;
 
-    const previewKey = JSON.stringify([
-      workspace.activeWorkspaceId,
-      projection.anchorKey,
-    ]);
-    if (autoProjectPreviewKeyRef.current === previewKey) return undefined;
-    autoProjectPreviewKeyRef.current = previewKey;
+    const previewKey = workspaceContextKey;
+    if (autoWorkspacePreviewKeyRef.current === previewKey) return undefined;
+    autoWorkspacePreviewKeyRef.current = previewKey;
 
     let active = true;
     setPreviewError(null);
-    compileProjectContext().catch((error) => {
-      if (active && activeAnchorRef.current === projection.anchorKey) {
-        setPreviewError(error?.message || "Could not generate Project Context.");
+    compileWorkspaceContext().catch((error) => {
+      if (active && activeWorkspaceContextKeyRef.current === workspaceContextKey) {
+        setPreviewError(error?.message || "Could not generate Workspace Context.");
       }
     });
     return () => {
       active = false;
     };
   }, [
-    compileProjectContext,
+    compileWorkspaceContext,
     currentPreparedContext,
-    dataUnavailable,
-    firstLoad,
-    prepareContinuation.isPending,
-    projection.anchorKey,
-    projection.previewAvailable,
+    prepareWorkspaceContext.isPending,
     workspace.activeWorkspaceId,
+    workspaceContextKey,
+    workspaceSelectionLoading,
   ]);
 
   if (!workspace.workspacesQuery.isLoading && !workspace.activeWorkspaceId) {
@@ -378,33 +394,6 @@ export default function ExecutePage() {
     );
   }
 
-  if (dataUnavailable) {
-    return (
-      <div className="relative mx-auto min-h-full w-full max-w-none">
-        <ExecuteWorkspaceFrame
-          workspace={workspace.activeWorkspace}
-          status="Unavailable"
-          attention
-          selectedSessions={selectedExecuteSessions}
-        >
-          <div role="alert" className="px-6 py-16 text-center">
-            <AlertTriangle className="mx-auto h-7 w-7 text-attention" aria-hidden="true" />
-            <h2 className="mt-4 text-xl font-semibold tracking-[-0.025em] text-ink">
-              Workspace Context is unavailable
-            </h2>
-            <p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-ink-muted">
-              Current activity and durable project knowledge could not be loaded, so Execute is not inventing an execution state.
-            </p>
-            <Link to="/app/execute/inspector" className="btn-secondary mt-5 min-h-11 text-xs">
-              Inspect context sources
-              <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
-            </Link>
-          </div>
-        </ExecuteWorkspaceFrame>
-      </div>
-    );
-  }
-
   return (
     <div className="relative mx-auto min-h-full w-full max-w-none">
       <ExecuteWorkspaceFrame
@@ -420,15 +409,14 @@ export default function ExecutePage() {
         ) : null}
 
         <ContextProductsPanel
-          projection={projection}
           preparedContext={currentPreparedContext}
-          projectPreparing={projectPreviewPreparing}
-          projectCopyState={projectCopyState}
-          projectError={previewError}
-          projectRetryable={projectPreviewRetryable}
-          projectDialogOpen={previewOpen}
-          onPreviewProject={generatePreview}
-          onCopyProject={copyProjectContext}
+          workspacePreparing={workspacePreviewPreparing}
+          workspaceCopyState={workspaceCopyState}
+          workspaceError={previewError}
+          workspaceRetryable={workspacePreviewRetryable}
+          workspaceDialogOpen={previewOpen}
+          onPreviewWorkspace={generatePreview}
+          onCopyWorkspace={copyWorkspaceContext}
           workspaceId={workspace.activeWorkspaceId}
           selectedSessions={selectedExecuteSessions}
           onRemoveSelectedSession={removeExecuteSession}
@@ -438,12 +426,12 @@ export default function ExecutePage() {
       {previewOpen ? createPortal(
         <ContextPreviewDialog
           result={currentPreparedContext}
-          loading={projectPreviewPreparing}
+          loading={workspacePreviewPreparing}
           error={previewError}
-          canRetry={projectPreviewRetryable}
+          canRetry={workspacePreviewRetryable}
           onRetry={retryPreview}
-          onCopy={copyProjectContext}
-          copyState={projectCopyState}
+          onCopy={copyWorkspaceContext}
+          copyState={workspaceCopyState}
           onClose={closePreview}
           returnFocusRef={previewReturnFocusRef}
         />,
@@ -555,23 +543,22 @@ function ExecuteWorkspaceFrame({
 
 
 function ContextProductsPanel({
-  projection,
   preparedContext,
-  projectPreparing,
-  projectCopyState,
-  projectError,
-  projectRetryable,
-  projectDialogOpen,
-  onPreviewProject,
-  onCopyProject,
+  workspacePreparing,
+  workspaceCopyState,
+  workspaceError,
+  workspaceRetryable,
+  workspaceDialogOpen,
+  onPreviewWorkspace,
+  onCopyWorkspace,
   workspaceId,
   selectedSessions = [],
   onRemoveSelectedSession,
 }) {
-  const projectContent = preparedContext?.project_context?.content || "";
-  const projectCopyReady = (
-    !preparedContext
-    || preparedContext?.project_context?.copy_ready === true
+  const workspaceContent = preparedContext?.workspace_context?.content || "";
+  const workspaceAvailable = Boolean(workspaceId);
+  const terminalWorkspaceError = Boolean(
+    !preparedContext && workspaceError && !workspaceRetryable,
   );
 
   return (
@@ -622,59 +609,52 @@ function ContextProductsPanel({
           <div className="grid w-full gap-3 sm:grid-cols-2 lg:w-auto lg:min-w-[22rem]">
             <button
               type="button"
-              aria-label="Preview Project Context"
-              onClick={(event) => onPreviewProject(event.currentTarget)}
-              disabled={
-                !projection.previewAvailable
-                || (!preparedContext && !projectRetryable)
-              }
+              aria-label="Preview Workspace Context"
+              onClick={(event) => onPreviewWorkspace(event.currentTarget)}
+              disabled={!workspaceAvailable || terminalWorkspaceError}
               className="btn-secondary min-h-11 px-4 text-xs"
             >
-              {projectPreparing
+              {workspacePreparing
                 ? <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
                 : <BookOpenCheck className="h-3.5 w-3.5" aria-hidden="true" />}
-              {!projection.previewAvailable
+              {!workspaceAvailable
                 ? "Unavailable"
-                : projectContent
+                : workspaceContent
                   ? "Open full preview"
-                  : projectError
-                    ? projectRetryable
+                  : workspaceError
+                    ? workspaceRetryable
                       ? "Retry preview"
                       : "Unavailable"
                     : "Preparing…"}
             </button>
             <ContextCopyButton
-              contextName="Project Context"
-              copyState={projectCopyState}
-              onClick={onCopyProject}
-              disabled={
-                !projection.previewAvailable
-                || !projectCopyReady
-                || (!preparedContext && !projectRetryable)
-              }
+              contextName="Workspace Context"
+              copyState={workspaceCopyState}
+              onClick={onCopyWorkspace}
+              disabled={!workspaceAvailable || terminalWorkspaceError}
             />
           </div>
         </header>
 
         <PromptPreview
-          label="Project Context prompt preview"
-          content={projectContent}
-          loading={projectPreparing || (
-            projection.previewAvailable
+          label="Workspace Context prompt preview"
+          content={workspaceContent}
+          loading={workspacePreparing || (
+            workspaceAvailable
             && !preparedContext
-            && !projectError
+            && !workspaceError
           )}
-          available={projection.previewAvailable}
-          error={projectError}
-          unavailableMessage="Choose an active task to compile the workspace foundation for execution."
+          available={workspaceAvailable}
+          error={workspaceError}
+          unavailableMessage="Select a workspace to compile its repository and durable context."
           className="mt-5 min-h-[360px]"
         />
-        {projectError ? (
+        {workspaceError ? (
           <p
-            role={projectDialogOpen ? undefined : "alert"}
+            role={workspaceDialogOpen ? undefined : "alert"}
             className="mt-3 text-xs leading-5 text-attention"
           >
-            {projectError}
+            {workspaceError}
           </p>
         ) : null}
       </section>
@@ -1258,7 +1238,7 @@ function ContextCopyButton({
   onClick,
   disabled,
 }) {
-  const artifactLabel = contextName === "Project Context" ? "workspace" : "session";
+  const artifactLabel = contextName === "Workspace Context" ? "workspace" : "session";
   const visibleLabel = copyState === "copying"
     ? "Copying…"
     : copyState === "copied"
@@ -1340,28 +1320,18 @@ function ContextPreviewDialog({
   const manifest = result?.manifest || {};
   const selected = manifest.selected_context || [];
   const excluded = manifest.excluded_context || [];
-  const projectContent = result?.project_context?.content || "";
-  const projectCopyReady = result?.project_context?.copy_ready === true;
-  const projectTokens = projectContent ? approximateTokens(projectContent) : null;
-  const selectedObjective = visibleText(
-    result?.task?.selected_intent?.objective
-    || result?.task?.workflow?.selected_intent?.objective,
-  );
-  const executionObjective = visibleText(result?.objective);
-  const executingPrerequisite = (
-    result?.task?.workflow?.execution_reason === "unfinished_prerequisite"
-    || (
-      selectedObjective
-      && executionObjective
-      && !taskTextCompatible(selectedObjective, executionObjective)
-    )
-  );
-  const prerequisiteAnchorSwitched = Boolean(
-    result?._memory_preview?.prerequisite_anchor_switched,
-  );
+  const workspaceContext = result?.workspace_context || {};
+  const workspaceContent = workspaceContext.content || "";
+  const workspaceCopyReady = workspaceContext.quality_report?.copy_ready === true;
+  const workspaceTokens = Number.isFinite(workspaceContext.estimated_tokens)
+    ? workspaceContext.estimated_tokens
+    : workspaceContent
+      ? approximateTokens(workspaceContent)
+      : null;
+  const repository = manifest.repo_state || {};
 
   const copyContext = async () => {
-    if (!projectContent || typeof onCopy !== "function") return;
+    if (!workspaceContent || typeof onCopy !== "function") return;
     const succeeded = await onCopy();
     if (succeeded) {
       setCopied(true);
@@ -1382,19 +1352,19 @@ function ContextPreviewDialog({
       >
         <header className="flex items-start justify-between gap-4 border-b border-line bg-surface-raised px-5 py-5 sm:px-6">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-subtle">Parent foundation · cross-harness</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-ink-subtle">Workspace foundation · cross-harness</p>
             <h2 id="context-preview-title" className="mt-1 text-xl font-semibold tracking-[-0.03em] text-ink">
-              Project Context Preview
+              Workspace Context Preview
             </h2>
             <p className="mt-1 text-xs leading-5 text-ink-muted">
-              The workspace-wide durable parent foundation. Mechanically verified, human-confirmed, and corroborated facts can appear; provisional and conflicting claims stay out.
+              The task- and session-independent workspace snapshot, compiled automatically from the current repository and durable workspace evidence.
             </p>
           </div>
           <button
             ref={closeRef}
             type="button"
             onClick={onClose}
-            aria-label="Close Project Context Preview"
+            aria-label="Close Workspace Context Preview"
             className="icon-button shrink-0"
           >
             <X className="h-4 w-4" aria-hidden="true" />
@@ -1404,15 +1374,15 @@ function ContextPreviewDialog({
         {loading ? (
           <ProductLoadingState
             compact
-            label="Compiling Project Context…"
-            detail="Reconciling the active task, current repository, and durable verified project foundation."
-            stages={["Resolving the task", "Checking repository state", "Rendering Project Context"]}
+            label="Compiling Workspace Context…"
+            detail="Reading the selected workspace, current repository, and durable workspace evidence."
+            stages={["Resolving the workspace", "Indexing repository state", "Rendering Workspace Context"]}
             className="m-5 sm:m-6"
           />
         ) : error ? (
           <div role="alert" className="px-6 py-14 text-center">
             <AlertTriangle className="mx-auto h-7 w-7 text-attention" aria-hidden="true" />
-            <h3 className="mt-4 text-base font-semibold text-ink">Project Context could not be generated</h3>
+            <h3 className="mt-4 text-base font-semibold text-ink">Workspace Context could not be generated</h3>
             <p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-ink-muted">{error}</p>
             {canRetry ? (
               <button type="button" onClick={onRetry} className="btn-secondary mt-5 min-h-11 text-xs">
@@ -1424,43 +1394,30 @@ function ContextPreviewDialog({
         ) : result ? (
           <>
             <div className="grid grid-cols-2 gap-px border-b border-line bg-line sm:grid-cols-4">
-              <PreviewMetric label="Scope" value="Verified parent projection" />
+              <PreviewMetric label="Scope" value="Whole workspace" />
               <PreviewMetric
                 label="Estimated size"
-                value={Number.isFinite(projectTokens) ? `≈${projectTokens.toLocaleString()} tokens` : "Not reported"}
+                value={Number.isFinite(workspaceTokens) ? `≈${workspaceTokens.toLocaleString()} tokens` : "Not reported"}
               />
               <PreviewMetric
                 label="Repository"
-                value={humanizeStatus(result.repository?.freshness?.status)}
+                value={repository.repo_path ? "Indexed" : "Workspace evidence only"}
               />
-              <PreviewMetric label="Format" value={result.project_context?.schema_version || "Unknown"} />
+              <PreviewMetric label="Format" value={workspaceContext.schema_version || "Unknown"} />
             </div>
-            {result.readiness?.status !== "ready" ? (
-              <div role="status" className="border-b border-attention/30 bg-attention/10 px-5 py-3 text-xs font-medium leading-5 text-ink sm:px-6">
-                Compiler readiness: {humanizeStatus(result.readiness?.status)}. Review the reported attention before continuing.
-              </div>
-            ) : null}
-            {!projectCopyReady ? (
-              <div role="status" className="border-b border-attention/30 bg-attention/10 px-5 py-3 text-xs font-medium leading-5 text-ink sm:px-6">
-                {projectContextQualityMessage(result)}
-              </div>
-            ) : null}
-            {executingPrerequisite ? (
-              <div role="status" className="border-b border-sky-300/40 bg-sky-50 px-5 py-3 text-xs font-medium leading-5 text-sky-950 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-100 sm:px-6">
-                This pack starts with the unfinished prerequisite “{executionObjective}” before returning to “{selectedObjective}”.
-                {prerequisiteAnchorSwitched
-                  ? " The compiler selected a different checkpoint or source session for that prerequisite; inspect the execution anchor before continuing."
-                  : ""}
-              </div>
-            ) : null}
             <div className="min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
+              {!workspaceCopyReady ? (
+                <div role="alert" className="mb-5 rounded-xl border border-attention/35 bg-attention/10 p-4 text-xs leading-5 text-ink">
+                  This foundation is incomplete. Review the blocking gaps below and recompile after adding the missing evidence; copying is disabled.
+                </div>
+              ) : null}
               <div>
                 <div className="flex items-center justify-between gap-3">
-                  <p className="text-xs font-semibold text-ink">Project Context</p>
+                  <p className="text-xs font-semibold text-ink">Workspace Context</p>
                   <button
                     type="button"
                     onClick={copyContext}
-                    disabled={!projectCopyReady || copyState === "copying"}
+                    disabled={!workspaceContent || !workspaceCopyReady || copyState === "copying"}
                     className="inline-flex min-h-9 items-center gap-2 rounded-lg px-3 text-[10px] font-semibold text-ink-muted hover:bg-surface-muted hover:text-ink"
                   >
                     <Clipboard className="h-3.5 w-3.5" aria-hidden="true" />
@@ -1468,15 +1425,15 @@ function ContextPreviewDialog({
                       ? "Copied"
                       : copyState === "copying"
                         ? "Refreshing…"
-                        : "Copy Project Context"}
+                        : "Copy Workspace Context"}
                   </button>
                 </div>
                 <pre
                   tabIndex={0}
-                  aria-label="Project Context prompt content"
+                  aria-label="Workspace Context prompt content"
                   className="mt-3 max-h-[48vh] overflow-auto whitespace-pre-wrap rounded-xl border border-line bg-[#171713] p-4 font-mono text-[11px] leading-5 text-[#f4f4ec]"
                 >
-                  {projectContent}
+                  {workspaceContent}
                 </pre>
               </div>
               <details className="mt-5 rounded-xl border border-line bg-surface-raised p-4">
@@ -1585,7 +1542,7 @@ function SessionContextPreviewDialog({
               {previewTitle}
             </h2>
             <p className="mt-1 text-xs leading-5 text-ink-muted">
-              The latest individual session's child working memory. Its Project Context parent is a separate artifact; failed attempts and transient blockers stay here.
+              The latest individual session's child working memory. Its Workspace Context parent is a separate artifact; failed attempts and transient blockers stay here.
             </p>
           </div>
           <button
@@ -1603,7 +1560,7 @@ function SessionContextPreviewDialog({
           <ProductLoadingState
             compact
             label={`Preparing ${contextName}…`}
-            detail="Capturing the latest task child while preserving its separate Project Context boundary."
+            detail="Capturing the latest task child while preserving its separate Workspace Context boundary."
             stages={["Capturing the session tip", "Restoring structured progress", "Rendering Session Context"]}
             className="m-5 sm:m-6"
           />
@@ -2579,57 +2536,59 @@ function sessionProviderLabel(value) {
 }
 
 
-function projectContextErrorIsRetryable(error) {
+function workspaceContextErrorIsRetryable(error) {
   if (!error) return true;
   const message = String(error).toLowerCase();
   return ![
-    "compiler dropped a referenced attachment",
-    "compiled context belongs to a different",
-    "compiler returned an incomplete continuation context",
-    "failed its content integrity check",
-    "compiler returned an incomplete project context",
+    "compiled context belongs to a different workspace",
+    "compiled context belongs to a different repository",
   ].some((terminalMessage) => message.includes(terminalMessage));
 }
 
 
-async function projectContextContent(result) {
-  const projectContext = result?.project_context;
+async function workspaceContextContent(result) {
+  const workspaceContext = result?.workspace_context;
+  const foundation = workspaceContext?.foundation;
   if (
-    projectContext?.schema_version !== "continuation_staging_context.v1"
-    || projectContext.scope !== "project"
-    || typeof projectContext.content !== "string"
-    || !projectContext.content.trim()
-    || typeof projectContext.sha256 !== "string"
-    || !projectContext.sha256.trim()
+    workspaceContext?.schema_version !== "workspace_context.v1"
+    || typeof workspaceContext.content !== "string"
+    || !workspaceContext.content.trim()
+    || typeof workspaceContext.sha256 !== "string"
+    || !workspaceContext.sha256.trim()
   ) {
-    throw new Error("The compiler returned an incomplete Project Context.");
+    throw new Error("The compiler returned an incomplete Workspace Context.");
   }
-  if (projectContext.copy_ready !== true) {
-    throw new Error(projectContextQualityMessage(result));
+  if (foundation?.quality_report?.copy_ready !== true) {
+    const detail = Array.isArray(foundation?.quality_report?.issues)
+      ? foundation.quality_report.issues
+        .filter((issue) => issue?.blocking === true)
+        .map((issue) => visibleText(issue?.message))
+        .filter(Boolean)
+        .slice(0, 2)
+        .join(" ")
+      : "";
+    throw new Error(
+      detail
+        ? `Workspace Context is not copy-ready. ${detail}`
+        : "Workspace Context is not copy-ready because its foundation quality gate did not pass.",
+    );
   }
   await requireMatchingContentSha256(
-    projectContext.content,
-    projectContext.sha256,
-    "Project Context",
+    canonicalWorkspaceFoundationSemanticJson(foundation),
+    foundation.semantic_sha256,
+    "Workspace foundation semantic state",
   );
-  return projectContext.content;
-}
-
-
-function projectContextQualityMessage(result) {
-  const issues = Array.isArray(result?.project_context?.quality_issues)
-    ? result.project_context.quality_issues.filter(
-      (issue) => issue?.blocks_copy !== false,
-    )
-    : [];
-  const detail = issues
-    .map((issue) => visibleText(issue?.message))
-    .filter(Boolean)
-    .slice(0, 2)
-    .join(" ");
-  return detail
-    ? `Project Context is not copy-ready. ${detail}`
-    : "Project Context is not copy-ready because its quality gate did not pass.";
+  await requireMatchingContentSha256(
+    canonicalWorkspaceFoundationJson(foundation),
+    foundation.artifact_sha256,
+    "Workspace foundation",
+  );
+  await requireMatchingContentSha256(
+    workspaceContext.content,
+    workspaceContext.sha256,
+    "Workspace Context",
+  );
+  return workspaceContext.content;
 }
 
 
@@ -2826,219 +2785,126 @@ async function writeClipboard(content) {
 }
 
 
-function validatePreparedContext(result, expectedIdentity = {}) {
-  // Identity checks must use lossless task data. cleanDisplayText is only for
-  // presentation and intentionally removes labels such as "Context:", which
-  // can be substantive text in an authoritative user request.
-  const selectedGoal = rawText(
-    result?.task?.selected_intent?.objective
-    || result?.task?.workflow?.selected_intent?.objective
-    || result?.task?.title
-    || result?.objective,
-  );
-  const contractRequest = rawText(
-    result?.execution_contract?.task?.request_verbatim,
-  );
-  const taskIdentity = result?.task?.identity;
-  const contractTaskIdentity = result?.execution_contract?.task_identity;
-  const readinessStatus = String(result?.readiness?.status || "").toLowerCase();
+function validateWorkspaceContext(result, expectedIdentity = {}) {
   const manifest = result?.manifest;
-  const manifestTaskIdentity = manifest?.continuation?.task_identity;
-  const executingPrerequisite = (
-    result?.task?.workflow?.execution_reason === "unfinished_prerequisite"
+  const foundation = manifest?.workspace_foundation;
+  const repositoryFingerprint = rawText(
+    manifest?.repo_state?.state_fingerprint
+      || manifest?.repo_state?.snapshot_fingerprint,
   );
   if (
     !result
-    || result.schema_version !== "continuation.v1"
+    || result.schema_version !== "context_pack.v2"
     || !result.context_pack_id
-    || !result.markdown
-    || result?.project_context?.schema_version !== "continuation_staging_context.v1"
-    || result.project_context.scope !== "project"
-    || typeof result.project_context.content !== "string"
-    || !result.project_context.content.trim()
-    || typeof result.project_context.sha256 !== "string"
-    || !result.project_context.sha256.trim()
-    || typeof result.project_context.copy_ready !== "boolean"
-    || !Array.isArray(result.project_context.quality_issues)
-    || !result.task
-    || typeof result.task !== "object"
-    || !selectedGoal
-    || !result.task.workflow
-    || typeof result.task.workflow !== "object"
-    || !result.repository
-    || typeof result.repository !== "object"
-    || Array.isArray(result.repository)
-    || !result.repository.freshness
-    || typeof result.repository.freshness !== "object"
-    || !["matched", "changed", "unavailable", "not_applicable"].includes(
-      String(result.repository.freshness.status || "").toLowerCase(),
+    || typeof result.markdown !== "string"
+    || !result.markdown.trim()
+    || !(
+      result.markdown === "# Workspace Context"
+      || result.markdown.startsWith("# Workspace Context\n")
     )
-    || !result.readiness
-    || typeof result.readiness !== "object"
-    || !["ready", "review_required", "blocked"].includes(readinessStatus)
-    || !Array.isArray(result.attention)
-    || typeof result.quality_report !== "object"
-    || result.quality_report === null
-    || typeof result.quality_report.launchable !== "boolean"
+    || !Array.isArray(result.selected_context)
+    || !Array.isArray(result.excluded_context)
     || manifest?.schema_version !== "context_pack.v2"
     || manifest.context_pack_id !== result.context_pack_id
-    || rawText(manifest.objective) !== rawText(result.objective)
-    || manifest.continuation?.task_id !== result.task.id
-    || rawText(manifest.continuation?.execution_objective) !== rawText(result.objective)
+    || manifest.objective_kind !== "project_snapshot"
+    || manifest.focus?.kind !== "project_snapshot"
+    || !manifest.repo_state
+    || typeof manifest.repo_state !== "object"
+    || Array.isArray(manifest.repo_state)
     || manifest.token_accounting?.within_budget !== true
     || manifest.rendering?.within_budget !== true
+    || typeof manifest.rendering?.markdown_sha256 !== "string"
+    || !manifest.rendering.markdown_sha256.trim()
     || !Array.isArray(manifest.selected_context)
     || !Array.isArray(manifest.excluded_context)
-    || !taskIdentityCopiesAreValid(
-      taskIdentity,
-      manifestTaskIdentity,
-      contractTaskIdentity,
-    )
-    || (
-      taskIdentity
-      && (
-        taskIdentity.schema_version !== "continuation_task_identity.v1"
-        || rawText(taskIdentity.id) !== rawText(result.task.id)
-      )
-    )
+    || !SUPPORTED_WORKSPACE_FOUNDATION_SCHEMAS.has(foundation?.schema_version)
+    || foundation.objective_independent !== true
+    || typeof foundation.semantic_sha256 !== "string"
+    || !foundation.semantic_sha256.trim()
+    || typeof foundation.artifact_sha256 !== "string"
+    || !foundation.artifact_sha256.trim()
+    || typeof foundation.quality_report !== "object"
+    || foundation.quality_report === null
+    || typeof foundation.quality_report.copy_ready !== "boolean"
+    || !repositoryFingerprint
+    || rawText(foundation.repository_state?.snapshot_fingerprint) !== repositoryFingerprint
+    || rawText(manifest.repo_state.workspace_foundation_sha256)
+      !== rawText(foundation.semantic_sha256)
+    || rawText(manifest.repo_state.workspace_foundation_artifact_sha256)
+      !== rawText(foundation.artifact_sha256)
+    || JSON.stringify(result.selected_context) !== JSON.stringify(manifest.selected_context)
+    || JSON.stringify(result.excluded_context) !== JSON.stringify(manifest.excluded_context)
   ) {
-    throw new Error("The compiler returned an incomplete continuation context.");
-  }
-  const referencedImagePaths = imagePathsFromRequest(contractRequest);
-  const manifestArtifactPaths = (
-    manifest?.continuation?.artifacts || []
-  )
-    .flatMap((artifact) => [
-      rawText(artifact?.path),
-      rawText(artifact?.source_path),
-    ])
-    .filter(Boolean);
-  const expectedArtifactPaths = [
-    ...new Set([...referencedImagePaths, ...manifestArtifactPaths]),
-  ];
-  if (expectedArtifactPaths.length) {
-    const compiledArtifactPaths = new Set(
-      (result?.execution_contract?.artifacts || [])
-        .flatMap((artifact) => [
-          rawText(artifact?.path),
-          rawText(artifact?.source_path),
-        ])
-        .filter(Boolean),
-    );
-    const missingImages = expectedArtifactPaths.filter(
-      (path) => !compiledArtifactPaths.has(path),
-    );
-    if (missingImages.length) {
-      throw new Error(
-        "The compiler dropped a referenced attachment; Project Context was not prepared.",
-      );
-    }
+    throw new Error("The compiler returned an incomplete Workspace Context.");
   }
   if (
     expectedIdentity.workspaceId
-    && taskIdentity
-    && rawText(taskIdentity.workspace_id) !== rawText(expectedIdentity.workspaceId)
+    && rawText(manifest.workspace_id) !== rawText(expectedIdentity.workspaceId)
   ) {
     throw new Error("The compiled context belongs to a different workspace.");
   }
-  if (expectedIdentity.objective) {
-    const expectedTaskKey = normalizeTaskText(expectedIdentity.objective);
-    const selectedTaskKey = rawText(taskIdentity?.selected_objective_key);
-    const taskMatches = selectedTaskKey
-      ? selectedTaskKey === expectedTaskKey
-      : contractRequest
-        ? normalizeTaskText(contractRequest) === expectedTaskKey
-        : taskTextCompatible(expectedIdentity.objective, selectedGoal);
-    if (!taskMatches) {
-      throw new Error("The compiled context belongs to a different task.");
-    }
-  }
   if (
     expectedIdentity.repoPath
-    && normalizeComparableRepoPath(result.repository.path)
+    && normalizeComparableRepoPath(manifest.repo_state.repo_path)
       !== normalizeComparableRepoPath(expectedIdentity.repoPath)
   ) {
     throw new Error("The compiled context belongs to a different repository.");
   }
-  const checkpointIdentityMismatch = Boolean(
-    expectedIdentity.checkpointId
-    && (
-      rawText(result.checkpoint?.id) !== rawText(expectedIdentity.checkpointId)
-      || rawText(manifest.continuation?.checkpoint_id)
-        !== rawText(expectedIdentity.checkpointId)
-    )
-  );
-  if (checkpointIdentityMismatch && !executingPrerequisite) {
-    throw new Error("The compiled context belongs to a different checkpoint.");
-  }
-  const sourceIdentityMismatch = Boolean(
-    expectedIdentity.sourceProvider
-    && (
-      normalizeProvider(result.source_session?.provider)
-        !== normalizeProvider(expectedIdentity.sourceProvider)
-      || rawText(result.source_session?.session_id)
-        !== rawText(expectedIdentity.sourceSessionId)
-    )
-  );
-  if (sourceIdentityMismatch && !executingPrerequisite) {
-    throw new Error("The compiled context belongs to a different source session.");
-  }
-  if (executingPrerequisite && (checkpointIdentityMismatch || sourceIdentityMismatch)) {
-    return {
-      ...result,
-      _memory_preview: {
-        prerequisite_anchor_switched: true,
-      },
-    };
-  }
-  return result;
+  return {
+    ...result,
+    workspace_context: {
+      schema_version: "workspace_context.v1",
+      workspace_id: rawText(manifest.workspace_id),
+      context_pack_id: result.context_pack_id,
+      content: result.markdown,
+      sha256: manifest.rendering.markdown_sha256,
+      estimated_tokens: Number(manifest.rendering.estimated_tokens),
+      repository: manifest.repo_state,
+      quality_report: foundation.quality_report,
+      foundation,
+    },
+  };
 }
 
 
-function imagePathsFromRequest(value) {
-  const paths = [];
-  const seen = new Set();
-  const pattern = /<image\b[^>]*\bpath\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))[^>]*>/gi;
-  for (const match of String(value || "").matchAll(pattern)) {
-    const path = rawText(match[1] || match[2] || match[3]);
-    if (!path || seen.has(path)) continue;
-    seen.add(path);
-    paths.push(path);
+function canonicalWorkspaceFoundationJson(foundation) {
+  if (!foundation || typeof foundation !== "object" || Array.isArray(foundation)) {
+    throw new Error("The compiler returned an incomplete Workspace foundation.");
   }
-  return paths;
+  const payload = { ...foundation };
+  delete payload.artifact_sha256;
+  return JSON.stringify(sortCanonicalJsonValue(payload));
 }
 
 
-function taskIdentityCopiesAreValid(
-  taskIdentity,
-  manifestTaskIdentity,
-  contractTaskIdentity,
-) {
-  const identities = [
-    taskIdentity,
-    manifestTaskIdentity,
-    contractTaskIdentity,
-  ];
-  const present = identities.filter(Boolean);
-  if (!present.length) return true;
-  if (
-    present.length !== identities.length
-    || present.some((identity) => typeof identity !== "object")
-  ) return false;
-  const fields = [
-    "schema_version",
-    "id",
-    "workspace_id",
-    "selected_objective_key",
-    "selected_objective_sha256",
-    "authoritative_request_sha256",
-    "workspace_goal_id",
-    "selected_component_id",
-  ];
-  return fields.every((field) => {
-    const expected = rawText(taskIdentity[field]);
-    return identities.every((identity) => rawText(identity[field]) === expected);
-  });
+function canonicalWorkspaceFoundationSemanticJson(foundation) {
+  if (!foundation || typeof foundation !== "object" || Array.isArray(foundation)) {
+    throw new Error("The compiler returned an incomplete Workspace foundation.");
+  }
+  const payload = {
+    ...foundation,
+    repository_state: { ...(foundation.repository_state || {}) },
+  };
+  delete payload.artifact_sha256;
+  delete payload.semantic_sha256;
+  delete payload.compiled_at;
+  delete payload.repository_state.captured_at;
+  return JSON.stringify(sortCanonicalJsonValue(payload));
+}
+
+
+function sortCanonicalJsonValue(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => sortCanonicalJsonValue(item));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, sortCanonicalJsonValue(value[key])]),
+    );
+  }
+  return value;
 }
 
 

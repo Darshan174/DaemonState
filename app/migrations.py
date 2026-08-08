@@ -5,6 +5,9 @@ import json
 from datetime import datetime
 from uuid import UUID, uuid4
 
+import sqlalchemy as sa
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -17,6 +20,7 @@ from app.taxonomy import default_trust_zone_for_source
 
 
 async def run_migrations(conn: AsyncConnection) -> None:
+    await _migrate_waitlist_tracking_schema(conn)
     await _migrate_connectors_workspace_schema(conn)
     await _migrate_workspace_lifecycle_schema(conn)
     await _migrate_workspace_ownership_columns(conn)
@@ -47,6 +51,131 @@ async def run_migrations(conn: AsyncConnection) -> None:
     await _migrate_query_and_sync_indexes(conn)
     await _migrate_source_ingestion_jobs(conn)
     await _migrate_daemonstate_brand(conn)
+
+
+def _waitlist_tracking_columns() -> tuple[sa.Column, ...]:
+    """Return fresh column objects matching Alembic revision 0020."""
+
+    return (
+        sa.Column("name", sa.String(255), nullable=True),
+        sa.Column("role", sa.String(255), nullable=True),
+        sa.Column("company", sa.String(255), nullable=True),
+        sa.Column("team_size", sa.String(64), nullable=True),
+        sa.Column("primary_tools", sa.Text(), nullable=True),
+        sa.Column("main_problem", sa.Text(), nullable=True),
+        sa.Column("referrer", sa.Text(), nullable=True),
+        sa.Column("utm_source", sa.String(255), nullable=True),
+        sa.Column("utm_medium", sa.String(255), nullable=True),
+        sa.Column("utm_campaign", sa.String(255), nullable=True),
+        sa.Column("utm_term", sa.String(255), nullable=True),
+        sa.Column("utm_content", sa.String(255), nullable=True),
+        sa.Column(
+            "status",
+            sa.String(32),
+            nullable=False,
+            server_default="new",
+        ),
+        sa.Column(
+            "priority_score",
+            sa.Integer(),
+            nullable=False,
+            server_default="0",
+        ),
+        sa.Column("notes", sa.Text(), nullable=True),
+        sa.Column("consent_at", sa.DateTime(), nullable=True),
+        sa.Column("consent_version", sa.String(32), nullable=True),
+        sa.Column("invited_at", sa.DateTime(), nullable=True),
+        sa.Column("activated_at", sa.DateTime(), nullable=True),
+        sa.Column("last_contacted_at", sa.DateTime(), nullable=True),
+        sa.Column(
+            "email_sync_status",
+            sa.String(32),
+            nullable=False,
+            server_default="pending",
+        ),
+        sa.Column("email_synced_at", sa.DateTime(), nullable=True),
+        sa.Column("email_sync_error", sa.Text(), nullable=True),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
+    )
+
+
+async def _migrate_waitlist_tracking_schema(conn: AsyncConnection) -> None:
+    """Upgrade legacy local waitlist tables to the tracked-signup schema.
+
+    Production deploys use Alembic revision 0020. Development and existing
+    self-hosted SQLite installs use this compatibility migrator, so it must
+    apply the same shape without deleting historical signups.
+    """
+
+    def _upgrade(sync_conn) -> None:
+        inspector = inspect(sync_conn)
+        if not inspector.has_table("waitlist_signups"):
+            return
+
+        existing_columns = {
+            item["name"] for item in inspector.get_columns("waitlist_signups")
+        }
+        required_legacy_columns = {"id", "email", "source", "created_at"}
+        missing_legacy_columns = sorted(required_legacy_columns - existing_columns)
+        if missing_legacy_columns:
+            raise RuntimeError(
+                "waitlist_signups has an incompatible legacy schema; missing "
+                + ", ".join(missing_legacy_columns)
+            )
+
+        columns = _waitlist_tracking_columns()
+        missing_columns = tuple(
+            column for column in columns if column.name not in existing_columns
+        )
+        existing_indexes = {
+            item["name"] for item in inspector.get_indexes("waitlist_signups")
+        }
+        status_index_missing = (
+            "ix_waitlist_signups_status_created_at" not in existing_indexes
+        )
+        added_updated_at = "updated_at" not in existing_columns
+        operations = Operations(MigrationContext.configure(sync_conn))
+
+        if sync_conn.dialect.name == "sqlite" and missing_columns:
+            # SQLite rejects ALTER TABLE ADD COLUMN for a non-null column with
+            # CURRENT_TIMESTAMP. Batch recreation preserves all reflected
+            # columns, constraints, indexes, and rows while installing the
+            # exact current defaults.
+            with operations.batch_alter_table(
+                "waitlist_signups",
+                recreate="always",
+            ) as batch_op:
+                for column in missing_columns:
+                    batch_op.add_column(column)
+                if status_index_missing:
+                    batch_op.create_index(
+                        "ix_waitlist_signups_status_created_at",
+                        ["status", "created_at"],
+                        unique=False,
+                    )
+        else:
+            for column in missing_columns:
+                operations.add_column("waitlist_signups", column)
+            if status_index_missing:
+                operations.create_index(
+                    "ix_waitlist_signups_status_created_at",
+                    "waitlist_signups",
+                    ["status", "created_at"],
+                    unique=False,
+                )
+
+        if added_updated_at:
+            sync_conn.execute(text(
+                "UPDATE waitlist_signups "
+                "SET updated_at = COALESCE(created_at, CURRENT_TIMESTAMP)"
+            ))
+
+    await conn.run_sync(_upgrade)
 
 
 async def _migrate_continuation_stage_request_schema(

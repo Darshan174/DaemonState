@@ -12,6 +12,139 @@ from app.services import repo_indexer
 from app.services.repo_indexer import RepoIndexer
 
 
+def test_git_state_preserves_porcelain_index_and_worktree_columns(
+    tmp_path,
+    monkeypatch,
+):
+    (tmp_path / "index.py").write_text("index = True\n", encoding="utf-8")
+    (tmp_path / "worktree.py").write_text("worktree = True\n", encoding="utf-8")
+
+    def fake_git(_root, *args):
+        command = tuple(args)
+        if command == ("rev-parse", "--is-inside-work-tree"):
+            return "true\n"
+        if command == ("status", "--short"):
+            return "M  index.py\n M worktree.py\n?? notes.txt\n"
+        if command == ("rev-parse", "--abbrev-ref", "HEAD"):
+            return "main\n"
+        if command == ("rev-parse", "HEAD"):
+            return "a" * 40
+        return ""
+
+    monkeypatch.setattr(repo_indexer, "_git", fake_git)
+
+    state = repo_indexer._git_state(tmp_path)
+
+    assert [item["status"] for item in state["changed_files"]] == [
+        "M ",
+        " M",
+        "??",
+    ]
+
+
+async def test_repo_frame_reports_bounded_head_vs_worktree_semantic_delta(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "workspace-foundation@example.invalid"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Workspace Foundation Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+    service = tmp_path / "service.py"
+    service.write_text(
+        "def run_service():\n"
+        "    return 'old'\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "service.py"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "baseline"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    service.write_text(
+        "import json\n\n"
+        "class ServiceResult:\n"
+        "    pass\n\n"
+        "def run_service():\n"
+        "    return json.dumps({'status': 'new'})\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "test_service.py").write_text(
+        "def test_run_service():\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+
+    frame = await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
+    changes = {item["path"]: item for item in frame.changed_files}
+    service_delta = changes["service.py"]["semantic_delta"]
+
+    assert service_delta["observer"] == "head_vs_worktree_syntax.v1"
+    assert service_delta["status"] == "observed"
+    assert service_delta["parser_coverage"] == "parsed"
+    assert service_delta["parser_languages"] == ["python"]
+    assert service_delta["complete"] is True
+    assert service_delta["lines_added"] > 0
+    assert service_delta["lines_removed"] > 0
+    assert service_delta["symbols_added"] == ["class:ServiceResult"]
+    assert service_delta["symbols_modified"] == ["function:run_service"]
+    assert service_delta["imports_added"] == ["json"]
+
+    untracked_delta = changes["test_service.py"]["semantic_delta"]
+    assert untracked_delta["status"] == "observed"
+    assert untracked_delta["lines_added"] == 2
+    assert untracked_delta["symbols_added"] == ["function:test_run_service"]
+
+
+async def test_semantic_delta_for_unsupported_language_is_explicitly_line_only(
+    tmp_path,
+):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "workspace-foundation@example.invalid"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Workspace Foundation Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+    source = tmp_path / "Application.swift"
+    source.write_text("struct Application {}\n", encoding="utf-8")
+    subprocess.run(["git", "add", "Application.swift"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "baseline"],
+        cwd=tmp_path,
+        check=True,
+    )
+    source.write_text(
+        "struct Application {\n    let enabled = true\n}\n",
+        encoding="utf-8",
+    )
+
+    frame = await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
+    delta = next(
+        item["semantic_delta"]
+        for item in frame.changed_files
+        if item["path"] == "Application.swift"
+    )
+
+    assert delta["status"] == "partial"
+    assert delta["parser_coverage"] == "line_only"
+    assert delta["parser_languages"] == ["swift"]
+    assert delta["complete"] is False
+    assert delta["lines_added"] is not None
+    assert delta["lines_removed"] is not None
+    assert not any(key.startswith("symbols_") for key in delta)
+
+
 async def test_indexes_python_files_symbols_and_routes(tmp_path):
     (tmp_path / ".git").mkdir()
     app_dir = tmp_path / "app"
@@ -42,6 +175,122 @@ async def test_indexes_python_files_symbols_and_routes(tmp_path):
     assert frame.persistence_available is False
 
 
+async def test_indexes_conservative_python_local_call_hints(tmp_path):
+    (tmp_path / ".git").mkdir()
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    (app_dir / "__init__.py").write_text("", encoding="utf-8")
+    (app_dir / "service.py").write_text(
+        "def run_service(payload):\n"
+        "    return payload\n",
+        encoding="utf-8",
+    )
+    (app_dir / "api.py").write_text(
+        "from .service import run_service as execute\n"
+        "import app.service as service_module\n\n"
+        "def local_helper(payload):\n"
+        "    return payload\n\n"
+        "async def create_item(payload):\n"
+        "    first = execute(payload)\n"
+        "    second = service_module.run_service(first)\n"
+        "    return local_helper(second)\n",
+        encoding="utf-8",
+    )
+
+    frame = await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
+    api_file = next(item for item in frame.indexed_files if item.path == "app/api.py")
+
+    assert [
+        (
+            item.caller_name,
+            item.target_name,
+            item.target_specifier,
+            item.binding_kind,
+            item.start_line,
+        )
+        for item in api_file.call_hints
+    ] == [
+        ("create_item", "run_service", ".service", "imported_symbol", 8),
+        ("create_item", "run_service", "app.service", "imported_module", 9),
+        ("create_item", "local_helper", None, "local_symbol", 10),
+    ]
+
+
+async def test_python_call_hints_reject_shadowed_and_reassigned_bindings(tmp_path):
+    (tmp_path / ".git").mkdir()
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    (app_dir / "__init__.py").write_text("", encoding="utf-8")
+    (app_dir / "service.py").write_text(
+        "def run_service(payload):\n    return payload\n",
+        encoding="utf-8",
+    )
+    (app_dir / "parameter_shadow.py").write_text(
+        "from .service import run_service as execute\n"
+        "import app.service as service_module\n\n"
+        "def local_helper(payload):\n"
+        "    return payload\n\n"
+        "def run(execute, service_module, local_helper, payload):\n"
+        "    execute(payload)\n"
+        "    service_module.run_service(payload)\n"
+        "    return local_helper(payload)\n",
+        encoding="utf-8",
+    )
+    (app_dir / "local_shadow.py").write_text(
+        "from .service import run_service as execute\n"
+        "import app.service as service_module\n\n"
+        "def local_helper(payload):\n"
+        "    return payload\n\n"
+        "def run(payload):\n"
+        "    execute = payload\n"
+        "    service_module = payload\n"
+        "    local_helper = payload\n"
+        "    execute(payload)\n"
+        "    service_module.run_service(payload)\n"
+        "    return local_helper(payload)\n",
+        encoding="utf-8",
+    )
+    (app_dir / "module_reassignment.py").write_text(
+        "from .service import run_service as execute\n"
+        "execute = lambda payload: payload\n\n"
+        "def run(payload):\n"
+        "    return execute(payload)\n",
+        encoding="utf-8",
+    )
+
+    frame = await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
+
+    for path in (
+        "app/parameter_shadow.py",
+        "app/local_shadow.py",
+        "app/module_reassignment.py",
+    ):
+        indexed = next(item for item in frame.indexed_files if item.path == path)
+        assert indexed.call_hints == []
+
+
+async def test_python_call_hints_are_strictly_capped_per_file(tmp_path):
+    (tmp_path / ".git").mkdir()
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    call_count = repo_indexer.MAX_INDEXED_CALL_HINTS_PER_FILE + 20
+    calls = "".join("    helper()\n" for _index in range(call_count))
+    (app_dir / "many_calls.py").write_text(
+        "def helper():\n"
+        "    return True\n\n"
+        "def run():\n"
+        f"{calls}",
+        encoding="utf-8",
+    )
+
+    frame = await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
+    indexed = next(
+        item for item in frame.indexed_files if item.path == "app/many_calls.py"
+    )
+
+    assert len(indexed.call_hints) == repo_indexer.MAX_INDEXED_CALL_HINTS_PER_FILE
+
+
 async def test_indexes_typescript_imports_components_and_routes(tmp_path):
     (tmp_path / ".git").mkdir()
     src = tmp_path / "src"
@@ -64,6 +313,115 @@ async def test_indexes_typescript_imports_components_and_routes(tmp_path):
     symbols = {(symbol.symbol_type, symbol.name) for symbol in indexed.symbols}
     assert ("component", "StatusPanel") in symbols
     assert ("function", "helper") in symbols
+
+
+async def test_indexes_static_javascript_http_method_and_path_references(tmp_path):
+    (tmp_path / ".git").mkdir()
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "hooks.js").write_text(
+        "import { api } from './client';\n"
+        "export async function loadWorkspace(id) {\n"
+        "  const workspace = await api.get(`/workspaces/${id}?include=true`);\n"
+        "  await api.post('/continuations/prepare', workspace);\n"
+        "  return workspace;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    frame = await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
+    hooks = next(item for item in frame.indexed_files if item.path == "src/hooks.js")
+
+    assert [
+        (item.method, item.path, item.start_line)
+        for item in hooks.http_references
+    ] == [
+        ("GET", "/workspaces/{}", 3),
+        ("POST", "/continuations/prepare", 4),
+    ]
+
+
+async def test_javascript_http_references_require_a_stable_proven_client(tmp_path):
+    (tmp_path / ".git").mkdir()
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "declared.js").write_text(
+        "import transport from 'axios';\n"
+        "const workspaceTransport = transport.create({ baseURL: '/api' });\n"
+        "workspaceTransport.get('/workspaces');\n",
+        encoding="utf-8",
+    )
+    (src / "unknown.js").write_text(
+        "const api = makeObject();\n"
+        "api.get('/invented');\n",
+        encoding="utf-8",
+    )
+    (src / "wrong_import.js").write_text(
+        "import { api } from './formatters';\n"
+        "api.get('/invented');\n",
+        encoding="utf-8",
+    )
+    (src / "parameter_shadow.js").write_text(
+        "import { api } from './client';\n"
+        "function load(api) {\n"
+        "  return api.get('/shadowed');\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (src / "local_shadow.js").write_text(
+        "import { api } from './client';\n"
+        "function load() {\n"
+        "  const api = makeObject();\n"
+        "  return api.get('/shadowed');\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (src / "reassigned.js").write_text(
+        "import { client } from './http-client';\n"
+        "client = makeObject();\n"
+        "client.get('/shadowed');\n",
+        encoding="utf-8",
+    )
+
+    frame = await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
+    by_path = {item.path: item for item in frame.indexed_files}
+
+    assert [
+        (item.method, item.path)
+        for item in by_path["src/declared.js"].http_references
+    ] == [("GET", "/workspaces")]
+    for path in (
+        "src/unknown.js",
+        "src/wrong_import.js",
+        "src/parameter_shadow.js",
+        "src/local_shadow.js",
+        "src/reassigned.js",
+    ):
+        assert by_path[path].http_references == []
+
+
+async def test_javascript_http_references_are_strictly_capped_per_file(tmp_path):
+    (tmp_path / ".git").mkdir()
+    src = tmp_path / "src"
+    src.mkdir()
+    reference_count = repo_indexer.MAX_INDEXED_HTTP_REFERENCES_PER_FILE + 20
+    references = "".join(
+        f"api.get('/items/{index}');\n" for index in range(reference_count)
+    )
+    (src / "many_requests.js").write_text(
+        "import { api } from './client';\n" + references,
+        encoding="utf-8",
+    )
+
+    frame = await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
+    indexed = next(
+        item for item in frame.indexed_files if item.path == "src/many_requests.js"
+    )
+
+    assert (
+        len(indexed.http_references)
+        == repo_indexer.MAX_INDEXED_HTTP_REFERENCES_PER_FILE
+    )
 
 
 async def test_regex_test_calls_do_not_turn_application_javascript_into_tests(
@@ -280,7 +638,7 @@ async def test_repository_evidence_filters_deictic_verbs_but_keeps_exact_file_na
     assert remove_file["match_basis"]["file_name"] == ["remove"]
 
     evidence = frame.repository_evidence_for_goal(keywords, [])
-    assert evidence["schema_version"] == "repository_evidence.v1"
+    assert evidence["schema_version"] == "repository_evidence.v2"
     assert len(evidence["items"]) <= 24
     assert {
         (item["path"], item["symbol_name"])
@@ -322,6 +680,205 @@ async def test_repository_evidence_filters_deictic_verbs_but_keeps_exact_file_na
         "docstring" not in item and "source" not in item and "signature" not in item
         for item in evidence["items"]
     )
+
+
+async def test_license_self_host_goal_excludes_ambiguous_copy_self_host_symbols(
+    tmp_path,
+):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "app").mkdir()
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "vendor").mkdir()
+    (tmp_path / "deploy" / "production").mkdir(parents=True)
+    (tmp_path / "frontend").mkdir()
+    (tmp_path / "fixtures").mkdir()
+    (tmp_path / "LICENSE").write_text(
+        "Source-available license terms.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "vendor" / "LICENSE").write_text(
+        "Bundled dependency terms.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Dockerfile").write_text(
+        "FROM python:3.12-slim\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Dockerfile.production").write_text(
+        "FROM python:3.12-slim\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "docker-compose.yml").write_text(
+        "services:\n  app:\n    build: .\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "docker-compose.production.yml").write_text(
+        "services:\n  app:\n    build: .\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "docker-compose.smoke.yml").write_text(
+        "services:\n  app:\n    build: .\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "deploy" / "production" / "production.env.example").write_text(
+        "PORT=8000\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / ".env.example").write_text(
+        "VITE_API_URL=/api\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "fixtures" / "docker-compose.yml").write_text(
+        "services: {}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "scripts" / "self-host.sh").write_text(
+        "#!/bin/sh\necho ready\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "scripts" / "self-host-smoke.sh").write_text(
+        "#!/bin/sh\necho smoke\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "docs" / "self-hosting.md").write_text(
+        "# Self-hosting\nRun the deployment locally.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests" / "test_docs.py").write_text(
+        "def test_license_and_self_hosting_contracts_are_explicit():\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "app" / "cache.py").write_text(
+        "def _copy_value():\n    return True\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "app" / "auth.py").write_text(
+        "def _client_host_digest():\n    return True\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests" / "test_agents.py").write_text(
+        "def test_agent_cannot_resolve_self_reference():\n    assert True\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests" / "test_continuation_execution_contract.py").write_text(
+        "def test_copy_contract_cannot_self_upgrade():\n    assert True\n",
+        encoding="utf-8",
+    )
+
+    frame = await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
+    lead = (
+        "Update the license so users can self host the project, but cannot "
+        "copy it into a product to make themselves money. Research the "
+        "license and make the project self hostable."
+    )
+    keywords = set(repo_indexer._tokenize(lead))
+    relevant = frame.relevant_files_for_goal(keywords, [])
+    relevant_paths = {item["path"] for item in relevant}
+
+    assert {
+        "LICENSE",
+        "Dockerfile",
+        "Dockerfile.production",
+        "docker-compose.yml",
+        "docker-compose.production.yml",
+        "docker-compose.smoke.yml",
+        "deploy/production/production.env.example",
+        "scripts/self-host.sh",
+        "scripts/self-host-smoke.sh",
+        "docs/self-hosting.md",
+        "tests/test_docs.py",
+    } <= relevant_paths
+    assert not {
+        "app/auth.py",
+        "app/cache.py",
+        "tests/test_agents.py",
+        "tests/test_continuation_execution_contract.py",
+        "vendor/LICENSE",
+        "frontend/.env.example",
+        "fixtures/docker-compose.yml",
+    } & relevant_paths
+    assert all(item["why"] for item in relevant)
+
+    evidence = frame.repository_evidence_for_goal(keywords, [])
+    evidence_paths = {
+        item.get("path")
+        for item in evidence["items"]
+        if item["kind"] in {"file_presence", "symbol_declaration"}
+    }
+    assert {
+        "LICENSE",
+        "Dockerfile",
+        "Dockerfile.production",
+        "docker-compose.yml",
+        "docker-compose.production.yml",
+        "docker-compose.smoke.yml",
+        "deploy/production/production.env.example",
+        "scripts/self-host.sh",
+        "scripts/self-host-smoke.sh",
+        "docs/self-hosting.md",
+        "tests/test_docs.py",
+    } <= evidence_paths
+    assert not {
+        "app/auth.py",
+        "app/cache.py",
+        "tests/test_agents.py",
+        "tests/test_continuation_execution_contract.py",
+        "vendor/LICENSE",
+        "frontend/.env.example",
+        "fixtures/docker-compose.yml",
+    } & evidence_paths
+    assert all(
+        item["kind"] == "file_presence"
+        for item in evidence["items"]
+        if item.get("path") in {
+            "LICENSE",
+            "Dockerfile",
+            "Dockerfile.production",
+            "docker-compose.yml",
+            "docker-compose.production.yml",
+            "docker-compose.smoke.yml",
+            "deploy/production/production.env.example",
+            "scripts/self-host.sh",
+            "scripts/self-host-smoke.sh",
+            "docs/self-hosting.md",
+        }
+    )
+
+
+async def test_license_variants_and_lowercase_dockerfile_are_discovered_safely(
+    tmp_path,
+):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "vendor").mkdir()
+    (tmp_path / "LICENSE.txt").write_text(
+        "Project source-available terms.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "vendor" / "LICENSE.md").write_text(
+        "Bundled dependency terms.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "dockerfile").write_text(
+        "FROM python:3.12-slim\n",
+        encoding="utf-8",
+    )
+
+    frame = await RepoIndexer(None).inspect_repo(tmp_path, persist=False)
+    keywords = {"license", "self", "host"}
+    relevant = frame.relevant_files_for_goal(keywords, [])
+    relevant_paths = {item["path"] for item in relevant}
+
+    assert {"LICENSE.txt", "dockerfile"} <= relevant_paths
+    assert "vendor/LICENSE.md" not in relevant_paths
+    evidence_paths = {
+        item.get("path")
+        for item in frame.repository_evidence_for_goal(keywords, [])["items"]
+    }
+    assert {"LICENSE.txt", "dockerfile"} <= evidence_paths
+    assert "vendor/LICENSE.md" not in evidence_paths
 
 
 async def test_repository_evidence_applies_per_kind_bounds(tmp_path):

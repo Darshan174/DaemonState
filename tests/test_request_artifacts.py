@@ -16,7 +16,10 @@ from app.services.request_artifacts import (
     resolve_trusted_request_image_artifacts,
     structured_input_image_metadata,
     trusted_request_image_descriptors_from_payload,
+    trusted_image_inspection_output_sha256,
+    validated_trusted_image_inspection,
 )
+from app.services.provider_capabilities import required_capabilities
 
 
 def test_structured_provider_images_are_hash_bound_and_markup_alone_is_not(
@@ -51,6 +54,127 @@ def test_structured_provider_images_are_hash_bound_and_markup_alone_is_not(
     assert "structured source event" in (markup_only[0].visual_summary or "")
 
 
+def test_visual_inspection_is_usable_only_for_the_exact_image_digest() -> None:
+    digest = "a" * 64
+    inspection = {
+        "producer": "daemonstate_visual_inspection.v1",
+        "status": "succeeded",
+        "inspected_sha256": digest,
+        "method": "vision_model",
+        "inspector_model": "test-vision",
+        "prompt_definition_sha256": "b" * 64,
+        "output_sha256": "c" * 64,
+        "anchors": [
+            {
+                "kind": "visible_text",
+                "text": "Memory now",
+                "region": "top",
+                "confidence": 0.9,
+            }
+        ],
+        "candidate_route": "/memory",
+    }
+    inspection["output_sha256"] = trusted_image_inspection_output_sha256(inspection)
+    descriptor = TrustedRequestImageDescriptor(
+        path="/capture/cards.png",
+        sha256=digest,
+        mime_type="image/png",
+        visual_inspection=inspection,
+        visual_inspection_attested=True,
+    )
+
+    validated = validated_trusted_image_inspection(descriptor)
+
+    assert validated is not None
+    assert validated["inspected_sha256"] == digest
+    assert validated["anchors"][0]["text"] == "Memory now"
+    assert validated["trust"] == "infrastructure_attested_hash_bound_observation"
+    assert (
+        validated_trusted_image_inspection(
+            TrustedRequestImageDescriptor(
+                path=descriptor.path,
+                sha256="d" * 64,
+                mime_type=descriptor.mime_type,
+                visual_inspection=inspection,
+                visual_inspection_attested=True,
+            )
+        )
+        is None
+    )
+
+
+def test_provider_content_cannot_self_attest_visual_inspection() -> None:
+    metadata = structured_input_image_metadata(
+        [
+            {
+                "type": "input_image",
+                "image_url": "data:image/png;base64,not-valid-base64",
+                "visual_inspection": {
+                    "producer": "daemonstate_visual_inspection.v1",
+                    "status": "succeeded",
+                    "inspected_sha256": "a" * 64,
+                    "anchors": [{"text": "spoofed"}],
+                },
+            }
+        ]
+    )
+
+    assert "visual_inspection" not in metadata[0]
+
+
+def test_visual_summary_never_replaces_required_image_input() -> None:
+    capabilities = required_capabilities(
+        {
+            "task_mode": "change",
+            "artifacts": [
+                {
+                    "kind": "screenshot",
+                    "path": "/bundle/reference.png",
+                    "visual_summary": "A derived description of the screenshot.",
+                }
+            ],
+        }
+    )
+
+    assert "image_input" in capabilities
+
+
+def test_image_mime_requires_native_image_input_even_with_generic_kind() -> None:
+    capabilities = required_capabilities(
+        {
+            "task_mode": "change",
+            "artifacts": [
+                {
+                    "kind": "attachment",
+                    "path": "/bundle/reference.bin",
+                    "mime_type": "image/png",
+                }
+            ],
+        }
+    )
+
+    assert "image_input" in capabilities
+
+
+def test_optional_unavailable_image_does_not_require_native_image_input() -> None:
+    capabilities = required_capabilities(
+        {
+            "task_mode": "change",
+            "artifacts": [
+                {
+                    "kind": "screenshot",
+                    "path": "/bundle/missing.png",
+                    "mime_type": "image/png",
+                    "required": False,
+                    "available": False,
+                }
+            ],
+        }
+    )
+
+    assert "image_input" not in capabilities
+
+
 def test_explicitly_edited_lead_does_not_inherit_unreferenced_source_image(
     tmp_path,
 ) -> None:
@@ -83,10 +207,7 @@ def test_trusted_image_resolver_rejects_symlinks_and_oversized_files(
     oversized = tmp_path / "oversized.png"
     with oversized.open("wb") as handle:
         handle.truncate(MAX_TRUSTED_REQUEST_IMAGE_BYTES + 1)
-    request = (
-        f'<image path="{symlink}"></image>\n'
-        f'<image path="{oversized}"></image>'
-    )
+    request = f'<image path="{symlink}"></image>\n<image path="{oversized}"></image>'
 
     artifacts = resolve_trusted_request_image_artifacts(
         request,
@@ -118,23 +239,16 @@ def test_legacy_codex_turn_recovers_only_matching_structured_local_images(
         path = tmp_path / f"reference-{index}.png"
         path.write_bytes(content)
         image_paths.append(str(path))
-        content_items.append({
-            "type": "input_image",
-            "image_url": (
-                "data:image/png;base64,"
-                + base64.b64encode(content).decode("ascii")
-            ),
-        })
-    request = (
-        "WORK ON THIS AND GET THIS DONE.\n"
-        + "\n".join(
-            f'<image path="{path}"></image>' for path in image_paths
+        content_items.append(
+            {
+                "type": "input_image",
+                "image_url": ("data:image/png;base64," + base64.b64encode(content).decode("ascii")),
+            }
         )
+    request = "WORK ON THIS AND GET THIS DONE.\n" + "\n".join(
+        f'<image path="{path}"></image>' for path in image_paths
     )
-    raw_request = (
-        "## My request for Codex:\n"
-        + request
-    )
+    raw_request = "## My request for Codex:\n" + request
     rollout = sessions / "rollout.jsonl"
     response = {
         "type": "response_item",
@@ -151,10 +265,7 @@ def test_legacy_codex_turn_recovers_only_matching_structured_local_images(
         "type": "event_msg",
         "payload": {
             "type": "user_message",
-            "message": (
-                "## My request for Codex:\n"
-                "WORK ON THIS AND GET THIS DONE."
-            ),
+            "message": ("## My request for Codex:\nWORK ON THIS AND GET THIS DONE."),
             "local_images": image_paths,
         },
     }
@@ -174,19 +285,13 @@ def test_legacy_codex_turn_recovers_only_matching_structured_local_images(
 
     assert [descriptor.path for descriptor in descriptors] == image_paths
     assert [descriptor.sha256 for descriptor in descriptors] == [
-        hashlib.sha256(content).hexdigest()
-        for content in image_contents
+        hashlib.sha256(content).hexdigest() for content in image_contents
     ]
-    stored = [
-        descriptor.resolved_path for descriptor in descriptors
-    ]
+    stored = [descriptor.resolved_path for descriptor in descriptors]
     assert all(path is not None for path in stored)
     assert all(Path(path).is_absolute() for path in stored)
     assert all((tmp_path / "data") in Path(path).parents for path in stored)
-    assert all(
-        (Path(path).stat().st_mode & 0o777) == 0o600
-        for path in stored
-    )
+    assert all((Path(path).stat().st_mode & 0o777) == 0o600 for path in stored)
 
 
 def test_attachment_without_source_time_digest_is_never_available(
@@ -219,26 +324,29 @@ def test_invalid_input_image_retains_ordinal_without_shifting_later_hash(
     second_content = _test_png((7, 8, 9))
     first.write_bytes(b"not-a-raster")
     second.write_bytes(second_content)
-    metadata = structured_input_image_metadata([
-        {
-            "type": "input_image",
-            "image_url": "data:image/png;base64,not-valid-base64",
-        },
-        {
-            "type": "input_image",
-            "image_url": (
-                "data:image/png;base64,"
-                + base64.b64encode(second_content).decode("ascii")
-            ),
-        },
-    ])
+    metadata = structured_input_image_metadata(
+        [
+            {
+                "type": "input_image",
+                "image_url": "data:image/png;base64,not-valid-base64",
+            },
+            {
+                "type": "input_image",
+                "image_url": (
+                    "data:image/png;base64," + base64.b64encode(second_content).decode("ascii")
+                ),
+            },
+        ]
+    )
 
     assert [item["ordinal"] for item in metadata] == [1, 2]
     assert metadata[0]["valid"] is False
-    descriptors = trusted_request_image_descriptors_from_payload({
-        "local_images": [str(first), str(second)],
-        "input_images": metadata,
-    })
+    descriptors = trusted_request_image_descriptors_from_payload(
+        {
+            "local_images": [str(first), str(second)],
+            "input_images": metadata,
+        }
+    )
     artifacts = resolve_trusted_request_image_artifacts(
         "",
         trusted_descriptors=descriptors,
@@ -247,9 +355,7 @@ def test_invalid_input_image_retains_ordinal_without_shifting_later_hash(
 
     assert descriptors[0].binding_valid is False
     assert descriptors[1].ordinal == 2
-    assert descriptors[1].sha256 == hashlib.sha256(
-        second_content
-    ).hexdigest()
+    assert descriptors[1].sha256 == hashlib.sha256(second_content).hexdigest()
     assert [artifact.available for artifact in artifacts] == [False, True]
 
 
@@ -260,22 +366,23 @@ def test_cardinality_mismatch_blocks_every_positional_binding(tmp_path) -> None:
     first.write_bytes(content)
     second.write_bytes(content)
 
-    descriptors = trusted_request_image_descriptors_from_payload({
-        "local_images": [str(first), str(second)],
-        "input_images": [{
-            "ordinal": 1,
-            "valid": True,
-            "sha256": hashlib.sha256(content).hexdigest(),
-            "mime_type": "image/png",
-        }],
-    })
+    descriptors = trusted_request_image_descriptors_from_payload(
+        {
+            "local_images": [str(first), str(second)],
+            "input_images": [
+                {
+                    "ordinal": 1,
+                    "valid": True,
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "mime_type": "image/png",
+                }
+            ],
+        }
+    )
 
     assert len(descriptors) == 2
     assert all(not descriptor.binding_valid for descriptor in descriptors)
-    assert all(
-        "counts differ" in (descriptor.binding_error or "")
-        for descriptor in descriptors
-    )
+    assert all("counts differ" in (descriptor.binding_error or "") for descriptor in descriptors)
 
 
 def test_legacy_recovery_requires_the_exact_adjacent_turn_pair(
@@ -288,42 +395,54 @@ def test_legacy_recovery_requires_the_exact_adjacent_turn_pair(
     image_path.write_bytes(content)
     request = "Implement the exact attached reference."
     rollout = sessions / "rollout.jsonl"
-    rollout.write_text("\n".join((
-        json.dumps({
-            "type": "response_item",
-            "payload": {
-                "type": "message",
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": request},
+    rollout.write_text(
+        "\n".join(
+            (
+                json.dumps(
                     {
-                        "type": "input_image",
-                        "image_url": (
-                            "data:image/png;base64,"
-                            + base64.b64encode(content).decode("ascii")
-                        ),
-                    },
-                ],
-            },
-        }),
-        json.dumps({"type": "event_msg", "payload": {"type": "token_count"}}),
-        json.dumps({
-            "type": "event_msg",
-            "payload": {
-                "type": "user_message",
-                "message": request,
-                "local_images": [str(image_path)],
-            },
-        }),
-    )), encoding="utf-8")
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": request},
+                                {
+                                    "type": "input_image",
+                                    "image_url": (
+                                        "data:image/png;base64,"
+                                        + base64.b64encode(content).decode("ascii")
+                                    ),
+                                },
+                            ],
+                        },
+                    }
+                ),
+                json.dumps({"type": "event_msg", "payload": {"type": "token_count"}}),
+                json.dumps(
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "user_message",
+                            "message": request,
+                            "local_images": [str(image_path)],
+                        },
+                    }
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
 
-    assert recover_codex_request_image_descriptors(
-        source_path=str(rollout),
-        source_sequence_number=1,
-        request_verbatim=request,
-        codex_sessions_root=sessions,
-        artifact_data_dir=tmp_path / "data",
-    ) == ()
+    assert (
+        recover_codex_request_image_descriptors(
+            source_path=str(rollout),
+            source_sequence_number=1,
+            request_verbatim=request,
+            codex_sessions_root=sessions,
+            artifact_data_dir=tmp_path / "data",
+        )
+        == ()
+    )
     assert not (tmp_path / "data").exists()
 
 
@@ -335,12 +454,15 @@ def test_legacy_recovery_rejects_an_oversized_target_line(tmp_path) -> None:
         handle.write(b" " * (MAX_LEGACY_CODEX_TURN_BYTES + 1))
         handle.write(b"\n{}\n")
 
-    assert recover_codex_request_image_descriptors(
-        source_path=str(rollout),
-        source_sequence_number=1,
-        request_verbatim="Implement the attached image.",
-        codex_sessions_root=sessions,
-    ) == ()
+    assert (
+        recover_codex_request_image_descriptors(
+            source_path=str(rollout),
+            source_sequence_number=1,
+            request_verbatim="Implement the attached image.",
+            codex_sessions_root=sessions,
+        )
+        == ()
+    )
 
 
 def test_forged_png_signature_and_unsafe_dimensions_are_rejected(
@@ -352,10 +474,7 @@ def test_forged_png_signature_and_unsafe_dimensions_are_rejected(
     huge.write_bytes(_test_png((1, 1, 1), width=32_769))
 
     artifacts = resolve_trusted_request_image_artifacts(
-        (
-            f'<image path="{forged}"></image>\n'
-            f'<image path="{huge}"></image>'
-        ),
+        (f'<image path="{forged}"></image>\n<image path="{huge}"></image>'),
         trusted_descriptors=(
             TrustedRequestImageDescriptor(
                 path=str(forged),
@@ -394,12 +513,10 @@ def test_claimed_stored_path_is_rehomed_into_content_addressed_storage(
 
     assert descriptor.binding_valid is True
     assert descriptor.resolved_path != str(source)
-    assert Path(descriptor.resolved_path or "").read_bytes() == (
-        source.read_bytes()
-    )
-    assert (
-        tmp_path / "durable" / "request-artifacts"
-    ) in Path(descriptor.resolved_path or "").parents
+    assert Path(descriptor.resolved_path or "").read_bytes() == (source.read_bytes())
+    assert (tmp_path / "durable" / "request-artifacts") in Path(
+        descriptor.resolved_path or ""
+    ).parents
 
 
 def _test_png(

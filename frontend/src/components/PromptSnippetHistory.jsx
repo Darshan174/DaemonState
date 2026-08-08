@@ -5,7 +5,6 @@ import {
   History,
   LoaderCircle,
   Plus,
-  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
@@ -181,8 +180,7 @@ export default function PromptSnippetHistory({ workspaceId }) {
           </button>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div className="pr-14 sm:pr-16">
-              <p className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.18em] text-[#5b691d] dark:text-[#d9ff68]">
-                <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
+              <p className="text-[11px] font-black uppercase tracking-[0.18em] text-[#5b691d] dark:text-[#d9ff68]">
                 Floating prompt library
               </p>
               <h2
@@ -235,8 +233,7 @@ export default function PromptSnippetHistory({ workspaceId }) {
                 </div>
               ) : !prompts.length ? (
                 <div className="flex min-h-40 flex-col items-center justify-center rounded-2xl border border-dashed border-[#d4d4ca] px-5 text-center dark:border-white/10">
-                  <Sparkles className="h-5 w-5 text-[#7e922a] dark:text-[#d9ff68]" aria-hidden="true" />
-                  <p className="mt-3 text-sm font-semibold text-[#3e3e37] dark:text-[#e2e2da]">
+                  <p className="text-sm font-semibold text-[#3e3e37] dark:text-[#e2e2da]">
                     No saved prompts yet
                   </p>
                   <p className="mt-1 max-w-xs text-xs leading-5 text-[#7b7b73] dark:text-[#8f8f87]">
@@ -351,8 +348,7 @@ export default function PromptSnippetHistory({ workspaceId }) {
               </article>
             ) : (
               <div className="mt-5 flex min-h-64 flex-1 flex-col items-center justify-center rounded-2xl border border-dashed border-[#d4d4ca] px-6 text-center dark:border-white/10">
-                <Sparkles className="h-6 w-6 text-[#7e922a] dark:text-[#d9ff68]" aria-hidden="true" />
-                <p className="mt-3 text-sm font-semibold text-[#3e3e37] dark:text-[#e2e2da]">
+                <p className="text-sm font-semibold text-[#3e3e37] dark:text-[#e2e2da]">
                   Nothing selected yet
                 </p>
                 <p className="mt-1 max-w-sm text-xs leading-5 text-[#7b7b73] dark:text-[#8f8f87]">

@@ -65,24 +65,24 @@ export default function FloatingContextToggle({ workspaceId }) {
         }
         disabled={disabled}
         onClick={changeVisibility}
-        className="group inline-flex min-h-11 max-w-full items-center gap-2 rounded-full border border-white/15 bg-white/[0.06] px-2.5 py-1.5 text-left text-xs font-semibold text-[#d0d0c8] backdrop-blur-md transition hover:border-[#d9ff68]/50 hover:bg-white/[0.1] hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#d9ff68]/70 disabled:cursor-not-allowed disabled:opacity-60"
+        className="group inline-flex min-h-11 max-w-full items-center gap-2 rounded-full border border-[#c9c9c0] bg-white/70 px-2.5 py-1.5 text-left text-xs font-semibold text-[#52524b] shadow-[0_7px_22px_rgba(23,23,19,0.05)] backdrop-blur-md transition hover:border-[#9d9d93] hover:bg-white hover:text-[#171713] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#849633]/70 disabled:cursor-not-allowed disabled:opacity-60 dark:border-white/15 dark:bg-white/[0.06] dark:text-[#d0d0c8] dark:shadow-none dark:hover:border-[#d9ff68]/50 dark:hover:bg-white/[0.1] dark:hover:text-white dark:focus-visible:ring-[#d9ff68]/70"
       >
         <DaemonStateIcon size={24} className="shrink-0 transition-transform group-hover:scale-105" />
         <span className="hidden whitespace-nowrap sm:inline">Floating button</span>
-        <span className="whitespace-nowrap text-[11px] text-white/65">{stateLabel}</span>
+        <span className="whitespace-nowrap text-[11px] text-[#77776e] dark:text-white/65">{stateLabel}</span>
         <span
           aria-hidden="true"
           className={`relative h-5 w-9 shrink-0 rounded-full border transition-colors ${
             visible
-              ? "border-[#d9ff68]/70 bg-[#d9ff68]/30"
-              : "border-white/20 bg-black/25"
+              ? "border-[#8ca332]/70 bg-[#d9ff68]/45 dark:border-[#d9ff68]/70 dark:bg-[#d9ff68]/30"
+              : "border-[#b8b8af] bg-[#e6e6df] dark:border-white/20 dark:bg-black/25"
           }`}
         >
           <span
             className={`absolute top-0.5 h-3.5 w-3.5 rounded-full shadow-sm transition-transform ${
               visible
-                ? "translate-x-[18px] bg-[#d9ff68]"
-                : "translate-x-0.5 bg-[#c5c5bc]"
+                ? "translate-x-[18px] bg-[#66751f] dark:bg-[#d9ff68]"
+                : "translate-x-0.5 bg-[#77776e] dark:bg-[#c5c5bc]"
             }`}
           />
         </span>
@@ -91,7 +91,7 @@ export default function FloatingContextToggle({ workspaceId }) {
         <p
           id={noticeId}
           role={requestError ? "alert" : "status"}
-          className="mt-1 max-w-72 text-right text-[10px] leading-4 text-amber-200"
+          className="mt-1 max-w-72 text-right text-[10px] leading-4 text-amber-700 dark:text-amber-200"
         >
           {notice}
         </p>

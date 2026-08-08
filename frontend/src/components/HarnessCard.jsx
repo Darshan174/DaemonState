@@ -44,7 +44,7 @@ function HarnessCardFrame({
   const buttonProps = Root === "button" ? { type: "button" } : {};
   const focusClass = Root === "button"
     ? "focus-visible:ring-2 focus-visible:ring-offset-4 focus-visible:ring-offset-[#f7f7f2] dark:focus-visible:ring-offset-[#0d0d0b]"
-    : "focus-within:ring-2 focus-within:ring-offset-4 focus-within:ring-offset-[#171713]";
+    : "focus-within:ring-2 focus-within:ring-offset-4 focus-within:ring-offset-[#f7f7f2] dark:focus-within:ring-offset-[#171713]";
   return (
     <Root
       {...buttonProps}
@@ -309,7 +309,7 @@ export function HarnessContinuationCard({
       monochrome={!ready}
       accentActive={pending || handoffRequested}
       artworkColor={ready ? CONTINUATION_ARTWORK_GOLD : ""}
-      className={`daemonstate-harness-fan-card daemonstate-provider-card h-[23rem] min-h-[23rem] w-[calc(100vw-4rem)] max-w-[280px] shrink-0 snap-center snap-always rounded-[26px] sm:h-[24rem] sm:min-h-[24rem] sm:w-[280px] sm:rounded-[32px] ${ready ? "border-[#cecec3] text-[#171713] dark:border-[#3a3a33] dark:text-white" : "border-[#77776f] text-white dark:border-[#77776f]"} ${workflowPending ? "cursor-wait" : disabled ? "cursor-not-allowed" : ""} ${contextBlocked && ready ? "saturate-[0.72]" : ""}`}
+      className={`daemonstate-harness-fan-card daemonstate-provider-card h-[23rem] min-h-[23rem] w-[calc(100vw-4rem)] max-w-[280px] shrink-0 snap-center snap-always rounded-[26px] sm:h-[24rem] sm:min-h-[24rem] sm:w-[280px] sm:rounded-[32px] ${ready ? "border-[#cecec3] text-[#171713] dark:border-[#3a3a33] dark:text-white" : "border-[#bcbcb3] text-[#34342f] dark:border-[#77776f] dark:text-white"} ${workflowPending ? "cursor-wait" : disabled ? "cursor-not-allowed" : ""} ${contextBlocked && ready ? "saturate-[0.72]" : ""}`}
       artworkContainerClassName="-right-[16%] top-[7%] h-[46%] w-[78%]"
       style={{
         zIndex: active ? 40 : HARNESS_FAN_Z_INDEX[index] || 10,
@@ -317,10 +317,9 @@ export function HarnessContinuationCard({
         "--daemonstate-card-y": `${translateY}px`,
         "--daemonstate-card-rotation": `${active ? 0 : baseRotation}deg`,
         "--daemonstate-card-scale": active ? 1.035 : 1,
-        backgroundColor: ready ? undefined : "#171715",
         borderColor: active ? accent : undefined,
         boxShadow: active
-          ? `0 28px 70px ${ready ? meta.glow : "rgba(255,255,255,0.08)"}, 0 16px 34px rgba(0,0,0,0.28)`
+          ? `0 28px 70px ${ready ? meta.glow : "rgba(23,23,19,0.10)"}, 0 16px 34px rgba(0,0,0,0.18)`
           : "0 16px 34px rgba(0,0,0,0.24)",
         transitionDelay: hovered ? "0ms" : `${index * 35}ms`,
       }}
@@ -347,7 +346,7 @@ export function HarnessContinuationCard({
             <span className="block font-mono text-lg font-black leading-none sm:text-2xl" style={{ color: accent }}>
               {cardNumber}
             </span>
-            <span className={`mt-1 block text-xs font-black uppercase tracking-[0.16em] ${ready ? "text-[#68685f] dark:text-[#b8b8af]" : "text-white/65"}`}>
+            <span className={`mt-1 block text-xs font-black uppercase tracking-[0.16em] ${ready ? "text-[#68685f] dark:text-[#b8b8af]" : "text-[#68685f] dark:text-white/65"}`}>
               {meta.company}
             </span>
           </span>
@@ -361,7 +360,7 @@ export function HarnessContinuationCard({
                 {compactionRequirementLabel}
               </span>
             ) : null}
-            <span className={`inline-flex min-h-7 items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-black uppercase tracking-[0.12em] backdrop-blur-md sm:text-xs ${ready ? statusTone : "border-white/20 bg-white/[0.07] text-white/75"}`}>
+            <span className={`inline-flex min-h-7 items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-black uppercase tracking-[0.12em] backdrop-blur-md sm:text-xs ${ready ? statusTone : "border-[#c8c8bf] bg-white/65 text-[#5f5f57] dark:border-white/20 dark:bg-white/[0.07] dark:text-white/75"}`}>
               {pending || checking
                 ? <Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
                 : ready && !accountAttention
@@ -372,13 +371,13 @@ export function HarnessContinuationCard({
           </span>
         </span>
 
-        <span className={`absolute inset-x-0 bottom-0 flex min-h-[72%] flex-col justify-end px-4 pb-4 pt-8 sm:px-5 ${ready ? "bg-gradient-to-t from-[#fbfbf6] via-[#fbfbf6]/95 to-[#fbfbf6]/35 dark:from-[#141411] dark:via-[#141411]/95 dark:to-[#141411]/30" : "bg-gradient-to-t from-[#171715] via-[#171715]/95 to-[#171715]/35"}`}>
+        <span className={`absolute inset-x-0 bottom-0 flex min-h-[72%] flex-col justify-end px-4 pb-4 pt-8 sm:px-5 ${ready ? "bg-gradient-to-t from-[#fbfbf6] via-[#fbfbf6]/95 to-[#fbfbf6]/35 dark:from-[#141411] dark:via-[#141411]/95 dark:to-[#141411]/30" : "bg-gradient-to-t from-[#fbfbf6] via-[#fbfbf6]/95 to-[#fbfbf6]/35 dark:from-[#171715] dark:via-[#171715]/95 dark:to-[#171715]/35"}`}>
           <span className="block text-lg font-black leading-tight tracking-[-0.035em] sm:text-2xl">
             {meta.name}
           </span>
           <span
             id={`continuation-provider-${type}-detail`}
-            className={`mt-1.5 block text-xs font-semibold leading-5 ${ready ? "text-[#68685f] dark:text-[#aaa9a0]" : "text-white/75"}`}
+            className={`mt-1.5 block text-xs font-semibold leading-5 ${ready ? "text-[#68685f] dark:text-[#aaa9a0]" : "text-[#68685f] dark:text-white/75"}`}
           >
             <span className={contextBlocked ? "line-clamp-1" : "line-clamp-2"}>{message}</span>
             {taskBlocked ? (
@@ -388,7 +387,7 @@ export function HarnessContinuationCard({
             ) : null}
           </span>
           {!ready && provider.action ? (
-            <span className="mt-1.5 line-clamp-2 text-xs font-semibold leading-5 text-white/60">
+            <span className="mt-1.5 line-clamp-2 text-xs font-semibold leading-5 text-[#77776e] dark:text-white/60">
               Next: {provider.action}
             </span>
           ) : null}
@@ -404,7 +403,7 @@ export function HarnessContinuationCard({
                 ? "border-amber-800/20 text-amber-900 dark:border-amber-200/20 dark:text-amber-100"
                 : ready
                   ? "border-[#d8d8cf]/80 dark:border-[#3a3a34]"
-                  : "border-white/15 text-white/55"
+                  : "border-[#d8d8cf]/80 text-[#68685f] dark:border-white/15 dark:text-white/55"
             }`}
             style={{ color: ready && taskReady ? accent : undefined }}
           >
@@ -439,7 +438,7 @@ export function HarnessContinuationCard({
       {controlsVisible ? (
         <div className="absolute inset-x-4 bottom-[3.9rem] z-20 grid grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)] gap-x-2 gap-y-1 sm:inset-x-5">
           <label className="min-w-0">
-            <span className={`mb-1 block text-xs font-black uppercase tracking-[0.12em] ${ready ? "text-[#68685f] dark:text-[#b8b8af]" : "text-white/65"}`}>
+            <span className={`mb-1 block text-xs font-black uppercase tracking-[0.12em] ${ready ? "text-[#68685f] dark:text-[#b8b8af]" : "text-[#68685f] dark:text-white/65"}`}>
               Model
             </span>
             <select
@@ -455,7 +454,7 @@ export function HarnessContinuationCard({
             </select>
           </label>
           <label className="min-w-0">
-            <span className={`mb-1 block text-xs font-black uppercase tracking-[0.12em] ${ready ? "text-[#68685f] dark:text-[#b8b8af]" : "text-white/65"}`}>
+            <span className={`mb-1 block text-xs font-black uppercase tracking-[0.12em] ${ready ? "text-[#68685f] dark:text-[#b8b8af]" : "text-[#68685f] dark:text-white/65"}`}>
               Effort
             </span>
             <select
@@ -470,7 +469,7 @@ export function HarnessContinuationCard({
               ))}
             </select>
           </label>
-          <span className={`col-span-2 text-[10px] font-bold leading-4 ${ready ? "text-[#77776e] dark:text-[#9d9d95]" : "text-white/55"}`}>
+          <span className={`col-span-2 text-[10px] font-bold leading-4 ${ready ? "text-[#77776e] dark:text-[#9d9d95]" : "text-[#77776e] dark:text-white/55"}`}>
             Requested settings — review them in Codex Desktop before sending.
           </span>
         </div>

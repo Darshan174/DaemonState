@@ -29,6 +29,15 @@ Date: 2026-08-03
 The compact prompt was shorter in all 20 pairs, with a mean size reduction of
 44.6%.
 
+The original permission and requirement scores were contract-consistency
+checks: they could confirm that a renderer followed its input, but not that the
+input contract correctly understood the user. A later adversarial case
+(`dont let cards be transparent`) exposed that limitation by compiling a UI
+change as a read-only report while still scoring the rendered permission as
+correct. Intent-classification, normalized-outcome, target-resolution, and
+acceptance checks now use independently labeled regression fixtures before
+renderer fidelity is evaluated.
+
 | Local-model replay | `legacy_v1` | `compact_v2` |
 |---|---:|---:|
 | Correct concrete first action | 33% | 100% |
@@ -42,6 +51,27 @@ The first replay exposed a candidate defect: the repository safety check
 preceded the concrete task action, so the model selected inspection as the task.
 The candidate was corrected to put `First action` first, while retaining the
 mandatory pre-edit repository check. The table contains the corrected replay.
+
+A later attachment-backed UI fixture exposed a second projection defect. The
+renderer turned attachment inspection into a synthetic R2, fell back to a
+generic goal, exposed capture-host paths and numeric target confidence, and
+omitted a concrete verification method. The current projection keeps exactly
+five sections, links A1 directly to the real R1, uses a contract-local evidence
+identity plus hash, renders qualitative candidate evidence, separates task
+capability from capture-time permission, and emits ordered discovery and
+planned-verification steps. It now also carries an integrity-checked Git
+index/worktree manifest rather than only a dirty-file count, and delegates
+artifact materialization and hash checks to infrastructure. Desktop staging
+publishes hash-verified, receiver-local copies of required images and the exact
+baseline manifest before opening the composer. The inspection
+validator accepts only hash-bound observations from infrastructure-owned
+descriptors; no production inspection producer exists yet. Capture permission
+is rendered as not observed rather than inferred from task type, and any
+unmet terminal prerequisite stops the action list until the context is
+regenerated. The richer projection permits up to 5,000
+characters of renderer overhead and up to 85% of the legacy prompt in the
+representative fail-closed fixture; compactness is subordinate to preserving
+execution-critical evidence.
 
 ## Verdict
 
